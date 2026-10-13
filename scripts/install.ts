@@ -9,7 +9,7 @@ import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { install, listVersions, rollback, versionLines } from "../src/install/install.ts";
-import { wire } from "../src/install/wire.ts";
+import { leftWarning, wireReport } from "../src/install/wire.ts";
 
 const { values } = parseArgs({
 	options: {
@@ -42,24 +42,35 @@ async function confirm(what: string): Promise<boolean> {
 	}
 }
 
-async function main(): Promise<void> {
+const KEEPS =
+	"pi and OMP lanes keep their version until they restart; Claude Code starts new hook processes on the new version at once, and a session's own recorder keeps the old one until the session restarts.";
+
+/** Resolves to the exit status: 1 when something is still wired to another Orrery. */
+async function main(): Promise<number> {
 	if (values.list === true) {
 		for (const line of versionLines(listVersions(env))) say(line);
-		return;
+		return 0;
 	}
 	if (values.rollback === true) {
 		const { from, to } = rollback(env);
-		say(`Switched back from ${from} to ${to}. Running lanes keep their version until they restart.`);
-		return;
+		say(`Switched back from ${from} to ${to}. ${KEEPS}`);
+		return 0;
 	}
 	const result = install({ checkout, env, ...(values["keep-dev"] === true ? { omitDev: false } : {}), log: say });
-	for (const line of await wire(env, { confirm })) say(line);
+	const { lines, left } = await wireReport(env, { confirm });
+	for (const line of lines) say(line);
 	if (result.removed.length > 0) say(`Removed old versions: ${result.removed.join(", ")}`);
-	say(`Installed ${result.version}. Running lanes keep their version until they restart.`);
+	if (left.length > 0) {
+		say(`Installed ${result.version}, but not everything points at it.`);
+		for (const line of leftWarning(left)) say(line);
+		return 1;
+	}
+	say(`Installed ${result.version}. ${KEEPS}`);
+	return 0;
 }
 
 main().then(
-	() => process.exit(0),
+	(status) => process.exit(status),
 	(error: unknown) => {
 		process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
 		process.exit(1);

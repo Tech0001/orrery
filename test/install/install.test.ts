@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +30,7 @@ function scratchEnv(): NodeJS.ProcessEnv {
 	return env;
 }
 
-const git = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { encoding: "utf8" });
+const git = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir, "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { encoding: "utf8" });
 
 /**
  * A tiny committed tree: no dependencies (npm ci stays offline and fast), a CLI that answers --help, one ignored file.
@@ -139,8 +139,10 @@ describe("install", () => {
 		const leftover = join(env.ORRERY_HOME as string, "app", ".staging-interrupted");
 		mkdirSync(leftover, { recursive: true });
 		writeFileSync(join(leftover, "package.json"), "{}");
+		chmodSync(env.ORRERY_HOME as string, 0o755);
 		install({ checkout: fixtureCheckout(), env, checks: "minimal" });
 		expect(existsSync(leftover)).toBe(false);
+		expect(statSync(env.ORRERY_HOME as string).mode & 0o777).toBe(0o700); // an existing 0755 home is tightened
 	});
 
 	it("says uncommitted changes are not included", () => {
@@ -158,7 +160,7 @@ describe("install", () => {
 		const env = scratchEnv();
 		const first = install({ checkout, env, checks: "minimal" });
 		writeFileSync(join(checkout, "src", "cli", "main.ts"), "process.exit(3);\n");
-		execFileSync("git", ["-C", checkout, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qam", "broken"]);
+		execFileSync("git", ["-C", checkout, "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qam", "broken"]);
 		expect(() => install({ checkout, env, checks: "minimal" })).toThrow(/check failed/);
 		const app = join(env.ORRERY_HOME as string, "app");
 		expect(readlinkSync(join(app, "current"))).toBe(first.version);
@@ -193,7 +195,27 @@ describe("install", () => {
 		const { env, versions } = twoInstalls();
 		expect(rollback(env)).toEqual({ from: versions[1], to: versions[0] });
 		expect(readlinkSync(join(env.ORRERY_HOME as string, "app", "current"))).toBe(versions[0]);
-		expect(historyOf(env)).toEqual([versions[0], versions[1], versions[0]]);
+		expect(historyOf(env)).toEqual([versions[0], versions[1]]); // history is install order; a rollback adds nothing
+	});
+
+	it("walks back in install order: a second rollback goes to the version before, a third refuses", () => {
+		const { checkout, env, versions } = twoInstalls();
+		const third = install({ checkout: commitAgain(env), env, checks: "minimal" }).version;
+		expect(rollback(env)).toEqual({ from: third, to: versions[1] });
+		expect(rollback(env)).toEqual({ from: versions[1], to: versions[0] });
+		expect(currentOf(env)).toBe(versions[0]);
+		expect(() => rollback(env)).toThrow(/no earlier version to roll back to/);
+		expect(currentOf(env)).toBe(versions[0]);
+		expect(checkout).toBeTruthy();
+	});
+
+	it("makes an install after a rollback current and newest, and rolls back from it to the version before", () => {
+		const { env, versions } = twoInstalls();
+		rollback(env); // current = v1
+		const next = install({ checkout: commitAgain(env), env, checks: "minimal" }).version; // v3
+		expect(currentOf(env)).toBe(next);
+		expect(historyOf(env).at(-1)).toBe(next);
+		expect(rollback(env)).toEqual({ from: next, to: versions[1] });
 	});
 
 	it("refuses to roll back with no earlier version", () => {
@@ -210,7 +232,7 @@ describe("install", () => {
 		const lines: string[] = [];
 		expect(install({ checkout, env, checks: "minimal", log: (l) => lines.push(l) })).toEqual({ version: versions[1], removed: [] });
 		expect(lines.join("\n")).toMatch(/already installed/);
-		expect(historyOf(env)).toEqual([versions[0], versions[1], versions[0], versions[1]]);
+		expect(historyOf(env)).toEqual([versions[0], versions[1]]);
 	});
 
 	it("keeps the newest three versions, current, and any version a live lane runs", () => {
@@ -229,6 +251,27 @@ describe("install", () => {
 		writeLiveStatus(env, "Bea", versions[2], process.pid, false);
 		const { version } = install({ checkout: commitAgain(env), env, checks: "minimal" });
 		expect(versionFolders(env)).toEqual([versions[3], versions[4], version].sort());
+	});
+
+	it("keeps every version when a lane's status.json cannot be read, and when it lacks a pid or version", () => {
+		for (const bad of ["{not json", JSON.stringify({ open: true, version: "x" }), JSON.stringify({ pid: process.pid, open: true }), JSON.stringify({ pid: process.pid, version: "x", open: "yes" })]) {
+			const { env } = fiveInstalls();
+			const before = versionFolders(env).length;
+			writeFileSync(join(env.ORRERY_HOME as string, "data", "lanes", "Atlas", "status.json"), bad);
+			const lines: string[] = [];
+			const result = install({ checkout: commitAgain(env), env, checks: "minimal", log: (l) => lines.push(l) });
+			expect(result.removed, bad).toEqual([]);
+			expect(versionFolders(env).length, bad).toBe(before + 1);
+			expect(lines.join("\n"), bad).toMatch(/Kept every older version/);
+		}
+	});
+
+	it("reads only pid, open and version from a status: {pid, version} alone protects its version", () => {
+		const { env, versions } = fiveInstalls();
+		writeFileSync(join(env.ORRERY_HOME as string, "data", "lanes", "Atlas", "status.json"), JSON.stringify({ pid: process.pid, version: versions[0] }));
+		install({ checkout: commitAgain(env), env, checks: "minimal" });
+		expect(versionFolders(env)).toContain(versions[0]);
+		expect(versionFolders(env)).not.toContain(versions[2]);
 	});
 
 	it("refuses a second install while one holds the lock", () => {

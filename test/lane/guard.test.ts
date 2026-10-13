@@ -282,11 +282,21 @@ describe("Orrery's own home", () => {
 	});
 
 	it("judges a very long command quickly", () => {
-		for (const unit of ["a/", "/", "./", "~/", "$", "{", "'", "x/../", "${", "{a,", "{a,b,c,d,e,f,g,h,", "{a,b,c,d,e,f,g,h}", "\\\n", "$()", "`", ".orrery/", "{a,b}"]) {
-			const command = `cat ${unit.repeat(100_000)}`;
+		const units = ["a/", "/", "./", "~/", "$", "{", "'", "x/../", "${", "{a,", "{a,b,c,d,e,f,g,h,", "{a,b,c,d,e,f,g,h}", "\\\n", "$()", "`", ".orrery/", "{a,b}"];
+		// Wall-clock budgets flake on slow runners: doubling the input must stay near double the time (linear passes, quadratic
+		// fails). The floor keeps a sub-millisecond baseline from turning timer noise into a ratio.
+		const time = (unit: string, times: number) => {
+			const command = `cat ${unit.repeat(times)}`;
 			const started = performance.now();
 			checkToolCall({ name: "bash", arguments: { command } }, options);
-			expect(performance.now() - started).toBeLessThan(1000);
+			return performance.now() - started;
+		};
+		for (const unit of units) {
+			time(unit, 1000); // warm up
+			const t100 = time(unit, 100_000);
+			const t200 = time(unit, 200_000);
+			expect(t200 / Math.max(t100, 20), `${JSON.stringify(unit)}: ${t100.toFixed(0)} ms -> ${t200.toFixed(0)} ms`).toBeLessThan(3);
+			expect(t200, `${JSON.stringify(unit)} backstop`).toBeLessThan(10_000);
 		}
 	});
 

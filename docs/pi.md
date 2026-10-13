@@ -6,16 +6,22 @@ and remote backup copies.
 
 ## Install
 
-The TUI does this for you: run `orrery`, open Tools (4), select pi and press `I` (or `orrery tools install pi`). By hand:
+`npm run install-local` wires this: it writes pi's extension file and points it at `~/.orrery/app/current`. If pi
+is not on PATH when you run it, or you decline a rewire, it says so and exits 1; rerun `npm run install-local -- --yes`
+once pi is there. The TUI does the same: run `orrery`, open Tools (4), select pi and press `I` (or
+`orrery tools install pi`).
 
-Add a one-line extension file to pi that imports Orrery by its absolute path:
+If you ever write the file by hand, it is one line that imports Orrery by its absolute path, into the installed copy:
 
 ```bash
-printf 'export { default } from "%s/src/pi/index.ts";\n' ~/code/orrery > ~/.pi/agent/extensions/orrery.ts
+printf 'export { default } from "%s/src/pi/index.ts";\n' ~/.orrery/app/current > ~/.pi/agent/extensions/orrery.ts
 ```
 
 Don't symlink `src/pi` into the extensions folder. pi resolves an extension's imports from where it finds the file,
 so a link breaks Orrery's imports, and pi then fails to start at all.
+
+Developing Orrery itself is different: running pi from a checkout is development mode, and `I` on the Tools page then
+points at that checkout. Use `npm run install-local` to put lanes back on the installed copy.
 
 Install from a checkout. The install copies the last commit and its runtime packages to `~/.orrery/app`, so pi finds
 typebox and smol-toml there, and pi loads the extension from that copy.

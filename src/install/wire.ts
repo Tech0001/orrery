@@ -26,21 +26,28 @@ function replaceLink(link: string, target: string): void {
 }
 
 /** ~/.local/bin/orrery → app/current's CLI. An older Orrery's link is replaced; anything else only when confirmed. */
-async function linkCommand(env: NodeJS.ProcessEnv, current: string, confirm: Confirm): Promise<string> {
+async function linkCommand(env: NodeJS.ProcessEnv, current: string, confirm: Confirm, left: string[]): Promise<string> {
 	const target = join(current, "src", "cli", "main.ts");
 	const link = join(env.HOME || homedir(), ".local", "bin", "orrery");
 	let now: string | null | undefined;
 	try {
 		now = lstatSync(link).isSymbolicLink() ? readlinkSync(link) : null;
 	} catch (error) {
-		if ((error as { code?: unknown }).code !== "ENOENT") return `orrery command: cannot read ${link}: ${errorText(error)}`;
+		if ((error as { code?: unknown }).code !== "ENOENT") {
+			left.push(`the orrery command (${link} could not be read)`);
+			return `orrery command: cannot read ${link}: ${errorText(error)}`;
+		}
 	}
 	if (now === target) return `orrery command: ${link} already links to ${target}`;
 	const older = typeof now === "string" && now.endsWith(join("src", "cli", "main.ts"));
-	if (now !== undefined && !older && !(await confirm(`replace ${link}?`))) return `orrery command: left ${link} as it is`;
+	if (now !== undefined && !older && !(await confirm(`replace ${link}?`))) {
+		left.push(`the orrery command (${link} is not Orrery's link and was not replaced)`);
+		return `orrery command: left ${link} as it is`;
+	}
 	try {
 		replaceLink(link, target);
 	} catch (error) {
+		left.push(`the orrery command (${link} could not be linked)`);
 		return `orrery command: could not link ${link}: ${errorText(error)}`;
 	}
 	return `orrery command: ${link} links to ${target}${typeof now === "string" ? ` (was ${now})` : ""}`;
@@ -54,13 +61,14 @@ function backupScript(env: NodeJS.ProcessEnv, home: string): string {
 }
 
 /** Rewrites the backup service's backup.sh line to app/current (same mode, one rename), then reloads systemd. */
-function pointBackup(env: NodeJS.ProcessEnv, home: string, run: Runner): string[] {
+function pointBackup(env: NodeJS.ProcessEnv, home: string, run: Runner, left: string[]): string[] {
 	const unit = join(env.HOME || homedir(), ".config", "systemd", "user", "orrery-backup.service");
 	let text: string;
 	try {
 		text = readFileSync(unit, "utf8");
 	} catch (error) {
 		if ((error as { code?: unknown }).code === "ENOENT") return ["no backup service; see docs/deploy.md"];
+		left.push(`the backup service (${unit} could not be read)`);
 		return [`backup service: cannot read ${unit}: ${errorText(error)}`];
 	}
 	const line = `ExecStart=${backupScript(env, home)}`;
@@ -80,13 +88,20 @@ function pointBackup(env: NodeJS.ProcessEnv, home: string, run: Runner): string[
 			throw error;
 		}
 	} catch (error) {
+		left.push(`the backup service (${unit} could not be rewritten)`);
 		return [`backup service: could not rewrite ${unit}: ${errorText(error)}`];
 	}
 	const lines = [`backup service: ${line}`];
 	const systemctl = findOnPath("systemctl", env);
-	if (systemctl === undefined) return [...lines, "backup service: no systemctl on PATH; run systemctl --user daemon-reload"];
+	if (systemctl === undefined) {
+		left.push("the backup service (systemd was not reloaded)");
+		return [...lines, "backup service: no systemctl on PATH; run systemctl --user daemon-reload"];
+	}
 	const reload = run(systemctl, ["--user", "daemon-reload"]);
-	if (reload.status !== 0) return [...lines, `backup service: systemctl --user daemon-reload failed (${firstLine(reload.stderr) || `exit ${reload.status}`}); run it again`];
+	if (reload.status !== 0) {
+		left.push("the backup service (systemctl --user daemon-reload failed)");
+		return [...lines, `backup service: systemctl --user daemon-reload failed (${firstLine(reload.stderr) || `exit ${reload.status}`}); run it again`];
+	}
 	return lines;
 }
 
@@ -95,7 +110,7 @@ function pointBackup(env: NodeJS.ProcessEnv, home: string, run: Runner): string[
  * without asking, "other" (another Orrery, or not Orrery's file) after confirm. A missing pi or OMP extension is written
  * only when that tool is on PATH.
  */
-async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: Runner; install: Runner }, confirm: Confirm): Promise<string[]> {
+async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: Runner; install: Runner }, confirm: Confirm, left: string[]): Promise<string[]> {
 	const lines: string[] = [];
 	const look = () => checkTools({ root: current, env, run: run.probe });
 	let checks = look();
@@ -111,28 +126,55 @@ async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: 
 			continue;
 		}
 		if (check.wiring === "other" && !(await confirm(`${check.label}: ${steps.map((step) => step.describe).join(", then ")}?`))) {
+			left.push(`${check.label} (still wired to ${check.detail})`);
 			lines.push(`${check.label}: left as it is (${check.detail})`);
 			continue;
 		}
 		const result = runInstall(steps, run.install);
 		lines.push(...result.output.split("\n").filter((line) => line.trim() !== "").map((line) => `${check.label}: ${line}`));
-		if (!result.ok) lines.push(`${check.label}: not wired; orrery tools install ${id} tries again`);
+		if (!result.ok) {
+			left.push(`${check.label} (the install failed)`);
+			lines.push(`${check.label}: not wired; orrery tools install ${id} tries again`);
+		}
 		// pi and OMP may share one extensions folder: OMP is judged after pi's file is written.
 		checks = look();
 	}
 	return lines;
 }
 
-/** Points everything at <home>/app/current; returns one line per thing wired, skipped or failed. */
-export async function wire(env: NodeJS.ProcessEnv, options: { run?: Runner; confirm: Confirm }): Promise<string[]> {
+/** What wiring did: one line per thing wired, skipped or failed, and what is still wired elsewhere (skipped, declined or failed). */
+export interface WireReport {
+	lines: string[];
+	left: string[];
+}
+
+/** Points everything at <home>/app/current. */
+export async function wireReport(env: NodeJS.ProcessEnv, options: { run?: Runner; confirm: Confirm }): Promise<WireReport> {
 	// A tool's --version or plugin list gets 15 s; installing the Claude Code plugin may take longer.
 	const run = options.run ?? envRunner(env, 300_000);
 	const probe = options.run ?? envRunner(env, 15_000);
 	const home = orreryHome(env);
 	const current = join(home, "app", "current");
+	const left: string[] = [];
+	const lines = [
+		await linkCommand(env, current, options.confirm, left),
+		...pointBackup(env, home, run, left),
+		...(await wireTools(env, current, { probe, install: run }, options.confirm, left)),
+	];
+	return { lines, left };
+}
+
+/** wireReport's lines. */
+export async function wire(env: NodeJS.ProcessEnv, options: { run?: Runner; confirm: Confirm }): Promise<string[]> {
+	return (await wireReport(env, options)).lines;
+}
+
+/** The closing warning when wiring left something behind: the list and the commands that fix it. */
+export function leftWarning(left: string[]): string[] {
+	if (left.length === 0) return [];
 	return [
-		await linkCommand(env, current, options.confirm),
-		...pointBackup(env, home, run),
-		...(await wireTools(env, current, { probe, install: run }, options.confirm)),
+		"Not everything points at this install. Still wired elsewhere:",
+		...left.map((item) => `  - ${item}`),
+		"Fix it with: npm run install-local -- --yes (or run orrery, then Tools, then I).",
 	];
 }

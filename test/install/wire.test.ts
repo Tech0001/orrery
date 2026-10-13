@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { wire } from "../../src/install/wire.ts";
+import { leftWarning, wire, wireReport } from "../../src/install/wire.ts";
 import { ompExtensionFile, piExtensionFile, piExtensionText, type Runner } from "../../src/lane/tools.ts";
 
 const dirs: string[] = [];
@@ -188,5 +188,32 @@ describe("pi, OMP and Claude Code", () => {
 		expect(asked.join("\n")).toMatch(/^Claude Code: claude plugin marketplace add .*app\/current/m);
 		expect(calls().filter((c) => c[0] === "claude" && c[2] === "marketplace")).toEqual([]);
 		expect(lines.join("\n")).toMatch(/^Claude Code: left as it is/m);
+	});
+});
+
+describe("what wiring leaves behind", () => {
+	it("lists the tools left wired to another Orrery when no one can confirm, and the warning names the fix", async () => {
+		const { env, home } = installedScratch({ tools: { pi: 'echo "1.1.0"' } });
+		writePiExtension(env, "/old/checkout/src/pi/index.ts");
+		mkdirSync(join(home, ".local", "bin"), { recursive: true });
+		symlinkSync("/usr/bin/true", join(home, ".local", "bin", "orrery"));
+		const { left } = await wireReport(env, { run: fakeRun, confirm: async () => false });
+		expect(left.join("\n")).toMatch(/pi \(still wired to/);
+		expect(left.join("\n")).toMatch(/orrery command/);
+		const warning = leftWarning(left).join("\n");
+		expect(warning).toContain("Still wired elsewhere");
+		expect(warning).toContain("pi (still wired to");
+		expect(warning).toContain("npm run install-local -- --yes");
+		expect(warning).toContain("Tools");
+		expect(piExtension(env)).toContain("/old/checkout/src/pi/index.ts");
+	});
+
+	it("lists a tool whose install failed, and nothing when everything is wired", async () => {
+		const { env } = installedScratch({ tools: { pi: 'echo "1.1.0"' } });
+		expect((await wireReport(env, { run: fakeRun, confirm: neverAsked })).left).toEqual([]);
+		expect(leftWarning([])).toEqual([]);
+		const failing = installedScratch({ tools: { claude: `if [ "$1" = "--version" ]; then echo "2.1.294 (Claude Code)"; elif [ "$1 $2" = "plugin list" ]; then printf '[]'; else echo nope >&2; exit 1; fi` } });
+		const { left } = await wireReport(failing.env, { run: fakeRun, confirm: neverAsked });
+		expect(left.join("\n")).toMatch(/Claude Code \(the install failed\)/);
 	});
 });

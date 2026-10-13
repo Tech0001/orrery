@@ -7,7 +7,7 @@
 import { join, resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
 import type { LaneTool } from "../lane/memory-tools.ts";
-import { defaultConfigPath, findLane, type HarnessConfig, type LaneConfig, loadConfig } from "../lane/config.ts";
+import { findLane, type HarnessConfig, type LaneConfig, loadConfig } from "../lane/config.ts";
 import { exitWhenFlushed } from "./exit.ts";
 
 const USAGE = `Usage: orrery <command> [--config FILE]
@@ -138,7 +138,7 @@ async function installCommand(values: { rollback?: boolean; list?: boolean }): P
 	}
 	if (values.rollback === true) {
 		const { from, to } = rollback(process.env);
-		process.stdout.write(`Switched back from ${from} to ${to}. Running lanes keep their version until they restart.\n`);
+		process.stdout.write(`Switched back from ${from} to ${to}. pi and OMP lanes keep their version until they restart.\n`);
 		return 0;
 	}
 	throw new Error("install takes --rollback or --list. To install a new version, run npm run install-local in a checkout.");

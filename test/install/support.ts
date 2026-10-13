@@ -33,7 +33,7 @@ export function workingTreeCheckout(): string {
 
 /** Commits everything in `dir` (allowing an empty commit), so its next install is a new version. */
 export function commitAll(dir: string, message: string): void {
-	const git = (...args: string[]) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", ...args]);
+	const git = (...args: string[]) => execFileSync("git", ["-C", dir, "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@example.com", ...args]);
 	git("add", "-A");
 	git("commit", "-q", "--allow-empty", "-m", message);
 }

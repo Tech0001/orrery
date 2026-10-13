@@ -82,7 +82,8 @@ folder `PI_CONFIG_DIR` moves `~/.omp` to; `agent.db` under `$XDG_DATA_HOME/omp`;
 Inside Orrery's home (`~/.orrery`), file tools are refused everywhere except `app/` and `config.toml`.
 
 It is a credential guard, not a sandbox. `bash` and `eval` get only a check of their text for ssh keys and credential
-stores; the code they run can reach any file. Tools from OMP plugins are not checked.
+stores. The check also refuses commands that name Orrery's home (`.orrery`). The code they run can reach any file.
+Tools from OMP plugins are not checked.
 
 Where OMP's own parsers may read more than the guard can, the guard refuses rather than guesses. In OMP lanes these
 calls are refused, and the model has to rephrase them:

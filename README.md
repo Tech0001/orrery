@@ -65,10 +65,11 @@ anything that is not Orrery's; `--yes` answers yes. `ORRERY_HOME` moves the whol
 ### Upgrading
 
 ```bash
-git pull && npm run install-local
+git pull && npm_config_ignore_scripts=true npm ci && npm run install-local
 ```
 
-Running lanes keep their version until they restart. `orrery install --rollback` switches back to the previous
+pi and OMP lanes keep their version until they restart. For Claude Code, new hook processes use the new version at
+once, while a session's own recorder keeps the old one until the session restarts. `orrery install --rollback` switches back to the previous
 version, and `orrery install --list` shows the installed versions and which lanes run them.
 
 ### Try the demo

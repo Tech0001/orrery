@@ -232,7 +232,7 @@ describe.skipIf(pi === null)("Orrery installed in app/current, inside a real pi"
 		const checkout = workingTreeCheckout();
 		dirs.push(checkout);
 		// With dev packages (npm ci without --omit=dev); the OMP test installs without them.
-		const first = install({ checkout, env, checks: "minimal", omitDev: false });
+		const first = install({ checkout, env, checks: "minimal" });
 		const current = join(orreryHome, "app", "current");
 		// Wired the way npm run install-local wires; this runner refuses every command (no real claude or systemctl runs).
 		const refuse = () => ({ status: 1, stdout: "", stderr: "not run in this test" });
@@ -328,7 +328,7 @@ describe.skipIf(pi === null)("Orrery installed in app/current, inside a real pi"
 			await turn(running, "The codename is Cedar.", 2);
 
 			commitAll(checkout, "a second version");
-			const second = install({ checkout, env, checks: "minimal", omitDev: false });
+			const second = install({ checkout, env, checks: "minimal" });
 			expect(second.version).not.toBe(first.version);
 			expect(second.previous).toBe(first.version);
 			expect(readlinkSync(current)).toBe(second.version);

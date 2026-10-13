@@ -7,14 +7,15 @@ pi and Tuesday in Claude Code are one memory. Claude's subscription covers Claud
 
 Or run `orrery`, open Tools (4), select Claude Code and press `I` (`orrery tools install claude-code`).
 
-1. Orrery itself, as in [pi.md](pi.md): `npm run install-local`, which installs the `orrery` command and the plugin,
-   and `~/.orrery/config.toml`.
+1. Orrery itself, as in [pi.md](pi.md): `npm run install-local`, which installs the `orrery` command, wires the
+   plugin from `~/.orrery/app/current`, and needs `~/.orrery/config.toml`.
 2. A login for summaries. Summaries run in the background on Orrery's own login, not Claude's. Run
    `orrery login openai` (Sign in with ChatGPT) for the lanes' `compactor_model`.
-3. The plugin:
+3. The plugin: `npm run install-local` wires this. If you must do it by hand, add the installed copy, never a
+   checkout (that would move the plugin off `app/current`):
 
    ```bash
-   claude plugin marketplace add ~/code/orrery
+   claude plugin marketplace add ~/.orrery/app/current
    claude plugin install orrery@orrery
    ```
 
@@ -24,9 +25,9 @@ recorder starts, nothing is kept, and the lane stays free for pi. The first line
 a message to you. The guard still applies there.
 
 The plugin runs `~/.local/bin/orrery`, so it uses the installed version (`~/.orrery/app/current`) and this
-machine's Node. After a change to Orrery's code, run `npm run install-local` again; running sessions keep their version
-until they restart. Without that launcher the hooks do nothing: they exit quietly and print nothing. Claude Code
-then lists the `orrery` MCP server as failed to connect.
+machine's Node. After a change to Orrery's code, run `npm run install-local` again; new hook processes use the new
+version at once, while a running session's own recorder keeps the old one until the session restarts. Without that
+launcher the hooks do nothing: they exit quietly and print nothing. Claude Code then lists the `orrery` MCP server as failed to connect.
 
 After a change to `claude-plugin/` itself, bump `version` in `claude-plugin/.claude-plugin/plugin.json` (a fixed
 version can keep a cached copy), then refresh the copy Claude Code installed. `claude plugin update orrery@orrery`
