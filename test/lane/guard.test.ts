@@ -214,8 +214,53 @@ describe("Orrery's own home", () => {
 		"(ls ~/.orrery/lanes)",
 		"ls ~/.orrery/lanes&",
 		"ls ~/.orrery/app/$X",
+		// separators and quotes before .orrery
+		"tar czf x ~//.orrery",
+		"tar czf x ~/./.orrery",
+		"tar czf x $HOME//.orrery",
+		"tar czf x /home/pc//.orrery",
+		"tar czf x /home//pc/.orrery",
+		"tar czf x ~/'.orrery'",
+		'tar czf x ~/".orrery"',
+		"tar czf x ~/x/../.orrery",
+		// and in the old folders
+		"cat ~/.config//orrery/remotes.json",
+		"cat ~/.config/./orrery/remotes.json",
+		'cat ~/.config/"orrery"/remotes.json',
+		"cat ~/.local//share/orrery/remotes.json",
+		"cat ~/.local/share/./orrery/remotes.json",
+		"cat /home/pc/.config/orrery/remotes.json",
+		// more spellings of home
+		"tar czf x ~pc/.orrery",
+		"tar czf x ${HOME%/}/.orrery",
+		"tar czf x ${HOME:-/root}/.orrery",
+		"tar czf x /var/home/pc/.orrery",
+		// backslashes and quotes inside the name
+		"tar czf x ~/.orr\\ery",
+		"tar czf x ~/.orr''ery",
+		'tar czf x ~/".orr"ery',
+		"cat ~/.config/orr\\ery/remotes.json",
+		// expansions in front of the folder
+		"tar czf x $(echo ~)/.orrery",
+		"tar czf x `echo ~`/.orrery",
+		"tar czf x $d/.orrery",
+		"tar czf x $PWD/.orrery",
+		// brace groups
+		"ls ~/{.orrery,x}/lanes",
+		"tar czf x ~/{.orrery,y}",
+		"tar czf x {~,/x}/.orrery",
+		"tar czf x ~/.{orrery,x}",
 	])("refuses the command %s", (command) => {
 		expect(checkToolCall({ name: "bash", arguments: { command } }, options)).toMatch(/sensitive/);
+	});
+
+	it("judges a very long command quickly", () => {
+		for (const unit of ["a/", "/", "./", "~/", "$", "{", "'", "x/../"]) {
+			const command = `cat ${unit.repeat(100_000)}`;
+			const started = performance.now();
+			checkToolCall({ name: "bash", arguments: { command } }, options);
+			expect(performance.now() - started).toBeLessThan(1000);
+		}
 	});
 
 	it.each([
@@ -229,6 +274,12 @@ describe("Orrery's own home", () => {
 		"ls ~/.local/share/orrery/app",
 		'cat "$HOME/.orrery/config.toml"',
 		"cat ~/.orrery-notes.txt",
+		"git status",
+		"ls ~/Documents",
+		"cat ~/.bashrc",
+		"cat ~/code/orrery/src/x.ts",
+		"cd ~/Documents/GitHub/orrery",
+		"cat ~/projects/x/.config/orrery/settings.json",
 	])("allows %s", (command) => {
 		expect(checkToolCall({ name: "bash", arguments: { command } }, options)).toBeUndefined();
 	});
@@ -256,11 +307,16 @@ describe("Orrery's own home", () => {
 		mkdirSync(join(data, "lanes", "Birch"), { recursive: true });
 		mkdirSync(join(data, "app", "v1", "src"), { recursive: true });
 		symlinkSync("v1", join(data, "app", "current"));
-		for (const file of ["remotes.json", "credentials.json", "config.toml", "lanes/Birch/memory.sqlite"]) writeFileSync(join(data, file), "");
+		for (const file of ["remotes.json", "config.toml", "lanes/Birch/memory.sqlite"]) writeFileSync(join(data, file), "");
+		// A login file outside the data folder, with a name no pattern knows: only the credentials list can refuse it.
+		const logins = join(home, "elsewhere", "logins.store");
+		mkdirSync(join(home, "elsewhere"));
+		writeFileSync(logins, "");
 		const env = new NodeExecutionEnv({ cwd: home });
-		const guard = { workspace: join(home, "ws"), allowedRoots: [], orreryData: data, credentials: [join(data, "credentials.json")] };
+		const guard = { workspace: join(home, "ws"), allowedRoots: [], orreryData: data, credentials: [logins] };
 		expect(await checkResolvedPath(env, join(data, "remotes.json"), "read", guard, ctx)).toMatch(/sensitive/);
-		expect(await checkResolvedPath(env, join(data, "credentials.json"), "read", guard, ctx)).toMatch(/sensitive/);
+		expect(await checkResolvedPath(env, logins, "read", guard, ctx)).toMatch(/sensitive/);
+		expect(await checkResolvedPath(env, logins, "read", { ...guard, credentials: [] }, ctx)).toBeUndefined();
 		expect(await checkResolvedPath(env, join(data, "app", "..", "lanes", "Birch", "memory.sqlite"), "read", guard, ctx)).toMatch(/sensitive/);
 		expect(await checkResolvedPath(env, join(data, "app", "current", "src"), "read", guard, ctx)).toBeUndefined();
 		expect(await checkResolvedPath(env, join(data, "config.toml"), "read", guard, ctx)).toBeUndefined();

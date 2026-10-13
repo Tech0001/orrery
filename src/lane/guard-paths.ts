@@ -411,7 +411,7 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	// searches for, so code that mentions auth.json can still be searched.
 	const nameKey = toolName === "grep" ? "glob" : toolName === "find" ? "pattern" : undefined;
 	const names = nameKey === undefined ? undefined : input[nameKey];
-	if (typeof names === "string" && sensitive(names)) return `${toolName} ${nameKey} "${names}" names sensitive files (ssh keys or credentials).`;
+	if (typeof names === "string" && sensitive(names)) return `${toolName} ${nameKey} "${names}" names sensitive files (keys, credentials or Orrery's private data).`;
 	const given = typeof input.path === "string" && input.path !== "" ? input.path : undefined;
 	const raw = given ?? (search ? "." : undefined);
 	if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, options);
@@ -487,13 +487,13 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 	const glob = (tool: "grep" | "edit", part: string) => {
 		const path = part.replace(/\\/g, "/"); // OMP reads either slash in these (tools/path-utils.ts:559)
 		if (escapingGlob(path)) return `${toolName} path "${part}": brace or parent patterns are not allowed in OMP paths.`;
-		if (sensitive(part) || sensitive(path)) return tool === "grep" ? `${toolName} path "${part}" names sensitive files (ssh keys or credentials).` : SENSITIVE_FILE(part);
+		if (sensitive(part) || sensitive(path)) return tool === "grep" ? `${toolName} path "${part}" names sensitive files (keys, credentials or Orrery's private data).` : SENSITIVE_FILE(part);
 		return firstRefusal([...new Set([globBase(path), path, part])], (form) => judge(tool, { path: form }));
 	};
 	if (toolName === "edit") {
 		const text = [input.input, input._input].filter((value): value is string => typeof value === "string").join("\n");
 		// Like a bash command: an edit whose text names a credential file is refused, its content included.
-		if (sensitive(text)) return "This edit touches sensitive files (ssh keys or credentials).";
+		if (sensitive(text)) return "This edit touches sensitive files (keys, credentials or Orrery's private data).";
 		const read = readEditText(text);
 		if (read.unreadable) return EDIT_UNREADABLE;
 		const renames = Array.isArray(input.edits) ? strings(input.edits.map((entry: unknown) => (entry as { rename?: unknown } | null)?.rename)) : [];

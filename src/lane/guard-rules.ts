@@ -40,22 +40,40 @@ const SENSITIVE = [
 	// judged by homeNamed below.
 	new RegExp(`\\.orrery${ORRERY_SEP}(?:lanes|backups|builds|ssh)(?:\\/|$|[\\s"'|;&)<>*])`),
 	new RegExp(`\\.orrery${ORRERY_SEP}(?:remotes\\.json|device-id|backup\\.env)\\b`),
-	/\/[^\s"']*\.orrery\/+[^\s/"']*[*?[{]/,
+	/\/\.orrery\/+[^\s/"']*[*?[{]/,
+	// A brace group that spells orrery can build any of the names above.
+	/\{[^{}]*orrery/,
 ];
 
 /** Case-insensitive: on a case-insensitive file system (macOS) ~/.SSH is ~/.ssh. */
 export function sensitive(text: string): boolean {
 	const lower = text.toLowerCase();
-	return SENSITIVE.some((pattern) => pattern.test(lower)) || homeNamed(lower);
+	// The shell drops quotes and backslashes inside a word and joins "//", "./" and "x/.." in a path: test those readings
+	// too.
+	const bare = lower.replace(/[\\'"]/g, "");
+	return [...new Set([lower, bare, flatten(bare)])].some((form) => SENSITIVE.some((pattern) => pattern.test(form)) || homeNamed(form));
+}
+
+/** A path text with "//" and "/." joined and "/x/.." removed (a few levels deep: the guard is a seatbelt). */
+function flatten(text: string): string {
+	let out = text.replace(/\/{2,}/g, "/").replace(/\/\.(?=\/)/g, "");
+	for (let pass = 0; pass < 8; pass++) {
+		const next = out.replace(/\/(?!\.\.(?:\/|$))[^/\s;|&()<>]+\/\.\.(?=\/|$|[\s;|&()<>])/g, "");
+		if (next === out) break;
+		out = next;
+	}
+	return out;
 }
 
 // What follows a folder name: the end, a path separator, a shell terminator or a glob, then the rest of that word.
 const AFTER = String.raw`(?=$|[\s"'/;|&)<>*?[{\\$\x60])([^\s|;&)<>]*)`;
-// ~/.orrery in every spelling of the home folder (a quote may sit between them), and the old folders, which are links to
-// the whole home after move-home: the folder itself and everything in it, except the program (app/) and config.toml.
-const HOME_PREFIX = String.raw`(?:~|\$home|\$\{home\}|/home/[^/\s"']+|/users/[^/\s"']+|/root)["']*`;
-const ORRERY_HOME = new RegExp(String.raw`(?:^|[\s"'=:;|&(<>])${HOME_PREFIX}/\.orrery${AFTER}`, "g");
-const OLD_FOLDERS = new RegExp(String.raw`\.(config|local/share)/orrery${AFTER}`, "g");
+// What comes before ~/.orrery and the old folders: some spelling of the home folder (~, ~user, /home/x, /var/home/x,
+// /Users/x, /root), or an expansion that may be one ($VAR, ${...}, $(...), a backtick, a brace group). The old folders
+// are links to the whole home after move-home: the folder itself and all in it is refused, except the program (app/) and
+// config.toml.
+const HOME_WORD = String.raw`(?:(?:^|[\s"'=:;|&(<>{,])(?:~[\w.-]*|/(?:var/)?home/[^/\s"']+|/users/[^/\s"']+|/root)|\$\{[^}\s]*\}|\$[a-z_]\w*|[)}\x60])`;
+const ORRERY_HOME = new RegExp(String.raw`${HOME_WORD}/\.orrery${AFTER}`, "g");
+const OLD_FOLDERS = new RegExp(String.raw`${HOME_WORD}/\.(config|local/share)/orrery${AFTER}`, "g");
 
 /** The path words after the folder, quotes dropped; undefined when a variable or escape could still change them. */
 function words(rest: string): string[] | undefined {
@@ -106,12 +124,12 @@ export function checkToolCall(
 ): string | undefined {
 	const command = call.arguments.command;
 	if (call.name === "bash" && typeof command === "string" && sensitive(command)) {
-		return "This command touches sensitive files (ssh keys or credentials).";
+		return "This command touches sensitive files (keys, credentials or Orrery's private data).";
 	}
 	const raw = call.arguments.path;
 	if (typeof raw !== "string") return undefined;
 	const path = posix.normalize(posix.isAbsolute(raw) ? raw : posix.join(options.cwd ?? options.workspace, raw));
-	if (sensitive(raw) || sensitive(path)) return `${path} is a sensitive file (ssh keys or credentials).`;
+	if (sensitive(raw) || sensitive(path)) return `${path} is a sensitive file (keys, credentials or Orrery's private data).`;
 	if ((call.name === "write" || call.name === "edit") && ![options.workspace, ...options.allowedRoots].some((root) => within(path, root))) {
 		return `${path} is outside this lane's workspace and allowed roots.`;
 	}
