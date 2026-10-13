@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { resetCapabilitiesCache, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -77,6 +77,8 @@ describe("the small logo", () => {
 		expect(existsSync(join(ROOT, "assets", "orrery.svg"))).toBe(true);
 		const found: string[] = [];
 		const walk = (path: string) => {
+			// Links are not the repository's files (a local docs/superpowers link to private notes, say).
+			if (lstatSync(path).isSymbolicLink()) return;
 			if (statSync(path).isDirectory()) {
 				for (const name of readdirSync(path)) walk(join(path, name));
 			} else if (readFileSync(path, "utf8").includes(png)) found.push(path);
