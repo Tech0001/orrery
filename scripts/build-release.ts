@@ -43,12 +43,14 @@ function versionOf(from: string, official: boolean): string {
 }
 
 /**
- * The compiled CLI at <folder>/bin/orrery. --sourcemap embeds the source map, so a stack names src/…ts files; the copy
- * Bun also writes beside the binary (orrery.map, about 11 MB) is not needed and is removed.
+ * The compiled CLI at <folder>/bin/orrery. --bytecode starts it in about 20 ms instead of 80 (a Claude Code hook runs it
+ * on every prompt); it needs --format=esm for Orrery's top-level await. --sourcemap embeds the source map, so a stack
+ * names src/…ts files; the copy Bun also writes beside the binary (orrery.map, about 11 MB) is not needed and is removed.
  */
 function compile(from: string, folder: string, target: Target): void {
 	mkdirSync(join(folder, "bin"), { recursive: true });
-	run(process.execPath, ["build", "--compile", `--target=${BUN_TARGET[target]}`, "--sourcemap", "--outfile", join(folder, "bin", "orrery"), join(from, "src", "cli", "main.ts")], from);
+	const flags = ["--compile", "--bytecode", "--format=esm", `--target=${BUN_TARGET[target]}`, "--sourcemap"];
+	run(process.execPath, ["build", ...flags, "--outfile", join(folder, "bin", "orrery"), join(from, "src", "cli", "main.ts")], from);
 	rmSync(join(folder, "bin", "orrery.map"), { force: true });
 }
 
@@ -57,30 +59,75 @@ interface LockEntry {
 	name?: string;
 	version?: string;
 	dev?: boolean;
-	devOptional?: boolean;
+}
+
+/** A package.json's license: its SPDX expression ("MIT", "(MIT OR Apache-2.0)"), from the older forms too. */
+function licenseOf(json: { license?: unknown; licenses?: unknown }): string | undefined {
+	const type = (value: unknown) => (typeof value === "string" ? value : typeof (value as { type?: unknown } | null)?.type === "string" ? (value as { type: string }).type : undefined);
+	if (json.license !== undefined) return type(json.license);
+	const types = Array.isArray(json.licenses) ? json.licenses.map(type) : [];
+	return types.length > 0 && types.every((t) => t !== undefined) ? types.join(" OR ") : undefined;
+}
+
+/** A package.json person ("Name <email> (url)", or { name, email, url }) as one line. */
+function personOf(value: unknown): string | undefined {
+	if (typeof value === "string") return value;
+	const { name, email, url } = (value ?? {}) as { name?: unknown; email?: unknown; url?: unknown };
+	if (typeof name !== "string") return undefined;
+	return [name, typeof email === "string" ? `<${email}>` : "", typeof url === "string" ? `(${url})` : ""].filter((part) => part !== "").join(" ");
+}
+
+/** The license ids an SPDX expression names: "(MIT OR Apache-2.0)" gives MIT and Apache-2.0. */
+function licenseIds(expression: string): string[] {
+	return expression.replace(/[()]/g, " ").split(/\s+/).filter((word) => word !== "" && !/^(AND|OR|WITH)$/i.test(word));
 }
 
 /**
- * Every production package's license text (what the binary and extensions may contain): package-lock.json's packages
- * less the dev ones, each read from its folder. A package not installed here, such as another platform's optional
- * binary, is left out. Not `npm ls`: it misreads a linked node_modules, and under `bun --bun` npm runs on Bun and its
- * output can come back cut short.
+ * THIRD_PARTY_LICENSES: every production package (what the binary and extensions may contain) with its license and
+ * author from its package.json, then its license file. A package that ships none is under the standard text of each
+ * license it names, given once at the end from `texts` (scripts/licenses/<SPDX id>.txt, from the SPDX license list; MIT's
+ * has no copyright line, as the author line names the holder). An id with no text there fails the build, so a new
+ * dependency can't ship without its license.
+ *
+ * The packages are package-lock.json's, less the dev ones, each read from its folder; one not installed here (another
+ * platform's optional binary) is left out. Not `npm ls`: it misreads a linked node_modules, and under `bun --bun` npm
+ * runs on Bun and its output can come back cut short.
  */
-function thirdPartyLicenses(from: string): string {
+export function thirdPartyLicenses(from: string, texts: string = join(from, "scripts", "licenses")): string {
 	const lock = JSON.parse(readFileSync(join(from, "package-lock.json"), "utf8")) as { packages: Record<string, LockEntry> };
-	const seen = new Map<string, { path: string; license: string }>();
+	const shipped = new Map<string, string>();
 	for (const [folder, entry] of Object.entries(lock.packages)) {
 		const path = join(from, folder);
-		if (folder === "" || entry.dev === true || entry.devOptional === true || entry.version === undefined || !existsSync(path)) continue;
-		const key = `${entry.name ?? folder.slice(folder.lastIndexOf("node_modules/") + "node_modules/".length)}@${entry.version}`;
-		if (seen.has(key)) continue;
-		const { license } = JSON.parse(readFileSync(join(path, "package.json"), "utf8")) as { license?: unknown };
-		seen.set(key, { path, license: typeof license === "string" ? license : "see the package" });
+		if (folder === "" || entry.dev === true || entry.version === undefined || !existsSync(path)) continue;
+		shipped.set(`${entry.name ?? folder.slice(folder.lastIndexOf("node_modules/") + "node_modules/".length)}@${entry.version}`, path);
 	}
-	const parts = ["Orrery's release contains code from these packages. Each package's license follows.\n"];
-	for (const [key, { path, license }] of [...seen].sort(([a], [b]) => a.localeCompare(b))) {
+	const parts = [
+		"Orrery's release contains code from these packages. Each package's license follows. A package that ships no license\n",
+		"file is under the standard text of its license, given once at the end of this file; its author is the copyright holder.\n",
+	];
+	const needed = new Map<string, string[]>(); // license id -> the packages that need its standard text
+	for (const [key, path] of [...shipped].sort(([a], [b]) => a.localeCompare(b))) {
+		const json = JSON.parse(readFileSync(join(path, "package.json"), "utf8")) as { license?: unknown; licenses?: unknown; author?: unknown };
+		const license = licenseOf(json);
+		parts.push(`\n==== ${key} ====\nLicense: ${license ?? "not given in the package"}\nAuthor: ${personOf(json.author) ?? "not given in the package"}\n`);
 		const file = readdirSync(path).find((name) => /^(licen[cs]e|copying|notice)(\.|$)/i.test(name));
-		parts.push(`\n==== ${key} (${license}) ====\n${file === undefined ? "(no license file in the package)\n" : readFileSync(join(path, file), "utf8")}`);
+		if (file !== undefined) {
+			parts.push(readFileSync(join(path, file), "utf8"));
+			continue;
+		}
+		if (license === undefined) throw new Error(`${key} ships no license file and names no license`);
+		const ids = licenseIds(license);
+		parts.push(`(no license file in the package: the standard ${ids.join(" and ")} text${ids.length > 1 ? "s are" : " is"} at the end of this file)\n`);
+		for (const id of ids) needed.set(id, [...(needed.get(id) ?? []), key]);
+	}
+	const textOf = (id: string) => join(texts, `${id}.txt`);
+	const missing = [...needed].filter(([id]) => !/^[A-Za-z0-9][A-Za-z0-9.+-]*$/.test(id) || !existsSync(textOf(id)));
+	if (missing.length > 0) {
+		throw new Error(`no standard license text for ${missing.map(([id, users]) => `${id} (${users.join(", ")})`).join("; ")}: add scripts/licenses/<id>.txt from the SPDX license list`);
+	}
+	if (needed.size > 0) {
+		parts.push("\n==== Standard license texts ====\n");
+		for (const id of [...needed.keys()].sort()) parts.push(`\n---- ${id} ----\n${readFileSync(textOf(id), "utf8")}`);
 	}
 	return parts.join("");
 }

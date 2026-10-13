@@ -16,10 +16,17 @@ export const compiled: boolean = fileURLToPath(import.meta.url).startsWith("/$bu
 
 /**
  * The folder this code runs from, by its real path (Node and Bun load modules by real path): for the binary, the folder
- * above its bin/; otherwise the nearest folder above this file that holds VERSION (a release) or package.json (a checkout).
+ * above its bin/, which must hold VERSION (a binary copied out of its release fails rather than read whatever
+ * package.json lies above it); otherwise the nearest folder above this file that holds VERSION (a release) or
+ * package.json (a checkout).
  */
 export function runningRoot(): string {
-	if (compiled) return resolve(dirname(realpathSync(process.execPath)), "..");
+	if (compiled) {
+		const binary = realpathSync(process.execPath);
+		const root = resolve(dirname(binary), "..");
+		if (!existsSync(join(root, "VERSION"))) throw new Error(`no VERSION beside this binary at ${binary} (looked for ${join(root, "VERSION")})`);
+		return root;
+	}
 	const here = fileURLToPath(import.meta.url);
 	for (let dir = dirname(here); ; dir = dirname(dir)) {
 		if (existsSync(join(dir, "VERSION")) || existsSync(join(dir, "package.json"))) return dir;

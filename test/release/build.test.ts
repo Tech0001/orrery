@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { builtRelease, bunReady, REPO, removeBuiltRelease } from "./support.ts";
@@ -33,8 +34,26 @@ describe.skipIf(!bunReady)("build-release (host)", () => {
 		expect(h.stdout).toMatch(/^Usage: orrery <command>/);
 	});
 
-	it("names third-party licenses for what it packs", async () => {
+	it("refuses to name a version when copied out of its release, even beside a stray package.json", async () => {
+		const stray = mkdtempSync(join(tmpdir(), "orrery-stray-"));
+		try {
+			mkdirSync(join(stray, "bin"));
+			writeFileSync(join(stray, "package.json"), JSON.stringify({ name: "elsewhere", version: "9.9.9" }));
+			const bin = join(stray, "bin", "orrery");
+			copyFileSync(join(await builtRelease(), "bin", "orrery"), bin);
+			chmodSync(bin, 0o755);
+			const v = spawnSync(bin, ["--version"], { encoding: "utf8" });
+			expect([v.status, v.stdout, v.stderr]).toEqual([1, "", `no VERSION beside this binary at ${realpathSync(bin)} (looked for ${join(realpathSync(stray), "VERSION")})\n`]);
+		} finally {
+			rmSync(stray, { recursive: true, force: true });
+		}
+	});
+
+	it("names third-party licenses for what it packs, with the standard text for each that ships none", async () => {
 		const text = readFileSync(join(await builtRelease(), "THIRD_PARTY_LICENSES"), "utf8");
-		for (const name of ["smol-toml", "proper-lockfile", "undici"]) expect(text).toContain(`${name}@`);
+		for (const name of ["smol-toml", "proper-lockfile", "undici"]) expect(text).toMatch(new RegExp(`\\n==== ${name}@\\S+ ====\\nLicense: \\S+\\nAuthor: `));
+		const ids = new Set([...text.matchAll(/the standard (.+) texts? (?:is|are) at the end of this file/g)].flatMap((m) => (m[1] as string).split(" and ")));
+		expect([...ids]).toContain("MIT");
+		for (const id of ids) expect(text.split(readFileSync(join(REPO, "scripts", "licenses", `${id}.txt`), "utf8")).length - 1, id).toBe(1);
 	});
 });

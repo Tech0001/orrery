@@ -1,13 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { modView } from "../../src/claude/mod-view.ts";
 import { pendingEvents, writeMode } from "../../src/claude/spool.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { holderFile } from "../../src/lane/handover.ts";
-import { MemoryStore, MemoryView } from "../../src/memory/index.ts";
-import { cleanEnv, cleanupDirs, MAIN, seed, spool, type TestLane, testLane } from "./support.ts";
+import { MemoryStore, MemoryView, Part } from "../../src/memory/index.ts";
+import { cleanEnv, cleanupDirs, cliCommand, seed, spool, type TestLane, testLane } from "./support.ts";
 
 const SESSION = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
@@ -306,12 +306,8 @@ function status(updatedAt: string, trouble: { state: string; plain: string } | n
 describe("the CLI", () => {
 	it("prints one JSON line, exit 0, and exit 1 with { error } for a broken config", () => {
 		const t = testLane();
-		const run = (config: string) =>
-			spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, "claude-mod", "view", "--cwd", t.lane.workspace], {
-				env: cleanEnv({ ORRERY_CONFIG: config }),
-				encoding: "utf8",
-				timeout: 20_000,
-			});
+		const c = cliCommand(["claude-mod", "view", "--cwd", t.lane.workspace]);
+		const run = (config: string) => spawnSync(c.cmd, c.args, { env: cleanEnv({ ORRERY_CONFIG: config }), encoding: "utf8", timeout: 20_000 });
 		const ok = run(t.configPath);
 		expect(ok.status).toBe(0);
 		expect(JSON.parse(ok.stdout)).toHaveProperty("lane");
@@ -325,11 +321,8 @@ describe("the CLI", () => {
 
 	it("takes --spool-only with --wait-ms", () => {
 		const t = testLane();
-		const run = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, "claude-mod", "view", "--cwd", t.lane.workspace, "--session", SESSION, "--wait-ms", "3000", "--spool-only"], {
-			env: cleanEnv({ ORRERY_CONFIG: t.configPath }),
-			encoding: "utf8",
-			timeout: 20_000,
-		});
+		const c = cliCommand(["claude-mod", "view", "--cwd", t.lane.workspace, "--session", SESSION, "--wait-ms", "3000", "--spool-only"]);
+		const run = spawnSync(c.cmd, c.args, { env: cleanEnv({ ORRERY_CONFIG: t.configPath }), encoding: "utf8", timeout: 20_000 });
 		expect(run.status).toBe(0);
 		expect(JSON.parse(run.stdout)).toHaveProperty("lane");
 		expect(run.stderr).toBe("");
@@ -340,11 +333,8 @@ describe("the CLI", () => {
 		writeFileSync(join(t.lane.dir, "status.json"), JSON.stringify(status(new Date().toISOString(), null)));
 		const timed = (waitMs: number, extra: string[]) => {
 			const started = Date.now();
-			const run = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, "claude-mod", "view", "--cwd", t.lane.workspace, "--session", SESSION, "--wait-ms", String(waitMs), ...extra], {
-				env: cleanEnv({ ORRERY_CONFIG: t.configPath }),
-				encoding: "utf8",
-				timeout: 30_000,
-			});
+			const c = cliCommand(["claude-mod", "view", "--cwd", t.lane.workspace, "--session", SESSION, "--wait-ms", String(waitMs), ...extra]);
+			const run = spawnSync(c.cmd, c.args, { env: cleanEnv({ ORRERY_CONFIG: t.configPath }), encoding: "utf8", timeout: 30_000 });
 			expect(run.status).toBe(0);
 			expect(JSON.parse(run.stdout)).toMatchObject({ mode: "mod", messages: 2 });
 			return Date.now() - started;
@@ -354,4 +344,27 @@ describe("the CLI", () => {
 		// With the flag the same call returns long before its cap.
 		expect(timed(20_000, ["--spool-only"])).toBeLessThan(10_000);
 	}, 40_000);
+
+	// A reply bigger than a pipe holds (64 KB), read late as the mod's process.run reads it, once came out cut at 65,536
+	// bytes (src/cli/exit.ts): on Node when the CLI exited at once, on Bun when it waited on an empty write.
+	it("delivers a reply over 64 KB in full through a pipe its reader drains late", () => {
+		const t = modLane();
+		// 120 messages of 660 bytes, each with its line built: a view of about 80 KB.
+		const store = MemoryStore.open(join(t.lane.dir, "memory.sqlite"));
+		const texts = Array.from({ length: 120 }, (_, i) => `${i} ${"long words ".repeat(60)}`);
+		store.appendBatch(texts.map((text) => ({ kind: "user" as const, text })));
+		texts.forEach((text, i) => store.saveNode(new Part(0, i + 2), `user: ${text}`));
+		store.close();
+		const code = join(t.dir, "code");
+		const c = cliCommand(["claude-mod", "view", "--cwd", t.lane.workspace, "--session", SESSION]);
+		const run = spawnSync("sh", ["-c", '{ "$@"; echo $? > "$CODE"; } | { sleep 0.3; cat; }', "sh", c.cmd, ...c.args], {
+			env: cleanEnv({ ORRERY_CONFIG: t.configPath, CODE: code }),
+			encoding: "utf8",
+			maxBuffer: 10_000_000,
+			timeout: 20_000,
+		});
+		expect([readFileSync(code, "utf8"), run.stderr]).toEqual(["0\n", ""]);
+		expect(run.stdout.length).toBeGreaterThan(65_536);
+		expect(JSON.parse(run.stdout)).toMatchObject({ mode: "mod", messages: 122 });
+	});
 });
