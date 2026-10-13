@@ -63,7 +63,7 @@ export interface AppDeps {
 	openUrl(url: string): string | undefined;
 	browse(config: HarnessConfig, lane: string): { path: string; opened?: string };
 	/** orrery's own version and folder, for the Tools page. */
-	about(): { readonly version: string; readonly root: string };
+	about(): { readonly version: string; readonly root: string; /** The installed version folder running, or "checkout". */ readonly running?: string };
 	rows(): number;
 	now(): number;
 	quit(): void;

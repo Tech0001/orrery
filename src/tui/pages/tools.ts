@@ -96,7 +96,7 @@ export const toolsPage: Page = {
 				app.config === undefined
 					? ""
 					: `\nMemory folder: ${app.config.dataDir}\nLast backup: ${backup === undefined ? "never (run orrery backup)" : `${backup} in ${join(app.config.dataDir, "backups")}`}`;
-			void app.host.open(new MessageModal("Orrery", safeLines(`Version: ${about.version}\nRuns from: ${about.root}\nConfig file: ${app.deps.configPath}${data}`)));
+			void app.host.open(new MessageModal("Orrery", safeLines(`Version: ${about.version}${about.running === undefined ? "" : ` (${about.running})`}\nRuns from: ${about.root}\nConfig file: ${app.deps.configPath}${data}`)));
 			return;
 		}
 		if (tool.id === "ori") {

@@ -14,7 +14,7 @@ import { applyFix, runTool } from "../lane/launch.ts";
 import { loginRows, removeLogin, saveKey, signIn } from "../lane/logins.ts";
 import { laneOverview, laneUsage, OverviewCache } from "../lane/overview.ts";
 import { openSummarySources, testChoice } from "../lane/summary-sources.ts";
-import { checkTools, probeOri, installSteps, orreryRoot, runInstall } from "../lane/tools.ts";
+import { checkTools, probeOri, installSteps, runningRoot, runningVersion, wiringRoot, runInstall } from "../lane/tools.ts";
 import { openStorage } from "../remote/index.ts";
 import type { AppDeps } from "./app.ts";
 import { colorWanted, makeTheme } from "./theme.ts";
@@ -61,7 +61,7 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 			}
 		},
 		applyFix: (fix, config, row, tools) => applyFix(fix, config, row, tools),
-		installSteps: (check) => installSteps(check, orreryRoot()),
+		installSteps: (check) => installSteps(check, wiringRoot().root),
 		install: (steps) => runInstall(steps),
 		browse: (config, lane) => {
 			const laneDir = config.lanes.get(lane)?.dir ?? "";
@@ -75,7 +75,7 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 			opener?.open(url);
 			return opener?.command;
 		},
-		about: () => ({ version: (JSON.parse(readFileSync(join(orreryRoot(), "package.json"), "utf8")) as { version: string }).version, root: orreryRoot() }),
+		about: () => ({ version: (JSON.parse(readFileSync(join(runningRoot(), "package.json"), "utf8")) as { version: string }).version, root: runningRoot(), running: runningVersion() }),
 		rows: () => tui.terminal.rows,
 		now: () => Date.now(),
 		quit: options.quit,

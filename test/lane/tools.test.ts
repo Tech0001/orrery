@@ -1,7 +1,7 @@
 import { chmodSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkTools, probeOri, shortHome, toolVersionNumber, installSteps, ompAgentDir, ompExtensionFile, ompExtensionText, orreryRoot, piExtensionFile, piExtensionText, pluginVersion, runInstall } from "../../src/lane/tools.ts";
+import { checkTools, probeOri, shortHome, toolVersionNumber, installSteps, ompAgentDir, ompExtensionFile, ompExtensionText, orreryRoot, piExtensionFile, piExtensionText, pluginVersion, runInstall, runningRoot, wiringRoot, type Runner, type ToolCheck } from "../../src/lane/tools.ts";
 import { tempDir } from "./support.ts";
 
 const dirs: string[] = [];
@@ -312,4 +312,88 @@ it("launch and new-lane tool checks never run Wrangler, even when it is installe
 	expect(calls).toEqual([]);
 	expect(checks.find((tool) => tool.id === "wrangler")).toMatchObject({ path: join(env.PATH, "wrangler") });
 	expect(checks.find((tool) => tool.id === "wrangler")?.version).toBeUndefined();
+});
+
+const VERSION = "0.6.0-abc1234";
+
+/** A scratch Orrery home with app/<version>/src/{pi,omp}/index.ts and app/current linked to it, plus scratch agent folders. */
+function installedHome() {
+	const home = tempDir("orrery-installed-");
+	dirs.push(home);
+	const app = join(home, ".orrery", "app");
+	for (const entry of ["pi", "omp"]) {
+		mkdirSync(join(app, VERSION, "src", entry), { recursive: true });
+		writeFileSync(join(app, VERSION, "src", entry, "index.ts"), "export default () => {};\n");
+	}
+	mkdirSync(join(app, VERSION, "claude-plugin"), { recursive: true });
+	symlinkSync(VERSION, join(app, "current"));
+	return { home, env: { PATH: "", HOME: home, ORRERY_HOME: join(home, ".orrery") } as NodeJS.ProcessEnv };
+}
+
+function scratchAgentEnv() {
+	const home = tempDir("orrery-agent-");
+	dirs.push(home);
+	return { PATH: "", HOME: home } as NodeJS.ProcessEnv;
+}
+
+function writePiExtension(env: NodeJS.ProcessEnv, target: string) {
+	const file = piExtensionFile(env);
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, `export { default } from ${JSON.stringify(target)};\n`);
+}
+
+/** Every --version exits non-zero, so no tool is found as a version; plugin lists are empty. */
+const noTools: Runner = () => ({ status: 1, stdout: "", stderr: "" });
+
+const missingPiCheck: ToolCheck = { id: "pi", label: "pi", wiring: "missing", detail: "no extension" };
+
+describe("wiring names app/current", () => {
+	it("writes pi's extension against app/current, not the version folder", () => {
+		const { home, env } = installedHome();
+		const root = join(home, ".orrery", "app", "current");
+		const [step] = installSteps(missingPiCheck, root, env);
+		expect(step).toMatchObject({ kind: "write" });
+		expect((step as { text: string }).text).toBe(`export { default } from ${JSON.stringify(join(root, "src", "pi", "index.ts"))};\n`);
+	});
+
+	it("writes OMP's relative re-export through app/current", () => {
+		const { home, env } = installedHome();
+		const root = join(home, ".orrery", "app", "current");
+		const text = ompExtensionText(root, ompExtensionFile(env));
+		expect(text).toMatch(/app\/current\/src\/omp\/index\.ts"/);
+		expect(text).not.toMatch(/0\.6\.0-abc1234/);
+	});
+
+	it("calls an extension that names a version folder 'other', so an install rewires it to current", () => {
+		const { home, env } = installedHome();
+		const root = join(home, ".orrery", "app", "current");
+		writePiExtension(env, join(home, ".orrery", "app", VERSION, "src", "pi", "index.ts"));
+		const [pi] = checkTools({ root, env, run: noTools });
+		expect(pi.wiring).toBe("other");
+	});
+
+	it("calls a Claude Code plugin read from a version folder 'other'", () => {
+		const { home, env } = installedHome();
+		const app = join(home, ".orrery", "app");
+		const { env: withClaude } = fakeBin({ claude: CLAUDE });
+		const plugins = (from: string) => JSON.stringify([{ id: "orrery@orrery", version: "0.1.0", enabled: true, readFromFolder: from }]);
+		const run = (from: string): Runner => (cmd, args) => (args[0] === "--version" ? { status: 0, stdout: "2.1.294 (Claude Code)\n", stderr: "" } : { status: 0, stdout: plugins(from), stderr: "" });
+		const options = { root: join(app, "current"), env: { ...env, PATH: withClaude.PATH } };
+		expect(checkTools({ ...options, run: run(join(app, VERSION, "claude-plugin")) })[1].wiring).toBe("other");
+		expect(checkTools({ ...options, run: run(join(app, "current", "claude-plugin")) })[1].wiring).not.toBe("other");
+	});
+
+	it("still accepts a checkout's own path in development mode", () => {
+		const checkout = tempDir("orrery-checkout-");
+		dirs.push(checkout);
+		const env = scratchAgentEnv();
+		writePiExtension(env, join(checkout, "src", "pi", "index.ts"));
+		const [pi] = checkTools({ root: checkout, env, run: noTools });
+		expect(pi.wiring).toBe("installed");
+	});
+
+	it("names this checkout, not installed, when it is not inside the home's app folder", () => {
+		const { env } = installedHome();
+		expect(wiringRoot(env)).toEqual({ root: runningRoot(), installed: false });
+	});
 });

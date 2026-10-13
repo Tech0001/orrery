@@ -6,10 +6,12 @@
 import { execFile, spawnSync } from "node:child_process";
 import { accessSync, constants, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LaneTool } from "./config.ts";
+import { within } from "./guard-rules.ts";
 import { realTarget } from "./guard-paths.ts";
+import { orreryHome } from "./home.ts";
 import { safeText } from "./source-labels.ts";
 
 export type Wiring = "installed" | "missing" | "other" | "update available" | "unknown" | "none";
@@ -60,9 +62,27 @@ export const realRunner: Runner = (cmd, args) => {
 const LABELS: Record<LaneTool, string> = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP" };
 export const BINARIES: Record<LaneTool, string> = { pi: "pi", "claude-code": "claude", codex: "codex", omp: "omp" };
 
-/** The orrery folder this code runs from. */
-export function orreryRoot(): string {
+/** The folder this code runs from (its real path: Node and Bun load modules by real path). */
+export function runningRoot(): string {
 	return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+}
+/** @deprecated alias for runningRoot */
+export const orreryRoot = runningRoot;
+
+/** What wiring should name: app/current when this code runs from an install, else this checkout. */
+export function wiringRoot(env: NodeJS.ProcessEnv = process.env): { root: string; installed: boolean } {
+	const app = join(orreryHome(env), "app");
+	try {
+		if (within(realpathSync(runningRoot()), realpathSync(app))) return { root: join(app, "current"), installed: true };
+	} catch {
+		// no app folder: not installed
+	}
+	return { root: runningRoot(), installed: false };
+}
+
+/** The version folder's name when this code runs from an install, else "checkout". */
+export function runningVersion(env: NodeJS.ProcessEnv = process.env): string {
+	return wiringRoot(env).installed ? basename(runningRoot()) : "checkout";
 }
 
 /** The first executable file called `name` on PATH. */
@@ -109,7 +129,9 @@ export function ompExtensionFile(env: NodeJS.ProcessEnv = process.env): string {
  * (research omp-eval.md section 3).
  */
 export function ompExtensionText(root: string, file: string): string {
-	const spec = relative(realTarget(dirname(file)), realTarget(join(root, "src", "omp", "index.ts")));
+	// Resolve only the root's parent, so an install's "current" link stays in the path.
+	const target = join(realTarget(dirname(root)), basename(root), "src", "omp", "index.ts");
+	const spec = relative(realTarget(dirname(file)), target);
 	return `export { default } from ${JSON.stringify(spec.startsWith(".") ? spec : `./${spec}`)};\n`;
 }
 
@@ -143,6 +165,12 @@ const same = (a: string, b: string) => {
 		return resolve(a) === resolve(b);
 	}
 };
+
+/** An install names app/current; its wiring is compared literally so a version-folder path is "other". A checkout compares real paths. */
+function sameAsRoot(path: string, rootPath: string, root: string): boolean {
+	if (basename(root) === "current" && basename(dirname(root)) === "app") return resolve(path) === resolve(rootPath);
+	return same(path, rootPath);
+}
 
 /** Whether version a is older than b ("0.1.0" < "0.2.0"). */
 function older(a: string, b: string): boolean {
@@ -199,7 +227,7 @@ function piWiring(root: string, env: NodeJS.ProcessEnv): Pick<ToolCheck, "wiring
 	if (sharedFolder(env) && entryOf(file, target) === "omp") {
 		return { wiring: "other", detail: `${safeText(file)} is OMP's Orrery extension: ${SHARED}, so Orrery installs only one`, now: "OMP's Orrery extension", blocked: SHARED };
 	}
-	if (same(target, join(root, "src", "pi", "index.ts"))) return { wiring: "installed", detail: safeText(file) };
+	if (sameAsRoot(target, join(root, "src", "pi", "index.ts"), root)) return { wiring: "installed", detail: safeText(file) };
 	return { wiring: "other", detail: `points at another Orrery: ${safeText(target)}`, now: `points at ${safeText(target)}` };
 }
 
@@ -235,7 +263,7 @@ function ompWiring(root: string, env: NodeJS.ProcessEnv): Pick<ToolCheck, "wirin
 		return { wiring: "other", detail: `${safeText(file)} is pi's Orrery extension: ${SHARED}, so Orrery installs only one`, now: "pi's Orrery extension", blocked: SHARED };
 	}
 	const full = resolve(dirname(file), target);
-	if (same(full, join(root, "src", "omp", "index.ts"))) {
+	if (sameAsRoot(full, join(root, "src", "omp", "index.ts"), root)) {
 		return isAbsolute(target) ? { wiring: "other", detail: `${safeText(file)} re-exports Orrery by an absolute path, which OMP cannot load`, now: "an absolute re-export" } : { wiring: "installed", detail: safeText(file) };
 	}
 	return { wiring: "other", detail: `points at another Orrery: ${safeText(full)}`, now: `points at ${safeText(full)}` };
@@ -258,7 +286,7 @@ function claudeWiring(root: string, path: string, run: Runner): Pick<ToolCheck, 
 	if (plugins.length > 0 && ids.length === 0) return { wiring: "unknown", detail: "claude plugin list --json lists plugins in a shape Orrery doesn't know" };
 	const entry = plugins.find((p) => typeof p === "object" && p !== null && (p as { id?: unknown }).id === "orrery@orrery") as { version?: unknown; readFromFolder?: unknown; enabled?: unknown } | undefined;
 	if (entry === undefined) return { wiring: "missing", detail: "the Orrery plugin is not installed" };
-	if (typeof entry.readFromFolder === "string" && !same(entry.readFromFolder, join(root, "claude-plugin"))) return { wiring: "other", detail: `reads from another Orrery: ${safeText(entry.readFromFolder)}` };
+	if (typeof entry.readFromFolder === "string" && !sameAsRoot(entry.readFromFolder, join(root, "claude-plugin"), root)) return { wiring: "other", detail: `reads from another Orrery: ${safeText(entry.readFromFolder)}` };
 	const mine = pluginVersion(root);
 	if (typeof entry.version === "string" && mine !== undefined && older(entry.version, mine)) return { wiring: "update available", detail: `plugin ${safeText(entry.version)}, this Orrery has ${mine}` };
 	return { wiring: "installed", detail: entry.enabled === false ? "installed but turned off in Claude Code" : `plugin ${safeText(String(entry.version ?? ""))}`.trim() };
@@ -271,8 +299,8 @@ function versionLine(stdout: string): string | undefined {
 
 /** pi, Claude Code, Codex and OMP, in that order. */
 export function checkTools(options: { root?: string; env?: NodeJS.ProcessEnv; run?: Runner; probeWrangler?: boolean } = {}): ToolCheck[] {
-	const root = options.root ?? orreryRoot();
 	const env = options.env ?? process.env;
+	const root = options.root ?? wiringRoot(env).root;
 	const run: Runner = options.run ?? ((cmd, args) => {
 		const r = spawnSync(cmd, [...args], { encoding: "utf8", timeout: 15_000, env });
 		return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };

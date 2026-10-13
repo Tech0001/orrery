@@ -91,7 +91,7 @@ async function askYes(question: string): Promise<boolean> {
 
 /** `orrery tools [--json]`, `orrery tools install <pi|claude-code|omp> [--yes]`. It needs no config, so a new user can run it first. */
 async function toolsCommand(positionals: string[], values: { json?: boolean; yes?: boolean }): Promise<number> {
-	const { checkTools, probeOri, installSteps, orreryRoot, runInstall } = await import("../lane/tools.ts");
+	const { checkTools, probeOri, installSteps, wiringRoot, runInstall } = await import("../lane/tools.ts");
 	const tools = checkTools();
 	if (positionals[1] === "install") {
 		const id = required(positionals[2], "pi, claude-code or omp");
@@ -101,7 +101,7 @@ async function toolsCommand(positionals: string[], values: { json?: boolean; yes
 			process.stdout.write(`Already installed: ${check.label}, ${check.detail}.\n`);
 			return 0;
 		}
-		const steps = installSteps(check, orreryRoot());
+		const steps = installSteps(check, wiringRoot().root);
 		if (steps.length === 0) {
 			process.stdout.write(`Nothing to do: ${check.detail}.\n`);
 			return 0;

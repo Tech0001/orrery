@@ -9,7 +9,7 @@ import { claudeSetup, setupReport } from "../claude/setup.ts";
 import { markedHere } from "../claude/view-file.ts";
 import { findLane, type HarnessConfig, type LaneLauncher, type LaneTool } from "./config.ts";
 import { type LaneRow, TOOL_LABELS } from "./overview.ts";
-import { BINARIES, findOnPath, installSteps, orreryRoot, type Runner, realRunner, runInstall, type ToolCheck } from "./tools.ts";
+import { BINARIES, findOnPath, installSteps, wiringRoot, type Runner, realRunner, runInstall, type ToolCheck } from "./tools.ts";
 
 const HINTS: Record<LaneTool, string> = { pi: "Get it at https://pi.dev", "claude-code": "Get it at https://claude.com/claude-code", codex: "Get it at https://github.com/openai/codex", omp: "Get it at https://omp.sh" };
 
@@ -37,7 +37,7 @@ export interface LaunchPlan {
 
 /** "<what>. Installing it will:\n  <step>\n  <step>\nInstall it now?": an install question that lists what a yes does first (spec §4.6). */
 function installQuestion(what: string, check: ToolCheck, options: { root?: string; env?: NodeJS.ProcessEnv }): string {
-	const steps = installSteps(check, options.root ?? orreryRoot(), options.env ?? process.env);
+	const steps = installSteps(check, options.root ?? wiringRoot(options.env).root, options.env ?? process.env);
 	return `${what}. Installing it will:\n${steps.map((step) => `  ${step.describe}`).join("\n")}\nInstall it now?`;
 }
 
@@ -84,7 +84,7 @@ export function applyFix(fix: LaunchFix, config: HarnessConfig, row: LaneRow, to
 	if (fix === "claude-setup") return setupReport(claudeSetup(findLane(config, row.name)));
 	const check = tools.find((t) => t.id === (fix === "install-pi" ? "pi" : fix === "install-omp" ? "omp" : "claude-code"));
 	if (check === undefined) throw new Error("That tool was not checked.");
-	const result = runInstall(installSteps(check, options.root ?? orreryRoot(), options.env), options.run ?? realRunner);
+	const result = runInstall(installSteps(check, options.root ?? wiringRoot(options.env).root, options.env), options.run ?? realRunner);
 	if (!result.ok) throw new Error(result.output);
 	return result.output;
 }
