@@ -82,9 +82,19 @@ export function openDatabase(path: string, options: { readOnly?: boolean } = {})
 				};
 			},
 			close: () => {
-				for (const statement of statements.values()) statement.finalize();
+				let failed: unknown;
+				for (const statement of statements.values()) {
+					try { statement.finalize(); } catch (error) { failed ??= error; }
+				}
 				statements.clear();
-				withErrcode(() => db.close(true));
+				try {
+					withErrcode(() => db.close(true));
+				} catch (error) {
+					// Never leave the handle fully open: at worst it closes when collected, as before.
+					db.close(false);
+					failed ??= error;
+				}
+				if (failed !== undefined) throw failed;
 			},
 		};
 	}

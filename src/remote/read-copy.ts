@@ -11,7 +11,7 @@ import { holdWriterLock, MemoryStore, type StoreRows, type WriterLock } from "..
 import { StoreError } from "../memory/types.ts";
 import { codeToKey, unseal } from "./crypto.ts";
 import { openStorage } from "./index.ts";
-import { decodeRows, decodeSnapshot, restoreSnapshot } from "./save-format.ts";
+import { assertWrittenThrough, decodeRows, decodeSnapshot, restoreSnapshot } from "./save-format.ts";
 import { readRemoteSecret } from "./secrets.ts";
 import { CALL_TIMEOUT_MS, RemoteError, type FetchResult, type Storage } from "./types.ts";
 
@@ -99,6 +99,7 @@ function updateCopy(path: string, lane: string, key: Uint8Array, fetched: FetchR
 			restoreSnapshot(stagedPath, snapshot.db);
 			const store = MemoryStore.open(stagedPath);
 			try { if (rows.length > 0) applySaves(store, rows); } finally { store.close(); }
+			assertWrittenThrough(stagedPath);
 			writer.check(path);
 			for (const suffix of ["-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
 			renameSync(stagedPath, path);
