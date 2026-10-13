@@ -381,6 +381,9 @@ export function installSteps(check: ToolCheck, root: string, env: NodeJS.Process
 	if (check.id === "claude-code" && check.path !== undefined) {
 		const run = (...args: string[]): InstallStep => ({ kind: "run", cmd: check.path as string, args, describe: `claude ${args.join(" ")}` });
 		if (check.wiring === "missing") return [run("plugin", "marketplace", "add", root), run("plugin", "install", "orrery@orrery")];
+		// Adding the same marketplace name from a new path repoints it, and the installed plugin follows. `marketplace remove`
+		// would also uninstall the plugin and delete its saved options, so it is not used.
+		if (check.wiring === "other") return [{ ...run("plugin", "marketplace", "add", root), describe: `claude plugin marketplace add ${root} (moves the Orrery plugin from the other Orrery to ${root})` }];
 		if (check.wiring === "update available") return [run("plugin", "marketplace", "update", "orrery"), run("plugin", "update", "orrery@orrery")];
 	}
 	return [];

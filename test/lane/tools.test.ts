@@ -383,6 +383,19 @@ describe("wiring names app/current", () => {
 		expect(checkTools({ ...options, run: run(join(app, "current", "claude-plugin")) })[1].wiring).not.toBe("other");
 	});
 
+	it("moves a Claude Code plugin that reads from another Orrery with one marketplace add, without removing it", () => {
+		const { home, env } = installedHome();
+		const root = join(home, ".orrery", "app", "current");
+		const withClaude = fakeBin({ claude: CLAUDE }).env;
+		const plugins = JSON.stringify([{ id: "orrery@orrery", version: "0.1.0", enabled: true, readFromFolder: "/elsewhere/orrery/claude-plugin" }]);
+		const run: Runner = (cmd, args) => (args[0] === "--version" ? { status: 0, stdout: "2.1.294 (Claude Code)\n", stderr: "" } : { status: 0, stdout: plugins, stderr: "" });
+		const claude = checkTools({ root, env: { ...env, PATH: withClaude.PATH }, run })[1];
+		expect(claude.wiring).toBe("other");
+		const steps = installSteps(claude, root, env);
+		expect(steps.map((s) => (s.kind === "run" ? s.args.join(" ") : ""))).toEqual([`plugin marketplace add ${root}`]);
+		expect(steps[0].describe).toContain(`moves the Orrery plugin from the other Orrery to ${root}`);
+	});
+
 	it("still accepts a checkout's own path in development mode", () => {
 		const checkout = tempDir("orrery-checkout-");
 		dirs.push(checkout);
