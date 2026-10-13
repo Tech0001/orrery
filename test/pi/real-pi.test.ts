@@ -1,12 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { realRemoteTurn } from "./remote-real-support.ts";
+import { realRemoteRebuild, realRemoteTurn } from "./remote-real-support.ts";
 
 function isolated(home: string): NodeJS.ProcessEnv {
 	return {
@@ -24,9 +24,24 @@ function isolated(home: string): NodeJS.ProcessEnv {
 const scratch = mkdtempSync(join(tmpdir(), "orrery-real-pi-version-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
-/** The pi binary to test with: ORRERY_TEST_PI, or "pi" on PATH. Null when there is none (a headless server may have no pi). */
-function findPi(): string | null {
-	const works = (path: string) => spawnSync(path, ["--version"], { cwd: scratch, env: isolated(scratch), timeout: 30_000 }).status === 0;
+/** Whether `path` is a script ("#!"): pi's Node build is one; its compiled binary runs on Bun. */
+function script(path: string): boolean {
+	const fd = openSync(path, "r");
+	try {
+		const head = Buffer.alloc(2);
+		return readSync(fd, head, 0, 2, 0) === 2 && head.toString("latin1") === "#!";
+	} finally {
+		closeSync(fd);
+	}
+}
+
+/**
+ * The pi binary to test with: ORRERY_TEST_PI, or "pi" on PATH. Null when there is none (a headless server may have no pi).
+ * `compiled`: only pi's compiled binary (Bun), never a script such as node_modules/.bin/pi (Node), which npm test puts
+ * first on PATH.
+ */
+function findPi(compiled = false): string | null {
+	const works = (path: string) => (!compiled || (existsSync(path) && !script(path))) && spawnSync(path, ["--version"], { cwd: scratch, env: isolated(scratch), timeout: 30_000 }).status === 0;
 	const wanted = process.env.ORRERY_TEST_PI ?? "pi";
 	if (wanted.includes("/")) return works(wanted) ? wanted : null;
 	for (const dir of (process.env.PATH ?? "").split(delimiter)) {
@@ -38,6 +53,7 @@ function findPi(): string | null {
 }
 
 const pi = findPi();
+const compiledPi = findPi(true);
 const LANE_DIR = resolve(fileURLToPath(new URL("../../src/lane", import.meta.url)));
 const PI_DIR = resolve(fileURLToPath(new URL("../../src/pi", import.meta.url)));
 const dirs: string[] = [];
@@ -62,6 +78,13 @@ function run(cmd: string, args: string[], cwd: string): Promise<string> {
 		});
 	});
 }
+
+/** Orrery inside the compiled pi runs on Bun's SQLite (bun:sqlite), which no test on Node reaches. */
+describe.skipIf(compiledPi === null)("Orrery's remote lanes inside a compiled pi (Bun)", () => {
+	it("rebuilds a remote lane from a snapshot and later saves in Bun's SQLite, keeping every save", async () => {
+		await realRemoteRebuild(compiledPi as string);
+	}, 90_000);
+});
 
 /**
  * A compiled pi loads the extension through jiti with only its own embedded pi packages. This runs orrery's model
