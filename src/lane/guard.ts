@@ -16,9 +16,15 @@ import type { Context } from "@earendil-works/chord";
 import { defineExtension, hook, type ToolRegistration, ToolTask, wrapTool } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
-import { checkToolCall, type GuardOptions, sensitive, within } from "./guard-rules.ts";
+import { checkToolCall, type GuardOptions, inOrreryHome, sensitive, within } from "./guard-rules.ts";
 
 export { checkToolCall, type GuardOptions };
+
+/** The durable harness's guard: the lane's roots, plus orrery's credentials file and home (data_dir) when known. */
+export interface DurableGuardOptions extends GuardOptions {
+	readonly credentials?: readonly string[];
+	readonly orreryData?: string;
+}
 
 // Mirrors pi-durable's normalizeToolPath (tools/path-utils): unicode spaces become spaces, a leading "@" is dropped.
 const UNICODE_SPACES = /[  -   　]/g;
@@ -65,14 +71,18 @@ export async function checkResolvedPath(
 	env: ExecutionEnv,
 	path: string,
 	mode: "read" | "write",
-	options: GuardOptions,
+	options: DurableGuardOptions,
 	context: Context,
 ): Promise<string | undefined> {
 	const resolved = await env.absolutePath(toolPath(path), context);
 	if (!resolved.ok) return undefined; // The tool itself will fail on this path.
 	const target = mode === "read" ? await readTarget(env, resolved.value, context) : resolved.value;
 	const real = await realPath(env, target, context);
-	if (sensitive(target) || sensitive(real)) return `${real} is a sensitive file (ssh keys or credentials).`;
+	const refused = `${real} is a sensitive file (keys, credentials or Orrery's private data).`;
+	if (sensitive(target) || sensitive(real)) return refused;
+	const lower = real.toLowerCase();
+	for (const credential of options.credentials ?? []) if (within(lower, (await realPath(env, credential, context)).toLowerCase())) return refused;
+	if (options.orreryData !== undefined && inOrreryHome(real, await realPath(env, options.orreryData, context))) return refused;
 	if (mode === "write") {
 		const roots = await Promise.all([options.workspace, ...options.allowedRoots].map((root) => realPath(env, root, context)));
 		if (!roots.some((root) => within(real, root))) return `${real} is outside this lane's workspace and allowed roots.`;
@@ -80,7 +90,7 @@ export async function checkResolvedPath(
 	return undefined;
 }
 
-function guarded<T extends ToolRegistration>(tool: T, mode: "read" | "write", options: GuardOptions): T {
+function guarded<T extends ToolRegistration>(tool: T, mode: "read" | "write", options: DurableGuardOptions): T {
 	const execute: T["execute"] = async (args, api, context) => {
 		const path = (args as { path?: unknown }).path;
 		if (typeof path === "string" && api.env !== undefined) {
@@ -92,7 +102,7 @@ function guarded<T extends ToolRegistration>(tool: T, mode: "read" | "write", op
 	return { ...tool, execute };
 }
 
-export function guardExtension(options: GuardOptions) {
+export function guardExtension(options: DurableGuardOptions) {
 	return defineExtension({
 		name: "lane-guard",
 		hooks: [

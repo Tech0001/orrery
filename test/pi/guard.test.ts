@@ -208,7 +208,7 @@ describe("guardToolCall keeps Orrery's home out", () => {
 		for (const file of ["remotes.json", "config.toml"]) writeFileSync(join(data, file), "");
 		const guarded = { ...options, workspace, allowedRoots: [], orreryData: data };
 		expect(guardToolCall("read", { path: join(data, "remotes.json") }, guarded)).toMatch(/sensitive/);
-		expect(guardToolCall("grep", { pattern: "x", path: join(data, "lanes") }, guarded)).toMatch(/sensitive|credential/);
+		expect(guardToolCall("grep", { pattern: "x", path: join(data, "lanes") }, guarded)).toMatch(/sensitive/);
 		expect(guardToolCall("read", { path: join(data, "config.toml") }, guarded)).toBeUndefined();
 	});
 });

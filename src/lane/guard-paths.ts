@@ -8,7 +8,7 @@ import { lstatSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkToolCall, type GuardOptions, sensitive, within } from "./guard-rules.ts";
+import { checkToolCall, type GuardOptions, inOrreryHome, sensitive, within } from "./guard-rules.ts";
 
 const UNICODE_SPACES = /[  -   　]/g;
 
@@ -401,7 +401,7 @@ function escapingGlob(path: string): boolean {
 	return wild !== -1 && segments.slice(wild + 1).includes("..");
 }
 
-const SENSITIVE_FILE = (path: string) => `${path} is a sensitive file (ssh keys or credentials).`;
+const SENSITIVE_FILE = (path: string) => `${path} is a sensitive file (keys, credentials or Orrery's private data).`;
 
 /** Why a tool call (in pi's tool names and arguments) is refused, or undefined to let it through. */
 export function guardToolCall(toolName: string, input: Readonly<Record<string, unknown>>, options: PathGuardOptions): string | undefined {
@@ -426,12 +426,10 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	const where = fold(target);
 	const credentials = [...HOME_CREDENTIALS.map((entry) => join(home, entry)), ...(options.credentials ?? [])].map((path) => fold(realTarget(path)));
 	if (credentials.some((location) => within(where, location))) return SENSITIVE_FILE(raw);
-	const data = options.orreryData === undefined ? undefined : fold(realTarget(options.orreryData));
-	if (data !== undefined && options.orreryData !== undefined) {
-		const config = fold(realTarget(join(options.orreryData, "config.toml")));
-		const program = fold(realTarget(join(options.orreryData, "app")));
-		if (within(where, data) && where !== config && !within(where, program) && !(search && where === data)) return SENSITIVE_FILE(raw);
-	}
+	// Orrery's home, judged on its real path (inOrreryHome).
+	const realData = options.orreryData === undefined ? undefined : realTarget(options.orreryData);
+	const data = realData === undefined ? undefined : fold(realData);
+	if (realData !== undefined && inOrreryHome(where, realData) && !(search && where === data)) return SENSITIVE_FILE(raw);
 	// A search reads everything under its root, hidden files too, whatever its glob: judge the root, not the glob's
 	// spelling. Home and above hold the credentials; /proc holds every process's environment.
 	if (search && (credentials.some((location) => within(location, where)) || (data !== undefined && within(data, where)) || within(where, "/proc"))) {

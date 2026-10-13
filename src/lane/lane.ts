@@ -196,7 +196,7 @@ export class Lane {
 			const registry = createRegistry();
 			registry.install(CodingTools);
 			registry.install(memoryExtension({ view, instructions: () => instructions }));
-			registry.install(guardExtension({ workspace: config.workspace, allowedRoots: config.allowedRoots }));
+			registry.install(guardExtension({ workspace: config.workspace, allowedRoots: config.allowedRoots, credentials: [options.config.credentialsPath], orreryData: options.config.dataDir }));
 			const storage = await openNodeSqliteStorage(join(config.dir, "session.sqlite"));
 			const harness = await Harness.open(
 				storage,

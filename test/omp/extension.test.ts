@@ -459,3 +459,19 @@ describe("summaryWaitMs", () => {
 		expect(summaryWaitMs("pi", 5_000, 1_000)).toBe(1_000);
 	});
 });
+
+describe("Orrery's home through the extension's guard, with a lane's real config", () => {
+	it.each(["pi", "omp"] as const)("%s's entry refuses the remote keys, the lanes' memory and a search of the home", async (entry) => {
+		const { root, config } = world();
+		const host = track(
+			fakeOmp(join(root, "agent-Atlas"), [createOrrery({ summarySources: async (cfg) => summarySourcesFor(cfg), ...scratchHome(dirname(config.dataDir)), config, host: entry })], { omp: entry === "omp" }),
+		);
+		await host.emit("session_start");
+		const call = (toolName: string, input: Record<string, unknown>) => host.emit("tool_call", { toolName, toolCallId: "t1", input });
+		const blocked = [{ block: true, reason: expect.stringMatching(/sensitive/) }];
+		expect(await call("read", { path: join(config.dataDir, "remotes.json") })).toEqual(blocked);
+		expect(await call("read", { path: join(config.dataDir, "lanes", "Atlas", "memory.sqlite") })).toEqual(blocked);
+		expect(await call("grep", { pattern: "x", path: config.dataDir })).toEqual([{ block: true, reason: expect.stringMatching(/credential/) }]);
+		expect(await call("read", { path: join(config.dataDir, "config.toml") })).toEqual([undefined]);
+	});
+});

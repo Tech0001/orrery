@@ -178,11 +178,91 @@ describe("Orrery's own home", () => {
 		"cat ~/.config/orrery/backup.env",
 		"ls ~/.orrery/ssh/",
 		'ls "$HOME/.orrery/builds"',
+		// the old config folder is a link to the whole home after move-home
+		"cat ~/.config/orrery/remotes.json",
+		"sqlite3 ~/.config/orrery/lanes/Birch/memory.sqlite .dump",
+		"ls ~/.config/orrery/ssh/",
+		"ls ~/.config/orrery",
+		// the bare home, in every spelling of home
+		"grep -r sk- ~/.orrery",
+		"tar czf x.tgz ~/.orrery",
+		"cp -r ~/.orrery /tmp/x",
+		"cd ~/.orrery && cat remotes.json",
+		"cp -r $HOME/.orrery /tmp/x",
+		"cp -r ${HOME}/.orrery /tmp/x",
+		'cp -r "$HOME"/.orrery /tmp/x',
+		'cp -r "$HOME/.orrery" /tmp/x',
+		"cp -r /home/someone/.orrery /tmp/x",
+		"cp -r /Users/Someone/.Orrery /tmp/x",
+		"cp -r /root/.orrery /tmp/x",
+		"ls ~/.local/share/orrery",
+		"ls ~/.local/share/orrery/lanes",
+		// spellings that reach the same files
+		"cat ~/.orrery/app/../remotes.json",
+		"ls ~/.orrery/app/../lanes",
+		"cat ~/.local/share/orrery/app/../remotes.json",
+		"cat /somewhere/.orrery/app/../remotes.json",
+		"cat ~/.orrery/./remotes.json",
+		"cat ~/.orrery//remotes.json",
+		"cat ~/.orrery/*.json",
+		'cat ~/.orrery/"remotes.json"',
+		"cat /somewhere/.orrery/./remotes.json",
+		"cat /somewhere/.orrery//lanes/Birch/memory.sqlite",
+		'cat /somewhere/.orrery/"remotes.json"',
+		"ls ~/.orrery/lanes|head",
+		"ls ~/.orrery/lanes;echo",
+		"(ls ~/.orrery/lanes)",
+		"ls ~/.orrery/lanes&",
+		"ls ~/.orrery/app/$X",
 	])("refuses the command %s", (command) => {
 		expect(checkToolCall({ name: "bash", arguments: { command } }, options)).toMatch(/sensitive/);
 	});
 
-	it.each(["cat .orrery/view.md", "ls ~/.orrery/app/current/src", "cat ~/.orrery/config.toml", "ls ~/.local/share/orrery/app/current"])("allows %s", (command) => {
+	it.each([
+		"cat .orrery/view.md",
+		"ls ~/.orrery/app/current/src",
+		"ls ~/.orrery/app",
+		"ls ~/.orrery/app/",
+		"cat ~/.orrery/config.toml",
+		"cat ~/.config/orrery/config.toml",
+		"ls ~/.local/share/orrery/app/current",
+		"ls ~/.local/share/orrery/app",
+		'cat "$HOME/.orrery/config.toml"',
+		"cat ~/.orrery-notes.txt",
+	])("allows %s", (command) => {
 		expect(checkToolCall({ name: "bash", arguments: { command } }, options)).toBeUndefined();
+	});
+
+	it("does not trust a planted link named app or config.toml", () => {
+		const { home, base: orrery } = setup();
+		// A custom data_dir, so only the path rule (not the name patterns) can refuse.
+		const data = join(home, "store");
+		mkdirSync(join(data, "lanes", "Birch"), { recursive: true });
+		mkdirSync(join(data, "app"));
+		for (const file of ["remotes.json", "config.toml", "lanes/Birch/memory.sqlite"]) writeFileSync(join(data, file), "");
+		const base = { ...orrery, orreryData: data };
+		rmSync(join(data, "app"), { recursive: true });
+		symlinkSync(".", join(data, "app"));
+		expect(read(join(data, "app", "remotes.json"), base)).toMatch(/sensitive/);
+		expect(read(join(data, "app", "lanes", "Birch", "memory.sqlite"), base)).toMatch(/sensitive/);
+		rmSync(join(data, "config.toml"));
+		symlinkSync("remotes.json", join(data, "config.toml"));
+		expect(read(join(data, "config.toml"), base)).toMatch(/sensitive/);
+	});
+
+	it("refuses through the durable harness's own check too", async () => {
+		const { home } = setup();
+		const data = join(home, "store"); // a custom data_dir, so only the path rule can refuse
+		mkdirSync(join(data, "lanes", "Birch"), { recursive: true });
+		mkdirSync(join(data, "app", "v1", "src"), { recursive: true });
+		symlinkSync("v1", join(data, "app", "current"));
+		for (const file of ["remotes.json", "credentials.json", "config.toml", "lanes/Birch/memory.sqlite"]) writeFileSync(join(data, file), "");
+		const env = new NodeExecutionEnv({ cwd: home });
+		const guard = { workspace: join(home, "ws"), allowedRoots: [], orreryData: data, credentials: [join(data, "credentials.json")] };
+		expect(await checkResolvedPath(env, join(data, "remotes.json"), "read", guard, ctx)).toMatch(/sensitive/);
+		expect(await checkResolvedPath(env, join(data, "credentials.json"), "read", guard, ctx)).toMatch(/sensitive/);
+		expect(await checkResolvedPath(env, join(data, "app", "..", "lanes", "Birch", "memory.sqlite"), "read", guard, ctx)).toMatch(/sensitive/);
+		expect(await checkResolvedPath(env, join(data, "app", "current", "src"), "read", guard, ctx)).toBeUndefined();
+		expect(await checkResolvedPath(env, join(data, "config.toml"), "read", guard, ctx)).toBeUndefined();
 	});
 });
