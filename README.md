@@ -170,6 +170,9 @@ These tests isolate agent homes and use fake model services. `ORRERY_TEST_ORI_ST
 Ori/OMP compatibility skip into a failure. [Claude Code testing](docs/claude-code.md#testing) describes the separate
 opt-in live script, which makes paid calls. CI checks Node 22 and 24 without requiring agent binaries or credentials.
 
+[CONTRIBUTING.md](CONTRIBUTING.md) covers bug reports and pull requests. Report security problems privately as
+[SECURITY.md](SECURITY.md) describes.
+
 ## Credits
 
 The memory design follows [OptChat by Victor Taelin](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449).
