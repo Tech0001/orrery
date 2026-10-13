@@ -209,6 +209,44 @@ describe("install", () => {
 		expect(checkout).toBeTruthy();
 	});
 
+	it("does not cycle: after v1..v3 and two rollbacks, installing v2 again puts it last, and rollback walks the true order", () => {
+		const { checkout, env, versions } = twoInstalls();
+		const v3 = install({ checkout: commitAgain(env), env, checks: "minimal" }).version;
+		const [v1, v2] = versions;
+		rollback(env);
+		rollback(env);
+		expect(currentOf(env)).toBe(v1);
+		git(checkout, "checkout", "-q", v2.split("-").at(-1) as string); // v2's commit; its folder already exists
+		expect(install({ checkout, env, checks: "minimal" }).version).toBe(v2);
+		expect(historyOf(env)).toEqual([v1, v3, v2]);
+		expect(rollback(env)).toEqual({ from: v2, to: v3 });
+		expect(rollback(env)).toEqual({ from: v3, to: v1 });
+		expect(() => rollback(env)).toThrow(/no earlier version to roll back to/);
+	});
+
+	it("rolls back after a downgrade by install (A, B, A again) to B, then refuses", () => {
+		const { checkout, env, versions } = twoInstalls();
+		const [a, b] = versions;
+		git(checkout, "checkout", "-q", a.split("-").at(-1) as string);
+		install({ checkout, env, checks: "minimal" });
+		expect(historyOf(env)).toEqual([b, a]);
+		expect(rollback(env)).toEqual({ from: a, to: b });
+		expect(() => rollback(env)).toThrow(/no earlier version to roll back to/);
+		expect(statSync(join(env.ORRERY_HOME as string, "app", "history")).mode & 0o777).toBe(0o600);
+	});
+
+	it("keeps the version the user rolled back to, and the one a rollback would go to next, through the next install's GC", () => {
+		const { env, versions } = fiveInstalls(); // folders v1 (Atlas), v3, v4, v5; history v1..v5
+		writeFileSync(join(env.ORRERY_HOME as string, "data", "lanes", "Atlas", "status.json"), JSON.stringify({ pid: process.pid, version: versions[0], open: false }));
+		rollback(env);
+		rollback(env); // current = v3
+		expect(currentOf(env)).toBe(versions[2]);
+		const result = install({ checkout: commitAgain(env), env, checks: "minimal" }); // v6
+		expect(versionFolders(env)).toContain(versions[2]);
+		expect(versionFolders(env)).toContain(versions[4]);
+		expect(result.removed).not.toContain(versions[2]);
+	});
+
 	it("makes an install after a rollback current and newest, and rolls back from it to the version before", () => {
 		const { env, versions } = twoInstalls();
 		rollback(env); // current = v1
@@ -263,6 +301,30 @@ describe("install", () => {
 			expect(result.removed, bad).toEqual([]);
 			expect(versionFolders(env).length, bad).toBe(before + 1);
 			expect(lines.join("\n"), bad).toMatch(/Kept every older version/);
+		}
+	});
+
+	it("does not let a status without a version block GC when the lane is closed or its process is gone", () => {
+		for (const status of [{ pid: process.pid, open: false }, { pid: deadPid() }]) {
+			const { env, versions } = fiveInstalls();
+			writeFileSync(join(env.ORRERY_HOME as string, "data", "lanes", "Atlas", "status.json"), JSON.stringify(status));
+			const { removed } = install({ checkout: commitAgain(env), env, checks: "minimal" });
+			expect(removed, JSON.stringify(status)).toContain(versions[0]);
+		}
+	});
+
+	it("keeps everything for a live pid without a version, and the log names the real reason", () => {
+		for (const [bad, reason] of [
+			[JSON.stringify({ pid: process.pid, open: true }), /Atlas.*live process but no version/],
+			["{not json", /Atlas.*cannot be parsed/],
+			[JSON.stringify({ open: true, version: "x" }), /Atlas.*no pid/],
+		] as const) {
+			const { env } = fiveInstalls();
+			writeFileSync(join(env.ORRERY_HOME as string, "data", "lanes", "Atlas", "status.json"), bad);
+			const lines: string[] = [];
+			expect(install({ checkout: commitAgain(env), env, checks: "minimal", log: (l) => lines.push(l) }).removed, bad).toEqual([]);
+			expect(lines.join("\n"), bad).toMatch(reason);
+			expect(lines.join("\n"), bad).not.toMatch(/config.*could not be read/);
 		}
 	});
 

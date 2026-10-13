@@ -118,6 +118,8 @@ async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: 
 		const check = checks.find((c) => c.id === id) as ToolCheck;
 		const steps = installSteps(check, current, env);
 		if (steps.length === 0) {
+			// "unknown" is a tool Orrery could not check; "other" with nothing to run is blocked (shared folder), only info.
+			if (check.wiring === "unknown") left.push(`couldn't check ${check.label}: ${check.detail}`);
 			lines.push(`${check.label}: ${check.wiring === "installed" ? `already wired (${check.detail})` : check.detail}`);
 			continue;
 		}

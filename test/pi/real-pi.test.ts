@@ -231,7 +231,7 @@ describe.skipIf(pi === null)("Orrery installed in app/current, inside a real pi"
 		const env = { ...isolated(home), ORRERY_HOME: orreryHome };
 		const checkout = workingTreeCheckout();
 		dirs.push(checkout);
-		// With dev packages (npm ci without --omit=dev); the OMP test installs without them.
+		// The default install (npm ci --omit=dev), which is what lanes load.
 		const first = install({ checkout, env, checks: "minimal" });
 		const current = join(orreryHome, "app", "current");
 		// Wired the way npm run install-local wires; this runner refuses every command (no real claude or systemctl runs).

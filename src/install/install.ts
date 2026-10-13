@@ -6,7 +6,7 @@
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { defaultConfigPath, loadConfig } from "../lane/config.ts";
@@ -117,15 +117,32 @@ const isFolder = (path: string) => {
 };
 
 /**
- * Points app/current at `version` in one rename. app/history is install order: `record` appends the version (an install,
- * unless it already ends the list); a rollback records nothing, so walking back stays a walk back.
+ * Points app/current at `version` in one rename. app/history is install order, each version once, latest install last:
+ * `record` (an install) drops the version's earlier entries and appends it, through a temp file and a rename. A rollback
+ * records nothing, so walking back stays a walk back.
  */
 function switchTo(app: string, version: string, record: boolean): void {
 	const next = join(app, "current.new");
 	rmSync(next, { force: true });
 	symlinkSync(version, next);
 	renameSync(next, join(app, "current"));
-	if (record && readHistory(app).at(-1) !== version) appendFileSync(join(app, "history"), `${version}\n`, { mode: 0o600 });
+	if (!record) return;
+	const history = join(app, "history");
+	const temp = `${history}.tmp-${process.pid}`;
+	try {
+		writeFileSync(temp, `${[...readHistory(app).filter((name) => name !== version), version].join("\n")}\n`, { mode: 0o600 });
+		renameSync(temp, history);
+	} catch (error) {
+		rmSync(temp, { force: true });
+		throw error;
+	}
+}
+
+/** The version a rollback from `from` goes to: the latest earlier one in install order that still has a folder. */
+function rollbackTarget(app: string, from: string): string | undefined {
+	const history = readHistory(app);
+	const at = history.lastIndexOf(from);
+	return history.slice(0, at < 0 ? history.length : at).reverse().find((name) => name !== from && isFolder(join(app, name)));
 }
 
 function alive(pid: number): boolean {
@@ -139,31 +156,35 @@ function alive(pid: number): boolean {
 }
 
 /**
- * What one lane's status.json says about the version it runs: only pid (an integer), open (a boolean, may be absent) and
- * version (a string) are read. "none": no file, so no running lane. "unknown": a file that cannot be read that way.
+ * What one lane's status.json says about the version it runs. Only pid (an integer), open (a boolean, may be absent) and
+ * version (a string) are read. "none": no file, or a lane that needs no version (closed, or its process is gone).
+ * Otherwise, a live lane's version, or why the file cannot be trusted ("unknown": nothing may then be deleted).
  */
-function laneRun(dir: string): { version: string; open: boolean; pid: number } | "none" | "unknown" {
+function laneRun(dir: string): { version: string } | "none" | { unknown: string } {
 	let text: string;
 	try {
 		text = readFileSync(join(dir, "status.json"), "utf8");
 	} catch (error) {
-		return (error as { code?: unknown }).code === "ENOENT" ? "none" : "unknown";
+		return (error as { code?: unknown }).code === "ENOENT" ? "none" : { unknown: "cannot be read" };
 	}
 	let json: unknown;
 	try {
 		json = JSON.parse(text);
 	} catch {
-		return "unknown";
+		return { unknown: "cannot be parsed" };
 	}
-	if (typeof json !== "object" || json === null) return "unknown";
+	if (typeof json !== "object" || json === null) return { unknown: "cannot be parsed" };
 	const { pid, open, version } = json as { pid?: unknown; open?: unknown; version?: unknown };
-	if (typeof pid !== "number" || !Number.isInteger(pid) || typeof version !== "string" || (open !== undefined && typeof open !== "boolean")) return "unknown";
-	return { version, open: open !== false, pid };
+	if (typeof pid !== "number" || !Number.isInteger(pid)) return { unknown: "has no pid" };
+	if (open !== undefined && typeof open !== "boolean") return { unknown: "has an open field that is not true or false" };
+	if (open === false || !alive(pid)) return "none";
+	if (typeof version !== "string") return { unknown: "names a live process but no version" };
+	return { version };
 }
 
 /**
  * Which lanes run each version, by their status files (open, process alive). `unreadable` says why the answer cannot be
- * trusted (config or a status file unreadable); then nothing may be deleted.
+ * trusted (config or a status file); then nothing may be deleted.
  */
 function laneVersions(env: NodeJS.ProcessEnv): { versions: Map<string, string[]>; unreadable?: string } {
 	const versions = new Map<string, string[]>();
@@ -178,15 +199,18 @@ function laneVersions(env: NodeJS.ProcessEnv): { versions: Map<string, string[]>
 	let unreadable: string | undefined;
 	for (const lane of config.lanes.values()) {
 		const run = laneRun(lane.dir);
-		if (run === "unknown") unreadable ??= `lane ${lane.name}'s status.json could not be read to see which version it runs`;
-		if (run === "none" || run === "unknown" || !run.open || !alive(run.pid)) continue;
+		if (run === "none") continue;
+		if ("unknown" in run) {
+			unreadable ??= `lane ${lane.name}'s status.json ${run.unknown}, so Orrery cannot tell which version it runs`;
+			continue;
+		}
 		versions.set(run.version, [...(versions.get(run.version) ?? []), lane.name]);
 	}
 	return { versions, ...(unreadable === undefined ? {} : { unreadable }) };
 }
 
-/** Removes the versions no one needs: beyond the newest three in history, not current, not run by a live lane. */
-function collect(app: string, env: NodeJS.ProcessEnv, log: (line: string) => void): string[] {
+/** Removes the versions no one needs: beyond the newest three in history, not current, its rollback target, the previous current, or run by a live lane. */
+function collect(app: string, env: NodeJS.ProcessEnv, log: (line: string) => void, previous: string | undefined): string[] {
 	const { versions: live, unreadable } = laneVersions(env);
 	if (unreadable !== undefined) {
 		log(`Kept every older version: ${unreadable}.`);
@@ -196,7 +220,12 @@ function collect(app: string, env: NodeJS.ProcessEnv, log: (line: string) => voi
 	const history = readHistory(app);
 	for (let i = history.length - 1; i >= 0 && keep.size < KEEP; i--) keep.add(history[i]);
 	const current = currentName(app);
-	if (current !== undefined) keep.add(current);
+	if (current !== undefined) {
+		keep.add(current);
+		const back = rollbackTarget(app, current);
+		if (back !== undefined) keep.add(back); // what a rollback goes to next
+	}
+	if (previous !== undefined) keep.add(previous); // what the user was on before this switch (maybe just rolled back to)
 	for (const version of live.keys()) keep.add(version);
 	const removed = versionFolders(app).filter((name) => !keep.has(name)).sort();
 	for (const name of removed) rmSync(join(app, name), { recursive: true, force: true });
@@ -277,7 +306,7 @@ export function install(options: InstallOptions): { version: string; previous?: 
 			stage(checkout, app, version, options, run, log);
 		}
 		switchTo(app, version, true);
-		return { version, ...(previous === undefined ? {} : { previous }), removed: collect(app, env, log) };
+		return { version, ...(previous === undefined ? {} : { previous }), removed: collect(app, env, log, previous) };
 	} finally {
 		release();
 	}
@@ -290,9 +319,7 @@ export function rollback(env: NodeJS.ProcessEnv): { from: string; to: string } {
 	const release = holdInstallLock(env);
 	try {
 		const from = currentName(app) as string;
-		const history = readHistory(app);
-		const at = history.lastIndexOf(from);
-		const to = history.slice(0, at < 0 ? history.length : at).reverse().find((name) => name !== from && isFolder(join(app, name)));
+		const to = rollbackTarget(app, from);
 		if (to === undefined) throw new Error("no earlier version to roll back to");
 		switchTo(app, to, false);
 		return { from, to };
@@ -301,7 +328,7 @@ export function rollback(env: NodeJS.ProcessEnv): { from: string; to: string } {
 	}
 }
 
-/** Every installed version, oldest switch first, with current marked and the live lanes that run it. */
+/** Every installed version, oldest install first (app/history order), with current marked and the live lanes that run it. */
 export function listVersions(env: NodeJS.ProcessEnv): { name: string; current: boolean; lanes: string[] }[] {
 	const app = appDir(env);
 	const folders = versionFolders(app);

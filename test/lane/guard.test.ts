@@ -283,8 +283,8 @@ describe("Orrery's own home", () => {
 
 	it("judges a very long command quickly", () => {
 		const units = ["a/", "/", "./", "~/", "$", "{", "'", "x/../", "${", "{a,", "{a,b,c,d,e,f,g,h,", "{a,b,c,d,e,f,g,h}", "\\\n", "$()", "`", ".orrery/", "{a,b}"];
-		// Wall-clock budgets flake on slow runners: doubling the input must stay near double the time (linear passes, quadratic
-		// fails). The floor keeps a sub-millisecond baseline from turning timer noise into a ratio.
+		// Wall-clock budgets flake on slow runners, and a 2x step is too close to the noise: a 4x step must cost under 10x
+		// (linear is about 4x, quadratic about 16x). Best of three, interleaved, each size; a 20 ms floor on the baseline.
 		const time = (unit: string, times: number) => {
 			const command = `cat ${unit.repeat(times)}`;
 			const started = performance.now();
@@ -293,10 +293,14 @@ describe("Orrery's own home", () => {
 		};
 		for (const unit of units) {
 			time(unit, 1000); // warm up
-			const t100 = time(unit, 100_000);
-			const t200 = time(unit, 200_000);
-			expect(t200 / Math.max(t100, 20), `${JSON.stringify(unit)}: ${t100.toFixed(0)} ms -> ${t200.toFixed(0)} ms`).toBeLessThan(3);
-			expect(t200, `${JSON.stringify(unit)} backstop`).toBeLessThan(10_000);
+			let small = Number.POSITIVE_INFINITY;
+			let large = Number.POSITIVE_INFINITY;
+			for (let round = 0; round < 3; round++) {
+				small = Math.min(small, time(unit, 25_000));
+				large = Math.min(large, time(unit, 100_000));
+			}
+			expect(large / Math.max(small, 20), `${JSON.stringify(unit)}: ${small.toFixed(0)} ms -> ${large.toFixed(0)} ms`).toBeLessThan(10);
+			expect(large, `${JSON.stringify(unit)} backstop`).toBeLessThan(10_000);
 		}
 	});
 

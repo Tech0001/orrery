@@ -216,4 +216,19 @@ describe("what wiring leaves behind", () => {
 		const { left } = await wireReport(failing.env, { run: fakeRun, confirm: neverAsked });
 		expect(left.join("\n")).toMatch(/Claude Code \(the install failed\)/);
 	});
+
+	it("lists a tool it could not check, with the reason, and leaves an OMP blocked by a shared folder as an info line", async () => {
+		const unreadable = installedScratch({ tools: { pi: 'echo "1.1.0"' } });
+		mkdirSync(piExtensionFile(unreadable.env), { recursive: true }); // a folder where the file belongs: cannot be read
+		const bad = await wireReport(unreadable.env, { run: fakeRun, confirm: neverAsked });
+		expect(bad.left.join("\n")).toMatch(/couldn't check pi: cannot read/);
+		const claude = installedScratch({ tools: { claude: `if [ "$1" = "--version" ]; then echo "2.1.294 (Claude Code)"; else echo timed out >&2; exit 1; fi` } });
+		const failed = await wireReport(claude.env, { run: fakeRun, confirm: neverAsked });
+		expect(failed.left.join("\n")).toMatch(/couldn't check Claude Code: claude plugin list/);
+		const shared = installedScratch({ tools: { pi: 'echo "1.1.0"', omp: 'echo "18.10.2"' } });
+		const env = { ...shared.env, PI_CODING_AGENT_DIR: join(shared.home, "agent") };
+		const both = await wireReport(env, { run: fakeRun, confirm: neverAsked });
+		expect(both.left).toEqual([]);
+		expect(both.lines.join("\n")).toMatch(/OMP/);
+	});
 });

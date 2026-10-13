@@ -43,7 +43,7 @@ async function confirm(what: string): Promise<boolean> {
 }
 
 const KEEPS =
-	"pi and OMP lanes keep their version until they restart; Claude Code starts new hook processes on the new version at once, and a session's own recorder keeps the old one until the session restarts.";
+	"pi and OMP lanes keep their version until they restart; Claude Code starts new hook processes on the installed version at once, and a session's own recorder keeps the old one until the session restarts.";
 
 /** Resolves to the exit status: 1 when something is still wired to another Orrery. */
 async function main(): Promise<number> {
