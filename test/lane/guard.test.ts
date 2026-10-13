@@ -281,6 +281,16 @@ describe("Orrery's own home", () => {
 		expect(checkToolCall({ name: "bash", arguments: { command } }, options)).toMatch(/sensitive/);
 	});
 
+	it("refuses a word over 4096 characters with a brace group that spells orrery, and allows one that does not", () => {
+		const filler = "x".repeat(5000);
+		expect(checkToolCall({ name: "bash", arguments: { command: `cat ${filler}{a,b}${filler}/.orrery/data` } }, options)).toMatch(/sensitive/);
+		expect(checkToolCall({ name: "bash", arguments: { command: `cat ${filler}{a,b}${filler}/.Orr''ery` } }, options)).toMatch(/sensitive/);
+		expect(checkToolCall({ name: "bash", arguments: { command: `cat ${filler}/.{orr''ery,x}/data` } }, options)).toMatch(/sensitive/);
+		expect(checkToolCall({ name: "bash", arguments: { command: `cat ${filler}{a,b}${filler}/notes.txt` } }, options)).toBeUndefined();
+		expect(checkToolCall({ name: "bash", arguments: { command: `cat ${"{a,b}".repeat(2000)}` } }, options)).toBeUndefined();
+		expect(checkToolCall({ name: "bash", arguments: { command: `cat ~/.{orrery,x}/config` } }, options)).toMatch(/sensitive/);
+	});
+
 	it("judges a very long command quickly", () => {
 		const units = ["a/", "/", "./", "~/", "$", "{", "'", "x/../", "${", "{a,", "{a,b,c,d,e,f,g,h,", "{a,b,c,d,e,f,g,h}", "\\\n", "$()", "`", ".orrery/", "{a,b}"];
 		// Wall-clock budgets flake on slow runners, and a 2x step is too close to the noise: a 4x step must cost under 10x

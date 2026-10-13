@@ -110,7 +110,7 @@ function pointBackup(env: NodeJS.ProcessEnv, home: string, run: Runner, left: st
  * without asking, "other" (another Orrery, or not Orrery's file) after confirm. A missing pi or OMP extension is written
  * only when that tool is on PATH.
  */
-async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: Runner; install: Runner }, confirm: Confirm, left: string[]): Promise<string[]> {
+async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: Runner; install: Runner }, confirm: Confirm, left: string[], unchecked: string[]): Promise<string[]> {
 	const lines: string[] = [];
 	const look = () => checkTools({ root: current, env, run: run.probe });
 	let checks = look();
@@ -119,7 +119,7 @@ async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: 
 		const steps = installSteps(check, current, env);
 		if (steps.length === 0) {
 			// "unknown" is a tool Orrery could not check; "other" with nothing to run is blocked (shared folder), only info.
-			if (check.wiring === "unknown") left.push(`couldn't check ${check.label}: ${check.detail}`);
+			if (check.wiring === "unknown") unchecked.push(`${check.label}: ${check.detail}`);
 			lines.push(`${check.label}: ${check.wiring === "installed" ? `already wired (${check.detail})` : check.detail}`);
 			continue;
 		}
@@ -148,6 +148,8 @@ async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: 
 export interface WireReport {
 	lines: string[];
 	left: string[];
+	/** Tools Orrery could not check at all ("<tool>: <reason>"); the user checks them by hand. */
+	unchecked: string[];
 }
 
 /** Points everything at <home>/app/current. */
@@ -158,12 +160,13 @@ export async function wireReport(env: NodeJS.ProcessEnv, options: { run?: Runner
 	const home = orreryHome(env);
 	const current = join(home, "app", "current");
 	const left: string[] = [];
+	const unchecked: string[] = [];
 	const lines = [
 		await linkCommand(env, current, options.confirm, left),
 		...pointBackup(env, home, run, left),
-		...(await wireTools(env, current, { probe, install: run }, options.confirm, left)),
+		...(await wireTools(env, current, { probe, install: run }, options.confirm, left, unchecked)),
 	];
-	return { lines, left };
+	return { lines, left, unchecked };
 }
 
 /** wireReport's lines. */
@@ -171,12 +174,16 @@ export async function wire(env: NodeJS.ProcessEnv, options: { run?: Runner; conf
 	return (await wireReport(env, options)).lines;
 }
 
-/** The closing warning when wiring left something behind: the list and the commands that fix it. */
-export function leftWarning(left: string[]): string[] {
-	if (left.length === 0) return [];
+/** The closing warning: what is still wired elsewhere (with the fix), and what could not be checked (to check by hand). */
+export function leftWarning(left: string[], unchecked: string[] = []): string[] {
 	return [
-		"Not everything points at this install. Still wired elsewhere:",
-		...left.map((item) => `  - ${item}`),
-		"Fix it with: npm run install-local -- --yes (or run orrery, then Tools, then I).",
+		...(left.length === 0
+			? []
+			: [
+					"Not everything points at this install. Still wired elsewhere:",
+					...left.map((item) => `  - ${item}`),
+					"Fix it with: npm run install-local -- --yes (or run orrery, then Tools, then I).",
+				]),
+		...(unchecked.length === 0 ? [] : ["Could not check these tools:", ...unchecked.map((item) => `  - check ${item.replace(": ", " by hand: ")}`)]),
 	];
 }

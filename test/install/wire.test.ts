@@ -221,14 +221,19 @@ describe("what wiring leaves behind", () => {
 		const unreadable = installedScratch({ tools: { pi: 'echo "1.1.0"' } });
 		mkdirSync(piExtensionFile(unreadable.env), { recursive: true }); // a folder where the file belongs: cannot be read
 		const bad = await wireReport(unreadable.env, { run: fakeRun, confirm: neverAsked });
-		expect(bad.left.join("\n")).toMatch(/couldn't check pi: cannot read/);
+		expect(bad.left).toEqual([]);
+		expect(bad.unchecked.join("\n")).toMatch(/pi: cannot read/);
+		const warning = leftWarning(bad.left, bad.unchecked).join("\n");
+		expect(warning).toMatch(/check pi by hand: cannot read/);
+		expect(warning).not.toMatch(/Still wired elsewhere|--yes/);
 		const claude = installedScratch({ tools: { claude: `if [ "$1" = "--version" ]; then echo "2.1.294 (Claude Code)"; else echo timed out >&2; exit 1; fi` } });
 		const failed = await wireReport(claude.env, { run: fakeRun, confirm: neverAsked });
-		expect(failed.left.join("\n")).toMatch(/couldn't check Claude Code: claude plugin list/);
+		expect(failed.unchecked.join("\n")).toMatch(/Claude Code: claude plugin list/);
 		const shared = installedScratch({ tools: { pi: 'echo "1.1.0"', omp: 'echo "18.10.2"' } });
 		const env = { ...shared.env, PI_CODING_AGENT_DIR: join(shared.home, "agent") };
 		const both = await wireReport(env, { run: fakeRun, confirm: neverAsked });
 		expect(both.left).toEqual([]);
+		expect(both.unchecked).toEqual([]);
 		expect(both.lines.join("\n")).toMatch(/OMP/);
 	});
 });

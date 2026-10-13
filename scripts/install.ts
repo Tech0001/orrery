@@ -57,12 +57,12 @@ async function main(): Promise<number> {
 		return 0;
 	}
 	const result = install({ checkout, env, ...(values["keep-dev"] === true ? { omitDev: false } : {}), log: say });
-	const { lines, left } = await wireReport(env, { confirm });
+	const { lines, left, unchecked } = await wireReport(env, { confirm });
 	for (const line of lines) say(line);
 	if (result.removed.length > 0) say(`Removed old versions: ${result.removed.join(", ")}`);
-	if (left.length > 0) {
-		say(`Installed ${result.version}, but not everything points at it.`);
-		for (const line of leftWarning(left)) say(line);
+	if (left.length > 0 || unchecked.length > 0) {
+		say(`Installed ${result.version}, but not everything is confirmed to point at it.`);
+		for (const line of leftWarning(left, unchecked)) say(line);
 		return 1;
 	}
 	say(`Installed ${result.version}. ${KEEPS}`);

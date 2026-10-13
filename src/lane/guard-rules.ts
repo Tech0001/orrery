@@ -57,7 +57,16 @@ function readings(lower: string): string[] {
 	bare = bare.replace(/[\\'"]/g, "");
 	const collapsed = bare.replace(/[^\s;|&()<>`]+/g, collapse);
 	const forms = [lower, bare, collapsed];
-	for (const base of [bare, collapsed]) {
+	for (const full of [bare, collapsed]) {
+		// Brace readings cost work per group, so they apply to words of at most MAX_BRACE_WORD characters. A longer word with
+		// a brace group is refused if it spells "orr" anywhere (the bare name stands for it); otherwise it gets no reading.
+		let base = full;
+		if (full.length > MAX_BRACE_WORD) {
+			for (const word of full.match(LONG_WORD) ?? []) {
+				if (word.includes("orr") && BRACE_ONE.test(word)) forms.push("/.orrery");
+			}
+			base = full.replace(LONG_WORD, " ");
+		}
 		let widest = 0;
 		for (const group of base.matchAll(BRACE)) widest = Math.max(widest, group[1].split(",").length);
 		// Past the cap, a brace body that spells orrery is refused outright (the bare name stands for it).
@@ -81,6 +90,9 @@ function collapse(word: string): string {
 
 // A brace expansion: one word with a comma inside the braces. Braces holding spaces or no comma (jq, JSON, code) are not.
 const MAX_ALTERNATIVES = 64;
+const MAX_BRACE_WORD = 4096;
+const LONG_WORD = new RegExp(`[^\\s;|&()<>\`]{${MAX_BRACE_WORD + 1},}`, "g");
+const BRACE_ONE = /\{[^{}\s,]*(?:,[^{}\s,]*)+\}/;
 const BRACE = /\{([^{}\s,]*(?:,[^{}\s,]*)+)\}/g;
 
 /** Each brace group read as alternative `pick` (the last one for a group with fewer). */

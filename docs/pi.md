@@ -7,9 +7,10 @@ and remote backup copies.
 ## Install
 
 `npm run install-local` wires this: it writes pi's extension file and points it at `~/.orrery/app/current`. If pi
-is not on PATH, it prints "not found on PATH; not wired" and carries on (exit 0). If you decline a rewire, or pi
-cannot be checked, it lists it and exits 1; rerun `npm run install-local -- --yes`. The TUI does the same: run `orrery`, open Tools (4), select pi and press `I` (or
-`orrery tools install pi`).
+is not on PATH, it prints "not found on PATH; not wired" and carries on (exit 0). If you decline a rewire, it lists
+what is still wired elsewhere and exits 1; rerun `npm run install-local -- --yes`. If pi cannot be checked (an
+unreadable extension file), it says "check pi by hand: <reason>" and also exits 1. The TUI does the same: run `orrery`,
+open Tools (4), select pi and press `I` (or `orrery tools install pi`).
 
 If you ever write the file by hand, it is one line that imports Orrery by its absolute path, into the installed copy:
 
