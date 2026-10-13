@@ -1,0 +1,10 @@
+{
+	"hooks": {
+		"SessionStart": [{ "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/orrery-run\" claude-hook session-start", "timeout": 30 }] }],
+		"UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/orrery-run\" claude-hook user-prompt-submit", "timeout": 10 }] }],
+		"Stop": [{ "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/orrery-run\" claude-hook stop", "timeout": 10 }] }],
+		"SessionEnd": [{ "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/orrery-run\" claude-hook session-end" }] }],
+		"PreToolUse": [{ "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/orrery-run\" claude-hook pre-tool-use", "timeout": 10 }] }]
+	},
+	"modules": ["./mod.ts"]
+}

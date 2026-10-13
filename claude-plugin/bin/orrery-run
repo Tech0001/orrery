@@ -1,0 +1,7 @@
+#!/bin/sh
+# Runs the user's orrery launcher, so hooks, the MCP server and the commands use this machine's orrery and Node.
+# ORRERY_BIN overrides it (the end-to-end script points it at a checkout). Without orrery installed, the plugin does
+# nothing: it exits 0 and prints nothing. Arguments are passed on as they came, never through a shell string.
+bin="${ORRERY_BIN:-$HOME/.local/bin/orrery}"
+[ -x "$bin" ] || exit 0
+exec "$bin" "$@"

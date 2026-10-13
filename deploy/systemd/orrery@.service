@@ -1,0 +1,29 @@
+[Unit]
+Description=Orrery lane %i (tmux -L orrery-%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=orrery
+Group=orrery
+Environment=ORRERY_CONFIG=/etc/orrery/config.toml
+# Secrets such as ORRERY_MAC_KEY=…, kept out of the config (optional; root:orrery 0640).
+EnvironmentFile=-/etc/orrery/env
+Environment=HOME=/var/lib/orrery
+Environment=TMUX_TMPDIR=/var/lib/orrery/run
+WorkingDirectory=/var/lib/orrery
+ExecStart=/usr/bin/tmux -L orrery-%i -f /opt/orrery/deploy/tmux.conf new-session -d -s %i -x 220 -y 50 /opt/orrery/deploy/orrery-lane %i
+ExecStop=/opt/orrery/deploy/orrery-stop %i
+TimeoutStopSec=30
+# The loop never exits by itself, so any exit of the tmux server (even code 0) means the lane is down.
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/orrery
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

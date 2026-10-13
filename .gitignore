@@ -1,0 +1,31 @@
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.coverage
+dist/
+*.egg-info/
+chat/
+.optchat/
+optchat.toml
+.env
+memory.html
+node_modules/
+claude-plugin/.claude-plugin/types/
+claude-plugin/tsconfig.json
+
+# Local backup destination settings
+backup.env
+
+# Local work: worktrees, agent notes, and the files Orrery writes into a lane folder
+.worktrees/
+.superpowers/
+.orrery/
+CLAUDE.local.md
+
+# Editors, OS and tooling output
+.DS_Store
+.idea/
+.vscode/
+*.log
+coverage/

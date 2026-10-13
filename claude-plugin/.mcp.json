@@ -1,0 +1,1 @@
+{ "mcpServers": { "orrery": { "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/bin/orrery-run", "mcp"] } } }

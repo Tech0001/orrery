@@ -1,0 +1,33 @@
+# Keys stay in environment variables, never in this file.
+[chat]
+directory = "chat"
+workspace = "."
+allow_shell = false
+# instructions = "my-instructions.md"
+max_steps = 100
+
+[memory]
+node_bytes = 512
+view_bytes = 16000
+jobs = 1
+tries = 5
+retry_seconds = 10
+tool_cap = 30000
+
+[agent]
+provider = "openrouter"
+model = "anthropic/claude-sonnet-5.5"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+effort = "medium"
+max_tokens = 8192
+timeout = 180
+
+[compactor]
+provider = "local"
+model = "qwen3:8b"
+base_url = "http://localhost:11434/v1"
+api_key_env = ""
+effort = "medium"
+max_tokens = 4096
+timeout = 180

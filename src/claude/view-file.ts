@@ -1,0 +1,320 @@
+/**
+ * The view file Claude Code loads (spec §4 "The view file and CLAUDE.md"): <workspace>/.orrery/view.md.
+ * - It holds memorySection(view, "claude-code").
+ * - It is written atomically, 0600 in a 0700 folder.
+ * - The workspace is untrusted, since a shared repo decides what is in it. So the view is written only where
+ *   claude-setup put it:
+ *   - the lane's own data folder holds claude-setup's marker (claude/setup.json), naming this workspace;
+ *   - and CLAUDE.md or CLAUDE.local.md still imports the view.
+ *   A repo that merely commits the import line gets nothing.
+ * - It never goes through a symlink: a .orrery that is a symlink, a file or someone else's folder counts as not set
+ *   up.
+ * - CLAUDE.md and CLAUDE.local.md are read only as regular files (never through a symlink), and only their first
+ *   256 KB. Only the file the marker names counts.
+ * - It never reaches a commit: in a git work tree, git must ignore .orrery/ and track nothing there (gitExposure).
+ *   - Where git would see it, the view orrery wrote there is deleted, then the marker goes (withdrawView). If the
+ *     delete fails, the marker stays and the next gate tries again.
+ *   - Where git cannot say (or a check throws), the view is taken out until git answers again: it is deleted and not
+ *     written, but the marker stays, so the next gate that passes writes it back with no setup to redo.
+ * - In mod mode (marker `file: "mod"`) the gate is closed: nothing is written, and a stale view is deleted, unless git
+ *   tracks it (then it is the repo's file) or cannot say (then a later gate asks again).
+ * Every writer (claude-setup, SessionStart, the holder) goes through one gate, viewGate, in writeViewFile.
+ */
+
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmdirSync, rmSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
+import type { LaneConfig } from "../lane/config.ts";
+import { ownFolder, writePrivate } from "../lane/private-file.ts";
+import { memorySection } from "../lane/view-text.ts";
+import { MemoryStore, MemoryView } from "../memory/index.ts";
+import { type Exposure, gitExposure, gitTracks } from "./git.ts";
+import { samePath, setupMarker, viewFile } from "./paths.ts";
+
+/** The CLAUDE.md line that loads the view. */
+export const VIEW_IMPORT = "@.orrery/view.md";
+
+/** How much of CLAUDE.md is searched for the import line (and the most claude-setup edits). */
+export const READ_LIMIT = 256 * 1024;
+
+/** The file claude-setup puts the import lines in: CLAUDE.md, or CLAUDE.local.md in a shared repo. */
+export type SetupFile = "CLAUDE.md" | "CLAUDE.local.md";
+
+/** What the marker names: the file holding the import lines, or "mod" (the Orrery mod gives the view; no file). */
+export type MarkerFile = SetupFile | "mod";
+
+/** claude/setup.json: claude-setup ran for `workspace` and put the import lines in `file`, at `at`. */
+export interface SetupMarker {
+	readonly workspace: string;
+	readonly file: MarkerFile;
+	readonly at: number;
+}
+
+/** The lane's setup marker, or undefined when there is none or it is malformed. */
+export function readSetupMarker(laneDir: string): SetupMarker | undefined {
+	let value: unknown;
+	try {
+		value = JSON.parse(readFileSync(setupMarker(laneDir), "utf8"));
+	} catch {
+		return undefined;
+	}
+	if (typeof value !== "object" || value === null) return undefined;
+	const { workspace, file, at } = value as Record<string, unknown>;
+	if (typeof workspace !== "string" || (file !== "CLAUDE.md" && file !== "CLAUDE.local.md" && file !== "mod") || typeof at !== "number") return undefined;
+	return { workspace, file, at };
+}
+
+/** Records that claude-setup put the import lines in `file` of `workspace` (private, atomic). claude-setup calls it. */
+export function writeSetupMarker(laneDir: string, workspace: string, file: MarkerFile): void {
+	writePrivate(setupMarker(laneDir), JSON.stringify({ workspace, file, at: Date.now() }));
+}
+
+/** Removes the lane's setup marker, so the view is written nowhere until claude-setup runs again. */
+export function removeSetupMarker(laneDir: string): void {
+	rmSync(setupMarker(laneDir), { force: true });
+}
+
+/**
+ * The first `limit` bytes of `path` as text, and whether that is all of it. `path` must be a regular file and is never
+ * opened through a symlink; anything else throws. A workspace is untrusted: its CLAUDE.md could be a link to
+ * /dev/zero.
+ */
+export function readHead(path: string, limit = READ_LIMIT): { readonly text: string; readonly whole: boolean } {
+	// O_NOFOLLOW: a symlink fails to open. O_NONBLOCK: a pipe opens at once, and fstat then refuses it unread.
+	const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	try {
+		if (!fstatSync(fd).isFile()) throw new Error(`${path} is not a regular file`);
+		// One byte past the limit tells whether the file goes on.
+		const buffer = Buffer.alloc(limit + 1);
+		let length = 0;
+		while (length <= limit) {
+			const read = readSync(fd, buffer, length, limit + 1 - length, null);
+			if (read === 0) break;
+			length += read;
+		}
+		return { text: buffer.toString("utf8", 0, Math.min(length, limit)), whole: length <= limit };
+	} finally {
+		closeSync(fd);
+	}
+}
+
+/** Whether `path`, read as readHead reads it, has the import line among its whole lines in the first 256 KB. */
+export function importsView(path: string): boolean {
+	try {
+		const { text, whole } = readHead(path);
+		const lines = text.split("\n");
+		// A line cut off at the limit is not a whole line.
+		if (!whole) lines.pop();
+		return lines.some((line) => line.trim() === VIEW_IMPORT);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Whether CLAUDE.md or CLAUDE.local.md in the workspace imports the view (the line claude-setup writes). Each is read
+ * only as a regular file, and only its first 256 KB: a repo could commit CLAUDE.md as a symlink to /dev/zero.
+ */
+export function viewImported(workspace: string): boolean {
+	return ["CLAUDE.md", "CLAUDE.local.md"].some((name) => importsView(join(workspace, name)));
+}
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/**
+ * Deletes the view orrery wrote into `workspace`: only a regular file, in a real .orrery folder of the user's.
+ * unlink never follows a symlink, and one at view.md is not orrery's view, so it stays. Returns whether it deleted
+ * one; a failing unlink throws.
+ */
+function deleteView(workspace: string): boolean {
+	if (ownFolder(dirname(viewFile(workspace))) !== true) return false;
+	if (!lstatSync(viewFile(workspace), { throwIfNoEntry: false })?.isFile()) return false;
+	unlinkSync(viewFile(workspace));
+	return true;
+}
+
+/**
+ * deleteView for mod mode, which needs no view file: only one git does not track. One git tracks is the repo's file, not
+ * a view orrery wrote, and stays; so does one git cannot say about this time (a later call asks again). Git is asked
+ * only when there is a view file.
+ */
+function deleteUntrackedView(workspace: string): boolean {
+	if (ownFolder(dirname(viewFile(workspace))) !== true || !lstatSync(viewFile(workspace), { throwIfNoEntry: false })?.isFile()) return false;
+	if (gitTracks(workspace, ".orrery/view.md") !== false) return false;
+	return deleteView(workspace);
+}
+
+/**
+ * For claude-setup --mod: deleteUntrackedView, then .orrery/ too when that leaves it empty (and it is a real folder of
+ * the user's).
+ */
+export function deleteViewFile(workspace: string): boolean {
+	const deleted = deleteUntrackedView(workspace);
+	const folder = dirname(viewFile(workspace));
+	if (ownFolder(folder) === true) {
+		try {
+			rmdirSync(folder);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOTEMPTY" && code !== "ENOENT" && code !== "EEXIST") throw error;
+		}
+	}
+	return deleted;
+}
+
+/** How the lane's workspace gets its memory into Claude Code: the Orrery mod, the view file, or not set up here. */
+export type LaneMode = "mod" | "file" | "none";
+
+/** "none" when the marker is missing, malformed or names another workspace; "mod" when it says mod; else "file". */
+export function laneMode(lane: LaneConfig): LaneMode {
+	const marker = readSetupMarker(lane.dir);
+	if (marker === undefined || !samePath(marker.workspace, lane.workspace)) return "none";
+	return marker.file === "mod" ? "mod" : "file";
+}
+
+/** The lane's message count, read-only; undefined when it has no memory yet. */
+export function messageCount(lane: LaneConfig): number | undefined {
+	const file = join(lane.dir, "memory.sqlite");
+	if (!existsSync(file)) return undefined;
+	const store = MemoryStore.openReadOnly(file);
+	try {
+		return store.root.length;
+	} finally {
+		store.close();
+	}
+}
+
+/**
+ * Whether the lane's setup marker names its workspace: claude-setup ran there. Only then did orrery write a view
+ * there, and only then does a Claude Code session in it record (src/claude/hooks.ts).
+ */
+export function markedHere(lane: LaneConfig): boolean {
+	const marker = readSetupMarker(lane.dir);
+	return marker !== undefined && samePath(marker.workspace, lane.workspace);
+}
+
+/**
+ * Takes the view out of the lane's workspace while git cannot say whether it would see it, keeping the marker: the
+ * next gate that passes writes it back. Only where the marker names this workspace (so orrery wrote the view).
+ * Returns whether it deleted one.
+ */
+export function takeOutView(lane: LaneConfig): boolean {
+	return markedHere(lane) && deleteView(lane.workspace);
+}
+
+/**
+ * Takes the view back from the lane's workspace, where git would see it. First the view file, when the marker named
+ * this workspace (so orrery wrote it); then the marker, so nothing writes the view any more. A delete that fails
+ * throws and leaves the marker, so the next gate tries again. Without a marker it does nothing: a .orrery/view.md
+ * there is the repo's own.
+ */
+export function withdrawView(lane: LaneConfig): void {
+	const marker = readSetupMarker(lane.dir);
+	if (marker === undefined) return;
+	if (samePath(marker.workspace, lane.workspace)) deleteView(lane.workspace);
+	removeSetupMarker(lane.dir);
+}
+
+/** The marker's file still imports the view, and nothing planted at .orrery would misdirect the write. */
+function viewWanted(lane: LaneConfig, file: SetupFile): boolean {
+	if (!importsView(join(lane.workspace, file))) return false;
+	return ownFolder(dirname(viewFile(lane.workspace))) !== false;
+}
+
+/** Whether the view may be written now, and when not because of git, what happened to it. */
+export interface ViewGate {
+	readonly open: boolean;
+	/**
+	 * Git would see the view (a definite answer). It was withdrawn, the view file and then the marker, unless `failed`
+	 * says why the view could not be deleted: then the marker stays, and the next gate tries again.
+	 */
+	readonly exposed?: Exposure;
+	/**
+	 * Why the view file could not be deleted: a failed withdrawal (with `exposed`), or in mod mode a stale view that
+	 * stays until a later gate deletes it. Never set when git could not answer.
+	 */
+	readonly failed?: string;
+	/**
+	 * Git could not say this time, or a check threw: the view is taken out until git answers again (deleted, not
+	 * written), and the marker stays, so the next gate that passes writes it back.
+	 */
+	readonly unchecked?: string;
+	/** The gate is closed because the lane is in mod mode. */
+	readonly mod?: true;
+	/** Whether this gate, unchecked, took a view out (the holder logs it). */
+	readonly removed?: boolean;
+}
+
+/**
+ * The one gate in front of the view file, for every writer (through writeViewFile) and for SessionStart's warnings:
+ * - claude-setup's marker must name this workspace, which must exist (else nothing of orrery's is there to guard);
+ * - git must not see the view (gitExposure). When it would, the view is withdrawn (withdrawView) and `exposed` says
+ *   why. When git cannot say, the view is taken out until it can (takeOutView) and `unchecked` says why;
+ * - the marker's file must still import the view, and nothing may be planted at .orrery.
+ * In mod mode (marker file "mod") none of that applies: the gate is closed (`mod`), a stale view file is deleted
+ * (deleteUntrackedView: not one git tracks), and `failed` says why when it could not be.
+ * A check that throws counts as unchecked: the view is taken out as far as it can be, and nothing is written.
+ */
+export function viewGate(lane: LaneConfig): ViewGate {
+	try {
+		const marker = readSetupMarker(lane.dir);
+		if (marker === undefined || !samePath(marker.workspace, lane.workspace) || !existsSync(lane.workspace)) return { open: false };
+		// Mod mode (spec 2026-10-08-claude-code-mod §4.6): the Orrery mod puts the view in the system prompt, so no view
+		// file is written, and one left from file mode is deleted.
+		if (marker.file === "mod") {
+			try {
+				return { open: false, mod: true, removed: deleteUntrackedView(lane.workspace) };
+			} catch (error) {
+				// A view that cannot be deleted now is tried again at the next gate.
+				return { open: false, mod: true, failed: errorText(error) };
+			}
+		}
+		const exposure = gitExposure(lane.workspace);
+		if (exposure?.kind === "unchecked") return { open: false, unchecked: exposure.reason, removed: takeOutView(lane) };
+		if (exposure !== undefined) {
+			try {
+				withdrawView(lane);
+			} catch (error) {
+				return { open: false, exposed: exposure, failed: errorText(error) };
+			}
+			return { open: false, exposed: exposure };
+		}
+		return { open: viewWanted(lane, marker.file) };
+	} catch (error) {
+		let removed = false;
+		try {
+			removed = takeOutView(lane);
+		} catch {
+			// As far as it can: the view could not be deleted either, and nothing is written.
+		}
+		return { open: false, unchecked: `a check failed: ${errorText(error)}`, removed };
+	}
+}
+
+/**
+ * Writes the view into the lane's workspace if its gate (viewGate) lets it; false otherwise. `onGate` hears what the
+ * gate said (the holder logs a withdrawal, SessionStart warns).
+ */
+export function writeViewFile(lane: LaneConfig, view: MemoryView, onGate?: (gate: ViewGate) => void): boolean {
+	const gate = viewGate(lane);
+	onGate?.(gate);
+	if (!gate.open) return false;
+	writePrivate(viewFile(lane.workspace), memorySection(view, "claude-code"));
+	return true;
+}
+
+/**
+ * Writes the view from a read-only snapshot of the lane's memory (SessionStart, claude-setup), where writeViewFile
+ * would; `onGate` as there. Returns the message count, or undefined when the lane has no memory yet (then no gate
+ * runs).
+ */
+export function refreshViewFile(lane: LaneConfig, onGate?: (gate: ViewGate) => void): number | undefined {
+	const file = join(lane.dir, "memory.sqlite");
+	if (!existsSync(file)) return undefined;
+	const store = MemoryStore.openReadOnly(file);
+	try {
+		writeViewFile(lane, new MemoryView(store, lane.memory.viewBytes), onGate);
+		return store.root.length;
+	} finally {
+		store.close();
+	}
+}

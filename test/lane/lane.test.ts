@@ -1,0 +1,143 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
+import { afterEach, describe, expect, it } from "vitest";
+import { parseConfig, parseModelChoice } from "../../src/lane/config.ts";
+import { Lane, readStatus } from "../../src/lane/lane.ts";
+import { MemoryStore } from "../../src/memory/index.ts";
+import { contextLines, ctx, fauxModels, laneConfigToml, tempDir } from "./support.ts";
+
+const dirs: string[] = [];
+afterEach(() => {
+	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
+function fixture() {
+	const dir = tempDir("orrery-lane-");
+	dirs.push(dir);
+	const workspace = join(dir, "ws");
+	mkdirSync(workspace);
+	writeFileSync(join(workspace, "AGENTS.md"), "You are the Test lane.");
+	const config = parseConfig(laneConfigToml({ dataDir: join(dir, "data"), workspace }), dir);
+	return { dir, workspace, config };
+}
+
+describe("Lane", () => {
+	it("answers, logs memory, writes status, and starts the next run from memory after a restart", async () => {
+		const { workspace, config } = fixture();
+		const { agent, models } = fauxModels();
+		const seen: string[][] = [];
+		agent.setResponses([
+			(context) => {
+				seen.push(contextLines(context));
+				return fauxAssistantMessage("Noted: the codename is Cedar.");
+			},
+			(context) => {
+				seen.push(contextLines(context));
+				return fauxAssistantMessage("Cedar.");
+			},
+		]);
+		const lane = await Lane.open({ config, lane: "Test", models, context: ctx });
+		const first = await lane.submit("The codename is Cedar.", "r1");
+		expect(first?.mode).toBe("run");
+		await first?.submission.wait(ctx);
+		await lane.projector.drain();
+		expect(lane.store.root.map((m) => `${m.kind}: ${m.text}`)).toEqual(["user: The codename is Cedar.", "talk: Noted: the codename is Cedar."]);
+		await lane.writeStatus();
+		const status = readStatus(lane.config.dir);
+		expect(status?.busy).toBe(false);
+		expect(status?.model).toBe("faux-agent/faux-1");
+		expect(seen[0][0]).toContain("You are the Test lane.");
+		await lane.close();
+
+		rmSync(join(workspace, "AGENTS.md")); // reopen must fall back to the cached copy in memory.sqlite
+		const reopened = await Lane.open({ config, lane: "Test", models, context: ctx });
+		expect(reopened.store.root).toHaveLength(2);
+		const second = await reopened.submit("What is the codename?", "r2");
+		await second?.submission.wait(ctx);
+		expect(seen[1][0]).toContain("You are the Test lane.");
+		expect(seen[1][0]).toContain("user: The codename is Cedar.");
+		expect(seen[1].slice(1)).toEqual(["user:What is the codename?"]);
+		await reopened.close();
+	});
+
+	it("keeps the agent and compactor models chosen in chat across a restart, until reset", async () => {
+		const { config } = fixture();
+		const configured = config.lanes.get("Test")!;
+		const { models } = fauxModels();
+		const lane = await Lane.open({ config, lane: "Test", models, context: ctx });
+		expect(lane.compactorModel).toEqual(configured.compactor.model);
+		await lane.setModel(parseModelChoice("faux-compactor/faux-1", "off"));
+		await lane.setCompactorModel(parseModelChoice("faux-agent/faux-1", "off"));
+		await expect(lane.setCompactorModel(parseModelChoice("nobody/nothing", "off"))).rejects.toThrow(/Unknown model/);
+		await lane.close();
+
+		const reopened = await Lane.open({ config, lane: "Test", models, context: ctx });
+		expect(reopened.model).toMatchObject({ provider: "faux-compactor", modelId: "faux-1" });
+		expect(reopened.compactorModel).toMatchObject({ provider: "faux-agent", modelId: "faux-1", thinking: "off" });
+		expect((await reopened.status()).compactor).toMatchObject({ model: "faux-agent/faux-1", thinking: "off", source: "chat" });
+		// The restored agent model really answers: the faux compactor provider always says "user: summarized".
+		const run = await reopened.submit("hello", "r1");
+		await run?.submission.wait(ctx);
+		await reopened.projector.drain();
+		expect(reopened.store.root.at(-1)?.text).toBe("user: summarized");
+		await reopened.setModel(undefined);
+		await reopened.setCompactorModel(undefined);
+		await reopened.close();
+
+		const third = await Lane.open({ config, lane: "Test", models, context: ctx });
+		expect(third.model).toEqual(configured.model);
+		expect(third.compactorModel).toEqual(configured.compactor.model);
+		expect((await third.status()).compactor).toMatchObject({ source: "config" });
+		await third.close();
+	});
+
+	it("builds new summaries with the compactor chosen in chat", async () => {
+		const { config } = fixture();
+		const { agent, models } = fauxModels();
+		agent.setResponses(Array.from({ length: 20 }, () => fauxAssistantMessage("user: summarized by the new compactor")));
+		const lane = await Lane.open({ config, lane: "Test", models, context: ctx });
+		await lane.setCompactorModel(parseModelChoice("faux-agent/faux-1", "off"));
+		lane.view.append("user", `A long message. ${"detail ".repeat(200)}`);
+		const end = Date.now() + 5000;
+		while (lane.store.nodeCount < 1 && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 20));
+		expect([...lane.store.nodes()][0]?.text).toBe("user: summarized by the new compactor");
+		expect(lane.store.usageRows().filter((r) => r.role === "compactor").map((r) => r.model)).toContain("faux-agent/faux-1");
+		await lane.close();
+	});
+
+	it("calls onFatal when the memory store starts refusing writes", async () => {
+		const { config } = fixture();
+		const { agent, models } = fauxModels();
+		agent.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+		const reasons: string[] = [];
+		const lane = await Lane.open({ config, lane: "Test", models, context: ctx, onFatal: (r) => reasons.push(r) });
+		lane.report = () => {};
+		const raw = new DatabaseSync(join(lane.config.dir, "memory.sqlite"));
+		raw.exec("CREATE TRIGGER fail BEFORE INSERT ON main BEGIN SELECT RAISE(ABORT, 'disk failure'); END");
+		raw.close();
+		const result = await lane.submit("hello", "r1");
+		await result?.submission.wait(ctx);
+		await lane.projector.drain().catch(() => {});
+		expect(reasons.length).toBeGreaterThan(0);
+		await lane.close();
+	});
+
+	it("rejects an unknown agent model at open", async () => {
+		const { config } = fixture();
+		const { models } = fauxModels();
+		const broken = { ...config, lanes: new Map([["Test", { ...config.lanes.get("Test")!, model: { provider: "nope", modelId: "x", thinking: "off" as const } }]]) };
+		await expect(Lane.open({ config: broken, lane: "Test", models, context: ctx })).rejects.toThrow(/Unknown model nope\/x/);
+		// A failed open must release the memory writer lock.
+		const reopened = MemoryStore.open(join(broken.lanes.get("Test")!.dir, "memory.sqlite"));
+		reopened.close();
+	});
+
+	it("refuses to run a lane that has no agent model", async () => {
+		const dir = tempDir("orrery-nomodel-");
+		dirs.push(dir);
+		const config = parseConfig(`data_dir = ${JSON.stringify(dir)}\n[lanes.A]\nworkspace = ${JSON.stringify(dir)}\ncompactor_model = "faux-compactor/faux-1"\n`, dir);
+		await expect(Lane.open({ config, lane: "A", models: fauxModels().models })).rejects.toThrow('A has no model in the config; orrery run needs one (model = "provider/id").');
+	});
+});

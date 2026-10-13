@@ -1,0 +1,15 @@
+name = "orrery-memory"
+main = "src/index.ts"
+compatibility_date = "2026-09-27"
+
+[[durable_objects.bindings]]
+name = "LANES"
+class_name = "LaneObject"
+
+[[durable_objects.bindings]]
+name = "INDEX"
+class_name = "IndexObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["LaneObject", "IndexObject"]

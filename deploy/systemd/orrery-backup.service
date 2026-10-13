@@ -1,0 +1,17 @@
+[Unit]
+Description=Orrery backup: snapshots and JSONL export of every lane's memory
+
+[Service]
+Type=oneshot
+User=orrery
+Group=orrery
+Environment=ORRERY_CONFIG=/etc/orrery/config.toml
+# Secrets such as ORRERY_MAC_KEY=…, kept out of the config (optional; root:orrery 0640).
+EnvironmentFile=-/etc/orrery/env
+Environment=HOME=/var/lib/orrery
+ExecStart=/usr/local/bin/orrery backup
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/orrery
+PrivateTmp=true

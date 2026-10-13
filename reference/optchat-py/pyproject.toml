@@ -1,0 +1,26 @@
+[project]
+name = "optchat-local"
+version = "0.1.0"
+description = "An endless terminal chat with durable, navigable tree memory"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.28,<1"]
+
+[project.scripts]
+optchat = "optchat.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["optchat"]
+
+[tool.hatch.build.targets.sdist]
+include = ["optchat", "tests", "examples", "docs/OPTCHAT.md", "README.md", "pyproject.toml", "uv.lock", "Makefile"]
+
+[dependency-groups]
+dev = ["ruff>=0.11"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100

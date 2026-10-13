@@ -1,0 +1,21 @@
+# /etc/orrery/config.toml on the server. Lanes run here; their tools run on the workstation over SSH.
+# Relative paths are relative to data_dir. Reference: src/lane/config.ts and docs/deploy.md.
+data_dir = "/var/lib/orrery"
+
+[hosts.workstation]
+host = "workstation.example.internal"
+user = "alex"
+identity_file = "ssh/id_ed25519"   # created by install.sh; add its .pub to alex@workstation (docs/deploy.md)
+connect_timeout = 5
+
+[lanes.Atlas]
+host = "workstation"
+workspace = "/home/alex/code/agent-Atlas"
+instructions = "AGENTS.md"
+# Any model your logins offer: openai/… (ChatGPT sign-in) or anthropic/… ; switch per turn with /model.
+model = "openai/gpt-6.1-sol"
+thinking = "medium"
+compactor_model = "openai/gpt-6.1-sol"
+compactor_thinking = "low"
+compactor_jobs = 2
+allowed_roots = ["/home/alex/code/agent-Atlas"]
