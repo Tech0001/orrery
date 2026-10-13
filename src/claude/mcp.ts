@@ -9,11 +9,11 @@
  *   instead of saving them to a file.
  */
 
-import { readFileSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { Value } from "typebox/value";
 import type { HarnessConfig, LaneConfig } from "../lane/config.ts";
 import { type LaneTool, memoryTools, readerTools, withLaneView } from "../lane/memory-tools.ts";
+import { versionNumber } from "../lane/running.ts";
 
 /** Claude Code saves a result over 50,000 characters to a file unless the tool raises this; its ceiling is 500,000. */
 export const LONG_RESULT_CHARS = 300_000;
@@ -21,7 +21,7 @@ export const LONG_RESULT_CHARS = 300_000;
 /** The longest input line served (1 MB); a longer one is refused with an error instead of buffered. */
 export const MAX_LINE_CHARS = 1_000_000;
 
-const VERSION = (JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string }).version;
+const VERSION = versionNumber();
 
 /** The lane's own tools, plus the reader tools for a lane that reads others (Birch). */
 export function laneTools(config: HarnessConfig, lane: LaneConfig): LaneTool[] {
@@ -116,8 +116,9 @@ export async function runMcp(input: NodeJS.ReadableStream, output: NodeJS.Writab
 	const decoder = new StringDecoder("utf8");
 	let pending = "";
 	let skipping = false; // inside an over-long line, up to its newline
+	let written = Promise.resolve();
 	const send = (response: object | undefined) => {
-		if (response !== undefined) output.write(`${JSON.stringify(response)}\n`);
+		if (response !== undefined) written = new Promise((resolve) => output.write(`${JSON.stringify(response)}\n`, () => resolve()));
 	};
 	const take = async (piece: string, ended: boolean) => {
 		let rest = piece;
@@ -142,6 +143,7 @@ export async function runMcp(input: NodeJS.ReadableStream, output: NodeJS.Writab
 	};
 	for await (const chunk of input) await take(typeof chunk === "string" ? chunk : decoder.write(chunk as Buffer), false);
 	await take(decoder.end(), true);
-	// The caller may exit as soon as this returns: wait until everything written has left.
-	await new Promise<void>((resolve) => output.write("", () => resolve()));
+	// The caller may exit as soon as this returns: wait until the last reply has left. Its write's callback runs once it
+	// and every write before it are out; an empty write's would not do on Bun, which runs it at once.
+	await written;
 }

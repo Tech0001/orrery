@@ -4,16 +4,18 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { importDryRunCommand } from "../../src/cli/commands.ts";
 import { parseConfig } from "../../src/lane/config.ts";
-import { cleanEnv } from "../claude/support.ts";
+import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { fauxModels, laneConfigToml, tempDir } from "../lane/support.ts";
 
-const MAIN = new URL("../../src/cli/main.ts", import.meta.url).pathname;
 const dirs: string[] = [];
 afterEach(() => {
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-const orrery = (args: string[]) => spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, ...args], { encoding: "utf8" });
+const orrery = (args: string[], cwd?: string) => {
+	const c = cliCommand(args);
+	return spawnSync(c.cmd, c.args, { encoding: "utf8", cwd });
+};
 const jsonl = (records: object[]) => records.map((r) => JSON.stringify(r)).join("\n");
 
 function fixture() {
@@ -137,11 +139,7 @@ describe("orrery import and browse", () => {
 			const file = elsewhere(f.dir);
 			const out = run(f, ["--codex-file", file], "none");
 			expect(out.stdout).toContain("Codex: 1 turns from 1 sessions");
-			const rel = spawnSync(
-				process.execPath,
-				["--disable-warning=ExperimentalWarning", MAIN, "import", "Test", "--config", f.config, "--dry-run", "--claude", "none", "--codex", "none", "--codex-file", "resumed/rollout-z.jsonl", "--no-split", "--out", join(f.dir, "out2")],
-				{ encoding: "utf8", cwd: f.dir },
-			);
+			const rel = orrery(["import", "Test", "--config", f.config, "--dry-run", "--claude", "none", "--codex", "none", "--codex-file", "resumed/rollout-z.jsonl", "--no-split", "--out", join(f.dir, "out2")], f.dir);
 			expect(rel.stdout).toContain("Codex: 1 turns from 1 sessions");
 		});
 
@@ -201,12 +199,10 @@ describe("orrery import and browse", () => {
 			);
 			return file;
 		}
-		const spawn = (f: ReturnType<typeof fixture>, args: string[], cwd?: string) =>
-			spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, "import", "Test", "--config", f.config, "--dry-run", "--codex", "none", "--no-split", ...args], {
-				encoding: "utf8",
-				cwd,
-				env: cleanEnv({ HOME: f.dir }),
-			});
+		const spawn = (f: ReturnType<typeof fixture>, args: string[], cwd?: string) => {
+			const c = cliCommand(["import", "Test", "--config", f.config, "--dry-run", "--codex", "none", "--no-split", ...args]);
+			return spawnSync(c.cmd, c.args, { encoding: "utf8", cwd, env: cleanEnv({ HOME: f.dir }) });
+		};
 		const run = (f: ReturnType<typeof fixture>, extra: string[], claude = f.claude) => spawn(f, ["--claude", claude, "--out", join(f.dir, "out"), ...extra]);
 
 		it("is not found by default, is included when named, and is not duplicated", () => {

@@ -13,6 +13,12 @@ import { laneConfigToml, tempDir } from "../lane/support.ts";
 /** The CLI entry point, run by process tests as `node MAIN …`. */
 export const MAIN = new URL("../../src/cli/main.ts", import.meta.url).pathname;
 
+/** The CLI under test: ORRERY_TEST_BIN (a built binary) when set, else `node MAIN`. */
+export function cliCommand(args: readonly string[]): { cmd: string; args: string[] } {
+	const bin = process.env.ORRERY_TEST_BIN;
+	return bin ? { cmd: bin, args: [...args] } : { cmd: process.execPath, args: ["--disable-warning=ExperimentalWarning", MAIN, ...args] };
+}
+
 const dirs: string[] = [];
 
 /** Removes every folder testLane made (afterEach). */
@@ -104,7 +110,8 @@ export function cleanEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
 
 /** Runs `orrery claude-hook <event>` as Claude Code does: the input as JSON on stdin, only the given environment. */
 export function hookCli(event: string, input: object, env: Record<string, string>): SpawnSyncReturns<string> {
-	return spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, "claude-hook", event], {
+	const c = cliCommand(["claude-hook", event]);
+	return spawnSync(c.cmd, c.args, {
 		input: JSON.stringify(input),
 		env: cleanEnv(env),
 		encoding: "utf8",

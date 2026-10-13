@@ -13,10 +13,10 @@ const SCRIPT = new URL("../../scripts/bun-store-check.ts", import.meta.url).path
 const hasBun = spawnSync("bun", ["--version"]).status === 0;
 
 describe("openDatabase", () => {
-	it("uses node:sqlite on Node and keeps BLOBs, multi-statement exec and missing rows as undefined", () => {
+	it("uses node:sqlite on Node (bun:sqlite on Bun) and keeps BLOBs, multi-statement exec and missing rows as undefined", () => {
 		const dir = mkdtempSync(join(tmpdir(), "orrery-sqlite-"));
 		dirs.push(dir);
-		expect(sqliteBackend()).toBe("node");
+		expect(sqliteBackend()).toBe(process.versions.bun === undefined ? "node" : "bun");
 		const db = openDatabase(join(dir, "t.sqlite"));
 		db.exec("CREATE TABLE t (x BLOB); CREATE TABLE u (y INTEGER);");
 		db.prepare("INSERT INTO t VALUES (?)").run(new TextEncoder().encode("a\u0000b"));

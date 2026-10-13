@@ -1,21 +1,29 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { statusCommand } from "../../src/cli/commands.ts";
 import { parseConfig } from "../../src/lane/config.ts";
-import { runningRoot, versionLine } from "../../src/lane/running.ts";
+import { runningRoot, versionLine, versionNumber } from "../../src/lane/running.ts";
 import { localIso, MemoryStore } from "../../src/memory/index.ts";
+import { cliCommand } from "../claude/support.ts";
 import { laneConfigToml, tempDir } from "../lane/support.ts";
 
-const MAIN = new URL("../../src/cli/main.ts", import.meta.url).pathname;
 const dirs: string[] = [];
 afterEach(() => {
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
+/** The CLI's stdout; a failure throws. */
 function runCli(args: string[]): string {
-	return execFileSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, ...args], { encoding: "utf8" });
+	const c = cliCommand(args);
+	return execFileSync(c.cmd, c.args, { encoding: "utf8" });
+}
+
+/** The CLI's exit status and both outputs. */
+function spawnCli(args: string[]): SpawnSyncReturns<string> {
+	const c = cliCommand(args);
+	return spawnSync(c.cmd, c.args, { encoding: "utf8" });
 }
 
 describe("orrery", () => {
@@ -44,13 +52,20 @@ describe("orrery", () => {
 		expect(runCli([])).toContain("Usage: orrery");
 	});
 
-	it("prints its version: an install's version folder, or a checkout's package.json version", () => {
+	it("prints its version: a release's VERSION, or a checkout's package.json version and path", () => {
 		const { version } = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string };
-		const line = `orrery ${version} (checkout ${runningRoot()})\n`;
+		// A built binary (ORRERY_TEST_BIN) is a release's bin/orrery: it prints that release's VERSION, not this checkout.
+		const bin = process.env.ORRERY_TEST_BIN;
+		const line = bin ? `orrery ${readFileSync(join(dirname(bin), "..", "VERSION"), "utf8").trim()}\n` : `orrery ${version} (checkout ${runningRoot()})\n`;
 		expect(runCli(["--version"])).toBe(line);
 		expect(runCli(["-v"])).toBe(line);
 		expect(runCli(["version"])).toBe(line);
 		expect(versionLine("0.5.0-ca3c41d")).toBe("orrery 0.5.0-ca3c41d\n");
+		const release = tempDir("orrery-main-");
+		dirs.push(release);
+		writeFileSync(join(release, "VERSION"), "0.6.0\n");
+		expect(versionNumber(release)).toBe("0.6.0");
+		expect(versionNumber()).toBe(version);
 	});
 
 	it("strips control sequences from status.json text", () => {
@@ -95,7 +110,7 @@ describe("orrery", () => {
 		const out = runCli(["backup", "--config", configPath, "--keep", "3"]);
 		expect(out).toMatch(/Test: 1 messages, 0 summaries -> .*backups\/\d{4}-\d{2}-\d{2}\/Test/);
 		expect(existsSync(join(dataDir, "backups"))).toBe(true);
-		const bad = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, "backup", "--config", configPath, "--keep", "0"], { encoding: "utf8" });
+		const bad = spawnCli(["backup", "--config", configPath, "--keep", "0"]);
 		expect(bad.status).toBe(1);
 		expect(bad.stderr).toContain("--keep");
 	});
@@ -106,7 +121,7 @@ describe("orrery", () => {
 		const configPath = join(dir, "config.toml");
 		writeFileSync(configPath, laneConfigToml({ dataDir: join(dir, "data"), workspace: join(dir, "ws") }));
 		for (const days of ["0", "x", "1.5"]) {
-			const bad = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, "usage", "--config", configPath, "--days", days], { encoding: "utf8" });
+			const bad = spawnCli(["usage", "--config", configPath, "--days", days]);
 			expect(bad.status, days).toBe(1);
 			expect(bad.stderr).toContain("--days");
 		}
@@ -131,7 +146,7 @@ describe("orrery", () => {
 		dirs.push(dir);
 		const configPath = join(dir, "config.toml");
 		writeFileSync(configPath, laneConfigToml({ dataDir: join(dir, "data"), workspace: join(dir, "ws") }));
-		const run = (args: string[]) => spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, ...args, "--config", configPath], { encoding: "utf8" });
+		const run = (args: string[]) => spawnCli([...args, "--config", configPath]);
 		expect(run(["restore", "Test"]).stderr).toContain("--from");
 		const missing = run(["restore", "Test", "--from", "2026-01-01"]);
 		expect(missing.status).toBe(1);

@@ -5,13 +5,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { holderLog, sessionDir } from "../../src/claude/paths.ts";
 import { readMode } from "../../src/claude/spool.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
-import { cleanEnv, cleanupDirs, MAIN, messages, spool, testLane, waitUntil } from "./support.ts";
+import { cleanEnv, cleanupDirs, cliCommand, messages, spool, testLane, waitUntil } from "./support.ts";
 
 afterEach(cleanupDirs);
 
 /** `orrery holder Test` for session s1 of the Claude Code process `claudePid`, with the test lane's config only. */
 function holderProcess(configPath: string, claudePid: number, extra: string[] = []) {
-	return spawn(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, "holder", "Test", "--session", "s1", "--claude-pid", String(claudePid), "--nonce", "n1", ...extra], {
+	const c = cliCommand(["holder", "Test", "--session", "s1", "--claude-pid", String(claudePid), "--nonce", "n1", ...extra]);
+	return spawn(c.cmd, c.args, {
 		env: cleanEnv({ ORRERY_CONFIG: configPath }),
 		stdio: "ignore",
 	});

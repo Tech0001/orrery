@@ -15,10 +15,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
 import type { HarnessConfig, LaneConfig } from "../lane/config.ts";
 import { movedAgentDirCredentials, ompCredentials } from "../lane/guard-paths.ts";
 import { writePrivate } from "../lane/private-file.ts";
+import { selfCommand } from "../lane/running.ts";
 import { safeText } from "../lane/source-labels.ts";
 import { holderFresh, readHolder } from "../lane/handover.ts";
 import { claudeGuard, claudeStateRoots, movedConfigDirCredentials } from "./guard.ts";
@@ -356,16 +356,15 @@ export async function runHook(event: string, stdin: string | undefined, ctx: Hoo
 	return output === undefined ? "" : JSON.stringify(output);
 }
 
-const MAIN = fileURLToPath(new URL("../cli/main.ts", import.meta.url));
-
 /**
  * Starts `orrery holder` detached, so it outlives this hook and Claude Code (Phase 0, finding 4). `since` is when
  * SessionStart ran: a run that turns read-only drops this session's events from then on.
  */
 export function spawnHolder(lane: LaneConfig, session: string, nonce: string, claudePid: number, since: number, configPath?: string): void {
-	const args = [...process.execArgv, MAIN, "holder", lane.name, "--session", session, "--claude-pid", String(claudePid), "--nonce", nonce, "--since", String(since)];
+	const args = ["holder", lane.name, "--session", session, "--claude-pid", String(claudePid), "--nonce", nonce, "--since", String(since)];
 	if (configPath !== undefined) args.push("--config", configPath);
-	const child = spawn(process.execPath, args, { detached: true, stdio: "ignore" });
+	const self = selfCommand(args);
+	const child = spawn(self.cmd, self.args, { detached: true, stdio: "ignore" });
 	child.on("error", () => {});
 	child.unref();
 }

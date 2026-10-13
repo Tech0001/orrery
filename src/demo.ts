@@ -1,6 +1,6 @@
 /** Fictional, offline data for `npm run demo`. Every file lives in the throwaway home. */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai/compat";
@@ -11,7 +11,7 @@ import { loginRows } from "./lane/logins.ts";
 import { laneOverview, laneUsage, TOOL_LABELS } from "./lane/overview.ts";
 import type { LaneStatus } from "./lane/status-file.ts";
 import type { SummarySources } from "./lane/summary-sources.ts";
-import { runningRoot } from "./lane/tools.ts";
+import { runningRoot, versionNumber } from "./lane/running.ts";
 import { MemoryStore, MemoryView, Part } from "./memory/index.ts";
 import type { AppDeps } from "./tui/app.ts";
 import { colorWanted, makeTheme } from "./tui/theme.ts";
@@ -128,7 +128,7 @@ export function demoDeps(demo: Demo, controls: Pick<AppDeps, "rows" | "quit" | "
 		testChoice: async () => disabled(), launch: async () => disabled(), applyFix: disabled,
 		installSteps: disabled, install: disabled, openUrl: () => undefined,
 		browse: (config, lane) => ({ path: browseCommand(config, lane, join(config.lanes.get(lane)!.dir, "memory.html")) }),
-		about: () => ({ version: `${JSON.parse(readFileSync(join(runningRoot(), "package.json"), "utf8")).version} (demo)`, root: runningRoot() }),
+		about: () => ({ version: `${versionNumber()} (demo)`, root: runningRoot() }),
 		now: () => demo.now,
 	};
 }

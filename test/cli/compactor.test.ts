@@ -12,7 +12,7 @@ import { writeHolder } from "../../src/lane/handover.ts";
 import { takeRequest } from "../../src/lane/settings-request.ts";
 import { laneModelSource } from "../../src/lane/model-source.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
-import { cleanEnv, cleanupDirs, MAIN, testLane } from "../claude/support.ts";
+import { cleanEnv, cleanupDirs, cliCommand, testLane } from "../claude/support.ts";
 import { fauxModels, tempDir } from "../lane/support.ts";
 
 const holders: Holder[] = [];
@@ -31,8 +31,10 @@ function fauxSources(config: HarnessConfig) {
 
 const NO_KEYS = { OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "", OPENROUTER_API_KEY: "" };
 
-const orrery = (args: string[], env: Record<string, string>, cwd?: string) =>
-	spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, ...args], { env: cleanEnv(env), encoding: "utf8", ...(cwd ? { cwd } : {}) });
+const orrery = (args: string[], env: Record<string, string>, cwd?: string) => {
+	const c = cliCommand(args);
+	return spawnSync(c.cmd, c.args, { env: cleanEnv(env), encoding: "utf8", ...(cwd ? { cwd } : {}) });
+};
 
 describe("orrery compactor", () => {
 	it("shows, switches (where pi's /compactor keeps it) and resets the summary model, refusing what fails its test", async () => {

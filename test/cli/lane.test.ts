@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanEnv, MAIN } from "../claude/support.ts";
+import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { localIso } from "../../src/memory/index.ts";
 import { tempDir } from "../lane/support.ts";
 
@@ -12,8 +12,10 @@ afterEach(() => {
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-const orrery = (args: string[], env: Record<string, string>, cwd?: string) =>
-	spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, ...args], { env: cleanEnv(env), encoding: "utf8", ...(cwd ? { cwd } : {}) });
+const orrery = (args: string[], env: Record<string, string>, cwd?: string) => {
+	const c = cliCommand(args);
+	return spawnSync(c.cmd, c.args, { env: cleanEnv(env), encoding: "utf8", ...(cwd ? { cwd } : {}) });
+};
 
 describe("orrery lane", () => {
 	it("adds a lane to a new config, then sets its keys", () => {

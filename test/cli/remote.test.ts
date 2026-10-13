@@ -10,7 +10,7 @@ import { FakeStorage } from "../../src/remote/fake.ts";
 import { checkOutLane } from "../../src/remote/checkout.ts";
 import { openStorage } from "../../src/remote/index.ts";
 import { readRemoteSecret, removeRemoteSecret, saveRemoteSecret } from "../../src/remote/secrets.ts";
-import { cleanEnv, MAIN } from "../claude/support.ts";
+import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { tempDir } from "../lane/support.ts";
 
 let dir: string;
@@ -31,7 +31,10 @@ beforeEach(() => {
 	saveRemoteSecret(loadConfig(path), "home", { key: code, token });
 });
 afterEach(() => { setStorageForTests(undefined); rmSync(dir, { recursive: true, force: true }); });
-const cli = (...args: string[]) => spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, "--config", path, ...args], { env: cleanEnv({}), encoding: "utf8", timeout: 15000 });
+const cli = (...args: string[]) => {
+	const c = cliCommand(["--config", path, ...args]);
+	return spawnSync(c.cmd, c.args, { env: cleanEnv({}), encoding: "utf8", timeout: 15000 });
+};
 
 describe("orrery remote lanes", () => {
 	it("lists closed, held and stale lanes without changing their locks", async () => {

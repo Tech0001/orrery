@@ -8,7 +8,7 @@ import { MemoryStore } from "../../src/memory/index.ts";
 import type { LaneTool } from "../../src/lane/memory-tools.ts";
 import { seedAtlas } from "../lane/support.ts";
 import { cleanup, pi, world } from "../pi/world.ts";
-import { cleanEnv, MAIN } from "./support.ts";
+import { cleanEnv, cliCommand } from "./support.ts";
 
 afterEach(cleanup);
 
@@ -117,7 +117,8 @@ describe("Orrery's MCP server", () => {
 		const big = "word ".repeat(200_000);
 		store.appendBatch([{ kind: "user", text: big, date: "2026-02-10T10:00:00.000Z" }]);
 		store.close();
-		const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, "mcp"], { env: cleanEnv({ ORRERY_CONFIG: configPath, CLAUDE_PROJECT_DIR: join(root, "agent-Atlas"), HOME: root }), cwd: root });
+		const c = cliCommand(["mcp"]);
+		const child = spawn(c.cmd, c.args, { env: cleanEnv({ ORRERY_CONFIG: configPath, CLAUDE_PROJECT_DIR: join(root, "agent-Atlas"), HOME: root }), cwd: root });
 		const chunks: Buffer[] = [];
 		child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
 		const exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
@@ -131,7 +132,8 @@ describe("Orrery's MCP server", () => {
 		const { root, configPath } = world();
 		seedAtlas(root);
 		const session = async (projectDir: string, env: Record<string, string> = { ORRERY_CONFIG: configPath }) => {
-			const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, "mcp"], { env: cleanEnv({ ...env, CLAUDE_PROJECT_DIR: projectDir, HOME: root }), cwd: root });
+			const c = cliCommand(["mcp"]);
+			const child = spawn(c.cmd, c.args, { env: cleanEnv({ ...env, CLAUDE_PROJECT_DIR: projectDir, HOME: root }), cwd: root });
 			let out = "";
 			let err = "";
 			child.stdout.setEncoding("utf8").on("data", (chunk: string) => (out += chunk));

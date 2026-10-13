@@ -12,7 +12,7 @@ import { laneSettings, remoteLaneSettings } from "../../src/remote/save-format.t
 import { saveRemoteSecret } from "../../src/remote/secrets.ts";
 import { RemoteSession } from "../../src/remote/session.ts";
 import { RemoteError, STALE_MS } from "../../src/remote/types.ts";
-import { cleanEnv, MAIN } from "../claude/support.ts";
+import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { tempDir } from "../lane/support.ts";
 
 let dir: string;
@@ -202,7 +202,10 @@ describe("lane local", () => {
 });
 
 it("wires all four commands and their flags into main and help", () => {
-	const cli = (...args: string[]) => spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, "--config", path, ...args], { env: cleanEnv({}), encoding: "utf8", timeout: 15000 });
+	const cli = (...args: string[]) => {
+		const c = cliCommand(["--config", path, ...args]);
+		return spawnSync(c.cmd, c.args, { env: cleanEnv({}), encoding: "utf8", timeout: 15000 });
+	};
 	const help = cli("help").stdout;
 	for (const action of ["push", "pull", "takeover", "local"]) expect(help).toContain(`lane ${action} <Lane>`);
 	for (const args of [["push", "Missing", "--to", "home"], ["pull", "Atlas", "--from", "missing", "--folder", folder], ["takeover", "Missing", "--yes"], ["local", "Missing", "--delete-remote"]]) {
