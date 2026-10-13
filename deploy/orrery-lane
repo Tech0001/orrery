@@ -26,6 +26,8 @@ while [ "$stopping" -eq 0 ]; do
 	# <&0 keeps the pane's terminal: a background job would otherwise read from /dev/null.
 	orrery run "$lane" <&0 &
 	child=$!
+	# A stop that landed before $child was set had nothing to signal.
+	if [ "$stopping" -eq 1 ]; then kill -TERM "$child" 2>/dev/null; fi
 	wait "$child"
 	code=$?
 	while kill -0 "$child" 2>/dev/null; do

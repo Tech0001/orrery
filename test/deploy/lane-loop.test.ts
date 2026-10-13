@@ -13,13 +13,13 @@ afterEach(() => {
 });
 
 /** A fake `orrery` on PATH that logs each start, then runs `body`. */
-function fakeOrrery(body: string): { bin: string; log: string } {
+function fakeOrrery(body: string, before = ""): { bin: string; log: string } {
 	const dir = tempDir("orrery-loop-");
 	dirs.push(dir);
 	const bin = join(dir, "bin");
 	mkdirSync(bin);
 	const log = join(dir, "starts.log");
-	writeFileSync(join(bin, "orrery"), `#!/usr/bin/env bash\necho "start $*" >> ${JSON.stringify(log)}\n${body}\n`);
+	writeFileSync(join(bin, "orrery"), `#!/usr/bin/env bash\n${before}\necho "start $*" >> ${JSON.stringify(log)}\n${body}\n`);
 	chmodSync(join(bin, "orrery"), 0o755);
 	return { bin, log };
 }
@@ -62,7 +62,8 @@ describe("orrery-lane restart loop", () => {
 	});
 
 	it("forwards SIGTERM to the running lane and exits cleanly", async () => {
-		const { bin, log } = fakeOrrery(`trap 'echo "stopped" >> ${JSON.stringify(`${"$"}{0%/*}/../stopped.log`)}; exit 0' TERM\nsleep 30 & wait`);
+		// The trap goes in before the start line, so a SIGTERM sent as soon as the start is seen is always handled.
+		const { bin, log } = fakeOrrery("sleep 30 & wait", `trap 'echo "stopped" >> ${JSON.stringify(`${"$"}{0%/*}/../stopped.log`)}; exit 0' TERM`);
 		const loop = startLoop(bin);
 		expect(await until(() => starts(log).length === 1, 3000)).toBe(true);
 		const sent = Date.now();

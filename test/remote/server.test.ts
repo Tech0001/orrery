@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { ServerStorage } from "../../src/remote/server.ts";
+import { RemoteError } from "../../src/remote/types.ts";
 import { SERVER_SCRIPT } from "../../src/remote/server-script.ts";
 import { sshTarget } from "../../src/lane/env.ts";
 import { storageContract } from "./contract.ts";
@@ -335,7 +336,11 @@ exec /usr/bin/mv "$@"
 `, { mode: 0o700 });
 	const ssh = fakeSsh(home, undefined, { PATH: `${bin}:${process.env.PATH}` });
 	const crashing = new ServerStorage(serverRemote("lanes"), join(home, "ssh"), { ssh: ssh.path });
-	await expect(crashing.renew("Atlas", 1)).rejects.toMatchObject({ kind: "unreachable" });
+	// Which process `mv`'s parent is depends on the shell: bash's whole call dies (unreachable), while dash
+	// (Ubuntu's /bin/sh) loses a subshell and the script exits 137 with "Killed" (refused). Recovery is the point.
+	const error = await crashing.renew("Atlas", 1).then(() => undefined, (caught: unknown) => caught);
+	expect(error).toBeInstanceOf(RemoteError);
+	expect(["unreachable", "refused"]).toContain((error as RemoteError).kind);
 	await expect(storage.renew("Atlas", 1)).resolves.toBeUndefined();
 });
 

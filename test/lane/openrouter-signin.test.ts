@@ -106,7 +106,8 @@ describe("OpenRouter PKCE", () => {
 			expect(response.status).toBe(400);
 			expect(response.headers.get("content-type")).toContain("text/plain");
 		});
-		await expect(openrouterSignIn(flow.io, { baseUrl: api.baseUrl, timeoutMs: 50 })).rejects.toThrow(/timed out/);
+		// Long enough for the denial request to arrive on a loaded machine; the point is that it does not end the login.
+		await expect(openrouterSignIn(flow.io, { baseUrl: api.baseUrl, timeoutMs: 500 })).rejects.toThrow(/timed out/);
 		await flow.done();
 		expect(api.requests).toHaveLength(0);
 		await freed(flow.callback());

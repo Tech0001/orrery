@@ -20,7 +20,8 @@ it("demo command arguments cannot bypass the throwaway home", async () => {
 		if (!quitting && output.includes("Bellwick")) { quitting = true; child.stdin.write("q"); }
 	});
 	child.stderr.on("data", (chunk) => { output += String(chunk); });
-	const timer = setTimeout(() => child.kill("SIGTERM"), 10_000);
+	// Stay inside the test's own limit (longer on CI, where a cold start of the demo is slower).
+	const timer = setTimeout(() => child.kill("SIGTERM"), process.env.CI ? 50_000 : 15_000);
 	try {
 		const code = await new Promise<number | null>((done, fail) => { child.once("close", done); child.once("error", fail); });
 		expect(code, output).toBe(0);
