@@ -12,7 +12,7 @@ import { wire } from "../../src/install/wire.ts";
 import { readStatus } from "../../src/lane/status-file.ts";
 import { piExtensionFile, piExtensionText } from "../../src/lane/tools.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
-import { commitAll, workingTreeCheckout } from "../install/support.ts";
+import { commitAll, noteNoGitWorkTree, repoIsGitWorkTree, workingTreeCheckout } from "../install/support.ts";
 import { realRemoteRebuild, realRemoteTurn, streamReply, writeModels } from "./remote-real-support.ts";
 
 function isolated(home: string): NodeJS.ProcessEnv {
@@ -219,7 +219,10 @@ export default function (pi) {
  * The installed layout end to end: pi loads Orrery through app/current, a second install switches current while pi
  * runs, and the running pi keeps the version it started with (its status says so) while a new pi runs the new one.
  */
-describe.skipIf(pi === null)("Orrery installed in app/current, inside a real pi", () => {
+// Needs pi's compiled binary (a dev build such as node_modules/.bin/pi does not count: CI has none, and the install does
+// a network npm ci) and a git work tree to copy.
+noteNoGitWorkTree();
+describe.skipIf(compiledPi === null || !repoIsGitWorkTree)("Orrery installed in app/current, inside a real pi", () => {
 	it("a running pi keeps its version across an install", async () => {
 		const root = mkdtempSync(join(tmpdir(), "orrery-installed-pi-"));
 		dirs.push(root);

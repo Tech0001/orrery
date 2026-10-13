@@ -8,7 +8,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { install } from "../../src/install/install.ts";
 import { checkTools, installSteps, ompExtensionFile, ompExtensionText, orreryRoot, runInstall, type ToolCheck } from "../../src/lane/tools.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
-import { workingTreeCheckout } from "../install/support.ts";
+import { noteNoGitWorkTree, repoIsGitWorkTree, workingTreeCheckout } from "../install/support.ts";
 import { realRemoteTurn } from "../pi/remote-real-support.ts";
 
 /**
@@ -149,7 +149,8 @@ describe.skipIf(omp === null)("Orrery inside a real OMP (isolated OMP home)", ()
 
 	// Spec call 3: an installed copy without dev packages (npm ci --omit=dev) must load in OMP. src/omp/settings.ts
 	// imports @earendil-works/pi-coding-agent at run time; OMP supplies it, or "OMP settings not applied" fails the check.
-	it("OMP loads Orrery through app/current", async () => {
+	noteNoGitWorkTree();
+	it.skipIf(!repoIsGitWorkTree)("OMP loads Orrery through app/current", async () => {
 		const base = mkdtempSync(join(scratch, "installed-"));
 		const checkout = workingTreeCheckout();
 		try {
