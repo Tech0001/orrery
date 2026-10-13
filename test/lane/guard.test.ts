@@ -35,6 +35,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { afterEach as after, beforeEach as before } from "vitest";
 import { checkResolvedPath, guardExtension } from "../../src/lane/guard.ts";
 import { guardOmpToolCall, guardToolCall } from "../../src/lane/guard-paths.ts";
+import { sensitive } from "../../src/lane/guard-rules.ts";
 import { ctx, fauxModels, tempDir } from "./support.ts";
 
 describe("checkResolvedPath (pi's own path resolution, symlinks followed)", () => {
@@ -151,13 +152,14 @@ describe("Orrery's own home", () => {
 
 	it("refuses a search rooted at the home, which would read the lanes", () => {
 		const { data, base } = setup();
-		expect(guardToolCall("grep", { pattern: "x", path: data }, base)).toMatch(/would search credential files/);
+		// The folder name is refused on sight now; a search of a custom data_dir still gets the search message (see the extension test).
+		expect(guardToolCall("grep", { pattern: "x", path: data }, base)).toMatch(/sensitive file|would search credential files/);
 		expect(guardToolCall("find", { pattern: "*.json", path: join(data, "lanes") }, base)).toMatch(/sensitive/);
 	});
 
 	it("refuses OMP's searches, reads and edits of it", () => {
 		const { data, base } = setup();
-		expect(guardOmpToolCall("grep", { pattern: "x", path: data }, base)).toMatch(/would search credential files/);
+		expect(guardOmpToolCall("grep", { pattern: "x", path: data }, base)).toMatch(/sensitive file|would search credential files/);
 		expect(guardOmpToolCall("read", { path: join(data, "remotes.json") }, base)).toMatch(/sensitive/);
 		expect(guardOmpToolCall("edit", { path: join(data, "lanes", "Birch", "memory.sqlite"), input: "x" }, base)).toMatch(/sensitive/);
 		expect(guardOmpToolCall("read", { path: join(data, "app", "current", "src") }, base)).toBeUndefined();
@@ -218,8 +220,8 @@ describe("Orrery's own home", () => {
 		"tar czf x ~//.orrery",
 		"tar czf x ~/./.orrery",
 		"tar czf x $HOME//.orrery",
-		"tar czf x /home/pc//.orrery",
-		"tar czf x /home//pc/.orrery",
+		"tar czf x /home/alex//.orrery",
+		"tar czf x /home//alex/.orrery",
 		"tar czf x ~/'.orrery'",
 		'tar czf x ~/".orrery"',
 		"tar czf x ~/x/../.orrery",
@@ -229,12 +231,12 @@ describe("Orrery's own home", () => {
 		'cat ~/.config/"orrery"/remotes.json',
 		"cat ~/.local//share/orrery/remotes.json",
 		"cat ~/.local/share/./orrery/remotes.json",
-		"cat /home/pc/.config/orrery/remotes.json",
+		"cat /home/alex/.config/orrery/remotes.json",
 		// more spellings of home
-		"tar czf x ~pc/.orrery",
+		"tar czf x ~alex/.orrery",
 		"tar czf x ${HOME%/}/.orrery",
 		"tar czf x ${HOME:-/root}/.orrery",
-		"tar czf x /var/home/pc/.orrery",
+		"tar czf x /var/home/alex/.orrery",
 		// backslashes and quotes inside the name
 		"tar czf x ~/.orr\\ery",
 		"tar czf x ~/.orr''ery",
@@ -250,12 +252,70 @@ describe("Orrery's own home", () => {
 		"tar czf x ~/{.orrery,y}",
 		"tar czf x {~,/x}/.orrery",
 		"tar czf x ~/.{orrery,x}",
+		// other home roots, and the old folders anywhere
+		"cat ~/../alex/.config/orrery/backup.env",
+		"tar -C/home/alex/.local/share/orrery x",
+		"cat /data/alex/.config/orrery/remotes.json",
+		"cat /mnt/home/alex/.orrery/lanes/x",
+		'tar -C"/home/alex"/.orrery x',
+		"cat ~/${x}.orrery/*",
+		"cat ~/``.orrery/*",
+		// backslash-newline, $'..', empty substitutions
+		"tar czf x ~/.orr\\\nery",
+		"cat ~/.s\\\nsh/config",
+		"cat ~/.pi/agent/au\\\nth.json",
+		"cat $'.orrery'/remotes.json",
+		'cat $".orrery"/remotes.json',
+		"tar czf x ~/.orr$()ery",
+		"tar czf x ~/../alex/.orrery",
+		// brace groups that split a name
+		"tar czf x ~/{.,}orrery",
+		"tar czf x ~/.orrer{y,}",
+		"tar czf x ~/.{orr,x}ery",
+		"ls ~/{x,.orrery,y}/lanes",
+		// .. nested deeper than any fixed cap
+		`cat ~/${"a/".repeat(12)}${"../".repeat(12)}.orrery/remotes.json`,
+		// the XDG folders
+		"cat $XDG_CONFIG_HOME/orrery/backup.env",
+		"cat ${XDG_DATA_HOME}/orrery/remotes.json",
+		"cat ${XDG_DATA_HOME:-~/.local/share}/orrery/remotes.json",
+		// a project-local .config/orrery is refused too (accepted cost of judging the name, not the home)
+		"cat ~/projects/x/.config/orrery/settings.json",
+		"ls .orrery",
 	])("refuses the command %s", (command) => {
 		expect(checkToolCall({ name: "bash", arguments: { command } }, options)).toMatch(/sensitive/);
 	});
 
+	it.each([
+		"cat ~/.ssh/id_ed25519",
+		"cat ~/.aws/credentials",
+		"cat /proc/self/environ",
+		"cat ~/.omp/agent/agent.db",
+		"cat ~/.omp/agent/models.yml",
+		"cat ~/.omp/profiles/work/agent/agent.db",
+		"cat ~/.local/share/omp/agent.db",
+		"cat ~/.omp/.env",
+		"cat ~/.omp/secrets.yml",
+		"cat ~/.pi/agent/models.json",
+		"cat ~/.pi/agent/auth.json",
+		"cat ~/data/credentials.json",
+		"cat ~/.netrc",
+		"cat ~/.git-credentials",
+		"cat ~/.gnupg/pubring.kbx",
+		"cat ~/.kube/config",
+		"cat ~/.docker/config.json",
+		"cat ~/.config/gh/hosts.yml",
+		"cat ~/.pgpass",
+		"cat '~/.ssh'; ls",
+		'cat "$HOME/.SSH/config"',
+		"cat ~/.ssh//id_rsa",
+		"cat ~/.s\\\nsh/config",
+	])("keeps refusing the credential command %s", (command) => {
+		expect(checkToolCall({ name: "bash", arguments: { command } }, options)).toMatch(/sensitive/);
+	});
+
 	it("judges a very long command quickly", () => {
-		for (const unit of ["a/", "/", "./", "~/", "$", "{", "'", "x/../"]) {
+		for (const unit of ["a/", "/", "./", "~/", "$", "{", "'", "x/../", "${", "{a,", "\\\n", "$()", "`", ".orrery/", "{a,b}"]) {
 			const command = `cat ${unit.repeat(100_000)}`;
 			const started = performance.now();
 			checkToolCall({ name: "bash", arguments: { command } }, options);
@@ -279,9 +339,24 @@ describe("Orrery's own home", () => {
 		"cat ~/.bashrc",
 		"cat ~/code/orrery/src/x.ts",
 		"cd ~/Documents/GitHub/orrery",
-		"cat ~/projects/x/.config/orrery/settings.json",
+		"jq '{orrery: .x}' a.json",
+		`curl -d '{"name":"orrery"}' x`,
+		`node -e 'const {orreryData} = require("./x")'`,
+		"git -C ~/Documents/GitHub/orrery status",
+		"awk '{print $1}' f | grep orrery",
+		"git commit -m 'a {b} change\n\nOrrery now guards the home'",
+		"cat ~/.orrery.bak",
 	])("allows %s", (command) => {
 		expect(checkToolCall({ name: "bash", arguments: { command } }, options)).toBeUndefined();
+	});
+
+	it("allows text that merely says orrery, and a path with brackets before the lane's view", () => {
+		expect(sensitive("+import { a, orreryHome } from './a';")).toBe(false);
+		const { home, base } = setup();
+		const dir = join(home, "proj (copy)", ".orrery");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "view.md"), "");
+		expect(read(join(dir, "view.md"), base)).toBeUndefined();
 	});
 
 	it("does not trust a planted link named app or config.toml", () => {

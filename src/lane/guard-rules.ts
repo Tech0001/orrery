@@ -9,8 +9,6 @@ export interface GuardOptions {
 	readonly cwd?: string;
 }
 
-const ORRERY_SEP = String.raw`["']*\/+(?:\.\/+|app\/+\.\.\/+|["'])*`;
-
 const SENSITIVE = [
 	/(^|[\s"'=:/~])\.ssh(\/|$|[\s"'])/,
 	/\bid_(rsa|ed25519|ecdsa|dsa)\b/,
@@ -34,70 +32,97 @@ const SENSITIVE = [
 	// The .env OMP loads from its config root and agent dir (utils/src/env.ts) and its secrets.yml (secrets/index.ts), in
 	// ~/.omp, a profile's or a project's .omp.
 	/\.omp\/(?:profiles\/[^/\s"']+\/)?(?:agent\/)?(?:\.env|secrets\.ya?ml)\b/,
-	// Orrery's own home, named by folder (any spelling of the path before it): its keys, other lanes' memory, backups and
-	// build scripts, not app/, not config.toml, and not a lane folder's .orrery/view.md, which these names never match.
-	// Between .orrery and the name: "/", "//", "./", "app/../" and quotes. The whole home and the old folders are
-	// judged by homeNamed below.
-	new RegExp(`\\.orrery${ORRERY_SEP}(?:lanes|backups|builds|ssh)(?:\\/|$|[\\s"'|;&)<>*])`),
-	new RegExp(`\\.orrery${ORRERY_SEP}(?:remotes\\.json|device-id|backup\\.env)\\b`),
-	/\/\.orrery\/+[^\s/"']*[*?[{]/,
-	// A brace group that spells orrery can build any of the names above.
-	/\{[^{}]*orrery/,
 ];
 
-/** Case-insensitive: on a case-insensitive file system (macOS) ~/.SSH is ~/.ssh. */
+/**
+ * Case-insensitive: on a case-insensitive file system (macOS) ~/.SSH is ~/.ssh. The text is judged as written and as the
+ * shell reads it (readings), each by the credential patterns and by Orrery's own names.
+ */
 export function sensitive(text: string): boolean {
-	const lower = text.toLowerCase();
-	// The shell drops quotes and backslashes inside a word and joins "//", "./" and "x/.." in a path: test those readings
-	// too.
-	const bare = lower.replace(/[\\'"]/g, "");
-	return [...new Set([lower, bare, flatten(bare)])].some((form) => SENSITIVE.some((pattern) => pattern.test(form)) || homeNamed(form));
+	return readings(text.toLowerCase()).some((form) => SENSITIVE.some((pattern) => pattern.test(form)) || orreryNamed(form));
 }
 
-/** A path text with "//" and "/." joined and "/x/.." removed (a few levels deep: the guard is a seatbelt). */
-function flatten(text: string): string {
-	let out = text.replace(/\/{2,}/g, "/").replace(/\/\.(?=\/)/g, "");
-	for (let pass = 0; pass < 8; pass++) {
-		const next = out.replace(/\/(?!\.\.(?:\/|$))[^/\s;|&()<>]+\/\.\.(?=\/|$|[\s;|&()<>])/g, "");
+/**
+ * The ways a shell (or a path tool) may read a text: as written; with line continuations, quotes, backslashes and empty
+ * substitutions gone (bash joins "~/.orr''ery" and "~/.orr$()ery"); with "//", "./" and "x/.." collapsed; and, for those
+ * two, with each brace group {p,q} read as its first, a middle, or its last alternative.
+ */
+function readings(lower: string): string[] {
+	let bare = lower.replace(/\\\n/g, "").replace(/\$(?=['"])/g, "");
+	for (let pass = 0; pass < 4; pass++) {
+		const next = bare.replace(/\$\(\)|``/g, "");
+		if (next === bare) break;
+		bare = next;
+	}
+	bare = bare.replace(/[\\'"]/g, "");
+	const collapsed = bare.replace(/[^\s;|&()<>`]+/g, collapse);
+	const forms = [lower, bare, collapsed];
+	for (const base of [bare, collapsed]) {
+		for (const pick of [0, 1, 2, -1]) forms.push(braces(base, pick));
+	}
+	return [...new Set(forms)];
+}
+
+/** One word as a path with "//" and "/." joined and "x/.." removed (a stack, so any depth, in linear time). */
+function collapse(word: string): string {
+	const stack: string[] = [];
+	for (const part of word.split("/")) {
+		if (part === "" || part === ".") continue;
+		if (part !== "..") stack.push(part);
+		else if (stack.length > 0 && stack[stack.length - 1] !== "..") stack.pop();
+		else stack.push(part);
+	}
+	return `${word.startsWith("/") ? "/" : ""}${stack.join("/")}${stack.length > 0 && word.endsWith("/") ? "/" : ""}`;
+}
+
+// A brace expansion: one word with a comma inside the braces. Braces holding spaces or no comma (jq, JSON, code) are not.
+const BRACE = /\{([^{}\s,]*(?:,[^{}\s,]*)+)\}/g;
+
+/** Each brace group read as alternative `pick` (-1: the last; past the end: the last). */
+function braces(text: string, pick: number): string {
+	let out = text;
+	for (let pass = 0; pass < 4; pass++) {
+		const next = out.replace(BRACE, (_group, body: string) => {
+			const alternatives = body.split(",");
+			return alternatives[pick < 0 ? alternatives.length - 1 : Math.min(pick, alternatives.length - 1)];
+		});
 		if (next === out) break;
 		out = next;
 	}
 	return out;
 }
 
-// What follows a folder name: the end, a path separator, a shell terminator or a glob, then the rest of that word.
-const AFTER = String.raw`(?=$|[\s"'/;|&)<>*?[{\\$\x60])([^\s|;&)<>]*)`;
-// What comes before ~/.orrery and the old folders: some spelling of the home folder (~, ~user, /home/x, /var/home/x,
-// /Users/x, /root), or an expansion that may be one ($VAR, ${...}, $(...), a backtick, a brace group). The old folders
-// are links to the whole home after move-home: the folder itself and all in it is refused, except the program (app/) and
-// config.toml.
-const HOME_WORD = String.raw`(?:(?:^|[\s"'=:;|&(<>{,])(?:~[\w.-]*|/(?:var/)?home/[^/\s"']+|/users/[^/\s"']+|/root)|\$\{[^}\s]*\}|\$[a-z_]\w*|[)}\x60])`;
-const ORRERY_HOME = new RegExp(String.raw`${HOME_WORD}/\.orrery${AFTER}`, "g");
-const OLD_FOLDERS = new RegExp(String.raw`${HOME_WORD}/\.(config|local/share)/orrery${AFTER}`, "g");
+// What follows a folder name: the end, a separator, a shell terminator or a glob, then the rest of that word.
+const AFTER = String.raw`(?=$|[\s/;|&)<>*?[{$\x60\\])([^\s|;&)<>]*)`;
+// Orrery's home is named by its folder, whatever spells the path before it: .orrery as a path segment.
+const ORRERY_NAME = /(?:^|[\s/=:~])\.orrery(?=$|[/\s|;&)<>])([^\s|;&)<>]*)/g;
+const ORRERY_GLOB = /\.orrery\/+[^\s/|;&)<>]*[*?[]/;
+// The old folders, which are links to the whole home after move-home (and the XDG variables that name their parents).
+const OLD_CONFIG = new RegExp(String.raw`(?:\.config|xdg_config_home)\}?/+orrery${AFTER}`, "g");
+const OLD_DATA = new RegExp(String.raw`(?:\.local/share|xdg_data_home)\}?/+orrery${AFTER}`, "g");
 
-/** The path words after the folder, quotes dropped; undefined when a variable or escape could still change them. */
+/** The path words after the folder; undefined when a variable or escape could still change them. */
 function words(rest: string): string[] | undefined {
 	const bare = rest.replace(/["']/g, "");
 	return /[$\x60\\]/.test(bare) ? undefined : bare.split("/").filter(Boolean);
 }
 
-/** Orrery's program (app/ below, with no "." or ".." or glob in the way) is open; so is config.toml. */
+/** Orrery's program (app/ below, with no "." or ".." or glob in the way) is open. */
 function program(parts: string[] | undefined): boolean {
 	return parts !== undefined && parts[0] === "app" && parts.every((part) => part !== ".." && part !== "." && !/[*?[{]/.test(part));
 }
 
-const config = (parts: string[] | undefined) => parts?.length === 1 && parts[0] === "config.toml";
+const only = (parts: string[] | undefined, name: string) => parts?.length === 1 && parts[0] === name;
 
-/** Whether a command (or path) text names Orrery's home as a whole, or the old folders, beyond what is open to the agent. */
-function homeNamed(lower: string): boolean {
-	for (const match of lower.matchAll(ORRERY_HOME)) {
+/** Whether a reading names Orrery's home or an old folder, beyond the program (app/), config.toml and a lane's view.md. */
+function orreryNamed(form: string): boolean {
+	if (ORRERY_GLOB.test(form)) return true;
+	for (const match of form.matchAll(ORRERY_NAME)) {
 		const parts = words(match[1]);
-		if (!program(parts) && !config(parts)) return true;
+		if (!program(parts) && !only(parts, "config.toml") && !only(parts, "view.md")) return true;
 	}
-	for (const match of lower.matchAll(OLD_FOLDERS)) {
-		const parts = words(match[2]);
-		if (!(match[1] === "config" ? config(parts) : program(parts))) return true;
-	}
+	for (const match of form.matchAll(OLD_CONFIG)) if (!only(words(match[1]), "config.toml")) return true;
+	for (const match of form.matchAll(OLD_DATA)) if (!program(words(match[1]))) return true;
 	return false;
 }
 
