@@ -10,7 +10,7 @@ chat/
 optchat.toml
 .env
 memory.html
-node_modules/
+node_modules
 claude-plugin/.claude-plugin/types/
 claude-plugin/tsconfig.json
 
@@ -29,3 +29,6 @@ CLAUDE.local.md
 .vscode/
 *.log
 coverage/
+
+# Private specs, plans and build reports; kept outside the repository.
+docs/superpowers
