@@ -4,10 +4,10 @@ import { scrub } from "../../src/import/scrub.ts";
 describe("scrub", () => {
 	it("redacts common credentials and keeps the surrounding text", () => {
 		const input = [
-			"anthropic sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
-			"openai sk-proj-AbCdEfGhIjKlMnOpQrStUvWx",
-			"gh ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
-			"aws AKIAABCDEFGHIJKLMNOP",
+			"anthropic sk-ant-" + "oat01-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+			"openai sk-" + "proj-AbCdEfGhIjKlMnOpQrStUvWx",
+			"gh ghp" + "_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+			"aws AKIA" + "ABCDEFGHIJKLMNOP",
 			"jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlc2lnbmF0dXJl",
 			'config: api_key = "q8Zr2Lm9Kd71XwQpTt5v"',
 			"-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----",
@@ -66,7 +66,7 @@ describe("scrub", () => {
 			`token ${longJwt}`,
 			`api_key="${"c1".repeat(2_500)}"`,
 			"https://bot:pa:ss123@host/x",
-			"key-sk-proj-AbCdEfGhIjKlMnOpQrStUvWx",
+			"key-sk-" + "proj-AbCdEfGhIjKlMnOpQrStUvWx",
 			'"api_key":\n    "q8Zr2Lm9Kd71"',
 		].join("\n");
 		const { text } = scrub(input);
@@ -89,7 +89,7 @@ describe("scrub", () => {
 			"sshpass -p Hunter2pass ssh alex@example.internal",
 			"mysql -uroot -pSecret1 sample",
 			`hf_${"A1b2C3d4".repeat(5)} sk_live_${"x9Y8".repeat(6)} AIza${"Sy0aB1cD2eF3gH4iJ5kL6mN7oP8qR9sT0uV"} npm_${"a1B2".repeat(9)}`,
-			"tskey-auth-k1a2b3c4CNTRL-AbCdEfGhIjKlMnOpQrStUv https://hooks.slack.com/services/T0001/B0002/XyZxyzXyZxyz",
+			"tskey-" + "auth-k1a2b3c4CNTRL-AbCdEfGhIjKlMnOpQrStUv https://hooks.slack.com/" + "services/T0001/B0002/XyZxyzXyZxyz",
 		].join("\n");
 		const { text } = scrub(input);
 		for (const secret of [

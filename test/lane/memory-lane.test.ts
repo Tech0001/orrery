@@ -78,7 +78,7 @@ describe("MemoryLane", () => {
 	it("drops the compactor's per-part retry lines and cleans what else it reports", () => {
 		const reports: string[] = [];
 		const report = compactorReport((message) => reports.push(message));
-		const key = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+		const key = "sk-ant-" + "api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 		report(`Compactor 0+1: 401 \u001b[31mbad key ${key}\u001b[0m; retrying every 30s`);
 		report(`Compactor 8+8: first line\nsecond line; retrying every 1.5s`);
 		report(`Compactor stopped: \u001b]0;title\u0007disk full near ${key}`);

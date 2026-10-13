@@ -19,13 +19,13 @@ const turns: ImportTurn[] = [
 		start: T,
 		messages: [
 			{ kind: "user", text: "LONG: my words then a pasted Willow report", date: T },
-			{ kind: "talk", text: "Done. Key was sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz", date: T },
+			{ kind: "talk", text: "Done. Key was sk-ant-" + "oat01-AbCdEfGhIjKlMnOpQrStUvWxYz", date: T },
 		],
 	},
 	{
 		source: "codex:x1",
 		start: "2026-08-01T11:00:00.000Z",
-		messages: [{ kind: "user", text: "short ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", date: "2026-08-01T11:00:00.000Z" }],
+		messages: [{ kind: "user", text: "short ghp" + "_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", date: "2026-08-01T11:00:00.000Z" }],
 	},
 ];
 

@@ -145,13 +145,13 @@ describe("explainFailure", () => {
 	});
 
 	it("says what went wrong in plain words, and never repeats a key", () => {
-		expect(explainFailure("openrouter", "401 Incorrect API key provided: sk-or-v1-abcdef1234567890abcdef")).toBe("OpenRouter refused the key");
+		expect(explainFailure("openrouter", "401 Incorrect API key provided: sk-or-" + "v1-abcdef1234567890abcdef")).toBe("OpenRouter refused the key");
 		expect(explainFailure("openai", "401 Unauthorized")).toBe("the ChatGPT sign-in expired or was refused (orrery login openai)");
 		expect(explainFailure("openrouter", "402 Insufficient credits")).toBe("the OpenRouter account has no balance");
 		expect(explainFailure("openai", "You've hit your usage limit. 429")).toBe("the ChatGPT plan limit was reached; retrying");
 		expect(explainFailure("anthropic", "404 model: claude-x not found")).toBe("this model isn't available on Anthropic");
 		expect(explainFailure("openrouter", "fetch failed: ENOTFOUND openrouter.ai")).toBe("can't reach OpenRouter");
-		const odd = explainFailure("anthropic", "weird failure mentioning sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAA\nsecond line");
+		const odd = explainFailure("anthropic", "weird failure mentioning sk-ant-" + "api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAA\nsecond line");
 		expect(odd).not.toContain("AAAAAAAAAAAA");
 		expect(odd).not.toContain("second line");
 	});
