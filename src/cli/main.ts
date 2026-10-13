@@ -12,6 +12,7 @@ import { exitWhenFlushed } from "./exit.ts";
 
 const USAGE = `Usage: orrery <command> [--config FILE]
   (no command)               in a terminal: the Orrery TUI (lanes, logins, usage, tools)
+  version, --version, -v     the running version (an install's version-commit, or the checkout's package version)
   run <Lane>                 attach this terminal to a lane (one process per lane)
   status [<Lane>] [--json]   every lane (or one): state, tool, memory, summaries
   lane add <Name> --folder DIR --tool pi|omp|claude-code|codex --summary provider/id [--thinking L]
@@ -70,7 +71,7 @@ const USAGE = `Usage: orrery <command> [--config FILE]
   claude-hook <event>        a Claude Code plugin hook (session-start, user-prompt-submit, stop, session-end,
                              pre-tool-use)
 A lane named "." is the lane whose workspace holds the current folder.
-Config: --config, $ORRERY_CONFIG, or /etc/orrery/config.toml
+Config: --config, $ORRERY_CONFIG, ~/.orrery/config.toml (or under $ORRERY_HOME), or /etc/orrery/config.toml
 `;
 
 function required(value: string | undefined, what: string): string {
@@ -285,11 +286,17 @@ async function main(argv: string[]): Promise<number> {
 			rollback: { type: "boolean" },
 			list: { type: "boolean" },
 			help: { type: "boolean", short: "h" },
+			version: { type: "boolean", short: "v" },
 		},
 	});
 	const [command, arg] = positionals;
 	if (values.help === true) {
 		process.stdout.write(USAGE);
+		return 0;
+	}
+	if (values.version === true || command === "version") {
+		const { versionLine } = await import("../lane/running.ts");
+		process.stdout.write(versionLine());
 		return 0;
 	}
 	if (command === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true) {

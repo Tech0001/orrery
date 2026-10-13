@@ -70,7 +70,8 @@ git pull && npm_config_ignore_scripts=true npm ci && npm run install-local
 
 pi and OMP lanes keep their version until they restart. For Claude Code, new hook processes use the new version at
 once, while a session's own recorder keeps the old one until the session restarts. `orrery install --rollback` switches back to the previous
-version, and `orrery install --list` shows the installed versions and which lanes run them.
+version, and `orrery install --list` shows the installed versions and which lanes run them. `orrery --version`
+prints the version you are running.
 
 ### Try the demo
 

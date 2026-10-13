@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { statusCommand } from "../../src/cli/commands.ts";
 import { parseConfig } from "../../src/lane/config.ts";
+import { runningRoot, versionLine } from "../../src/lane/running.ts";
 import { localIso, MemoryStore } from "../../src/memory/index.ts";
 import { laneConfigToml, tempDir } from "../lane/support.ts";
 
@@ -41,6 +42,15 @@ describe("orrery", () => {
 		expect(usage).toMatch(/agent\s+openai\/gpt-6\.1-sol\s+1\s+100\s+50\s+0\s+20/);
 		expect(usage).toMatch(/compactor\s+omlx\/Bonsai\s+1\s+30/);
 		expect(runCli([])).toContain("Usage: orrery");
+	});
+
+	it("prints its version: an install's version folder, or a checkout's package.json version", () => {
+		const { version } = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string };
+		const line = `orrery ${version} (checkout ${runningRoot()})\n`;
+		expect(runCli(["--version"])).toBe(line);
+		expect(runCli(["-v"])).toBe(line);
+		expect(runCli(["version"])).toBe(line);
+		expect(versionLine("0.5.0-ca3c41d")).toBe("orrery 0.5.0-ca3c41d\n");
 	});
 
 	it("strips control sequences from status.json text", () => {

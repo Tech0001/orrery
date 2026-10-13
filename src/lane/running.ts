@@ -3,7 +3,7 @@
  * (Node only) because every lane's status file records the version, inside pi and OMP too.
  */
 
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { within } from "./guard-rules.ts";
@@ -28,4 +28,11 @@ export function wiringRoot(env: NodeJS.ProcessEnv = process.env): { root: string
 /** The version folder's name when this code runs from an install, else "checkout". */
 export function runningVersion(env: NodeJS.ProcessEnv = process.env): string {
 	return wiringRoot(env).installed ? basename(runningRoot()) : "checkout";
+}
+
+/** What `orrery --version` prints: an install's version folder (version-commit), or a checkout's package.json version. */
+export function versionLine(running: string = runningVersion()): string {
+	if (running !== "checkout") return `orrery ${running}\n`;
+	const { version } = JSON.parse(readFileSync(join(runningRoot(), "package.json"), "utf8")) as { version: string };
+	return `orrery ${version} (checkout ${runningRoot()})\n`;
 }
