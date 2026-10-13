@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isLegacyConfig, legacyConfigPath, legacyDataDir, orreryHome } from "../../src/lane/home.ts";
+import { orreryHome } from "../../src/lane/home.ts";
 import { DEFAULT_CONFIG_PATH, defaultConfigPath } from "../../src/lane/config.ts";
 import { newConfigText, userConfigPath } from "../../src/lane/config-edit.ts";
 import { parseConfig } from "../../src/lane/config.ts";
@@ -18,23 +18,15 @@ describe("Orrery's home", () => {
 	it("refuses a relative ORRERY_HOME instead of resolving it against the current folder", () => {
 		expect(() => orreryHome({ HOME: "/h", ORRERY_HOME: "orrery-data" })).toThrow(/ORRERY_HOME must be an absolute path/);
 	});
-
-	it("names the old layout", () => {
-		expect(legacyConfigPath({ HOME: "/h" })).toBe("/h/.config/orrery/config.toml");
-		expect(legacyDataDir({ HOME: "/h" })).toBe("/h/.local/share/orrery");
-		expect(isLegacyConfig("/h/.config/orrery/config.toml", { HOME: "/h" })).toBe(true);
-		expect(isLegacyConfig("/h/.orrery/config.toml", { HOME: "/h" })).toBe(false);
-	});
 });
 
 describe("finding the config", () => {
-	it("prefers ORRERY_CONFIG, then the home's config, then the old config, then the server path", () => {
+	it("prefers ORRERY_CONFIG, then the home's config, then the server path, and ignores the old folders", () => {
 		const home = tempDir("orrery-home-");
 		const env = { HOME: home };
-		expect(defaultConfigPath(env)).toBe(DEFAULT_CONFIG_PATH);
 		mkdirSync(join(home, ".config", "orrery"), { recursive: true });
 		writeFileSync(join(home, ".config", "orrery", "config.toml"), "");
-		expect(defaultConfigPath(env)).toBe(join(home, ".config", "orrery", "config.toml"));
+		expect(defaultConfigPath(env)).toBe(DEFAULT_CONFIG_PATH);
 		mkdirSync(join(home, ".orrery"), { recursive: true });
 		writeFileSync(join(home, ".orrery", "config.toml"), "");
 		expect(defaultConfigPath(env)).toBe(join(home, ".orrery", "config.toml"));

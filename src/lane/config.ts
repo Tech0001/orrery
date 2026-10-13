@@ -5,7 +5,7 @@ import { homedir, hostname } from "node:os";
 import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { parse } from "smol-toml";
 import { type MemoryConfig, memoryConfig } from "../memory/index.ts";
-import { ConfigError, legacyConfigPath, orreryHome } from "./home.ts";
+import { ConfigError, orreryHome } from "./home.ts";
 
 export { ConfigError };
 
@@ -339,13 +339,12 @@ export function laneForCwd(config: HarnessConfig, cwd: string): LaneConfig | und
 	return best;
 }
 
-/** ORRERY_CONFIG, then <home>/config.toml, then the old ~/.config/orrery/config.toml, then the server path. */
+/** ORRERY_CONFIG, then <home>/config.toml, then the server path. */
 export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string {
 	if (env.ORRERY_CONFIG) return env.ORRERY_CONFIG;
 	const home = join(orreryHome(env), "config.toml");
 	if (existsSync(home)) return home;
-	const legacy = legacyConfigPath(env);
-	return existsSync(legacy) ? legacy : DEFAULT_CONFIG_PATH;
+	return DEFAULT_CONFIG_PATH;
 }
 
 export function loadConfig(file: string = defaultConfigPath()): HarnessConfig {
