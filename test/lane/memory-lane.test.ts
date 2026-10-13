@@ -27,7 +27,7 @@ describe("MemoryLane", () => {
 			expect(open.view.render()).toContain("0+1|user: summarized");
 			expect(open.store.usageRows().some((row) => row.role === "compactor" && row.model === "faux-compactor/faux-1")).toBe(true);
 			open.writeStatus();
-			expect(JSON.parse(readFileSync(join(lane.dir, "status.json"), "utf8"))).toMatchObject({ lane: "Test", model: "claude-code", open: true });
+			expect(JSON.parse(readFileSync(join(lane.dir, "status.json"), "utf8"))).toMatchObject({ lane: "Test", model: "claude-code", open: true, version: "checkout" });
 			expect(() => MemoryLane.open({ lane, models, report: () => {} })).toThrow(LaneHeld);
 		} finally {
 			await open.close();

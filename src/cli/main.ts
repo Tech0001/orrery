@@ -61,6 +61,8 @@ const USAGE = `Usage: orrery <command> [--config FILE]
   launch <Lane> [--yes]      start the lane's tool (pi, omp, claude, codex) in its folder, after the checks the TUI makes
   tools [--json]             pi, Claude Code, Codex and OMP: found, version, Orrery's side installed
   tools install <pi|claude-code|omp> [--yes]   install or update Orrery's side of a tool (shows what it does first)
+  install --rollback | --list   switch back to the previous installed version, or list versions and which lanes run them
+                             (install a new version from a checkout: npm run install-local)
   claude-setup <Lane> [--mod]  make Claude Code load the lane's memory view (CLAUDE.md, or CLAUDE.local.md in a
                              repo); --mod: from the Orrery mod, in the system prompt
   claude-mod view --cwd DIR [--session ID] [--wait-ms N [--spool-only]]   the Orrery mod's call: the lane's memory
@@ -126,6 +128,21 @@ async function toolsCommand(positionals: string[], values: { json?: boolean; yes
 	}
 	for (const t of tools) process.stdout.write(`${t.label.padEnd(12)} ${(t.version ?? (t.path === undefined ? "not found" : "?")).padEnd(24)} ${t.wiring.padEnd(17)} ${t.detail}\n`);
 	return 0;
+}
+
+/** `orrery install --rollback | --list`: the installed copies in the home's app folder. Installing a new one needs a checkout. */
+async function installCommand(values: { rollback?: boolean; list?: boolean }): Promise<number> {
+	const { listVersions, rollback, versionLines } = await import("../install/install.ts");
+	if (values.list === true) {
+		process.stdout.write(`${versionLines(listVersions(process.env)).join("\n")}\n`);
+		return 0;
+	}
+	if (values.rollback === true) {
+		const { from, to } = rollback(process.env);
+		process.stdout.write(`Switched back from ${from} to ${to}. Running lanes keep their version until they restart.\n`);
+		return 0;
+	}
+	throw new Error("install takes --rollback or --list. To install a new version, run npm run install-local in a checkout.");
 }
 
 /** A lane name as given, or "." for the lane whose workspace holds the project folder (Claude Code's commands use it). */
@@ -266,9 +283,16 @@ async function main(argv: string[]): Promise<number> {
 			new: { type: "boolean" },
 			json: { type: "boolean" },
 			yes: { type: "boolean" },
+			rollback: { type: "boolean" },
+			list: { type: "boolean" },
+			help: { type: "boolean", short: "h" },
 		},
 	});
 	const [command, arg] = positionals;
+	if (values.help === true) {
+		process.stdout.write(USAGE);
+		return 0;
+	}
 	if (command === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true) {
 		const { runTui } = await import("../tui/run.ts");
 		return runTui(values.config);
@@ -288,6 +312,7 @@ async function main(argv: string[]): Promise<number> {
 		return 0;
 	}
 	if (command === "tools") return toolsCommand(positionals, values);
+	if (command === "install") return installCommand(values);
 	const config = loadConfig(values.config);
 	switch (command) {
 		case "status": {

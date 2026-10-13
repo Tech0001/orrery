@@ -28,7 +28,7 @@ import { compactorModel, createLaneModels, modelContextWindow, savedSummaryLogin
 import { Projector } from "./projector.ts";
 import { laneSummarizer } from "./summarizer.ts";
 export { type LaneStatus, type ModelSource, readStatus } from "./status-file.ts";
-import type { LaneStatus, ModelSource } from "./status-file.ts";
+import { type LaneStatus, type ModelSource, statusVersion } from "./status-file.ts";
 import { laneSubmit, type SubmitResult } from "./submit.ts";
 
 /** Compaction only as a blocking in-run overflow guard (spec §5.3). Never pass undefined fields (pi 1.0.x). */
@@ -344,6 +344,7 @@ export class Lane {
 			},
 			lastError: this.#lastError,
 			updatedAt: localIso(),
+			version: statusVersion(),
 		};
 	}
 

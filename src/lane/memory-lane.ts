@@ -14,6 +14,7 @@ import type { RemoteSession } from "../remote/session.ts";
 import type { LockState, Storage } from "../remote/types.ts";
 import { holdWriterLock, type WriterLock } from "../memory/store.ts";
 import { openYielding } from "./handover.ts";
+import { statusVersion } from "./status-file.ts";
 
 type MemoryLaneOptions = { lane: LaneConfig; models: ModelSource; report(message: string): void; agent?: Agent; writer?: WriterLock };
 
@@ -242,6 +243,7 @@ export class MemoryLane {
 			trouble: trouble === undefined ? null : { state: trouble.state, plain: trouble.plain },
 			lastError: trouble?.plain ?? null,
 			updatedAt: localIso(),
+			version: statusVersion(),
 		};
 		const file = join(this.config.dir, "status.json");
 		writeFileSync(`${file}.tmp`, JSON.stringify(status), { mode: 0o600 });

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { MemoryStats } from "../memory/index.ts";
 import type { ThinkingLevel } from "./config.ts";
+import { runningVersion } from "./running.ts";
 
 export interface LaneStatus {
 	readonly lane: string;
@@ -24,6 +25,17 @@ export interface LaneStatus {
 	/** Why summaries cannot come, in plain words (absent in files from before it existed). */
 	readonly trouble?: { readonly state: "stopped" | "failing"; readonly plain: string } | null;
 	readonly updatedAt: string;
+	/** The installed version the lane's process runs, "checkout", or "unknown" (absent in files from before it existed). */
+	readonly version?: string;
+}
+
+/** The version field a status file records: what runningVersion says, or "unknown" when ORRERY_HOME cannot be read. */
+export function statusVersion(): string {
+	try {
+		return runningVersion();
+	} catch {
+		return "unknown";
+	}
 }
 
 /** Where a lane's model comes from: the config, or a choice made in chat (/model, /compactor) that survives restarts. */
@@ -57,6 +69,7 @@ export function readStatus(dir: string): LaneStatus | undefined {
 			typeof status.compactor.model === "string" &&
 			typeof status.compactor.thinking === "string" &&
 			typeof status.compactor.source === "string" &&
+			(status.version === undefined || typeof status.version === "string") &&
 			troubleValid(status.trouble);
 		return valid ? (status as LaneStatus) : undefined;
 	} catch {

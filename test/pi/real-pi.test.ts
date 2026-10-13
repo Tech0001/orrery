@@ -1,12 +1,19 @@
-import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { realRemoteRebuild, realRemoteTurn } from "./remote-real-support.ts";
+import { install, listVersions } from "../../src/install/install.ts";
+import { wire } from "../../src/install/wire.ts";
+import { readStatus } from "../../src/lane/status-file.ts";
+import { piExtensionFile, piExtensionText } from "../../src/lane/tools.ts";
+import { MemoryStore } from "../../src/memory/index.ts";
+import { commitAll, workingTreeCheckout } from "../install/support.ts";
+import { realRemoteRebuild, realRemoteTurn, streamReply, writeModels } from "./remote-real-support.ts";
 
 function isolated(home: string): NodeJS.ProcessEnv {
 	return {
@@ -206,4 +213,150 @@ export default function (pi) {
 			omp: ["session_start"],
 		});
 	}, 90_000);
+});
+
+/**
+ * The installed layout end to end: pi loads Orrery through app/current, a second install switches current while pi
+ * runs, and the running pi keeps the version it started with (its status says so) while a new pi runs the new one.
+ */
+describe.skipIf(pi === null)("Orrery installed in app/current, inside a real pi", () => {
+	it("a running pi keeps its version across an install", async () => {
+		const root = mkdtempSync(join(tmpdir(), "orrery-installed-pi-"));
+		dirs.push(root);
+		const home = join(root, "home");
+		const workspace = join(root, "workspace");
+		mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+		mkdirSync(workspace);
+		const orreryHome = join(home, ".orrery");
+		const env = { ...isolated(home), ORRERY_HOME: orreryHome };
+		const checkout = workingTreeCheckout();
+		dirs.push(checkout);
+		// With dev packages (npm ci without --omit=dev); the OMP test installs without them.
+		const first = install({ checkout, env, checks: "minimal", omitDev: false });
+		const current = join(orreryHome, "app", "current");
+		// Wired the way npm run install-local wires; this runner refuses every command (no real claude or systemctl runs).
+		const refuse = () => ({ status: 1, stdout: "", stderr: "not run in this test" });
+		const wired = await wire(env, { run: refuse, confirm: async () => false });
+		expect(wired.join("\n")).toMatch(/^pi: wrote /m);
+		expect(readFileSync(piExtensionFile(env), "utf8")).toBe(piExtensionText(current));
+
+		let chats = 0;
+		const server = createServer((req, res) => {
+			req.resume();
+			req.on("end", () => {
+				if (req.method === "GET") {
+					res.end(JSON.stringify({ object: "list", data: [{ id: "m" }] }));
+					return;
+				}
+				chats += 1;
+				streamReply(res, "pong");
+			});
+		});
+		await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+		const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+		writeModels(join(home, ".pi", "agent"), "pi", baseUrl);
+		const data = join(root, "data");
+		writeFileSync(
+			join(orreryHome, "config.toml"),
+			[
+				`data_dir = ${JSON.stringify(data)}`,
+				"[[providers]]",
+				'id = "local"',
+				`base_url = ${JSON.stringify(baseUrl)}`,
+				"[[providers.models]]",
+				'id = "m"',
+				'name = "m"',
+				"context_window = 128000",
+				"max_tokens = 4096",
+				"reasoning = false",
+				"[lanes.Probe]",
+				`workspace = ${JSON.stringify(workspace)}`,
+				'tool = "pi"',
+				'compactor_model = "local/m"',
+				'compactor_thinking = "off"',
+				"",
+			].join("\n"),
+			{ mode: 0o600 },
+		);
+		const laneDir = join(data, "lanes", "Probe");
+		const rows = () => {
+			if (!existsSync(join(laneDir, "memory.sqlite"))) return [];
+			const store = MemoryStore.openReadOnly(join(laneDir, "memory.sqlite"));
+			try {
+				return store.root.map((m) => `${m.kind}: ${m.text}`);
+			} finally {
+				store.close();
+			}
+		};
+		const runs: { child: ChildProcessWithoutNullStreams; exited: Promise<void>; output: () => string }[] = [];
+		const launch = () => {
+			const child = spawn(pi as string, ["--mode", "rpc", "--provider", "local", "--model", "m", "--thinking", "off"], { cwd: workspace, env });
+			let output = "";
+			child.stdout.on("data", (chunk) => (output += chunk));
+			child.stderr.on("data", (chunk) => (output += chunk));
+			const exited = new Promise<void>((done) => {
+				child.on("error", (error) => {
+					output += String(error);
+					done();
+				});
+				child.on("close", () => done());
+			});
+			const run = { child, exited, output: () => output };
+			runs.push(run);
+			return run;
+		};
+		const until = async <T>(what: string, run: (typeof runs)[number], value: () => T | undefined): Promise<T> => {
+			const deadline = Date.now() + 30_000;
+			for (;;) {
+				const seen = value();
+				if (seen !== undefined) return seen;
+				if (Date.now() > deadline || run.child.exitCode !== null) throw new Error(`no ${what}: ${run.output().slice(-3000)}`);
+				await delay(50);
+			}
+		};
+		const openStatus = (run: (typeof runs)[number]) => until("open status", run, () => {
+			const status = readStatus(laneDir);
+			return status !== undefined && status.pid === run.child.pid && status.open !== false ? status : undefined;
+		});
+		const turn = async (run: (typeof runs)[number], message: string, count: number) => {
+			run.child.stdin.write(`${JSON.stringify({ id: `t${count}`, type: "prompt", message })}\n`);
+			return until(`${count} rows`, run, () => (rows().length >= count ? rows() : undefined));
+		};
+		try {
+			const running = launch();
+			expect((await openStatus(running)).version).toBe(first.version);
+			await turn(running, "The codename is Cedar.", 2);
+
+			commitAll(checkout, "a second version");
+			const second = install({ checkout, env, checks: "minimal", omitDev: false });
+			expect(second.version).not.toBe(first.version);
+			expect(second.previous).toBe(first.version);
+			expect(readlinkSync(current)).toBe(second.version);
+			// The live lane keeps its version folder.
+			expect(listVersions(env)).toEqual([
+				{ name: first.version, current: false, lanes: ["Probe"] },
+				{ name: second.version, current: true, lanes: [] },
+			]);
+
+			expect(await turn(running, "What is the codename?", 4)).toEqual(["user: The codename is Cedar.", "talk: pong", "user: What is the codename?", "talk: pong"]);
+			expect(readStatus(laneDir)).toMatchObject({ pid: running.child.pid, version: first.version });
+			running.child.stdin.end();
+			await running.exited;
+
+			const fresh = launch();
+			expect((await openStatus(fresh)).version).toBe(second.version);
+			fresh.child.stdin.end();
+			await fresh.exited;
+			expect(chats).toBeGreaterThanOrEqual(2);
+		} finally {
+			for (const run of runs) {
+				run.child.stdin.end();
+				const stop = setTimeout(() => run.child.kill("SIGKILL"), 5000);
+				await run.exited;
+				clearTimeout(stop);
+			}
+			server.closeAllConnections();
+			await new Promise<void>((done) => server.close(() => done()));
+		}
+	}, 300_000);
 });

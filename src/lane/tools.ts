@@ -7,11 +7,9 @@ import { execFile, spawnSync } from "node:child_process";
 import { accessSync, constants, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { LaneTool } from "./config.ts";
-import { within } from "./guard-rules.ts";
 import { realTarget } from "./guard-paths.ts";
-import { orreryHome } from "./home.ts";
+import { runningRoot, wiringRoot } from "./running.ts";
 import { safeText } from "./source-labels.ts";
 
 export type Wiring = "installed" | "missing" | "other" | "update available" | "unknown" | "none";
@@ -62,28 +60,9 @@ export const realRunner: Runner = (cmd, args) => {
 const LABELS: Record<LaneTool, string> = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP" };
 export const BINARIES: Record<LaneTool, string> = { pi: "pi", "claude-code": "claude", codex: "codex", omp: "omp" };
 
-/** The folder this code runs from (its real path: Node and Bun load modules by real path). */
-export function runningRoot(): string {
-	return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-}
+export { runningRoot, runningVersion, wiringRoot } from "./running.ts";
 /** @deprecated alias for runningRoot */
 export const orreryRoot = runningRoot;
-
-/** What wiring should name: app/current when this code runs from an install, else this checkout. */
-export function wiringRoot(env: NodeJS.ProcessEnv = process.env): { root: string; installed: boolean } {
-	const app = join(orreryHome(env), "app");
-	try {
-		if (within(realpathSync(runningRoot()), realpathSync(app))) return { root: join(app, "current"), installed: true };
-	} catch {
-		// no app folder: not installed
-	}
-	return { root: runningRoot(), installed: false };
-}
-
-/** The version folder's name when this code runs from an install, else "checkout". */
-export function runningVersion(env: NodeJS.ProcessEnv = process.env): string {
-	return wiringRoot(env).installed ? basename(runningRoot()) : "checkout";
-}
 
 /** The first executable file called `name` on PATH. */
 export function findOnPath(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {

@@ -17,6 +17,7 @@
   },
   "scripts": {
     "demo": "node --disable-warning=ExperimentalWarning scripts/demo.ts",
+    "install-local": "node --disable-warning=ExperimentalWarning scripts/install.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "test:bun": "ORRERY_SQLITE=bun bun scripts/bun-store-check.ts",

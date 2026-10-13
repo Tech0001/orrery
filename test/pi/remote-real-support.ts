@@ -31,7 +31,7 @@ async function answerRemote(backend: Storage, { method, args }: RemoteCall, res:
 }
 
 /** The model's reply, streamed as one OpenAI-compatible completion. */
-function streamReply(res: ServerResponse, text: string): void {
+export function streamReply(res: ServerResponse, text: string): void {
 	res.writeHead(200, { "content-type": "text/event-stream" });
 	const base = { id: "r1", object: "chat.completion.chunk", created: 1, model: "m" };
 	for (const chunk of [
@@ -42,7 +42,7 @@ function streamReply(res: ServerResponse, text: string): void {
 }
 
 /** The host's only provider: the test's own server. */
-function writeModels(agent: string, host: "pi" | "omp", baseUrl: string): void {
+export function writeModels(agent: string, host: "pi" | "omp", baseUrl: string): void {
 	writeFileSync(join(agent, host === "pi" ? "models.json" : "models.yml"), JSON.stringify({ providers: { local: {
 		baseUrl, apiKey: "none", api: "openai-completions", models: [{ id: "m", name: "m", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 4096,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, compat: { supportsStore: false, supportsDeveloperRole: false, maxTokensField: "max_tokens" } }],

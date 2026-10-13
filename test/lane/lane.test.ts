@@ -5,6 +5,7 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig, parseModelChoice } from "../../src/lane/config.ts";
 import { Lane, readStatus } from "../../src/lane/lane.ts";
+import { statusVersion } from "../../src/lane/status-file.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { contextLines, ctx, fauxModels, laneConfigToml, tempDir } from "./support.ts";
 
@@ -48,6 +49,7 @@ describe("Lane", () => {
 		const status = readStatus(lane.config.dir);
 		expect(status?.busy).toBe(false);
 		expect(status?.model).toBe("faux-agent/faux-1");
+		expect(status?.version).toBe("checkout");
 		expect(seen[0][0]).toContain("You are the Test lane.");
 		await lane.close();
 
@@ -140,4 +142,26 @@ describe("Lane", () => {
 		const config = parseConfig(`data_dir = ${JSON.stringify(dir)}\n[lanes.A]\nworkspace = ${JSON.stringify(dir)}\ncompactor_model = "faux-compactor/faux-1"\n`, dir);
 		await expect(Lane.open({ config, lane: "A", models: fauxModels().models })).rejects.toThrow('A has no model in the config; orrery run needs one (model = "provider/id").');
 	});
+});
+
+it("reads a status file with or without the version it runs, but not one whose version is not a string", () => {
+	const dir = tempDir("orrery-status-");
+	dirs.push(dir);
+	const status = { lane: "A", pid: 1, busy: false, model: "pi", thinking: "pi", compactor: { stopped: false, failing: 0, model: "a/b", thinking: "off", source: "config" }, lastError: null, updatedAt: "2026-10-13T10:00:00.000Z" };
+	const read = (extra: object) => {
+		writeFileSync(join(dir, "status.json"), JSON.stringify({ ...status, ...extra }));
+		return readStatus(dir);
+	};
+	expect(read({})?.version).toBeUndefined();
+	expect(read({ version: "0.6.0-abc1234" })?.version).toBe("0.6.0-abc1234");
+	expect(read({ version: 6 })).toBeUndefined();
+	// A status write never throws over the home: an ORRERY_HOME orrery cannot use records "unknown".
+	const before = process.env.ORRERY_HOME;
+	process.env.ORRERY_HOME = "relative/home";
+	try {
+		expect(statusVersion()).toBe("unknown");
+	} finally {
+		if (before === undefined) delete process.env.ORRERY_HOME;
+		else process.env.ORRERY_HOME = before;
+	}
 });
