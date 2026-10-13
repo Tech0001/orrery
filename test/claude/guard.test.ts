@@ -530,7 +530,7 @@ describe("the PreToolUse hook", () => {
 		expect([fine.status, fine.stdout, fine.stderr]).toEqual([0, "", ""]);
 	}, 60_000);
 
-	// Without ORRERY_CONFIG or ~/.config/orrery, the hook falls back to the server's config, which a test must not read.
+	// Without ORRERY_CONFIG, ~/.orrery or ~/.config/orrery, the hook falls back to the server's config, which a test must not read.
 	it.skipIf(existsSync("/etc/orrery/config.toml"))("allows everything and prints nothing without any orrery config", () => {
 		const t = testLane();
 		const none = hookCli("pre-tool-use", { session_id: "s1", cwd: t.workspace, tool_name: "Read", tool_input: { file_path: "~/.ssh/id_rsa" } }, { HOME: t.dir });

@@ -76,7 +76,8 @@ describe("throwaway demo", () => {
 		const root = home();
 		const env = demoEnvironment(root, { HOME: "/real", XDG_CONFIG_HOME: "/real-config", ORRERY_CONFIG: "/real/config.toml", PI_CODING_AGENT_DIR: "/real/pi", ANTHROPIC_API_KEY: "synthetic", PATH: "/real/bin", TERM: "xterm-256color" });
 		expect(env.HOME).toBe(root);
-		for (const name of ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "ORRERY_CONFIG"]) expect(env[name]?.startsWith(`${root}/`)).toBe(true);
+		for (const name of ["ORRERY_HOME", "ORRERY_CONFIG"]) expect(env[name]?.startsWith(`${root}/`)).toBe(true);
+		for (const name of ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"]) expect(env[name]).toBeUndefined();
 		expect(env.TERM).toBe("xterm-256color");
 		expect(env.PATH).not.toBe("/real/bin");
 		expect(env.PI_CODING_AGENT_DIR).toBeUndefined();

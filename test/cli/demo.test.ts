@@ -6,8 +6,8 @@ import { expect, it } from "vitest";
 
 it("demo command arguments cannot bypass the throwaway home", async () => {
 	const home = mkdtempSync(join(tmpdir(), "orrery-demo-cli-"));
-	const config = join(home, ".config", "orrery", "config.toml");
-	mkdirSync(join(home, ".config", "orrery"), { recursive: true });
+	const config = join(home, ".orrery", "config.toml");
+	mkdirSync(join(home, ".orrery"), { recursive: true });
 	writeFileSync(config, "# synthetic existing config: leave this alone\n");
 	const child = spawn(process.execPath, [new URL("../../scripts/demo.ts", import.meta.url).pathname, "--child"], {
 		cwd: home,

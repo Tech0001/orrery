@@ -5,6 +5,9 @@ import { homedir, hostname } from "node:os";
 import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { parse } from "smol-toml";
 import { type MemoryConfig, memoryConfig } from "../memory/index.ts";
+import { ConfigError, legacyConfigPath, orreryHome } from "./home.ts";
+
+export { ConfigError };
 
 export const DEFAULT_CONFIG_PATH = "/etc/orrery/config.toml";
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -90,13 +93,6 @@ export interface HarnessConfig {
 	readonly providers: readonly CustomProviderConfig[];
 	readonly hosts: ReadonlyMap<string, HostConfig>;
 	readonly lanes: ReadonlyMap<string, LaneConfig>;
-}
-
-export class ConfigError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "ConfigError";
-	}
 }
 
 type Table = Record<string, unknown>;
@@ -343,11 +339,13 @@ export function laneForCwd(config: HarnessConfig, cwd: string): LaneConfig | und
 	return best;
 }
 
-/** ORRERY_CONFIG, then the workstation config if it exists, then the server path. */
-export function defaultConfigPath(): string {
-	if (process.env.ORRERY_CONFIG) return process.env.ORRERY_CONFIG;
-	const user = join(homedir(), ".config", "orrery", "config.toml");
-	return existsSync(user) ? user : DEFAULT_CONFIG_PATH;
+/** ORRERY_CONFIG, then <home>/config.toml, then the old ~/.config/orrery/config.toml, then the server path. */
+export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+	if (env.ORRERY_CONFIG) return env.ORRERY_CONFIG;
+	const home = join(orreryHome(env), "config.toml");
+	if (existsSync(home)) return home;
+	const legacy = legacyConfigPath(env);
+	return existsSync(legacy) ? legacy : DEFAULT_CONFIG_PATH;
 }
 
 export function loadConfig(file: string = defaultConfigPath()): HarnessConfig {

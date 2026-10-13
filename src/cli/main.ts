@@ -7,7 +7,8 @@
 import { join, resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
 import type { LaneTool } from "../lane/memory-tools.ts";
-import { findLane, type HarnessConfig, type LaneConfig, loadConfig } from "../lane/config.ts";
+import { defaultConfigPath, findLane, type HarnessConfig, type LaneConfig, loadConfig } from "../lane/config.ts";
+import { isLegacyConfig, LEGACY_NOTICE } from "../lane/home.ts";
 import { exitWhenFlushed } from "./exit.ts";
 
 const USAGE = `Usage: orrery <command> [--config FILE]
@@ -279,6 +280,7 @@ async function main(argv: string[]): Promise<number> {
 	if (command === "claude-hook") return claudeHook(arg, values.config);
 	if (command === "claude-mod") return claudeModCommand(arg, values);
 	if (command === "mcp") return mcpServer(values.config);
+	if (values.json !== true && isLegacyConfig(values.config ?? defaultConfigPath())) process.stderr.write(`${LEGACY_NOTICE}\n`);
 	if (command === "lane") return laneCommand(positionals.slice(1), values);
 	if (command === "remote") {
 		const { remoteCommand } = await import("./remote.ts");

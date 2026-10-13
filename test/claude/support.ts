@@ -1,4 +1,4 @@
-/** Shared pieces of the Claude Code adapter's tests. Everything lives in temp folders, never ~/.local/share/orrery. */
+/** Shared pieces of the Claude Code adapter's tests. Everything lives in temp folders, never ~/.orrery. */
 
 import { execFileSync, type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";

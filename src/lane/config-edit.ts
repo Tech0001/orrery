@@ -6,10 +6,10 @@
  */
 
 import { accessSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse } from "smol-toml";
 import { ConfigError, type HarnessConfig, type LaneTool, type LaneLauncher, parseConfig, type ThinkingLevel } from "./config.ts";
+import { orreryHome } from "./home.ts";
 
 /** The lane keys the TUI and `orrery lane set` may change. */
 export const EDITABLE_KEYS = ["remote", "launcher", "ori_model", "tool", "workspace", "view_bytes", "compactor_context_bytes", "compactor_jobs", "compact_at", "compactor_model", "compactor_thinking"] as const;
@@ -234,9 +234,10 @@ export function archiveLane(text: string, configDir: string, lane: string, day: 
 	return checked(text, out, configDir, lane, () => undefined);
 }
 
-/** A new config's first lines: what the file is, and where memory lives. */
-export function newConfigText(dataDir = "~/.local/share/orrery"): string {
-	return `# Orrery's config: where memory lives, and one [lanes.<Name>] block per lane.\n# The Orrery TUI (run \`orrery\`) edits this file in place and keeps your comments.\ndata_dir = ${tomlValue(dataDir)}\n`;
+/** A new config's first lines: what the file is, and data_dir only when memory lives somewhere other than beside it. */
+export function newConfigText(dataDir?: string): string {
+	const head = "# Orrery's config: one [lanes.<Name>] block per lane. Memory lives beside this file unless you point it elsewhere.\n# The Orrery TUI (run `orrery`) edits this file in place and keeps your comments.\n";
+	return dataDir === undefined ? head : `${head}data_dir = ${tomlValue(dataDir)}\n`;
 }
 
 /** Writes the config atomically (a temporary file, then rename), keeping its mode, and keeps the old text as config.toml.bak. */
@@ -282,9 +283,9 @@ export function configWritable(path: string): boolean {
 	}
 }
 
-/** Where a new config goes: $ORRERY_CONFIG, else ~/.config/orrery/config.toml. */
+/** Where a new config goes: $ORRERY_CONFIG, else <home>/config.toml. */
 export function userConfigPath(env: NodeJS.ProcessEnv = process.env): string {
-	return env.ORRERY_CONFIG || join(homedir(), ".config", "orrery", "config.toml");
+	return env.ORRERY_CONFIG || join(orreryHome(env), "config.toml");
 }
 
 

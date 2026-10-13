@@ -63,7 +63,7 @@ describe("the hooks as Claude Code runs them", () => {
 		}
 	}, 60_000);
 
-	// Without ORRERY_CONFIG or ~/.config/orrery, the hook falls back to the server's config, which a test must not read.
+	// Without ORRERY_CONFIG, ~/.orrery or ~/.config/orrery, the hook falls back to the server's config, which a test must not read.
 	it.skipIf(existsSync("/etc/orrery/config.toml"))("exit 0 and print nothing without any orrery config", () => {
 		const t = testLane();
 		const none = hookCli("user-prompt-submit", { session_id: "s1", cwd: t.workspace, prompt: "x" }, { HOME: t.dir });

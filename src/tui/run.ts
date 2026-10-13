@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { ProcessTerminal, type TUI, TuiAltScreen } from "@earendil-works/pi-tui";
 import { defaultConfigPath } from "../lane/config.ts";
 import { userConfigPath } from "../lane/config-edit.ts";
+import { isLegacyConfig, LEGACY_NOTICE } from "../lane/home.ts";
 import { App, type Page } from "./app.ts";
 import { realDeps } from "./deps.ts";
 import { lanesPage } from "./pages/lanes.ts";
@@ -19,8 +20,7 @@ export const PAGES: Page[] = [lanesPage, loginsPage, usagePage, toolsPage];
 /** The config the TUI reads and edits: --config (absolute), else the usual places, else where a new one goes. */
 export function tuiConfigPath(option: string | undefined): string {
 	if (option !== undefined) return resolve(option);
-	const usual = defaultConfigPath();
-	return existsSync(usual) ? usual : userConfigPath();
+	return existsSync(defaultConfigPath()) ? defaultConfigPath() : userConfigPath();
 }
 
 /**
@@ -93,7 +93,8 @@ export async function runTui(configOption?: string, options: { createDeps?: type
 		tui.addChild(app);
 		tui.setFocus(app);
 		app.refresh();
-		if (options.notice !== undefined) app.say(options.notice);
+		const notice = [options.notice, isLegacyConfig(configPath) ? LEGACY_NOTICE : undefined].filter((n) => n !== undefined).join(" ");
+		if (notice !== "") app.say(notice);
 		tui.start();
 		if (!existsSync(configPath)) {
 			firstRun(app).then((ok) => {

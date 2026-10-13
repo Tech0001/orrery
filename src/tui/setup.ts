@@ -18,6 +18,11 @@ const WAYS = ["Sign in to ChatGPT", "Add an Anthropic key", "Add an OpenAI key",
 const KEY_NAMES: Record<string, string> = { "Add an Anthropic key": "anthropic", "Add an OpenAI key": "openai", "Add an OpenRouter key": "openrouter" };
 const errorText = (error: unknown) => safeText(error instanceof Error ? error.message : String(error));
 
+/** The answer for data_dir, or undefined when it is the config's own folder (memory then lives beside the config). */
+function dataFor(answer: string, configPath: string): string | undefined {
+	return resolve(expandHome(answer)) === dirname(resolve(configPath)) ? undefined : answer;
+}
+
 /** Runs setup in the open TUI; true once the config is written. */
 export async function firstRun(app: App): Promise<boolean> {
 	app.setup = true;
@@ -30,11 +35,11 @@ export async function firstRun(app: App): Promise<boolean> {
 		let dataText: string | undefined;
 		let draft: ReturnType<typeof parseConfig> | undefined;
 		while (draft === undefined) {
-			dataText = await app.host.open(new InputModal("Welcome to Orrery. It keeps a long memory for each agent folder (a lane).\n\nWhere should memory live? (Esc leaves without writing anything)", "~/.local/share/orrery"));
+			dataText = await app.host.open(new InputModal("Welcome to Orrery. It keeps a long memory for each agent folder (a lane).\n\nWhere should memory live? (Esc leaves without writing anything)", "~/.orrery"));
 			if (dataText === undefined) return false;
 			if (dataText.trim() === "") continue;
 			try {
-				draft = parseConfig(newConfigText(dataText), dirname(resolve(app.deps.configPath)));
+				draft = parseConfig(newConfigText(dataFor(dataText, app.deps.configPath)), dirname(resolve(app.deps.configPath)));
 				mkdirSync(draft.dataDir, { recursive: true, mode: 0o700 });
 			} catch (error) {
 				draft = undefined;
@@ -112,7 +117,7 @@ export async function firstRun(app: App): Promise<boolean> {
 		const laneName = name;
 		try {
 			app.deps.editConfig((text, dir) =>
-				addLane(text.trim() === "" || text === newConfigText() ? newConfigText(data) : text, dir, {
+				addLane(text.trim() === "" || text === newConfigText() ? newConfigText(dataFor(data, app.deps.configPath)) : text, dir, {
 					name: laneName,
 					workspace: resolve(expandHome(folder)),
 					tool,

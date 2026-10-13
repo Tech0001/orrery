@@ -100,7 +100,7 @@ describe("no big drawing on any screen", () => {
 		welcome.setup = true;
 		const step = emptyApp(rows);
 		step.setup = true;
-		void step.host.open(new InputModal("Where should memory live?", "~/.local/share/orrery"));
+		void step.host.open(new InputModal("Where should memory live?", "~/.orrery"));
 		return { empty, help, welcome, step };
 	};
 

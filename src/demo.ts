@@ -39,9 +39,7 @@ export function demoEnvironment(home: string, env: NodeJS.ProcessEnv = process.e
 		HOME: home, PATH: "", TERM: env.TERM ?? "xterm-256color",
 		...(env.COLORTERM === undefined ? {} : { COLORTERM: env.COLORTERM }),
 		...(env.NO_COLOR === undefined ? {} : { NO_COLOR: env.NO_COLOR }),
-		XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"),
-		XDG_STATE_HOME: join(home, ".local", "state"), XDG_CACHE_HOME: join(home, ".cache"),
-		ORRERY_CONFIG: join(home, ".config", "orrery", "config.toml"), ORRERY_NO_OPEN: "1",
+		ORRERY_HOME: join(home, ".orrery"), ORRERY_CONFIG: join(home, ".orrery", "config.toml"), ORRERY_NO_OPEN: "1",
 	};
 }
 
@@ -52,10 +50,9 @@ export async function withDemoHome<T>(run: (home: string) => Promise<T>): Promis
 }
 
 export function createDemo(home: string, now = Date.now()): Demo {
-	const configPath = join(home, ".config", "orrery", "config.toml");
-	mkdirSync(join(home, ".config", "orrery"), { recursive: true });
+	const configPath = join(home, ".orrery", "config.toml");
+	mkdirSync(join(home, ".orrery"), { recursive: true });
 	writeFileSync(configPath, [
-		`data_dir = ${JSON.stringify(join(home, ".local", "share", "orrery"))}`,
 		...LANES.map((lane) => `\n[lanes.${lane.name}]\nworkspace = ${JSON.stringify(join(home, "workspaces", lane.name))}\ntool = "${lane.tool}"\ncompactor_model = "${MODEL}"\ncompactor_thinking = "off"`), "",
 	].join("\n"), { mode: 0o600 });
 	const config = loadConfig(configPath);
