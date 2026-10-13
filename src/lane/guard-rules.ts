@@ -32,6 +32,13 @@ const SENSITIVE = [
 	// The .env OMP loads from its config root and agent dir (utils/src/env.ts) and its secrets.yml (secrets/index.ts), in
 	// ~/.omp, a profile's or a project's .omp.
 	/\.omp\/(?:profiles\/[^/\s"']+\/)?(?:agent\/)?(?:\.env|secrets\.ya?ml)\b/,
+	// Orrery's own home: its keys, other lanes' memory, backups and build scripts (not app/, not config.toml, and not a
+	// lane folder's .orrery/view.md, which these names never match).
+	/\.orrery\/(?:lanes|backups|builds|ssh)(?:\/|$|[\s"'])/,
+	/\.orrery\/(?:remotes\.json|device-id|backup\.env)\b/,
+	// The old layout, and the links move-home leaves there.
+	/\.local\/share\/orrery(?:\/|$|[\s"'])(?!app\/)/,
+	/\.config\/orrery\/backup\.env\b/,
 ];
 
 /** Case-insensitive: on a case-insensitive file system (macOS) ~/.SSH is ~/.ssh. */

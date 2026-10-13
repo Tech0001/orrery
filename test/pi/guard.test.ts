@@ -199,3 +199,16 @@ describe("movedAgentDirCredentials", () => {
 		expect(movedAgentDirCredentials({ PI_CODING_AGENT_DIR: "/srv/pi" }, "/h")).toEqual(["/srv/pi/models.json", "/srv/pi/auth.json"]);
 	});
 });
+
+describe("guardToolCall keeps Orrery's home out", () => {
+	it("refuses the remote keys and other lanes' memory, and allows config.toml", () => {
+		const { workspace, options } = setup();
+		const data = join(dir, "home", ".orrery");
+		mkdirSync(join(data, "lanes", "Birch"), { recursive: true });
+		for (const file of ["remotes.json", "config.toml"]) writeFileSync(join(data, file), "");
+		const guarded = { ...options, workspace, allowedRoots: [], orreryData: data };
+		expect(guardToolCall("read", { path: join(data, "remotes.json") }, guarded)).toMatch(/sensitive/);
+		expect(guardToolCall("grep", { pattern: "x", path: join(data, "lanes") }, guarded)).toMatch(/sensitive|credential/);
+		expect(guardToolCall("read", { path: join(data, "config.toml") }, guarded)).toBeUndefined();
+	});
+});

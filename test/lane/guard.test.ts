@@ -34,6 +34,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { afterEach as after, beforeEach as before } from "vitest";
 import { checkResolvedPath, guardExtension } from "../../src/lane/guard.ts";
+import { guardOmpToolCall, guardToolCall } from "../../src/lane/guard-paths.ts";
 import { ctx, fauxModels, tempDir } from "./support.ts";
 
 describe("checkResolvedPath (pi's own path resolution, symlinks followed)", () => {
@@ -113,5 +114,75 @@ describe("sensitive patterns", () => {
 		const narrow = { workspace: "/w/lane", allowedRoots: [], cwd: "/w/lane/sub" };
 		expect(checkToolCall({ name: "write", arguments: { path: "../x" } }, narrow)).toBeUndefined();
 		expect(checkToolCall({ name: "write", arguments: { path: "../../x" } }, narrow)).toMatch(/\/w\/x is outside/);
+	});
+});
+
+describe("Orrery's own home", () => {
+	const setup = () => {
+		const home = tempDir("guard-home-");
+		const data = join(home, ".orrery");
+		for (const dir of ["lanes/Atlas", "lanes/Birch", "backups/2026-10-13", "builds", "ssh", "app/0.6.0-abc1234/src"]) mkdirSync(join(data, dir), { recursive: true });
+		symlinkSync("0.6.0-abc1234", join(data, "app", "current"));
+		for (const file of ["config.toml", "remotes.json", "device-id", "credentials.json", "backup.env", "lanes/Birch/memory.sqlite", "ssh/known_hosts"]) writeFileSync(join(data, file), "");
+		// The old paths, left as links by move-home.
+		mkdirSync(join(home, ".local", "share"), { recursive: true });
+		symlinkSync(data, join(home, ".local", "share", "orrery"));
+		const workspace = join(home, "ws");
+		mkdirSync(workspace);
+		return { home, data, base: { workspace, allowedRoots: [] as string[], cwd: workspace, home, orreryData: data } };
+	};
+	const read = (path: string, base: ReturnType<typeof setup>["base"]) => guardToolCall("read", { path }, base);
+
+	it.each(["remotes.json", "device-id", "ssh/known_hosts", "lanes/Birch/memory.sqlite", "backups/2026-10-13", "builds", "backup.env"])("refuses %s", (rel) => {
+		const { data, base } = setup();
+		expect(read(join(data, rel), base)).toMatch(/sensitive/);
+	});
+
+	it("refuses the same files reached through the old-path link", () => {
+		const { home, base } = setup();
+		expect(read(join(home, ".local", "share", "orrery", "remotes.json"), base)).toMatch(/sensitive/);
+	});
+
+	it("allows the installed program and the config", () => {
+		const { data, base } = setup();
+		expect(read(join(data, "app", "current", "src"), base)).toBeUndefined();
+		expect(read(join(data, "config.toml"), base)).toBeUndefined();
+	});
+
+	it("refuses a search rooted at the home, which would read the lanes", () => {
+		const { data, base } = setup();
+		expect(guardToolCall("grep", { pattern: "x", path: data }, base)).toMatch(/would search credential files/);
+		expect(guardToolCall("find", { pattern: "*.json", path: join(data, "lanes") }, base)).toMatch(/sensitive/);
+	});
+
+	it("refuses OMP's searches, reads and edits of it", () => {
+		const { data, base } = setup();
+		expect(guardOmpToolCall("grep", { pattern: "x", path: data }, base)).toMatch(/would search credential files/);
+		expect(guardOmpToolCall("read", { path: join(data, "remotes.json") }, base)).toMatch(/sensitive/);
+		expect(guardOmpToolCall("edit", { path: join(data, "lanes", "Birch", "memory.sqlite"), input: "x" }, base)).toMatch(/sensitive/);
+		expect(guardOmpToolCall("read", { path: join(data, "app", "current", "src") }, base)).toBeUndefined();
+	});
+
+	it("refuses a .. spelling and another letter case", () => {
+		const { data, base } = setup();
+		expect(read(join(data, "app", "..", "remotes.json"), base)).toMatch(/sensitive/);
+		expect(read(join(data, "REMOTES.json"), base)).toMatch(/sensitive/);
+	});
+
+	it.each([
+		"cat ~/.orrery/remotes.json",
+		"cat $HOME/.orrery/lanes/Birch/memory.sqlite",
+		"sqlite3 /somewhere/.orrery/lanes/Birch/memory.sqlite .dump",
+		"tar czf x.tgz ~/.orrery/backups",
+		"cat ~/.local/share/orrery/remotes.json",
+		"cat ~/.config/orrery/backup.env",
+		"ls ~/.orrery/ssh/",
+		'ls "$HOME/.orrery/builds"',
+	])("refuses the command %s", (command) => {
+		expect(checkToolCall({ name: "bash", arguments: { command } }, options)).toMatch(/sensitive/);
+	});
+
+	it.each(["cat .orrery/view.md", "ls ~/.orrery/app/current/src", "cat ~/.orrery/config.toml", "ls ~/.local/share/orrery/app/current"])("allows %s", (command) => {
+		expect(checkToolCall({ name: "bash", arguments: { command } }, options)).toBeUndefined();
 	});
 });

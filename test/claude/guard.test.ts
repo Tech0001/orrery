@@ -451,9 +451,11 @@ describe("the PreToolUse hook", () => {
 		expect(await write(join(home, ".claude", "plans", "plan.md"))).toBe("");
 		expect(await write(join(tmp, `claude-${uid}`, "s", "scratchpad", "a.txt"))).toBe("");
 		expect(await write(join(t.workspace, "a.ts"))).toBe("");
-		for (const elsewhere of [join(home, ".claude", "settings.json"), join(home, ".claude", "projects", "-other", "memory", "MEMORY.md"), join(t.dir, "data", "x")]) {
+		for (const elsewhere of [join(home, ".claude", "settings.json"), join(home, ".claude", "projects", "-other", "memory", "MEMORY.md")]) {
 			expect(JSON.parse(await write(elsewhere)).hookSpecificOutput.permissionDecisionReason).toMatch(/^Orrery guard: .*outside this lane's workspace/);
 		}
+		// Orrery's own home is refused outright now, not only as outside the workspace.
+		expect(JSON.parse(await write(join(t.dir, "data", "x"))).hookSpecificOutput.permissionDecisionReason).toMatch(/^Orrery guard: .*sensitive/);
 	});
 
 	it("counts Claude Code's login in a config folder moved by CLAUDE_CONFIG_DIR as credentials", async () => {
@@ -642,4 +644,19 @@ describe("the PreToolUse hook answers in time, whatever the size of the call (fi
 		const under = hookCli("pre-tool-use", write("é".repeat(400 * 1024)), env);
 		expect([under.status, under.stdout, under.stderr]).toEqual([0, "", ""]);
 	}, 60_000);
+});
+
+describe("claudeGuard keeps Orrery's home out", () => {
+	it("refuses the remote keys through the hook with the lane's real config, and a search of the home", async () => {
+		const t = testLane();
+		const { home } = setup();
+		const data = t.config.dataDir;
+		mkdirSync(data, { recursive: true });
+		writeFileSync(join(data, "remotes.json"), "{}");
+		const c = { config: t.config, env: { CLAUDE_PROJECT_DIR: t.workspace }, claudePid: 1, startHolder: () => {}, home };
+		const call = (tool_name: string, tool_input: object) => runHook("pre-tool-use", JSON.stringify({ session_id: "s1", cwd: t.workspace, tool_name, tool_input }), c);
+		expect(JSON.parse(await call("Read", { file_path: join(data, "remotes.json") })).hookSpecificOutput.permissionDecisionReason).toMatch(/sensitive/);
+		const options = { workspace: t.workspace, allowedRoots: [] as string[], cwd: t.workspace, home, orreryData: data };
+		expect(claudeGuard("Grep", { pattern: "x", path: data }, options)).toMatch(/credential/);
+	});
 });

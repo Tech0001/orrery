@@ -96,6 +96,7 @@ export interface OrreryOptions {
 interface Guarded {
 	readonly lane: LaneConfig;
 	readonly credentials: readonly string[];
+	readonly orreryData: string;
 	readonly home: string;
 }
 
@@ -103,7 +104,7 @@ interface Guarded {
 function guarded(lane: LaneConfig, config: HarnessConfig, options: OrreryOptions): Guarded {
 	const env = options.env ?? process.env;
 	const home = options.home ?? homedir();
-	return { lane, home, credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)] };
+	return { lane, home, orreryData: config.dataDir, credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)] };
 }
 
 /** OMP's extension API carries its schema libraries (`arktype`, `zod`); pi's has neither. */
@@ -644,8 +645,8 @@ function guard(pi: ExtensionAPI, state: OrreryState, host: "pi" | "omp"): void {
 	const judge = host === "omp" ? guardOmpToolCall : guardToolCall;
 	pi.on("tool_call", (event, ctx) => {
 		if (state.guarded === undefined) return;
-		const { lane, credentials, home } = state.guarded;
-		const reason = judge(event.toolName, event.input as Record<string, unknown>, { workspace: lane.workspace, allowedRoots: lane.allowedRoots, cwd: ctx.cwd, credentials, home });
+		const { lane, credentials, orreryData, home } = state.guarded;
+		const reason = judge(event.toolName, event.input as Record<string, unknown>, { workspace: lane.workspace, allowedRoots: lane.allowedRoots, cwd: ctx.cwd, credentials, orreryData, home });
 		return reason === undefined ? undefined : { block: true, reason };
 	});
 }

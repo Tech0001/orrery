@@ -76,6 +76,8 @@ export interface PathGuardOptions extends GuardOptions {
 	readonly home?: string;
 	/** More credential files by absolute path (orrery's own credentials.json, pi's files in a moved agent dir). */
 	readonly credentials?: readonly string[];
+	/** Orrery's home (data_dir): refused whole, except app/ (the installed program) and config.toml (no secrets by rule). */
+	readonly orreryData?: string;
 	/** How the tool resolves the path it is given, to the file it will open; default: pi's (piToolPath). */
 	readonly resolvePath?: (raw: string, cwd: string, home: string) => string;
 }
@@ -424,9 +426,15 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	const where = fold(target);
 	const credentials = [...HOME_CREDENTIALS.map((entry) => join(home, entry)), ...(options.credentials ?? [])].map((path) => fold(realTarget(path)));
 	if (credentials.some((location) => within(where, location))) return SENSITIVE_FILE(raw);
+	const data = options.orreryData === undefined ? undefined : fold(realTarget(options.orreryData));
+	if (data !== undefined && options.orreryData !== undefined) {
+		const config = fold(realTarget(join(options.orreryData, "config.toml")));
+		const program = fold(realTarget(join(options.orreryData, "app")));
+		if (within(where, data) && where !== config && !within(where, program) && !(search && where === data)) return SENSITIVE_FILE(raw);
+	}
 	// A search reads everything under its root, hidden files too, whatever its glob: judge the root, not the glob's
 	// spelling. Home and above hold the credentials; /proc holds every process's environment.
-	if (search && (credentials.some((location) => within(location, where)) || within(where, "/proc"))) {
+	if (search && (credentials.some((location) => within(location, where)) || (data !== undefined && within(data, where)) || within(where, "/proc"))) {
 		return `${toolName} on ${target} would search credential files (~/.ssh, ~/.pi and the like, or /proc); search a narrower folder.`;
 	}
 	return checkToolCall(

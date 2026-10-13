@@ -306,6 +306,7 @@ export function preToolUse(input: HookInput, ctx: HookContext): object | undefin
 			allowedRoots: [...found.lane.allowedRoots, ...claudeStateRoots(found.projectDir, home, ctx.env)],
 			cwd: typeof input.cwd === "string" ? input.cwd : found.projectDir,
 			credentials: [ctx.config.credentialsPath, ...movedAgentDirCredentials(ctx.env, home), ...movedConfigDirCredentials(ctx.env), ...ompCredentials(ctx.env, home)],
+			orreryData: ctx.config.dataDir,
 			home,
 		});
 	} catch (error) {
