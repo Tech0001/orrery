@@ -266,6 +266,9 @@ Ori's telemetry, updates and cloud-session settings are explained separately in 
 ## The credential guard
 
 The guard rejects known credential paths and disallowed file-tool targets.
+Inside Orrery's home (`~/.orrery`, or `ORRERY_HOME`), file tools are refused everywhere except `app/`, the installed
+program, and `config.toml`. Paths are compared by real path, so a link into the home does not get around it.
+Shell commands that name `.orrery` are refused unless they point at `app/`, `config.toml` or a lane folder's `view.md`.
 Shared rules handle normalization and symlinks; adapters map each host's arguments to those rules.
 Host-specific checks cover multi-file edits and known credential locations.
 Some ambiguous OMP edit or glob forms are refused because their targets cannot be judged reliably.

@@ -1,5 +1,5 @@
-# ~/.config/orrery/config.toml on the workstation. Lanes run inside pi; this file maps folders to lanes.
-data_dir = "~/.local/share/orrery"
+# ~/.orrery/config.toml on the workstation. Lanes run inside pi; this file maps folders to lanes.
+# data_dir is optional: with none, memory lives beside this file, in ~/.orrery.
 
 [lanes.Atlas]
 workspace = "/home/alex/code/agent-Atlas"

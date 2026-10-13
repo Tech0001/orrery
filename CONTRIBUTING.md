@@ -29,6 +29,9 @@ Orrery needs Node 22.19 or newer. Keep install scripts off for every npm install
 The README's [Development](README.md#development) section covers the Bun store check, the Python parity oracle and the
 real pi, OMP and Ori tests.
 
+To try a change in your real lanes, commit it and run `npm run install-local`. It installs the last commit into
+`~/.orrery/app`; `orrery install --rollback` undoes it.
+
 ## Making a change
 
 - Open an issue first for larger changes, so the approach is agreed before the work: a new tool adapter, a memory

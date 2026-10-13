@@ -1,14 +1,14 @@
 # Lanes in Claude Code
 
-A lane can run in Claude Code as well as in pi, on the same memory (`~/.local/share/orrery/lanes/<Lane>/`). Monday in
+A lane can run in Claude Code as well as in pi, on the same memory (`~/.orrery/lanes/<Lane>/`). Monday in
 pi and Tuesday in Claude Code are one memory. Claude's subscription covers Claude Code, not pi.
 
 ## Install, once per machine
 
 Or run `orrery`, open Tools (4), select Claude Code and press `I` (`orrery tools install claude-code`).
 
-1. Orrery itself, as in [pi.md](pi.md): the repo with `npm ci --ignore-scripts`, the `~/.local/bin/orrery` link, and
-   `~/.config/orrery/config.toml`.
+1. Orrery itself, as in [pi.md](pi.md): `npm run install-local`, which installs the `orrery` command and the plugin,
+   and `~/.orrery/config.toml`.
 2. A login for summaries. Summaries run in the background on Orrery's own login, not Claude's. Run
    `orrery login openai` (Sign in with ChatGPT) for the lanes' `compactor_model`.
 3. The plugin:
@@ -23,8 +23,9 @@ run for it (below). In any other lane's folder, or a subfolder of one, Claude Co
 recorder starts, nothing is kept, and the lane stays free for pi. The first line the model gets says so, and so does
 a message to you. The guard still applies there.
 
-The plugin runs `~/.local/bin/orrery`, so it uses this checkout's code and this machine's Node. Changes to Orrery's
-code need no reinstall. Without that launcher the hooks do nothing: they exit quietly and print nothing. Claude Code
+The plugin runs `~/.local/bin/orrery`, so it uses the installed version (`~/.orrery/app/current`) and this
+machine's Node. After a change to Orrery's code, run `npm run install-local` again; running sessions keep their version
+until they restart. Without that launcher the hooks do nothing: they exit quietly and print nothing. Claude Code
 then lists the `orrery` MCP server as failed to connect.
 
 After a change to `claude-plugin/` itself, bump `version` in `claude-plugin/.claude-plugin/plugin.json` (a fixed

@@ -12,7 +12,7 @@ hand, write a one-line extension file that re-exports Orrery's OMP entry by a re
 
 ```bash
 mkdir -p ~/.omp/agent/extensions
-printf 'export { default } from "%s";\n' "$(realpath --relative-to ~/.omp/agent/extensions ~/code/orrery/src/omp/index.ts)" > ~/.omp/agent/extensions/orrery.ts
+printf 'export { default } from "%s";\n' "$(realpath --relative-to ~/.omp/agent/extensions ~/.orrery/app/current/src/omp/index.ts)" > ~/.omp/agent/extensions/orrery.ts
 ```
 
 The path must be relative. OMP does not follow an absolute re-export, and Orrery then fails to load ("Cannot find
@@ -78,6 +78,8 @@ folder or glob it rewrites; and searches and reads given several paths in one st
 blocked in every tool, in pi and Claude Code lanes too: `~/.omp/agent/agent.db`, `models.yml`, `.env` and
 `secrets.yml`, and `~/.omp/.env`; the same in each profile, in an agent folder `PI_CODING_AGENT_DIR` names, and in the
 folder `PI_CONFIG_DIR` moves `~/.omp` to; `agent.db` under `$XDG_DATA_HOME/omp`; and a project's `.omp/secrets.yml`.
+
+Inside Orrery's home (`~/.orrery`), file tools are refused everywhere except `app/` and `config.toml`.
 
 It is a credential guard, not a sandbox. `bash` and `eval` get only a check of their text for ssh keys and credential
 stores; the code they run can reach any file. Tools from OMP plugins are not checked.

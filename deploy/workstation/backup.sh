@@ -3,7 +3,9 @@
 # A systemd user service may not have node on its PATH, and orrery needs it.
 export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
 set -euo pipefail
-backups="$HOME/.local/share/orrery/backups"
+home="${ORRERY_HOME:-$HOME/.orrery}"
+backups="$home/backups"
+settings="$home/backup.env"
 # rsync --delete from a missing or empty folder would wipe the remote copy, so refuse.
 require_backups() {
 	if [ ! -d "$backups" ] || [ -z "$(ls -A "$backups")" ]; then
@@ -15,7 +17,6 @@ require_backups() {
 orrery backup
 require_backups
 
-settings="${XDG_CONFIG_HOME:-$HOME/.config}/orrery/backup.env"
 if [ ! -f "$settings" ]; then
 	echo "orrery-backup: backup.env is missing; create $settings (see docs/deploy.md)" >&2
 	exit 1

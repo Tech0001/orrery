@@ -3,4 +3,4 @@ Description=orrery backup: snapshot every lane's memory and copy it to a backup 
 
 [Service]
 Type=oneshot
-ExecStart=%h/code/orrery/deploy/workstation/backup.sh
+ExecStart=%h/.orrery/app/current/deploy/workstation/backup.sh

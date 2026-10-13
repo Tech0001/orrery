@@ -52,10 +52,24 @@ key or a compatible local model server.
 ### Install
 
 ```bash
-git clone https://github.com/Tech0001/orrery.git orrery
+git clone https://github.com/Tech0001/orrery.git
 cd orrery
 npm_config_ignore_scripts=true npm ci
+npm run install-local
 ```
+
+The install copies the last commit to `~/.orrery/app`, and pi, OMP, Claude Code and the `orrery` command run from
+there. Edits in the checkout that are not committed do not reach your lanes. The installer asks before replacing
+anything that is not Orrery's; `--yes` answers yes. `ORRERY_HOME` moves the whole `~/.orrery` folder.
+
+### Upgrading
+
+```bash
+git pull && npm run install-local
+```
+
+Running lanes keep their version until they restart. `orrery install --rollback` switches back to the previous
+version, and `orrery install --list` shows the installed versions and which lanes run them.
 
 ### Try the demo
 
@@ -72,21 +86,15 @@ editing, sign-in, installation and launching are disabled in the demo. Codex rem
 
 ### Set up your lanes
 
-Put the `orrery` command on your PATH:
+The install puts the `orrery` command in `~/.local/bin`. Add that folder to your shell's PATH if it is not there
+already, then start the TUI:
 
 ```bash
-mkdir -p ~/.local/bin
-ln -s "$PWD/src/cli/main.ts" ~/.local/bin/orrery
-export PATH="$HOME/.local/bin:$PATH"
 orrery
 ```
 
-Keep the checkout in place: the command and extensions load code from it. Add `~/.local/bin` to your shell's PATH
-permanently if it is not already there. If an `orrery` command already exists, use that installation or choose a
-new link location rather than replacing it blindly.
-
 First-run setup asks where memory should live, which folder is your first lane, which tool to launch, and how to
-make summaries. The usual config is `~/.config/orrery/config.toml`; `ORRERY_CONFIG` or `--config` can select another.
+make summaries. The config is `~/.orrery/config.toml`; `ORRERY_CONFIG` or `--config` can select another.
 
 1. Open **Tools** (4), select pi, OMP or Claude Code, and press **I** to install Orrery's wiring.
 2. Return to **Lanes** (1), select your lane, and press **L** to launch it. Quit the tool to return to Orrery.
@@ -138,7 +146,9 @@ are encrypted with a recovery code you keep. See [remote lane setup and commands
 
 ## Safety
 
-Orrery's credential guard checks known sensitive paths and supported tool arguments. **It is not a sandbox**:
+Orrery's credential guard refuses agents' file tools anywhere in `~/.orrery` except the installed program (`app/`)
+and `config.toml`, and it checks other known sensitive paths and supported tool arguments. Shell commands that name
+`~/.orrery` are refused unless they point at `app/`, `config.toml` or a lane's `view.md`. **It is not a sandbox**:
 shell code, unknown plugin tools and host hook failures can exceed its coverage. See each tool guide for limits.
 
 Credentials are stored outside the repository in private files with mode 0600. Enter keys through Logins or the

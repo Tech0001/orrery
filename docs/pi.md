@@ -17,26 +17,24 @@ printf 'export { default } from "%s/src/pi/index.ts";\n' ~/code/orrery > ~/.pi/a
 Don't symlink `src/pi` into the extensions folder. pi resolves an extension's imports from where it finds the file,
 so a link breaks Orrery's imports, and pi then fails to start at all.
 
-Install the repo's dependencies. Orrery's files load from the repo, so pi finds typebox and smol-toml in the repo's
-`node_modules`.
+Install from a checkout. The install copies the last commit and its runtime packages to `~/.orrery/app`, so pi finds
+typebox and smol-toml there, and pi loads the extension from that copy.
 
 ```bash
-cd ~/code/orrery && npm ci --ignore-scripts
+cd ~/code/orrery
+npm_config_ignore_scripts=true npm ci
+npm run install-local
 ```
 
 To remove Orrery from pi, delete `~/.pi/agent/extensions/orrery.ts`.
 
-Put `orrery` on your PATH (it is a link to `src/cli/main.ts`):
-
-```bash
-ln -s ~/code/orrery/src/cli/main.ts ~/.local/bin/orrery
-```
+The install also puts `orrery` on your PATH, as `~/.local/bin/orrery`.
 
 Write the config. Start from [deploy/workstation/config.example.toml](../deploy/workstation/config.example.toml).
-`~` works in `data_dir`.
+`~` works in `data_dir`, which you can leave out to keep memory in `~/.orrery`.
 
 ```bash
-install -D deploy/workstation/config.example.toml ~/.config/orrery/config.toml
+install -D deploy/workstation/config.example.toml ~/.orrery/config.toml
 ```
 
 The extension targets pi 1.0.4 and is also tested with 1.1.0. If you use mise, select a compatible version:
@@ -68,8 +66,7 @@ Summaries use Orrery's own logins, in pi and in Claude Code alike (pi's `/login`
 shell: `orrery login openai` (Sign in with ChatGPT), or `orrery login --key openai|anthropic|openrouter` for an API key
 (typed hidden; `--from-pi` copies a key pi's `/login` already saved). `orrery logins` lists what is saved, never the
 keys; `orrery logout openai` or `orrery logout --key <name>` removes one.
-Orrery's logins live in its own credential file, `credentials.json` in the config's `data_dir` (on the workstation
-`~/.local/share/orrery/`; the config's `credentials` key can move it), mode 0600.
+Orrery's logins live in its own credential file, `credentials.json` in `~/.orrery/` (the config's `credentials` key can move it), mode 0600.
 
 Commands from Orrery:
 
@@ -166,12 +163,11 @@ First create your local `backup.env` from [the example](../deploy/workstation/ba
 user and SSH identity for your backup destination. See [deployment and backups](deploy.md#workstation-backups)
 for the complete setup. The script refuses to run without this file.
 
-Install the timer after setting `ExecStart` in the service copy to your checkout's `deploy/workstation/backup.sh`:
+The service runs the installed script, `~/.orrery/app/current/deploy/workstation/backup.sh`. Install the timer:
 
 ```bash
-cd ~/code/orrery/deploy/workstation
+cd ~/.orrery/app/current/deploy/workstation
 install -D -m 644 orrery-backup.service orrery-backup.timer -t ~/.config/systemd/user/
-# Edit ~/.config/systemd/user/orrery-backup.service if your checkout is elsewhere.
 systemctl --user daemon-reload
 systemctl --user enable --now orrery-backup.timer
 systemctl --user start orrery-backup.service
@@ -188,7 +184,7 @@ journalctl --user -u orrery-backup.service
 The remote destination is a mirror of the local backups, with the same retention (`orrery backup` keeps 14 days). The script refuses to
 sync when the local backups folder is missing or empty, so a failed backup cannot wipe the remote copy.
 
-Backups are in `~/.local/share/orrery/backups/<date>/<Lane>/`. Restore with `orrery restore <Lane> --from <date>`,
+Backups are in `~/.orrery/backups/<date>/<Lane>/`. Restore with `orrery restore <Lane> --from <date>`,
 with the lane's pi closed.
 
 ## One writer

@@ -97,7 +97,7 @@ host = "home"
 folder = "orrery lanes"
 ```
 
-Use an identity file whose public key is authorized for that SSH user. Pin the
+Use an identity file (a relative path starts at `~/.orrery`) whose public key is authorized for that SSH user. Pin the
 server's host key with `orrery trust-host home` before using the remote. Orrery
 uses its own SSH configuration and known-hosts file; it does not depend on your
 personal `~/.ssh/config`. Connections are noninteractive and refuse an untrusted
@@ -163,7 +163,7 @@ Then, on each machine:
 orrery remote add cloud --cloudflare https://orrery-memory.YOUR-ACCOUNT.workers.dev
 ```
 
-Orrery asks for the access token. On the first machine it creates an encryption key and shows a recovery code; keep that code safe. Other machines need the same token and recovery code. Orrery keeps them in its private `remotes.json`, not in `config.toml`. A lane can be held by one machine at a time.
+Orrery asks for the access token. On the first machine it creates an encryption key and shows a recovery code; keep that code safe. Other machines need the same token and recovery code. Orrery keeps them in its private `~/.orrery/remotes.json`, not in `config.toml`. A lane can be held by one machine at a time.
 
 The Tools page reports Wrangler's location and version, checking both PATH and this repository's `worker/node_modules/.bin`. Deployment and sign-in remain commands you run yourself.
 

@@ -66,11 +66,11 @@ The [pi guide](pi.md#imports-and-builds) describes selecting individual history 
 ## Workstation backups
 
 `orrery backup` snapshots all configured lanes and keeps fourteen days by default. The optional workstation timer
-also mirrors those snapshots over SSH. Its destination settings live outside the checkout:
+also mirrors those snapshots over SSH. Its destination settings live in `~/.orrery/backup.env`, outside the checkout:
 
 ```bash
-mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/orrery"
-install -m 600 deploy/workstation/backup.env.example "${XDG_CONFIG_HOME:-$HOME/.config}/orrery/backup.env"
+mkdir -p ~/.orrery
+install -m 600 deploy/workstation/backup.env.example ~/.orrery/backup.env
 # Edit backup.env: BACKUP_HOST, BACKUP_USER, BACKUP_IDENTITY_FILE.
 ```
 
@@ -81,19 +81,20 @@ The script takes the local snapshot first, then checks `backup.env` just before 
 env file fails the copy with a plain message and a nonzero exit; the local snapshot remains. A failed snapshot
 or empty local backup folder also stops the copy.
 
-Copy `deploy/workstation/orrery-backup.service` and `.timer` into `~/.config/systemd/user/`. Set the service's
-`ExecStart` to your checkout's `deploy/workstation/backup.sh`; the example assumes `~/code/orrery`.
+Copy `deploy/workstation/orrery-backup.service` and `.timer` into `~/.config/systemd/user/`. The service's
+`ExecStart` is the installed script, `~/.orrery/app/current/deploy/workstation/backup.sh`, which
+`npm run install-local` puts in place.
 Then run `systemctl --user daemon-reload`, `systemctl --user enable --now orrery-backup.timer`, and
 `systemctl --user start orrery-backup.service` once to verify it. Check failures with
 `journalctl --user -u orrery-backup.service`.
 
-An existing installation upgrading from a hard-coded destination must create `backup.env` with its previous host,
-user and identity before switching to this script. The installed timer and script path can remain unchanged.
+After an upgrade (`npm run install-local`), the timer keeps working: its service names `app/current`, which points at
+the new version.
 
 ## Restore
 
 Snapshots contain `memory.sqlite`, `memory.jsonl` and, for durable-runtime lanes, `session.sqlite`. Workstation
-backups are under `~/.local/share/orrery/backups/<date>/<Lane>/`; server backups use `/var/lib/orrery/backups/`.
+backups are under `~/.orrery/backups/<date>/<Lane>/`; server backups use `/var/lib/orrery/backups/`.
 Keep remote backups and exports private: they contain conversation content.
 
 Close the lane in every tool before restoring:
