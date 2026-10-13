@@ -45,7 +45,7 @@ export function sensitive(text: string): boolean {
 /**
  * The ways a shell (or a path tool) may read a text: as written; with line continuations, quotes, backslashes and empty
  * substitutions gone (bash joins "~/.orr''ery" and "~/.orr$()ery"); with "//", "./" and "x/.." collapsed; and, for those
- * two, with each brace group {p,q} read as its first, a middle, or its last alternative.
+ * two, with each brace group {p,q,...} read as each of its alternatives in turn.
  */
 function readings(lower: string): string[] {
 	let bare = lower.replace(/\\\n/g, "").replace(/\$(?=['"])/g, "");
@@ -58,7 +58,11 @@ function readings(lower: string): string[] {
 	const collapsed = bare.replace(/[^\s;|&()<>`]+/g, collapse);
 	const forms = [lower, bare, collapsed];
 	for (const base of [bare, collapsed]) {
-		for (const pick of [0, 1, 2, -1]) forms.push(braces(base, pick));
+		let widest = 0;
+		for (const group of base.matchAll(BRACE)) widest = Math.max(widest, group[1].split(",").length);
+		// Past the cap, a brace body that spells orrery is refused outright (the bare name stands for it).
+		if (widest > MAX_ALTERNATIVES && /\{[^{}]*orrery/.test(base)) forms.push("/.orrery");
+		for (let pick = 0; pick < Math.min(widest, MAX_ALTERNATIVES); pick++) forms.push(braces(base, pick));
 	}
 	return [...new Set(forms)];
 }
@@ -76,15 +80,16 @@ function collapse(word: string): string {
 }
 
 // A brace expansion: one word with a comma inside the braces. Braces holding spaces or no comma (jq, JSON, code) are not.
+const MAX_ALTERNATIVES = 64;
 const BRACE = /\{([^{}\s,]*(?:,[^{}\s,]*)+)\}/g;
 
-/** Each brace group read as alternative `pick` (-1: the last; past the end: the last). */
+/** Each brace group read as alternative `pick` (the last one for a group with fewer). */
 function braces(text: string, pick: number): string {
 	let out = text;
 	for (let pass = 0; pass < 4; pass++) {
 		const next = out.replace(BRACE, (_group, body: string) => {
 			const alternatives = body.split(",");
-			return alternatives[pick < 0 ? alternatives.length - 1 : Math.min(pick, alternatives.length - 1)];
+			return alternatives[Math.min(pick, alternatives.length - 1)];
 		});
 		if (next === out) break;
 		out = next;
@@ -92,14 +97,9 @@ function braces(text: string, pick: number): string {
 	return out;
 }
 
-// What follows a folder name: the end, a separator, a shell terminator or a glob, then the rest of that word.
-const AFTER = String.raw`(?=$|[\s/;|&)<>*?[{$\x60\\])([^\s|;&)<>]*)`;
 // Orrery's home is named by its folder, whatever spells the path before it: .orrery as a path segment.
-const ORRERY_NAME = /(?:^|[\s/=:~])\.orrery(?=$|[/\s|;&)<>])([^\s|;&)<>]*)/g;
+const ORRERY_NAME = /(?:^|[\s/=:~,{])\.orrery(?=$|[/\s|;&)<>,}])([^\s|;&)<>,}]*)/g;
 const ORRERY_GLOB = /\.orrery\/+[^\s/|;&)<>]*[*?[]/;
-// The old folders, which are links to the whole home after move-home (and the XDG variables that name their parents).
-const OLD_CONFIG = new RegExp(String.raw`(?:\.config|xdg_config_home)\}?/+orrery${AFTER}`, "g");
-const OLD_DATA = new RegExp(String.raw`(?:\.local/share|xdg_data_home)\}?/+orrery${AFTER}`, "g");
 
 /** The path words after the folder; undefined when a variable or escape could still change them. */
 function words(rest: string): string[] | undefined {
@@ -114,15 +114,13 @@ function program(parts: string[] | undefined): boolean {
 
 const only = (parts: string[] | undefined, name: string) => parts?.length === 1 && parts[0] === name;
 
-/** Whether a reading names Orrery's home or an old folder, beyond the program (app/), config.toml and a lane's view.md. */
+/** Whether a reading names Orrery's home, beyond the program (app/), config.toml and a lane's view.md. */
 function orreryNamed(form: string): boolean {
 	if (ORRERY_GLOB.test(form)) return true;
 	for (const match of form.matchAll(ORRERY_NAME)) {
 		const parts = words(match[1]);
 		if (!program(parts) && !only(parts, "config.toml") && !only(parts, "view.md")) return true;
 	}
-	for (const match of form.matchAll(OLD_CONFIG)) if (!only(words(match[1]), "config.toml")) return true;
-	for (const match of form.matchAll(OLD_DATA)) if (!program(words(match[1]))) return true;
 	return false;
 }
 

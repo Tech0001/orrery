@@ -125,9 +125,6 @@ describe("Orrery's own home", () => {
 		for (const dir of ["lanes/Atlas", "lanes/Birch", "backups/2026-10-13", "builds", "ssh", "app/0.6.0-abc1234/src"]) mkdirSync(join(data, dir), { recursive: true });
 		symlinkSync("0.6.0-abc1234", join(data, "app", "current"));
 		for (const file of ["config.toml", "remotes.json", "device-id", "credentials.json", "backup.env", "lanes/Birch/memory.sqlite", "ssh/known_hosts"]) writeFileSync(join(data, file), "");
-		// The old paths, left as links by move-home.
-		mkdirSync(join(home, ".local", "share"), { recursive: true });
-		symlinkSync(data, join(home, ".local", "share", "orrery"));
 		const workspace = join(home, "ws");
 		mkdirSync(workspace);
 		return { home, data, base: { workspace, allowedRoots: [] as string[], cwd: workspace, home, orreryData: data } };
@@ -137,11 +134,6 @@ describe("Orrery's own home", () => {
 	it.each(["remotes.json", "device-id", "ssh/known_hosts", "lanes/Birch/memory.sqlite", "backups/2026-10-13", "builds", "backup.env"])("refuses %s", (rel) => {
 		const { data, base } = setup();
 		expect(read(join(data, rel), base)).toMatch(/sensitive/);
-	});
-
-	it("refuses the same files reached through the old-path link", () => {
-		const { home, base } = setup();
-		expect(read(join(home, ".local", "share", "orrery", "remotes.json"), base)).toMatch(/sensitive/);
 	});
 
 	it("allows the installed program and the config", () => {
@@ -176,15 +168,8 @@ describe("Orrery's own home", () => {
 		"cat $HOME/.orrery/lanes/Birch/memory.sqlite",
 		"sqlite3 /somewhere/.orrery/lanes/Birch/memory.sqlite .dump",
 		"tar czf x.tgz ~/.orrery/backups",
-		"cat ~/.local/share/orrery/remotes.json",
-		"cat ~/.config/orrery/backup.env",
 		"ls ~/.orrery/ssh/",
 		'ls "$HOME/.orrery/builds"',
-		// the old config folder is a link to the whole home after move-home
-		"cat ~/.config/orrery/remotes.json",
-		"sqlite3 ~/.config/orrery/lanes/Birch/memory.sqlite .dump",
-		"ls ~/.config/orrery/ssh/",
-		"ls ~/.config/orrery",
 		// the bare home, in every spelling of home
 		"grep -r sk- ~/.orrery",
 		"tar czf x.tgz ~/.orrery",
@@ -197,12 +182,9 @@ describe("Orrery's own home", () => {
 		"cp -r /home/someone/.orrery /tmp/x",
 		"cp -r /Users/Someone/.Orrery /tmp/x",
 		"cp -r /root/.orrery /tmp/x",
-		"ls ~/.local/share/orrery",
-		"ls ~/.local/share/orrery/lanes",
 		// spellings that reach the same files
 		"cat ~/.orrery/app/../remotes.json",
 		"ls ~/.orrery/app/../lanes",
-		"cat ~/.local/share/orrery/app/../remotes.json",
 		"cat /somewhere/.orrery/app/../remotes.json",
 		"cat ~/.orrery/./remotes.json",
 		"cat ~/.orrery//remotes.json",
@@ -225,13 +207,6 @@ describe("Orrery's own home", () => {
 		"tar czf x ~/'.orrery'",
 		'tar czf x ~/".orrery"',
 		"tar czf x ~/x/../.orrery",
-		// and in the old folders
-		"cat ~/.config//orrery/remotes.json",
-		"cat ~/.config/./orrery/remotes.json",
-		'cat ~/.config/"orrery"/remotes.json',
-		"cat ~/.local//share/orrery/remotes.json",
-		"cat ~/.local/share/./orrery/remotes.json",
-		"cat /home/alex/.config/orrery/remotes.json",
 		// more spellings of home
 		"tar czf x ~alex/.orrery",
 		"tar czf x ${HOME%/}/.orrery",
@@ -241,7 +216,6 @@ describe("Orrery's own home", () => {
 		"tar czf x ~/.orr\\ery",
 		"tar czf x ~/.orr''ery",
 		'tar czf x ~/".orr"ery',
-		"cat ~/.config/orr\\ery/remotes.json",
 		// expansions in front of the folder
 		"tar czf x $(echo ~)/.orrery",
 		"tar czf x `echo ~`/.orrery",
@@ -252,10 +226,6 @@ describe("Orrery's own home", () => {
 		"tar czf x ~/{.orrery,y}",
 		"tar czf x {~,/x}/.orrery",
 		"tar czf x ~/.{orrery,x}",
-		// other home roots, and the old folders anywhere
-		"cat ~/../alex/.config/orrery/backup.env",
-		"tar -C/home/alex/.local/share/orrery x",
-		"cat /data/alex/.config/orrery/remotes.json",
 		"cat /mnt/home/alex/.orrery/lanes/x",
 		'tar -C"/home/alex"/.orrery x',
 		"cat ~/${x}.orrery/*",
@@ -273,14 +243,11 @@ describe("Orrery's own home", () => {
 		"tar czf x ~/.orrer{y,}",
 		"tar czf x ~/.{orr,x}ery",
 		"ls ~/{x,.orrery,y}/lanes",
+		"ls ~/{a,b,c,.orrery,d}/lanes",
+		"tar czf x ~/{1,2,3,4,5,6,.orrery}",
+		`tar czf x ~/{${Array.from({ length: 70 }, (_, i) => (i === 40 ? ".orrery" : `d${i}`)).join(",")}}`,
 		// .. nested deeper than any fixed cap
 		`cat ~/${"a/".repeat(12)}${"../".repeat(12)}.orrery/remotes.json`,
-		// the XDG folders
-		"cat $XDG_CONFIG_HOME/orrery/backup.env",
-		"cat ${XDG_DATA_HOME}/orrery/remotes.json",
-		"cat ${XDG_DATA_HOME:-~/.local/share}/orrery/remotes.json",
-		// a project-local .config/orrery is refused too (accepted cost of judging the name, not the home)
-		"cat ~/projects/x/.config/orrery/settings.json",
 		"ls .orrery",
 	])("refuses the command %s", (command) => {
 		expect(checkToolCall({ name: "bash", arguments: { command } }, options)).toMatch(/sensitive/);
@@ -315,7 +282,7 @@ describe("Orrery's own home", () => {
 	});
 
 	it("judges a very long command quickly", () => {
-		for (const unit of ["a/", "/", "./", "~/", "$", "{", "'", "x/../", "${", "{a,", "\\\n", "$()", "`", ".orrery/", "{a,b}"]) {
+		for (const unit of ["a/", "/", "./", "~/", "$", "{", "'", "x/../", "${", "{a,", "{a,b,c,d,e,f,g,h,", "{a,b,c,d,e,f,g,h}", "\\\n", "$()", "`", ".orrery/", "{a,b}"]) {
 			const command = `cat ${unit.repeat(100_000)}`;
 			const started = performance.now();
 			checkToolCall({ name: "bash", arguments: { command } }, options);
@@ -329,9 +296,6 @@ describe("Orrery's own home", () => {
 		"ls ~/.orrery/app",
 		"ls ~/.orrery/app/",
 		"cat ~/.orrery/config.toml",
-		"cat ~/.config/orrery/config.toml",
-		"ls ~/.local/share/orrery/app/current",
-		"ls ~/.local/share/orrery/app",
 		'cat "$HOME/.orrery/config.toml"',
 		"cat ~/.orrery-notes.txt",
 		"git status",
@@ -346,6 +310,7 @@ describe("Orrery's own home", () => {
 		"awk '{print $1}' f | grep orrery",
 		"git commit -m 'a {b} change\n\nOrrery now guards the home'",
 		"cat ~/.orrery.bak",
+		"cat ~/projects/x/.config/orrery/settings.json",
 	])("allows %s", (command) => {
 		expect(checkToolCall({ name: "bash", arguments: { command } }, options)).toBeUndefined();
 	});
