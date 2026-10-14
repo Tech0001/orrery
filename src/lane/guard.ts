@@ -1,7 +1,7 @@
 /**
  * A seatbelt, not a sandbox (spec §6).
  *
- * - write/edit must land inside the workspace and allowed roots.
+ * - write/edit must land inside the workspace and allowed roots, and never in Orrery's config.
  * - No file tool may touch ssh keys or credential stores, or another lane's memory view (GuardOptions.foreignViews).
  * - File paths are checked inside the tools themselves, resolved exactly the way pi's tools resolve them (`@`
  *   prefix, `~`, `file://`, relative to cwd) and then through symlinks, so the check and the write see the same file.
@@ -9,6 +9,9 @@
  * Limits, by design:
  * - Shell commands cannot be parsed reliably, so bash only gets the sensitive-pattern check.
  * - A lane can still reach anything its OS account can. The real boundary is the account the tools run as.
+ * - No search-root rule here: a grep or find over a folder holding a credential store or another lane's view is not
+ *   refused (pi's, OMP's and Claude Code's guards refuse it; src/lane/guard-paths.ts).
+ * - A hard link to another lane's view is another name for the same file; links are not counted.
  */
 
 import { posix } from "node:path";
@@ -16,7 +19,7 @@ import type { Context } from "@earendil-works/chord";
 import { defineExtension, hook, type ToolRegistration, ToolTask, wrapTool } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
-import { checkToolCall, type GuardOptions, inOrreryHome, sensitive, viewRules, within } from "./guard-rules.ts";
+import { CONFIG_READ_ONLY, checkToolCall, type GuardOptions, inOrreryHome, orreryConfigNamed, sensitive, viewRules, within } from "./guard-rules.ts";
 
 export { checkToolCall, type GuardOptions };
 
@@ -81,15 +84,18 @@ export async function checkResolvedPath(
 	const refused = `${real} is a sensitive file (keys, credentials or Orrery's private data).`;
 	// Which view files the path may be (GuardOptions.foreignViews): the session's own, as given and where it really is.
 	const views = viewRules(options, options.ownView === undefined ? [] : [options.ownView, await realPath(env, options.ownView, context)]);
-	if (sensitive(target, views?.path(target)) || sensitive(real, views?.path(real))) return refused;
+	if (sensitive(target, views.path(target)) || sensitive(real, views.path(real))) return refused;
 	const lower = real.toLowerCase();
 	for (const credential of options.credentials ?? []) if (within(lower, (await realPath(env, credential, context)).toLowerCase())) return refused;
 	// Another lane's view file, as given and where it really is.
-	for (const view of options.foreignViews ?? []) {
+	for (const view of options.foreignViews) {
 		if (within(lower, view.toLowerCase()) || within(lower, (await realPath(env, view, context)).toLowerCase())) return `${real} is another agent's memory view.`;
 	}
-	if (options.orreryData !== undefined && inOrreryHome(real, await realPath(env, options.orreryData, context))) return refused;
+	const data = options.orreryData === undefined ? undefined : await realPath(env, options.orreryData, context);
+	if (data !== undefined && inOrreryHome(real, data)) return refused;
 	if (mode === "write") {
+		// Orrery's config is read, never written: a lane's view and these rules come from it.
+		if (orreryConfigNamed(target) || orreryConfigNamed(real) || (data !== undefined && lower === posix.join(data, "config.toml").toLowerCase())) return CONFIG_READ_ONLY(real);
 		const roots = await Promise.all([options.workspace, ...options.allowedRoots].map((root) => realPath(env, root, context)));
 		if (!roots.some((root) => within(real, root))) return `${real} is outside this lane's workspace and allowed roots.`;
 	}

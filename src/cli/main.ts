@@ -695,14 +695,23 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
  * Code then runs plain. A config that is named but missing, or broken, gets one stderr line, `label` first.
  */
 function optionalConfig(configPath: string | undefined, label: string): HarnessConfig | undefined {
+	return foundConfig(configPath, label).config;
+}
+
+/** optionalConfig, and whether a config is there (or named) but could not be read: `broken`. */
+function foundConfig(configPath: string | undefined, label: string): { readonly config?: HarnessConfig; readonly broken: boolean } {
 	try {
-		return loadConfig(configPath);
+		return { config: loadConfig(configPath), broken: false };
 	} catch (error) {
 		const absent = (error as { code?: unknown }).code === "ENOENT" && configPath === undefined && !process.env.ORRERY_CONFIG;
 		if (!absent) process.stderr.write(`${label}: ${errorText(error)}\n`);
-		return undefined;
+		return { broken: !absent };
 	}
 }
+
+/** PreToolUse's answer that refuses the call, made here so it needs nothing that may have failed to load. */
+const denyToolCall = (reason: string) =>
+	JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: `Orrery guard: ${reason}` } });
 
 /**
  * Claude Code's MCP server, for the session's lane (src/claude/pick.ts: ORRERY_AGENT's, else the project folder's).
@@ -740,13 +749,17 @@ async function readStdin(max: number): Promise<string | undefined> {
 
 /**
  * `orrery claude-hook <event>`: Claude Code's hooks never fail a session. They exit 0, print only their JSON answer,
- * and note any error in one stderr line, never with message contents.
+ * and note any error in one stderr line, never with message contents. PreToolUse never lets a call through on a failure
+ * of its own (Claude Code allows a call the hook says nothing about): a config that is there, or named, but cannot be
+ * read denies every call until it is fixed, and so does an error. Without any config Claude Code runs plain.
  */
 async function claudeHook(event: string | undefined, configPath: string | undefined): Promise<number> {
+	const guarding = event === "pre-tool-use";
 	try {
-		const config = optionalConfig(configPath, "Orrery");
+		const { config, broken } = foundConfig(configPath, "Orrery");
 		if (config === undefined) {
 			await readStdin(0); // read to its end all the same, so Claude Code's write completes
+			if (guarding && broken) process.stdout.write(denyToolCall("Orrery's config could not be read, so no call can be checked; nothing was run. Fix the config file."));
 			return 0;
 		}
 		const hooks = await import("../claude/hooks.ts");
@@ -754,9 +767,11 @@ async function claudeHook(event: string | undefined, configPath: string | undefi
 		const stdin = await readStdin(hooks.hookInputMax(event ?? ""));
 		const claudePid = Number(process.env.CLAUDE_PID) || process.ppid;
 		const startHolder = (lane: LaneConfig, session: string, nonce: string, since: number) => hooks.spawnHolder(lane, session, nonce, claudePid, since, configPath);
-		process.stdout.write(await hooks.runHook(event ?? "", stdin, { config, env: process.env, claudePid, startHolder }));
+		const answer = await hooks.runHook(event ?? "", stdin, { config, env: process.env, claudePid, startHolder });
+		process.stdout.write(answer);
 	} catch (error) {
 		process.stderr.write(`Orrery: ${event ?? "claude-hook"}: ${errorText(error)}\n`);
+		if (guarding) process.stdout.write(denyToolCall(`this call could not be checked (${errorText(error)}); nothing was run.`));
 	}
 	return 0;
 }

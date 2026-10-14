@@ -79,7 +79,7 @@ blocked in every tool, in pi and Claude Code lanes too: `~/.omp/agent/agent.db`,
 `secrets.yml`, and `~/.omp/.env`; the same in each profile, in an agent folder `PI_CODING_AGENT_DIR` names, and in the
 folder `PI_CONFIG_DIR` moves `~/.omp` to; `agent.db` under `$XDG_DATA_HOME/omp`; and a project's `.omp/secrets.yml`.
 
-Inside Orrery's home (`~/.orrery`), file tools are refused everywhere except `app/` and `config.toml`.
+Inside Orrery's home (`~/.orrery`), file tools are refused everywhere except `app/` and reading `config.toml`.
 
 It is a credential guard, not a sandbox. `bash` and `eval` get only a check of their text for ssh keys and credential
 stores. The check also refuses commands that name Orrery's home (`.orrery`). The code they run can reach any file.

@@ -4,8 +4,11 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it } from "vitest";
 import { guardToolCall, movedAgentDirCredentials } from "../../src/pi/guard.ts";
+import type { HarnessConfig } from "../../src/lane/config.ts";
+import { createOrrery } from "../../src/pi/index.ts";
+import { fakeOmp, ompCleanup, track } from "../omp/world.ts";
 import type { PiRun } from "./harness.ts";
-import { cleanup, pi, world } from "./world.ts";
+import { cleanup, pi, scratchHome, summarySourcesFor, world } from "./world.ts";
 
 let dir: string;
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -17,9 +20,9 @@ function setup() {
 	mkdirSync(join(dir, "outside"));
 	symlinkSync(join(dir, "outside"), join(workspace, "link"));
 	// A scratch home, so no case stats the real one's credential files (~/.omp's among them).
-	return { workspace, options: { workspace, allowedRoots: [], cwd: join(workspace, "sub"), home: join(dir, "home") } };
+	return { workspace, options: { workspace, allowedRoots: [], cwd: join(workspace, "sub"), home: join(dir, "home"), foreignViews: [] as string[] } };
 }
-const write = (path: string, options: { workspace: string; allowedRoots: string[]; cwd: string }) => guardToolCall("write", { path, content: "x" }, options);
+const write = (path: string, options: Parameters<typeof guardToolCall>[2]) => guardToolCall("write", { path, content: "x" }, options);
 
 describe("guardToolCall resolves paths the way pi's tools do", () => {
 	it("blocks ~, @/abs, file:// and symlink escapes for write", () => {
@@ -217,7 +220,10 @@ describe("guardToolCall keeps Orrery's home out", () => {
 });
 
 describe("pi: only the agent that owns a folder's memory view reads it", () => {
-	afterEach(cleanup);
+	afterEach(async () => {
+		await ompCleanup();
+		await cleanup();
+	});
 
 	/** The world's two lanes, Atlas and Birch, each set up the file way: a memory view in its folder. */
 	function viewWorld() {
@@ -261,7 +267,31 @@ describe("pi: only the agent that owns a folder's memory view reads it", () => {
 		expect(readFileSync(birchView, "utf8")).toBe("Birch's view: secret");
 		expect(await call(atlas, "read", { path: ".orrery/view.md" })).toContain("Atlas's view: secret");
 		expect(await call(atlas, "read", { path: atlasView })).toContain("Atlas's view: secret");
-		expect(await call(atlas, "bash", { command: "cat .orrery/view.md" })).toContain("Atlas's view: secret");
+		// In shell text only by an absolute (or ~/) path: a shell's folder is not proof of where a relative one starts.
+		expect(await call(atlas, "bash", { command: `cat ${atlasView}` })).toContain("Atlas's view: secret");
+		refused(await call(atlas, "bash", { command: "cat .orrery/view.md" }));
+	}, 20_000);
+
+	it("lets Atlas, opened in Birch's folder, list its root with pi's ls and find, and refuses grep there (fix round 1)", async () => {
+		const { root, config } = viewWorld();
+		// pi's ls and find are not among pi's default tools, so pi's entry runs in a pi-shaped host here.
+		const options = { config, summarySources: async (cfg: HarnessConfig) => summarySourcesFor(cfg), ...scratchHome(root), env: { ORRERY_AGENT: "Atlas" } };
+		const host = track(fakeOmp(join(root, "agent-Birch"), [createOrrery(options)], { omp: false }));
+		await host.emit("session_start");
+		const tool = async (toolName: string, input: object) => (await host.emit("tool_call", { toolName, toolCallId: "t1", input }))[0];
+		expect(await tool("ls", { path: "." })).toBeUndefined();
+		expect(await tool("ls", {})).toBeUndefined();
+		expect(await tool("find", { pattern: "*.md" })).toBeUndefined();
+		expect(await tool("grep", { pattern: "secret" })).toEqual({ block: true, reason: expect.stringMatching(/memory view/) });
+		expect(await tool("grep", { pattern: "secret", path: "." })).toEqual({ block: true, reason: expect.stringMatching(/memory view/) });
+	});
+
+	it("refuses shell text that names Orrery's config, to read or to change it (fix round 1)", async () => {
+		const { root, config } = viewWorld();
+		const atlas = await pi(root, join(root, "agent-Atlas"), config);
+		for (const command of ["cat ~/.orrery/config.toml", "sed -i s/Atlas/Birch/ ~/.orrery/config.toml", "printf '[' >> ~/.orrery/config.toml"]) {
+			refused(await call(atlas, "bash", { command }));
+		}
 	}, 20_000);
 
 	it("refuses Birch's view to Atlas opened by ORRERY_AGENT in Birch's folder, and keeps Atlas's own open", async () => {
@@ -272,6 +302,7 @@ describe("pi: only the agent that owns a folder's memory view reads it", () => {
 		refused(await call(atlas, "edit", edit(".orrery/view.md")));
 		refused(await call(atlas, "bash", { command: "cat .orrery/view.md" }));
 		expect(await call(atlas, "read", { path: atlasView })).toContain("Atlas's view: secret");
+		expect(await call(atlas, "bash", { command: `cat ${atlasView}` })).toContain("Atlas's view: secret");
 	}, 20_000);
 
 	it("refuses every lane's view to a refused ORRERY_AGENT, the folder's own lane's too", async () => {

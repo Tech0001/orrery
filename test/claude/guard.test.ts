@@ -30,7 +30,7 @@ function setup() {
 	writeFileSync(join(home, ".pi", "agent", "models.json"), "{}");
 	symlinkSync(join(home, ".pi", "agent", "models.json"), join(workspace, "settings.json"));
 	symlinkSync(join(root, "outside"), join(workspace, "link"));
-	return { root, workspace, home, options: { workspace, allowedRoots: [] as string[], cwd: join(workspace, "sub"), home } };
+	return { root, workspace, home, options: { workspace, allowedRoots: [] as string[], cwd: join(workspace, "sub"), home, foreignViews: [] as string[] } };
 }
 
 describe("claudeGuard", () => {
@@ -658,7 +658,7 @@ describe("claudeGuard keeps Orrery's home out", () => {
 		const c = { config: t.config, env: { CLAUDE_PROJECT_DIR: t.workspace }, claudePid: 1, startHolder: () => {}, home };
 		const call = (tool_name: string, tool_input: object) => runHook("pre-tool-use", JSON.stringify({ session_id: "s1", cwd: t.workspace, tool_name, tool_input }), c);
 		expect(JSON.parse(await call("Read", { file_path: join(data, "remotes.json") })).hookSpecificOutput.permissionDecisionReason).toMatch(/sensitive/);
-		const options = { workspace: t.workspace, allowedRoots: [] as string[], cwd: t.workspace, home, orreryData: data };
+		const options = { workspace: t.workspace, allowedRoots: [] as string[], cwd: t.workspace, home, orreryData: data, foreignViews: [] as string[] };
 		expect(claudeGuard("Grep", { pattern: "x", path: data }, options)).toMatch(/credential/);
 	});
 });
@@ -708,22 +708,65 @@ describe("Claude Code: only the agent that owns a folder's memory view reads it"
 			["Write", { file_path: birchView, content: "planted" }],
 			["Grep", { pattern: "secret", path: birch }],
 			["Grep", { pattern: "secret", path: birchView }],
-			["Glob", { pattern: "**/*.md", path: birch }],
-			["Glob", { pattern: `${birch}/**/*.md` }],
+			["Glob", { pattern: "*", path: birchView }],
+			["LS", { path: birchView }],
 			["Bash", { command: `cat ${birchView}` }],
 			["Bash", { command: `grep -r secret ${birchView}` }],
 			["Bash", { command: `cd ${birch} && cat .orrery/view.md` }],
+			// Atlas's own view by a relative path in shell text (fix round 1: the shell's folder is no proof)
+			["Bash", { command: "cat .orrery/view.md" }],
 		];
 		for (const [name, input] of calls) expect([name, input, await tool(name, input)]).toEqual([name, input, REFUSED]);
-		const own: [string, object][] = [
+		const allowed: [string, object][] = [
 			["Read", { file_path: atlasView }],
 			["Grep", { pattern: "secret", path: atlas }],
 			["Grep", { pattern: "secret" }],
 			["Glob", { pattern: "**/*.md" }],
-			["Bash", { command: "cat .orrery/view.md" }],
-			["Bash", { command: "grep -r secret .orrery/view.md" }],
+			["Bash", { command: `cat ${atlasView}` }],
+			["Bash", { command: `grep -r secret ${atlasView}` }],
+			// Glob and LS list names only (fix round 1): a listing of Birch's folder goes through.
+			["Glob", { pattern: "**/*.md", path: birch }],
+			["Glob", { pattern: `${birch}/**/*.md` }],
+			["LS", { path: birch }],
 		];
-		for (const [name, input] of own) expect([name, input, await tool(name, input)]).toEqual([name, input, "allowed"]);
+		for (const [name, input] of allowed) expect([name, input, await tool(name, input)]).toEqual([name, input, "allowed"]);
+	});
+
+	it("lets an agent in a file-mode lane's folder list its root, never grep it (fix round 1)", async () => {
+		const { home, config, birch, atlasView } = viewLanes();
+		const { tool } = session(config, home, birch, { ORRERY_AGENT: "Atlas" });
+		// Claude Code refuses Atlas in Birch's file-mode folder: the session is no lane's, so every view is another's.
+		expect(await tool("Glob", { pattern: "**/*" })).toBe("allowed");
+		expect(await tool("LS", { path: birch })).toBe("allowed");
+		expect(await tool("Grep", { pattern: "secret" })).toEqual(REFUSED);
+		expect(await tool("Read", { file_path: atlasView })).toEqual(REFUSED);
+	});
+
+	it("refuses shell text that names Orrery's config, to read or to change it (fix round 1)", async () => {
+		const { home, config, atlas } = viewLanes();
+		const { tool } = session(config, home, atlas);
+		for (const command of ["cat ~/.orrery/config.toml", "sed -i s/Atlas/Birch/ ~/.orrery/config.toml", "printf '[' >> ~/.orrery/config.toml"]) {
+			expect([command, await tool("Bash", { command })]).toEqual([command, REFUSED]);
+		}
+		expect(await tool("Write", { file_path: join(home, ".orrery", "config.toml"), content: "[" })).toMatch(/^Orrery guard: .*(Orrery's config|outside)/);
+	});
+
+	it("denies a call when choosing the session's lane throws, rather than let it through (fix round 1)", async () => {
+		const { home, config, atlas } = viewLanes();
+		const broken = Object.create(config, {
+			lanes: {
+				get: () => {
+					throw new Error("lanes unreadable");
+				},
+			},
+		}) as HarnessConfig;
+		const c: HookContext = { config: broken, env: { CLAUDE_PROJECT_DIR: atlas }, claudePid: process.pid, startHolder: () => {}, home };
+		const input = { session_id: "s1", cwd: atlas, tool_name: "Read", tool_input: { file_path: join(atlas, "notes.md") } };
+		const denied = { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: expect.stringMatching(/^Orrery guard: .*lanes unreadable/) } };
+		expect(preToolUse(input, c)).toEqual(denied);
+		expect(JSON.parse(await runHook("pre-tool-use", JSON.stringify(input), c))).toEqual(denied);
+		// An input too long to read, judged by the folder alone: the pick throws there too.
+		expect(JSON.parse(await runHook("pre-tool-use", undefined, c))).toEqual(denied);
 	});
 
 	it("denies a refused ORRERY_AGENT every lane's view, the folder's own lane's too", async () => {
@@ -734,7 +777,7 @@ describe("Claude Code: only the agent that owns a folder's memory view reads it"
 			["Read", { file_path: atlasView }],
 			["Read", { file_path: birchView }],
 			["Grep", { pattern: "secret" }],
-			["Bash", { command: "cat .orrery/view.md" }],
+			["Bash", { command: `cat ${atlasView}` }],
 		];
 		for (const [name, input] of calls) expect([name, input, await tool(name, input)]).toEqual([name, input, REFUSED]);
 	});

@@ -116,6 +116,8 @@ interface Guarded {
 	readonly home: string;
 	/** Every other lane's memory view file, which no tool may read (src/lane/guard-paths.ts laneViews). */
 	readonly foreignViews: readonly string[];
+	/** Of those, the ones whose lane is set up Claude Code's file way: searches stay away even before they are written. */
+	readonly fileModeViews: readonly string[];
 	/** The session's own lane's view file, if it has one. */
 	readonly ownView?: string;
 }
@@ -765,8 +767,9 @@ function guard(pi: ExtensionAPI, state: OrreryState, host: "pi" | "omp"): void {
 	const judge = host === "omp" ? guardOmpToolCall : guardToolCall;
 	pi.on("tool_call", (event, ctx) => {
 		if (state.guarded === undefined) return;
-		const { workArea: area, allowedRoots, credentials, orreryData, home, foreignViews, ownView } = state.guarded;
-		const reason = judge(event.toolName, event.input as Record<string, unknown>, { workspace: area, allowedRoots, cwd: ctx.cwd, credentials, orreryData, home, foreignViews, ownView });
+		const { workArea: area, allowedRoots, credentials, orreryData, home, foreignViews, fileModeViews, ownView } = state.guarded;
+		const options = { workspace: area, allowedRoots, cwd: ctx.cwd, credentials, orreryData, home, foreignViews, fileModeViews, ownView };
+		const reason = judge(event.toolName, event.input as Record<string, unknown>, options);
 		return reason === undefined ? undefined : { block: true, reason };
 	});
 }

@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { editTargets, globBase, guardOmpToolCall, guardToolCall, ompCredentials, ompToolPath, pathParts } from "../../src/lane/guard-paths.ts";
+import { writeSetupMarker } from "../../src/claude/view-file.ts";
+import type { LaneConfig } from "../../src/lane/config.ts";
 import { cleanup, world } from "../pi/world.ts";
 import { type FakeOmp, ompCleanup, ompOrrery } from "./world.ts";
 
@@ -19,7 +21,7 @@ function setup() {
 	mkdirSync(join(home, ".omp", "profiles", "work", "agent"), { recursive: true });
 	writeFileSync(join(home, ".omp", "agent", "agent.db"), "x");
 	writeFileSync(join(home, ".omp", "agent", "models.yml"), "providers: {}");
-	return { workspace, home, options: { workspace, allowedRoots: [], cwd: workspace, home, credentials: ompCredentials({}, home) } };
+	return { workspace, home, options: { workspace, allowedRoots: [], cwd: workspace, home, credentials: ompCredentials({}, home), foreignViews: [] as string[] } };
 }
 
 describe("guardOmpToolCall: OMP's tools, judged like pi's", () => {
@@ -203,7 +205,7 @@ describe("fix round 1: OMP's paths, read as OMP reads them", () => {
 			join(xdg, "omp", "agent.db"),
 			join(xdg, "omp", "profiles", "work", "agent.db"),
 		]);
-		const options = { workspace, allowedRoots: [], cwd: workspace, home, credentials };
+		const options = { workspace, allowedRoots: [], cwd: workspace, home, credentials, foreignViews: [] as string[] };
 		expect(guardOmpToolCall("grep", { pattern: "k", path: join(xdg, "omp", "profiles", "work") }, options)).toMatch(/narrower folder/);
 	});
 });
@@ -277,7 +279,7 @@ describe("fix round 3: where OMP's own parsers may read more, the guard fails cl
 		writeFileSync(join(vault, "secret.store"), "x");
 		writeFileSync(join(vault, "x.db"), "x");
 		symlinkSync(join(vault, "secret.store"), join(workspace, "link"));
-		const options = { workspace, allowedRoots: [], cwd: workspace, home, credentials: [join(vault, "secret.store"), join(vault, "x.db")] };
+		const options = { workspace, allowedRoots: [], cwd: workspace, home, credentials: [join(vault, "secret.store"), join(vault, "x.db")], foreignViews: [] as string[] };
 		const read = (path: string) => guardOmpToolCall("read", { path }, options);
 		expect(read("link:1-50")).toMatch(/sensitive/);
 		expect(read(`${vault}/x.db:table`)).toMatch(/sensitive/);
@@ -436,7 +438,7 @@ describe("final review: OMP's .env and secrets.yml, and the stores PI_CONFIG_DIR
 		mkdirSync(join(home, ".omp-alt", "profiles", "lab", "agent"), { recursive: true });
 		mkdirSync(join(home, ".omp-alt", "agent"));
 		writeFileSync(join(home, ".omp-alt", "agent", "models.yml"), "providers: {}");
-		const options = { workspace, allowedRoots: [], cwd: workspace, home, credentials: ompCredentials({ PI_CONFIG_DIR: ".omp-alt" }, home) };
+		const options = { workspace, allowedRoots: [], cwd: workspace, home, credentials: ompCredentials({ PI_CONFIG_DIR: ".omp-alt" }, home), foreignViews: [] as string[] };
 		const paths = [
 			"~/.omp/.env",
 			"~/.omp/agent/.env",
@@ -504,7 +506,7 @@ describe("OMP: only the agent that owns a folder's memory view reads it", () => 
 			["write", { path: birchView, content: "planted" }],
 			["grep", { pattern: "secret", path: birch }],
 			["grep", { pattern: "secret", path: "../agent-Birch" }],
-			["glob", { path: `${birch}/**/*.md` }],
+			["glob", { path: `${birchView}` }],
 			["ast_grep", { pat: "x", path: birch }],
 			["find", { query: "secret", grep_keywords: [], path: birch }],
 			["bash", { command: `cat ${birchView}` }],
@@ -513,7 +515,14 @@ describe("OMP: only the agent that owns a folder's memory view reads it", () => 
 		for (const [tool, input] of calls) expect([tool, input, await call(omp, tool, input)]).toEqual([tool, input, refused]);
 		expect(await call(omp, "read", { path: ".orrery/view.md" })).toBeUndefined();
 		expect(await call(omp, "grep", { pattern: "secret", path: "." })).toBeUndefined();
-		expect(await call(omp, "bash", { command: "cat .orrery/view.md" })).toBeUndefined();
+		const atlasView = join(atlas, ".orrery", "view.md");
+		expect(await call(omp, "bash", { command: `cat ${atlasView}` })).toBeUndefined();
+		// OMP's shell keeps its folder across calls: after `cd <Birch>`, a relative name is Birch's, whatever ctx.cwd says.
+		expect(await call(omp, "bash", { command: `cd ${birch}` })).toBeUndefined();
+		expect(await call(omp, "bash", { command: "cat .orrery/view.md" })).toEqual(refused);
+		// glob lists names only (fix round 1): a listing of Birch's folder goes through.
+		expect(await call(omp, "glob", { path: `${birch}/**/*.md` })).toBeUndefined();
+		expect(await call(omp, "glob", { path: birch })).toBeUndefined();
 	});
 
 	it("refuses Birch's view to Atlas opened by ORRERY_AGENT in Birch's folder, and keeps Atlas's own open", async () => {
@@ -522,8 +531,29 @@ describe("OMP: only the agent that owns a folder's memory view reads it", () => 
 		expect(omp.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
 		expect(await call(omp, "read", { path: ".orrery/view.md" })).toEqual(refused);
 		expect(await call(omp, "grep", { pattern: "secret", path: "." })).toEqual(refused);
+		expect(await call(omp, "ast_grep", { pat: "x", path: "." })).toEqual(refused);
+		expect(await call(omp, "find", { query: "secret", grep_keywords: ["secret"], path: "." })).toEqual(refused);
+		expect(await call(omp, "glob", { path: "**/*.md" })).toBeUndefined();
 		expect(await call(omp, "bash", { command: "cat .orrery/view.md" })).toEqual(refused);
 		expect(await call(omp, "read", { path: atlasView })).toBeUndefined();
+	});
+
+	it("keeps Atlas's content searches out of Birch's folder once Birch is set up the file way, before its view is written (fix round 1)", async () => {
+		const { config, atlas, birch, birchView } = viewWorld();
+		rmSync(birchView);
+		writeSetupMarker((config.lanes.get("Birch") as LaneConfig).dir, birch, "CLAUDE.md");
+		const omp = await ompOrrery(atlas, config);
+		expect(await call(omp, "grep", { pattern: "secret", path: birch })).toEqual(refused);
+		expect(await call(omp, "glob", { path: birch })).toBeUndefined();
+	});
+
+	it("refuses shell text that names Orrery's config, to read or to change it (fix round 1)", async () => {
+		const { config, atlas } = viewWorld();
+		const omp = await ompOrrery(atlas, config);
+		for (const command of ["cat ~/.orrery/config.toml", "sed -i s/Atlas/Birch/ ~/.orrery/config.toml", "printf '[' >> ~/.orrery/config.toml"]) {
+			expect([command, await call(omp, "bash", { command })]).toEqual([command, refused]);
+		}
+		expect(await call(omp, "eval", { language: "py", code: "open('/home/x/.orrery/config.toml', 'a').write('[')" })).toEqual(refused);
 	});
 
 	it("refuses every lane's view to a refused ORRERY_AGENT, the folder's own lane's too", async () => {

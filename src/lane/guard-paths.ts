@@ -2,6 +2,16 @@
  * The lane guard's path judgment for any agent's tool calls, shared by pi (src/pi/guard.ts) and Claude Code
  * (src/claude/guard.ts). It judges the path the tool will actually touch: resolved the way the tool resolves it (pi's
  * way by default), then with symlinks followed. The rules themselves are src/lane/guard-rules.ts.
+ *
+ * Another lane's memory view (laneViews) is kept from every tool that reads, writes or searches file contents. Known
+ * limits:
+ * - A hard link to it is another name for the same file. The guard does not count links; the copy goes stale once
+ *   Orrery replaces the view on its next write.
+ * - The durable harness (src/lane/guard.ts, `orrery run`) has no search-root rule, for views as for credentials.
+ * - Claude Code loads a subfolder's CLAUDE.md (and what it imports) by itself once the session reads files there. That
+ *   is no tool call, so the hook never sees it.
+ * - Shell text is a seatbelt: a view named through a variable, an escape, or a command that changes folder by its own
+ *   flag (`git -C`, `tar -C`), or a shell search of a lane's whole folder, gets through.
  */
 
 import { lstatSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
@@ -9,8 +19,9 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { viewFile } from "../claude/paths.ts";
+import { laneMode } from "../claude/view-file.ts";
 import type { HarnessConfig, LaneConfig } from "./config.ts";
-import { checkToolCall, type GuardOptions, inOrreryHome, sensitive, viewRules, within } from "./guard-rules.ts";
+import { CONFIG_READ_ONLY, checkToolCall, type GuardOptions, inOrreryHome, orreryConfigNamed, sensitive, viewRules, within } from "./guard-rules.ts";
 
 const UNICODE_SPACES = /[  -   　]/g;
 
@@ -133,16 +144,27 @@ export function ompCredentials(env: NodeJS.ProcessEnv = process.env, home: strin
 }
 
 /**
- * The guard's view options (GuardOptions.foreignViews and ownView) for a session of lane `own`, or of no lane (a refused
- * pick): every other lane's view file (Claude Code's file mode keeps it in the lane's folder), as its folder is written
- * and where it really is, and its own view, unless another lane's is the same file (two lanes in one folder). A lane
- * with no folder has no view file.
+ * The guard's view options (GuardOptions.foreignViews, fileModeViews and ownView) for a session of lane `own`, or of no
+ * lane (a refused pick): every other lane's view file (Claude Code's file mode keeps it in the lane's folder), as its
+ * folder is written and where it really is; which of them belong to lanes set up the file way (their setup marker); and
+ * the session's own view, unless another lane's is the same file (two lanes in one folder, compared ignoring case as
+ * the guard compares paths). A lane with no folder has no view file.
  */
-export function laneViews(config: Pick<HarnessConfig, "lanes">, own?: Pick<LaneConfig, "name" | "workspace">): { readonly foreignViews: string[]; readonly ownView?: string } {
-	const views = [...config.lanes.values()].filter((lane) => lane.name !== own?.name && lane.workspace !== undefined).map((lane) => viewFile(lane.workspace as string));
-	const foreignViews = [...new Set(views.flatMap((view) => [view, realTarget(view)]))];
+export function laneViews(
+	config: Pick<HarnessConfig, "lanes">,
+	own?: Pick<LaneConfig, "name" | "workspace">,
+): { readonly foreignViews: string[]; readonly fileModeViews: string[]; readonly ownView?: string } {
+	const others = [...config.lanes.values()].filter((lane) => lane.name !== own?.name && lane.workspace !== undefined);
+	const spellings = (lane: LaneConfig) => {
+		const view = viewFile(lane.workspace as string);
+		return [view, realTarget(view)];
+	};
+	const foreignViews = [...new Set(others.flatMap(spellings))];
+	const fileModeViews = [...new Set(others.filter((lane) => laneMode(lane) === "file").flatMap(spellings))];
 	const ownView = own?.workspace === undefined ? undefined : viewFile(own.workspace);
-	return ownView === undefined || foreignViews.includes(realTarget(ownView)) ? { foreignViews } : { foreignViews, ownView };
+	const taken = new Set(foreignViews.map((view) => view.toLowerCase()));
+	const shared = ownView !== undefined && [ownView, realTarget(ownView)].some((view) => taken.has(view.toLowerCase()));
+	return ownView === undefined || shared ? { foreignViews, fileModeViews } : { foreignViews, fileModeViews, ownView };
 }
 
 /** Whether something is at `path` (a dangling link counts): a search that would read it is refused. */
@@ -433,6 +455,9 @@ const OTHER_VIEW = (path: string) => `${path} is another agent's memory view.`;
 const viewsOf = (options: PathGuardOptions, home: string) =>
 	viewRules({ ...options, home }, options.ownView === undefined ? [] : [options.ownView, realTarget(options.ownView)]);
 
+/** pi's searches that list names only (ls, and find, which runs fd): no file's contents, so no view's. */
+const LISTINGS = new Set(["ls", "find"]);
+
 /** Why a tool call (in pi's tool names and arguments) is refused, or undefined to let it through. */
 export function guardToolCall(toolName: string, input: Readonly<Record<string, unknown>>, options: PathGuardOptions): string | undefined {
 	const home = options.home ?? homedir();
@@ -442,16 +467,19 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	// searches for, so code that mentions auth.json can still be searched. A glob opens no view file: a path does.
 	const nameKey = toolName === "grep" ? "glob" : toolName === "find" ? "pattern" : undefined;
 	const names = nameKey === undefined ? undefined : input[nameKey];
-	if (typeof names === "string" && sensitive(names, views?.path())) return `${toolName} ${nameKey} "${names}" names sensitive files (keys, credentials or Orrery's private data).`;
+	if (typeof names === "string" && sensitive(names, views.path())) return `${toolName} ${nameKey} "${names}" names sensitive files (keys, credentials or Orrery's private data).`;
 	const given = typeof input.path === "string" && input.path !== "" ? input.path : undefined;
 	const raw = given ?? (search ? "." : undefined);
 	if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, options, views);
 	// All three forms: what the model wrote, where the tool resolves it, and where it really lands.
 	const resolved = (options.resolvePath ?? piToolPath)(raw, options.cwd, home);
-	const named = views?.path(resolved);
+	const named = views.path(resolved);
 	if (sensitive(raw, named) || sensitive(resolved, named)) return SENSITIVE_FILE(raw);
 	const target = realTarget(resolved);
-	if (sensitive(target, views?.path(target))) return SENSITIVE_FILE(raw);
+	if (sensitive(target, views.path(target))) return SENSITIVE_FILE(raw);
+	// Orrery's config is read, never written: a lane's view and these rules come from it.
+	const writes = toolName === "write" || toolName === "edit";
+	if (writes && (orreryConfigNamed(resolved) || orreryConfigNamed(target))) return CONFIG_READ_ONLY(raw);
 	// The credential locations themselves, symlinks followed (a ~/.ssh linked from a dotfiles folder, say). Compared
 	// ignoring case: on a case-insensitive file system (macOS) ~/.SSH and /USERS are the same folders.
 	const fold = (path: string) => path.toLowerCase();
@@ -459,25 +487,28 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	const credentials = [...HOME_CREDENTIALS.map((entry) => join(home, entry)), ...(options.credentials ?? [])].map((path) => fold(realTarget(path)));
 	if (credentials.some((location) => within(where, location))) return SENSITIVE_FILE(raw);
 	// Another lane's view file, as given and where it really is: no tool reads or writes it, by any spelling or link.
-	const foreign = (options.foreignViews ?? []).flatMap((view) => [view, realTarget(view)]);
+	const foreign = options.foreignViews.flatMap((view) => [view, realTarget(view)]);
 	if (foreign.some((view) => within(where, fold(view)))) return OTHER_VIEW(raw);
 	// Orrery's home, judged on its real path (inOrreryHome).
 	const realData = options.orreryData === undefined ? undefined : realTarget(options.orreryData);
 	const data = realData === undefined ? undefined : fold(realData);
 	if (realData !== undefined && inOrreryHome(where, realData) && !(search && where === data)) return SENSITIVE_FILE(raw);
+	if (writes && realData !== undefined && where === fold(join(realData, "config.toml"))) return CONFIG_READ_ONLY(raw);
 	// A search reads everything under its root, hidden files too, whatever its glob: judge the root, not the glob's
 	// spelling. Home and above hold the credentials; /proc holds every process's environment.
 	if (search && (credentials.some((location) => within(location, where)) || (data !== undefined && within(data, where)) || within(where, "/proc"))) {
 		return `${toolName} on ${target} would search credential files (~/.ssh, ~/.pi and the like, or /proc); search a narrower folder.`;
 	}
-	// A root that holds another lane's view file, once one is there (a lane that never uses Claude Code's file mode has
-	// none to keep a folder's searches from).
-	if (search && foreign.some((view) => within(fold(view), where) && present(view))) {
+	// A content search whose root holds another lane's view file: one that is there, or whose lane is set up the file
+	// way (it is written soon). A lane that never uses Claude Code's file mode has none to keep a folder's searches from,
+	// and a listing reads names only.
+	const setUp = new Set((options.fileModeViews ?? []).flatMap((view) => [view, realTarget(view)]).map(fold));
+	if (search && !LISTINGS.has(toolName) && foreign.some((view) => within(fold(view), where) && (setUp.has(fold(view)) || present(view)))) {
 		return `${toolName} on ${target} would search another agent's memory view; search a narrower folder.`;
 	}
 	return checkToolCall(
 		{ name: toolName, arguments: { ...input, path: target } },
-		{ workspace: realRoot(options.workspace), allowedRoots: options.allowedRoots.map(realRoot), cwd: realRoot(options.cwd) },
+		{ workspace: realRoot(options.workspace), allowedRoots: options.allowedRoots.map(realRoot), cwd: realRoot(options.cwd), foreignViews: options.foreignViews },
 		views,
 	);
 }
@@ -515,7 +546,7 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 	const omp: PathGuardOptions = { ...options, resolvePath: ompToolPath };
 	if (toolName === "eval") return guardToolCall("bash", { command: typeof input.code === "string" ? input.code : "" }, omp);
 	// Names in a search path and an edit's text are read like a command's words.
-	const named = viewsOf(omp, omp.home ?? homedir())?.command;
+	const named = viewsOf(omp, omp.home ?? homedir()).command;
 	const judge = (tool: string, args: Readonly<Record<string, unknown>>) =>
 		typeof args.path === "string" && unreadableFileUrl(args.path) ? `${args.path}: Orrery cannot read this file:// URL; use a plain path.` : guardToolCall(tool, args, omp);
 	// A write target: as written, and the path inside a [path#TAG] header; with `selectors`, each also cut before a ":" or
@@ -527,10 +558,11 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 	};
 	// A glob in a search or ast_edit: one that reaches past its base folder is refused; else its base folder is judged,
 	// and the path itself too, since OMP takes an existing literal path over the glob (tools/path-utils.ts:893-901).
-	const glob = (tool: "grep" | "edit", part: string) => {
+	// `tool`: how pi's guard judges it (grep reads contents, find lists names, edit writes).
+	const glob = (tool: "grep" | "find" | "edit", part: string) => {
 		const path = part.replace(/\\/g, "/"); // OMP reads either slash in these (tools/path-utils.ts:559)
 		if (escapingGlob(path)) return `${toolName} path "${part}": brace or parent patterns are not allowed in OMP paths.`;
-		if (sensitive(part, named) || sensitive(path, named)) return tool === "grep" ? `${toolName} path "${part}" names sensitive files (keys, credentials or Orrery's private data).` : SENSITIVE_FILE(part);
+		if (sensitive(part, named) || sensitive(path, named)) return tool === "edit" ? SENSITIVE_FILE(part) : `${toolName} path "${part}" names sensitive files (keys, credentials or Orrery's private data).`;
 		return firstRefusal([...new Set([globBase(path), path, part])], (form) => judge(tool, { path: form }));
 	};
 	if (toolName === "edit") {
@@ -548,8 +580,9 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 	if (toolName === "write" && typeof input.path === "string" && input.path !== "") return target("write", input.path, input, true);
 	if (toolName === "ast_edit") return firstRefusal(strings(input.paths).flatMap(pathParts), (part) => glob("edit", part));
 	const raw = typeof input.path === "string" && input.path.trim() !== "" ? input.path : undefined;
-	// Judged as pi's grep is: a root at home or above, or holding credentials, is refused.
-	if (OMP_SEARCHES.has(toolName)) return firstRefusal(pathParts(raw ?? "."), (part) => glob("grep", part));
+	// Judged as pi's grep is: a root at home or above, or holding credentials, is refused. glob lists names only, so it is
+	// judged as pi's find (a listing); grep, ast_grep and find (which takes grep_keywords) read contents.
+	if (OMP_SEARCHES.has(toolName)) return firstRefusal(pathParts(raw ?? "."), (part) => glob(toolName === "glob" ? "find" : "grep", part));
 	if (toolName === "read" && raw !== undefined) {
 		const parts = pathParts(raw).flatMap((part) => [part, ...selectorPrefixes(part)]);
 		return firstRefusal([...new Set(parts)], (part) => judge("read", { ...input, path: part }));

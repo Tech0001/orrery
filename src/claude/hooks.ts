@@ -323,7 +323,12 @@ const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToo
  */
 function unreadToolCall(ctx: HookContext): object | undefined {
 	const projectDir = ctx.env.CLAUDE_PROJECT_DIR;
-	if (projectDir && pickFor(ctx, projectDir).kind === "none") return undefined;
+	try {
+		if (projectDir && pickFor(ctx, projectDir).kind === "none") return undefined;
+	} catch (error) {
+		// A pick that cannot be made is no proof the folder is no lane's.
+		return deny(`this call could not be checked (${errorText(error)}).`);
+	}
 	return deny("this call's input is over 1 MB, too long to check; nothing was run.");
 }
 
@@ -334,17 +339,17 @@ function unreadToolCall(ctx: HookContext): object | undefined {
  * guard with the rules of the lane whose folder it runs in, or outside lanes those of a lane with no folder (its own
  * folder, no allowed roots), as pi's refusedGuard does. No session reads another lane's memory view file (laneViews):
  * a refused one is no lane's, so every lane's view is another's. A call it cannot judge is refused, since a hook that
- * crashed would let it through.
+ * crashed would let it through: the pick too (the folder's lane, the process's decision) is made inside the check.
  */
 export function preToolUse(input: HookInput, ctx: HookContext): object | undefined {
-	const found = pickHere(input, ctx);
-	if (found === undefined || found.pick.kind === "none" || typeof input.tool_name !== "string") return undefined;
-	const { pick, projectDir } = found;
-	const rules = pick.kind === "lane" ? pick.lane : laneForCwd(ctx.config, projectDir);
-	const toolInput = typeof input.tool_input === "object" && input.tool_input !== null ? (input.tool_input as Record<string, unknown>) : {};
-	const home = ctx.home ?? homedir();
 	let reason: string | undefined;
 	try {
+		const found = pickHere(input, ctx);
+		if (found === undefined || found.pick.kind === "none" || typeof input.tool_name !== "string") return undefined;
+		const { pick, projectDir } = found;
+		const rules = pick.kind === "lane" ? pick.lane : laneForCwd(ctx.config, projectDir);
+		const toolInput = typeof input.tool_input === "object" && input.tool_input !== null ? (input.tool_input as Record<string, unknown>) : {};
+		const home = ctx.home ?? homedir();
 		reason = claudeGuard(input.tool_name, toolInput, {
 			workspace: workArea(rules ?? {}, projectDir),
 			allowedRoots: [...(rules?.allowedRoots ?? []), ...claudeStateRoots(projectDir, home, ctx.env)],

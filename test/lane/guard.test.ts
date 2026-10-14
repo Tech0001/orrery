@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { checkToolCall } from "../../src/lane/guard.ts";
 
-const options = { workspace: "/home/alex/Documents/GitHub/agent-Atlas", allowedRoots: ["/home/alex/Documents/GitHub"] };
+const options = {
+	workspace: "/home/alex/Documents/GitHub/agent-Atlas",
+	allowedRoots: ["/home/alex/Documents/GitHub"],
+	foreignViews: [] as string[],
+	ownView: "/home/alex/Documents/GitHub/agent-Atlas/.orrery/view.md",
+};
 const call = (name: string, args: Record<string, unknown>) => checkToolCall({ name, arguments: args }, options);
 
 describe("checkToolCall", () => {
@@ -57,7 +62,7 @@ describe("checkResolvedPath (pi's own path resolution, symlinks followed)", () =
 		process.env.HOME = savedHome;
 		rmSync(root, { recursive: true, force: true });
 	});
-	const opts = () => ({ workspace: ws, allowedRoots: [ws] });
+	const opts = () => ({ workspace: ws, allowedRoots: [ws], foreignViews: [] as string[] });
 
 	it("blocks writes the tool would resolve outside the roots via ~, @ or file://", async () => {
 		const env = new NodeExecutionEnv({ cwd: ws });
@@ -100,7 +105,7 @@ describe("checkResolvedPath (pi's own path resolution, symlinks followed)", () =
 
 describe("sensitive patterns", () => {
 	it("cover common credential stores", () => {
-		const o = { workspace: "/w", allowedRoots: ["/w"] };
+		const o = { workspace: "/w", allowedRoots: ["/w"], foreignViews: [] as string[] };
 		for (const p of ["/home/alex/.gnupg/private-keys-v1.d/a", "/home/alex/.kube/config", "/home/alex/.docker/config.json", "/home/alex/.config/gh/hosts.yml", "/home/alex/.git-credentials"]) {
 			expect(checkToolCall({ name: "read", arguments: { path: p } }, o)).toMatch(/sensitive/);
 		}
@@ -112,7 +117,7 @@ describe("sensitive patterns", () => {
 		expect(at("a.ts")).toBeUndefined();
 		expect(at("../../x")).toBeUndefined();
 		expect(at("../../../../../../x")).toMatch(/outside/);
-		const narrow = { workspace: "/w/lane", allowedRoots: [], cwd: "/w/lane/sub" };
+		const narrow = { workspace: "/w/lane", allowedRoots: [], cwd: "/w/lane/sub", foreignViews: [] as string[] };
 		expect(checkToolCall({ name: "write", arguments: { path: "../x" } }, narrow)).toBeUndefined();
 		expect(checkToolCall({ name: "write", arguments: { path: "../../x" } }, narrow)).toMatch(/\/w\/x is outside/);
 	});
@@ -127,7 +132,7 @@ describe("Orrery's own home", () => {
 		for (const file of ["config.toml", "remotes.json", "device-id", "credentials.json", "backup.env", "lanes/Birch/memory.sqlite", "ssh/known_hosts"]) writeFileSync(join(data, file), "");
 		const workspace = join(home, "ws");
 		mkdirSync(workspace);
-		return { home, data, base: { workspace, allowedRoots: [] as string[], cwd: workspace, home, orreryData: data } };
+		return { home, data, base: { workspace, allowedRoots: [] as string[], cwd: workspace, home, orreryData: data, foreignViews: [] as string[] } };
 	};
 	const read = (path: string, base: ReturnType<typeof setup>["base"]) => guardToolCall("read", { path }, base);
 
@@ -249,6 +254,14 @@ describe("Orrery's own home", () => {
 		// .. nested deeper than any fixed cap
 		`cat ~/${"a/".repeat(12)}${"../".repeat(12)}.orrery/remotes.json`,
 		"ls .orrery",
+		// Orrery's config, by name, in shell text (fix round 1: a command could rewrite it; file tools may still read it)
+		"cat ~/.orrery/config.toml",
+		'cat "$HOME/.orrery/config.toml"',
+		"sed -i s/Atlas/Birch/ ~/.orrery/config.toml",
+		"printf '[' >> ~/.orrery/config.toml",
+		"cp /tmp/x /somewhere/.orrery/config.toml",
+		// the session's own view by a relative path (fix round 1: a shell may keep a folder of its own)
+		"cat .orrery/view.md",
 	])("refuses the command %s", (command) => {
 		expect(checkToolCall({ name: "bash", arguments: { command } }, options)).toMatch(/sensitive/);
 	});
@@ -315,12 +328,10 @@ describe("Orrery's own home", () => {
 	});
 
 	it.each([
-		"cat .orrery/view.md",
+		"cat /home/alex/Documents/GitHub/agent-Atlas/.orrery/view.md",
 		"ls ~/.orrery/app/current/src",
 		"ls ~/.orrery/app",
 		"ls ~/.orrery/app/",
-		"cat ~/.orrery/config.toml",
-		'cat "$HOME/.orrery/config.toml"',
 		"cat ~/.orrery-notes.txt",
 		"git status",
 		"ls ~/Documents",
@@ -345,7 +356,8 @@ describe("Orrery's own home", () => {
 		const dir = join(home, "proj (copy)", ".orrery");
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(join(dir, "view.md"), "");
-		expect(read(join(dir, "view.md"), base)).toBeUndefined();
+		const owner = { ...base, ownView: join(dir, "view.md") };
+		expect(read(join(dir, "view.md"), owner)).toBeUndefined();
 	});
 
 	it("does not trust a planted link named app or config.toml", () => {
@@ -377,7 +389,7 @@ describe("Orrery's own home", () => {
 		mkdirSync(join(home, "elsewhere"));
 		writeFileSync(logins, "");
 		const env = new NodeExecutionEnv({ cwd: home });
-		const guard = { workspace: join(home, "ws"), allowedRoots: [], orreryData: data, credentials: [logins] };
+		const guard = { workspace: join(home, "ws"), allowedRoots: [], orreryData: data, credentials: [logins], foreignViews: [] as string[] };
 		expect(await checkResolvedPath(env, join(data, "remotes.json"), "read", guard, ctx)).toMatch(/sensitive/);
 		expect(await checkResolvedPath(env, logins, "read", guard, ctx)).toMatch(/sensitive/);
 		expect(await checkResolvedPath(env, logins, "read", { ...guard, credentials: [] }, ctx)).toBeUndefined();

@@ -9,10 +9,15 @@ export interface GuardOptions {
 	readonly cwd?: string;
 	/**
 	 * Every other lane's view file (the memory view Claude Code's file mode keeps at <workspace>/.orrery/view.md): no
-	 * tool reads, writes or searches it (src/lane/guard-paths.ts laneViews). Once this is given, even empty, a view file
-	 * named in a command or a path is open only when it is `ownView`; without it every view file is open by name.
+	 * tool reads, writes or content-searches it (src/lane/guard-paths.ts laneViews). Required, so no caller gets the old
+	 * rule by leaving it out: a view file named in a command or a path is open only when it is `ownView`.
 	 */
-	readonly foreignViews?: readonly string[];
+	readonly foreignViews: readonly string[];
+	/**
+	 * Of those, the ones whose lane is set up Claude Code's file way (its setup marker says so): a search under one is
+	 * refused even before the file is first written.
+	 */
+	readonly fileModeViews?: readonly string[];
 	/** The session's own lane's view file, if it has one. */
 	readonly ownView?: string;
 }
@@ -44,11 +49,23 @@ const SENSITIVE = [
 
 /**
  * Case-insensitive: on a case-insensitive file system (macOS) ~/.SSH is ~/.ssh. The text is judged as written and as the
- * shell reads it (readings), each by the credential patterns and by Orrery's own names. `views`: which lane view files
- * the text may name (viewRules); without it, any.
+ * shell reads it (readings), each by the credential patterns and by Orrery's own names. `views`: which lane view file the
+ * text may name (viewRules); by default none.
  */
-export function sensitive(text: string, views?: ViewRule): boolean {
-	return readings(text.toLowerCase()).some((form) => SENSITIVE.some((pattern) => pattern.test(form)) || orreryNamed(form, views));
+export function sensitive(text: string, views: ViewRule = NO_VIEW): boolean {
+	return flagged(text, views, false);
+}
+
+/**
+ * sensitive for shell text (a command line, code to run): Orrery's config is refused by name too, since a command could
+ * rewrite it (a lane's view and the guard's rules come from it). File tools may still read it.
+ */
+export function shellSensitive(command: string, views: ViewRule = NO_VIEW): boolean {
+	return flagged(command, views, true);
+}
+
+function flagged(text: string, views: ViewRule, shell: boolean): boolean {
+	return readings(text.toLowerCase()).some((form) => SENSITIVE.some((pattern) => pattern.test(form)) || orreryNamed(form, views, shell));
 }
 
 /**
@@ -136,22 +153,27 @@ function program(parts: string[] | undefined): boolean {
 const only = (parts: string[] | undefined, name: string) => parts?.length === 1 && parts[0] === name;
 
 /**
- * Whether a reading names Orrery's home, beyond the program (app/), config.toml and a lane's view.md: any lane's, or with
- * `views` only one it opens.
+ * Whether a reading names Orrery's home, beyond the program (app/), config.toml (not in `shell` text) and the lane view
+ * file `views` opens.
  */
-function orreryNamed(form: string, views?: ViewRule): boolean {
+function orreryNamed(form: string, views: ViewRule, shell: boolean): boolean {
 	if (ORRERY_GLOB.test(form)) return true;
 	let opens: ((end: number) => boolean) | undefined;
 	for (const match of form.matchAll(ORRERY_NAME)) {
 		const parts = words(match[1]);
-		if (program(parts) || only(parts, "config.toml")) continue;
+		if (program(parts) || (!shell && only(parts, "config.toml"))) continue;
 		if (!only(parts, "view.md")) return true;
-		if (views === undefined) continue;
 		opens ??= views(form);
 		if (!opens(match.index + match[0].length)) return true;
 	}
 	return false;
 }
+
+/** Orrery's config by name (…/.orrery/config.toml, a path folded to lower case): agents may read it, never change it. */
+export const orreryConfigNamed = (path: string) => /(^|\/)\.orrery\/config\.toml$/.test(posix.normalize(path).toLowerCase());
+
+/** Why a write to Orrery's config is refused: a lane's view and the guard's rules come from it. */
+export const CONFIG_READ_ONLY = (path: string) => `${path} is Orrery's config: agents may read it, not change it.`;
 
 /**
  * Whether a reading opens the lane view file it names, the name ending at `end`: made once per reading (`views(form)`),
@@ -159,9 +181,12 @@ function orreryNamed(form: string, views?: ViewRule): boolean {
  */
 export type ViewRule = (form: string) => (end: number) => boolean;
 
+/** No view file is open. */
+const NO_VIEW: ViewRule = () => () => false;
+
 /** A session's view rules (GuardOptions.foreignViews): for command text and file-name globs, and for one path. */
 export interface ViewRules {
-	/** Command text's: a view file is open where a plain word names the session's own (commandRule). */
+	/** Command text's: a view file is open where a plain absolute or "~/" word names the session's own (commandRule). */
 	readonly command: ViewRule;
 	/** A path's: its view file is open when the path is a spelling of the session's own view; without a path, none is. */
 	readonly path: (path?: string) => ViewRule;
@@ -170,14 +195,13 @@ export interface ViewRules {
 const fold = (path: string) => posix.normalize(path).toLowerCase();
 
 /**
- * The view rules for `options`, or undefined when it gives no foreignViews (then every view file is open by name).
- * `own`: each spelling of the session's own view (as written, and where it really is); default ownView alone.
+ * The view rules for `options`. `own`: each spelling of the session's own view (as written, and where it really is);
+ * default ownView alone.
  */
-export function viewRules(options: GuardOptions & { readonly home?: string }, own: readonly string[] = options.ownView === undefined ? [] : [options.ownView]): ViewRules | undefined {
-	if (options.foreignViews === undefined) return undefined;
+export function viewRules(options: GuardOptions & { readonly home?: string }, own: readonly string[] = options.ownView === undefined ? [] : [options.ownView]): ViewRules {
 	const mine = new Set(own.map(fold));
 	return {
-		command: commandRule(mine, options.cwd ?? options.workspace, options.home),
+		command: commandRule(mine, options.home),
 		path: (path) => {
 			const open = path !== undefined && mine.has(fold(path));
 			return () => () => open;
@@ -189,33 +213,28 @@ export function viewRules(options: GuardOptions & { readonly home?: string }, ow
 const WORD_EDGE = /[ \t\n;|&()<>`]/;
 /** A character of a plain path word: no word edge, quote, escape, expansion, glob, brace, "~", ",", "=", ":" or "!". */
 const PLAIN = /[^ \t\n;|&()<>`"'\\$*?[\]{}~,=:!]/;
-/** A command that changes its folder: a relative path after it may start elsewhere. */
-const CHANGES_FOLDER = /(?:^|[\s;|&(`])(?:cd|pushd|popd)(?=$|[\s;|&)`])/;
 
 /**
- * Command text's view rule: a view file is open only where a plain word names the session's own (`own`, folded), read
- * as a path: absolute, "~/" from `home`, or from `cwd` when the command changes no folder. The word must start and end
- * where the shell's words do (an edge, not escaped) and hold no ".." (a link may lead it elsewhere). The guard cannot
- * read a word with quotes, escapes, variables, globs or braces, so a view file named that way is refused.
+ * Command text's view rule: a view file is open only where a plain word names the session's own (`own`, folded) as an
+ * absolute path or one from "~/" (`home`). A relative word is refused: a shell may keep a folder of its own (OMP's does,
+ * across calls), so the host's cwd is no proof of where it starts. The word must start and end where the shell's words
+ * do (an edge, not escaped) and hold no ".." (a link may lead it elsewhere). The guard cannot read a word with quotes,
+ * escapes, variables, globs or braces, so a view file named that way is refused.
  */
-function commandRule(own: ReadonlySet<string>, cwd: string, home: string | undefined): ViewRule {
-	return (form) => {
-		const moved = CHANGES_FOLDER.test(form);
-		return (end) => {
-			if (end < form.length && !WORD_EDGE.test(form[end])) return false;
-			let start = end;
-			while (start > 0 && PLAIN.test(form[start - 1])) start--;
-			let word = form.slice(start, end);
-			if (form[start - 1] === "~" && word.startsWith("/")) {
-				start--;
-				word = `~${word}`;
-			}
-			if (start > 0 && (!WORD_EDGE.test(form[start - 1]) || form[start - 2] === "\\")) return false;
-			if (word.split("/").includes("..")) return false;
-			if (word.startsWith("~/")) return home !== undefined && own.has(fold(posix.join(home, word.slice(2))));
-			if (word.startsWith("/")) return own.has(fold(word));
-			return !moved && own.has(fold(posix.join(cwd, word)));
-		};
+function commandRule(own: ReadonlySet<string>, home: string | undefined): ViewRule {
+	return (form) => (end) => {
+		if (end < form.length && !WORD_EDGE.test(form[end])) return false;
+		let start = end;
+		while (start > 0 && PLAIN.test(form[start - 1])) start--;
+		let word = form.slice(start, end);
+		if (form[start - 1] === "~" && word.startsWith("/")) {
+			start--;
+			word = `~${word}`;
+		}
+		if (start > 0 && (!WORD_EDGE.test(form[start - 1]) || form[start - 2] === "\\")) return false;
+		if (word.split("/").includes("..")) return false;
+		if (word.startsWith("~/")) return home !== undefined && own.has(fold(posix.join(home, word.slice(2))));
+		return word.startsWith("/") && own.has(fold(word));
 	};
 }
 
@@ -239,18 +258,20 @@ export function within(path: string, root: string): boolean {
 export function checkToolCall(
 	call: { readonly name: string; readonly arguments: Readonly<Record<string, unknown>> },
 	options: GuardOptions,
-	views: ViewRules | undefined = viewRules(options),
+	views: ViewRules = viewRules(options),
 ): string | undefined {
 	const command = call.arguments.command;
-	if (call.name === "bash" && typeof command === "string" && sensitive(command, views?.command)) {
+	if (call.name === "bash" && typeof command === "string" && shellSensitive(command, views.command)) {
 		return "This command touches sensitive files (keys, credentials or Orrery's private data).";
 	}
 	const raw = call.arguments.path;
 	if (typeof raw !== "string") return undefined;
 	const path = posix.normalize(posix.isAbsolute(raw) ? raw : posix.join(options.cwd ?? options.workspace, raw));
-	const named = views?.path(path);
+	const named = views.path(path);
 	if (sensitive(raw, named) || sensitive(path, named)) return `${path} is a sensitive file (keys, credentials or Orrery's private data).`;
-	if ((call.name === "write" || call.name === "edit") && ![options.workspace, ...options.allowedRoots].some((root) => within(path, root))) {
+	const writes = call.name === "write" || call.name === "edit";
+	if (writes && orreryConfigNamed(path)) return CONFIG_READ_ONLY(path);
+	if (writes && ![options.workspace, ...options.allowedRoots].some((root) => within(path, root))) {
 		return `${path} is outside this lane's workspace and allowed roots.`;
 	}
 	return undefined;

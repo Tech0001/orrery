@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readMode } from "../../src/claude/spool.ts";
@@ -78,5 +78,22 @@ describe("the hooks as Claude Code runs them", () => {
 		expect([broken.status, broken.stdout]).toEqual([0, ""]);
 		expect(broken.stderr).toMatch(/^Orrery: .*missing\.toml.*\n$/);
 		expect(broken.stderr).not.toContain("secret");
+	}, 60_000);
+
+	it("PreToolUse denies every call while a config is there but cannot be read, or is named and missing (fix round 1)", () => {
+		const t = testLane();
+		const call = { session_id: "s1", cwd: t.workspace, tool_name: "Read", tool_input: { file_path: join(t.workspace, "notes.md") } };
+		const broken = join(t.dir, "broken.toml");
+		writeFileSync(broken, "[");
+		for (const config of [broken, join(t.dir, "missing.toml")]) {
+			const out = hookCli("pre-tool-use", call, { ORRERY_CONFIG: config, CLAUDE_PROJECT_DIR: t.workspace });
+			expect([config, out.status]).toEqual([config, 0]);
+			expect(JSON.parse(out.stdout)).toEqual({
+				hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: expect.stringMatching(/^Orrery guard: Orrery's config could not be read/) },
+			});
+			expect(out.stderr).toMatch(/^Orrery: /);
+		}
+		// The same call with the lane's good config goes through.
+		expect(hookCli("pre-tool-use", call, { ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: t.workspace }).stdout).toBe("");
 	}, 60_000);
 });
