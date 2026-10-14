@@ -1,11 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createFromPreview, type NewAgentFromChat } from "../../src/import/create-agent.ts";
-import { writePreview } from "../../src/import/preview.ts";
+import { commitPreview, writePreview } from "../../src/import/preview.ts";
+import { editConfigFile } from "../../src/lane/config-edit.ts";
 import { loadConfig } from "../../src/lane/config.ts";
-import { instructionsTemplate } from "../../src/lane/instructions.ts";
-import { MemoryStore } from "../../src/memory/index.ts";
+import { instructionsTemplate, writeInstructions } from "../../src/lane/instructions.ts";
+import { holdWriterLock, MemoryStore } from "../../src/memory/index.ts";
 import { tempDir } from "../lane/support.ts";
 
 const dirs: string[] = [];
@@ -47,17 +48,20 @@ describe("createFromPreview", () => {
 		expect(texts(s.laneDir)).toEqual(["Install RPCS3 AppImage for me.", "Done."]);
 	});
 
-	it("never imports into a folder that already holds memory (an archived agent's), and writes nothing then", () => {
-		const s = scene();
-		mkdirSync(s.laneDir, { recursive: true });
-		const store = MemoryStore.open(join(s.laneDir, "memory.sqlite"));
-		store.append("user", "an archived agent's memory");
-		store.close();
-		const before = readFileSync(s.configPath, "utf8");
-		expect(() => createFromPreview(s.configPath, s.request)).toThrow(/already holds memory/);
-		expect(readFileSync(s.configPath, "utf8")).toBe(before);
-		expect(existsSync(join(s.laneDir, "instructions.md"))).toBe(false);
-		expect(texts(s.laneDir)).toEqual(["an archived agent's memory"]);
+	it("never imports into a folder that already has a memory store (an archived agent's, even an empty one), and writes nothing then", () => {
+		for (const archived of [["an archived agent's memory"], []]) {
+			const s = scene();
+			mkdirSync(s.laneDir, { recursive: true });
+			const store = MemoryStore.open(join(s.laneDir, "memory.sqlite"));
+			for (const text of archived) store.append("user", text);
+			store.close();
+			const before = readFileSync(s.configPath, "utf8");
+			const files = readdirSync(s.laneDir).sort();
+			expect(() => createFromPreview(s.configPath, s.request)).toThrow(/already has a memory store/);
+			expect(readFileSync(s.configPath, "utf8")).toBe(before);
+			expect(readdirSync(s.laneDir).sort()).toEqual(files);
+			expect(texts(s.laneDir)).toEqual(archived);
+		}
 	});
 
 	it("keeps instructions already in the folder", () => {
@@ -68,13 +72,116 @@ describe("createFromPreview", () => {
 		expect(readFileSync(join(s.laneDir, "instructions.md"), "utf8")).toBe("You are Rpcs3.\n");
 	});
 
-	it("refuses a bad name or a broken preview before writing anything", () => {
+	// Guard: passed before the write order changed; now the taken name must be refused before memory is written.
+	it("refuses a bad name, a taken one, or a broken preview before writing anything", () => {
 		const s = scene();
+		writeFileSync(s.configPath, `${readFileSync(s.configPath, "utf8")}[lanes.rpcs3]\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+		expect(() => createFromPreview(s.configPath, s.request)).toThrow(/A lane named Rpcs3 already exists/);
+		expect(existsSync(join(s.dir, "data"))).toBe(false);
+		writeFileSync(s.configPath, `data_dir = ${JSON.stringify(join(s.dir, "data"))}\n`);
 		const before = readFileSync(s.configPath, "utf8");
 		expect(() => createFromPreview(s.configPath, { ...s.request, name: "push" })).toThrow(/a word orrery agent uses/);
 		writeFileSync(s.request.previewPath, `${JSON.stringify({ kind: "thought", text: "x", date: T, source: "a" })}\n`);
 		expect(() => createFromPreview(s.configPath, s.request)).toThrow(/Invalid preview/);
 		expect(readFileSync(s.configPath, "utf8")).toBe(before);
 		expect(existsSync(s.laneDir)).toBe(false);
+	});
+});
+
+/** Every path under `dir`, for "no new files". */
+const tree = (dir: string) => (readdirSync(dir, { recursive: true }) as string[]).sort();
+
+describe("createFromPreview when a step fails", () => {
+	/** After a failure: the config as it was, no file it made, and a retry under the same name works. */
+	function undone(s: ReturnType<typeof scene>, config: string, files: string[], retry = () => createFromPreview(s.configPath, s.request)) {
+		expect(readFileSync(s.configPath, "utf8")).toBe(config);
+		expect(loadConfig(s.configPath).lanes.has("Rpcs3")).toBe(false);
+		expect(tree(s.dir)).toEqual(files);
+		expect(retry()).toEqual({ laneDir: s.laneDir, messages: 2 });
+		expect(texts(s.laneDir)).toEqual(["Install RPCS3 AppImage for me.", "Done."]);
+	}
+
+	it("instructions: a lane folder that is a symlink is refused, and the link and its target stay as they were", () => {
+		const s = scene();
+		const elsewhere = tempDir("orrery-create-agent-elsewhere-");
+		dirs.push(elsewhere);
+		mkdirSync(join(s.dir, "data", "lanes"), { recursive: true });
+		symlinkSync(elsewhere, s.laneDir);
+		const config = readFileSync(s.configPath, "utf8");
+		const files = tree(s.dir);
+		expect(() => createFromPreview(s.configPath, s.request)).toThrow(/not a real folder/);
+		expect(readdirSync(elsewhere)).toEqual([]);
+		undone(s, config, files, () => {
+			rmSync(s.laneDir);
+			return createFromPreview(s.configPath, s.request);
+		});
+	});
+
+	it("instructions: a write that fails after making the folder takes the folder away again", () => {
+		const s = scene();
+		const config = readFileSync(s.configPath, "utf8");
+		const files = tree(s.dir);
+		const failing = (dir: string, text: string) => {
+			writeInstructions(dir, text);
+			throw new Error("No space left on device");
+		};
+		expect(() => createFromPreview(s.configPath, s.request, { writeInstructions: failing })).toThrow(/No space left/);
+		expect(existsSync(join(s.dir, "data"))).toBe(false);
+		undone(s, config, files);
+	});
+
+	it("memory: a store another writer holds is refused; what was there before stays", () => {
+		const s = scene();
+		const release = holdWriterLock(join(s.laneDir, "memory.sqlite"));
+		const config = readFileSync(s.configPath, "utf8");
+		const files = tree(s.dir);
+		try {
+			expect(() => createFromPreview(s.configPath, s.request)).toThrow(/already open by another writer/);
+			expect(tree(s.dir)).toEqual(files);
+		} finally {
+			release();
+		}
+		// The test's own lock kept a journal while it held the store; releasing it removes that.
+		undone(s, config, files.filter((file) => !file.endsWith(".lock-journal")));
+	});
+
+	it("memory: a commit that fails takes the store (and its -wal, -shm and lock) and the folder away", () => {
+		const s = scene();
+		const config = readFileSync(s.configPath, "utf8");
+		const files = tree(s.dir);
+		const failing = (store: MemoryStore, lines: Parameters<typeof commitPreview>[1]) => {
+			commitPreview(store, lines);
+			throw new Error("disk I/O error");
+		};
+		expect(() => createFromPreview(s.configPath, s.request, { commit: failing })).toThrow(/disk I\/O error/);
+		undone(s, config, files);
+	});
+
+	// Guard: the old order (config first) passed this too; with the config written last it holds the same promise.
+	it.skipIf(process.getuid?.() === 0)("config: a config folder that can't be written leaves no memory, instructions or folder", () => {
+		const s = scene();
+		const config = readFileSync(s.configPath, "utf8");
+		const files = tree(s.dir);
+		chmodSync(s.dir, 0o500);
+		try {
+			expect(() => createFromPreview(s.configPath, s.request)).toThrow(/EACCES/);
+		} finally {
+			chmodSync(s.dir, 0o700);
+		}
+		undone(s, config, files);
+	});
+
+	it("config: an edit that fails after writing puts the config (and its .bak) back as they were", () => {
+		const s = scene();
+		writeFileSync(`${s.configPath}.bak`, "an older config\n");
+		const config = readFileSync(s.configPath, "utf8");
+		const files = tree(s.dir);
+		const failing = (path: string, edit: (text: string, dir: string) => string) => {
+			editConfigFile(path, edit);
+			throw new Error("after the write");
+		};
+		expect(() => createFromPreview(s.configPath, s.request, { editConfig: failing })).toThrow(/after the write/);
+		expect(readFileSync(`${s.configPath}.bak`, "utf8")).toBe("an older config\n");
+		undone(s, config, files);
 	});
 });
