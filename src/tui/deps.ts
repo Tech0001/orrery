@@ -5,7 +5,7 @@ import type { TUI } from "@earendil-works/pi-tui";
 import { addRemoteCommand, laneRemoteCommand, pullLaneCommand } from "../cli/remote.ts";
 import { browseCommand } from "../cli/commands.ts";
 import { laneCompactorTarget } from "../lane/compactor-target.ts";
-import { loadConfig } from "../lane/config.ts";
+import { defaultConfigPath, loadConfig } from "../lane/config.ts";
 import { configWritable, editConfigFile } from "../lane/config-edit.ts";
 import { configureHttp } from "../lane/http.ts";
 import { pageOpener } from "../lane/lane-commands.ts";
@@ -15,6 +15,7 @@ import { laneOverview, laneUsage, OverviewCache } from "../lane/overview.ts";
 import { versionNumber } from "../lane/running.ts";
 import { openSummarySources, testChoice } from "../lane/summary-sources.ts";
 import { checkTools, probeOri, installSteps, runningRoot, runningVersion, wiringRoot, runInstall } from "../lane/tools.ts";
+import { updateCheck } from "../install/update.ts";
 import { openStorage } from "../remote/index.ts";
 import type { AppDeps } from "./app.ts";
 import { colorWanted, makeTheme } from "./theme.ts";
@@ -74,6 +75,15 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 			const opener = process.env.ORRERY_NO_OPEN === "1" ? undefined : pageOpener();
 			opener?.open(url);
 			return opener?.command;
+		},
+		updateNotice: async () => {
+			let enabled = true;
+			try {
+				enabled = loadConfig(defaultConfigPath(process.env)).updates.check;
+			} catch {
+				// no config yet (first run) or one that does not load: the TUI says that elsewhere; check anyway
+			}
+			return updateCheck(process.env, Date.now(), { enabled, running: versionNumber() });
 		},
 		about: () => ({ version: versionNumber(), root: runningRoot(), running: runningVersion() }),
 		rows: () => tui.terminal.rows,

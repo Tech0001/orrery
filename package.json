@@ -22,7 +22,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "test:bun": "ORRERY_SQLITE=bun bun scripts/bun-store-check.ts",
-    "test:binary": "rm -rf dist/test-binary && bun scripts/build-release.ts --target host --out dist/test-binary && ORRERY_TEST_BIN=\"$(ls -d $PWD/dist/test-binary/orrery-*)/bin/orrery\" vitest run test/cli test/claude/hooks-process.test.ts test/claude/holder-process.test.ts test/claude/mcp.test.ts test/claude/mod-view.test.ts test/install/ask.test.ts test/install/uninstall.test.ts",
+    "test:binary": "rm -rf dist/test-binary && bun scripts/build-release.ts --target host --out dist/test-binary && ORRERY_TEST_BIN=\"$(ls -d $PWD/dist/test-binary/orrery-*)/bin/orrery\" vitest run test/cli test/claude/hooks-process.test.ts test/claude/holder-process.test.ts test/claude/mcp.test.ts test/claude/mod-view.test.ts test/install/ask.test.ts test/install/uninstall.test.ts test/install/update.test.ts",
     "test:bun-suite": "bun --bun vitest run",
     "check": "npm run typecheck && npm test"
   },

@@ -93,6 +93,7 @@ export interface HarnessConfig {
 	readonly providers: readonly CustomProviderConfig[];
 	readonly hosts: ReadonlyMap<string, HostConfig>;
 	readonly lanes: ReadonlyMap<string, LaneConfig>;
+	readonly updates: { readonly check: boolean };
 }
 
 type Table = Record<string, unknown>;
@@ -257,6 +258,8 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 	const providers = parseProviders(root.providers);
 	const hosts = parseHosts(root.hosts, dataDir);
 	const remotes = parseRemotes(root.remotes, hosts);
+	const updates = table(root.updates, "updates");
+	if (updates.check !== undefined && typeof updates.check !== "boolean") throw new ConfigError("updates.check must be true or false");
 	const lanes = new Map<string, LaneConfig>();
 	for (const [name, value] of Object.entries(table(root.lanes, "lanes"))) {
 		const where = `lanes.${name}`;
@@ -325,6 +328,7 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 		providers,
 		hosts,
 		lanes,
+		updates: { check: updates.check !== false },
 	};
 }
 

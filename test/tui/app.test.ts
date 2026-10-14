@@ -9,6 +9,22 @@ const ENTER = "\r";
 const ESC = "\x1b";
 const DOWN = "\x1b[B";
 
+describe("the restart marker", () => {
+	const lanes = (version: string | undefined, running: string | undefined) =>
+		makeApp(fakeDeps({ about: () => ({ version: "0.6.1", root: "/opt/orrery", ...(running === undefined ? {} : { running }) }) }, [row({ name: "Alpha", state: "open", openIn: "pi", ...(version === undefined ? {} : { runsVersion: version }) })]), [lanesPage]);
+
+	it("marks a lane running an older version", () => {
+		const text = screen(lanes("0.6.0", "0.6.1"));
+		expect(text).toMatch(/Alpha\s+pi\s+open · restart for 0\.6\.1/);
+	});
+
+	it("marks nothing for the same version, checkout, unknown, no version, or a checkout running here", () => {
+		for (const text of [screen(lanes("0.6.1", "0.6.1")), screen(lanes("checkout", "0.6.1")), screen(lanes("unknown", "0.6.1")), screen(lanes(undefined, "0.6.1")), screen(lanes("0.6.0", "checkout")), screen(lanes("0.6.0", undefined))]) {
+			expect(text).not.toContain("restart for");
+		}
+	});
+});
+
 describe("the App and the Lanes page", () => {
 	it("draws the page tabs and one row per lane, with its tool, state, memory and summaries", () => {
 		const app = makeApp(fakeDeps({}, [row({ name: "Alpha", tool: "claude-code", state: "working", openIn: "claude-code" }), row({ name: "Cedarn", summary: { state: "failing", waiting: 3, plain: "quota reached" } })]), [lanesPage]);
@@ -169,6 +185,35 @@ describe("the App and the Lanes page", () => {
 		await app.idle();
 		await settle();
 		expect(screen(app)).toContain("boom happened");
+	});
+});
+
+describe("the header's update notice", () => {
+	const NOTICE = "Orrery 0.6.1 is available: orrery update";
+	const withNotice = async (theme = fakeDeps().theme) => {
+		const app = makeApp(fakeDeps({ updateNotice: async () => NOTICE, theme }), [lanesPage]);
+		await settle();
+		return app;
+	};
+
+	it("ends the first line after the version, dim", async () => {
+		expect((await withNotice()).render(120)[0]).toMatch(/ Orrery v0\.1\.0  Orrery 0\.6\.1 is available: orrery update *$/);
+		expect((await withNotice(makeTheme(true))).render(120)[0]).toContain(`\x1b[2m${NOTICE}\x1b[22m`);
+	});
+
+	it("is left out rather than cutting the version at 70 columns, and is absent without one", async () => {
+		const app = await withNotice();
+		const line = app.render(70)[0];
+		expect(line).toContain("v0.1.0");
+		expect(line).not.toContain("available");
+		expect(visibleWidth(line)).toBeLessThanOrEqual(70);
+		expect(makeApp(fakeDeps(), [lanesPage]).render(120)[0]).not.toContain("available");
+	});
+
+	it("survives a notice check that throws", async () => {
+		const app = makeApp(fakeDeps({ updateNotice: async () => { throw new Error("offline"); } }), [lanesPage]);
+		await settle();
+		expect(app.render(120)[0]).toContain("v0.1.0");
 	});
 });
 

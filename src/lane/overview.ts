@@ -55,6 +55,8 @@ export interface LaneRow {
 	readonly unreadable?: string;
 	/** The day (YYYY-MM-DD) of the lane's newest backup under `<data_dir>/backups/`, when it has one. */
 	readonly lastBackup?: string;
+	/** The Orrery version the lane's open tool runs (its status file's version): a release, "checkout" or "unknown". Only while the lane is open or working. */
+	readonly runsVersion?: string;
 }
 
 /** A pi status older than this belongs to a pi that is gone: pi rewrites it every 5 s. */
@@ -233,6 +235,7 @@ function laneRow(lane: LaneConfig, now: number, cache: OverviewCache, alive: (pi
 		toolSet: lane.tool !== undefined,
 		state,
 		...(openIn === undefined ? {} : { openIn }),
+		...(openIn === undefined || (state !== "open" && state !== "working") || status?.version === undefined ? {} : { runsVersion: status.version }),
 		workspace: lane.workspace,
 		dataDir: lane.dir,
 		summaryContextBytes: lane.compactor.contextBytes ?? COMPACTION_VIEW_BYTES,

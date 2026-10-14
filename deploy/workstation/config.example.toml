@@ -1,6 +1,9 @@
 # ~/.orrery/config.toml on the workstation. Lanes run inside pi; this file maps folders to lanes.
 # data_dir is optional: with none, memory lives beside this file, in ~/.orrery.
 
+[updates]
+# check = false   # no daily check for a new release
+
 [lanes.Atlas]
 workspace = "/home/alex/code/agent-Atlas"
 tool = "pi"                            # pi, omp, claude-code or codex: what the TUI launches

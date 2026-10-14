@@ -112,6 +112,16 @@ describe("parseConfig", () => {
 	});
 });
 
+describe("[updates]", () => {
+	const lane = `[lanes.A]\nworkspace = "/w/a"\ncompactor_model = "openai/gpt-6.1-sol"\n`;
+	it("reads check, true when absent, and refuses a non-boolean", () => {
+		expect(parseConfig(`[updates]\ncheck = false\n${lane}`, "/x").updates.check).toBe(false);
+		expect(parseConfig(lane, "/x").updates.check).toBe(true);
+		expect(() => parseConfig(`[updates]\ncheck = "no"\n${lane}`, "/x")).toThrow(ConfigError);
+		expect(() => parseConfig(`[updates]\ncheck = "no"\n${lane}`, "/x")).toThrow(/updates\.check/);
+	});
+});
+
 describe("parseModelChoice", () => {
 	it("splits at the first slash", () => {
 		expect(parseModelChoice("openrouter/anthropic/x", "low")).toEqual({ provider: "openrouter", modelId: "anthropic/x", thinking: "low" });

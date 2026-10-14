@@ -66,6 +66,7 @@ const USAGE = `Usage: orrery <command> [--config FILE]
                              and which lanes run them
   setup [--yes]              wire the orrery command, pi, OMP, Claude Code and the backup service to the installed
                              version; asks on the terminal before replacing anything that is not Orrery's (--yes: replace)
+  update [--check] [--version V] [--yes]   install the newest release (or V); --check only says whether one is out
   uninstall [--purge]        unwire pi, OMP and Claude Code, remove the command, the backup service and the installed
                              versions; lanes' memory, config and logins stay (--purge: delete them too, after typing delete)
   claude-setup <Lane> [--mod]  make Claude Code load the lane's memory view (CLAUDE.md, or CLAUDE.local.md in a
@@ -178,6 +179,43 @@ async function installCommand(values: { from?: string; rollback?: boolean; list?
 	throw new Error("install takes --from DIR, --rollback or --list.");
 }
 
+/** `orrery update`: the newest release (or --version V), downloaded, checked and installed by that release's own installer. */
+async function updateCommand(values: { check?: boolean; version?: string; yes?: boolean }): Promise<number> {
+	const { latestVersion, downloadRelease, newer, releasesBase } = await import("../install/update.ts");
+	const { versionNumber, compiled } = await import("../lane/running.ts");
+	const { laneVersions } = await import("../install/install.ts");
+	const running = versionNumber();
+	const target = values.version?.replace(/^v/, "") ?? (await latestVersion(process.env));
+	if (!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(target)) throw new Error(`--version takes a release such as 0.6.1 (got ${values.version})`);
+	if (!newer(target, "0.5.99")) throw new Error("no release before 0.6.0 exists");
+	if (values.check === true) {
+		process.stdout.write(newer(target, running) ? `Orrery ${target} is available (this is ${running}). Run orrery update.\n` : `Orrery ${running} is up to date.\n`);
+		return 0;
+	}
+	if (values.version === undefined && !newer(target, running)) {
+		process.stdout.write(`Orrery ${running} is up to date.\n`);
+		return 0;
+	}
+	const { mkdtempSync, rmSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const { spawnSync } = await import("node:child_process");
+	const work = mkdtempSync(join(tmpdir(), "orrery-update-"));
+	try {
+		process.stdout.write(`Downloading Orrery ${target}...\n`);
+		const folder = await downloadRelease(process.env, target, join(work, "release"));
+		const r = spawnSync(join(folder, "bin", "orrery"), ["install", "--from", folder, ...(values.yes === true ? ["--yes"] : [])], { stdio: "inherit" });
+		if (r.status !== 0) return r.status ?? 1;
+	} finally {
+		rmSync(work, { recursive: true, force: true });
+	}
+	process.stdout.write(`Updated ${running} → ${target}. Release notes: ${releasesBase(process.env)}/tag/v${target}\n`);
+	const live = [...laneVersions(process.env).versions].filter(([v]) => v !== target);
+	if (live.length > 0) process.stdout.write(`These lanes keep their version until they restart: ${live.map(([v, lanes]) => `${lanes.join(", ")} (${v})`).join("; ")}\n`);
+	if (!compiled) process.stdout.write("This Orrery runs from a checkout; the installed copy was updated, the checkout was not.\n");
+	return 0;
+}
+
 /** `orrery uninstall [--purge]`: 1 when something of Orrery's was left, lanes are open, or the purge was not confirmed. */
 async function uninstallCommand(values: { purge?: boolean }): Promise<number> {
 	const [{ uninstall }, { askTyped }, { orreryHome }] = await Promise.all([import("../install/uninstall.ts"), import("../install/ask.ts"), import("../lane/home.ts")]);
@@ -276,7 +314,21 @@ async function laneCommand(args: string[], values: Record<string, string | boole
 	throw new Error(`lane needs add, set, archive, push, pull, takeover or local.\n${USAGE}`);
 }
 
-async function main(argv: string[]): Promise<number> {
+async function main(rawArgv: string[]): Promise<number> {
+	// --version is the version flag everywhere but `update`, where it names a release: take its value out first.
+	let updateVersion: string | undefined;
+	let argv = rawArgv;
+	if (rawArgv[0] === "update") {
+		argv = [];
+		for (let i = 0; i < rawArgv.length; i++) {
+			const a = rawArgv[i] as string;
+			if (a === "--version") {
+				updateVersion = rawArgv[++i];
+				if (updateVersion === undefined) throw new Error("--version takes a release such as 0.6.1");
+			} else if (a.startsWith("--version=")) updateVersion = a.slice("--version=".length);
+			else argv.push(a);
+		}
+	}
 	const { positionals, values } = parseArgs({
 		args: argv,
 		allowPositionals: true,
@@ -332,6 +384,7 @@ async function main(argv: string[]): Promise<number> {
 			rollback: { type: "boolean" },
 			list: { type: "boolean" },
 			purge: { type: "boolean" },
+			check: { type: "boolean" },
 			help: { type: "boolean", short: "h" },
 			version: { type: "boolean", short: "v" },
 		},
@@ -366,6 +419,7 @@ async function main(argv: string[]): Promise<number> {
 	if (command === "tools") return toolsCommand(positionals, values);
 	if (command === "install") return installCommand(values);
 	if (command === "setup") return setupCommand(values);
+	if (command === "update") return updateCommand({ check: values.check, version: updateVersion, yes: values.yes });
 	if (command === "uninstall") return uninstallCommand(values);
 	const config = loadConfig(values.config);
 	switch (command) {

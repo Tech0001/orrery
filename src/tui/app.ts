@@ -64,6 +64,8 @@ export interface AppDeps {
 	browse(config: HarnessConfig, lane: string): { path: string; opened?: string };
 	/** orrery's own version and folder, for the Tools page. */
 	about(): { readonly version: string; readonly root: string; /** The installed version folder running, or "checkout". */ readonly running?: string };
+	/** The text of the daily update notice ("Orrery 0.6.1 is available: orrery update"), or undefined. Never throws on a network failure. */
+	updateNotice(): Promise<string | undefined>;
 	rows(): number;
 	now(): number;
 	quit(): void;
@@ -176,11 +178,21 @@ export class App implements Component {
 	#status: { text: string; tone: "info" | "error" } | undefined;
 	#action: Promise<void> | undefined;
 	#version: string | undefined;
+	#update: string | undefined;
 
 	constructor(deps: AppDeps, pages: readonly Page[]) {
 		this.deps = deps;
 		this.pages = pages;
 		this.host.onChange = () => deps.requestRender();
+		// Once, in the background: the notice appears in the header when the answer comes.
+		void Promise.resolve()
+			.then(() => deps.updateNotice())
+			.then((text) => {
+				if (text === undefined) return;
+				this.#update = safeText(text);
+				deps.requestRender();
+			})
+			.catch(() => {});
 	}
 
 	get current(): Page {
@@ -316,6 +328,8 @@ export class App implements Component {
 		}
 		const warning = attentionText(this.lanes, width - left - visibleWidth(beside[0]) - 2, true);
 		if (warning !== "") beside[0] = `${beside[0]}  ${theme.red(warning)}`;
+		// The update notice follows only when the whole line still fits; it never cuts the version or the warning.
+		if (this.#update !== undefined && left + visibleWidth(beside[0]) + 2 + visibleWidth(this.#update) <= width) beside[0] = `${beside[0]}  ${theme.dim(this.#update)}`;
 		const logo = orreryLogo(theme).map((line, i) => fit(`${" ".repeat(LOGO_PAD)}${line}${" ".repeat(LOGO_GAP)}${beside[i] ?? ""}`, width));
 		return [...logo, fit("", width)];
 	}
