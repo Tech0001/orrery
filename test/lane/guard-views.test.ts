@@ -98,7 +98,7 @@ describe("laneViews", () => {
 	});
 });
 
-describe("the view name rule in commands: only the session's own view, by an absolute or ~/ path", () => {
+describe("the view name rule in commands: only the session's own view, by its absolute path (OMP's tool roots also from ~/)", () => {
 	it.each([
 		(t: Lanes) => `cat ${view(t.birch)}`,
 		() => "cat ../agent-Birch/.orrery/view.md",
@@ -149,6 +149,35 @@ describe("the view name rule in commands: only the session's own view, by an abs
 		const leak = `export HOME=${t.root}/x; mkdir -p ~/projects; ln -sfn ${t.birch} ~/projects/agent-Atlas; cat ~/projects/agent-Atlas/.orrery/view.md`;
 		expect(bash(leak, homeIsRoot)).toMatch(/sensitive/);
 		expect(bash("cat $HOME/projects/agent-Atlas/.orrery/view.md", homeIsRoot)).toMatch(/sensitive/);
+	});
+
+	it("opens the own view to OMP's tool roots from ~/ too (OMP expands ~ in its own process), never to shell or eval text (fix round 4)", () => {
+		const t = lanes();
+		const homeIsRoot = { ...asAtlas(t), home: t.root };
+		const own = "~/projects/agent-Atlas/.orrery/view.md";
+		const birch = "~/projects/agent-Birch/.orrery/view.md";
+		const roots: [string, (path: string) => Record<string, unknown>][] = [
+			["grep", (path) => ({ pattern: "memory", path })],
+			["glob", (path) => ({ path })],
+			["ast_grep", (path) => ({ pat: "x", path })],
+			["find", (path) => ({ query: "memory", grep_keywords: ["memory"], path })],
+			["ast_edit", (path) => ({ ops: [{ pat: "a", out: "b" }], paths: [path] })],
+		];
+		for (const [tool, args] of roots) {
+			expect([tool, guardOmpToolCall(tool, args(own), homeIsRoot)]).toEqual([tool, undefined]);
+			expect([tool, guardOmpToolCall(tool, args(birch), homeIsRoot)]).toEqual([tool, expect.stringMatching(/sensitive|memory view/)]);
+			// A ".." or a quote in the word, or a home the word does not start from: refused as the absolute spellings are.
+			expect([tool, guardOmpToolCall(tool, args("~/projects/x/../agent-Atlas/.orrery/view.md"), homeIsRoot)]).toEqual([tool, expect.stringMatching(/sensitive/)]);
+			expect([tool, guardOmpToolCall(tool, args(`"${own}"`), homeIsRoot)]).toEqual([tool, expect.stringMatching(/sensitive/)]);
+			expect([tool, guardOmpToolCall(tool, args(own), asAtlas(t))]).toEqual([tool, expect.stringMatching(/sensitive/)]);
+		}
+		expect(guardOmpToolCall("read", { path: own }, homeIsRoot)).toBeUndefined();
+		// Shell text and eval code run under a HOME a command may change: no "~/" opens the own view there.
+		expect(guardOmpToolCall("bash", { command: `cat ${own}` }, homeIsRoot)).toMatch(/sensitive/);
+		expect(guardOmpToolCall("eval", { language: "py", code: `open('${own}').read()` }, homeIsRoot)).toMatch(/sensitive/);
+		const leak = `export HOME=${t.root}/x; mkdir -p ~/projects; ln -sfn ${t.birch} ~/projects/agent-Atlas; cat ${own}`;
+		expect(guardOmpToolCall("bash", { command: leak }, homeIsRoot)).toMatch(/sensitive/);
+		expect(guardOmpToolCall("edit", { path: "src/a.ts", input: `[${own}#1a2b]\nPUT 1\n+x\n` }, homeIsRoot)).toMatch(/sensitive/);
 	});
 
 	it("refuses every view file to a refused pick, the folder's own lane's too", () => {

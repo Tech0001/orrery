@@ -216,10 +216,15 @@ export type ViewRule = (form: string) => (end: number) => boolean;
 /** No view file is open. */
 const NO_VIEW: ViewRule = () => () => false;
 
-/** A session's view rules (GuardOptions.foreignViews): for command text and file-name globs, and for one path. */
+/** A session's view rules (GuardOptions.foreignViews): for command text and file-name globs, for OMP's tool roots, and for one path. */
 export interface ViewRules {
 	/** Command text's: a view file is open where a plain absolute word names the session's own (commandRule). */
 	readonly command: ViewRule;
+	/**
+	 * OMP's tool roots' (a search path, an ast_edit target; read like a command's words): as `command`, and also a plain
+	 * "~/" word from the guard's home. OMP expands "~" in its own process, which a shell's `export HOME` cannot reach.
+	 */
+	readonly tool: ViewRule;
 	/** A path's: its view file is open when the path is a spelling of the session's own view; without a path, none is. */
 	readonly path: (path?: string) => ViewRule;
 }
@@ -228,12 +233,13 @@ const fold = (path: string) => posix.normalize(path).toLowerCase();
 
 /**
  * The view rules for `options`. `own`: each spelling of the session's own view (as written, and where it really is);
- * default ownView alone.
+ * default ownView alone. `options.home` is what "~/" means to OMP's tools (ViewRules.tool).
  */
 export function viewRules(options: GuardOptions & { readonly home?: string }, own: readonly string[] = options.ownView === undefined ? [] : [options.ownView]): ViewRules {
 	const mine = new Set(own.map(fold));
 	return {
 		command: commandRule(mine),
+		tool: commandRule(mine, options.home),
 		path: (path) => {
 			const open = path !== undefined && mine.has(fold(path));
 			return () => () => open;
@@ -248,20 +254,25 @@ const PLAIN = /[^ \t\n;|&()<>`"'\\$*?[\]{}~,=:!]/;
 
 /**
  * Command text's view rule: a view file is open only where a plain word names the session's own (`own`, folded) by its
- * absolute path. A relative word is refused: a shell may keep a folder of its own (OMP's does, across calls), so the
- * host's cwd is no proof of where it starts. So is "~/": the shell's ~ follows its HOME, which a command may change. The
- * word must start and end where the shell's words do (an edge, not escaped) and hold no ".." (a link may lead it
- * elsewhere). The guard cannot read a word with quotes, escapes, variables, globs or braces, so a view file named that way
- * is refused.
+ * absolute path, or, given a `home` (OMP's tool roots, ViewRules.tool), by "~/" from it. A relative word is refused: a
+ * shell may keep a folder of its own (OMP's does, across calls), so the host's cwd is no proof of where it starts. So is
+ * "~/" in shell text: the shell's ~ follows its HOME, which a command may change; OMP's tools expand ~ in OMP's own
+ * process, from the home the guard knows. The word must start and end where the shell's words do (an edge, not escaped)
+ * and hold no ".." (a link may lead it elsewhere). The guard cannot read a word with quotes, escapes, variables, globs or
+ * braces, so a view file named that way is refused.
  */
-function commandRule(own: ReadonlySet<string>): ViewRule {
+function commandRule(own: ReadonlySet<string>, home?: string): ViewRule {
+	const fromHome = home === undefined ? undefined : posix.normalize(home).replace(/\/+$/, "");
 	return (form) => (end) => {
 		if (end < form.length && !WORD_EDGE.test(form[end])) return false;
 		let start = end;
 		while (start > 0 && PLAIN.test(form[start - 1])) start--;
+		// With a home, "~/" may begin the word: the one "~" a plain word may hold.
+		if (fromHome !== undefined && start > 0 && start < end && form[start - 1] === "~" && form[start] === "/") start--;
 		const word = form.slice(start, end);
 		if (start > 0 && (!WORD_EDGE.test(form[start - 1]) || form[start - 2] === "\\")) return false;
 		if (word.split("/").includes("..")) return false;
+		if (word.startsWith("~/")) return fromHome !== undefined && own.has(fold(fromHome + word.slice(1)));
 		return word.startsWith("/") && own.has(fold(word));
 	};
 }

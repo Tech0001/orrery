@@ -568,13 +568,18 @@ const EDIT_UNREADABLE = "Orrery could not read every target of this edit; use a 
  * stripped).
  * A file:// URL Node cannot read is refused. read and write are judged with any `:`/`?` selector peeled too. ast_edit
  * rewrites files, folders or globs; searches and read take several paths in one string. Each path is judged on its own
- * and the first refusal wins (fix round 3 ruling: where OMP's own parsers may read more, fail closed).
+ * and the first refusal wins (fix round 3 ruling: where OMP's own parsers may read more, fail closed). A search path or
+ * ast_edit target may name the session's own view from "~/" as well as by its absolute path (OMP expands "~" in its
+ * own process); shell text, eval code and an edit's text may not (ViewRules).
  */
 export function guardOmpToolCall(toolName: string, input: Readonly<Record<string, unknown>>, options: PathGuardOptions): string | undefined {
 	const omp: PathGuardOptions = { ...options, resolvePath: ompToolPath };
 	if (toolName === "eval") return guardToolCall("bash", { command: typeof input.code === "string" ? input.code : "" }, omp);
-	// Names in a search path and an edit's text are read like a command's words.
-	const named = viewsOf(omp, omp.home ?? homedir()).command;
+	// Names in a search path or an ast_edit target are read like a command's words, "~/" from the guard's home included
+	// (named); an edit's text is read as a command's (inText).
+	const rules = viewsOf(omp, omp.home ?? homedir());
+	const named = rules.tool;
+	const inText = rules.command;
 	const judge = (tool: string, args: Readonly<Record<string, unknown>>) =>
 		typeof args.path === "string" && unreadableFileUrl(args.path) ? `${args.path}: Orrery cannot read this file:// URL; use a plain path.` : guardToolCall(tool, args, omp);
 	// A write target: as written, and the path inside a [path#TAG] header; with `selectors`, each also cut before a ":" or
@@ -596,7 +601,7 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 	if (toolName === "edit") {
 		const text = [input.input, input._input].filter((value): value is string => typeof value === "string").join("\n");
 		// Like a bash command: an edit whose text names a credential file is refused, its content included.
-		if (sensitive(text, named)) return "This edit touches sensitive files (keys, credentials or Orrery's private data).";
+		if (sensitive(text, inText)) return "This edit touches sensitive files (keys, credentials or Orrery's private data).";
 		const read = readEditText(text);
 		if (read.unreadable) return EDIT_UNREADABLE;
 		const renames = Array.isArray(input.edits) ? strings(input.edits.map((entry: unknown) => (entry as { rename?: unknown } | null)?.rename)) : [];

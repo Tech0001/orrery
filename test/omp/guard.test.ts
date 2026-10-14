@@ -602,6 +602,18 @@ describe("OMP: only the agent that owns a folder's memory view reads it", () => 
 		const leak = `export HOME=${root}/x; mkdir -p ~; ln -sfn ${birch} ~/agent-Atlas; cat ~/agent-Atlas/.orrery/view.md`;
 		expect(await call(omp, "bash", { command: leak })).toEqual(refused);
 		expect(await call(omp, "bash", { command: "cat ~/agent-Atlas/.orrery/view.md" })).toEqual(refused);
+		expect(await call(omp, "eval", { language: "py", code: "open('~/agent-Atlas/.orrery/view.md').read()" })).toEqual(refused);
+		// OMP's own tools expand ~ in OMP's process, which that export cannot reach: their roots take the own view from ~/,
+		// and Birch's still not (fix round 4).
+		const roots = (view: string): [string, Record<string, unknown>][] => [
+			["grep", { pattern: "secret", path: view }],
+			["glob", { path: view }],
+			["ast_grep", { pat: "x", path: view }],
+			["find", { query: "secret", grep_keywords: ["secret"], path: view }],
+			["ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [view] }],
+		];
+		for (const [tool, input] of roots("~/agent-Atlas/.orrery/view.md")) expect([tool, await call(omp, tool, input)]).toEqual([tool, undefined]);
+		for (const [tool, input] of roots("~/agent-Birch/.orrery/view.md")) expect([tool, await call(omp, tool, input)]).toEqual([tool, refused]);
 	});
 
 	it("keeps the config file in use read-only and named in no command, wherever ORRERY_CONFIG puts it (fix round 2)", async () => {
