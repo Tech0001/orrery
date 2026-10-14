@@ -182,7 +182,7 @@ async function installCommand(values: { from?: string; rollback?: boolean; list?
 
 /** `orrery update`: the newest release (or --version V), downloaded, checked and installed by that release's own installer. */
 async function updateCommand(values: { check?: boolean; version?: string; yes?: boolean }): Promise<number> {
-	const { latestVersion, downloadRelease, newer, releasesBase } = await import("../install/update.ts");
+	const { latestVersion, downloadRelease, installedVersion, newer, releasesBase } = await import("../install/update.ts");
 	const { versionNumber, compiled } = await import("../lane/running.ts");
 	const { laneVersions } = await import("../install/install.ts");
 	const running = versionNumber();
@@ -217,6 +217,7 @@ async function updateCommand(values: { check?: boolean; version?: string; yes?: 
 	});
 	const tty = process.stdout.isTTY === true;
 	let shown = false;
+	let status = 0;
 	try {
 		process.stdout.write(`Downloading Orrery ${target}...\n`);
 		const folder = await downloadRelease(process.env, target, join(work, "release"), {
@@ -234,22 +235,31 @@ async function updateCommand(values: { check?: boolean; version?: string; yes?: 
 			shown = false;
 		}
 		const r = spawnSync(join(folder, "bin", "orrery"), ["install", "--from", folder, ...(values.yes === true ? ["--yes"] : [])], { stdio: "inherit" });
-		if (r.error) throw new Error(`could not run the installer of ${target}: ${r.error.message}`);
-		if (r.signal) return 128 + (constants.signals[r.signal] ?? 0);
-		if (r.status !== 0) {
-			process.stderr.write(`The install of ${target} failed; Orrery stays on ${running}.\n`);
-			return r.status ?? 1;
+		if (r.error) {
+			// The archive unpacked, but its program cannot run there: a temp folder mounted noexec does that.
+			const code = (r.error as { code?: unknown }).code;
+			if (code === "EACCES" || code === "EPERM") throw new Error(`could not run the downloaded Orrery: ${tmpdir()} may be mounted noexec; set TMPDIR to a folder that allows running programs and try again`);
+			throw new Error(`could not run the installer of ${target}: ${r.error.message}`);
 		}
+		if (r.signal) return 128 + (constants.signals[r.signal] ?? 0);
+		status = r.status ?? 1;
 	} finally {
 		if (shown) process.stdout.write("\n");
 		for (const [i, name] of names.entries()) process.off(name, handlers[i] as () => void);
 		rmSync(work, { recursive: true, force: true });
 	}
+	// install --from also exits non-zero when only its setup left something (a question declined, no terminal), after
+	// app/current was switched: what app/current names says whether the update happened.
+	if (status !== 0 && installedVersion(process.env) !== target) {
+		process.stderr.write(`The install of ${target} failed; Orrery stays on ${running}.\n`);
+		return status;
+	}
 	process.stdout.write(`Updated ${running} → ${target}. Release notes: ${releasesBase(process.env)}/tag/v${target}\n`);
 	const live = [...laneVersions(process.env).versions].filter(([v]) => v !== target);
 	if (live.length > 0) process.stdout.write(`These lanes keep their version until they restart: ${live.map(([v, lanes]) => `${lanes.join(", ")} (${v})`).join("; ")}\n`);
 	if (!compiled) process.stdout.write("This Orrery runs from a checkout; the installed copy was updated, the checkout was not.\n");
-	return 0;
+	if (status !== 0) process.stdout.write("Setup left something unfinished; run `orrery setup` to finish it.\n");
+	return status;
 }
 
 /** `orrery uninstall [--purge]`: 1 when something of Orrery's was left, lanes are open, or the purge was not confirmed. */

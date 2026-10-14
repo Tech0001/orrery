@@ -1,7 +1,8 @@
 /**
  * orrery update and the TUI's daily notice (spec 2026-10-13-orrery-releases-design §6). Releases come from
  * ORRERY_RELEASES_URL (default GitHub's): <base>/latest redirects to <base>/tag/v<version>, and assets are at
- * <base>/download/v<version>/<asset>. A download is checked against SHA256SUMS before anything is unpacked.
+ * <base>/download/v<version>/<asset>. A download from an https base follows only https redirects, and is checked
+ * against SHA256SUMS before anything is unpacked.
  */
 
 import { spawnSync } from "node:child_process";
@@ -77,7 +78,30 @@ export interface DownloadOptions {
 
 class NotFound extends Error {}
 
-/** The body of `url`, with a timer that restarts on the headers and on every chunk. */
+const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+const MAX_HOPS = 10;
+
+/**
+ * `url`'s final answer, following redirects one hop at a time (GitHub sends a release asset to another host). From an
+ * https URL, a hop to anything but https is refused before it is requested.
+ */
+async function follow(url: string, signal: AbortSignal, onHop: () => void): Promise<{ res: Response; at: string }> {
+	const httpsOnly = new URL(url).protocol === "https:";
+	let at = url;
+	for (let hop = 0; ; hop++) {
+		const res = await fetch(at, { redirect: "manual", signal, headers: { "user-agent": "orrery-update" } });
+		const location = res.headers.get("location");
+		if (!REDIRECTS.has(res.status) || location === null) return { res, at };
+		await res.body?.cancel();
+		if (hop === MAX_HOPS) throw new Error(`${url}: more than ${MAX_HOPS} redirects`);
+		const next = new URL(location, at).href;
+		if (httpsOnly && new URL(next).protocol !== "https:") throw new Error(`${at} redirects to ${next}, which is not https; nothing was installed`);
+		onHop();
+		at = next;
+	}
+}
+
+/** The body of `url`, with a timer that restarts on the headers (of each redirect too) and on every chunk. */
 async function fetchBytes(url: string, options: DownloadOptions, progress: boolean): Promise<Buffer> {
 	const idleMs = options.idleMs ?? 30_000;
 	const control = new AbortController();
@@ -91,10 +115,10 @@ async function fetchBytes(url: string, options: DownloadOptions, progress: boole
 	};
 	try {
 		arm();
-		const res = await fetch(url, { redirect: "follow", signal: control.signal, headers: { "user-agent": "orrery-update" } });
+		const { res, at } = await follow(url, control.signal, arm);
 		arm();
-		if (res.status === 404) throw new NotFound(url);
-		if (!res.ok || res.body === null) throw new Error(`${url}: ${res.status}`);
+		if (res.status === 404) throw new NotFound(at);
+		if (!res.ok || res.body === null) throw new Error(`${at}: ${res.status}`);
 		const length = Number(res.headers.get("content-length"));
 		const total = Number.isFinite(length) && length > 0 ? length : undefined;
 		const chunks: Buffer[] = [];

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -64,20 +64,26 @@ export async function releasesServer(latest: string, files: Record<string, Buffe
 
 export const PLATFORM = platformAsset().replace(/^orrery-|\.tar\.gz$/g, "");
 
-/** A tar.gz holding orrery-<v>-<platform>/ with VERSION and a bin/orrery script, and its SHA256SUMS line. */
-export function fakeArchive(version: string, script = `#!/bin/sh\necho "orrery ${version}"\n`, held = version, platform = PLATFORM): { archive: Buffer; sums: Buffer } {
+/**
+ * A tar.gz holding orrery-<v>-<platform>/ with VERSION and a bin/orrery script (`mode` 0o644: one that cannot be run, as
+ * on a noexec TMPDIR), and its SHA256SUMS line.
+ */
+export function fakeArchive(version: string, script = `#!/bin/sh\necho "orrery ${version}"\n`, held = version, platform = PLATFORM, mode = 0o755): { archive: Buffer; sums: Buffer } {
 	const dir = scratch("orrery-archive-");
 	const top = `orrery-${version}-${platform}`;
 	mkdirSync(join(dir, top, "bin"), { recursive: true });
 	writeFileSync(join(dir, top, "VERSION"), `${held}\n`);
-	if (script !== "") writeFileSync(join(dir, top, "bin", "orrery"), script, { mode: 0o755 });
+	if (script !== "") {
+		writeFileSync(join(dir, top, "bin", "orrery"), script);
+		chmodSync(join(dir, top, "bin", "orrery"), mode);
+	}
 	execFileSync("tar", ["-czf", join(dir, "a.tar.gz"), "-C", dir, top]);
 	const archive = readFileSync(join(dir, "a.tar.gz"));
 	return { archive, sums: Buffer.from(`${createHash("sha256").update(archive).digest("hex")}  orrery-${platform}.tar.gz\n`) };
 }
 
 /** The server's files for one release: <version>/<asset> for the archive and SHA256SUMS. */
-export function release(version: string, script?: string, held?: string, platform = PLATFORM): Record<string, Buffer> {
-	const { archive, sums } = fakeArchive(version, script, held, platform);
+export function release(version: string, script?: string, held?: string, platform = PLATFORM, mode?: number): Record<string, Buffer> {
+	const { archive, sums } = fakeArchive(version, script, held, platform, mode);
 	return { [`${version}/orrery-${platform}.tar.gz`]: archive, [`${version}/SHA256SUMS`]: sums };
 }

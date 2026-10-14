@@ -3,12 +3,15 @@ import { createServer } from "node:http";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { downloadRelease, latestVersion, newer, platformAsset, updateCheck } from "../../src/install/update.ts";
 import { cliCommand } from "../claude/support.ts";
 import { cleanupFakes, PLATFORM, release, releasesServer, scratch, servers } from "../release/fake-releases.ts";
 
 afterEach(cleanupFakes);
+afterEach(() => {
+	vi.unstubAllGlobals();
+});
 
 describe("newer", () => {
 	it("compares releases, counting a local build as its release", () => {
@@ -89,6 +92,31 @@ describe("downloadRelease", () => {
 		expect(Date.now() - start).toBeGreaterThan(400);
 		expect(readFileSync(join(folder, "VERSION"), "utf8").trim()).toBe("0.6.1");
 		expect(seen.length).toBeGreaterThan(1);
+	});
+
+	it("from an https base, follows https redirects and refuses one to http before requesting it", async () => {
+		const files = release("0.6.1");
+		const requested: string[] = [];
+		// GitHub's way: the asset URL redirects to another https host. One answer below sends the archive to http instead.
+		const fake = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+			const url = String(input);
+			requested.push(url);
+			const hop = (to: string) => {
+				if (init?.redirect === "manual") return new Response(null, { status: 302, headers: { location: to } });
+				return fake(to, init); // a fetch that follows by itself
+			};
+			if (url === "https://releases.invalid/r/download/v0.6.1/SHA256SUMS") return hop("https://objects.invalid/sums");
+			if (url === "https://objects.invalid/sums") return new Response(files["0.6.1/SHA256SUMS"]);
+			if (url === `https://releases.invalid/r/download/v0.6.1/${platformAsset()}`) return hop("http://objects.invalid/archive");
+			if (url === "http://objects.invalid/archive") return new Response(files[`0.6.1/${platformAsset()}`]);
+			return new Response(null, { status: 404 });
+		};
+		vi.stubGlobal("fetch", fake);
+		const into = join(scratch(), "dl");
+		await expect(downloadRelease({ ORRERY_RELEASES_URL: "https://releases.invalid/r" }, "0.6.1", into)).rejects.toThrow(`https://releases.invalid/r/download/v0.6.1/${platformAsset()} redirects to http://objects.invalid/archive, which is not https; nothing was installed`);
+		expect(requested).toContain("https://objects.invalid/sums");
+		expect(requested).not.toContain("http://objects.invalid/archive");
+		expect(existsSync(into)).toBe(false);
 	});
 
 	it("gives up on a server that never answers", async () => {
@@ -204,6 +232,27 @@ describe("orrery update", () => {
 		const r = await run(["--yes"], base, scratch(), scratch("orrery-tmp-"));
 		expect(r.status).toBe(3);
 		expect(r.stderr).toMatch(/The install of 0\.6\.1 failed; Orrery stays on /);
+		expect(r.stdout).not.toContain("Updated");
+	});
+
+	it("an install that switched but whose setup left something says Updated, and how to finish", async () => {
+		// The installer installs and switches app/current, then exits 1 as setup does when a question was declined.
+		const SWITCH_THEN_FAIL = '#!/bin/sh\napp="$ORRERY_HOME/app"\nmkdir -p "$app/0.6.1"\necho 0.6.1 > "$app/0.6.1/VERSION"\nrm -f "$app/current"\nln -s 0.6.1 "$app/current"\nexit 1\n';
+		const { base } = await releasesServer("0.6.1", release("0.6.1", SWITCH_THEN_FAIL));
+		const r = await run(["--yes"], base, scratch(), scratch("orrery-tmp-"));
+		expect(r.status).toBe(1);
+		expect(r.stdout).toMatch(/^Updated \S+ → 0\.6\.1\. Release notes: /m);
+		expect(r.stdout).toContain("Setup left something unfinished; run `orrery setup` to finish it.");
+		expect(r.stderr).not.toContain("stays on");
+	});
+
+	it("a downloaded binary that cannot be run says TMPDIR may be mounted noexec", async () => {
+		const { base } = await releasesServer("0.6.1", release("0.6.1", SCRIPT, undefined, PLATFORM, 0o644));
+		const tmp = scratch("orrery-tmp-");
+		const r = await run(["--yes"], base, scratch(), tmp);
+		expect(r.status).toBe(1);
+		expect(r.stderr).toContain(`could not run the downloaded Orrery: ${tmp} may be mounted noexec; set TMPDIR to a folder that allows running programs and try again`);
+		expect(readdirSync(tmp).filter((n) => n.startsWith("orrery-update-"))).toEqual([]);
 	});
 
 	it("refuses -v, --check with --version, and finds update after a leading option", async () => {
