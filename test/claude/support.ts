@@ -3,6 +3,7 @@
 import { execFileSync, type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { afterAll } from "vitest";
 import { gitEnv } from "../../src/claude/git.ts";
 import { type SpoolEvent, spoolEvent } from "../../src/claude/spool.ts";
 import { VIEW_IMPORT, writeSetupMarker } from "../../src/claude/view-file.ts";
@@ -103,10 +104,30 @@ export async function waitUntil(check: () => boolean, ms = 5000): Promise<void> 
 	}
 }
 
-/** The test process may run inside Claude Code: children get no CLAUDE_* or ORRERY_* variables but these. */
+let childHome: string | undefined;
+
+/**
+ * The HOME of the processes tests start, unless a test names its own: a scratch folder (one per test file, removed after
+ * its tests), never the user's, so a child that reads or writes under ~ (a default config, a tool's files) touches nothing real.
+ */
+function scratchHome(): string {
+	if (childHome === undefined || !existsSync(childHome)) childHome = tempDir("orrery-child-home-");
+	return childHome;
+}
+
+// Imported at the top of a test file, this hook is that file's.
+afterAll(() => {
+	if (childHome !== undefined) rmSync(childHome, { recursive: true, force: true });
+	childHome = undefined;
+});
+
+/**
+ * The test process may run inside Claude Code: children get no CLAUDE_* or ORRERY_* variables but these, and a scratch
+ * HOME unless these name one.
+ */
 export function cleanEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
 	const kept = Object.entries(process.env).filter(([key]) => !key.startsWith("CLAUDE") && !key.startsWith("ORRERY_"));
-	return { ...Object.fromEntries(kept), ...extra };
+	return { ...Object.fromEntries(kept), HOME: scratchHome(), ...extra };
 }
 
 /** Runs `orrery claude-hook <event>` as Claude Code does: the input as JSON on stdin, only the given environment. */
