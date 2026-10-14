@@ -442,12 +442,29 @@ describe("orrery install", () => {
 		expect(currentOf(env)).toBe("0.6.0");
 		expect(commandLink(env)).toBe(join(env.ORRERY_HOME as string, "app", "current", "bin", "orrery"));
 		expect(out.stdout).toMatch(/~\/\.local\/bin is not on your PATH/);
-		expect(out.stdout.trim().split("\n").at(-1)).toBe("Run orrery to add your first lane.");
+		expect(out.stdout.trim().split("\n").at(-1)).toBe("Run ~/.local/bin/orrery (or open a new terminal after adding it to PATH) to add your first lane.");
+		const onPath = scratchEnv();
+		const plain = runCli(onPath, ["install", "--from", fixtureRelease("0.6.0")], join(onPath.HOME as string, ".local", "bin"));
+		expect(plain.status, plain.stderr).toBe(0);
+		expect(plain.stdout.trim().split("\n").at(-1)).toBe("Run orrery to add your first lane.");
 		writeFileSync(join(env.ORRERY_HOME as string, "config.toml"), "");
 		const again = cli(env, "install", "--from", fixtureRelease("0.6.0"));
 		expect(again.status, again.stderr).toBe(0);
 		expect(again.stdout).toContain("0.6.0 is already installed.");
-		expect(again.stdout).not.toContain("Run orrery to add your first lane.");
+		expect(again.stdout).not.toContain("to add your first lane.");
+	});
+
+	it("says how to add the first lane even when setup left something", () => {
+		const env = scratchEnv();
+		const bin = mkdtempSync(join(tmpdir(), "orrery-bin-"));
+		dirs.push(bin);
+		writeFileSync(join(bin, "pi"), '#!/bin/sh\necho "pi 1.2.0"\n', { mode: 0o755 });
+		// A folder where pi's extension file belongs cannot be checked: setup lists it and exits 1, asking nothing.
+		mkdirSync(join(env.HOME as string, ".pi", "agent", "extensions", "orrery.ts"), { recursive: true });
+		const out = runCli(env, ["install", "--from", fixtureRelease("0.6.0")], bin);
+		expect(out.status).toBe(1);
+		expect(out.stdout).toContain("check pi by hand");
+		expect(out.stdout.trim().split("\n").at(-1)).toMatch(/to add your first lane\.$/);
 	});
 
 	it("install and rollback rewire between a source-style 0.5.0 and a binary 0.6.0, both ways", () => {

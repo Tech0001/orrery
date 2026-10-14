@@ -164,8 +164,12 @@ async function installCommand(values: { from?: string; rollback?: boolean; list?
 		say(`Installed ${version}.`);
 		if (removed.length > 0) say(`Removed older versions: ${removed.join(", ")}.`);
 		const status = await setupCommand(values);
-		const [{ existsSync }, { defaultConfigPath }] = await Promise.all([import("node:fs"), import("../lane/config.ts")]);
-		if (status === 0 && !existsSync(defaultConfigPath(process.env))) say("Run orrery to add your first lane.");
+		const [{ existsSync }, { homedir }, { defaultConfigPath }, { pathAdvice }] = await Promise.all([import("node:fs"), import("node:os"), import("../lane/config.ts"), import("../install/ask.ts")]);
+		// Said even when setup left something (a tool not connected): the install itself is done.
+		if (!existsSync(defaultConfigPath(process.env))) {
+			const onPath = pathAdvice(process.env, join(process.env.HOME || homedir(), ".local", "bin")) === undefined;
+			say(onPath ? "Run orrery to add your first lane." : "Run ~/.local/bin/orrery (or open a new terminal after adding it to PATH) to add your first lane.");
+		}
 		return status;
 	}
 	if (values.list === true) {
