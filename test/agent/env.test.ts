@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAgentEnv, sshTarget } from "../../src/agent/env.ts";
@@ -10,14 +10,11 @@ afterEach(() => {
 });
 
 describe("createAgentEnv (local)", () => {
-	it("runs in the folder and reads files, or undefined when missing", async () => {
+	it("runs in the folder, one environment per folder", async () => {
 		const dir = tempDir("orrery-env-");
 		dirs.push(dir);
 		mkdirSync(join(dir, "ws"));
-		writeFileSync(join(dir, "ws", "AGENTS.md"), "be careful");
 		const agentEnv = createAgentEnv({ name: "local", kind: "local" }, join(dir, "ws"), join(dir, "ssh"), ctx);
-		expect(await agentEnv.readText(join(dir, "ws", "AGENTS.md"))).toBe("be careful");
-		expect(await agentEnv.readText(join(dir, "ws", "missing.md"))).toBeUndefined();
 		expect(agentEnv.env().cwd).toBe(join(dir, "ws"));
 		expect(agentEnv.env()).toBe(agentEnv.env());
 		await agentEnv.close();

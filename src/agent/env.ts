@@ -9,20 +9,10 @@ import { sshTarget } from "./ssh-target.ts";
 
 export interface AgentEnv {
 	env(cwd?: string): ExecutionEnv;
-	readText(path: string): Promise<string | undefined>;
 	close(): Promise<void>;
 }
 
 export { sshTarget };
-
-async function readVia(env: ExecutionEnv, path: string, context: Context): Promise<string | undefined> {
-	try {
-		const result = await env.readTextFile(path, context);
-		return result.ok ? result.value : undefined;
-	} catch {
-		return undefined;
-	}
-}
 
 export function createAgentEnv(host: HostConfig, folder: string, sshDir: string, context: Context): AgentEnv {
 	if (host.kind === "local") {
@@ -37,7 +27,6 @@ export function createAgentEnv(host: HostConfig, folder: string, sshDir: string,
 		};
 		return {
 			env,
-			readText: (path) => readVia(env(), path, context),
 			close: async () => {
 				for (const found of envs.values()) await found.cleanup(context);
 			},
@@ -55,7 +44,6 @@ export function createAgentEnv(host: HostConfig, folder: string, sshDir: string,
 	};
 	return {
 		env,
-		readText: (path) => readVia(env(), path, context),
 		close: async () => {
 			await connection.close();
 		},
