@@ -64,9 +64,9 @@ export interface AppDeps {
 	browse(config: HarnessConfig, lane: string): { path: string; opened?: string };
 	/** orrery's own version and folder, for the Tools page. */
 	about(): { readonly version: string; readonly root: string; /** The installed version folder running, or "checkout". */ readonly running?: string };
-	/** The text of the daily update notice ("Orrery 0.6.1 is available: orrery update"), or undefined. Never throws on a network failure. */
 	/** The version `app/current` names (what a restarted lane would run), or undefined when none is installed. */
 	installedVersion(): string | undefined;
+	/** The text of the daily update notice ("Orrery 0.6.1 is available: orrery update"), or undefined. Never throws on a network failure. */
 	updateNotice(): Promise<string | undefined>;
 	rows(): number;
 	now(): number;
