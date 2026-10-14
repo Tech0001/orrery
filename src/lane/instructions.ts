@@ -5,7 +5,7 @@
  * this file.
  */
 
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { writePrivate } from "./private-file.ts";
 
@@ -32,11 +32,15 @@ function wholeCharacters(buffer: Buffer, end: number): number {
 	return at;
 }
 
-/** The lane's instructions, or undefined when the file is missing, not a file, unreadable, or blank. */
+/**
+ * The lane's instructions, or undefined when the file is missing, not a file, unreadable, or blank. A symlink is followed
+ * (the folder is Orrery's own, which agents cannot write); O_NONBLOCK opens a FIFO at once, and fstat then refuses it, so
+ * a session start never waits for a writer.
+ */
 export function readInstructions(laneDir: string): Instructions | undefined {
 	let fd: number;
 	try {
-		fd = openSync(instructionsPath(laneDir), "r");
+		fd = openSync(instructionsPath(laneDir), constants.O_RDONLY | constants.O_NONBLOCK);
 	} catch {
 		return undefined;
 	}

@@ -33,6 +33,8 @@ describe("throwaway demo", () => {
 		for (const path of [demo.configPath, config.dataDir, config.credentialsPath, config.deviceIdPath, ...[...config.lanes.values()].flatMap((lane) => [lane.dir, lane.workspace ?? "(no workspace)"])]) expect(path.startsWith(`${root}/`)).toBe(true);
 		const rows = deps.overview(config);
 		expect(new Set(rows.map((row) => row.state))).toEqual(new Set(["working", "open", "closed"]));
+		// Each fictional lane has instructions, so the page shows no "no instructions" note.
+		expect(rows.map((row) => row.instructions)).toEqual(["ok", "ok", "ok", "ok", "ok"]);
 		expect(rows.filter((row) => row.summary.state === "failing")).toHaveLength(1);
 		for (const row of rows.filter((row) => row.tool !== "codex")) {
 			expect(row.messages).toBeGreaterThan(20);
@@ -43,6 +45,7 @@ describe("throwaway demo", () => {
 		const app = makeApp(deps, PAGES);
 		expect(screen(app)).toContain("Bellwick");
 		expect(screen(app)).toContain("failing:");
+		expect(screen(app)).not.toContain("instructions");
 		app.handleInput("3"); await settle();
 		expect(screen(app)).toMatch(/\$\d+\.\d{2}/);
 		expect(deps.usage(config, 7).flatMap((lane) => lane.rows).some((row) => row.cacheRead > 0 && row.role === "compactor")).toBe(true);

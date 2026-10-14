@@ -7,6 +7,7 @@ import { createModels } from "@earendil-works/pi-ai/compat";
 import { browseCommand } from "./cli/commands.ts";
 import { loadConfig, type HarnessConfig } from "./lane/config.ts";
 import { FileCredentialStore } from "./lane/credentials.ts";
+import { instructionsTemplate, writeInstructions } from "./lane/instructions.ts";
 import { loginRows } from "./lane/logins.ts";
 import { laneOverview, laneUsage, TOOL_LABELS } from "./lane/overview.ts";
 import type { LaneStatus } from "./lane/status-file.ts";
@@ -62,6 +63,7 @@ export function createDemo(home: string, now = Date.now()): Demo {
 			mkdirSync(lane.workspace, { recursive: true });
 			writeFileSync(join(lane.workspace, "README.md"), `# ${fixture.name}\n\nA fictional demo project: ${fixture.task}.\n`);
 		}
+		writeInstructions(lane.dir, instructionsTemplate(fixture.name, `Builds ${fixture.task}, a fictional demo project.`));
 		// Codex is launch-only: do not imply that it records Orrery memory.
 		if (fixture.tool === "codex") continue;
 		const store = MemoryStore.open(join(lane.dir, "memory.sqlite"));

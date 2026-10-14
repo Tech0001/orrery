@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,6 +60,14 @@ describe("instructions.md", () => {
 		expect(instructionsFacts(dir).state).toBe("none");
 		writeFileSync(join(dir, "instructions.md"), "");
 		expect(readInstructions(dir)).toBeUndefined();
+	});
+
+	// mkfifo is a POSIX tool: where it is missing there is no FIFO to test with.
+	it.skipIf(spawnSync("mkfifo", ["--version"]).error !== undefined)("a FIFO where the file should be is no instructions, at once (never a wait for a writer)", () => {
+		const dir = scratch();
+		expect(spawnSync("mkfifo", [join(dir, "instructions.md")]).status).toBe(0);
+		expect(readInstructions(dir)).toBeUndefined();
+		expect(instructionsFacts(dir)).toEqual({ state: "none" });
 	});
 
 	it("a folder where the file should be is no instructions", () => {

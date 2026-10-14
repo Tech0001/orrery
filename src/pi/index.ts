@@ -250,6 +250,8 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 		 * read. `arrived`: the session moved here from another folder (OMP), so it records only what comes after the move.
 		 */
 		const openNow = async (event: { reason?: string }, ctx: ExtensionContext, controller: AbortController, loaded?: HarnessConfig, arrived = false): Promise<void> => {
+			// A runtime pi keeps for the next session holds none from the last one until this open reads its lane's.
+			state.instructions = undefined;
 			const { config, unreadable } = loaded === undefined ? orreryConfig(options, ctx) : { config: loaded, unreadable: undefined };
 			if (config === undefined) {
 				// A guard that cannot judge refuses: an unreadable config leaves the default guard on (no lane, no memory).
