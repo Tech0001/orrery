@@ -22,7 +22,7 @@ export interface Chat {
 	readonly file: string;
 	/** Claude Code's session id, or Codex's thread id. */
 	readonly id: string;
-	/** Safe to show: no control or bidi characters. */
+	/** Safe to show: no control or bidi characters. UNTITLED when the chat names nothing usable. */
 	readonly title: string;
 	/** The folder the chat ran in, when the file says: the real path, for opening. Show it through `folderLabel`. */
 	readonly folder?: string;
@@ -47,6 +47,8 @@ export const FIRST_LINE_BYTES = 4 * 1024 * 1024;
 const INDEX_BYTES = 4 * 1024 * 1024;
 const CHUNK_BYTES = 32 * 1024;
 const TITLE_CHARS = 80;
+/** A chat with no usable title (none, or blank once made safe to show) is listed under this, never left out. */
+export const UNTITLED = "(untitled)";
 
 interface Counter {
 	bytes: number;
@@ -133,6 +135,9 @@ export function titleLine(text: string): string {
 	return points.length > TITLE_CHARS ? `${points.slice(0, TITLE_CHARS - 1).join("")}…` : first;
 }
 
+/** The list's title: the first that is there, as titleLine shows it, else UNTITLED. */
+const rowTitle = (title: string | undefined): string => (title === undefined ? "" : titleLine(title)) || UNTITLED;
+
 /** A folder as the list shows it: "~/…" under the home, made safe to show. `Chat.folder` stays the real path, for opening. */
 export function folderLabel(folder: string, home: string): string {
 	if (folder === home) return "~";
@@ -159,9 +164,12 @@ function claudeChat(file: string, fd: number, size: number, mtime: number, now: 
 	let custom: string | undefined;
 	let ai: string | undefined;
 	let summary: string | undefined;
+	// A file with no record at all is no chat; any record makes it one, listed even when it names nothing.
+	let records = false;
 	const titles = (line: string): void => {
 		if (!TITLE_MARKERS.some((marker) => line.includes(marker))) return;
 		const record = parse(line);
+		if (record !== undefined) records = true;
 		if (record?.type === "custom-title") custom = words(record.customTitle) ?? custom;
 		else if (record?.type === "ai-title") ai = words(record.aiTitle) ?? ai;
 		else if (record?.type === "summary") summary = words(record.summary) ?? summary;
@@ -173,6 +181,7 @@ function claudeChat(file: string, fd: number, size: number, mtime: number, now: 
 		titles(line);
 		const record = parse(line);
 		if (record === undefined) return false;
+		records = true;
 		if (typeof record.sessionId === "string") id = record.sessionId;
 		folder ??= words(record.cwd);
 		if (prompt === undefined && record.type === "user" && record.isMeta !== true && record.isSidechain !== true && record.isCompactSummary !== true) {
@@ -181,9 +190,8 @@ function claudeChat(file: string, fd: number, size: number, mtime: number, now: 
 		return !whole && folder !== undefined && prompt !== undefined;
 	});
 	for (const line of tail(fd, size, counter)) titles(line);
-	const title = custom ?? ai ?? summary ?? prompt;
-	if (title === undefined) return undefined; // nothing said in it yet
-	return { tool: "claude-code", file, id, title: titleLine(title), ...(folder === undefined ? {} : { folder }), lastActive: mtime, size, inUse: now - mtime < IN_USE_MS };
+	if (!records) return undefined;
+	return { tool: "claude-code", file, id, title: rowTitle(custom ?? ai ?? summary ?? prompt), ...(folder === undefined ? {} : { folder }), lastActive: mtime, size, inUse: now - mtime < IN_USE_MS };
 }
 
 interface CodexPayload {
@@ -224,9 +232,7 @@ function codexChat(file: string, fd: number, size: number, mtime: number, now: n
 		return true;
 	});
 	if (skip) return undefined;
-	const title = names.get(id) ?? prompt;
-	if (title === undefined) return undefined; // nothing said in it yet
-	return { tool: "codex", file, id, title: titleLine(title), ...(folder === undefined ? {} : { folder }), lastActive: mtime, size, inUse: now - mtime < IN_USE_MS };
+	return { tool: "codex", file, id, title: rowTitle(names.get(id) ?? prompt), ...(folder === undefined ? {} : { folder }), lastActive: mtime, size, inUse: now - mtime < IN_USE_MS };
 }
 
 /** Codex's thread names: <codex>/session_index.jsonl lines of id, thread_name and updated_at; the last for an id wins. */

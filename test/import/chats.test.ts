@@ -183,6 +183,24 @@ describe("listChats", () => {
 		expect(list(h).map((chat) => chat.title)).toEqual(["My real question"]);
 	});
 
+	it("lists every chat: one with no usable title is (untitled), never dropped", () => {
+		const h = home();
+		const project = join(h, ".claude", "projects", "-p");
+		// A title of control characters only, and no prompt: blank once made safe to show.
+		put(join(project, "blank.jsonl"), lines([{ type: "user", isMeta: true, sessionId: "s-b", cwd: "/w", message: { content: "<local-command-caveat>x" } }, { type: "ai-title", aiTitle: "\u0007\u0007", sessionId: "s-b" }]), 1);
+		// Nothing but a command: no prompt and no title.
+		put(join(project, "command.jsonl"), lines([claudeUser("<command-name>/clear</command-name>")]), 2);
+		// A Codex chat whose only message is injected context, with no thread name.
+		put(join(h, ".codex", "sessions", "rollout-2026-10-10T10-00-00-j.jsonl"), lines([codexMeta("id-j", "/w"), codexUser("<environment_context>\n<cwd>/w</cwd>")]), 3);
+		// A file with no record at all is no chat.
+		put(join(project, "empty.jsonl"), "\n", 4);
+		expect(list(h).map((chat) => [chat.tool, chat.title])).toEqual([
+			["claude-code", "(untitled)"],
+			["claude-code", "(untitled)"],
+			["codex", "(untitled)"],
+		]);
+	});
+
 	it("keeps one row per Codex thread across sessions and archived_sessions, the newest file", () => {
 		const h = home();
 		put(join(h, ".codex", "sessions", "rollout-2026-10-10T10-00-00-d.jsonl"), lines([codexMeta("id-d", "/w"), codexUser("Live copy")]), 5);
