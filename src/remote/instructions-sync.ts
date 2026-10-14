@@ -5,8 +5,8 @@
  * hash of the text this machine's file and the remote last agreed on; it never leaves the machine. Text this machine
  * sends counts as agreed only once the remote has it (a save acknowledged, or this machine's unsaved rows sent or found
  * there at a check-out), so a save that never landed is sent again later, never mistaken for an edit made elsewhere. An
- * agreement holds only for the history it was made with: a check-out that sets this machine's memory aside as foreign
- * forgets it.
+ * agreement holds only for the history it was made with: a push (which starts a new history) and a check-out that sets
+ * this machine's memory aside as foreign forget it.
  *
  * At each check-out, with the store at the remote's newest, the file is settled against the store's copy:
  * - only the remote's copy changed: the file gets it, and the person is told;
@@ -163,8 +163,11 @@ export function settleInstructions(store: MemoryStore, laneDir: string, lane: st
 		}
 		if (instructionsHash(remote) === last) return send(local);
 	}
-	// Both changed: the remote's copy wins, and this machine's is kept beside it.
+	// Both changed (or this machine never agreed with this history): the remote's copy wins, and this machine's is kept.
 	const aside = local === "" ? undefined : keepAside(laneDir, local, now);
+	if (last === undefined && aside !== undefined) {
+		return take(`Orrery: ${lane}'s instructions.md here is not the copy that travels with its memory; that copy is used now, and this machine's is kept in ${aside}.`);
+	}
 	const theirs = remote === "" ? "the other machine cleared them" : "the other machine's are kept";
 	return take(`Orrery: ${lane}'s instructions were changed both here and on another machine; ${theirs}${aside === undefined ? "." : `, and this machine's are in ${aside}.`}`);
 }

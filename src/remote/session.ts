@@ -13,7 +13,7 @@ import { holdWriterLock, MemoryStore, type StoreMarks, type StoreRows, type Writ
 import { processAlive } from "../lane/process.ts";
 import { writePrivate } from "../lane/private-file.ts";
 import { seal, unseal } from "./crypto.ts";
-import { agreeOn, agreeOnOwnRows, forgetAgreement, INSTRUCTIONS_KEY, instructionsIntoStore, pushInstructions, type SettledInstructions, settleInstructions } from "./instructions-sync.ts";
+import { agreeOn, agreeOnOwnRows, forgetAgreement, INSTRUCTIONS_KEY, instructionsIntoStore, pushInstructions, type SettledInstructions, settleInstructions, SYNCED_FILE } from "./instructions-sync.ts";
 import { assertWrittenThrough, decodeRows, decodeSnapshot, encodeRows, encodeSnapshot, type LaneSettings, LOCAL_META_KEYS, makeHeader, restoreSnapshot, type SaveHeader, snapshotBytes } from "./save-format.ts";
 import {
 	type FetchResult,
@@ -99,6 +99,17 @@ function openKey(storage: Storage, lane: string): string {
 
 const STATE_FILE = "remote-state.json";
 const DB_FILE = "memory.sqlite";
+
+/**
+ * The store key holding the remote history's identity: a random id a first push writes, so it rides in every snapshot
+ * and every working copy made from them. A history pushed by an older build gets one from its first writer's attach.
+ * remote-state.json records it through its marks (the hash of every travelling metadata value the remote has), so a
+ * check-out can tell this lane's history from another one under the same remote and lane name: the lane removed from
+ * the remote and pushed again, or the remote replaced.
+ */
+export const HISTORY_KEY = "remote.history";
+
+const newHistoryId = () => randomBytes(16).toString("hex");
 /** A command took and released the lane; the next checkout carries its source into the first save's audit. */
 export const TAKEOVER_FILE = "takeover-from.json";
 
@@ -274,6 +285,9 @@ export class RemoteSession {
 			throw error;
 		}
 		try {
+			// A push starts a new history: its own identity, and nothing this folder agreed on before.
+			store.setMeta(HISTORY_KEY, newHistoryId());
+			forget(o);
 			// A first push sends this machine's instructions.md as the agent's (none when there is no file).
 			let instructions: string | undefined;
 			try {
@@ -310,6 +324,12 @@ export class RemoteSession {
 	/** Called with the lane's open store. Renews at once (a long fetch may have used part of the stale time), then every minute. */
 	attach(store: MemoryStore): void {
 		this.#store = store;
+		// A history pushed by an older build has no identity yet: its first writer gives it one, with its next save.
+		try {
+			if (store.getMeta(HISTORY_KEY) === undefined) store.setMeta(HISTORY_KEY, newHistoryId());
+		} catch {
+			// Tried again at the next attach.
+		}
 		void this.renew();
 		const every = this.#o.renewMs ?? RENEW_MS;
 		if (every > 0) {
@@ -559,7 +579,7 @@ async function bringUpToDate(o: RemoteSessionOptions, lock: number, takeover: { 
 
 	if (state === undefined) {
 		// No state for this remote: whatever this folder agreed on before belongs to another history.
-		forgetAgreement(laneDir);
+		forget(o);
 		setAsideLocalMemory(o, dbPath, now());
 		return rebuild(o, await storage.fetch(lane, -1));
 	}
@@ -616,17 +636,59 @@ async function bringUpToDate(o: RemoteSessionOptions, lock: number, takeover: { 
 
 	if (intact && pending === undefined) {
 		// Catch up: a newer snapshot means a rebuild; otherwise apply the saves after ours.
-		if (fetched.snapshot !== undefined && fetched.snapshot.n > state.save) return rebuild(o, fetched);
+		if (fetched.snapshot !== undefined && fetched.snapshot.n > state.save) return rebuild(o, fetched, { state, continues: true, now: now() });
 		return catchUp(o, state, fetched, dbPath);
 	}
 
-	if (pending !== undefined) {
-		// Two histories: the remote's wins; this machine's rows are kept, not merged (spec §5.9).
-		const file = join(laneDir, `unsaved-${stamp(now())}.json`);
-		writePrivate(file, `${JSON.stringify(pending)}\n`);
-		guarded(() => o.report(`Orrery: ${lane} was saved from another machine since this one last saved. This machine's unsaved turns are kept in ${file}; the lane continues from ${storage.name}'s copy.`));
+	// The remote's newest replaces this working copy: its unsaved rows are kept aside, or all of its memory when the
+	// remote holds another history.
+	return rebuild(o, await storage.fetch(lane, -1), { state, continues: intact, pending, now: now() });
+}
+
+/** What a rebuild over an existing working copy knows of it, to keep what the remote's copy does not hold. */
+interface Rebuilding {
+	readonly state: SessionState;
+	/** The remote's history continues this working copy's last save (lineageIntact). */
+	readonly continues: boolean;
+	/** This working copy's rows the remote does not have. */
+	readonly pending?: StoreRows;
+	readonly now: number;
+}
+
+/**
+ * Before the remote's copy replaces this one: another history (an identity other than the one recorded, or, with none
+ * recorded, a remote that does not continue this copy) keeps all of this machine's memory aside, as foreign, and forgets
+ * the instructions agreement made with the old history. Within one history, only unsaved rows are kept (spec §5.9).
+ */
+function keepBeforeRebuild(o: RemoteSessionOptions, known: Rebuilding, remoteMarks: StoreMarks, dbPath: string): void {
+	const { lane, storage } = o;
+	const recorded = known.state.marks.meta[HISTORY_KEY];
+	const another = recorded !== undefined && remoteMarks.meta[HISTORY_KEY] !== recorded;
+	if (another || (recorded === undefined && !known.continues)) {
+		forget(o);
+		const why = another
+			? `${storage.name} holds another history of it now (pushed there again, or a replaced remote)`
+			: `${storage.name}'s copy does not continue the one on this machine`;
+		setAsideLocalMemory(o, dbPath, known.now, (aside) => `Orrery: ${lane}: ${why}; the memory on this machine was kept aside as ${aside}, and the lane now uses ${storage.name}'s copy.`);
+		return;
 	}
-	return rebuild(o, await storage.fetch(lane, -1));
+	// A history identity given at an attach whose save never landed is not worth keeping: the remote has its own.
+	const { [HISTORY_KEY]: _id, ...meta } = known.pending?.meta ?? {};
+	const pending = known.pending === undefined ? undefined : { ...known.pending, meta };
+	if (pending === undefined || (pending.main.length === 0 && pending.tree.length === 0 && pending.usage.length === 0 && Object.keys(pending.meta).length === 0)) return;
+	// Two histories: the remote's wins; this machine's rows are kept, not merged (spec §5.9).
+	const file = join(o.laneDir, `unsaved-${stamp(known.now)}.json`);
+	writePrivate(file, `${JSON.stringify(pending)}\n`);
+	guarded(() => o.report(`Orrery: ${lane} was saved from another machine since this one last saved. This machine's unsaved turns are kept in ${file}; the lane continues from ${storage.name}'s copy.`));
+}
+
+/** Forgets the instructions agreement; a failure is said, and the check-out or push goes on. */
+function forget(o: Pick<RemoteSessionOptions, "lane" | "laneDir" | "report">): void {
+	try {
+		forgetAgreement(o.laneDir);
+	} catch (error) {
+		guarded(() => o.report(`Orrery: ${o.lane}: ${SYNCED_FILE} could not be removed (${error instanceof Error ? error.message : String(error)}); remove it by hand, or its instructions may be compared with another history's.`));
+	}
 }
 
 /** Sends this machine's unsaved rows as the next save, under the new lock, before the store opens (spec §5.9). */
@@ -696,7 +758,7 @@ function lineageIntact(o: RemoteSessionOptions, state: SessionState, fetched: Fe
 }
 
 /** Memory already here that never synced is copied aside (WAL included), never overwritten. */
-function setAsideLocalMemory(o: RemoteSessionOptions, dbPath: string, now: number): void {
+function setAsideLocalMemory(o: RemoteSessionOptions, dbPath: string, now: number, notice?: (aside: string) => string): void {
 	if (!existsSync(dbPath)) return;
 	const store = MemoryStore.open(dbPath, o.writer);
 	const hasRows = store.root.length > 0 || store.nodeCount > 0;
@@ -717,7 +779,7 @@ function setAsideLocalMemory(o: RemoteSessionOptions, dbPath: string, now: numbe
 	} finally {
 		release();
 	}
-	guarded(() => o.report(`Orrery: ${o.lane}: the memory already on this machine was kept aside as ${aside}; the lane now uses ${o.storage.name}'s copy.`));
+	guarded(() => o.report(notice?.(aside) ?? `Orrery: ${o.lane}: the memory already on this machine was kept aside as ${aside}; the lane now uses ${o.storage.name}'s copy.`));
 }
 
 /** This machine's local meta values (projector cursor, session cursors), carried across a rebuild. */
@@ -738,7 +800,7 @@ function localMeta(dbPath: string): Record<string, string> {
  * Replaces the working copy with the remote's newest snapshot plus the saves after it. Everything is decrypted and
  * checked first; the new copy is built in a temporary file and renamed into place, so a crash midway leaves the old one.
  */
-function rebuild(o: RemoteSessionOptions, fetched: FetchResult): Position {
+function rebuild(o: RemoteSessionOptions, fetched: FetchResult, known?: Rebuilding): Position {
 	const { lane, laneDir, key } = o;
 	const dbPath = join(laneDir, DB_FILE);
 	const remote = o.storage.name;
@@ -768,6 +830,7 @@ function rebuild(o: RemoteSessionOptions, fetched: FetchResult): Position {
 			store.close();
 		}
 		assertWrittenThrough(temp);
+		if (known !== undefined) keepBeforeRebuild(o, known, marks, dbPath);
 		o.writer?.check(dbPath);
 		const release = o.writer === undefined ? holdWriterLock(dbPath) : () => {};
 		try {

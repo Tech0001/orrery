@@ -91,7 +91,8 @@ function offline(s: Scene): () => void {
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 const tooLarge = "Orrery: Atlas's instructions.md is over 256 KB, so it stays on this machine and does not travel with its memory; shorten it to share it.";
-const conflicts = (m: Machine) => m.reports.filter((text) => text.includes("both here"));
+/** Every notice that this machine's instructions were kept aside for another copy. */
+const conflicts = (m: Machine) => m.reports.filter((text) => text.includes("both here") || text.includes("is not the copy that travels"));
 
 /** What the remote holds now: the store's copy as a machine that never had a file checks it out. */
 async function remoteCopy(s: Scene): Promise<string | undefined> {
@@ -278,7 +279,7 @@ describe("cleared on purpose, or never had any", () => {
 		expect(instructions(s.mac)).toBe("v1\n");
 		expect(asides(s.mac)).toHaveLength(1);
 		expect(readFileSync(join(s.mac.dir, asides(s.mac)[0] as string), "utf8")).toBe("the Mac's own\n");
-		expect(s.mac.reports).toContain(`Orrery: Atlas's instructions were changed both here and on another machine; the other machine's are kept, and this machine's are in ${join(s.mac.dir, asides(s.mac)[0] as string)}.`);
+		expect(s.mac.reports).toContain(`Orrery: Atlas's instructions.md here is not the copy that travels with its memory; that copy is used now, and this machine's is kept in ${join(s.mac.dir, asides(s.mac)[0] as string)}.`);
 		expect(await remoteCopy(s)).toBe("v1\n");
 	});
 
@@ -534,5 +535,36 @@ describe("instructions.md over 256 KB stays on its machine", () => {
 		expect(s.pc.reports).toContain(tooLarge);
 		expect(await remoteCopy(s) ?? "").toBe("");
 		expect(instructions(s.pc)).toBe(over);
+	});
+});
+
+describe("a first push starts a new history", () => {
+	it.each(["S a new shorter text\n", "v1\n"])("pushed elsewhere over 256 KB, then shortened to %j: the file goes up, nothing set aside, nothing cleared", async (shortened) => {
+		const s = scene();
+		await pushed(s);
+		await close(await open(s, s.pc));
+		// The PC's Atlas moves to another remote with a file over 256 KB: none travels there.
+		const home2 = { ...s, storage: new FakeStorage({ name: "home2" }) };
+		write(s.pc, `${"b".repeat(256 * 1024)}+`);
+		await RemoteSession.push({ lane: "Atlas", laneDir: s.pc.dir, storage: home2.storage, key: s.key, holder: s.pc.holder, report: () => {}, settings });
+		write(s.pc, shortened);
+		s.pc.reports.length = 0;
+		await close(await open(home2, s.pc));
+		expect(instructions(s.pc)).toBe(shortened);
+		expect(asides(s.pc)).toEqual([]);
+		expect(s.pc.reports).toEqual([]);
+		expect(await remoteCopy(home2)).toBe(shortened);
+	});
+});
+
+describe("the agreement record in the way", () => {
+	it("a folder where .instructions-synced goes does not stop a check-out: it is said, and the memory opens", async () => {
+		const s = scene();
+		await firstPush(s);
+		mkdirSync(join(s.mac.dir, SYNCED_FILE));
+		const held = await open(s, s.mac);
+		expect(held.store.root.map((m) => m.text)).toEqual(["hello"]);
+		await close(held);
+		expect(s.mac.reports.some((text) => text.startsWith(`Orrery: Atlas: ${SYNCED_FILE} could not be removed (`))).toBe(true);
 	});
 });
