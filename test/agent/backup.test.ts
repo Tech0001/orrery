@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
@@ -199,6 +199,68 @@ describe("instructions.md in backups", () => {
 		writeFileSync(join(root, "2026-10-01", "Test", "instructions.md"), "Atlas reviews pull requests.\n");
 		expect(restoreAgent(config, "Test", { from: "2026-10-01" }).instructions).toBe("kept");
 		expect(lstatSync(fifo).isFIFO()).toBe(true);
+	});
+
+	// Root reads a mode-000 file anyway: there is nothing unreadable to test with.
+	it.skipIf(process.getuid?.() === 0)("leaves out an instructions.md it can't read, with a warning naming the agent and why; the memory is still backed up", () => {
+		const { config, root, agentDir } = stopped("Atlas reviews pull requests.\n");
+		const path = join(agentDir, "instructions.md");
+		chmodSync(path, 0o000);
+		try {
+			const report = backupAgents(config, { now: day(1) });
+			expect(report.agents).toEqual([{ name: "Test", messages: 3, nodes: 1, files: ["memory.sqlite", "session.sqlite", "memory.jsonl"] }]);
+			expect(report.warnings).toEqual([expect.stringMatching(/^Test: instructions\.md was not backed up \(EACCES/)]);
+			expect(existsSync(join(root, "2026-10-01", "Test", "memory.sqlite"))).toBe(true);
+			expect(existsSync(join(root, "2026-10-01", "Test", "instructions.md"))).toBe(false);
+		} finally {
+			chmodSync(path, 0o600);
+		}
+		expect(backupAgents(config, { now: day(2) }).warnings).toEqual([]);
+	});
+
+	it("backs up an agent with instructions but no memory yet: a folder with just that file", () => {
+		const { config, root } = stopped();
+		const empty = config.agents.get("Empty")!.dir;
+		writeInstructions(empty, "Empty answers questions.\n");
+		const report = backupAgents(config, { now: day(1) });
+		expect(report.agents).toEqual([
+			{ name: "Test", messages: 3, nodes: 1, files: ["memory.sqlite", "session.sqlite", "memory.jsonl"] },
+			{ name: "Empty", messages: 0, nodes: 0, files: ["instructions.md"] },
+		]);
+		expect(readdirSync(join(root, "2026-10-01", "Empty"))).toEqual(["instructions.md"]);
+		expect(mode(join(root, "2026-10-01", "Empty", "instructions.md"))).toBe(0o600);
+		expect(lastBackup(config, "Empty")?.day).toBe("2026-10-01");
+	});
+
+	it("restores an instructions-only backup: the instructions go back as before, and the agent's memory is left as it is", () => {
+		const { config } = stopped();
+		const empty = config.agents.get("Empty")!.dir;
+		writeInstructions(empty, "Empty answers questions.\n");
+		backupAgents(config, { now: day(1) });
+		rmSync(join(empty, "instructions.md"));
+
+		const report = restoreAgent(config, "Empty", { from: "2026-10-01" });
+		expect(report).toEqual({ agent: "Empty", from: expect.stringContaining("2026-10-01"), memory: false, messages: 0, nodes: 0, files: ["instructions.md"], instructions: "restored" });
+		expect(readFileSync(join(empty, "instructions.md"), "utf8")).toBe("Empty answers questions.\n");
+		expect(existsSync(join(empty, "memory.sqlite"))).toBe(false);
+
+		// Opened since the backup: its memory stays, and so do its own instructions.
+		const store = MemoryStore.open(join(empty, "memory.sqlite"));
+		store.append("user", "Since the backup.", "2026-10-02T09:00:00.000Z");
+		store.close();
+		writeInstructions(empty, "Empty answers questions, briefly.\n");
+		expect(restoreAgent(config, "Empty", { from: "2026-10-01" })).toMatchObject({ memory: false, files: [], instructions: "kept" });
+		const after = MemoryStore.openReadOnly(join(empty, "memory.sqlite"));
+		expect(after.root.map((m) => m.text)).toEqual(["Since the backup."]);
+		after.close();
+		expect(readFileSync(join(empty, "instructions.md"), "utf8")).toBe("Empty answers questions, briefly.\n");
+	});
+
+	it("still says there is no backup where a folder holds neither memory nor instructions", () => {
+		const { config, root } = stopped();
+		backupAgents(config, { now: day(1) });
+		mkdirSync(join(root, "2026-10-01", "Empty"));
+		expect(() => restoreAgent(config, "Empty", { from: "2026-10-01" })).toThrow(/No backup of Empty/);
 	});
 });
 

@@ -14,8 +14,11 @@ import { writePrivate as writeAtomically } from "./private-file.ts";
 
 export interface BackupReport {
 	readonly dir: string;
+	/** Each agent backed up: its memory (0 messages and summaries for one with instructions only), and the files kept. */
 	readonly agents: { readonly name: string; readonly messages: number; readonly nodes: number; readonly files: string[] }[];
 	readonly pruned: string[];
+	/** What was left out and why, one line per problem naming the agent ("Atlas: instructions.md was not backed up (…)"). */
+	readonly warnings: string[];
 }
 
 const DATED = /^\d{4}-\d{2}-\d{2}$/;
@@ -88,7 +91,11 @@ function exportMemory(database: string, target: string, agent: string, now: Date
 	}
 }
 
-/** Writes `<data_dir>/backups/<YYYY-MM-DD>/<Name>/`, replacing that day's backup, and keeps the newest `keep` days. */
+/**
+ * Writes `<data_dir>/backups/<YYYY-MM-DD>/<Name>/`, replacing that day's backup, and keeps the newest `keep` days. An
+ * agent with instructions but no memory yet (made, never opened) gets a folder with just its instructions.md. An
+ * instructions.md that can't be read is left out with a warning: one file's problem never stops the night's backup.
+ */
 export function backupAgents(config: HarnessConfig, options: { now?: Date; keep?: number } = {}): BackupReport {
 	const now = options.now ?? new Date();
 	const keep = options.keep ?? 14;
@@ -101,22 +108,34 @@ export function backupAgents(config: HarnessConfig, options: { now?: Date; keep?
 	rmSync(partial, { recursive: true, force: true });
 	mkdirSync(partial, { mode: 0o700 });
 	const agents: BackupReport["agents"] = [];
+	const warnings: string[] = [];
 	for (const agent of config.agents.values()) {
 		const memory = join(agent.dir, "memory.sqlite");
-		if (!existsSync(memory)) continue;
+		const hasMemory = existsSync(memory);
+		let instructions: Buffer | undefined;
+		try {
+			const found = regularFile(instructionsPath(agent.dir));
+			if (Buffer.isBuffer(found)) instructions = found;
+		} catch (error) {
+			warnings.push(`${agent.name}: ${INSTRUCTIONS_FILE} was not backed up (${error instanceof Error ? error.message : String(error)})`);
+		}
+		if (!hasMemory && instructions === undefined) continue;
 		const out = join(partial, agent.name);
 		mkdirSync(out, { mode: 0o700 });
-		const files = ["memory.sqlite"];
-		snapshot(memory, join(out, "memory.sqlite"));
-		const session = join(agent.dir, "session.sqlite");
-		if (existsSync(session)) {
-			snapshot(session, join(out, "session.sqlite"));
-			files.push("session.sqlite");
+		const files: string[] = [];
+		let counts = { messages: 0, nodes: 0 };
+		if (hasMemory) {
+			snapshot(memory, join(out, "memory.sqlite"));
+			files.push("memory.sqlite");
+			const session = join(agent.dir, "session.sqlite");
+			if (existsSync(session)) {
+				snapshot(session, join(out, "session.sqlite"));
+				files.push("session.sqlite");
+			}
+			counts = exportMemory(join(out, "memory.sqlite"), join(out, "memory.jsonl"), agent.name, now);
+			files.push("memory.jsonl");
 		}
-		const counts = exportMemory(join(out, "memory.sqlite"), join(out, "memory.jsonl"), agent.name, now);
-		files.push("memory.jsonl");
-		const instructions = regularFile(instructionsPath(agent.dir));
-		if (Buffer.isBuffer(instructions)) {
+		if (instructions !== undefined) {
 			writePrivate(join(out, INSTRUCTIONS_FILE), instructions);
 			files.push(INSTRUCTIONS_FILE);
 		}
@@ -129,7 +148,7 @@ export function backupAgents(config: HarnessConfig, options: { now?: Date; keep?
 		.sort();
 	const pruned = dated.slice(0, Math.max(0, dated.length - keep));
 	for (const old of pruned) rmSync(join(root, old), { recursive: true, force: true });
-	return { dir, agents, pruned };
+	return { dir, agents, pruned, warnings };
 }
 
 /** Where an agent's newest backup is: its day and its folder. */
@@ -185,6 +204,11 @@ export interface RestoreReport {
 	readonly nodes: number;
 	readonly files: string[];
 	/**
+	 * Whether the backup held memory, now in place of the agent's. False for a backup of instructions only (an agent that
+	 * had no memory yet): the agent's memory is left as it is, and messages and nodes are 0.
+	 */
+	readonly memory: boolean;
+	/**
 	 * The backup's instructions.md: "restored" (the agent had none: no file, or a blank one), "kept" (the agent has its
 	 * own, which stays; the backup's copy is in `from`), or "none" (the backup holds none, or only a blank one).
 	 */
@@ -195,14 +219,20 @@ export interface RestoreReport {
  * Puts a backup back in place of a stopped agent's databases. The agent's -wal/-shm files are removed first: replayed
  * onto an older snapshot they would mix two states of the database. Backups snapshot memory before session, so the
  * session is never older than the memory's projection cursor. The backup's instructions.md goes back only where the
- * agent has none: instructions written since the backup are the person's, and newer.
+ * agent has none: instructions written since the backup are the person's, and newer. A backup of instructions only
+ * puts those back and touches no memory.
  */
 export function restoreAgent(config: HarnessConfig, agentName: string, options: { from: string }): RestoreReport {
 	const agent = findAgent(config, agentName);
 	if (agent.remote !== undefined) throw new Error(`${agent.name} keeps its memory on remote ${agent.remote}; run orrery agent local ${agent.name} first`);
 	const from = DATED.test(options.from) ? join(config.dataDir, "backups", options.from, agent.name) : options.from;
 	if (!isAbsolute(from) && !DATED.test(options.from)) throw new Error(`--from must be a date (YYYY-MM-DD) or an absolute directory`);
-	if (!existsSync(join(from, "memory.sqlite"))) throw new Error(`No backup of ${agent.name} at ${from}`);
+	const hasMemory = existsSync(join(from, "memory.sqlite"));
+	if (!hasMemory && !existsSync(join(from, INSTRUCTIONS_FILE))) throw new Error(`No backup of ${agent.name} at ${from}`);
+	if (!hasMemory) {
+		const instructions = restoreInstructions(join(from, INSTRUCTIONS_FILE), instructionsPath(agent.dir));
+		return { agent: agent.name, from, memory: false, messages: 0, nodes: 0, files: instructions === "restored" ? [INSTRUCTIONS_FILE] : [], instructions };
+	}
 	const memory = join(agent.dir, "memory.sqlite");
 	if (existsSync(memory)) {
 		try {
@@ -230,7 +260,7 @@ export function restoreAgent(config: HarnessConfig, agentName: string, options: 
 	if (instructions === "restored") files.push(INSTRUCTIONS_FILE);
 	const store = MemoryStore.openReadOnly(memory);
 	try {
-		return { agent: agent.name, from, messages: store.root.length, nodes: store.nodeCount, files, instructions };
+		return { agent: agent.name, from, memory: true, messages: store.root.length, nodes: store.nodeCount, files, instructions };
 	} finally {
 		store.close();
 	}

@@ -201,4 +201,42 @@ describe("orrery", () => {
 		expect(kept).toContain(`Kept Test's own instructions.md; the backup's copy is ${join(from, "instructions.md")}`);
 		expect(readFileSync(join(agentDir, "instructions.md"), "utf8")).toBe("Test reviews pull requests and releases.\n");
 	});
+
+	// Root reads a mode-000 file anyway: there is nothing unreadable to test with.
+	it.skipIf(process.getuid?.() === 0)("backup warns about an instructions.md it can't read and still succeeds; an agent with instructions only says so, and restores", () => {
+		const dir = tempDir("orrery-main-");
+		dirs.push(dir);
+		const dataDir = join(dir, "data");
+		const configPath = join(dir, "config.toml");
+		const extra = `\n[agents.Fresh]\nfolder = ${JSON.stringify(join(dir, "ws"))}\nmodel = "faux-agent/faux-1"\n`;
+		writeFileSync(configPath, agentConfigToml({ dataDir, folder: join(dir, "ws"), extra }));
+		const agentDir = join(dataDir, "agents", "Test");
+		mkdirSync(agentDir, { recursive: true });
+		const store = MemoryStore.open(join(agentDir, "memory.sqlite"));
+		store.appendBatch([{ kind: "user", text: "hello" }]);
+		store.close();
+		writeFileSync(join(agentDir, "instructions.md"), "Test reviews pull requests.\n", { mode: 0o000 });
+		const fresh = join(dataDir, "agents", "Fresh");
+		mkdirSync(fresh, { recursive: true });
+		writeFileSync(join(fresh, "instructions.md"), "Fresh answers questions.\n", { mode: 0o600 });
+		const env = { ...process.env, HOME: dir, ORRERY_CONFIG: "", ORRERY_HOME: "" };
+		const run = (args: string[]) => {
+			const c = cliCommand([...args, "--config", configPath]);
+			return spawnSync(c.cmd, c.args, { encoding: "utf8", env });
+		};
+
+		const backup = run(["backup"]);
+		expect(backup.status).toBe(0);
+		expect(backup.stdout).toMatch(/Test: 1 messages, 0 summaries -> .*\/Test/);
+		expect(backup.stdout).toMatch(/Fresh: instructions only \(no memory yet\) -> .*\/Fresh/);
+		expect(backup.stderr).toMatch(/Warning: Test: instructions\.md was not backed up \(EACCES/);
+
+		const day = readdirSync(join(dataDir, "backups")).find((entry) => /^\d{4}-\d{2}-\d{2}$/.test(entry))!;
+		rmSync(join(fresh, "instructions.md"));
+		const restored = run(["restore", "Fresh", "--from", day]);
+		expect(restored.status).toBe(0);
+		expect(restored.stdout).toContain("holds instructions only; Fresh's memory is left as it is");
+		expect(restored.stdout).toContain("Fresh had no instructions; put back the backup's instructions.md");
+		expect(readFileSync(join(fresh, "instructions.md"), "utf8")).toBe("Fresh answers questions.\n");
+	});
 });

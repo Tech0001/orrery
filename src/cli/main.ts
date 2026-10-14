@@ -610,9 +610,14 @@ async function main(rawArgv: string[]): Promise<number> {
 			const keep = Number(values.keep ?? "14");
 			if (!Number.isInteger(keep) || keep < 1) throw new Error("--keep must be a whole number of days, at least 1");
 			const report = backupAgents(config, { keep });
-			for (const agent of report.agents) process.stdout.write(`${agent.name}: ${agent.messages} messages, ${agent.nodes} summaries -> ${report.dir}/${agent.name}\n`);
-			if (report.agents.length === 0) process.stdout.write(`No agent has memory yet; wrote ${report.dir}\n`);
+			for (const agent of report.agents) {
+				const what = agent.files.includes("memory.sqlite") ? `${agent.messages} messages, ${agent.nodes} summaries` : "instructions only (no memory yet)";
+				process.stdout.write(`${agent.name}: ${what} -> ${report.dir}/${agent.name}\n`);
+			}
+			if (report.agents.length === 0) process.stdout.write(`No agent has memory or instructions yet; wrote ${report.dir}\n`);
 			if (report.pruned.length > 0) process.stdout.write(`Removed old backups: ${report.pruned.join(", ")}\n`);
+			// A warning leaves the backup good (exit 0): the nightly script still copies it.
+			for (const warning of report.warnings) process.stderr.write(`Warning: ${warning}\n`);
 			return 0;
 		}
 		case "restore": {
@@ -620,7 +625,8 @@ async function main(rawArgv: string[]): Promise<number> {
 			const agent = required(arg, "agent");
 			if (values.from === undefined) throw new Error(`restore needs --from DATE (YYYY-MM-DD) or --from DIR.\n${USAGE}`);
 			const report = restoreAgent(config, agent, { from: values.from });
-			process.stdout.write(`Restored ${report.agent} from ${report.from}: ${report.messages} messages, ${report.nodes} summaries (${report.files.join(", ")})\n`);
+			if (report.memory) process.stdout.write(`Restored ${report.agent} from ${report.from}: ${report.messages} messages, ${report.nodes} summaries (${report.files.join(", ")})\n`);
+			else process.stdout.write(`The backup at ${report.from} holds instructions only; ${report.agent}'s memory is left as it is\n`);
 			if (report.instructions === "restored") process.stdout.write(`${report.agent} had no instructions; put back the backup's instructions.md\n`);
 			if (report.instructions === "kept") {
 				process.stdout.write(`Kept ${report.agent}'s own instructions.md; the backup's copy is ${join(report.from, "instructions.md")}\n`);
