@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import { compactorCliCommand } from "../../src/cli/commands.ts";
 import { type HarnessConfig, parseModelChoice } from "../../src/lane/config.ts";
 import { FileCredentialStore } from "../../src/lane/credentials.ts";
 import { sessionDir } from "../../src/claude/paths.ts";
+import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { writeHolder } from "../../src/lane/handover.ts";
 import { takeRequest } from "../../src/lane/settings-request.ts";
 import { laneModelSource } from "../../src/lane/model-source.ts";
@@ -156,5 +157,20 @@ describe("`.`, this session's lane (Claude Code's commands)", () => {
 		const child = status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: String(process.ppid) });
 		expect([child.status, child.stderr]).toEqual([1, `${elsewhere} is in no lane's workspace.\n`]);
 		expect(orrery(["status", "."], { ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: t.workspace, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: String(process.ppid) }).stdout).toMatch(/^Test\s/);
+		// A command runs within a session: a dead agent's claim is not taken over here (only at a session's start).
+		const dead = newToken();
+		writeFileSync(join(t.lane.dir, "claims", dead), `${spawnSync("true").pid}\n`);
+		const late = status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: dead, CLAUDE_PID: String(process.pid) });
+		expect([late.status, late.stderr]).toEqual([1, `${elsewhere} is in no lane's workspace.\n`]);
+		// In another lane's folder set up the file way, the agent is refused, as in the hooks.
+		const other = join(t.dir, "other");
+		mkdirSync(other);
+		writeFileSync(t.configPath, `${readFileSync(t.configPath, "utf8")}\n[lanes.Other]\nworkspace = ${JSON.stringify(other)}\ncompactor_model = "faux-compactor/faux-1"\n`);
+		writeSetupMarker(join(t.dir, "data", "lanes", "Other"), other, "CLAUDE.md");
+		const refused = orrery(["status", "."], { ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: other, ORRERY_AGENT: "Test" });
+		expect([refused.status, refused.stderr]).toEqual([
+			1,
+			"Orrery: this folder is Other's, set up to load Other's memory view into Claude Code, so Test does not open here (Other's memory would be in its session); this session runs without memory. Open Test in another folder, or switch Other to the mod (`orrery claude-setup Other --mod`).\n",
+		]);
 	}, 60_000);
 });

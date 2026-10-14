@@ -7,6 +7,7 @@ import { handleMessage, laneTools, MAX_LINE_CHARS, runMcp } from "../../src/clau
 import { MemoryStore } from "../../src/memory/index.ts";
 import type { LaneTool } from "../../src/lane/memory-tools.ts";
 import { claimToken, newToken } from "../../src/lane/pick.ts";
+import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { seedAtlas } from "../lane/support.ts";
 import { cleanup, pi, world } from "../pi/world.ts";
 import { cleanEnv, cliCommand } from "./support.ts";
@@ -132,9 +133,11 @@ describe("Orrery's MCP server", () => {
 	it("runs over stdio as `orrery mcp`, finds the lane by ORRERY_AGENT or from CLAUDE_PROJECT_DIR, and serves no tools outside a lane", { timeout: 60_000 }, async () => {
 		const { root, configPath } = world();
 		seedAtlas(root);
-		const session = async (projectDir: string, env: Record<string, string> = { ORRERY_CONFIG: configPath }) => {
+		/** `orrery mcp`, started by this test, or (`viaShell`) by a shell this test starts, which is then its parent. */
+		const session = async (projectDir: string, env: Record<string, string> = { ORRERY_CONFIG: configPath }, viaShell = false) => {
 			const c = cliCommand(["mcp"]);
-			const child = spawn(c.cmd, c.args, { env: cleanEnv({ ...env, CLAUDE_PROJECT_DIR: projectDir, HOME: root }), cwd: root });
+			const [cmd, args] = viaShell ? ["sh", ["-c", '"$@"; exit $?', "sh", c.cmd, ...c.args]] : [c.cmd, c.args];
+			const child = spawn(cmd, args, { env: cleanEnv({ ...env, CLAUDE_PROJECT_DIR: projectDir, HOME: root }), cwd: root });
 			let out = "";
 			let err = "";
 			child.stdout.setEncoding("utf8").on("data", (chunk: string) => (out += chunk));
@@ -161,12 +164,17 @@ describe("Orrery's MCP server", () => {
 		expect(named.replies.get(2).result.tools.map((tool: { name: string }) => tool.name)).toEqual(["zoom", "date", "search"]);
 		expect(named.replies.get(3).result.content[0].text).toContain("#0 2026-02-10 user");
 		expect((await session(join(root, "agent-Atlas"), { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Nobody" })).replies.get(2).result.tools).toEqual([]);
-		// With a token, only the Claude Code that claimed it (CLAUDE_PID) is the agent.
+		// With a token, only the Claude Code that claimed it is the agent: the server's parent (Claude Code starts it), not
+		// CLAUDE_PID, which a claude started from an agent's Bash inherits from the agent.
 		const token = newToken();
 		expect(claimToken(join(root, "data", "lanes", "Atlas"), token, process.pid)).toBe(true);
 		const asAgent = { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token };
-		expect((await session(join(root, "plain"), { ...asAgent, CLAUDE_PID: String(process.pid) })).replies.get(2).result.tools).toHaveLength(3);
-		expect((await session(join(root, "plain"), { ...asAgent, CLAUDE_PID: String(process.ppid) })).replies.get(2).result.tools).toEqual([]);
+		expect((await session(join(root, "plain"), { ...asAgent, CLAUDE_PID: String(process.ppid) })).replies.get(2).result.tools).toHaveLength(3);
+		expect((await session(join(root, "plain"), { ...asAgent, CLAUDE_PID: String(process.pid) }, true)).replies.get(2).result.tools).toEqual([]);
+		// In another lane's folder set up the file way (its CLAUDE.md loads that lane's view), the agent is refused.
+		writeSetupMarker(join(root, "data", "lanes", "Birch"), join(root, "agent-Birch"), "CLAUDE.md");
+		expect((await session(join(root, "agent-Birch"), { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas" })).replies.get(2).result.tools).toEqual([]);
+		expect((await session(join(root, "agent-Birch"))).replies.get(2).result.tools.map((tool: { name: string }) => tool.name)).toEqual(expect.arrayContaining(["zoom", "date", "search"]));
 		// No config anywhere: quiet, no tools.
 		if (!existsSync("/etc/orrery/config.toml")) expect((await session(join(root, "agent-Atlas"), {})).replies.get(2).result.tools).toEqual([]);
 	});

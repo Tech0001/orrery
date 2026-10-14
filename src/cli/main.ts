@@ -283,18 +283,19 @@ async function uninstallCommand(values: { purge?: boolean }): Promise<number> {
 
 /**
  * A lane name as given, or "." for this session's lane (Claude Code's commands use it): the one ORRERY_AGENT names, as
- * the hooks pick it (src/lane/pick.ts), else the one whose workspace holds the project folder. A token is claimed for
- * Claude Code's process (CLAUDE_PID, which Claude Code gives the commands it runs, else this command's parent), so a
- * tool the agent started with the same variables falls back to its folder.
+ * the hooks pick it (src/claude/pick.ts), else the one whose workspace holds the project folder. The token's claim is
+ * Claude Code's (CLAUDE_PID, which Claude Code sets for the commands it runs, else this command's parent), and a command
+ * runs within a session, so it only finds the claim SessionStart made: a tool the agent started with the same variables
+ * falls back to its folder.
  */
 async function laneArg(config: HarnessConfig, name: string): Promise<string> {
 	if (name !== ".") return name;
-	const { pickLane, refusedNotice } = await import("../lane/pick.ts");
+	const { claudePick, claudeRefusedNotice } = await import("../claude/pick.ts");
 	const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-	const pick = pickLane(config, { env: process.env, cwd: dir, owner: Number(process.env.CLAUDE_PID) || process.ppid });
+	const pick = claudePick(config, { env: process.env, cwd: dir, owner: Number(process.env.CLAUDE_PID) || process.ppid, takeover: false });
 	if (pick.kind === "lane") return pick.lane.name;
 	if (pick.kind === "none") throw new Error(`${dir} is in no lane's workspace.`);
-	throw new Error(refusedNotice(pick));
+	throw new Error(claudeRefusedNotice(pick));
 }
 
 /**
@@ -700,17 +701,19 @@ function optionalConfig(configPath: string | undefined, label: string): HarnessC
 }
 
 /**
- * Claude Code's MCP server, for the session's lane (src/lane/pick.ts: ORRERY_AGENT's, else the project folder's).
+ * Claude Code's MCP server, for the session's lane (src/claude/pick.ts: ORRERY_AGENT's, else the project folder's).
  * Outside a lane, under a refused ORRERY_AGENT, or without an orrery config, it serves no tools rather than failing.
+ * Claude Code starts it with the session (before SessionStart runs) and it picks once, so it may claim the token as
+ * SessionStart may; the claim is its parent's, the Claude Code that started it (orrery-run execs), never CLAUDE_PID,
+ * which a claude started from an agent's Bash inherits from the agent.
  */
 async function mcpServer(configPath: string | undefined): Promise<number> {
 	const { laneTools, runMcp } = await import("../claude/mcp.ts");
 	let tools: LaneTool[] = [];
 	const config = optionalConfig(configPath, "orrery mcp");
 	if (config !== undefined) {
-		const { pickLane } = await import("../lane/pick.ts");
-		// Claude Code starts the server itself: its pid is CLAUDE_PID when given, else this process's parent.
-		const pick = pickLane(config, { env: process.env, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), owner: Number(process.env.CLAUDE_PID) || process.ppid });
+		const { claudePick } = await import("../claude/pick.ts");
+		const pick = claudePick(config, { env: process.env, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), owner: process.ppid });
 		if (pick.kind === "lane") tools = laneTools(config, pick.lane);
 	}
 	await runMcp(process.stdin, process.stdout, tools);

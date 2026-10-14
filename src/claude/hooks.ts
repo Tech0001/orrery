@@ -1,12 +1,14 @@
 /**
  * Claude Code's hooks (spec §4 "Hooks"), run as `orrery claude-hook <event>` with the hook's JSON on stdin.
- * - They find the session's lane at every event (src/lane/pick.ts): the one ORRERY_AGENT names, in any folder, else the
- *   one whose workspace holds the project folder (CLAUDE_PROJECT_DIR, else the hook's cwd). Claude Code's own process
- *   (CLAUDE_PID) is the one an ORRERY_AGENT_TOKEN claim is made for.
+ * - They find the session's lane at every event (src/claude/pick.ts): the one ORRERY_AGENT names, in any folder, else
+ *   the one whose workspace holds the project folder (CLAUDE_PROJECT_DIR, else the hook's cwd). Claude Code's own
+ *   process (CLAUDE_PID, which Claude Code sets for its hooks) is the one an ORRERY_AGENT_TOKEN claim is made for. Only
+ *   SessionStart may make a claim or take a dead one over; later events keep what it decided.
  * - They never write the store, and they return quickly: SessionEnd gets about 1.5 s.
  * - Subagent events (agent_id) are not memory.
- * - Outside a lane they print and write nothing. An ORRERY_AGENT that is refused (it names no lane, or its token is
- *   malformed) gets a notice at SessionStart, records nothing, and keeps the guard.
+ * - Outside a lane they print and write nothing. An ORRERY_AGENT that is refused (it names no lane, its token is
+ *   malformed, or the folder is another lane's set up the file way) gets a notice at SessionStart, records nothing, and
+ *   keeps the guard.
  * - They record only where `orrery claude-setup` ran: in mod mode in any folder, in file mode for the lane's
  *   workspace. In any other lane they start no holder and spool nothing, SessionStart says the session is not recorded,
  *   and the guard still applies.
@@ -21,7 +23,7 @@ import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { type HarnessConfig, type LaneConfig, laneForCwd } from "../lane/config.ts";
 import { movedAgentDirCredentials, ompCredentials } from "../lane/guard-paths.ts";
-import { type Picked, pickLane, refusedNotice, workArea } from "../lane/pick.ts";
+import { workArea } from "../lane/pick.ts";
 import { writePrivate } from "../lane/private-file.ts";
 import { selfCommand } from "../lane/running.ts";
 import { safeText } from "../lane/source-labels.ts";
@@ -29,8 +31,9 @@ import { holderFresh, readHolder } from "../lane/handover.ts";
 import { claudeGuard, claudeStateRoots, movedConfigDirCredentials } from "./guard.ts";
 import { summaryNotice } from "./notices.ts";
 import { holderLog, samePath, validSession } from "./paths.ts";
+import { type ClaudePicked, claudePick, claudeRefusedNotice } from "./pick.ts";
 import { readMode, type SessionMode, spoolEvent } from "./spool.ts";
-import { laneMode, markedHere, refreshViewFile, type ViewGate, viewGate } from "./view-file.ts";
+import { markedHere, refreshViewFile, type ViewGate, viewGate } from "./view-file.ts";
 
 /**
  * Whether this recorder start's notice was already shown to this session (a /compact reuses the recorder and runs
@@ -112,15 +115,20 @@ interface Here {
 	readonly projectDir: string;
 }
 
-/** Which lane the session belongs to (src/lane/pick.ts), for the project folder and Claude Code's own process. */
-function pickFor(ctx: HookContext, projectDir: string): Picked {
-	return pickLane(ctx.config, { env: ctx.env, cwd: projectDir, owner: ctx.claudePid });
+/**
+ * Which lane the session belongs to (src/claude/pick.ts), for the project folder and Claude Code's own process.
+ * `start`: SessionStart, the one event that may claim ORRERY_AGENT_TOKEN or take a dead claim over; every other event
+ * finds what it decided, so a session never changes lanes midway (a Claude Code an agent started, picked by its folder,
+ * does not become the agent when the agent exits).
+ */
+function pickFor(ctx: HookContext, projectDir: string, start = false): ClaudePicked {
+	return claudePick(ctx.config, { env: ctx.env, cwd: projectDir, owner: ctx.claudePid, takeover: start });
 }
 
-function pickHere(input: HookInput, ctx: HookContext): { readonly pick: Picked; readonly projectDir: string } | undefined {
+function pickHere(input: HookInput, ctx: HookContext, start = false): { readonly pick: ClaudePicked; readonly projectDir: string } | undefined {
 	const projectDir = ctx.env.CLAUDE_PROJECT_DIR || (typeof input.cwd === "string" ? input.cwd : undefined);
 	if (projectDir === undefined) return undefined;
-	return { pick: pickFor(ctx, projectDir), projectDir };
+	return { pick: pickFor(ctx, projectDir, start), projectDir };
 }
 
 function here(input: HookInput, ctx: HookContext): Here | undefined {
@@ -211,12 +219,14 @@ const MOD_CHECK = "If your system prompt has no Orrery memory section (its text 
  * the session is not recorded, and the status says so to both. Under a refused ORRERY_AGENT it only tells the person.
  */
 export async function sessionStart(input: HookInput, ctx: HookContext): Promise<object | undefined> {
-	const picked = pickHere(input, ctx);
-	if (picked === undefined || !validSession(input.session_id)) return undefined;
+	if (!validSession(input.session_id)) return undefined;
+	// The session's start: the one pick that may claim the token (pickFor).
+	const picked = pickHere(input, ctx, true);
+	if (picked === undefined) return undefined;
 	const { pick, projectDir } = picked;
+	if (pick.kind === "none") return undefined;
 	// A refused ORRERY_AGENT: said once, to the person, in the main session; nothing is recorded.
-	if (pick.kind === "unknown" || pick.kind === "bad-token") return input.agent_id === undefined ? { systemMessage: refusedNotice(pick) } : undefined;
-	if (pick.kind !== "lane") return undefined;
+	if (pick.kind !== "lane") return input.agent_id === undefined ? { systemMessage: claudeRefusedNotice(pick) } : undefined;
 	const { lane } = pick;
 	// The holder's cut-off: this session's events from now on belong to this run.
 	const since = Date.now();
@@ -285,15 +295,6 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 		warnings.push(`Orrery: CLAUDE.md does not load ${lane.name}'s memory view; run \`orrery claude-setup ${lane.name}\`, then start a new session.`);
 	} else if (setUp && lane.workspace !== undefined && !samePath(projectDir, lane.workspace)) {
 		warnings.push(`Orrery: Claude Code started in a subfolder of ${lane.workspace}; start it there, or CLAUDE.md may not load the memory view.`);
-	}
-	// Opened by ORRERY_AGENT in another lane's folder set up the file way: Claude Code loads that lane's view there too
-	// (the folder's CLAUDE.md or CLAUDE.local.md imports it). `orrery agent` refuses that; ORRERY_AGENT set by hand still
-	// gets here.
-	const host = pick.by === "env" ? laneForCwd(ctx.config, projectDir) : undefined;
-	if (host !== undefined && host.name !== lane.name && laneMode(host) === "file") {
-		warnings.push(
-			`Orrery: this folder is ${host.name}'s, set up to load ${host.name}'s memory view into Claude Code, so ${host.name}'s memory is in this session too; open ${lane.name} in another folder, or switch ${host.name} to the mod (\`orrery claude-setup ${host.name} --mod\`).`,
-		);
 	}
 	// For the user only (systemMessage), never the model's context; this also records the session's key.
 	const summaries = notice(input, ctx) as { systemMessage?: string } | undefined;

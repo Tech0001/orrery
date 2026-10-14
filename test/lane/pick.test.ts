@@ -100,6 +100,25 @@ describe("pickLane", () => {
 		expect(readFileSync(join(birch, "claims", kept), "utf8")).toBe(`${me}\n`);
 	});
 
+	it("without takeover (a session's later events): only the claim's own owner, never a new or a dead owner's claim", () => {
+		const { root, config } = world();
+		const birch = join(config.dataDir, "lanes", "Birch");
+		const [mine, dead, unclaimed] = [newToken(), newToken(), newToken()];
+		const alive = (pid: number) => pid === me;
+		expect(claimToken(birch, mine, me, alive)).toBe(true);
+		expect(claimToken(birch, mine, me, alive, false)).toBe(true);
+		writeFileSync(join(birch, "claims", dead), "4243\n");
+		expect(claimToken(birch, dead, 4244, alive, false)).toBe(false);
+		expect(readFileSync(join(birch, "claims", dead), "utf8")).toBe("4243\n");
+		expect(claimToken(birch, unclaimed, 4244, alive, false)).toBe(false);
+		expect(existsSync(join(birch, "claims", unclaimed))).toBe(false);
+		// pickLane: the folder decides; with takeover (a session's start) the dead claim is taken over.
+		const env = { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: dead };
+		expect(pickLane(config, { env, cwd: join(root, "plain"), owner: 4244, alive, takeover: false })).toEqual({ kind: "none" });
+		expect(pickLane(config, { env, cwd: join(root, "plain"), owner: 4244, alive })).toMatchObject({ kind: "lane", by: "env", lane: { name: "Birch" } });
+		expect(readFileSync(join(birch, "claims", dead), "utf8")).toBe("4244\n");
+	});
+
 	it("never makes a file from a token that is not hex", () => {
 		const { config } = world();
 		const birch = join(config.dataDir, "lanes", "Birch");

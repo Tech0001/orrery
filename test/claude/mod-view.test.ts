@@ -324,9 +324,11 @@ describe("the CLI", () => {
 		const t = modLane();
 		const elsewhere = join(t.dir, "elsewhere");
 		mkdirSync(elsewhere);
-		const view = (args: string[], env: Record<string, string> = {}) => {
+		/** The view, run by this test, or (`viaShell`) by a shell this test starts, which is then its parent. */
+		const view = (args: string[], env: Record<string, string> = {}, viaShell = false) => {
 			const c = cliCommand(["claude-mod", "view", "--cwd", elsewhere, "--session", SESSION, ...args]);
-			const run = spawnSync(c.cmd, c.args, { env: cleanEnv({ ORRERY_CONFIG: t.configPath, ...env }), encoding: "utf8", timeout: 20_000 });
+			const [cmd, argv] = viaShell ? ["sh", ["-c", '"$@"; exit $?', "sh", c.cmd, ...c.args]] : [c.cmd, c.args];
+			const run = spawnSync(cmd, argv, { env: cleanEnv({ ORRERY_CONFIG: t.configPath, ...env }), encoding: "utf8", timeout: 20_000 });
 			expect([run.status, run.stderr]).toEqual([0, ""]);
 			return JSON.parse(run.stdout);
 		};
@@ -336,9 +338,11 @@ describe("the CLI", () => {
 		expect(view(["--agent", "Nobody"], { ORRERY_AGENT: "Test" })).toEqual({ lane: null });
 		const token = newToken();
 		expect(claimToken(t.lane.dir, token, process.pid)).toBe(true);
-		// The view's Claude Code is CLAUDE_PID, else its parent (here this test, which claimed the token).
+		// The view's Claude Code is its parent (here this test, which claimed the token), never CLAUDE_PID: a claude started
+		// from an agent's Bash inherits the agent's.
 		expect(view(["--agent", "Test", "--agent-token", token])).toMatchObject({ lane: "Test" });
-		expect(view(["--agent", "Test", "--agent-token", token], { CLAUDE_PID: String(process.ppid) })).toEqual({ lane: null });
+		expect(view(["--agent", "Test", "--agent-token", token], { CLAUDE_PID: String(process.ppid) })).toMatchObject({ lane: "Test" });
+		expect(view(["--agent", "Test", "--agent-token", token], { CLAUDE_PID: String(process.pid) }, true)).toEqual({ lane: null });
 	});
 
 	it("takes --spool-only with --wait-ms", () => {

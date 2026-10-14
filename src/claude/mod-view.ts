@@ -1,8 +1,10 @@
 /**
  * `orrery claude-mod view` (spec 2026-10-08-claude-code-mod §4.2): what the Orrery mod in Claude Code needs from the
- * session's lane (ORRERY_AGENT's, as the mod passes it on, else the folder's), as one JSON document. The reply keeps its
- * names (`lane`): a cached older mod reads it. It opens memory read-only, so it works while the holder, pi or nothing
- * holds the lane; the holder stays the single writer. It never prints message contents anywhere but the section.
+ * session's lane (src/claude/pick.ts: ORRERY_AGENT's, as the mod passes it on, else the folder's), as one JSON
+ * document. It runs within a session, so it never claims ORRERY_AGENT_TOKEN: it finds the claim SessionStart made, for
+ * its parent, the Claude Code that runs it. The reply keeps its names (`lane`): a cached older mod reads it. It opens
+ * memory read-only, so it works while the holder, pi or nothing holds the lane; the holder stays the single writer. It
+ * never prints message contents anywhere but the section.
  * It runs at every Claude Code session start and compaction, so it imports nothing heavy (not lane/overview.ts).
  */
 
@@ -14,12 +16,13 @@ import { safeText } from "../lane/source-labels.ts";
 import type { RemoteStatus } from "../remote/types.ts";
 import type { HarnessConfig, LaneConfig } from "../lane/config.ts";
 import { holderFresh, readHolder } from "../lane/handover.ts";
-import { AGENT_ENV, pickLane, TOKEN_ENV } from "../lane/pick.ts";
+import { AGENT_ENV, TOKEN_ENV } from "../lane/pick.ts";
 import { processAlive } from "../lane/process.ts";
 import { readStatus } from "../lane/status-file.ts";
 import { memorySection } from "../lane/view-text.ts";
 import { MemoryStore, MemoryView } from "../memory/index.ts";
 import { validSession } from "./paths.ts";
+import { claudePick } from "./pick.ts";
 import { pendingEvents, readMode, type SessionMode } from "./spool.ts";
 import { type LaneMode, laneMode } from "./view-file.ts";
 
@@ -61,7 +64,11 @@ export interface ModViewOptions {
 	/** ORRERY_AGENT and its token as the Orrery mod read them from Claude Code's environment: they stand in for it. */
 	readonly agent?: string;
 	readonly agentToken?: string;
-	/** The environment and Claude Code's process (default: this process's environment, and CLAUDE_PID or the parent). */
+	/**
+	 * The environment and Claude Code's process (default: this process's environment, and its parent). Never CLAUDE_PID:
+	 * Claude Code passes its own on to what its Bash tool runs, so a claude started from an agent's Bash has the agent's
+	 * pid there, while this command's parent is that claude itself (the mod runs it, and orrery-run execs).
+	 */
 	readonly env?: NodeJS.ProcessEnv;
 	readonly owner?: number;
 }
@@ -145,10 +152,10 @@ function remoteFields(lane: LaneConfig, session: string | undefined, now: number
 export async function modView(config: HarnessConfig | undefined, options: ModViewOptions): Promise<ModViewReply> {
 	try {
 		if (config === undefined) return { lane: null };
-		// The session's lane (src/lane/pick.ts): the agent the mod passed on, else ORRERY_AGENT here, else the folder's.
+		// The session's lane (src/claude/pick.ts): the agent the mod passed on, else ORRERY_AGENT here, else the folder's.
 		const base = options.env ?? process.env;
-		const env = options.agent === undefined ? base : { ...base, [AGENT_ENV]: options.agent, [TOKEN_ENV]: options.agentToken };
-		const picked = pickLane(config, { env, cwd: options.cwd, owner: options.owner ?? (Number(base.CLAUDE_PID) || process.ppid) });
+		const env = options.agent === undefined ? base : { ...base, [AGENT_ENV]: options.agent, [TOKEN_ENV]: options.agentToken ?? base[TOKEN_ENV] };
+		const picked = claudePick(config, { env, cwd: options.cwd, owner: options.owner ?? process.ppid, takeover: false });
 		if (picked.kind !== "lane") return { lane: null };
 		const { lane } = picked;
 		const { session } = options;

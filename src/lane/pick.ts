@@ -5,7 +5,8 @@
  *    A launcher may also set ORRERY_AGENT_TOKEN, 32 lowercase hex digits; any other value is "bad-token" (a notice and no
  *    memory; no fallback). The first process that starts a session with that token owns it (claims/<token> in the lane's
  *    folder), so a tool the agent starts itself, which inherits both variables, is not the agent too: it falls through
- *    to 2.
+ *    to 2. A dead owner's claim is taken over only at a session's start (`takeover`); a session's later picks (Claude
+ *    Code asks at every hook) keep what its start decided, so it never changes lanes midway.
  * 2. The lane whose workspace holds the folder (laneForCwd).
  * 3. None.
  * Node built-ins and relative imports only: pi and OMP load this file.
@@ -36,6 +37,11 @@ export interface Where {
 	readonly owner: number;
 	/** Whether a pid lives (default processAlive); tests pass their own. */
 	readonly alive?: (pid: number) => boolean;
+	/**
+	 * Whether this pick may claim the token: make the claim, or take a dead owner's over (default true). False for a
+	 * session's later events, which may only find the owner's own claim (claimToken).
+	 */
+	readonly takeover?: boolean;
 }
 
 /** The lane `name` names: an exact match, else the one match ignoring case. */
@@ -53,7 +59,7 @@ export function pickLane(config: HarnessConfig, where: Where): Picked {
 		if (lane === undefined) return { kind: "unknown", name };
 		const token = where.env[TOKEN_ENV];
 		if (token !== undefined && !TOKEN.test(token)) return { kind: "bad-token", name: lane.name };
-		if (token === undefined || claimToken(lane.dir, token, where.owner, where.alive)) return { kind: "lane", lane, by: "env" };
+		if (token === undefined || claimToken(lane.dir, token, where.owner, where.alive, where.takeover !== false)) return { kind: "lane", lane, by: "env" };
 	}
 	const lane = laneForCwd(config, where.cwd);
 	return lane === undefined ? { kind: "none" } : { kind: "lane", lane, by: "folder" };
@@ -101,14 +107,17 @@ function pruneClaims(dir: string, alive: (pid: number) => boolean): void {
 
 /**
  * Whether `owner` may take ORRERY_AGENT with `token`: it claimed it before, or is the first to claim it, or the claim
- * is dead (liveClaimant). False for a token that is not 32 lowercase hex digits (it must never name a file elsewhere).
+ * is dead (liveClaimant). Without `takeover` (a session's later events) only the first: such an event never makes a
+ * claim nor takes a dead one over, so a session that started as another process's tool stays one. False for a token
+ * that is not 32 lowercase hex digits (it must never name a file elsewhere).
  */
-export function claimToken(laneDir: string, token: string, owner: number, alive: (pid: number) => boolean = processAlive): boolean {
+export function claimToken(laneDir: string, token: string, owner: number, alive: (pid: number) => boolean = processAlive, takeover = true): boolean {
 	if (!TOKEN.test(token)) return false;
 	const dir = join(laneDir, "claims");
 	const file = join(dir, token);
 	// The owner's own claim, the common case (Claude Code asks at every hook): nothing to prune or write.
 	if (claimant(file) === owner) return true;
+	if (!takeover) return false;
 	try {
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
 		pruneClaims(dir, alive);
