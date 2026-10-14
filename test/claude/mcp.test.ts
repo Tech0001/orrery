@@ -11,10 +11,12 @@ import { claimToken, newToken } from "../../src/lane/pick.ts";
 import { runHook } from "../../src/claude/hooks.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { seedAtlas } from "../lane/support.ts";
-import { cleanup, pi, world } from "../pi/world.ts";
+import { cleanup, isolatedHome, pi, world } from "../pi/world.ts";
 import { cleanEnv, cliCommand } from "./support.ts";
 
 afterEach(cleanup);
+// One test starts a real pi; the MCP processes below get a scratch HOME of their own (the world's root).
+isolatedHome();
 
 // biome-ignore lint/suspicious/noExplicitAny: JSON-RPC replies are checked field by field.
 const call = (tools: readonly LaneTool[], method: string, params: object = {}): any => JSON.parse(JSON.stringify(handleMessage({ jsonrpc: "2.0", id: 1, method, params }, tools)));

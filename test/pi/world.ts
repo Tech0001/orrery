@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type FauxProviderHandle, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
+import { afterEach, beforeEach } from "vitest";
 import { type HarnessConfig, parseConfig } from "../../src/lane/config.ts";
 import { FileCredentialStore } from "../../src/lane/credentials.ts";
 import { createLaneModels } from "../../src/lane/models.ts";
@@ -64,6 +65,33 @@ export function ageVisitMarks(dataDir: string): void {
 /** The guard's environment and home in a world `root`: scratch ones, so no test lists or stats the real ~/.omp. */
 export function scratchHome(root: string): Pick<OrreryOptions, "env" | "home"> {
 	return { env: {}, home: join(root, "home") };
+}
+
+/**
+ * HOME as a fresh scratch folder for every test of the enclosing suite (a beforeEach sets it, an afterEach puts the
+ * old one back and removes the folder), and a getter for the current one. A real pi runs its bash with this process's
+ * environment and its tools expand "~" from os.homedir(), so a command the guard lets through (as it does in a run
+ * against older code) would otherwise run under the user's own home. Every suite that starts a real pi calls this
+ * once; a test that needs something in the home (a config, a credential file) puts it in the scratch one.
+ */
+export function isolatedHome(): () => string {
+	let home: string | undefined;
+	let saved: string | undefined;
+	beforeEach(() => {
+		saved = process.env.HOME;
+		home = mkdtempSync(join(tmpdir(), "orrery-home-"));
+		process.env.HOME = home;
+	});
+	afterEach(() => {
+		if (saved === undefined) delete process.env.HOME;
+		else process.env.HOME = saved;
+		if (home !== undefined) rmSync(home, { recursive: true, force: true });
+		home = undefined;
+	});
+	return () => {
+		if (home === undefined) throw new Error("isolatedHome: no test is running");
+		return home;
+	};
 }
 
 /**

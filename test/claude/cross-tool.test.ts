@@ -5,12 +5,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { claudeSetup } from "../../src/claude/setup.ts";
 import { pendingEvents } from "../../src/claude/spool.ts";
 import { readHolder } from "../../src/lane/handover.ts";
-import { cleanup, close, lastLane, pi, world } from "../pi/world.ts";
+import { cleanup, close, isolatedHome, lastLane, pi, world } from "../pi/world.ts";
 import { hookCli, messages, waitUntil } from "./support.ts";
 
 afterEach(cleanup);
 
 describe("one lane in pi and in Claude Code", () => {
+	const home = isolatedHome();
+
 	it("keeps one memory across both, and the second runs read-only while the first holds the lane", async () => {
 		const { root, config, configPath } = world();
 		const ws = join(root, "agent-Atlas");
@@ -18,7 +20,8 @@ describe("one lane in pi and in Claude Code", () => {
 		// Claude Code records only in a lane where claude-setup ran.
 		claudeSetup(atlas);
 		const claude = spawn("sleep", ["60"]);
-		const env = { ORRERY_CONFIG: configPath, CLAUDE_PROJECT_DIR: ws, CLAUDE_PID: String(claude.pid) };
+		// The hook processes get the scratch home too (hookCli inherits this process's environment; said here anyway).
+		const env = { ORRERY_CONFIG: configPath, CLAUDE_PROJECT_DIR: ws, CLAUDE_PID: String(claude.pid), HOME: home() };
 		try {
 			const first = await pi(root, ws, config);
 			first.setResponses([fauxAssistantMessage("pi reply")]);

@@ -8,7 +8,7 @@ import type { HarnessConfig } from "../../src/lane/config.ts";
 import { createOrrery } from "../../src/pi/index.ts";
 import { fakeOmp, ompCleanup, track } from "../omp/world.ts";
 import type { PiRun } from "./harness.ts";
-import { cleanup, pi, scratchHome, summarySourcesFor, world } from "./world.ts";
+import { cleanup, isolatedHome, pi, scratchHome, summarySourcesFor, world } from "./world.ts";
 
 let dir: string;
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -224,6 +224,8 @@ describe("pi: only the agent that owns a folder's memory view reads it", () => {
 		await ompCleanup();
 		await cleanup();
 	});
+	// These sessions run pi's real bash: a command the guard lets through runs, under a scratch HOME.
+	isolatedHome();
 
 	/** The world's two lanes, Atlas and Birch, each set up the file way: a memory view in its folder. */
 	function viewWorld() {
@@ -341,9 +343,9 @@ describe("pi: only the agent that owns a folder's memory view reads it", () => {
 	}, 20_000);
 
 	/**
-	 * An Orrery home in the scratch home, with a config and an installed program. pi's bash runs a command the guard lets
-	 * through for real, under the real HOME: these tests name only scratch paths, never "~", so a run against code that
-	 * does not refuse them changes nothing outside the test's folder.
+	 * An Orrery home in the world's scratch home (the guard's), with a config and an installed program. pi's bash runs a
+	 * command the guard lets through for real: these tests name only scratch paths, never "~" (the harness refuses that),
+	 * so a run against code that does not refuse them changes nothing outside the test's folders.
 	 */
 	function scratchOrrery(root: string) {
 		const home = join(root, "home", ".orrery");

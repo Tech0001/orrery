@@ -3,9 +3,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { writeRequest } from "../../src/lane/settings-request.ts";
 import { waitUntil } from "../claude/support.ts";
 import { FAUX_SUMMARY } from "./harness.ts";
-import { cleanup, lastLane, pi, world } from "./world.ts";
+import { cleanup, isolatedHome, lastLane, pi, world } from "./world.ts";
 
 afterEach(cleanup);
+isolatedHome();
 
 describe("pi takes a summary-model change from outside", () => {
 	it("applies request.json on its tick and tells the user", async () => {

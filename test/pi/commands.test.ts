@@ -4,9 +4,10 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/provid
 import { afterEach, describe, expect, it } from "vitest";
 import { browse, compactorCommand, memoryReport, pageOpener } from "../../src/pi/commands.ts";
 import { FAUX, FAUX_SUMMARY } from "./harness.ts";
-import { cleanup, lastLane, pi, world } from "./world.ts";
+import { cleanup, isolatedHome, lastLane, pi, world } from "./world.ts";
 
 afterEach(cleanup);
+isolatedHome();
 
 describe("commands", () => {
 	it("/memory reports the lane, /compactor shows, sets (persisting) and resets, /browse writes a private page", async () => {

@@ -7,9 +7,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { newToken } from "../../src/lane/pick.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { FAUX_SUMMARY } from "./harness.ts";
-import { ageVisitMarks, cleanup, close, lastLane, pi, plainPi, summarySourcesFor, world } from "./world.ts";
+import { ageVisitMarks, cleanup, close, isolatedHome, lastLane, pi, plainPi, summarySourcesFor, world } from "./world.ts";
 
 afterEach(cleanup);
+isolatedHome();
 
 const memoryOf = (root: string, lane = "Atlas") => {
 	const store = MemoryStore.openReadOnly(join(root, "data", "lanes", lane, "memory.sqlite"));

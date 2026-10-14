@@ -2,9 +2,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { MemoryStore } from "../../src/memory/index.ts";
-import { cleanup, close, pi, world } from "./world.ts";
+import { cleanup, close, isolatedHome, pi, world } from "./world.ts";
 
 afterEach(cleanup);
+isolatedHome();
 
 const text = (r: { content: { text?: string }[] }) => r.content.map((c) => c.text ?? "").join("");
 

@@ -5,9 +5,10 @@ import { spoolEvent } from "../../src/claude/spool.ts";
 import { readHolder } from "../../src/lane/handover.ts";
 import type { ModelSource } from "../../src/lane/model-source.ts";
 import { waitUntil } from "../claude/support.ts";
-import { cleanup, lastLane, pi, world } from "./world.ts";
+import { cleanup, isolatedHome, lastLane, pi, world } from "./world.ts";
 
 afterEach(cleanup);
+isolatedHome();
 
 /** Summaries that never come until aborted: a holder whose session ended stays "finishing". */
 const stuck: ModelSource = {

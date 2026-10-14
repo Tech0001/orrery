@@ -2,9 +2,10 @@ import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryStore } from "../../src/memory/index.ts";
-import { cleanup, close, lastLane, pi, plainPi, world } from "./world.ts";
+import { cleanup, close, isolatedHome, lastLane, pi, plainPi, world } from "./world.ts";
 
 afterEach(cleanup);
+isolatedHome();
 
 type Ctx = { systemPrompt?: string; messages: { role: string; content: unknown }[] };
 const textOf = (m: { content: unknown }) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content));

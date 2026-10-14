@@ -3,9 +3,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Holder } from "../../src/claude/holder.ts";
 import { laneModelSource } from "../../src/lane/model-source.ts";
 import { fauxModels } from "../lane/support.ts";
-import { cleanup, pi, world } from "./world.ts";
+import { cleanup, isolatedHome, pi, world } from "./world.ts";
 
 afterEach(cleanup);
+isolatedHome();
 
 describe("pi in a lane a Claude Code session records", () => {
 	it("says the lane is open in Claude Code, and runs without memory", async () => {

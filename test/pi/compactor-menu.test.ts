@@ -3,7 +3,7 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { compactorMenu, pickSummaryModel, laneTarget } from "../../src/lane/compactor-menu.ts";
 import { FAUX_SUMMARY } from "./harness.ts";
-import { cleanup, lastLane, pi, summarySourcesFor, world } from "./world.ts";
+import { cleanup, isolatedHome, lastLane, pi, summarySourcesFor, world } from "./world.ts";
 
 // The groups shown depend on keys in the environment; the user's shell may export some.
 beforeEach(() => {
@@ -13,6 +13,7 @@ afterEach(async () => {
 	vi.unstubAllEnvs();
 	await cleanup();
 });
+isolatedHome();
 
 /** Answers select/input in order; records the titles and options it was shown. */
 function scripted(answers: (string | undefined)[]) {
