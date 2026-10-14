@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { newToken } from "../../src/lane/pick.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { FAUX_SUMMARY } from "./harness.ts";
-import { cleanup, close, lastLane, pi, plainPi, world } from "./world.ts";
+import { cleanup, close, lastLane, pi, plainPi, summarySourcesFor, world } from "./world.ts";
 
 afterEach(cleanup);
 
@@ -367,6 +367,29 @@ describe("who a session belongs to: a lane never copies turns another agent said
 		await say(atlas, "Atlas secret question.", "Atlas secret answer.");
 		await close(meanwhile);
 		await close(atlas);
+		const again = await pi(root, join(root, "agent-Birch"), config, "s-b");
+		await say(again, "Two.", "Second.");
+		await close(again);
+		expect(memoryOf(root, "Birch")).toEqual(["user: One.", "talk: First.", "user: Two.", "talk: Second."]);
+		expect(memoryOf(root)).toEqual(["user: Atlas secret question.", "talk: Atlas secret answer."]);
+	});
+
+	it("a visitor's run that ends while the owner is opening (after it loaded the session) stays out of the owner too", async () => {
+		const { root, config } = world();
+		const first = await pi(root, join(root, "agent-Birch"), config, "s-b");
+		await say(first, "One.", "First.");
+		await close(first);
+		const atlas = await pi(root, join(root, "agent-Birch"), config, "s-b", { env: { ORRERY_AGENT: "Atlas" } });
+		// A hook, not timing: the owner's memory opens (summary sources) only once the visitor has run and shut down, so
+		// every note of the visit falls after the owner loaded the session and before it settles the visit.
+		const opening = await pi(root, join(root, "agent-Birch"), config, "s-b", {
+			summarySources: async (cfg) => {
+				await say(atlas, "Atlas secret question.", "Atlas secret answer.");
+				await close(atlas);
+				return summarySourcesFor(cfg);
+			},
+		});
+		await close(opening);
 		const again = await pi(root, join(root, "agent-Birch"), config, "s-b");
 		await say(again, "Two.", "Second.");
 		await close(again);

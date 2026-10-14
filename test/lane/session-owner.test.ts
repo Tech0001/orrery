@@ -35,16 +35,34 @@ describe("session owners", () => {
 		const dir = data();
 		noteSession(dir, "s1", "Atlas");
 		expect(sessionStanding(dir, "s1", "Atlas")).toBe("own");
-		noteSession(dir, "s1", "Birch");
+		noteSession(dir, "s1", "Birch", 1_000);
 		expect(readFileSync(`${record(dir, "s1")}.visited`, "utf8")).toBe("");
 		// The mark stays until the tail is written (a failed write leaves it for the next open).
 		expect(sessionStanding(dir, "s1", "Atlas")).toBe("visited");
 		expect(sessionStanding(dir, "s1", "Atlas")).toBe("visited");
-		settleVisit(dir, "s1");
+		settleVisit(dir, "s1", 2_000);
 		expect(sessionStanding(dir, "s1", "Atlas")).toBe("own");
-		// Noting the visit again while it is marked changes nothing; after it is settled, a later turn marks it again.
-		noteSession(dir, "s1", "Birch");
-		noteSession(dir, "s1", "Birch");
+		// After it is settled, a later visit marks it again.
+		noteSession(dir, "s1", "Birch", 3_000);
+		expect(sessionStanding(dir, "s1", "Atlas")).toBe("visited");
+	});
+
+	it("each visit rewrites the mark (injected times): one written after the owner loaded the session outlives its settling", () => {
+		const dir = data();
+		noteSession(dir, "s1", "Atlas", 1_000);
+		noteSession(dir, "s1", "Birch", 2_000); // the visitor starts
+		expect(statSync(`${record(dir, "s1")}.visited`).mtimeMs).toBe(2_000);
+		const loadedAt = 3_000; // the owner loads the session, then opens its memory
+		expect(sessionStanding(dir, "s1", "Atlas")).toBe("visited");
+		noteSession(dir, "s1", "Birch", 4_000); // the visitor's run ends before the owner settles
+		expect(statSync(`${record(dir, "s1")}.visited`).mtimeMs).toBe(4_000);
+		settleVisit(dir, "s1", loadedAt); // the owner's tail is written: the mark is newer than its load, so it stays
+		expect(sessionStanding(dir, "s1", "Atlas")).toBe("visited");
+		settleVisit(dir, "s1", 5_000); // the owner's next open loaded the session after the mark: it goes
+		expect(sessionStanding(dir, "s1", "Atlas")).toBe("own");
+		// A mark written in the very millisecond the owner loaded stays too (only an older one goes).
+		noteSession(dir, "s1", "Birch", 6_000);
+		settleVisit(dir, "s1", 6_000);
 		expect(sessionStanding(dir, "s1", "Atlas")).toBe("visited");
 	});
 

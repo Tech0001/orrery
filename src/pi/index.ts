@@ -70,6 +70,11 @@ export interface OrreryState {
 	config?: HarnessConfig;
 	/** OMP: takes back its settings Orrery switched off, when the session leaves the lane's folder. */
 	restoreSettings?: () => void;
+	/**
+	 * When the host loaded the session now open (as close as the extension sees it: the session_start or switch that
+	 * says so). A visit mark written since stays when the lane settles the visit (src/lane/session-owner.ts).
+	 */
+	loadedAt?: number;
 }
 
 export interface OrreryOptions {
@@ -289,7 +294,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			if (arrived || standing !== "own" || (pick.by === "env" && ctx.sessionManager.getBranch().length > 0)) startAtTail(state.lane.store, ctx.sessionManager);
 			else if (event.reason === "fork" || ctx.sessionManager.getHeader()?.parentSession !== undefined) markSessionCopied(state.lane.store, ctx.sessionManager);
 			// Only once the tail is written: a write that failed (it threw) leaves the mark for the next open.
-			if (standing === "visited") settleVisit(config.dataDir, id);
+			if (standing === "visited") settleVisit(config.dataDir, id, state.loadedAt ?? 0);
 			copySession(state.lane.view, ctx.sessionManager, lane.memory.toolCap);
 			state.runStart = Date.now(); // a first model call that is not a prompt (resumed session) is trimmed too
 			state.lastEnd = state.runSince = state.runStart;
@@ -339,7 +344,10 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			state.opening = pending;
 			return pending;
 		};
-		pi.on("session_start", (event, ctx) => open(event, ctx));
+		pi.on("session_start", (event, ctx) => {
+			state.loadedAt = Date.now();
+			return open(event, ctx);
+		});
 
 		/** Closes the open lane as a session's end does: the session saved into it when `save`, status closed, lock released. */
 		const closeLane = (ctx: ExtensionContext, save: boolean): Promise<void> => {
@@ -542,6 +550,8 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			// /btw" starts at the entry it branched at, so the side question and answer OMP adds after it are recorded.
 			let btwLeaf: string | undefined;
 			const switched = async (event: SessionEvent, ctx: ExtensionContext) => {
+				// OMP loaded the session it switched to before saying so.
+				state.loadedAt = Date.now();
 				const leaf = event.type === "session_branch" && event.reason === "btw" ? btwLeaf : undefined;
 				if (event.type === "session_branch") btwLeaf = undefined;
 				// A /resume of another folder's session (or a /move before this) took the session there: that folder's lane, or
@@ -561,7 +571,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 					if (standing !== "own" || byEnv) startAtTail(lane.store, ctx.sessionManager);
 					else if (event.type === "session_branch" || event.reason === "fork" || ctx.sessionManager.getHeader()?.parentSession !== undefined) markSessionCopied(lane.store, ctx.sessionManager, leaf);
 					// Only once the tail is written: a write that failed (it threw) leaves the mark for the next open.
-					if (standing === "visited") settleVisit(state.config.dataDir, id);
+					if (standing === "visited") settleVisit(state.config.dataDir, id, state.loadedAt ?? 0);
 					copySession(lane.view, ctx.sessionManager, lane.config.memory.toolCap);
 				} catch (error) {
 					warn(ctx, `Orrery: logging the new session into memory failed: ${errorText(error)}`);

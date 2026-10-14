@@ -7,8 +7,10 @@
  * (dots, any length) has a record, and no id can name another session's mark:
  * - <hash> names the agent that first ran in the session, or NO_AGENT for a session under an ORRERY_AGENT that was
  *   refused. It is made once (exclusive create) and left alone.
- * - <hash>.visited says another agent ran in the session since. A visitor marks it when it starts, and again at each
- *   run's end and at shutdown, so turns it says after the owner opened are marked too.
+ * - <hash>.visited says another agent ran in the session since. A visitor writes it afresh (its time is the visit's)
+ *   when it starts, at each run's end and at shutdown. The owner, once its tail is written, removes it only when it is
+ *   older than the owner's load of the session: a visitor turn that ended after that load is not in what the owner
+ *   loaded, so its mark stays for the owner's next open.
  * Agent names only, never content; files 0600 in a 0700 folder.
  *
  * Another agent's session, or the owner's own once marked, is recorded from its tail (src/pi/index.ts). The cost of a
@@ -22,7 +24,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /** The owner of a session that ran under a refused ORRERY_AGENT: foreign to every lane. */
@@ -68,16 +70,27 @@ function ownerOf(dataDir: string, sessionId: string): string | undefined {
 	}
 }
 
+/** Writes the visit mark afresh, timed `now` (its mtime), so the owner can tell it from one it already settled. */
+function mark(file: string, now: number): void {
+	try {
+		mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+		writeFileSync(file, "", { mode: 0o600 });
+		utimesSync(file, new Date(now), new Date(now));
+	} catch {
+		// No mark where nothing can be written: the visit is unmarked, as when there is no record.
+	}
+}
+
 /**
- * `agent` (a lane's name, or NO_AGENT) runs in session `sessionId`: it owns the session when it is the first to, and
- * otherwise marks the session visited when the owner is another (a no-op while the mark is there). Called whether or
- * not the lane's memory opened, since the turns said here are the agent's either way: when a session opens, and again
- * at each run's end and at shutdown.
+ * `agent` (a lane's name, or NO_AGENT) runs in session `sessionId` at `now`: it owns the session when it is the first
+ * to, and otherwise marks the session visited, afresh, when the owner is another. Called whether or not the lane's
+ * memory opened, since the turns said here are the agent's either way: when a session opens, and again at each run's
+ * end and at shutdown.
  */
-export function noteSession(dataDir: string, sessionId: string, agent: string): void {
+export function noteSession(dataDir: string, sessionId: string, agent: string, now: number = Date.now()): void {
 	if (!recordable(sessionId) || create(ownerFile(dataDir, sessionId), `${agent}\n`)) return;
 	const owner = ownerOf(dataDir, sessionId);
-	if (owner !== undefined && owner !== agent) create(visitFile(dataDir, sessionId), "");
+	if (owner !== undefined && owner !== agent) mark(visitFile(dataDir, sessionId), now);
 }
 
 /**
@@ -97,7 +110,18 @@ export function sessionStanding(dataDir: string, sessionId: string, lane: string
 	}
 }
 
-/** The owner has recorded a visited session from its tail: the mark goes, and the session is recorded as usual again. */
-export function settleVisit(dataDir: string, sessionId: string): void {
-	if (recordable(sessionId)) rmSync(visitFile(dataDir, sessionId), { force: true });
+/**
+ * The owner has written its tail of a visited session it loaded at `loadedAt`: the mark goes when it is older than that
+ * load, so the session is recorded as usual again. A mark written at or after the load stays: the visit it marks ended
+ * after the owner read the session, so its turns are not under the owner's tail, and its next open starts at the tail
+ * again.
+ */
+export function settleVisit(dataDir: string, sessionId: string, loadedAt: number): void {
+	if (!recordable(sessionId)) return;
+	const file = visitFile(dataDir, sessionId);
+	try {
+		if (statSync(file).mtimeMs < loadedAt) rmSync(file, { force: true });
+	} catch {
+		// no mark
+	}
 }
