@@ -325,8 +325,18 @@ function stageRelease(from: string, app: string, version: string, run: Runner): 
 		if (said.status !== 0) throw new Error(`the release's orrery --version failed: ${failure(said)}`);
 		if (said.stdout.trim() !== `orrery ${version}`) throw new Error(`the release's binary says ${said.stdout.trim() || "nothing"}, not orrery ${version}`);
 		makeReadOnly(staging); // before the rename, so a folder under app/<VERSION> is never writable
-		if (isFolder(join(app, version))) dropVersion(app, version); // a damaged folder goes only now the new copy has checked out
-		renameSync(staging, join(app, version));
+		const target = join(app, version);
+		// A damaged folder is moved aside, the new copy moved in, and only then is the old one deleted: the name is
+		// never empty for longer than two renames, and a failed second rename puts the old folder back.
+		const damaged = isFolder(target) ? join(app, `.removing-${randomUUID()}`) : undefined;
+		if (damaged !== undefined) renameSync(target, damaged);
+		try {
+			renameSync(staging, target);
+		} catch (error) {
+			if (damaged !== undefined) renameSync(damaged, target);
+			throw error;
+		}
+		if (damaged !== undefined) removeVersion(damaged);
 	} catch (error) {
 		removeVersion(staging);
 		throw error;

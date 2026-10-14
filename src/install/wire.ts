@@ -156,7 +156,7 @@ async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: 
 		const result = runInstall(steps, run.install);
 		for (const line of result.output.split("\n").filter((line) => line.trim() !== "")) emit(`${check.label}: ${line}`);
 		if (!result.ok) {
-			left.push(`${check.label} (the install failed)`);
+			left.push(`${check.label} (${result.problem ?? "the install failed"})`);
 			emit(`${check.label}: not wired; orrery tools install ${id} tries again`);
 		}
 		// pi and OMP may share one extensions folder: OMP is judged after pi's file is written.

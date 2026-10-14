@@ -440,26 +440,46 @@ function foreignExtension(file: string): boolean {
 	}
 }
 
+const reason = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
 /**
  * Writes `text` to a temporary file beside `path`, then renames it over `path`: a link there is replaced, never written
- * through. A file that is not Orrery's one line is renamed aside first (setAside); the new name is returned.
+ * through. A file that is not Orrery's one line is renamed aside first (setAside); the new name is returned. If the
+ * final rename fails after that, the original is put back; when that fails too, the error names where it is.
  */
 function replaceFile(path: string, text: string): string | undefined {
 	mkdirSync(dirname(path), { recursive: true });
 	const temp = `${path}.tmp-${process.pid}`;
 	try {
 		writeFileSync(temp, text);
-		const aside = foreignExtension(path) ? setAside(path) : undefined;
-		renameSync(temp, path);
-		return aside;
 	} catch (error) {
 		rmSync(temp, { force: true });
-		throw error;
+		throw new Error(`could not write ${path}: ${reason(error)}`);
 	}
+	let aside: string | undefined;
+	try {
+		aside = foreignExtension(path) ? setAside(path) : undefined;
+	} catch (error) {
+		rmSync(temp, { force: true });
+		throw new Error(`could not set ${path} aside: ${reason(error)}`);
+	}
+	try {
+		renameSync(temp, path);
+	} catch (error) {
+		rmSync(temp, { force: true });
+		if (aside === undefined) throw new Error(`could not write ${path}: ${reason(error)}`);
+		try {
+			renameSync(aside, path);
+		} catch {
+			throw new Error(`could not write ${path}: ${reason(error)}; the original is at ${aside}`);
+		}
+		throw new Error(`could not write ${path}: ${reason(error)}; the original was put back`);
+	}
+	return aside;
 }
 
 /** Runs the steps in order and stops at the first that fails; `output` is what each did, for showing. */
-export function runInstall(steps: readonly InstallStep[], run: Runner = realRunner): { ok: boolean; output: string } {
+export function runInstall(steps: readonly InstallStep[], run: Runner = realRunner): { ok: boolean; output: string; problem?: string } {
 	let output = "";
 	for (const step of steps) {
 		if (step.kind === "write") {
@@ -467,7 +487,7 @@ export function runInstall(steps: readonly InstallStep[], run: Runner = realRunn
 				const aside = replaceFile(step.path, step.text);
 				if (aside !== undefined) output += `set ${step.path} aside as ${aside}\n`;
 			} catch (error) {
-				return { ok: false, output: `${output}could not write ${step.path}: ${error instanceof Error ? error.message : String(error)}\n` };
+				return { ok: false, output: `${output}${reason(error)}\n`, problem: reason(error) };
 			}
 			output += `wrote ${step.path}\n`;
 			continue;
