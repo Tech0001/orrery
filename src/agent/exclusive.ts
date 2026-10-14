@@ -23,8 +23,9 @@
  * its rename, the pruner moves that live claim, and if the second claimer then links its own before the put-back, the
  * put-back replaces it. Both claimers believe they hold the token. With two processes exactly one wins.
  * Known limit: a crash between moving a live claim and putting it back leaves that live owner without its claim (the
- * graveyard file is swept as a stray after STRAY_MS), so a later claimer of its token finds none and takes it over
- * while the owner lives.
+ * graveyard file is swept as a stray after STRAY_MS), and so does a stall there past STRAY_MS: another process's prune
+ * sweeps the graveyard file first, and the put-back finds it gone ("removed"). Either way a later claimer of its token
+ * finds none and takes it over while the owner lives.
  * Known limit: without hard links, a second consumer of the same process (Claude Code's MCP server and its
  * SessionStart) that arrives in the fallback's empty moment finds a file being made: its record is unreadable
  * ("unrecorded"), or it loses the claim and falls back to the folder. That fails closed, and is accepted.
