@@ -9,7 +9,7 @@ import { isAbsolute, join } from "node:path";
 import { openDatabase } from "../memory/sqlite.ts";
 import { localIso, MemoryStore } from "../memory/index.ts";
 import { findAgent, type HarnessConfig } from "./config.ts";
-import { INSTRUCTIONS_FILE, instructionsPath } from "./instructions.ts";
+import { INSTRUCTIONS_FILE, instructionsPath, readInstructions } from "./instructions.ts";
 import { writePrivate as writeAtomically } from "./private-file.ts";
 
 export interface BackupReport {
@@ -116,6 +116,8 @@ export function backupAgents(config: HarnessConfig, options: { now?: Date; keep?
 		try {
 			const found = regularFile(instructionsPath(agent.dir));
 			if (Buffer.isBuffer(found)) instructions = found;
+			// Sessions follow a symlink (src/agent/instructions.ts); the backup never does, so it says what it left out.
+			else if (found === "other") warnings.push(`${agent.name}: ${INSTRUCTIONS_FILE} is not a regular file; not backed up`);
 		} catch (error) {
 			warnings.push(`${agent.name}: ${INSTRUCTIONS_FILE} was not backed up (${error instanceof Error ? error.message : String(error)})`);
 		}
@@ -210,9 +212,13 @@ export interface RestoreReport {
 	readonly memory: boolean;
 	/**
 	 * The backup's instructions.md: "restored" (the agent had none: no file, or a blank one), "kept" (the agent has its
-	 * own, which stays; the backup's copy is in `from`), or "none" (the backup holds none, or only a blank one).
+	 * own, which stays; the backup's copy is in `from`), "none in effect" (the agent's is not a regular file, a link to
+	 * nothing say, and sessions read none from it; it is left as it is), "unreadable" (the backup's copy or the agent's
+	 * could not be read: a warning names it, and nothing was changed), or "none" (the backup holds none, or a blank one).
 	 */
-	readonly instructions: "restored" | "kept" | "none";
+	readonly instructions: "restored" | "kept" | "none in effect" | "unreadable" | "none";
+	/** What went wrong with instructions.md, naming the file: the restore of the memory still stands. */
+	readonly warnings: string[];
 }
 
 /**
@@ -220,7 +226,8 @@ export interface RestoreReport {
  * onto an older snapshot they would mix two states of the database. Backups snapshot memory before session, so the
  * session is never older than the memory's projection cursor. The backup's instructions.md goes back only where the
  * agent has none: instructions written since the backup are the person's, and newer. A backup of instructions only
- * puts those back and touches no memory.
+ * puts those back and touches no memory. A problem with instructions.md is a warning, never a failure after the
+ * databases are replaced; the backup's copy is read before they are touched.
  */
 export function restoreAgent(config: HarnessConfig, agentName: string, options: { from: string }): RestoreReport {
 	const agent = findAgent(config, agentName);
@@ -229,9 +236,11 @@ export function restoreAgent(config: HarnessConfig, agentName: string, options: 
 	if (!isAbsolute(from) && !DATED.test(options.from)) throw new Error(`--from must be a date (YYYY-MM-DD) or an absolute directory`);
 	const hasMemory = existsSync(join(from, "memory.sqlite"));
 	if (!hasMemory && !existsSync(join(from, INSTRUCTIONS_FILE))) throw new Error(`No backup of ${agent.name} at ${from}`);
+	const warnings: string[] = [];
+	const saved = savedInstructions(join(from, INSTRUCTIONS_FILE), warnings);
 	if (!hasMemory) {
-		const instructions = restoreInstructions(join(from, INSTRUCTIONS_FILE), instructionsPath(agent.dir));
-		return { agent: agent.name, from, memory: false, messages: 0, nodes: 0, files: instructions === "restored" ? [INSTRUCTIONS_FILE] : [], instructions };
+		const instructions = saved === "unreadable" ? saved : placeInstructions(saved, join(from, INSTRUCTIONS_FILE), agent.dir, warnings);
+		return { agent: agent.name, from, memory: false, messages: 0, nodes: 0, files: instructions === "restored" ? [INSTRUCTIONS_FILE] : [], instructions, warnings };
 	}
 	const memory = join(agent.dir, "memory.sqlite");
 	if (existsSync(memory)) {
@@ -256,11 +265,11 @@ export function restoreAgent(config: HarnessConfig, agentName: string, options: 
 		chmodSync(join(agent.dir, name), 0o600);
 		files.push(name);
 	}
-	const instructions = restoreInstructions(join(from, INSTRUCTIONS_FILE), instructionsPath(agent.dir));
+	const instructions = saved === "unreadable" ? saved : placeInstructions(saved, join(from, INSTRUCTIONS_FILE), agent.dir, warnings);
 	if (instructions === "restored") files.push(INSTRUCTIONS_FILE);
 	const store = MemoryStore.openReadOnly(memory);
 	try {
-		return { agent: agent.name, from, memory: true, messages: store.root.length, nodes: store.nodeCount, files, instructions };
+		return { agent: agent.name, from, memory: true, messages: store.root.length, nodes: store.nodeCount, files, instructions, warnings };
 	} finally {
 		store.close();
 	}
@@ -268,12 +277,35 @@ export function restoreAgent(config: HarnessConfig, agentName: string, options: 
 
 const blank = (bytes: Buffer): boolean => bytes.toString("utf8").trim() === "";
 
-/** Puts `saved` (a backup's instructions.md) at `own` when the agent has none there: no file, or a blank one. */
-function restoreInstructions(saved: string, own: string): RestoreReport["instructions"] {
-	const copy = regularFile(saved);
-	if (!Buffer.isBuffer(copy) || blank(copy)) return "none";
-	const current = regularFile(own);
-	if (current !== "missing" && !(Buffer.isBuffer(current) && blank(current))) return "kept";
-	writeAtomically(own, copy);
-	return "restored";
+const reason = (error: unknown): string => (error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error));
+
+/** A backup's instructions.md: its text, undefined when it holds none (or a blank or non-regular one), or "unreadable" (warned). */
+function savedInstructions(path: string, warnings: string[]): Buffer | undefined | "unreadable" {
+	try {
+		const copy = regularFile(path);
+		return Buffer.isBuffer(copy) && !blank(copy) ? copy : undefined;
+	} catch (error) {
+		warnings.push(`could not read ${path} (${reason(error)}); ${INSTRUCTIONS_FILE} was not restored`);
+		return "unreadable";
+	}
+}
+
+/** Puts `saved` (the backup's copy, at `savedPath`) in place when the agent has none: no file, or a blank one. */
+function placeInstructions(saved: Buffer | undefined, savedPath: string, agentDir: string, warnings: string[]): RestoreReport["instructions"] {
+	if (saved === undefined) return "none";
+	const own = instructionsPath(agentDir);
+	let current: Buffer | "missing" | "other";
+	try {
+		current = regularFile(own);
+	} catch (error) {
+		warnings.push(`could not read ${own} (${reason(error)}); it was left as it is, and the backup's copy is ${savedPath}`);
+		return "unreadable";
+	}
+	if (current === "missing" || (Buffer.isBuffer(current) && blank(current))) {
+		writeAtomically(own, saved);
+		return "restored";
+	}
+	// Not a file restore replaces (a symlink, a FIFO): kept when sessions read instructions through it, as they would.
+	if (current === "other" && readInstructions(agentDir) === undefined) return "none in effect";
+	return "kept";
 }

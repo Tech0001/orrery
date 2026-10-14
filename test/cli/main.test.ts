@@ -1,5 +1,5 @@
 import { execFileSync, type SpawnSyncReturns, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { statusCommand } from "../../src/cli/commands.ts";
@@ -238,5 +238,50 @@ describe("orrery", () => {
 		expect(restored.stdout).toContain("holds instructions only; Fresh's memory is left as it is");
 		expect(restored.stdout).toContain("Fresh had no instructions; put back the backup's instructions.md");
 		expect(readFileSync(join(fresh, "instructions.md"), "utf8")).toBe("Fresh answers questions.\n");
+	});
+
+	it.skipIf(process.getuid?.() === 0)("restore puts the memory back and exits 0 when an instructions.md can't be read, naming it; a link to nothing is none in effect", () => {
+		const dir = tempDir("orrery-main-");
+		dirs.push(dir);
+		const dataDir = join(dir, "data");
+		const configPath = join(dir, "config.toml");
+		writeFileSync(configPath, agentConfigToml({ dataDir, folder: join(dir, "ws") }));
+		const agentDir = join(dataDir, "agents", "Test");
+		mkdirSync(agentDir, { recursive: true });
+		const store = MemoryStore.open(join(agentDir, "memory.sqlite"));
+		store.appendBatch([{ kind: "user", text: "hello" }]);
+		store.close();
+		const own = join(agentDir, "instructions.md");
+		writeFileSync(own, "Test reviews pull requests.\n", { mode: 0o600 });
+		const env = { ...process.env, HOME: dir, ORRERY_CONFIG: "", ORRERY_HOME: "" };
+		const run = (args: string[]) => {
+			const c = cliCommand([...args, "--config", configPath]);
+			return spawnSync(c.cmd, c.args, { encoding: "utf8", env });
+		};
+		expect(run(["backup"]).status).toBe(0);
+		const day = readdirSync(join(dataDir, "backups")).find((entry) => /^\d{4}-\d{2}-\d{2}$/.test(entry))!;
+		const saved = join(dataDir, "backups", day, "Test", "instructions.md");
+
+		chmodSync(own, 0o000);
+		const ownUnreadable = run(["restore", "Test", "--from", day]);
+		chmodSync(own, 0o600);
+		expect(ownUnreadable.status).toBe(0);
+		expect(ownUnreadable.stdout).toContain("Restored Test from");
+		expect(ownUnreadable.stdout).toContain("1 messages");
+		expect(ownUnreadable.stderr).toContain(`Warning: could not read ${own} (EACCES); it was left as it is, and the backup's copy is ${saved}`);
+
+		rmSync(own);
+		chmodSync(saved, 0o000);
+		const savedUnreadable = run(["restore", "Test", "--from", day]);
+		chmodSync(saved, 0o600);
+		expect(savedUnreadable.status).toBe(0);
+		expect(savedUnreadable.stdout).toContain("Restored Test from");
+		expect(savedUnreadable.stderr).toContain(`Warning: could not read ${saved} (EACCES); instructions.md was not restored`);
+		expect(existsSync(own)).toBe(false);
+
+		symlinkSync(join(dir, "nothing.md"), own);
+		const dangling = run(["restore", "Test", "--from", day]);
+		expect(dangling.status).toBe(0);
+		expect(dangling.stdout).toContain(`Left Test's instructions.md as it is (not a regular file; none in effect); the backup's copy is ${saved}`);
 	});
 });

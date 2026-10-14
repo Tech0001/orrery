@@ -167,13 +167,14 @@ describe("instructions.md in backups", () => {
 		expect(existsSync(join(agentDir, "instructions.md"))).toBe(false);
 	});
 
-	it("skips a symlink in its place: never followed, on backup or on restore", () => {
+	it("skips a symlink in its place, with a warning (sessions follow it; the backup does not), on backup or on restore", () => {
 		const { config, root, agentDir, close } = stopped();
 		const outside = join(agentDir, "..", "outside.md");
 		writeFileSync(outside, "Not the agent's.\n");
 		symlinkSync(outside, join(agentDir, "instructions.md"));
 		const report = backupAgents(config, { now: day(1) });
 		expect(report.agents[0].files).not.toContain("instructions.md");
+		expect(report.warnings).toEqual(["Test: instructions.md is not a regular file; not backed up"]);
 		expect(existsSync(join(root, "2026-10-01", "Test", "instructions.md"))).toBe(false);
 
 		// A backup folder given with --from whose instructions.md is a symlink: not read, not put back.
@@ -192,13 +193,64 @@ describe("instructions.md in backups", () => {
 		expect(spawnSync("mkfifo", [fifo]).status).toBe(0);
 		const report = backupAgents(config, { now: day(1) });
 		expect(report.agents[0].files).not.toContain("instructions.md");
+		expect(report.warnings).toEqual(["Test: instructions.md is not a regular file; not backed up"]);
 		expect(existsSync(join(root, "2026-10-01", "Test", "instructions.md"))).toBe(false);
 
-		// A backup that holds instructions, restored over a FIFO: something is there that is not "none", so it stays.
+		// A backup that holds instructions, restored over a FIFO: not a file restore replaces, and sessions read none from it.
 		close();
 		writeFileSync(join(root, "2026-10-01", "Test", "instructions.md"), "Atlas reviews pull requests.\n");
-		expect(restoreAgent(config, "Test", { from: "2026-10-01" }).instructions).toBe("kept");
+		expect(restoreAgent(config, "Test", { from: "2026-10-01" }).instructions).toBe("none in effect");
 		expect(lstatSync(fifo).isFIFO()).toBe(true);
+	});
+
+	it("at restore, keeps a link to the agent's instructions; a link to nothing is none in effect, and is left as it is", () => {
+		const { config, agentDir, close } = stopped("Atlas reviews pull requests.\n");
+		backupAgents(config, { now: day(1) });
+		close();
+		const own = join(agentDir, "instructions.md");
+		const target = join(agentDir, "..", "atlas.md");
+		writeFileSync(target, "Atlas reviews pull requests and releases.\n");
+		rmSync(own);
+		symlinkSync(target, own);
+		expect(restoreAgent(config, "Test", { from: "2026-10-01" }).instructions).toBe("kept");
+		rmSync(target);
+		const report = restoreAgent(config, "Test", { from: "2026-10-01" });
+		expect(report).toMatchObject({ memory: true, messages: 3, instructions: "none in effect", files: ["memory.sqlite", "session.sqlite"], warnings: [] });
+		expect(lstatSync(own).isSymbolicLink()).toBe(true);
+	});
+
+	// Root reads a mode-000 file anyway: there is nothing unreadable to test with.
+	it.skipIf(process.getuid?.() === 0)("restores the memory when the agent's instructions.md can't be read, and warns, naming it", () => {
+		const { config, agentDir, close } = stopped("Atlas reviews pull requests.\n");
+		backupAgents(config, { now: day(1) });
+		close();
+		const own = join(agentDir, "instructions.md");
+		chmodSync(own, 0o000);
+		try {
+			const report = restoreAgent(config, "Test", { from: "2026-10-01" });
+			expect(report).toMatchObject({ memory: true, messages: 3, nodes: 1, files: ["memory.sqlite", "session.sqlite"], instructions: "unreadable" });
+			expect(report.warnings).toEqual([expect.stringMatching(new RegExp(`^could not read ${own} \\(EACCES\\); it was left as it is`))]);
+			expect(mode(own)).toBe(0o000);
+		} finally {
+			chmodSync(own, 0o600);
+		}
+	});
+
+	it.skipIf(process.getuid?.() === 0)("restores the memory when the backup's instructions.md can't be read, and warns, naming it", () => {
+		const { config, root, agentDir, close } = stopped("Atlas reviews pull requests.\n");
+		backupAgents(config, { now: day(1) });
+		close();
+		rmSync(join(agentDir, "instructions.md"));
+		const saved = join(root, "2026-10-01", "Test", "instructions.md");
+		chmodSync(saved, 0o000);
+		try {
+			const report = restoreAgent(config, "Test", { from: "2026-10-01" });
+			expect(report).toMatchObject({ memory: true, messages: 3, nodes: 1, files: ["memory.sqlite", "session.sqlite"], instructions: "unreadable" });
+			expect(report.warnings).toEqual([`could not read ${saved} (EACCES); instructions.md was not restored`]);
+			expect(existsSync(join(agentDir, "instructions.md"))).toBe(false);
+		} finally {
+			chmodSync(saved, 0o600);
+		}
 	});
 
 	// Root reads a mode-000 file anyway: there is nothing unreadable to test with.
@@ -240,7 +292,7 @@ describe("instructions.md in backups", () => {
 		rmSync(join(empty, "instructions.md"));
 
 		const report = restoreAgent(config, "Empty", { from: "2026-10-01" });
-		expect(report).toEqual({ agent: "Empty", from: expect.stringContaining("2026-10-01"), memory: false, messages: 0, nodes: 0, files: ["instructions.md"], instructions: "restored" });
+		expect(report).toEqual({ agent: "Empty", from: expect.stringContaining("2026-10-01"), memory: false, messages: 0, nodes: 0, files: ["instructions.md"], instructions: "restored", warnings: [] });
 		expect(readFileSync(join(empty, "instructions.md"), "utf8")).toBe("Empty answers questions.\n");
 		expect(existsSync(join(empty, "memory.sqlite"))).toBe(false);
 

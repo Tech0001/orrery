@@ -99,7 +99,8 @@ Copy `deploy/workstation/orrery-backup.service` and `.timer` into `~/.config/sys
 the installer puts in place.
 Then run `systemctl --user daemon-reload`, `systemctl --user enable --now orrery-backup.timer`, and
 `systemctl --user start orrery-backup.service` once to verify it. Check failures with
-`journalctl --user -u orrery-backup.service`.
+`journalctl --user -u orrery-backup.service`. Backup warnings appear in that journal too, as lines starting
+`Warning:`. A warning names the agent, and the backup still completes and is copied.
 
 After an upgrade (`orrery update`), the timer keeps working: its service names `app/current`, which points at
 the new version.
@@ -108,8 +109,9 @@ the new version.
 
 Snapshots contain `memory.sqlite`, `memory.jsonl`, the agent's `instructions.md` when it has one and, for
 durable-runtime agents, `session.sqlite`. An agent that has instructions but no memory yet gets a folder with just
-its `instructions.md`. An `instructions.md` that can't be read is left out with a warning naming the agent; the
-rest of the backup still completes. Workstation backups are under `~/.orrery/backups/<date>/<Name>/`; server
+its `instructions.md`. An `instructions.md` that can't be read, or that is not a regular file (a symlink, say:
+sessions follow it, the backup does not), is left out with a warning naming the agent. The rest of the backup still
+completes. Workstation backups are under `~/.orrery/backups/<date>/<Name>/`; server
 backups use `/var/lib/orrery/backups/`.
 Keep remote backups and exports private: they contain conversation content.
 
@@ -123,5 +125,8 @@ orrery restore Atlas --from 2026-10-01
 Restore refuses while an agent's writer is running. It removes old WAL/SHM sidecars and status before copying snapshots,
 so a crashed writer's pending journal cannot be replayed onto an older database. It puts the backup's `instructions.md`
 back only when the agent has none (no file, or a blank one). When the agent has its own, restore keeps it and prints
-where the backup's copy is. A backup of instructions only puts those back the same way and leaves the agent's memory
-as it is. Restart the agent after verifying its restored state.
+where the backup's copy is. When the agent's `instructions.md` is not a regular file, restore leaves it as it is. If
+that leaves no instructions in effect (a link to nothing, for example), it says so. A backup of instructions only puts
+those back the same way and leaves the agent's memory as it is. An `instructions.md` that can't be read, the backup's or
+the agent's, is a warning naming the file. The memory's restore still stands. Restart the agent after verifying its
+restored state.

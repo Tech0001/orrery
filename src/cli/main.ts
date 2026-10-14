@@ -631,6 +631,11 @@ async function main(rawArgv: string[]): Promise<number> {
 			if (report.instructions === "kept") {
 				process.stdout.write(`Kept ${report.agent}'s own instructions.md; the backup's copy is ${join(report.from, "instructions.md")}\n`);
 			}
+			if (report.instructions === "none in effect") {
+				process.stdout.write(`Left ${report.agent}'s instructions.md as it is (not a regular file; none in effect); the backup's copy is ${join(report.from, "instructions.md")}\n`);
+			}
+			// The memory's restore stands (exit 0); what went wrong with instructions.md is said, naming the file.
+			for (const warning of report.warnings) process.stderr.write(`Warning: ${warning}\n`);
 			return 0;
 		}
 		case "browse": {
