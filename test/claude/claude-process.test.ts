@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { claudeSession, forgetProcess } from "../../src/claude/pick.ts";
@@ -22,6 +22,13 @@ function livePid(): number {
 	sleepers.push(sleeper);
 	return sleeper.pid as number;
 }
+
+/** The pid of a process that has exited (its record is a dead one's). */
+const deadPid = () =>
+	new Promise<number>((resolve) => {
+		const exited = spawn("sleep", ["0"], { stdio: "ignore" });
+		exited.on("exit", () => resolve(exited.pid as number));
+	});
 
 /** sha256 hex, as the record keeps a token. */
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -77,6 +84,33 @@ describe("claudeSession: one decision per Claude Code process", () => {
 		expect(claudeSession(t.config, { env: { ORRERY_AGENT: "Nobody" }, cwd: dir, pid, decide: true })).toEqual({ kind: "unknown", name: "Nobody" });
 		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ agent: "Nobody", token: "", kind: "refused", why: "unknown", name: "Nobody" });
 		expect(readdirSync(records)).toEqual([`${pid}.json`]);
+	});
+
+	it("prunes a dead process's record, but not an empty one younger than 60 s (being made), nor young temporary or graveyard files", async () => {
+		const t = testLane();
+		const dir = tempDir("orrery-elsewhere-");
+		dirs.push(dir);
+		const records = join(t.config.dataDir, "claude-processes");
+		mkdirSync(records, { recursive: true, mode: 0o700 });
+		const dead = await deadPid();
+		const stale = JSON.stringify({ agent: "Test", token: "", kind: "none" });
+		const [making, temporary, grave] = [`${dead}.json`, `${dead}.json.0a0b0c0d0e0f`, `${dead}.json.dead-0a0b0c0d0e0f`];
+		writeFileSync(join(records, making), "");
+		writeFileSync(join(records, temporary), stale);
+		writeFileSync(join(records, grave), stale);
+		const decide = () => claudeSession(t.config, { env: { ORRERY_AGENT: "Test" }, cwd: dir, pid: livePid(), decide: true });
+		const left = () => readdirSync(records).filter((name) => name.startsWith(`${dead}.`)).sort();
+		expect(decide()).toMatchObject({ kind: "lane" });
+		expect(left()).toEqual([making, temporary, grave].sort());
+		// Old, the empty record is a crash's leftover, and the other two are strays.
+		const longAgo = new Date(Date.now() - 120_000);
+		for (const name of [making, temporary, grave]) utimesSync(join(records, name), longAgo, longAgo);
+		expect(decide()).toMatchObject({ kind: "lane" });
+		expect(left()).toEqual([]);
+		// A dead process's written record goes at once, however young.
+		writeFileSync(join(records, making), stale);
+		expect(decide()).toMatchObject({ kind: "lane" });
+		expect(left()).toEqual([]);
 	});
 
 	it("records refusals and none as they were decided, and refuses a record it cannot read", () => {

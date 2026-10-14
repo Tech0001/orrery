@@ -13,12 +13,14 @@
  * records of processes that are gone.
  *
  * A record of another identity is stale: another process's whose pid this one reuses (pids wrap, at 99999 on a Mac), or
- * an ancestor's whose CLAUDE_PID a descendant inherited. A decider replaces it whole (a temporary file renamed over it);
- * any other reader is refused.
+ * an ancestor's whose CLAUDE_PID a descendant inherited. A decider takes it down exclusively and records its own
+ * decision in its place (src/lane/exclusive.ts); of two deciders, the loser reads the winner's record. Any other reader
+ * is refused.
  *
  * Fail closed: a decision that cannot be recorded, or a later event with ORRERY_AGENT set that finds no record of its
  * own for its process, is refused (no memory, nothing recorded, no view, no tools, the guard on with the folder lane's
- * rules), never "none".
+ * rules), never "none". A crash between a stale record's takedown and the new link leaves no record, so the next event
+ * refuses the same way, until a SessionStart decides afresh.
  *
  * Known limit: a reused pid whose old record survived (its process died without SessionEnd, and no decision has pruned
  * it since) and was made under the same ORRERY_AGENT and token inherits that record's pick.
@@ -30,10 +32,11 @@
  * cannot intercept that loading. The Orrery mod avoids it (mod mode writes no view file).
  */
 
-import { createHash, randomBytes } from "node:crypto";
-import { linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type HarnessConfig, inWorkspace } from "../lane/config.ts";
+import { beingMade, publish, removeStale, stray, temporaryOf } from "../lane/exclusive.ts";
 import { AGENT_ENV, type Picked, pickLane, type Refused, refusedNotice, TOKEN_ENV, type Where } from "../lane/pick.ts";
 import { processAlive } from "../lane/process.ts";
 import { safeText } from "../lane/source-labels.ts";
@@ -153,10 +156,12 @@ interface Recorded {
 }
 
 /** The process's record: undefined when there is none; "unreadable" when there is one that cannot be read as one. */
-function readRecord(config: HarnessConfig, pid: number): Recorded | "unreadable" | undefined {
+const readRecord = (config: HarnessConfig, pid: number) => readRecordFile(recordFile(config, pid));
+
+function readRecordFile(file: string): Recorded | "unreadable" | undefined {
 	let text: string;
 	try {
-		text = readFileSync(recordFile(config, pid), "utf8");
+		text = readFileSync(file, "utf8");
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : "unreadable";
 	}
@@ -179,28 +184,28 @@ function readRecord(config: HarnessConfig, pid: number): Recorded | "unreadable"
 
 const sameIdentity = (recorded: Identity | undefined, asker: Identity) => recorded !== undefined && recorded.agent === asker.agent && recorded.token === asker.token;
 
+/** A readable record of another identity: never this session's, and a decider's to replace. */
+const staleFor = (asker: Identity) => (file: string) => {
+	const recorded = readRecordFile(file);
+	return recorded !== undefined && recorded !== "unreadable" && !sameIdentity(recorded.identity, asker);
+};
+
 /**
- * Records the process's decision, whole: written to a temporary file, then put in place, so no reader ever sees half of
- * it. A first decision is linked into place, exclusively: "exists" when another consumer of the process recorded first.
- * A decision that replaces a stale record (`replace`) is renamed over it. Else the error's text.
+ * Records the process's decision, whole: written to a temporary file, then published to its name exclusively
+ * (src/lane/exclusive.ts), so no reader ever sees half of it, and "exists" when another consumer of the process
+ * recorded first. A stale record (`replace`) is taken down exclusively before that: of two deciders, one renames it
+ * away, and the other finds the winner's fresh record of this identity, leaves it standing and gets "exists". Else the
+ * error's text.
  */
 function recordDecision(config: HarnessConfig, pid: number, record: Identity & Decision, replace: boolean): true | "exists" | string {
 	const file = recordFile(config, pid);
-	const temporary = `${file}.${randomBytes(6).toString("hex")}`;
+	const temporary = temporaryOf(file);
 	try {
 		mkdirSync(processesDir(config), { recursive: true, mode: 0o700 });
-		writeFileSync(temporary, `${JSON.stringify(record)}\n`, { flag: "wx", mode: 0o600 });
-		if (replace) {
-			renameSync(temporary, file);
-			return true;
-		}
-		try {
-			linkSync(temporary, file);
-			return true;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "EEXIST") return "exists";
-			throw error;
-		}
+		const content = `${JSON.stringify(record)}\n`;
+		writeFileSync(temporary, content, { flag: "wx", mode: 0o600 });
+		if (replace) removeStale(file, staleFor(record));
+		return publish(temporary, file, content);
 	} catch (error) {
 		return error instanceof Error ? error.message : String(error);
 	} finally {
@@ -212,7 +217,12 @@ function recordDecision(config: HarnessConfig, pid: number, record: Identity & D
 	}
 }
 
-/** Removes the records (and stray temporary files) of processes that are gone, before a new decision. */
+const RECORD = /^\d+\.json$/;
+
+/**
+ * Removes the records of processes that are gone, before a new decision, except one still being made (publish's
+ * fallback is writing it: empty and young). Temporary and graveyard files go once stray.
+ */
 function prune(config: HarnessConfig, alive: (pid: number) => boolean): void {
 	let names: string[];
 	try {
@@ -221,10 +231,11 @@ function prune(config: HarnessConfig, alive: (pid: number) => boolean): void {
 		return;
 	}
 	for (const name of names) {
+		const file = join(processesDir(config), name);
 		const pid = Number.parseInt(name, 10);
-		if (Number.isInteger(pid) && pid > 0 && alive(pid)) continue;
+		if (RECORD.test(name) ? (Number.isInteger(pid) && pid > 0 && alive(pid)) || beingMade(file) : !stray(file)) continue;
 		try {
-			rmSync(join(processesDir(config), name), { force: true });
+			rmSync(file, { force: true });
 		} catch {
 			// gone already, or not ours to remove
 		}

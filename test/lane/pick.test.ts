@@ -53,15 +53,23 @@ describe("pickLane", () => {
 		expect(pickLane(config, { env: { ORRERY_AGENT: "Birch" }, cwd: join(root, "plain"), owner: me })).toMatchObject({ kind: "lane", by: "env" });
 	});
 
-	it("a claim file with no pid in it counts as its owner's death, when pruning and when taking its token", () => {
+	it("an empty claim younger than 60 s is one being made: never pruned, and a claimer with its token loses; an old one is dead", () => {
 		const { config } = world();
 		const birch = join(config.dataDir, "lanes", "Birch");
 		const [empty, mine] = [newToken(), newToken()];
 		mkdirSync(join(birch, "claims"), { recursive: true });
 		writeFileSync(join(birch, "claims", empty), "");
 		expect(claimToken(birch, mine, me)).toBe(true);
+		expect(existsSync(join(birch, "claims", empty))).toBe(true);
+		expect(claimToken(birch, empty, 4245, () => true)).toBe(false);
+		expect(readFileSync(join(birch, "claims", empty), "utf8")).toBe("");
+		// Old enough, it is a crash's leftover (or an older version's): its owner is dead.
+		const longAgo = new Date(Date.now() - 120_000);
+		utimesSync(join(birch, "claims", empty), longAgo, longAgo);
+		expect(claimToken(birch, newToken(), me)).toBe(true);
 		expect(existsSync(join(birch, "claims", empty))).toBe(false);
 		writeFileSync(join(birch, "claims", empty), "");
+		utimesSync(join(birch, "claims", empty), longAgo, longAgo);
 		expect(claimToken(birch, empty, 4245, () => true)).toBe(true);
 		expect(readFileSync(join(birch, "claims", empty), "utf8")).toBe("4245\n");
 	});

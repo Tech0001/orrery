@@ -13,9 +13,10 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type HarnessConfig, inWorkspace, type LaneConfig, laneForCwd } from "./config.ts";
+import { beingMade, publish, removeStale, stray, temporaryOf } from "./exclusive.ts";
 import { processAlive } from "./process.ts";
 import { safeText } from "./source-labels.ts";
 
@@ -76,21 +77,22 @@ function claimant(file: string): number | undefined {
 }
 
 /**
- * The live process a claim file names, or undefined when the claim is dead: its process is gone, or the file names no
- * pid. One rule for pruning and for taking a token over. A claim is never half-written (claimToken writes it whole to a
- * temporary file first), so a file with no pid is a crash's leftover, or an older version's, and dead.
+ * What a claim file holds: the live process it names; "making" when it names none yet but is young (publish's fallback
+ * is still writing it; src/lane/exclusive.ts); else "dead": its process is gone, or it names no pid and is old (a
+ * crash's leftover, or an older version's). One rule for pruning and for taking a token over.
  */
-function liveClaimant(file: string, alive: (pid: number) => boolean): number | undefined {
+function holding(file: string, alive: (pid: number) => boolean): number | "making" | "dead" {
 	const pid = claimant(file);
-	return pid !== undefined && alive(pid) ? pid : undefined;
+	if (pid !== undefined) return alive(pid) ? pid : "dead";
+	return beingMade(file) ? "making" : "dead";
 }
 
-/** How old a stray temporary file must be before pruning removes it (its maker has long finished or died). */
-const STRAY_MS = 60_000;
+const dead = (alive: (pid: number) => boolean) => (file: string) => holding(file, alive) === "dead";
 
 /**
- * Takes out dead claims (liveClaimant): files named by a token. A live owner's claim stays however old it is (an agent
- * may run for weeks). Temporary files are another process's claim being made: only stray ones, old enough, go.
+ * Takes out dead claims (holding): files named by a token, each taken down exclusively (removeStale), so a fresh claim
+ * made meanwhile stays. A live owner's claim stays however old it is (an agent may run for weeks). Any other file is a
+ * temporary or graveyard one, another process's claim being made or taken over: only stray ones, old enough, go.
  */
 function pruneClaims(dir: string, alive: (pid: number) => boolean): void {
 	let names: string[];
@@ -102,7 +104,9 @@ function pruneClaims(dir: string, alive: (pid: number) => boolean): void {
 	for (const name of names) {
 		const file = join(dir, name);
 		try {
-			if (TOKEN.test(name) ? liveClaimant(file, alive) === undefined : Date.now() - statSync(file).mtimeMs > STRAY_MS) rmSync(file, { force: true });
+			if (TOKEN.test(name)) {
+				if (holding(file, alive) === "dead") removeStale(file, dead(alive));
+			} else if (stray(file)) rmSync(file, { force: true });
 		} catch {
 			// gone already
 		}
@@ -111,13 +115,16 @@ function pruneClaims(dir: string, alive: (pid: number) => boolean): void {
 
 /**
  * Whether `owner` may take ORRERY_AGENT with `token`: it claimed it before, or is the first to claim it, or the claim
- * is dead (liveClaimant). Without `takeover` (a session's later events) only the first: such an event never makes a
- * claim nor takes a dead one over, so a session that started as another process's tool stays one. False for a token
- * that is not 32 lowercase hex digits (it must never name a file elsewhere).
+ * is dead (holding). Without `takeover` (a session's later events) only the first: such an event never makes a claim
+ * nor takes a dead one over, so a session that started as another process's tool stays one. False for a token that is
+ * not 32 lowercase hex digits (it must never name a file elsewhere).
  *
- * The claim is written whole to a temporary file, then linked to its name, exclusively (EEXIST: someone holds it), so
- * no claim ever exists without its pid for a pruner to take for dead. A dead claim is taken over the same way, renamed
- * over it, then read back: of two takers at once, the one whose claim stands wins.
+ * The claim is written whole to a temporary file, then published to its name exclusively (src/lane/exclusive.ts:
+ * EEXIST, someone holds it), so no claim ever exists without its pid for a pruner to take for dead. A dead claim found
+ * then is taken down exclusively (removeStale), and the link decides again. Whatever a taker lost, the rename, the
+ * link, or a live claim it had moved and put back, it owns the token only if the claim that stands is its own (another
+ * consumer of the same process may have made it). A crash between the takedown and the link leaves no claim: the next
+ * claim is made fresh, and until then later events (no takeover) fall back to the folder, as they did on a dead claim.
  */
 export function claimToken(laneDir: string, token: string, owner: number, alive: (pid: number) => boolean = processAlive, takeover = true): boolean {
 	if (!TOKEN.test(token)) return false;
@@ -130,20 +137,15 @@ export function claimToken(laneDir: string, token: string, owner: number, alive:
 	try {
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
 		pruneClaims(dir, alive);
-		temporary = join(dir, `${token}.${randomBytes(6).toString("hex")}`);
-		writeFileSync(temporary, `${owner}\n`, { flag: "wx", mode: 0o600 });
-		try {
-			linkSync(temporary, file);
-			return true;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-		}
+		const content = `${owner}\n`;
+		temporary = temporaryOf(file);
+		writeFileSync(temporary, content, { flag: "wx", mode: 0o600 });
+		if (publish(temporary, file, content) === true) return true;
 		// Made since the prune: the same rule decides.
-		const held = liveClaimant(file, alive);
-		if (held === owner) return true;
-		if (held !== undefined) return false;
-		renameSync(temporary, file);
-		temporary = undefined;
+		const held = holding(file, alive);
+		if (held !== "dead") return held === owner;
+		removeStale(file, dead(alive));
+		if (publish(temporary, file, content) === true) return true;
 		return claimant(file) === owner;
 	} catch {
 		// A claim that cannot be recorded never costs the session its agent.
