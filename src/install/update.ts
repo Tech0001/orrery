@@ -6,8 +6,8 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { orreryHome } from "../lane/home.ts";
 
 const DEFAULT_BASE = "https://github.com/Tech0001/orrery/releases";
@@ -40,26 +40,99 @@ async function get(url: string, timeoutMs: number, redirect: "follow" | "manual"
 /** The newest published release's version, from where <base>/latest redirects. */
 export async function latestVersion(env: NodeJS.ProcessEnv, options: { timeoutMs?: number } = {}): Promise<string> {
 	const res = await get(`${releasesBase(env)}/latest`, options.timeoutMs ?? 10_000, "manual");
-	const to = res.headers.get("location") ?? "";
-	const version = /\/tag\/v([^/?#]+)$/.exec(to)?.[1];
+	const location = res.headers.get("location") ?? "";
+	let path = "";
+	try {
+		path = new URL(location, `${releasesBase(env)}/latest`).pathname;
+	} catch {
+		// not a URL: rejected below
+	}
+	const version = /\/tag\/v([^/]+)$/.exec(path)?.[1];
 	if (res.status < 300 || res.status >= 400 || version === undefined || !RELEASE.test(version)) throw new Error(`could not tell the latest release from ${releasesBase(env)}/latest (${res.status})`);
 	return version;
 }
 
-async function fetchBytes(url: string, timeoutMs: number): Promise<Buffer> {
-	const res = await get(url, timeoutMs, "follow");
-	if (!res.ok) throw new Error(`${url}: ${res.status}`);
-	return Buffer.from(await res.arrayBuffer());
+/** Where the installed `app/current` points: its VERSION (or the folder's name), or undefined when nothing is installed. */
+export function installedVersion(env: NodeJS.ProcessEnv): string | undefined {
+	try {
+		const dir = realpathSync(join(orreryHome(env), "app", "current"));
+		try {
+			return readFileSync(join(dir, "VERSION"), "utf8").trim();
+		} catch {
+			return basename(dir);
+		}
+	} catch {
+		return undefined;
+	}
+}
+
+export interface DownloadOptions {
+	/** Give up when nothing arrives (headers or a chunk) for this long; there is no total limit. Default 30 s. */
+	idleMs?: number;
+	/** Called as the archive arrives. */
+	onProgress?: (bytes: number, total: number | undefined) => void;
+	/** Aborts the download (a signal received while updating). */
+	signal?: AbortSignal;
+}
+
+class NotFound extends Error {}
+
+/** The body of `url`, with a timer that restarts on the headers and on every chunk. */
+async function fetchBytes(url: string, options: DownloadOptions, progress: boolean): Promise<Buffer> {
+	const idleMs = options.idleMs ?? 30_000;
+	const control = new AbortController();
+	const stop = () => control.abort();
+	options.signal?.addEventListener("abort", stop);
+	if (options.signal?.aborted) stop();
+	let timer: NodeJS.Timeout | undefined;
+	const arm = () => {
+		clearTimeout(timer);
+		timer = setTimeout(() => control.abort(new Error(`no data from ${url} for ${Math.round(idleMs / 1000)} s`)), idleMs);
+	};
+	try {
+		arm();
+		const res = await fetch(url, { redirect: "follow", signal: control.signal, headers: { "user-agent": "orrery-update" } });
+		arm();
+		if (res.status === 404) throw new NotFound(url);
+		if (!res.ok || res.body === null) throw new Error(`${url}: ${res.status}`);
+		const length = Number(res.headers.get("content-length"));
+		const total = Number.isFinite(length) && length > 0 ? length : undefined;
+		const chunks: Buffer[] = [];
+		let bytes = 0;
+		const reader = res.body.getReader();
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			arm();
+			chunks.push(Buffer.from(value));
+			bytes += value.length;
+			if (progress) options.onProgress?.(bytes, total);
+		}
+		return Buffer.concat(chunks);
+	} catch (error) {
+		if (control.signal.aborted && control.signal.reason instanceof Error) throw control.signal.reason;
+		throw error;
+	} finally {
+		clearTimeout(timer);
+		options.signal?.removeEventListener("abort", stop);
+	}
 }
 
 /** Downloads, checks and unpacks this machine's archive of `version` into `into`; returns the release folder. */
-export async function downloadRelease(env: NodeJS.ProcessEnv, version: string, into: string, options: { timeoutMs?: number } = {}): Promise<string> {
-	const timeoutMs = options.timeoutMs ?? 300_000;
+export async function downloadRelease(env: NodeJS.ProcessEnv, version: string, into: string, options: DownloadOptions = {}): Promise<string> {
 	const asset = platformAsset();
 	const base = `${releasesBase(env)}/download/v${version}`;
 	mkdirSync(into, { recursive: true, mode: 0o700 });
 	try {
-		const [archive, sums] = await Promise.all([fetchBytes(`${base}/${asset}`, timeoutMs), fetchBytes(`${base}/SHA256SUMS`, timeoutMs)]);
+		let archive: Buffer;
+		let sums: Buffer;
+		try {
+			sums = await fetchBytes(`${base}/SHA256SUMS`, options, false);
+			archive = await fetchBytes(`${base}/${asset}`, options, true);
+		} catch (error) {
+			if (error instanceof NotFound) throw new Error(`no Orrery release ${version} (${error.message})`);
+			throw error;
+		}
 		const line = sums.toString("utf8").split("\n").find((l) => l.trim().split(/\s+\*?/)[1] === asset);
 		if (line === undefined) throw new Error(`SHA256SUMS of ${version} has no line for ${asset}`);
 		const want = line.trim().split(/\s+/)[0];
@@ -70,7 +143,15 @@ export async function downloadRelease(env: NodeJS.ProcessEnv, version: string, i
 		if (tar.status !== 0) throw new Error(`could not unpack ${asset}: ${(tar.stderr ?? "").trim()}`);
 		const top = readdirSync(into).filter((name) => name.startsWith("orrery-") && !name.endsWith(".tar.gz"));
 		if (top.length !== 1) throw new Error(`${asset} does not hold one Orrery release`);
-		return join(into, top[0] as string);
+		const folder = join(into, top[0] as string);
+		let held = "";
+		try {
+			held = readFileSync(join(folder, "VERSION"), "utf8").trim();
+		} catch {
+			// reported below
+		}
+		if (held !== version) throw new Error(`${asset} holds Orrery ${held === "" ? "with no VERSION" : held}, not ${version}; nothing was installed`);
+		return folder;
 	} catch (error) {
 		rmSync(into, { recursive: true, force: true });
 		throw error;

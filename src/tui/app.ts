@@ -65,6 +65,8 @@ export interface AppDeps {
 	/** orrery's own version and folder, for the Tools page. */
 	about(): { readonly version: string; readonly root: string; /** The installed version folder running, or "checkout". */ readonly running?: string };
 	/** The text of the daily update notice ("Orrery 0.6.1 is available: orrery update"), or undefined. Never throws on a network failure. */
+	/** The version `app/current` names (what a restarted lane would run), or undefined when none is installed. */
+	installedVersion(): string | undefined;
 	updateNotice(): Promise<string | undefined>;
 	rows(): number;
 	now(): number;
@@ -166,6 +168,8 @@ export class App implements Component {
 	config: HarnessConfig | undefined;
 	configError: string | undefined;
 	lanes: LaneRow[] = [];
+	/** The installed current version, read on each refresh; lanes on an older one get a restart marker. */
+	installed: string | undefined;
 	/** The lane whose page is open (Lanes page only). */
 	detail: string | undefined;
 	/** First run: no config yet; only setup's dialogs take keys. */
@@ -206,6 +210,11 @@ export class App implements Component {
 			this.config = this.deps.loadConfig();
 			this.configError = undefined;
 			this.lanes = this.deps.overview(this.config);
+			try {
+				this.installed = this.deps.installedVersion();
+			} catch {
+				this.installed = undefined;
+			}
 		} catch (error) {
 			this.config = undefined;
 			this.configError = safeText(errorText(error));

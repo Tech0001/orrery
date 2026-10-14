@@ -26,15 +26,31 @@ function scratch(prefix = "orrery-update-test-"): string {
 }
 
 /** A server for <base>/latest (302 to <base>/tag/v<latest>) and <base>/download/v<x>/<asset>; `stall` never answers downloads. */
-async function releasesServer(latest: string, files: Record<string, Buffer>, options: { stall?: boolean } = {}): Promise<{ base: string; server: Server; hits: string[] }> {
+async function releasesServer(latest: string, files: Record<string, Buffer>, options: { stall?: boolean; slow?: number; query?: boolean } = {}): Promise<{ base: string; server: Server; hits: string[] }> {
 	const hits: string[] = [];
 	const server = createServer((req, res) => {
 		hits.push(req.url ?? "");
-		if (req.url === "/releases/latest") return void res.writeHead(302, { location: `/releases/tag/v${latest}` }).end();
+		if (req.url === "/releases/latest") return void res.writeHead(302, { location: `/releases/tag/v${latest}${options.query ? "?x=1#frag" : ""}` }).end();
 		const m = /^\/releases\/download\/v([^/]+)\/([^/]+)$/.exec(req.url ?? "");
 		if (m && options.stall) return; // never answers
 		const body = m ? files[`${m[1]}/${m[2]}`] : undefined;
 		if (body === undefined) return void res.writeHead(404).end();
+		if (options.slow !== undefined && m?.[2] === platformAsset()) {
+			// a steady trickle: a chunk every `slow` ms, so the whole takes longer than the idle limit
+			res.writeHead(200, { "content-length": String(body.length) });
+			const size = Math.ceil(body.length / 6);
+			let at = 0;
+			const timer = setInterval(() => {
+				res.write(body.subarray(at, at + size));
+				at += size;
+				if (at >= body.length) {
+					clearInterval(timer);
+					res.end();
+				}
+			}, options.slow);
+			res.on("close", () => clearInterval(timer));
+			return;
+		}
 		res.writeHead(200).end(body);
 	});
 	servers.push(server);
@@ -45,19 +61,19 @@ async function releasesServer(latest: string, files: Record<string, Buffer>, opt
 const PLATFORM = platformAsset().replace(/^orrery-|\.tar\.gz$/g, "");
 
 /** A tar.gz holding orrery-<v>-<platform>/ with VERSION and a bin/orrery script, and its SHA256SUMS line. */
-function fakeArchive(version: string, script = `#!/bin/sh\necho "orrery ${version}"\n`): { archive: Buffer; sums: Buffer } {
+function fakeArchive(version: string, script = `#!/bin/sh\necho "orrery ${version}"\n`, held = version): { archive: Buffer; sums: Buffer } {
 	const dir = scratch("orrery-archive-");
 	const top = `orrery-${version}-${PLATFORM}`;
 	mkdirSync(join(dir, top, "bin"), { recursive: true });
-	writeFileSync(join(dir, top, "VERSION"), `${version}\n`);
-	writeFileSync(join(dir, top, "bin", "orrery"), script, { mode: 0o755 });
+	writeFileSync(join(dir, top, "VERSION"), `${held}\n`);
+	if (script !== "") writeFileSync(join(dir, top, "bin", "orrery"), script, { mode: 0o755 });
 	execFileSync("tar", ["-czf", join(dir, "a.tar.gz"), "-C", dir, top]);
 	const archive = readFileSync(join(dir, "a.tar.gz"));
 	return { archive, sums: Buffer.from(`${createHash("sha256").update(archive).digest("hex")}  ${platformAsset()}\n`) };
 }
 
-function release(version: string, script?: string): Record<string, Buffer> {
-	const { archive, sums } = fakeArchive(version, script);
+function release(version: string, script?: string, held?: string): Record<string, Buffer> {
+	const { archive, sums } = fakeArchive(version, script, held);
 	return { [`${version}/${platformAsset()}`]: archive, [`${version}/SHA256SUMS`]: sums };
 }
 
@@ -112,11 +128,41 @@ describe("downloadRelease", () => {
 		expect(existsSync(into)).toBe(false);
 	});
 
+	it("accepts a redirect whose location has a query or fragment", async () => {
+		const { base } = await releasesServer("0.6.1", {}, { query: true });
+		expect(await latestVersion({ ORRERY_RELEASES_URL: base })).toBe("0.6.1");
+	});
+
+	it("says so when the release does not exist", async () => {
+		const { base } = await releasesServer("0.6.1", {});
+		const into = join(scratch(), "dl");
+		await expect(downloadRelease({ ORRERY_RELEASES_URL: base }, "0.9.9", into)).rejects.toThrow(/^no Orrery release 0\.9\.9 \(http/);
+		expect(existsSync(into)).toBe(false);
+	});
+
+	it("refuses an archive whose VERSION is not the one asked for", async () => {
+		const { base } = await releasesServer("0.6.1", release("0.6.1", undefined, "0.6.2"));
+		const into = join(scratch(), "dl");
+		await expect(downloadRelease({ ORRERY_RELEASES_URL: base }, "0.6.1", into)).rejects.toThrow("holds Orrery 0.6.2, not 0.6.1");
+		expect(existsSync(into)).toBe(false);
+	});
+
+	it("keeps going while a slow body keeps arriving, and reports progress", async () => {
+		const { base } = await releasesServer("0.6.1", release("0.6.1"), { slow: 120 });
+		const into = join(scratch(), "dl");
+		const seen: number[] = [];
+		const start = Date.now();
+		const folder = await downloadRelease({ ORRERY_RELEASES_URL: base }, "0.6.1", into, { idleMs: 400, onProgress: (bytes) => seen.push(bytes) });
+		expect(Date.now() - start).toBeGreaterThan(400);
+		expect(readFileSync(join(folder, "VERSION"), "utf8").trim()).toBe("0.6.1");
+		expect(seen.length).toBeGreaterThan(1);
+	});
+
 	it("gives up on a server that never answers", async () => {
 		const { base } = await releasesServer("0.6.1", release("0.6.1"), { stall: true });
 		const into = join(scratch(), "dl");
 		const start = Date.now();
-		await expect(downloadRelease({ ORRERY_RELEASES_URL: base }, "0.6.1", into, { timeoutMs: 300 })).rejects.toThrow();
+		await expect(downloadRelease({ ORRERY_RELEASES_URL: base }, "0.6.1", into, { idleMs: 300 })).rejects.toThrow();
 		expect(Date.now() - start).toBeLessThan(1500);
 		expect(existsSync(into)).toBe(false);
 	});
@@ -167,9 +213,13 @@ describe("orrery update", () => {
 	const SCRIPT = `#!/bin/sh\necho "$@" > "$HOME/installed"\nexit 0\n`;
 
 	/** Async, because the release server lives in this process. */
-	function run(args: string[], base: string, home: string, tmp: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
+	function run(args: string[], base: string, home: string, tmp: string) {
 		const c = cliCommand(["update", ...args]);
-		const child = spawn(c.cmd, c.args, {
+		return runRaw(c.cmd, c.args, base, home, tmp);
+	}
+
+	function runRaw(cmd: string, args: string[], base: string, home: string, tmp: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
+		const child = spawn(cmd, args, {
 			timeout: 60_000,
 			env: { PATH: process.env.PATH, HOME: home, ORRERY_HOME: join(home, "orrery-home"), ORRERY_RELEASES_URL: base, TMPDIR: tmp },
 		});
@@ -205,6 +255,59 @@ describe("orrery update", () => {
 		const r = await run(["--version", "0.5.0"], base, scratch(), scratch("orrery-tmp-"));
 		expect(r.status).toBe(1);
 		expect(r.stderr).toContain("no release before 0.6.0 exists");
+	});
+
+	it("a release without bin/orrery says so", async () => {
+		const { base } = await releasesServer("0.6.1", release("0.6.1", ""));
+		const tmp = scratch("orrery-tmp-");
+		const r = await run(["--yes"], base, scratch(), tmp);
+		expect(r.status).toBe(1);
+		expect(r.stderr).toContain("could not run the installer of 0.6.1");
+		expect(readdirSync(tmp).filter((n) => n.startsWith("orrery-update-"))).toEqual([]);
+	});
+
+	it("a failing installer says Orrery stays on the running version", async () => {
+		const { base } = await releasesServer("0.6.1", release("0.6.1", "#!/bin/sh\nexit 3\n"));
+		const r = await run(["--yes"], base, scratch(), scratch("orrery-tmp-"));
+		expect(r.status).toBe(3);
+		expect(r.stderr).toMatch(/The install of 0\.6\.1 failed; Orrery stays on /);
+	});
+
+	it("refuses -v, --check with --version, and finds update after a leading option", async () => {
+		const { base } = await releasesServer("0.6.1", {});
+		const home = scratch();
+		const dash = await run(["-v", "0.6.1"], base, home, scratch("orrery-tmp-"));
+		expect(dash.status).toBe(1);
+		expect(dash.stderr).toContain("use --version <release>");
+		const both = await run(["--check", "--version", "0.6.1"], base, home, scratch("orrery-tmp-"));
+		expect(both.status).toBe(1);
+		expect(both.stderr).toContain("--check looks for the latest release");
+		const c = cliCommand(["--yes", "update", "--version", "0.5.0"]);
+		const lead = await runRaw(c.cmd, c.args, base, home, scratch("orrery-tmp-"));
+		expect(lead.status).toBe(1);
+		expect(lead.stderr).toContain("no release before 0.6.0 exists");
+	});
+
+	it("a version that does not exist says so", async () => {
+		const { base } = await releasesServer("0.6.1", {});
+		const r = await run(["--version", "0.9.9"], base, scratch(), scratch("orrery-tmp-"));
+		expect(r.status).toBe(1);
+		expect(r.stderr).toMatch(/no Orrery release 0\.9\.9 \(http/);
+	});
+
+	it("Ctrl-C during the download stops it and leaves no work folder", async () => {
+		const { base } = await releasesServer("0.6.1", release("0.6.1", "#!/bin/sh\nexit 0\n"), { stall: true });
+		const tmp = scratch("orrery-tmp-");
+		const c = cliCommand(["update", "--yes"]);
+		const child = spawn(c.cmd, c.args, { env: { PATH: process.env.PATH, HOME: scratch(), ORRERY_HOME: join(scratch(), "orrery-home"), ORRERY_RELEASES_URL: base, TMPDIR: tmp } });
+		let out = "";
+		child.stdout.on("data", (d) => {
+			out += d;
+			if (out.includes("Downloading")) child.kill("SIGINT");
+		});
+		const code = await new Promise<number | null>((done) => child.on("close", (status) => done(status)));
+		expect(code).toBe(130);
+		expect(readdirSync(tmp).filter((n) => n.startsWith("orrery-update-"))).toEqual([]);
 	});
 
 	it("a bad checksum installs nothing and leaves no download", async () => {

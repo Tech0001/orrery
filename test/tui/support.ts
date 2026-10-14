@@ -58,6 +58,7 @@ export function fakeDeps(overrides: Partial<AppDeps> = {}, rows: LaneRow[] = [ro
 		browse: () => ({ path: "/d/lanes/Alpha/memory.html" }),
 		openUrl: () => undefined,
 		about: () => ({ version: "0.1.0", root: "/opt/orrery" }),
+		installedVersion: () => undefined,
 		updateNotice: async () => undefined,
 		rows: () => 30,
 		now: () => NOW,

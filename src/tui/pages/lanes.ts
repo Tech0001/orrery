@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { LaneTool } from "../../lane/config.ts";
 import { ago, type LaneRow, summaryText, TOOL_LABELS } from "../../lane/overview.ts";
+import { newer } from "../../install/update.ts";
 import { safeText } from "../../lane/source-labels.ts";
 import { localIso } from "../../memory/index.ts";
 import type { UsageRow } from "../../memory/types.ts";
@@ -112,26 +113,28 @@ export function selectedLane(app: App): LaneRow | undefined {
 	return visibleLanes(app)[app.sel()];
 }
 
-/** "restart for 0.6.1" when the lane's open tool runs an older Orrery than this one; a checkout or an unknown version is never marked. */
-function restartText(row: LaneRow, running: string | undefined): string {
+const VERSION_START = /^[0-9]+\.[0-9]+\.[0-9]+/;
+
+/** "on 0.6.0, restart for 0.6.1" when the lane's open tool runs an older Orrery than the installed current one; a checkout or an unknown version is never marked. */
+function restartText(row: LaneRow, installed: string | undefined): string {
 	const v = row.runsVersion;
-	if (v === undefined || running === undefined || running === "checkout" || v === "checkout" || v === "unknown" || v === running) return "";
-	return `restart for ${safeText(running)}`;
+	if (v === undefined || installed === undefined || !VERSION_START.test(v) || !VERSION_START.test(installed) || !newer(installed, v)) return "";
+	return `on ${safeText(v)}, restart for ${safeText(installed)}`;
 }
 
-function remoteState(row: LaneRow, running?: string): string {
-	const restart = restartText(row, running);
+function remoteState(row: LaneRow, installed?: string): string {
+	const restart = restartText(row, installed);
 	const mark = restart === "" ? "" : ` · ${restart}`;
 	if (row.remotePending) return `${row.state} · …`;
 	if (row.remoteReachable === false) return `${row.state} · unreachable`;
 	return row.heldElsewhere === undefined ? `${row.state}${mark}` : `${row.state} · open on ${safeText(row.heldElsewhere.machine)}${row.heldElsewhere.stale ? " (stale)" : ""}${mark}`;
 }
 
-function cells(row: LaneRow, now: number, withRemotes: boolean, running?: string): string[] {
+function cells(row: LaneRow, now: number, withRemotes: boolean, installed?: string): string[] {
 	return [
 		row.name,
 		`${SHORT_TOOL[row.tool]}${row.launcher === "ori" ? " · Ori" : ""}`,
-		remoteState(row, running),
+		remoteState(row, installed),
 		row.hasMemory ? String(row.messages) : "—",
 		row.hasMemory ? `${kb(row.viewBytes)}/${kb(row.viewBudget)} KB` : "—",
 		row.unreadable !== undefined ? "unreadable" : summaryText(row),
@@ -230,18 +233,13 @@ export const lanesPage: Page = {
 		const baseColumns = withRemotes ? COLUMNS : COLUMNS.filter((c) => c.title !== "Memory").map((c) => c.title === "Summaries" ? { ...c, width: c.width + 8 } : c);
 		// Borrow six columns from summaries only when a launcher needs the wider tool cell.
 		let columns = rows.some((r) => r.launcher === "ori") ? baseColumns.map((c) => c.title === "Tool" ? { ...c, width: 12 } : c.title === "Summaries" ? { ...c, width: c.width - 6 } : c) : [...baseColumns];
-		let running: string | undefined;
-		try {
-			running = app.deps.about().running;
-		} catch {
-			// the version is shown elsewhere; here it only decides the restart marker
-		}
-		if (rows.some((r) => r.remote !== undefined || restartText(r, running) !== "")) {
-			const stateWidth = Math.max(9, Math.min(width < 90 ? 24 : 42, Math.max(...rows.map((r) => remoteState(r, running).length))));
+		const installed = app.installed;
+		if (rows.some((r) => r.remote !== undefined || restartText(r, installed) !== "")) {
+			const stateWidth = Math.max(9, Math.min(width < 90 ? 24 : 42, Math.max(...rows.map((r) => remoteState(r, installed).length))));
 			const memoryWidth = Math.max(6, Math.min(12, Math.max(...rows.map((r) => (r.remote ?? "local").length))));
 			columns = columns.map((c) => c.title === "State" ? { ...c, width: stateWidth } : c.title === "Memory" ? { ...c, width: memoryWidth } : c.title === "Summaries" ? { ...c, drop: 4 } : c.title === "Msgs" ? { ...c, drop: 5 } : c);
 		}
-		return renderTable(columns, rows.map((r) => cells(r, now, withRemotes, running)), width, {
+		return renderTable(columns, rows.map((r) => cells(r, now, withRemotes, installed)), width, {
 			selected: app.sel(),
 			height,
 			theme,

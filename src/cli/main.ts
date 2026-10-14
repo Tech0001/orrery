@@ -185,6 +185,7 @@ async function updateCommand(values: { check?: boolean; version?: string; yes?: 
 	const { versionNumber, compiled } = await import("../lane/running.ts");
 	const { laneVersions } = await import("../install/install.ts");
 	const running = versionNumber();
+	if (values.check === true && values.version !== undefined) throw new Error("--check looks for the latest release; drop --version.");
 	const target = values.version?.replace(/^v/, "") ?? (await latestVersion(process.env));
 	if (!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(target)) throw new Error(`--version takes a release such as 0.6.1 (got ${values.version})`);
 	if (!newer(target, "0.5.99")) throw new Error("no release before 0.6.0 exists");
@@ -197,16 +198,50 @@ async function updateCommand(values: { check?: boolean; version?: string; yes?: 
 		return 0;
 	}
 	const { mkdtempSync, rmSync } = await import("node:fs");
-	const { tmpdir } = await import("node:os");
+	const { constants, tmpdir } = await import("node:os");
 	const { join } = await import("node:path");
 	const { spawnSync } = await import("node:child_process");
 	const work = mkdtempSync(join(tmpdir(), "orrery-update-"));
+	// A signal while updating: stop the download, remove the work folder, and exit the way the shell expects.
+	const control = new AbortController();
+	const names = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+	const handlers = names.map((name) => {
+		const handler = () => {
+			control.abort();
+			rmSync(work, { recursive: true, force: true });
+			process.exit(128 + constants.signals[name]);
+		};
+		process.on(name, handler);
+		return handler;
+	});
+	const tty = process.stdout.isTTY === true;
+	let shown = false;
 	try {
 		process.stdout.write(`Downloading Orrery ${target}...\n`);
-		const folder = await downloadRelease(process.env, target, join(work, "release"));
+		const folder = await downloadRelease(process.env, target, join(work, "release"), {
+			signal: control.signal,
+			onProgress: tty
+				? (bytes, total) => {
+						shown = true;
+						const mb = (n: number) => (n / 1e6).toFixed(1);
+						process.stdout.write(`\r  ${mb(bytes)} MB${total === undefined ? "" : ` / ${mb(total)} MB (${Math.floor((bytes / total) * 100)}%)`}   `);
+					}
+				: undefined,
+		});
+		if (shown) {
+			process.stdout.write("\n");
+			shown = false;
+		}
 		const r = spawnSync(join(folder, "bin", "orrery"), ["install", "--from", folder, ...(values.yes === true ? ["--yes"] : [])], { stdio: "inherit" });
-		if (r.status !== 0) return r.status ?? 1;
+		if (r.error) throw new Error(`could not run the installer of ${target}: ${r.error.message}`);
+		if (r.signal) return 128 + (constants.signals[r.signal] ?? 0);
+		if (r.status !== 0) {
+			process.stderr.write(`The install of ${target} failed; Orrery stays on ${running}.\n`);
+			return r.status ?? 1;
+		}
 	} finally {
+		if (shown) process.stdout.write("\n");
+		for (const [i, name] of names.entries()) process.off(name, handlers[i] as () => void);
 		rmSync(work, { recursive: true, force: true });
 	}
 	process.stdout.write(`Updated ${running} → ${target}. Release notes: ${releasesBase(process.env)}/tag/v${target}\n`);
@@ -316,13 +351,28 @@ async function laneCommand(args: string[], values: Record<string, string | boole
 
 async function main(rawArgv: string[]): Promise<number> {
 	// --version is the version flag everywhere but `update`, where it names a release: take its value out first.
+	// The command is the first token that is not an option (--config takes a value).
 	let updateVersion: string | undefined;
 	let argv = rawArgv;
-	if (rawArgv[0] === "update") {
+	let first: string | undefined;
+	for (let i = 0; i < rawArgv.length; i++) {
+		const a = rawArgv[i] as string;
+		if (a === "--config") i++;
+		else if (!a.startsWith("-")) {
+			first = a;
+			break;
+		}
+	}
+	if (first === "update") {
 		argv = [];
+		let seen = false;
 		for (let i = 0; i < rawArgv.length; i++) {
 			const a = rawArgv[i] as string;
-			if (a === "--version") {
+			if (a === "-v") throw new Error("use --version <release> with update.");
+			if (!seen && a === "update") {
+				seen = true;
+				argv.push(a);
+			} else if (a === "--version") {
 				updateVersion = rawArgv[++i];
 				if (updateVersion === undefined) throw new Error("--version takes a release such as 0.6.1");
 			} else if (a.startsWith("--version=")) updateVersion = a.slice("--version=".length);

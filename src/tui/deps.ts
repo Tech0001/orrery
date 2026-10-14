@@ -15,7 +15,7 @@ import { laneOverview, laneUsage, OverviewCache } from "../lane/overview.ts";
 import { versionNumber } from "../lane/running.ts";
 import { openSummarySources, testChoice } from "../lane/summary-sources.ts";
 import { checkTools, probeOri, installSteps, runningRoot, runningVersion, wiringRoot, runInstall } from "../lane/tools.ts";
-import { updateCheck } from "../install/update.ts";
+import { installedVersion, updateCheck } from "../install/update.ts";
 import { openStorage } from "../remote/index.ts";
 import type { AppDeps } from "./app.ts";
 import { colorWanted, makeTheme } from "./theme.ts";
@@ -76,6 +76,7 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 			opener?.open(url);
 			return opener?.command;
 		},
+		installedVersion: () => installedVersion(process.env),
 		updateNotice: async () => {
 			let enabled = true;
 			try {

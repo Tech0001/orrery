@@ -10,16 +10,17 @@ const ESC = "\x1b";
 const DOWN = "\x1b[B";
 
 describe("the restart marker", () => {
-	const lanes = (version: string | undefined, running: string | undefined) =>
-		makeApp(fakeDeps({ about: () => ({ version: "0.6.1", root: "/opt/orrery", ...(running === undefined ? {} : { running }) }) }, [row({ name: "Alpha", state: "open", openIn: "pi", ...(version === undefined ? {} : { runsVersion: version }) })]), [lanesPage]);
+	const lanes = (runs: string | undefined, installed: string | undefined, running = "0.6.0") =>
+		makeApp(fakeDeps({ installedVersion: () => installed, about: () => ({ version: "0.6.0", root: "/opt/orrery", running }) }, [row({ name: "Alpha", state: "open", openIn: "pi", ...(runs === undefined ? {} : { runsVersion: runs }) })]), [lanesPage]);
 
-	it("marks a lane running an older version", () => {
-		const text = screen(lanes("0.6.0", "0.6.1"));
-		expect(text).toMatch(/Alpha\s+pi\s+open · restart for 0\.6\.1/);
+	it("marks a lane older than the installed current version, whatever this TUI runs", () => {
+		expect(screen(lanes("0.6.0", "0.6.1"))).toMatch(/Alpha\s+pi\s+open · on 0\.6\.0, restart for 0\.6\.1/);
+		// a TUI left running on 0.6.0 does not tell a lane on 0.6.1 to restart
+		expect(screen(lanes("0.6.1", "0.6.1"))).not.toContain("restart for");
 	});
 
-	it("marks nothing for the same version, checkout, unknown, no version, or a checkout running here", () => {
-		for (const text of [screen(lanes("0.6.1", "0.6.1")), screen(lanes("checkout", "0.6.1")), screen(lanes("unknown", "0.6.1")), screen(lanes(undefined, "0.6.1")), screen(lanes("0.6.0", "checkout")), screen(lanes("0.6.0", undefined))]) {
+	it("marks nothing for a lane newer than current (after a rollback), a checkout, unknown, no version, or nothing installed", () => {
+		for (const text of [screen(lanes("0.6.2", "0.6.1")), screen(lanes("checkout", "0.6.1")), screen(lanes("unknown", "0.6.1")), screen(lanes(undefined, "0.6.1")), screen(lanes("0.6.0", undefined))]) {
 			expect(text).not.toContain("restart for");
 		}
 	});

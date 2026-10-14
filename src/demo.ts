@@ -129,6 +129,7 @@ export function demoDeps(demo: Demo, controls: Pick<AppDeps, "rows" | "quit" | "
 		installSteps: disabled, install: disabled, openUrl: () => undefined,
 		browse: (config, lane) => ({ path: browseCommand(config, lane, join(config.lanes.get(lane)!.dir, "memory.html")) }),
 		about: () => ({ version: `${versionNumber()} (demo)`, root: runningRoot() }),
+		installedVersion: () => undefined,
 		updateNotice: async () => undefined,
 		now: () => demo.now,
 	};
