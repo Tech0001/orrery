@@ -15,21 +15,30 @@ import { orreryHome } from "./home.ts";
 export const compiled: boolean = fileURLToPath(import.meta.url).startsWith("/$bunfs/");
 
 /**
- * The folder this code runs from, by its real path (Node and Bun load modules by real path): for the binary, the folder
- * above its bin/, which must hold VERSION (a binary copied out of its release fails rather than read whatever
- * package.json lies above it); otherwise the nearest folder above this file that holds VERSION (a release) or
- * package.json (a checkout).
+ * This module's own file by real path, taken when it loads. Through app/current an install can switch the link at any
+ * time; a running pi or OMP keeps the version it loaded, and its status file must say so. Undefined where the path
+ * cannot be resolved (the binary's embedded /$bunfs/ file system).
+ */
+const loadedFrom: string | undefined = (() => {
+	try {
+		return realpathSync(fileURLToPath(import.meta.url));
+	} catch {
+		return undefined;
+	}
+})();
+
+let foundRoot: string | undefined;
+
+/**
+ * The folder this code runs from, found on the first call and kept: for the binary, the folder above its bin/ (by the
+ * real path of process.execPath), which must hold VERSION (a binary copied out of its release fails rather than read
+ * whatever package.json lies above it); otherwise the nearest folder above the file this module loaded from (its real
+ * path at load time) that holds VERSION (a release) or package.json (a checkout).
  */
 export function runningRoot(): string {
 	foundRoot ??= findRoot();
 	return foundRoot;
 }
-
-/**
- * Found once per process. Through app/current a later install would otherwise change the answer: a running pi or OMP
- * keeps the version it loaded, and its status file says so.
- */
-let foundRoot: string | undefined;
 
 function findRoot(): string {
 	if (compiled) {
@@ -38,7 +47,7 @@ function findRoot(): string {
 		if (!existsSync(join(root, "VERSION"))) throw new Error(`no VERSION beside this binary at ${binary} (looked for ${join(root, "VERSION")})`);
 		return root;
 	}
-	const here = realpathSync(fileURLToPath(import.meta.url));
+	const here = loadedFrom ?? fileURLToPath(import.meta.url);
 	for (let dir = dirname(here); ; dir = dirname(dir)) {
 		if (existsSync(join(dir, "VERSION")) || existsSync(join(dir, "package.json"))) return dir;
 		if (dirname(dir) === dir) throw new Error(`no Orrery folder above ${here}`);

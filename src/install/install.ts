@@ -6,7 +6,7 @@
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { defaultConfigPath, loadConfig } from "../lane/config.ts";
@@ -40,30 +40,42 @@ const appDir = (env: NodeJS.ProcessEnv) => join(orreryHome(env), "app");
 /** Takes app/.install.lock (app must exist); the returned function releases it. */
 export function holdInstallLock(env: NodeJS.ProcessEnv): () => void {
 	const lock = join(appDir(env), ".install.lock");
-	let fd: number;
-	try {
-		fd = openSync(lock, "wx", 0o600);
-	} catch (error) {
-		if ((error as { code?: unknown }).code === "EEXIST") throw new Error(`another install is running (remove ${shown(lock, env)} if none is)`);
-		throw error;
+	let fd: number | undefined;
+	for (let attempt = 0; fd === undefined; attempt++) {
+		try {
+			fd = openSync(lock, "wx", 0o600);
+		} catch (error) {
+			if ((error as { code?: unknown }).code !== "EEXIST") throw error;
+			// A lock whose recorded process is gone (an install killed partway) is taken over; anything unreadable is refused.
+			if (attempt > 0 || !lockIsStale(lock)) throw new Error(`another install is running (remove ${shown(lock, env)} if none is)`);
+			rmSync(lock, { force: true });
+		}
 	}
 	try {
 		writeSync(fd, `${process.pid}\n`);
 	} finally {
 		closeSync(fd);
 	}
-	const release = () => rmSync(lock, { force: true });
-	const onSignal = (signal: NodeJS.Signals) => {
-		release();
-		process.exit(signal === "SIGINT" ? 130 : 143);
-	};
-	process.once("SIGINT", onSignal);
-	process.once("SIGTERM", onSignal);
-	return () => {
-		process.off("SIGINT", onSignal);
-		process.off("SIGTERM", onSignal);
-		release();
-	};
+	return () => rmSync(lock, { force: true });
+}
+
+/** True only when the lock file names a pid that no process has (ESRCH). */
+function lockIsStale(lock: string): boolean {
+	let text: string;
+	try {
+		text = readFileSync(lock, "utf8").trim();
+	} catch {
+		return false;
+	}
+	if (!/^[0-9]+$/.test(text)) return false;
+	const pid = Number(text);
+	if (!Number.isSafeInteger(pid) || pid < 1) return false;
+	try {
+		process.kill(pid, 0);
+		return false;
+	} catch (error) {
+		return (error as { code?: unknown }).code === "ESRCH";
+	}
 }
 
 /** The version app/current names, if any. */
@@ -259,21 +271,45 @@ export function removeVersion(path: string): void {
 	rmSync(path, { recursive: true, force: true });
 }
 
+/** The os-arch a binary was built for, from its ELF or Mach-O header; undefined for anything else (a script). */
+export function binaryTarget(file: string): string | undefined {
+	const head = Buffer.alloc(20);
+	let length: number;
+	const fd = openSync(file, "r");
+	try {
+		length = readSync(fd, head, 0, 20, 0);
+	} finally {
+		closeSync(fd);
+	}
+	if (length >= 20 && head.readUInt32BE(0) === 0x7f454c46 && head[5] === 1) {
+		const machine = head.readUInt16LE(18);
+		return machine === 62 ? "linux-x64" : machine === 183 ? "linux-arm64" : "linux-other";
+	}
+	if (length >= 8 && head.readUInt32LE(0) === 0xfeedfacf) {
+		const cpu = head.readUInt32LE(4);
+		return cpu === 0x01000007 ? "darwin-x64" : cpu === 0x0100000c ? "darwin-arm64" : "darwin-other";
+	}
+	return undefined;
+}
+
 /** Copies a release folder into app/.staging-*, runs its binary's --version, then renames it to app/<VERSION>. */
 function stageRelease(from: string, app: string, version: string, run: Runner): void {
 	const staging = join(app, `.staging-${randomUUID()}`);
 	try {
 		cpSync(from, staging, { recursive: true, verbatimSymlinks: true });
+		const built = binaryTarget(join(staging, "bin", "orrery"));
+		const here = `${process.platform}-${process.arch}`;
+		if (built !== undefined && built !== here) throw new Error(`this release is for ${built}, not this machine (${here}); download the archive for it`);
 		const said = run(join(staging, "bin", "orrery"), ["--version"]);
 		if (said.status !== 0 && /ENOEXEC|Exec format error|cannot execute binary/i.test(said.stderr)) throw new Error(`this release cannot run on this machine (${process.platform}-${process.arch}); download the archive for it`);
 		if (said.status !== 0) throw new Error(`the release's orrery --version failed: ${failure(said)}`);
 		if (said.stdout.trim() !== `orrery ${version}`) throw new Error(`the release's binary says ${said.stdout.trim() || "nothing"}, not orrery ${version}`);
+		makeReadOnly(staging); // before the rename, so a folder under app/<VERSION> is never writable
 		renameSync(staging, join(app, version));
 	} catch (error) {
 		removeVersion(staging);
 		throw error;
 	}
-	makeReadOnly(join(app, version));
 }
 
 /** Installs a release folder and switches app/current to it. `previous` is what current named before the switch. */

@@ -134,6 +134,7 @@ async function toolsCommand(positionals: string[], values: { json?: boolean; yes
 async function installCommand(values: { from?: string; rollback?: boolean; list?: boolean }): Promise<number> {
 	const { installFrom, listVersions, rollback, versionLines } = await import("../install/install.ts");
 	if (values.from !== undefined) {
+		if (values.rollback === true || values.list === true) throw new Error("install takes one of --from DIR, --rollback or --list.");
 		const say = (line: string) => process.stdout.write(`${line}\n`);
 		const { version, removed } = installFrom({ from: values.from, env: process.env, log: say });
 		say(`Installed ${version}.`);

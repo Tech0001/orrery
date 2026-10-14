@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { holdInstallLock, installFrom, listVersions, makeReadOnly, releaseVersion, removeVersion, rollback } from "../../src/install/install.ts";
+import { binaryTarget, holdInstallLock, installFrom, listVersions, makeReadOnly, releaseVersion, removeVersion, rollback } from "../../src/install/install.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -130,11 +130,42 @@ describe("installFrom", () => {
 		expect(() => releaseVersion(tempDir("orrery-empty-"))).toThrow(/no VERSION file/);
 	});
 
-	it("says a binary that cannot run here is for another machine", () => {
+	it("refuses a release built for another os or arch, by its header, before running it", () => {
 		const env = scratchEnv();
-		const other = fixtureRelease("0.6.1");
-		writeFileSync(join(other, "bin", "orrery"), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 0, 0, 0]), { mode: 0o755 });
-		expect(() => installFrom({ from: other, env })).toThrow(/cannot run on this machine/);
+		const arch = process.arch === "arm64" ? "arm64" : "x64";
+		const otherArch = arch === "x64" ? "arm64" : "x64";
+		const elf = (machine: number) => {
+			const head = Buffer.alloc(20);
+			head.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1], 0);
+			head.writeUInt16LE(machine, 18);
+			return head;
+		};
+		const macho = (cpu: number) => {
+			const head = Buffer.alloc(32);
+			head.writeUInt32LE(0xfeedfacf, 0);
+			head.writeUInt32LE(cpu, 4);
+			return head;
+		};
+		const cases: [Buffer, string][] = [
+			[elf(otherArch === "x64" ? 62 : 183), `linux-${otherArch}`],
+			[macho(otherArch === "x64" ? 0x01000007 : 0x0100000c), `darwin-${otherArch}`],
+		];
+		if (process.platform === "linux") cases.push([macho(arch === "x64" ? 0x01000007 : 0x0100000c), `darwin-${arch}`]);
+		else cases.push([elf(arch === "x64" ? 62 : 183), `linux-${arch}`]);
+		for (const [header, built] of cases) {
+			const other = fixtureRelease("0.6.1");
+			writeFileSync(join(other, "bin", "orrery"), header, { mode: 0o755 });
+			expect(() => installFrom({ from: other, env })).toThrow(`this release is for ${built}, not this machine (${process.platform}-${process.arch}); download the archive for it`);
+		}
+		expect(existsSync(join(env.ORRERY_HOME as string, "app", "current"))).toBe(false);
+	});
+
+	it("reads a header only for a real ELF or Mach-O file", () => {
+		const file = join(tempDir("orrery-bin-"), "x");
+		writeFileSync(file, "#!/bin/sh\n");
+		expect(binaryTarget(file)).toBeUndefined();
+		writeFileSync(file, "");
+		expect(binaryTarget(file)).toBeUndefined();
 	});
 
 	it("removes a staging folder an interrupted install left", () => {
@@ -338,15 +369,44 @@ describe("installFrom", () => {
 		expect(currentOf(installed)).toBe(versions[1]);
 	});
 
-	it("a SIGINT while the lock is held releases it", async () => {
+	it("takes over a lock left by a dead process, and refuses one held by a live process or an unreadable one", () => {
 		const env = scratchEnv();
-		mkdirSync(join(env.ORRERY_HOME as string, "app"), { recursive: true });
-		const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "-e", `import(${JSON.stringify(new URL("../../src/install/install.ts", import.meta.url).href)}).then((m) => { m.holdInstallLock(process.env); console.log("held"); setInterval(() => {}, 1000); })`], { env, stdio: ["ignore", "pipe", "inherit"] });
-		await new Promise<void>((done) => child.stdout.once("data", () => done()));
-		child.kill("SIGINT");
-		const code = await new Promise<number | null>((done) => child.once("exit", done));
-		expect(code).toBe(130);
-		expect(existsSync(join(env.ORRERY_HOME as string, "app", ".install.lock"))).toBe(false);
+		const app = join(env.ORRERY_HOME as string, "app");
+		mkdirSync(app, { recursive: true });
+		const lock = join(app, ".install.lock");
+		writeFileSync(lock, `${deadPid()}\n`);
+		expect(installFrom({ from: fixtureRelease("0.6.0"), env }).version).toBe("0.6.0");
+		expect(existsSync(lock)).toBe(false);
+		for (const text of [`${process.pid}\n`, "", "not a pid\n"]) {
+			writeFileSync(lock, text);
+			expect(() => installFrom({ from: fixtureRelease("0.6.1"), env }), JSON.stringify(text)).toThrow(/another install is running/);
+			expect(readFileSync(lock, "utf8")).toBe(text);
+		}
+		expect(currentOf(env)).toBe("0.6.0");
+	});
+
+	// Timing a kill in the middle of a real copy is flaky, so the pieces are tested: a child that holds the lock with a
+	// staging folder, as an install killed partway leaves them, is killed with SIGINT (the default abort), and the next
+	// install takes over the lock, removes the staging folder and switches only itself.
+	it("a SIGINT-killed install leaves current unchanged, and the next install cleans up after it", async () => {
+		const { env } = freshInstall();
+		const app = join(env.ORRERY_HOME as string, "app");
+		const script = `import(${JSON.stringify(new URL("../../src/install/install.ts", import.meta.url).href)}).then((m) => { m.holdInstallLock(process.env); const fs = require("node:fs"); fs.mkdirSync(process.env.STAGING + "/bin", { recursive: true }); fs.writeFileSync(process.env.STAGING + "/bin/orrery", "x"); console.log("held"); setInterval(() => {}, 1000); })`;
+		const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "-e", script], { env: { ...env, STAGING: join(app, ".staging-killed") }, stdio: ["ignore", "pipe", "inherit"] });
+		try {
+			await new Promise<void>((done) => child.stdout.once("data", () => done()));
+			child.kill("SIGINT");
+			const signal = await new Promise<string | null>((done) => child.once("exit", (_code, sig) => done(sig)));
+			expect(signal).toBe("SIGINT");
+		} finally {
+			child.kill("SIGKILL");
+		}
+		expect(currentOf(env)).toBe("0.6.0");
+		expect(existsSync(join(app, ".install.lock"))).toBe(true);
+		installFrom({ from: fixtureRelease("0.6.1"), env });
+		expect(currentOf(env)).toBe("0.6.1");
+		expect(readdirSync(app).filter((n) => n.startsWith(".staging-"))).toEqual([]);
+		expect(existsSync(join(app, ".install.lock"))).toBe(false);
 	});
 
 	it("lists the versions, which one is current, and which live lanes run each", () => {
@@ -382,6 +442,16 @@ describe("orrery install", () => {
 		expect(out.status, out.stderr).toBe(0);
 		expect(out.stdout).toContain("Installed 0.6.0.");
 		expect(currentOf(env)).toBe("0.6.0");
+	});
+
+	it("refuses --from with --rollback or --list", () => {
+		const env = scratchEnv();
+		for (const flag of ["--rollback", "--list"]) {
+			const out = cli(env, "install", "--from", fixtureRelease("0.6.0"), flag);
+			expect(out.status).toBe(1);
+			expect(out.stderr).toContain("one of --from DIR, --rollback or --list");
+		}
+		expect(existsSync(join(env.ORRERY_HOME as string, "app", "current"))).toBe(false);
 	});
 
 	it("tells a plain install to use --from", () => {
