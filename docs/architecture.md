@@ -269,9 +269,10 @@ The guard rejects known credential paths and disallowed file-tool targets.
 Inside Orrery's home (`~/.orrery`, or `ORRERY_HOME`), file tools are refused everywhere except reading `app/`, the
 installed program, and `config.toml`; no tool may change either, nor a config `ORRERY_CONFIG` names elsewhere. Paths
 are compared by real path, so a link into the home does not get around it.
-Shell commands that name `.orrery` are refused, except for the session's own lane's `view.md` by its full path. Another lane's view file is refused to every file tool and content search (grep), by any path or
-link; name-only listings (ls, find, glob) may list its folder. In Claude Code, a config that is there but cannot be read
-refuses every tool call.
+Shell commands that name `.orrery` are refused, except for the session's own lane's `view.md` by its full path (OMP's
+own search tools take it from `~/` too, since OMP expands `~` itself). Another lane's view file is refused to every
+file tool and content search (grep), by any path or link; name-only listings (ls, find, glob) may list its folder. In
+Claude Code, a config that is there but cannot be read refuses every tool call.
 Shared rules handle normalization and symlinks; adapters map each host's arguments to those rules.
 Host-specific checks cover multi-file edits and known credential locations.
 Some ambiguous OMP edit or glob forms are refused because their targets cannot be judged reliably.

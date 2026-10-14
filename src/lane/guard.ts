@@ -12,6 +12,10 @@
  * - No search-root rule here: a grep or find over a folder holding a credential store or another lane's view is not
  *   refused (pi's, OMP's and Claude Code's guards refuse it; src/lane/guard-paths.ts).
  * - A hard link to another lane's view is another name for the same file; links are not counted.
+ * - A dangling link is not followed (realPath below stops where nothing resolves, so the link's own path stands for
+ *   it): a write through one in the work area, pointing into Orrery's installed program (app/) or outside the roots,
+ *   is judged by the link's path and goes through, making the target. pi's, OMP's and Claude Code's guards read where
+ *   such a link points (src/lane/guard-paths.ts realTarget).
  */
 
 import { posix } from "node:path";
@@ -66,7 +70,10 @@ async function readTarget(env: ExecutionEnv, resolved: string, context: Context)
 	return resolved;
 }
 
-/** Resolves symlinks along the longest existing prefix; the not-yet-existing tail is appended unchanged. */
+/**
+ * Resolves symlinks along the longest existing prefix; the not-yet-existing tail is appended unchanged. A dangling link
+ * is part of that tail: it is not read (a known limit, above), so the path it points to is not judged.
+ */
 async function realPath(env: ExecutionEnv, absolute: string, context: Context): Promise<string> {
 	const rest: string[] = [];
 	let current = absolute;

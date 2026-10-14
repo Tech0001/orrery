@@ -7,15 +7,19 @@
  * config (the file in use, GuardOptions.configFile, and any .orrery/config.toml) and its installed program (.orrery/app)
  * are read-only: file tools may read them, no tool may write them, and shell text may not name them. Known limits:
  * - A hard link is another name for the same file, and the guard does not count links: one to another lane's view (the
- *   copy goes stale once Orrery replaces the view on its next write), or to the config file in use, made before the
- *   guard ran or by a spelling it cannot see, reads or writes the file through a name the guard does not know.
+ *   copy goes stale once Orrery replaces the view on its next write), to the config file in use, or to a file of the
+ *   installed program (app/), made before the guard ran or by a spelling it cannot see, reads or writes the file
+ *   through a name the guard does not know.
  * - The durable harness (src/lane/guard.ts, `orrery run`) has no search-root rule, for views as for credentials.
  * - Claude Code loads a subfolder's CLAUDE.md (and what it imports) by itself once the session reads files there. That
  *   is no tool call, so the hook never sees it.
  * - Shell text is a seatbelt: a view named through a variable, an escape, or a command that changes folder by its own
- *   flag (`git -C`, `tar -C`), or a shell search of a lane's whole folder, gets through. So does a config file in use at a
- *   custom path (ORRERY_CONFIG) when it is named by a relative path, through a link, or by a variable: only its exact
- *   path spellings are known (configSpellings).
+ *   flag (`git -C`, `tar -C`), or a shell search of a lane's whole folder, gets through. So does a swap of the session's
+ *   own folder in the same command (`mv <own> x && ln -s <other> <own> && cat <own>/.orrery/view.md`): the own view's
+ *   absolute path is open in shell text, and the link made before the read leads it to another lane's view (a file
+ *   tool follows the link and is refused). So does a config file in use at a custom path (ORRERY_CONFIG) when it is
+ *   named by a relative path, through a link, or by a variable: only its exact path spellings are known
+ *   (configSpellings).
  * - A deleted config is no config: Claude Code then runs plain, and so do pi and OMP sessions started after it. Deleting
  *   it takes a spelling the guard cannot see (its name and its path are refused in commands; no file tool deletes).
  * - A pi or OMP session that starts while the config cannot be read (src/pi/index.ts unreadableGuard) knows no lane, so

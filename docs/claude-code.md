@@ -234,7 +234,9 @@ A lane records in one place at a time.
 
 Claude Code's tool calls in a lane folder get pi's rules. A credential file is refused through any tool, in reads
 as well as writes (`~/.ssh`, credential stores, `~/.claude/.credentials.json`, `~/.claude.json`, Orrery's
-`credentials.json`). Other files in Orrery's data folder, such as another lane's `memory.sqlite`, can be read, as in pi, and writes stay inside the workspace and its `allowed_roots`.
+`credentials.json`). So is Orrery's data folder, except reading the installed program (`app/`) and `config.toml`:
+another lane's `memory.sqlite` is refused, as in pi, and so is another lane's memory view (`.orrery/view.md` in its
+folder). Writes stay inside the workspace and its `allowed_roots`.
 
 Claude Code's own per-user state stays writable, and only this:
 

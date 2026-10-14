@@ -262,8 +262,6 @@ describe("Orrery's own home", () => {
 		"cp /tmp/x /somewhere/.orrery/config.toml",
 		// the session's own view by a relative path (fix round 1: a shell may keep a folder of its own)
 		"cat .orrery/view.md",
-		// the own view from ~ (fix round 3: the shell's ~ follows its HOME, which a command may change)
-		"cat ~/Documents/GitHub/agent-Atlas/.orrery/view.md",
 		// Orrery's installed program, by name, in shell text (fix round 3: a command could replace it)
 		"ls ~/.orrery/app/current/src",
 		"ls ~/.orrery/app",
@@ -301,6 +299,15 @@ describe("Orrery's own home", () => {
 		"cat ~/.s\\\nsh/config",
 	])("keeps refusing the credential command %s", (command) => {
 		expect(checkToolCall({ name: "bash", arguments: { command } }, options)).toMatch(/sensitive/);
+	});
+
+	it("refuses the own view from ~ or $HOME even where the guard's home leads there (fix round 3: the shell's ~ follows a HOME a command may change)", () => {
+		// Before round 3 the guard read ~/ from its home, which opened this word; the test needs that home to tell.
+		const fromHome = { ...options, home: "/home/alex" };
+		const bash = (command: string) => checkToolCall({ name: "bash", arguments: { command } }, fromHome);
+		expect(bash("cat ~/Documents/GitHub/agent-Atlas/.orrery/view.md")).toMatch(/sensitive/);
+		expect(bash("cat $HOME/Documents/GitHub/agent-Atlas/.orrery/view.md")).toMatch(/sensitive/);
+		expect(bash("cat /home/alex/Documents/GitHub/agent-Atlas/.orrery/view.md")).toBeUndefined();
 	});
 
 	it("refuses a word over 4096 characters with a brace group that spells orrery, and allows one that does not", () => {

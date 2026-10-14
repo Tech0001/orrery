@@ -165,10 +165,12 @@ change the installed program or the config in use (`config.toml`, or the file `O
 that name an `.orrery` folder are refused, except for the agent's own `view.md` named by its full path; shell commands
 that name a custom `ORRERY_CONFIG` file by its full path (or from `~` or `$HOME`) are refused too, though a relative
 path or a link to it is not caught. Only the agent that owns a folder's memory view (`.orrery/view.md`, which Claude
-Code's file mode imports) may read it: other agents' file tools, content searches and plainly written shell commands
-are refused. A config that is there but cannot be read refuses every tool call in Claude Code, and leaves pi and OMP
-with the default guard (the session's folder as its work area). **It is not a sandbox**: shell code, unknown plugin
-tools and host hook failures can exceed its coverage. See each tool guide for limits.
+Code's file mode imports) may read it: other agents' file tools and content searches are refused by any path or link,
+and their shell commands are refused when they name it by a path the guard can read (a spelling through a variable, a
+link made in the same command, or a folder change by a command's own flag is not caught). A config that is there but
+cannot be read refuses every tool call in Claude Code, and leaves pi and OMP with the default guard (the session's
+folder as its work area). **It is not a sandbox**: shell code, unknown plugin tools and host hook failures can exceed
+its coverage. See each tool guide for limits.
 
 Credentials are stored outside the repository in private files with mode 0600. Enter keys through Logins or the
 hidden terminal prompt, never in chat or committed config. Keep real conversations, exports, backup settings and
