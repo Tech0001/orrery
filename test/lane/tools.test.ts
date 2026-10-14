@@ -330,6 +330,21 @@ function installedHome() {
 	return { home, env: { PATH: "", HOME: home, ORRERY_HOME: join(home, ".orrery") } as NodeJS.ProcessEnv };
 }
 
+/** A release's shape at `dir`: bin/orrery and the packed extensions. */
+function releaseShape(dir: string) {
+	mkdirSync(join(dir, "bin"), { recursive: true });
+	mkdirSync(join(dir, "extensions"), { recursive: true });
+	writeFileSync(join(dir, "bin", "orrery"), "", { mode: 0o755 });
+	writeFileSync(join(dir, "extensions", "pi.js"), "export default () => {};\n");
+	writeFileSync(join(dir, "extensions", "omp.js"), "export default () => {};\n");
+}
+
+/** Points app/current at `version`. */
+function relink(app: string, version: string) {
+	rmSync(join(app, "current"));
+	symlinkSync(version, join(app, "current"));
+}
+
 function scratchAgentEnv() {
 	const home = tempDir("orrery-agent-");
 	dirs.push(home);
@@ -403,6 +418,63 @@ describe("wiring names app/current", () => {
 		writePiExtension(env, join(checkout, "src", "pi", "index.ts"));
 		const [pi] = checkTools({ root: checkout, env, run: noTools });
 		expect(pi.wiring).toBe("installed");
+	});
+
+	it("a release in app/current is wired through its packed extensions", () => {
+		const { home, env } = installedHome();
+		const app = join(home, ".orrery", "app");
+		releaseShape(join(app, "0.6.0"));
+		relink(app, "0.6.0");
+		const root = join(app, "current");
+		expect(piExtensionText(root)).toBe(`export { default } from ${JSON.stringify(join(root, "extensions", "pi.js"))};\n`);
+		const ompText = ompExtensionText(root, ompExtensionFile(env));
+		expect(ompText).toMatch(/^export \{ default \} from "\.\.?\/.*app\/current\/extensions\/omp\.js";\n$/);
+		expect(ompText).not.toMatch(/0\.6\.0\//);
+		const [step] = installSteps(missingPiCheck, root, env);
+		expect(step).toMatchObject({ kind: "write", describe: `write ${piExtensionFile(env)} (a re-export of ${join(root, "extensions", "pi.js")})` });
+	});
+
+	it("calls Orrery's entry of the other shape under the same root 'update available', and rewrites it without a question", () => {
+		const { home, env } = installedHome();
+		const app = join(home, ".orrery", "app");
+		const root = join(app, "current");
+		writePiExtension(env, join(root, "src", "pi", "index.ts"));
+		const ompFile = ompExtensionFile(env);
+		mkdirSync(dirname(ompFile), { recursive: true });
+		writeFileSync(ompFile, ompExtensionText(root, ompFile));
+		releaseShape(join(app, "0.6.0"));
+		relink(app, "0.6.0");
+		const checks = checkTools({ root, env, run: noTools });
+		const pi = checks[0];
+		const omp = checks[3];
+		expect(pi).toMatchObject({ wiring: "update available", detail: "Orrery's source entry; setup moves it to this version's", now: `points at ${join(root, "src", "pi", "index.ts")}` });
+		expect(omp).toMatchObject({ wiring: "update available", detail: "Orrery's source entry; setup moves it to this version's" });
+		const piSteps = installSteps(pi, root, env);
+		expect(piSteps).toEqual([{ kind: "write", path: piExtensionFile(env), text: piExtensionText(root), describe: `rewrite ${piExtensionFile(env)} (now points at ${join(root, "src", "pi", "index.ts")}) as a re-export of ${join(root, "extensions", "pi.js")}` }]);
+		expect(runInstall(piSteps).ok).toBe(true);
+		expect(runInstall(installSteps(omp, root, env)).ok).toBe(true);
+		const after = checkTools({ root, env, run: noTools });
+		expect(after[0].wiring).toBe("installed");
+		expect(after[3].wiring).toBe("installed");
+		relink(app, VERSION);
+		const back = checkTools({ root, env, run: noTools });
+		expect(back[0]).toMatchObject({ wiring: "update available", detail: "Orrery's binary entry; setup moves it to this version's" });
+		expect(back[3]).toMatchObject({ wiring: "update available", detail: "Orrery's binary entry; setup moves it to this version's" });
+	});
+
+	it("knows either shape's entry as Orrery's in a folder pi and OMP share", () => {
+		const { home, env: base } = installedHome();
+		const env = { ...base, PI_CODING_AGENT_DIR: join(home, "agent") };
+		const app = join(home, ".orrery", "app");
+		releaseShape(join(app, "0.6.0"));
+		relink(app, "0.6.0");
+		const root = join(app, "current");
+		const file = ompExtensionFile(env);
+		mkdirSync(dirname(file), { recursive: true });
+		writeFileSync(file, ompExtensionText(root, file));
+		expect(checkTools({ root, env, run: noTools })[0]).toMatchObject({ wiring: "other", blocked: expect.any(String) });
+		writeFileSync(file, piExtensionText(root));
+		expect(checkTools({ root, env, run: noTools })[3]).toMatchObject({ wiring: "other", blocked: expect.any(String) });
 	});
 
 	it("names this checkout, not installed, when it is not inside the home's app folder", () => {

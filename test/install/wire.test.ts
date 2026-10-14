@@ -1,67 +1,12 @@
-import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { pathAdvice } from "../../src/install/ask.ts";
 import { leftWarning, wire, wireReport } from "../../src/install/wire.ts";
-import { ompExtensionFile, piExtensionFile, piExtensionText, type Runner } from "../../src/lane/tools.ts";
+import { ompExtensionFile, piExtensionFile, piExtensionText } from "../../src/lane/tools.ts";
+import { addVersion, cleanupScratch, fakeRun, installedScratch, pointCurrent, tempDir, VERSION, writePiExtension } from "./support.ts";
 
-const dirs: string[] = [];
-afterEach(() => {
-	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-});
-
-function tempDir(prefix: string): string {
-	const dir = mkdtempSync(join(tmpdir(), prefix));
-	dirs.push(dir);
-	return dir;
-}
-
-const VERSION = "0.6.0-abc1234";
-
-/** Runs only the scratch bins' fake commands: anything else (a real systemctl or claude) is refused, never run. */
-const fakeRun: Runner = (cmd, args) => {
-	if (!isAbsolute(cmd) || !cmd.startsWith(join(tmpdir(), "orrery-wire-"))) return { status: 127, stdout: "", stderr: `not a scratch command: ${cmd}` };
-	const r = spawnSync(cmd, [...args], { encoding: "utf8", env: { PATH: dirname(cmd) } });
-	return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
-};
-
-/**
- * A scratch home with an installed version and app/current; env.PATH holds only a scratch bin of fake commands that log
- * their arguments (claude lists no plugins; `tools` adds more, such as a fake pi). calls() reads the log.
- */
-function installedScratch(options: { tools?: Record<string, string>; orreryHome?: string } = {}) {
-	const home = tempDir("orrery-wire-");
-	const bin = join(home, "bin");
-	const log = join(home, "calls.log");
-	mkdirSync(bin);
-	const logLine = `{ printf '%s' "\${0##*/}"; for a in "$@"; do printf '\\t%s' "$a"; done; printf '\\n'; } >> ${JSON.stringify(log)}`;
-	const scripts: Record<string, string> = {
-		claude: `if [ "$1" = "--version" ]; then echo "2.1.294 (Claude Code)"; elif [ "$1 $2" = "plugin list" ]; then printf '%s' "\${FAKE_PLUGINS:-[]}"; fi`,
-		systemctl: "",
-		...options.tools,
-	};
-	for (const [name, body] of Object.entries(scripts)) {
-		writeFileSync(join(bin, name), `#!/bin/sh\n${logLine}\n${body}\n`);
-		chmodSync(join(bin, name), 0o755);
-	}
-	const orreryHome = options.orreryHome ?? join(home, ".orrery");
-	const app = join(orreryHome, "app");
-	for (const entry of ["src/cli/main.ts", "src/pi/index.ts", "src/omp/index.ts", "deploy/workstation/backup.sh"]) {
-		mkdirSync(dirname(join(app, VERSION, entry)), { recursive: true });
-		writeFileSync(join(app, VERSION, entry), "\n");
-	}
-	symlinkSync(VERSION, join(app, "current"));
-	const env: NodeJS.ProcessEnv = { HOME: home, ORRERY_HOME: orreryHome, PATH: bin };
-	const calls = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((l) => l !== "").map((line) => line.split("\t")) : []);
-	return { env, home, bin, calls, current: join(app, "current") };
-}
-
-function writePiExtension(env: NodeJS.ProcessEnv, target: string): void {
-	const file = piExtensionFile(env);
-	mkdirSync(dirname(file), { recursive: true });
-	writeFileSync(file, `export { default } from ${JSON.stringify(target)};\n`);
-}
+afterEach(cleanupScratch);
 
 const piExtension = (env: NodeJS.ProcessEnv) => readFileSync(piExtensionFile(env), "utf8");
 const neverAsked = async (what: string): Promise<boolean> => {
@@ -191,6 +136,73 @@ describe("pi, OMP and Claude Code", () => {
 	});
 });
 
+describe("both install shapes", () => {
+	const never = async (): Promise<boolean> => {
+		throw new Error("asked");
+	};
+
+	it("binary style: the command links to bin/orrery and pi's file re-exports extensions/pi.js, without asking", async () => {
+		const t = installedScratch({ style: "binary", tools: { pi: 'echo "pi 1.2.0"' } });
+		await wire(t.env, { run: fakeRun, confirm: never });
+		expect(readlinkSync(join(t.home, ".local", "bin", "orrery"))).toBe(join(t.current, "bin", "orrery"));
+		expect(readFileSync(piExtensionFile(t.env), "utf8")).toBe(`export { default } from ${JSON.stringify(join(t.current, "extensions", "pi.js"))};\n`);
+	});
+
+	it("a switch between styles rewires the command, pi and OMP without asking, both ways", async () => {
+		const t = installedScratch({ tools: { pi: 'echo "pi 1.2.0"', omp: 'echo "omp/18.8.9"' } });
+		const omp = () => readFileSync(ompExtensionFile(t.env), "utf8");
+		await wire(t.env, { run: fakeRun, confirm: never });
+		expect(readFileSync(piExtensionFile(t.env), "utf8")).toBe(`export { default } from ${JSON.stringify(join(t.current, "src", "pi", "index.ts"))};\n`);
+		expect(omp()).toMatch(/^export \{ default \} from "\.\.?\/.*app\/current\/src\/omp\/index\.ts";\n$/);
+		addVersion(t, "0.6.0", "binary");
+		pointCurrent(t, "0.6.0");
+		const lines = await wire(t.env, { run: fakeRun, confirm: never });
+		expect(readlinkSync(join(t.home, ".local", "bin", "orrery"))).toBe(join(t.current, "bin", "orrery"));
+		expect(readFileSync(piExtensionFile(t.env), "utf8")).toBe(`export { default } from ${JSON.stringify(join(t.current, "extensions", "pi.js"))};\n`);
+		expect(omp()).toMatch(/^export \{ default \} from "\.\.?\/.*app\/current\/extensions\/omp\.js";\n$/);
+		expect(lines.join("\n")).toContain(`(was ${join(t.current, "src", "cli", "main.ts")})`);
+		pointCurrent(t, VERSION);
+		await wire(t.env, { run: fakeRun, confirm: never });
+		expect(readlinkSync(join(t.home, ".local", "bin", "orrery"))).toBe(join(t.current, "src", "cli", "main.ts"));
+		expect(readFileSync(piExtensionFile(t.env), "utf8")).toBe(`export { default } from ${JSON.stringify(join(t.current, "src", "pi", "index.ts"))};\n`);
+		expect(omp()).toMatch(/^export \{ default \} from "\.\.?\/.*app\/current\/src\/omp\/index\.ts";\n$/);
+	});
+
+	it("OMP's relative re-export follows the style too", async () => {
+		const t = installedScratch({ style: "binary", tools: { omp: 'echo "omp/18.8.9"' } });
+		await wire(t.env, { run: fakeRun, confirm: never });
+		const text = readFileSync(ompExtensionFile(t.env), "utf8");
+		expect(text).toMatch(/^export \{ default \} from "\.\.?\/.*app\/current\/extensions\/omp\.js";\n$/);
+	});
+
+	it("replaces an older Orrery's bin/orrery link without asking", async () => {
+		const t = installedScratch();
+		mkdirSync(join(t.home, ".local", "bin"), { recursive: true });
+		symlinkSync("/old/release/bin/orrery", join(t.home, ".local", "bin", "orrery"));
+		await wire(t.env, { run: fakeRun, confirm: never });
+		expect(readlinkSync(join(t.home, ".local", "bin", "orrery"))).toBe(join(t.current, "src", "cli", "main.ts"));
+	});
+
+	it("says how to put ~/.local/bin on PATH, for zsh and for bash, when it is not", () => {
+		expect(pathAdvice({ HOME: "/h", SHELL: "/bin/zsh", PATH: "/usr/bin" }, "/h/.local/bin")).toBe(`~/.local/bin is not on your PATH. Add it: echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc, then open a new terminal.`);
+		expect(pathAdvice({ HOME: "/h", SHELL: "/bin/bash", PATH: "/usr/bin" }, "/h/.local/bin")).toMatch(/>> ~\/\.bashrc/);
+		expect(pathAdvice({ HOME: "/h", SHELL: "/bin/zsh", PATH: "/usr/bin:/h/.local/bin" }, "/h/.local/bin")).toBeUndefined();
+		expect(pathAdvice({ HOME: "/h", SHELL: "/bin/zsh", PATH: "/usr/bin:/h/.local/bin/" }, "/h/.local/bin")).toBeUndefined();
+		expect(pathAdvice({ HOME: "/h", SHELL: "/usr/bin/fish", PATH: "/usr/bin" }, "/h/.local/bin")).toBe("~/.local/bin is not on your PATH. Add it: fish_add_path ~/.local/bin, then open a new terminal.");
+		expect(pathAdvice({ HOME: "/h", PATH: "/usr/bin" }, "/h/.local/bin")).toMatch(/>> ~\/\.profile, then open a new terminal\.$/);
+	});
+
+	it("adds the PATH line after the command's line, and leaves it out when ~/.local/bin is on PATH", async () => {
+		const t = installedScratch();
+		const lines = await wire({ ...t.env, SHELL: "/bin/zsh" }, { run: fakeRun, confirm: never });
+		expect(lines[0]).toMatch(/^orrery command: /);
+		expect(lines[1]).toBe(`~/.local/bin is not on your PATH. Add it: echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc, then open a new terminal.`);
+		const onPath = await wireReport({ ...t.env, PATH: `${t.bin}:${join(t.home, ".local", "bin")}` }, { run: fakeRun, confirm: never });
+		expect(onPath.lines.join("\n")).not.toMatch(/not on your PATH/);
+		expect(onPath.left).toEqual([]);
+	});
+});
+
 describe("what wiring leaves behind", () => {
 	it("lists the tools left wired to another Orrery when no one can confirm, and the warning names the fix", async () => {
 		const { env, home } = installedScratch({ tools: { pi: 'echo "1.1.0"' } });
@@ -203,7 +215,7 @@ describe("what wiring leaves behind", () => {
 		const warning = leftWarning(left).join("\n");
 		expect(warning).toContain("Still wired elsewhere");
 		expect(warning).toContain("pi (still wired to");
-		expect(warning).toContain("npm run install-local -- --yes");
+		expect(warning).toContain("orrery setup --yes");
 		expect(warning).toContain("Tools");
 		expect(piExtension(env)).toContain("/old/checkout/src/pi/index.ts");
 	});

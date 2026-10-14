@@ -61,8 +61,13 @@ const USAGE = `Usage: orrery <command> [--config FILE]
   launch <Lane> [--yes]      start the lane's tool (pi, omp, claude, codex) in its folder, after the checks the TUI makes
   tools [--json]             pi, Claude Code, Codex and OMP: found, version, Orrery's side installed
   tools install <pi|claude-code|omp> [--yes]   install or update Orrery's side of a tool (shows what it does first)
-  install --from DIR [--yes]   install an unpacked release folder (install.sh and orrery update run this)
-  install --rollback | --list   switch back to the previous installed version, or list versions and which lanes run them
+  install --from DIR [--yes]   install an unpacked release folder, then run setup (install.sh and orrery update run this)
+  install --rollback [--yes] | --list   switch back to the previous installed version and run setup, or list versions
+                             and which lanes run them
+  setup [--yes]              wire the orrery command, pi, OMP, Claude Code and the backup service to the installed
+                             version; asks on the terminal before replacing anything that is not Orrery's (--yes: replace)
+  uninstall [--purge]        unwire pi, OMP and Claude Code, remove the command, the backup service and the installed
+                             versions; lanes' memory, config and logins stay (--purge: delete them too, after typing delete)
   claude-setup <Lane> [--mod]  make Claude Code load the lane's memory view (CLAUDE.md, or CLAUDE.local.md in a
                              repo); --mod: from the Orrery mod, in the system prompt
   claude-mod view --cwd DIR [--session ID] [--wait-ms N [--spool-only]]   the Orrery mod's call: the lane's memory
@@ -130,16 +135,36 @@ async function toolsCommand(positionals: string[], values: { json?: boolean; yes
 	return 0;
 }
 
-/** `orrery install --from DIR | --rollback | --list`: install a release folder, or work with the installed copies in the home's app folder. */
-async function installCommand(values: { from?: string; rollback?: boolean; list?: boolean }): Promise<number> {
+const say = (line: string) => process.stdout.write(`${line}\n`);
+
+/** `orrery setup [--yes]`: wires the orrery command, pi, OMP, Claude Code and the backup service to app/current. 1 when something is left. */
+async function setupCommand(values: { yes?: boolean }): Promise<number> {
+	const [{ existsSync }, { orreryHome }, { wireReport, leftWarning }, { terminalConfirm }] = await Promise.all([import("node:fs"), import("../lane/home.ts"), import("../install/wire.ts"), import("../install/ask.ts")]);
+	if (!existsSync(join(orreryHome(process.env), "app", "current"))) throw new Error("Orrery is not installed yet: see the install line in the README");
+	const { lines, left, unchecked } = await wireReport(process.env, { confirm: terminalConfirm({ yes: values.yes === true, say }) });
+	for (const line of lines) say(line);
+	if (left.length > 0 || unchecked.length > 0) {
+		for (const line of leftWarning(left, unchecked)) say(line);
+		return 1;
+	}
+	return 0;
+}
+
+/**
+ * `orrery install --from DIR | --rollback | --list [--yes]`: install a release folder or switch back a version, each
+ * followed by setup; or list the installed copies in the home's app folder.
+ */
+async function installCommand(values: { from?: string; rollback?: boolean; list?: boolean; yes?: boolean }): Promise<number> {
 	const { installFrom, listVersions, rollback, versionLines } = await import("../install/install.ts");
 	if (values.from !== undefined) {
 		if (values.rollback === true || values.list === true) throw new Error("install takes one of --from DIR, --rollback or --list.");
-		const say = (line: string) => process.stdout.write(`${line}\n`);
 		const { version, removed } = installFrom({ from: values.from, env: process.env, log: say });
 		say(`Installed ${version}.`);
 		if (removed.length > 0) say(`Removed older versions: ${removed.join(", ")}.`);
-		return 0;
+		const status = await setupCommand(values);
+		const [{ existsSync }, { defaultConfigPath }] = await Promise.all([import("node:fs"), import("../lane/config.ts")]);
+		if (status === 0 && !existsSync(defaultConfigPath(process.env))) say("Run orrery to add your first lane.");
+		return status;
 	}
 	if (values.list === true) {
 		process.stdout.write(`${versionLines(listVersions(process.env)).join("\n")}\n`);
@@ -147,10 +172,23 @@ async function installCommand(values: { from?: string; rollback?: boolean; list?
 	}
 	if (values.rollback === true) {
 		const { from, to } = rollback(process.env);
-		process.stdout.write(`Switched back from ${from} to ${to}. pi and OMP lanes keep their version until they restart.\n`);
-		return 0;
+		say(`Switched back from ${from} to ${to}. pi and OMP lanes keep their version until they restart.`);
+		return setupCommand(values);
 	}
 	throw new Error("install takes --from DIR, --rollback or --list.");
+}
+
+/** `orrery uninstall [--purge]`: 1 when something of Orrery's was left, lanes are open, or the purge was not confirmed. */
+async function uninstallCommand(values: { purge?: boolean }): Promise<number> {
+	const [{ uninstall }, { askTyped }, { orreryHome }] = await Promise.all([import("../install/uninstall.ts"), import("../install/ask.ts"), import("../lane/home.ts")]);
+	const home = orreryHome(process.env);
+	const { lines, ok } = await uninstall({
+		env: process.env,
+		purge: values.purge === true,
+		confirmPurge: () => askTyped(`This deletes every lane's memory, logins and backups in ${home}.`, "delete"),
+	});
+	for (const line of lines) say(line);
+	return ok ? 0 : 1;
 }
 
 /** A lane name as given, or "." for the lane whose workspace holds the project folder (Claude Code's commands use it). */
@@ -293,6 +331,7 @@ async function main(argv: string[]): Promise<number> {
 			yes: { type: "boolean" },
 			rollback: { type: "boolean" },
 			list: { type: "boolean" },
+			purge: { type: "boolean" },
 			help: { type: "boolean", short: "h" },
 			version: { type: "boolean", short: "v" },
 		},
@@ -326,6 +365,8 @@ async function main(argv: string[]): Promise<number> {
 	}
 	if (command === "tools") return toolsCommand(positionals, values);
 	if (command === "install") return installCommand(values);
+	if (command === "setup") return setupCommand(values);
+	if (command === "uninstall") return uninstallCommand(values);
 	const config = loadConfig(values.config);
 	switch (command) {
 		case "status": {

@@ -53,6 +53,18 @@ describe("launchPlan and runTool", () => {
 		expect(applyFix("install-pi", config, row, tools, { root: orreryRoot(), env })).toContain("wrote ");
 	});
 
+	it("offers to rewrite a pi or OMP extension that names Orrery's entry of the other install shape", () => {
+		for (const tool of ["pi", "omp"] as const) {
+			const { config, row, tools, env } = setup(tool);
+			const stale = tools.map((t) => (t.id === tool ? { ...t, wiring: "update available" as const, detail: "Orrery's binary entry; setup moves it to this version's", now: "points at /h/.orrery/app/current/extensions/x.js" } : t));
+			const plan = launchPlan(config, row, stale, { root: orreryRoot(), env });
+			const label = tool === "pi" ? "pi" : "OMP";
+			expect(plan.steps).toHaveLength(1);
+			expect(plan.steps[0]).toMatchObject({ confirm: true, fix: `install-${tool}` });
+			expect(plan.steps[0].text).toMatch(new RegExp(`^Orrery's ${label} extension names the other install shape's entry, so this session won't record\\. Installing it will:\\n  rewrite `));
+		}
+	});
+
 	it("asks to set up Claude Code's memory import, and to install the plugin, listing the commands", () => {
 		const { config, row, tools, env } = setup("claude-code");
 		const plan = launchPlan(config, row, tools, { root: orreryRoot(), env });

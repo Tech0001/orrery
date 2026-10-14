@@ -7,6 +7,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { accessSync, constants, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { ENTRY_TAILS, entries, type Style } from "../install/layout.ts";
 import type { LaneTool } from "./config.ts";
 import { realTarget } from "./guard-paths.ts";
 import { runningRoot, wiringRoot } from "./running.ts";
@@ -84,9 +85,9 @@ export function piExtensionFile(env: NodeJS.ProcessEnv = process.env): string {
 	return join(env.PI_CODING_AGENT_DIR || join(env.HOME || homedir(), ".pi", "agent"), "extensions", "orrery.ts");
 }
 
-/** The extension file's text: one line that re-exports this orrery's pi entry point. */
+/** The extension file's text: one line that re-exports the pi entry point of the shape `root` has (layout.ts). */
 export function piExtensionText(root: string): string {
-	return `export { default } from ${JSON.stringify(join(root, "src", "pi", "index.ts"))};\n`;
+	return `export { default } from ${JSON.stringify(entries(root).pi)};\n`;
 }
 
 /** Why Orrery installs no second entry: with PI_CODING_AGENT_DIR set, pi and OMP read one extensions folder. */
@@ -109,7 +110,7 @@ export function ompExtensionFile(env: NodeJS.ProcessEnv = process.env): string {
  */
 export function ompExtensionText(root: string, file: string): string {
 	// Resolve only the root's parent, so an install's "current" link stays in the path.
-	const target = join(realTarget(dirname(root)), basename(root), "src", "omp", "index.ts");
+	const target = entries(join(realTarget(dirname(root)), basename(root))).omp;
 	const spec = relative(realTarget(dirname(file)), target);
 	return `export { default } from ${JSON.stringify(spec.startsWith(".") ? spec : `./${spec}`)};\n`;
 }
@@ -119,13 +120,22 @@ function sharedFolder(env: NodeJS.ProcessEnv): boolean {
 	return resolve(piExtensionFile(env)) === resolve(ompExtensionFile(env));
 }
 
-/** Which Orrery entry an extension file's target is, by its tail. */
+/** Which Orrery entry an extension file's target is, by its tail (either install shape's). */
 function entryOf(file: string, target: string): "pi" | "omp" | undefined {
 	const full = resolve(dirname(file), target);
-	if (full.endsWith(join("src", "pi", "index.ts"))) return "pi";
-	if (full.endsWith(join("src", "omp", "index.ts"))) return "omp";
+	if (ENTRY_TAILS.pi.some((tail) => full.endsWith(tail))) return "pi";
+	if (ENTRY_TAILS.omp.some((tail) => full.endsWith(tail))) return "omp";
 	return undefined;
 }
+
+/** The other install shape, and its entry for `tool` under `root`. */
+function otherShape(root: string, tool: "pi" | "omp"): { style: Style; entry: string } {
+	const style: Style = entries(root).style === "binary" ? "source" : "binary";
+	return { style, entry: join(root, ENTRY_TAILS[tool][style === "binary" ? 0 : 1]) };
+}
+
+/** A file naming Orrery's entry of the other shape under this root: written by setup before a switch between shapes. */
+const otherShapeWiring = (style: Style, now: string) => ({ wiring: "update available" as const, detail: `Orrery's ${style} entry; setup moves it to this version's`, now });
 
 /** The version in this orrery's claude-plugin/.claude-plugin/plugin.json. */
 export function pluginVersion(root: string): string | undefined {
@@ -206,7 +216,9 @@ function piWiring(root: string, env: NodeJS.ProcessEnv): Pick<ToolCheck, "wiring
 	if (sharedFolder(env) && entryOf(file, target) === "omp") {
 		return { wiring: "other", detail: `${safeText(file)} is OMP's Orrery extension: ${SHARED}, so Orrery installs only one`, now: "OMP's Orrery extension", blocked: SHARED };
 	}
-	if (sameAsRoot(target, join(root, "src", "pi", "index.ts"), root)) return { wiring: "installed", detail: safeText(file) };
+	if (sameAsRoot(target, entries(root).pi, root)) return { wiring: "installed", detail: safeText(file) };
+	const other = otherShape(root, "pi");
+	if (sameAsRoot(target, other.entry, root)) return otherShapeWiring(other.style, `points at ${safeText(target)}`);
 	return { wiring: "other", detail: `points at another Orrery: ${safeText(target)}`, now: `points at ${safeText(target)}` };
 }
 
@@ -242,13 +254,25 @@ function ompWiring(root: string, env: NodeJS.ProcessEnv): Pick<ToolCheck, "wirin
 		return { wiring: "other", detail: `${safeText(file)} is pi's Orrery extension: ${SHARED}, so Orrery installs only one`, now: "pi's Orrery extension", blocked: SHARED };
 	}
 	const full = resolve(dirname(file), target);
-	if (sameAsRoot(full, join(root, "src", "omp", "index.ts"), root)) {
+	if (sameAsRoot(full, entries(root).omp, root)) {
 		return isAbsolute(target) ? { wiring: "other", detail: `${safeText(file)} re-exports Orrery by an absolute path, which OMP cannot load`, now: "an absolute re-export" } : { wiring: "installed", detail: safeText(file) };
 	}
+	// The relative re-export names the root's parent by its real path (ompExtensionText).
+	const other = otherShape(root, "omp");
+	const realOther = join(realTarget(dirname(root)), basename(root), relative(root, other.entry));
+	if (sameAsRoot(full, other.entry, root) || sameAsRoot(full, realOther, root)) return otherShapeWiring(other.style, `points at ${safeText(full)}`);
 	return { wiring: "other", detail: `points at another Orrery: ${safeText(full)}`, now: `points at ${safeText(full)}` };
 }
 
-function claudeWiring(root: string, path: string, run: Runner): Pick<ToolCheck, "wiring" | "detail"> {
+/** Claude Code's entry for the Orrery plugin (orrery@orrery) as `claude plugin list --json` gives it. */
+export interface OrreryPlugin {
+	readonly version?: unknown;
+	readonly readFromFolder?: unknown;
+	readonly enabled?: unknown;
+}
+
+/** The Orrery plugin in Claude Code's plugin list: its entry, missing, or why the list cannot be read. */
+export function orreryPlugin(path: string, run: Runner): { plugin: OrreryPlugin } | "missing" | { unreadable: string } {
 	const listed = run(path, ["plugin", "list", "--json"]);
 	let plugins: unknown;
 	try {
@@ -257,14 +281,21 @@ function claudeWiring(root: string, path: string, run: Runner): Pick<ToolCheck, 
 		const start = lines.findIndex((line) => /^\s*[\[{]/.test(line));
 		plugins = JSON.parse(start < 0 ? "" : lines.slice(start).join("\n"));
 	} catch {
-		return { wiring: "unknown", detail: "claude plugin list --json gave something Orrery cannot read" };
+		return { unreadable: "claude plugin list --json gave something Orrery cannot read" };
 	}
-	if (!Array.isArray(plugins)) return { wiring: "unknown", detail: "claude plugin list --json gave something Orrery cannot read" };
+	if (!Array.isArray(plugins)) return { unreadable: "claude plugin list --json gave something Orrery cannot read" };
 	// A list whose entries carry no string id is a shape orrery doesn't know: it cannot say the plugin is missing.
 	const ids = plugins.filter((p) => typeof p === "object" && p !== null && typeof (p as { id?: unknown }).id === "string");
-	if (plugins.length > 0 && ids.length === 0) return { wiring: "unknown", detail: "claude plugin list --json lists plugins in a shape Orrery doesn't know" };
-	const entry = plugins.find((p) => typeof p === "object" && p !== null && (p as { id?: unknown }).id === "orrery@orrery") as { version?: unknown; readFromFolder?: unknown; enabled?: unknown } | undefined;
-	if (entry === undefined) return { wiring: "missing", detail: "the Orrery plugin is not installed" };
+	if (plugins.length > 0 && ids.length === 0) return { unreadable: "claude plugin list --json lists plugins in a shape Orrery doesn't know" };
+	const entry = plugins.find((p) => typeof p === "object" && p !== null && (p as { id?: unknown }).id === "orrery@orrery") as OrreryPlugin | undefined;
+	return entry === undefined ? "missing" : { plugin: entry };
+}
+
+function claudeWiring(root: string, path: string, run: Runner): Pick<ToolCheck, "wiring" | "detail"> {
+	const listed = orreryPlugin(path, run);
+	if (listed === "missing") return { wiring: "missing", detail: "the Orrery plugin is not installed" };
+	if ("unreadable" in listed) return { wiring: "unknown", detail: listed.unreadable };
+	const entry = listed.plugin;
 	if (typeof entry.readFromFolder === "string" && !sameAsRoot(entry.readFromFolder, join(root, "claude-plugin"), root)) return { wiring: "other", detail: `reads from another Orrery: ${safeText(entry.readFromFolder)}` };
 	const mine = pluginVersion(root);
 	if (typeof entry.version === "string" && mine !== undefined && older(entry.version, mine)) return { wiring: "update available", detail: `plugin ${safeText(entry.version)}, this Orrery has ${mine}` };
@@ -341,21 +372,18 @@ export type InstallStep =
 export function installSteps(check: ToolCheck, root: string, env: NodeJS.ProcessEnv = process.env): InstallStep[] {
 	// pi and OMP share one extensions folder: Orrery never replaces the other tool's entry.
 	if (check.blocked !== undefined) return [];
-	if (check.id === "pi") {
-		if (check.wiring !== "missing" && check.wiring !== "other") return [];
-		const path = piExtensionFile(env);
-		const entry = safeText(join(root, "src", "pi", "index.ts"));
+	// pi and OMP: "update available" is Orrery's entry of the other install shape, rewritten like a missing file.
+	if (check.id === "pi" || check.id === "omp") {
+		if (check.wiring !== "missing" && check.wiring !== "other" && check.wiring !== "update available") return [];
+		const path = check.id === "pi" ? piExtensionFile(env) : ompExtensionFile(env);
+		const entry = safeText(check.id === "pi" ? entries(root).pi : entries(root).omp);
+		const what = `${check.id === "omp" ? "a relative " : "a "}re-export of ${entry}`;
+		const now = check.now ?? "something else";
 		const describe =
-			check.wiring === "missing" ? `write ${safeText(path)} (a re-export of ${entry})` : `replace ${safeText(path)} (now ${check.now ?? "something else"}) with a re-export of ${entry}`;
-		return [{ kind: "write", path, text: piExtensionText(root), describe }];
-	}
-	if (check.id === "omp") {
-		if (check.wiring !== "missing" && check.wiring !== "other") return [];
-		const path = ompExtensionFile(env);
-		const entry = safeText(join(root, "src", "omp", "index.ts"));
-		const describe =
-			check.wiring === "missing" ? `write ${safeText(path)} (a relative re-export of ${entry})` : `replace ${safeText(path)} (now ${check.now ?? "something else"}) with a relative re-export of ${entry}`;
-		return [{ kind: "write", path, text: ompExtensionText(root, path), describe }];
+			check.wiring === "missing"
+				? `write ${safeText(path)} (${what})`
+				: `${check.wiring === "update available" ? "rewrite" : "replace"} ${safeText(path)} (now ${now}) ${check.wiring === "update available" ? "as" : "with"} ${what}`;
+		return [{ kind: "write", path, text: check.id === "pi" ? piExtensionText(root) : ompExtensionText(root, path), describe }];
 	}
 	if (check.id === "claude-code" && check.path !== undefined) {
 		const run = (...args: string[]): InstallStep => ({ kind: "run", cmd: check.path as string, args, describe: `claude ${args.join(" ")}` });

@@ -5,10 +5,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { binaryTarget, holdInstallLock, installFrom, listVersions, makeReadOnly, releaseVersion, removeVersion, rollback } from "../../src/install/install.ts";
+import { bareSystemPath, cleanupScratch, fixtureRelease } from "./support.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
 	for (const d of dirs.splice(0)) removeVersion(d);
+	cleanupScratch();
 });
 
 function tempDir(prefix: string): string {
@@ -25,18 +27,6 @@ function scratchEnv(): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, ORRERY_HOME: join(home, ".orrery") };
 	delete env.ORRERY_CONFIG;
 	return env;
-}
-
-/** A release folder for `version`: a bin/orrery that answers --version (and can be told to fail), and the files a release has. */
-function fixtureRelease(version: string, options: { versionOutput?: string; exit?: number } = {}): string {
-	const dir = join(tempDir("orrery-release-"), `orrery-${version}-linux-x64`);
-	mkdirSync(join(dir, "bin"), { recursive: true });
-	mkdirSync(join(dir, "extensions"), { recursive: true });
-	writeFileSync(join(dir, "VERSION"), `${version}\n`);
-	writeFileSync(join(dir, "extensions", "pi.js"), "export default () => {};\n");
-	const said = options.versionOutput ?? `orrery ${version}`;
-	writeFileSync(join(dir, "bin", "orrery"), `#!/bin/sh\n[ "$1" = --version ] && { echo "${said}"; exit ${options.exit ?? 0}; }\nexit 0\n`, { mode: 0o755 });
-	return dir;
 }
 
 /** The next version to install in each scratch env: 0.6.0, 0.6.1, ... */
@@ -422,7 +412,14 @@ describe("installFrom", () => {
 });
 
 describe("orrery install", () => {
-	const cli = (env: NodeJS.ProcessEnv, ...args: string[]) => spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, ...args], { env, encoding: "utf8" });
+	/**
+	 * Setup runs after install and rollback, so the command gets only the scratch home and a PATH with no real pi, OMP or
+	 * Claude Code (and no PI_CODING_AGENT_DIR from the environment running the tests); `bin` puts fakes first.
+	 */
+	const runCli = (env: NodeJS.ProcessEnv, args: string[], bin?: string) =>
+		spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, ...args], { env: { HOME: env.HOME, ORRERY_HOME: env.ORRERY_HOME, PATH: [...(bin === undefined ? [] : [bin]), bareSystemPath()].join(":") }, encoding: "utf8" });
+	const cli = (env: NodeJS.ProcessEnv, ...args: string[]) => runCli(env, args);
+	const commandLink = (env: NodeJS.ProcessEnv) => readlinkSync(join(env.HOME as string, ".local", "bin", "orrery"));
 
 	it("--list and --rollback work from the command, without a config", () => {
 		const { env, versions } = twoInstalls();
@@ -433,15 +430,56 @@ describe("orrery install", () => {
 		const back = cli(env, "install", "--rollback");
 		expect(back.status, back.stderr).toBe(0);
 		expect(back.stdout).toContain(`from ${versions[1]} to ${versions[0]}`);
+		expect(back.stdout).toMatch(/^orrery command: /m);
 		expect(currentOf(env)).toBe(versions[0]);
 	});
 
-	it("--from installs a release folder and says so", () => {
+	it("--from installs a release folder, wires it, and says what to do next", () => {
 		const env = scratchEnv();
 		const out = cli(env, "install", "--from", fixtureRelease("0.6.0"));
 		expect(out.status, out.stderr).toBe(0);
 		expect(out.stdout).toContain("Installed 0.6.0.");
 		expect(currentOf(env)).toBe("0.6.0");
+		expect(commandLink(env)).toBe(join(env.ORRERY_HOME as string, "app", "current", "bin", "orrery"));
+		expect(out.stdout).toMatch(/~\/\.local\/bin is not on your PATH/);
+		expect(out.stdout.trim().split("\n").at(-1)).toBe("Run orrery to add your first lane.");
+		writeFileSync(join(env.ORRERY_HOME as string, "config.toml"), "");
+		const again = cli(env, "install", "--from", fixtureRelease("0.6.0"));
+		expect(again.status, again.stderr).toBe(0);
+		expect(again.stdout).toContain("0.6.0 is already installed.");
+		expect(again.stdout).not.toContain("Run orrery to add your first lane.");
+	});
+
+	it("install and rollback rewire between a source-style 0.5.0 and a binary 0.6.0, both ways", () => {
+		const env = scratchEnv();
+		const home = env.ORRERY_HOME as string;
+		const bin = mkdtempSync(join(tmpdir(), "orrery-bin-"));
+		dirs.push(bin);
+		writeFileSync(join(bin, "pi"), '#!/bin/sh\necho "pi 1.2.0"\n', { mode: 0o755 });
+		const old = join(home, "app", "0.5.0-9d7452f");
+		for (const entry of ["src/cli/main.ts", "src/pi/index.ts", "src/omp/index.ts"]) {
+			mkdirSync(join(old, entry, ".."), { recursive: true });
+			writeFileSync(join(old, entry), "\n");
+		}
+		writeFileSync(join(home, "app", "history"), "0.5.0-9d7452f\n");
+		symlinkSync("0.5.0-9d7452f", join(home, "app", "current"));
+		const current = join(home, "app", "current");
+		const piFile = join(env.HOME as string, ".pi", "agent", "extensions", "orrery.ts");
+		const up = runCli(env, ["install", "--from", fixtureRelease("0.6.0")], bin);
+		expect(up.status, up.stdout + up.stderr).toBe(0);
+		expect(commandLink(env)).toBe(join(current, "bin", "orrery"));
+		expect(readFileSync(piFile, "utf8")).toBe(`export { default } from ${JSON.stringify(join(current, "extensions", "pi.js"))};\n`);
+		const back = runCli(env, ["install", "--rollback"], bin);
+		expect(back.status, back.stdout + back.stderr).toBe(0);
+		expect(currentOf(env)).toBe("0.5.0-9d7452f");
+		expect(commandLink(env)).toBe(join(current, "src", "cli", "main.ts"));
+		expect(readFileSync(piFile, "utf8")).toBe(`export { default } from ${JSON.stringify(join(current, "src", "pi", "index.ts"))};\n`);
+	});
+
+	it("setup refuses before anything is installed", () => {
+		const out = cli(scratchEnv(), "setup");
+		expect(out.status).toBe(1);
+		expect(out.stderr).toContain("Orrery is not installed yet");
 	});
 
 	it("refuses --from with --rollback or --list", () => {
@@ -464,6 +502,9 @@ describe("orrery install", () => {
 		const help = cli(scratchEnv(), "--help");
 		expect(help.status, help.stderr).toBe(0);
 		expect(help.stdout).toContain("install --from DIR");
-		expect(help.stdout).toContain("install --rollback | --list");
+		expect(help.stdout).toContain("install --rollback [--yes] | --list");
+		expect(help.stdout).toContain("setup [--yes]");
+		expect(help.stdout).toContain("uninstall [--purge]");
+		expect(help.stdout).not.toContain("npm run install-local");
 	});
 });

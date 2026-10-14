@@ -182,7 +182,7 @@ function laneRun(dir: string): { version: string } | "none" | { unknown: string 
  * Which lanes run each version, by their status files (open, process alive). `unreadable` says why the answer cannot be
  * trusted (config or a status file); then nothing may be deleted.
  */
-function laneVersions(env: NodeJS.ProcessEnv): { versions: Map<string, string[]>; unreadable?: string } {
+export function laneVersions(env: NodeJS.ProcessEnv): { versions: Map<string, string[]>; unreadable?: string } {
 	const versions = new Map<string, string[]>();
 	const path = defaultConfigPath(env);
 	if (!existsSync(path)) return { versions };
@@ -229,7 +229,7 @@ function collect(app: string, env: NodeJS.ProcessEnv, log: (line: string) => voi
 }
 
 /** Release versions as folder names: 0.6.0, 0.6.0-<commit>, 1.0.0-rc.1 (no slashes, no leading dot). */
-const VERSION_NAME = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
+export const VERSION_NAME = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
 
 /** A release folder's VERSION, checked. */
 export function releaseVersion(folder: string): string {

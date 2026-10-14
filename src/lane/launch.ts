@@ -55,9 +55,11 @@ export function launchPlan(config: HarnessConfig, row: LaneRow, tools: readonly 
 	if ((row.state === "open" || row.state === "working") && row.openIn !== undefined) {
 		steps.push({ text: `${row.name} is already open in ${TOOL_LABELS[row.openIn]}. A second session won't record. Launch anyway?`, confirm: true });
 	}
-	if (row.tool === "pi" && check.wiring === "missing") steps.push({ text: installQuestion("Orrery's pi extension is not installed, so this session won't record", check, options), confirm: true, fix: "install-pi" });
+	// "update available" for pi or OMP: the file names Orrery's entry of the other install shape, which app/current lacks.
+	const stale = (label: string) => (check.wiring === "missing" ? `Orrery's ${label} extension is not installed` : `Orrery's ${label} extension names the other install shape's entry`);
+	if (row.tool === "pi" && (check.wiring === "missing" || check.wiring === "update available")) steps.push({ text: installQuestion(`${stale("pi")}, so this session won't record`, check, options), confirm: true, fix: "install-pi" });
 	if (row.tool === "pi" && check.wiring === "other") steps.push({ text: `pi's Orrery extension ${check.detail}. Launch anyway?`, confirm: true });
-	if (row.tool === "omp" && check.wiring === "missing") steps.push({ text: installQuestion("Orrery's OMP extension is not installed, so this session won't record", check, options), confirm: true, fix: "install-omp" });
+	if (row.tool === "omp" && (check.wiring === "missing" || check.wiring === "update available")) steps.push({ text: installQuestion(`${stale("OMP")}, so this session won't record`, check, options), confirm: true, fix: "install-omp" });
 	if (row.tool === "omp" && check.wiring === "other") steps.push({ text: `OMP's Orrery extension: ${check.detail}. Launch anyway?`, confirm: true });
 	if (row.tool === "claude-code") {
 		// "unknown" (a plugin list orrery cannot read) neither blocks nor offers an install: the plugin may well be there.

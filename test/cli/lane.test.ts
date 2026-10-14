@@ -172,7 +172,9 @@ describe("orrery tools", () => {
 		const { env: shared, home } = bare({ omp: "echo omp/18.8.7" });
 		const { PI_CODING_AGENT_DIR: _pi, ...env } = shared; // pi's dir would be OMP's too
 		expect(orrery(["tools", "install", "omp", "--yes"], env).status).toBe(0);
-		expect(readFileSync(join(home, ".omp", "agent", "extensions", "orrery.ts"), "utf8")).toMatch(/^export \{ default \} from "\.\.\/.*src\/omp\/index\.ts";\n$/);
+		// A checkout re-exports its source entry; the built binary runs from a release folder, which has the packed one.
+		const entry = process.env.ORRERY_TEST_BIN ? /^export \{ default \} from "\.\.\/.*extensions\/omp\.js";\n$/ : /^export \{ default \} from "\.\.\/.*src\/omp\/index\.ts";\n$/;
+		expect(readFileSync(join(home, ".omp", "agent", "extensions", "orrery.ts"), "utf8")).toMatch(entry);
 	});
 
 	it("without a terminal and without --yes, says why nothing was installed", () => {

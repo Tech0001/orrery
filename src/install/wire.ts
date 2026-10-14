@@ -1,7 +1,8 @@
 /**
- * After an install (spec 2026-10-13-orrery-home-and-install §5, step 5): the orrery command, the backup service, pi, OMP
- * and Claude Code are pointed at <home>/app/current, never at a version folder. What is already right is left alone;
- * anything that is not Orrery's own is replaced only after asking.
+ * orrery setup, and the end of every install and rollback (spec 2026-10-13-orrery-releases-design §5, §6): the orrery
+ * command, the backup service, pi, OMP and Claude Code are pointed at <home>/app/current, never at a version folder, in
+ * the shape the version there has (layout.ts). What is already right is left alone; Orrery's own wiring of either shape
+ * is moved without asking; anything that is not Orrery's own is replaced only after asking.
  */
 
 import { chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -9,9 +10,9 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { orreryHome } from "../lane/home.ts";
 import { checkTools, findOnPath, installSteps, runInstall, type Runner, type ToolCheck } from "../lane/tools.ts";
+import { type Confirm, pathAdvice } from "./ask.ts";
 import { envRunner } from "./install.ts";
-
-type Confirm = (what: string) => Promise<boolean>;
+import { ENTRY_TAILS, entries } from "./layout.ts";
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const firstLine = (text: string) => text.split("\n").map((line) => line.trim()).find((line) => line !== "") ?? "";
@@ -25,9 +26,9 @@ function replaceLink(link: string, target: string): void {
 	renameSync(next, link);
 }
 
-/** ~/.local/bin/orrery → app/current's CLI. An older Orrery's link is replaced; anything else only when confirmed. */
+/** ~/.local/bin/orrery → app/current's CLI. An older Orrery's link (either shape) is replaced; anything else only when confirmed. */
 async function linkCommand(env: NodeJS.ProcessEnv, current: string, confirm: Confirm, left: string[]): Promise<string> {
-	const target = join(current, "src", "cli", "main.ts");
+	const target = entries(current).cli;
 	const link = join(env.HOME || homedir(), ".local", "bin", "orrery");
 	let now: string | null | undefined;
 	try {
@@ -39,7 +40,7 @@ async function linkCommand(env: NodeJS.ProcessEnv, current: string, confirm: Con
 		}
 	}
 	if (now === target) return `orrery command: ${link} already links to ${target}`;
-	const older = typeof now === "string" && now.endsWith(join("src", "cli", "main.ts"));
+	const older = typeof now === "string" && ENTRY_TAILS.cli.some((tail) => (now as string).endsWith(tail));
 	if (now !== undefined && !older && !(await confirm(`replace ${link}?`))) {
 		left.push(`the orrery command (${link} is not Orrery's link and was not replaced)`);
 		return `orrery command: left ${link} as it is`;
@@ -161,8 +162,10 @@ export async function wireReport(env: NodeJS.ProcessEnv, options: { run?: Runner
 	const current = join(home, "app", "current");
 	const left: string[] = [];
 	const unchecked: string[] = [];
+	const advice = pathAdvice(env, join(env.HOME || homedir(), ".local", "bin"));
 	const lines = [
 		await linkCommand(env, current, options.confirm, left),
+		...(advice === undefined ? [] : [advice]),
 		...pointBackup(env, home, run, left),
 		...(await wireTools(env, current, { probe, install: run }, options.confirm, left, unchecked)),
 	];
@@ -182,7 +185,7 @@ export function leftWarning(left: string[], unchecked: string[] = []): string[] 
 			: [
 					"Not everything points at this install. Still wired elsewhere:",
 					...left.map((item) => `  - ${item}`),
-					"Fix it with: npm run install-local -- --yes (or run orrery, then Tools, then I).",
+					"Fix it with: orrery setup --yes (or run orrery, then Tools, then I).",
 				]),
 		...(unchecked.length === 0 ? [] : ["Could not check these tools:", ...unchecked.map((item) => `  - check ${item.replace(": ", " by hand: ")}`)]),
 	];

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Nightly: snapshot every lane's memory, then mirror the backups to a configured host.
-# A systemd user service may not have node on its PATH, and orrery needs it.
-export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
+# A systemd user service may not have ~/.local/bin on its PATH.
+export PATH="$HOME/.local/bin:$PATH"
 set -euo pipefail
 home="${ORRERY_HOME:-$HOME/.orrery}"
 backups="$home/backups"
