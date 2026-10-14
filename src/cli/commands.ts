@@ -13,7 +13,8 @@ import { commitPreview, readPreview } from "../import/preview.ts";
 import { findLane, type HarnessConfig, parseModelChoice } from "../lane/config.ts";
 import { FileCredentialStore } from "../lane/credentials.ts";
 import { sshTarget } from "../lane/env.ts";
-import { laneOverview, laneUsage, summaryText, TOOL_LABELS } from "../lane/overview.ts";
+import { writeBuild } from "../lane/build.ts";
+import { laneOverview, laneUsage, summaryText, TOOL_LABELS, totalCost, usageCost } from "../lane/overview.ts";
 import { laneCompactorTarget } from "../lane/compactor-target.ts";
 import { createLaneCompactor } from "../lane/lane.ts";
 import { createLaneModels, savedSummaryLoginsOnly } from "../lane/models.ts";
@@ -60,29 +61,69 @@ export async function trustHostCommand(config: HarnessConfig, hostName: string):
 	process.stdout.write(`Trusted ${host.host} as ${host.hostKeyAlias}.\n`);
 }
 
-export async function compactCommand(config: HarnessConfig, laneName: string, models?: Models): Promise<void> {
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/**
+ * `orrery compact <Lane> [--progress FILE]`: builds every missing summary. With `progress`, FILE (the lane's build.json,
+ * src/lane/build.ts) says how far it is and what its summaries cost so far, every 5 s and when it ends.
+ */
+export async function compactCommand(config: HarnessConfig, laneName: string, models?: Models, options: { readonly progress?: string } = {}): Promise<void> {
 	const lane = findLane(config, laneName);
 	await withBriefCheckOut(config, lane, async (remote, writer) => {
 		const store = MemoryStore.open(join(lane.dir, "memory.sqlite"), writer);
 		let compactor: Compactor | undefined;
 		const lost = Promise.withResolvers<void>();
 		if (remote !== undefined) attachRemoteStore(remote, store, () => { lost.resolve(); void compactor?.close(); });
+		const startedAt = Date.now();
+		let laneModels: Models | undefined;
+		let counts = { messages: 0, summaries: 0 };
+		// build.json for the Agents page (src/lane/build.ts): how far the build is, and what its summaries cost so far.
+		// Writing it never stops the build.
+		const progress = (fields: { done?: true; error?: string } = {}) => {
+			const file = options.progress;
+			if (file === undefined) return;
+			let dollars: number | undefined;
+			try {
+				counts = { messages: store.root.length, summaries: store.nodeCount };
+				const price = (provider: string, modelId: string) => laneModels?.getModel(provider, modelId)?.cost;
+				const total = totalCost(store.usageRows().filter((row) => row.role === "compactor" && Date.parse(row.at) >= startedAt).map((row) => usageCost(row, config, price)));
+				if (total?.kind === "api") dollars = total.dollars;
+			} catch {
+				// the store went with the lane (to another machine): its last counts, no price
+			}
+			try {
+				writeBuild(file, { pid: process.pid, startedAt, ...counts, ...(dollars === undefined ? {} : { dollars }), ...fields });
+			} catch (error) {
+				process.stderr.write(`Could not write ${file}: ${errorText(error)}\n`);
+			}
+		};
 		try {
-			const laneModels =
+			laneModels =
 				models ?? createLaneModels({ credentials: new FileCredentialStore(config.credentialsPath), providers: config.providers, savedLoginsOnly: savedSummaryLoginsOnly(lane) });
 			const view = new MemoryView(store, lane.memory.viewBytes);
 			compactor = createLaneCompactor(lane, laneModels, store, view, (message) => process.stderr.write(`${message}\n`));
-			const timer = setInterval(() => process.stdout.write(`${store.nodeCount} summaries for ${store.root.length} messages\n`), 5000);
+			const timer = setInterval(() => {
+				process.stdout.write(`${store.nodeCount} summaries for ${store.root.length} messages\n`);
+				progress();
+			}, 5000);
 			try {
+				progress();
 				compactor.start();
 				await Promise.race([compactor.drain(), lost.promise]);
 				// Let withBriefCheckOut report fencing after it has closed and released the writer.
-				if (remote?.lost) return;
+				if (remote?.lost) {
+					progress({ error: "it moved to another machine" });
+					return;
+				}
+				progress({ done: true });
 				process.stdout.write(`Done: ${store.nodeCount} summaries for ${store.root.length} messages.\n`);
 			} finally {
 				clearInterval(timer);
 				await compactor.close();
 			}
+		} catch (error) {
+			progress({ error: errorText(error) });
+			throw error;
 		} finally {
 			if (remote === undefined) store.close();
 		}

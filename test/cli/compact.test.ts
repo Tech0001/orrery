@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -40,7 +40,7 @@ describe("compactCommand", () => {
 	});
 
 	// The whole model path in a CLI process (the binary under test:binary): models.ts and pi-ai's providers load, and
-	// the summaries come from an OpenAI-compatible server.
+	// the summaries come from an OpenAI-compatible server; --progress writes the build's state.
 	it("runs `orrery compact` as a process against an OpenAI-compatible server", async () => {
 		const dir = tempDir("orrery-compact-");
 		dirs.push(dir);
@@ -77,7 +77,7 @@ describe("compactCommand", () => {
 			);
 			const laneDir = join(dir, "data", "lanes", "Test");
 			seedHistory(laneDir);
-			const c = cliCommand(["compact", "Test", "--config", config]);
+			const c = cliCommand(["compact", "Test", "--config", config, "--progress", join(laneDir, "build.json")]);
 			const child = spawn(c.cmd, c.args, { env: cleanEnv({ HOME: dir }) });
 			let out = "";
 			child.stdout.setEncoding("utf8").on("data", (chunk: string) => (out += chunk));
@@ -85,6 +85,8 @@ describe("compactCommand", () => {
 			const code = await new Promise<number | null>((done) => child.on("exit", done));
 			expect([code, out]).toEqual([0, expect.stringMatching(/^Done: [1-9]\d* summaries for 3 messages\.\n$/)]);
 			expect(chats).toBeGreaterThan(0);
+			// --progress: the Agents page's build.json says it is done.
+			expect(JSON.parse(readFileSync(join(laneDir, "build.json"), "utf8"))).toMatchObject({ messages: 3, done: true });
 			const store = MemoryStore.openReadOnly(join(laneDir, "memory.sqlite"));
 			try {
 				expect(store.nodeCount).toBeGreaterThan(0);

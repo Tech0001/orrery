@@ -45,7 +45,8 @@ const USAGE = `Usage: orrery <command> [--config FILE]
   logins [--json]            what is saved (never the keys)
   logout openai | --key <name>   remove one login
   trust-host <host>          verify and trust an SSH host key for tools
-  compact <Lane>             build every missing summary (lane must not be running)
+  compact <Lane> [--progress FILE]   build every missing summary (lane must not be running); --progress: write how
+                             far it is to FILE
   import <Lane> --dry-run [--claude DIR|none] [--claude-file FILE]... [--codex DIR|none] [--codex-file FILE]... [--notes FILE]... [--paste-threshold N] [--no-split] [--out DIR]
                              preview a history import for review (defaults: this lane's Claude Code
                              project and ~/.codex/sessions; --no-split skips the model pass; --claude-file adds a
@@ -400,6 +401,7 @@ const OPTIONS = {
 	"paste-threshold": { type: "string" },
 	"no-split": { type: "boolean" },
 	out: { type: "string" },
+	progress: { type: "string" },
 	session: { type: "string" },
 	cwd: { type: "string" },
 	"wait-ms": { type: "string" },
@@ -573,7 +575,7 @@ async function main(rawArgv: string[]): Promise<number> {
 		case "compact": {
 			const [{ compactCommand }, { configureHttp }] = await Promise.all([import("./commands.ts"), import("../lane/http.ts")]);
 			configureHttp();
-			await compactCommand(config, required(arg, "lane"));
+			await compactCommand(config, required(arg, "lane"), undefined, values.progress === undefined ? {} : { progress: values.progress });
 			return 0;
 		}
 		case "import": {

@@ -11,6 +11,7 @@ import { clean } from "../cli/printer.ts";
 import { COMPACTION_VIEW_BYTES } from "../memory/compaction-view.ts";
 import { MemoryStore, MemoryView, type UsageRow } from "../memory/index.ts";
 import { backupFinder } from "./backup.ts";
+import { type BuildState, buildRunning, readBuild } from "./build.ts";
 import { COMPACTOR_MODEL_KEY, storedChoice } from "./choices.ts";
 import { type HarnessConfig, type LaneConfig, type LaneLauncher, type LaneTool, type ModelChoice, THINKING_LEVELS, type ThinkingLevel } from "./config.ts";
 import { holderFresh, readHolder } from "./handover.ts";
@@ -63,6 +64,8 @@ export interface LaneRow {
 	readonly instructions: InstructionsState;
 	/** The open session read older instructions than the file holds now (or had none): it uses them at its next start. */
 	readonly instructionsNewer?: true;
+	/** The memory build's state (src/lane/build.ts) while it runs, or after it stopped short while summaries still wait. */
+	readonly building?: string;
 }
 
 /** A pi status older than this belongs to a pi that is gone: pi rewrites it every 5 s. */
@@ -267,6 +270,10 @@ function laneRow(lane: LaneConfig, now: number, cache: OverviewCache, alive: (pi
 	const summary = live?.trouble
 		? { state: live.trouble.state, waiting, plain: shown(live.trouble.plain) }
 		: { state: waiting === 0 ? ("ok" as const) : state === "closed" ? ("waiting" as const) : ("catching up" as const), waiting };
+	// A build that stopped short is named only while summaries still wait: once memory is settled (by a later compact or
+	// the agent's own sessions) there is nothing to say.
+	const build = readBuild(lane.dir);
+	const building = buildRunning(build, alive, now) || waiting > 0 ? buildText(build, alive, now) : undefined;
 	const chosen = facts?.chosen;
 	const summaryModel = live
 		? { ref: shown(live.compactor.model), thinking: knownThinking(live.compactor.thinking), source: live.compactor.source === "chat" ? ("chat" as const) : ("config" as const) }
@@ -283,6 +290,7 @@ function laneRow(lane: LaneConfig, now: number, cache: OverviewCache, alive: (pi
 		summary,
 		summaryModel,
 		...(facts?.lastMessageAt === undefined ? {} : { lastMessageAt: facts.lastMessageAt }),
+		...(building === undefined ? {} : { building }),
 	};
 }
 
@@ -323,6 +331,14 @@ export function laneOverview(config: HarnessConfig, options: { now?: number; cac
 /** Why a lane can't be archived now ("<Name> is open in <tool>; close it first."), or undefined when it can. */
 export function archiveRefusal(row: LaneRow): string | undefined {
 	return row.state === "closed" ? undefined : `${row.name} is open in ${TOOL_LABELS[row.openIn ?? row.tool]}; close it first.`;
+}
+
+/** The Agents page's words for a memory build (src/lane/build.ts), or undefined when there is none or it is done. */
+export function buildText(state: BuildState | undefined, alive: (pid: number) => boolean = processAlive, now = Date.now()): string | undefined {
+	if (state === undefined || state.done === true) return undefined;
+	const cost = state.dollars === undefined ? "" : ` · ${dollarText(state.dollars)} so far`;
+	if (buildRunning(state, alive, now)) return `building memory: ${state.summaries} summaries for ${state.messages} messages${cost}`;
+	return `memory build stopped${state.error === undefined ? "" : ` (${shown(state.error)})`}: see build.log, or run orrery compact again`;
 }
 
 /** "ok", "catching up (12)", "waiting (3)", "failing: <reason>", "stopped: <reason>". */

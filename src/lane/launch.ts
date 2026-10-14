@@ -10,6 +10,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { claudeSetup, claudeSetupMod, modSetupReport, setupReport } from "../claude/setup.ts";
 import { laneMode, markedHere, readSetupMarker } from "../claude/view-file.ts";
+import { buildRunning, readBuild } from "./build.ts";
 import { findLane, type HarnessConfig, inWorkspace, type LaneConfig, type LaneLauncher, type LaneTool } from "./config.ts";
 import { type LaneRow, TOOL_LABELS } from "./overview.ts";
 import { AGENT_ENV, newToken, releaseClaim, TOKEN_ENV, workArea } from "./pick.ts";
@@ -105,6 +106,11 @@ export function launchPlan(config: HarnessConfig, row: LaneRow, tools: readonly 
 	const ori = lane.launcher === "ori" ? findOnPath("ori", options.env ?? process.env) : undefined;
 	if (lane.launcher === "ori" && ori === undefined) return { ...base, steps: [], blocked: 'Ori isn\'t installed: see docs/ori.md (or set launcher = "direct")' };
 	if (check?.path === undefined) return { ...base, steps: [], blocked: `${label} is not on PATH (looked for "${BINARIES[tool]}"). ${HINTS[tool]}, or ${options.changeTool ?? "change the lane's tool with C"}.` };
+	// An imported agent's memory is built in the background (src/lane/build.ts): a session now would summarize alongside it.
+	const build = readBuild(lane.dir);
+	if (build !== undefined && buildRunning(build)) {
+		return { ...base, steps: [], blocked: `${lane.name}'s memory is still being built (${build.summaries} summaries for ${build.messages} messages); open it when the build finishes.` };
+	}
 	const inFolder = lane.workspace !== undefined && workArea(lane, cwd) === lane.workspace;
 	const refused = tool === "claude-code" ? claudeCodeRefusal(config, lane, cwd, inFolder) : undefined;
 	if (refused !== undefined) return { ...base, steps: [], blocked: refused };
