@@ -13,7 +13,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { realTarget } from "../lane/guard-paths.ts";
 import { orreryHome } from "../lane/home.ts";
 import { findOnPath, ompExtensionFile, orreryPlugin, piExtensionFile, type RunResult, type Runner } from "../lane/tools.ts";
-import { envRunner, holdInstallLock, laneVersions, removeVersion } from "./install.ts";
+import { dropVersion, envRunner, holdInstallLock, isLeftover, laneVersions, removeVersion } from "./install.ts";
 import { ENTRY_TAILS, inApp, oneLineTarget, VERSION_NAME } from "./layout.ts";
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -223,8 +223,11 @@ function isVersionFolder(path: string, name: string): boolean {
 	return VERSION_NAME.test(name) && [join(path, "VERSION"), ...ENTRY_TAILS.cli.map((tail) => join(path, tail))].some((file) => existsSync(file));
 }
 
-/** Removes from app/ what installs put there (versions, staging, current, history), then app/ itself if that empties it. */
-function removeApp(report: Report, env: NodeJS.ProcessEnv, app: string): void {
+/**
+ * Removes from app/ what installs put there (versions, staging and .removing- folders, current, history), then app/
+ * itself if that empties it. The caller holds the install lock; `release` lets it go before app/ is removed.
+ */
+function removeApp(report: Report, app: string, release: () => void): void {
 	try {
 		if (!lstatSync(app).isDirectory()) {
 			report.lines.push(`left ${app} as it is (not a folder, so not Orrery's)`);
@@ -240,14 +243,6 @@ function removeApp(report: Report, env: NodeJS.ProcessEnv, app: string): void {
 		report.ok = false;
 		return;
 	}
-	let release: () => void;
-	try {
-		release = holdInstallLock(env);
-	} catch (error) {
-		report.lines.push(`left ${app}: ${errorText(error)}`);
-		report.ok = false;
-		return;
-	}
 	const versions: string[] = [];
 	const foreign: string[] = [];
 	try {
@@ -256,9 +251,9 @@ function removeApp(report: Report, env: NodeJS.ProcessEnv, app: string): void {
 			if (entry.name === ".install.lock") continue; // released below
 			if (entry.isSymbolicLink() && (entry.name === "current" || entry.name === "current.new")) rmSync(path);
 			else if (entry.isFile() && (entry.name === "history" || entry.name.startsWith("history.tmp-"))) rmSync(path);
-			else if (entry.isDirectory() && entry.name.startsWith(".staging-")) removeVersion(path);
+			else if (entry.isDirectory() && isLeftover(entry.name)) removeVersion(path);
 			else if (entry.isDirectory() && isVersionFolder(path, entry.name)) {
-				removeVersion(path);
+				dropVersion(app, entry.name);
 				versions.push(entry.name);
 			} else foreign.push(entry.name);
 		}
@@ -315,8 +310,9 @@ function purgeRefusal(home: string, env: NodeJS.ProcessEnv): string | undefined 
 
 /**
  * Unwires and removes this install; with `purge`, also deletes the home. Everything that can stop it (open lanes, a home
- * that is not Orrery's, the purge question) comes before the first change, so a refusal or a no changes nothing.
- * `confirmPurge` answers "no terminal" when there was none to ask.
+ * that is not Orrery's, the purge question, an install holding the lock) comes before the first change, so a refusal or
+ * a no changes nothing. The install lock is held from before the first change until app/ is emptied, so an install
+ * cannot run in between. `confirmPurge` answers "no terminal" when there was none to ask.
  */
 export async function uninstall(options: { env: NodeJS.ProcessEnv; purge: boolean; confirmPurge: () => Promise<boolean | "no terminal">; run?: Runner }): Promise<{ lines: string[]; ok: boolean }> {
 	const { env } = options;
@@ -339,18 +335,34 @@ export async function uninstall(options: { env: NodeJS.ProcessEnv; purge: boolea
 		if (answer !== true) return refused("you did not type delete; nothing changed.");
 	}
 
-	const report: Report = { lines: [], ok: true };
-	const pi = piExtensionFile(env);
-	const omp = ompExtensionFile(env);
-	if (resolve(pi) === resolve(omp)) unwireExtension(report, "pi and OMP", pi, app);
-	else {
-		unwireExtension(report, "pi", pi, app);
-		unwireExtension(report, "OMP", omp, app);
+	// The lock lives in app/; with no app/ folder there is nothing an install could be switching.
+	let held: (() => void) | undefined;
+	try {
+		if (lstatSync(app).isDirectory()) held = holdInstallLock(env);
+	} catch (error) {
+		if (code(error) !== "ENOENT") return refused(`${errorText(error)}; nothing changed.`);
 	}
-	unwireClaude(report, env, app, run);
-	unwireBackup(report, env, userHome, app, run);
-	unlinkCommand(report, userHome, app);
-	removeApp(report, env, app);
+	const release = () => {
+		held?.();
+		held = undefined; // once: the lock may be another install's by the time a second call came
+	};
+
+	const report: Report = { lines: [], ok: true };
+	try {
+		const pi = piExtensionFile(env);
+		const omp = ompExtensionFile(env);
+		if (resolve(pi) === resolve(omp)) unwireExtension(report, "pi and OMP", pi, app);
+		else {
+			unwireExtension(report, "pi", pi, app);
+			unwireExtension(report, "OMP", omp, app);
+		}
+		unwireClaude(report, env, app, run);
+		unwireBackup(report, env, userHome, app, run);
+		unlinkCommand(report, userHome, app);
+		removeApp(report, app, release);
+	} finally {
+		release();
+	}
 	if (!options.purge) {
 		report.lines.push(`Kept ${home}: your config, logins and lanes' memory (orrery uninstall --purge deletes them).`);
 		return report;

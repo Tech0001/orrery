@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { installFrom, makeReadOnly } from "../../src/install/install.ts";
+import { holdInstallLock, installFrom, makeReadOnly } from "../../src/install/install.ts";
 import { uninstall } from "../../src/install/uninstall.ts";
 import { wire } from "../../src/install/wire.ts";
 import { ompExtensionFile, piExtensionFile } from "../../src/lane/tools.ts";
@@ -158,6 +158,27 @@ describe("uninstall", () => {
 		expect(existsSync(join(t.home, ".local", "bin", "orrery"))).toBe(true);
 		expect(existsSync(join(unitDir(t), "orrery-backup.service"))).toBe(true);
 		expect(changes(t, before)).toEqual([]);
+	});
+
+	it("takes the install lock before changing anything: while an install holds it, nothing changes", async () => {
+		const t = await wiredInstall();
+		const release = holdInstallLock(t.env); // this process: alive, so the lock is not stale
+		try {
+			const before = t.calls().length;
+			const { lines, ok } = await uninstall({ env: t.env, purge: false, confirmPurge: never, run: fakeRun });
+			expect(ok).toBe(false);
+			expect(lines.join("\n")).toMatch(/^Not uninstalled: another install is running \(remove .*\.install\.lock if none is\); nothing changed\.$/);
+			expect(existsSync(piExtensionFile(t.env))).toBe(true);
+			expect(existsSync(ompExtensionFile(t.env))).toBe(true);
+			expect(existsSync(join(t.home, ".local", "bin", "orrery"))).toBe(true);
+			expect(existsSync(join(unitDir(t), "orrery-backup.service"))).toBe(true);
+			expect(changes(t, before)).toEqual([]);
+		} finally {
+			release();
+		}
+		const { ok } = await uninstall({ env: t.env, purge: false, confirmPurge: never, run: fakeRun });
+		expect(ok).toBe(true);
+		expect(existsSync(join(t.orreryHome, "app"))).toBe(false);
 	});
 
 	it("refuses when it cannot tell whether a lane is open", async () => {
