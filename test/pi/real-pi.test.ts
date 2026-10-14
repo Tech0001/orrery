@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -7,12 +7,9 @@ import { delimiter, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { install, listVersions } from "../../src/install/install.ts";
-import { wire } from "../../src/install/wire.ts";
+import { installFrom, listVersions, removeVersion } from "../../src/install/install.ts";
 import { readStatus } from "../../src/lane/status-file.ts";
-import { piExtensionFile, piExtensionText } from "../../src/lane/tools.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
-import { commitAll, noteNoGitWorkTree, repoIsGitWorkTree, workingTreeCheckout } from "../install/support.ts";
 import { builtRelease, bunReady, changedSince, installRelease, REPO, removeBuiltRelease } from "../release/support.ts";
 import { fakeModel, rpc } from "./host-rpc.ts";
 import { realRemoteRebuild, realRemoteTurn, streamReply, writeModels } from "./remote-real-support.ts";
@@ -71,8 +68,9 @@ const npmPi: string | null = (() => {
 const LANE_DIR = resolve(fileURLToPath(new URL("../../src/lane", import.meta.url)));
 const PI_DIR = resolve(fileURLToPath(new URL("../../src/pi", import.meta.url)));
 const dirs: string[] = [];
+afterAll(removeBuiltRelease);
 afterAll(() => {
-	for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+	for (const dir of dirs) removeVersion(dir); // an installed release is read-only
 });
 
 const sse = (payload: unknown): string => `data: ${JSON.stringify(payload)}\n\n`;
@@ -226,10 +224,8 @@ export default function (pi) {
  * The installed layout end to end: pi loads Orrery through app/current, a second install switches current while pi
  * runs, and the running pi keeps the version it started with (its status says so) while a new pi runs the new one.
  */
-// Needs pi's compiled binary (a dev build such as node_modules/.bin/pi does not count: CI has none, and the install does
-// a network npm ci) and a git work tree to copy.
-noteNoGitWorkTree();
-describe.skipIf(compiledPi === null || !repoIsGitWorkTree)("Orrery installed in app/current, inside a real pi", () => {
+// Needs pi's compiled binary (a dev build such as node_modules/.bin/pi does not count: CI has none) and Bun to build the release.
+describe.skipIf(compiledPi === null || !bunReady)("Orrery installed in app/current, inside a real pi", () => {
 	it("a running pi keeps its version across an install", async () => {
 		const root = mkdtempSync(join(tmpdir(), "orrery-installed-pi-"));
 		dirs.push(root);
@@ -239,16 +235,12 @@ describe.skipIf(compiledPi === null || !repoIsGitWorkTree)("Orrery installed in 
 		mkdirSync(workspace);
 		const orreryHome = join(home, ".orrery");
 		const env = { ...isolated(home), ORRERY_HOME: orreryHome };
-		const checkout = workingTreeCheckout();
-		dirs.push(checkout);
-		// The default install (npm ci --omit=dev), which is what lanes load.
-		const first = install({ checkout, env, checks: "minimal" });
+		const release = await builtRelease();
+		const first = installFrom({ from: release, env });
 		const current = join(orreryHome, "app", "current");
-		// Wired the way npm run install-local wires; this runner refuses every command (no real claude or systemctl runs).
-		const refuse = () => ({ status: 1, stdout: "", stderr: "not run in this test" });
-		const wired = await wire(env, { run: refuse, confirm: async () => false });
-		expect(wired.join("\n")).toMatch(/^pi: wrote /m);
-		expect(readFileSync(piExtensionFile(env), "utf8")).toBe(piExtensionText(current));
+		// Written by hand until the wiring knows releases: pi's extension file re-exports the installed pi.js.
+		mkdirSync(join(home, ".pi", "agent", "extensions"), { recursive: true });
+		writeFileSync(join(home, ".pi", "agent", "extensions", "orrery.ts"), `export { default } from ${JSON.stringify(join(current, "extensions", "pi.js"))};\n`);
 
 		let chats = 0;
 		const server = createServer((req, res) => {
@@ -337,8 +329,11 @@ describe.skipIf(compiledPi === null || !repoIsGitWorkTree)("Orrery installed in 
 			expect((await openStatus(running)).version).toBe(first.version);
 			await turn(running, "The codename is Cedar.", 2);
 
-			commitAll(checkout, "a second version");
-			const second = install({ checkout, env, checks: "minimal" });
+			// A second version: the same release under another VERSION (its binary reports the file's version).
+			const other = join(root, "second-release");
+			cpSync(release, other, { recursive: true });
+			writeFileSync(join(other, "VERSION"), `${first.version}-second\n`);
+			const second = installFrom({ from: other, env });
 			expect(second.version).not.toBe(first.version);
 			expect(second.previous).toBe(first.version);
 			expect(readlinkSync(current)).toBe(second.version);
@@ -367,6 +362,7 @@ describe.skipIf(compiledPi === null || !repoIsGitWorkTree)("Orrery installed in 
 			}
 			server.closeAllConnections();
 			await new Promise<void>((done) => server.close(() => done()));
+			removeVersion(root); // the installed versions are read-only
 		}
 	}, 300_000);
 });
@@ -377,8 +373,6 @@ describe.skipIf(compiledPi === null || !repoIsGitWorkTree)("Orrery installed in 
  * through its virtual modules (Bun), the npm one through its aliases (Node).
  */
 describe.skipIf(!bunReady)("Orrery from a read-only installed release, inside a real pi", () => {
-	afterAll(removeBuiltRelease);
-
 	for (const [kind, binary] of [["compiled", compiledPi], ["npm", npmPi]] as const) {
 		it.skipIf(binary === null)(`the ${kind} pi loads extensions/pi.js, summarizes through Orrery's registry, records a turn, and writes nothing into the release`, async () => {
 			await releaseCheck(binary as string);

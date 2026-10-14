@@ -1,28 +1,17 @@
 /**
- * npm run install-local (spec 2026-10-13-orrery-home-and-install §5): the checkout's last commit is staged in
- * <home>/app/.staging-*, checked, renamed to app/<version>, and app/current is switched to it in one rename. Older
- * versions go, except the newest three and any a live lane runs. Lanes' data is never touched.
+ * orrery install --from DIR (spec 2026-10-13-orrery-releases-design §5): a release folder is copied to
+ * <home>/app/.staging-*, its binary checked, renamed to app/<VERSION>, made read-only, and app/current is switched to
+ * it in one rename. Older versions go, except the newest three and any a live lane runs. Lanes' data is never touched.
  */
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { defaultConfigPath, loadConfig } from "../lane/config.ts";
 import { orreryHome } from "../lane/home.ts";
-import { findOnPath, type Runner } from "../lane/tools.ts";
-
-export interface InstallOptions {
-	checkout: string;
-	env: NodeJS.ProcessEnv;
-	run?: Runner;
-	/** False keeps dev packages in the installed copy (npm ci without --omit=dev). */
-	omitDev?: boolean;
-	/** "minimal" runs only `--help`; "full" (the default) also a read-only `status` and the Bun store check. */
-	checks?: "minimal" | "full";
-	log?: (line: string) => void;
-}
+import type { Runner } from "../lane/tools.ts";
 
 /** Versions kept by history alone; current and versions live lanes run are kept besides. */
 const KEEP = 3;
@@ -48,22 +37,6 @@ function shown(path: string, env: NodeJS.ProcessEnv): string {
 
 const appDir = (env: NodeJS.ProcessEnv) => join(orreryHome(env), "app");
 
-/** `${package.json version}-${short commit}` of the checkout's HEAD. */
-export function versionName(checkout: string, run: Runner): string {
-	const pkg = run("git", ["-C", checkout, "show", "HEAD:package.json"]);
-	if (pkg.status !== 0) throw new Error(`${checkout}'s last commit has no package.json`);
-	let version: unknown;
-	try {
-		version = (JSON.parse(pkg.stdout) as { version?: unknown }).version;
-	} catch {
-		// not JSON: said below
-	}
-	if (typeof version !== "string" || !/^[0-9A-Za-z][0-9A-Za-z.+_-]*$/.test(version)) throw new Error(`${checkout}'s last commit has no usable version in package.json`);
-	const sha = run("git", ["-C", checkout, "rev-parse", "--short=7", "HEAD"]);
-	if (sha.status !== 0) throw new Error(`${checkout}: git rev-parse failed: ${failure(sha)}`);
-	return `${version}-${sha.stdout.trim()}`;
-}
-
 /** Takes app/.install.lock (app must exist); the returned function releases it. */
 export function holdInstallLock(env: NodeJS.ProcessEnv): () => void {
 	const lock = join(appDir(env), ".install.lock");
@@ -79,7 +52,18 @@ export function holdInstallLock(env: NodeJS.ProcessEnv): () => void {
 	} finally {
 		closeSync(fd);
 	}
-	return () => rmSync(lock, { force: true });
+	const release = () => rmSync(lock, { force: true });
+	const onSignal = (signal: NodeJS.Signals) => {
+		release();
+		process.exit(signal === "SIGINT" ? 130 : 143);
+	};
+	process.once("SIGINT", onSignal);
+	process.once("SIGTERM", onSignal);
+	return () => {
+		process.off("SIGINT", onSignal);
+		process.off("SIGTERM", onSignal);
+		release();
+	};
 }
 
 /** The version app/current names, if any. */
@@ -228,63 +212,76 @@ function collect(app: string, env: NodeJS.ProcessEnv, log: (line: string) => voi
 	if (previous !== undefined) keep.add(previous); // what the user was on before this switch (maybe just rolled back to)
 	for (const version of live.keys()) keep.add(version);
 	const removed = versionFolders(app).filter((name) => !keep.has(name)).sort();
-	for (const name of removed) rmSync(join(app, name), { recursive: true, force: true });
+	for (const name of removed) removeVersion(join(app, name));
 	return removed;
 }
 
-/** Writes the checkout's HEAD into `into`: git archive piped to tar, so no ignored or untracked file comes along. */
-function extract(checkout: string, into: string, env: NodeJS.ProcessEnv): void {
-	const archive = spawnSync("git", ["-C", checkout, "archive", "--format=tar", "HEAD"], { env, maxBuffer: 1024 * 1024 * 1024 });
-	if (archive.status !== 0) throw new Error(`git archive failed: ${firstLine(String(archive.stderr ?? archive.error ?? ""))}`);
-	const tar = spawnSync("tar", ["-x", "-f", "-", "-C", into], { env, input: archive.stdout });
-	if (tar.status !== 0) throw new Error(`tar could not unpack the commit: ${firstLine(String(tar.stderr ?? tar.error ?? ""))}`);
-}
+/** Release versions as folder names: 0.6.0, 0.6.0-<commit>, 1.0.0-rc.1 (no slashes, no leading dot). */
+const VERSION_NAME = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
 
-/** The staged copy must answer --help; "full" also runs a read-only status against the real config and the Bun store check. */
-function check(staging: string, options: InstallOptions, run: Runner): void {
-	const main = join(staging, "src", "cli", "main.ts");
-	const cli = (command: string, ...args: string[]) => ({ show: `node src/cli/main.ts ${command}`, cmd: process.execPath, args: ["--disable-warning=ExperimentalWarning", main, command, ...args] });
-	const checks = [cli("--help")];
-	if (options.checks !== "minimal") {
-		const config = defaultConfigPath(options.env);
-		if (existsSync(config)) checks.push(cli("status", "--config", config));
-		if (findOnPath("bun", options.env) !== undefined) checks.push({ show: "npm run test:bun", cmd: "npm", args: ["--prefix", staging, "run", "test:bun"] });
-	}
-	for (const { show, cmd, args } of checks) {
-		const result = run(cmd, args);
-		if (result.status !== 0) throw new Error(`check failed: ${show}: ${failure(result)}`);
-	}
-}
-
-/** Builds app/<version> through a staging folder, which is removed if any step fails. */
-function stage(checkout: string, app: string, version: string, options: InstallOptions, run: Runner, log: (line: string) => void): void {
-	const staging = join(app, `.staging-${randomUUID()}`);
-	mkdirSync(staging, { mode: 0o700 });
+/** A release folder's VERSION, checked. */
+export function releaseVersion(folder: string): string {
+	let text: string;
 	try {
-		extract(checkout, staging, options.env);
-		log(`Installing packages for ${version} (npm ci${options.omitDev === false ? "" : " --omit=dev"})...`);
-		const npm = run("npm", ["ci", "--prefix", staging, ...(options.omitDev === false ? [] : ["--omit=dev"]), "--ignore-scripts", "--no-audit", "--no-fund"]);
-		if (npm.status !== 0) throw new Error(`npm ci failed in the staged copy: ${failure(npm)}`);
-		log(`Checking ${version}...`);
-		check(staging, options, run);
+		text = readFileSync(join(folder, "VERSION"), "utf8").trim();
+	} catch {
+		throw new Error(`${folder} is not an Orrery release (no VERSION file)`);
+	}
+	if (!VERSION_NAME.test(text)) throw new Error(`${folder}'s VERSION is not a version: ${JSON.stringify(text.slice(0, 40))}`);
+	return text;
+}
+
+/** Folders 555, files 444, executables 555, deepest first; links are left as they are. */
+export function makeReadOnly(path: string): void {
+	const info = lstatSync(path);
+	if (info.isSymbolicLink()) return;
+	if (info.isDirectory()) {
+		for (const name of readdirSync(path)) makeReadOnly(join(path, name));
+		chmodSync(path, 0o555);
+		return;
+	}
+	chmodSync(path, info.mode & 0o111 ? 0o555 : 0o444);
+}
+
+/** Removes a version folder, making its folders writable first (a read-only folder's entries cannot be removed). */
+export function removeVersion(path: string): void {
+	const open = (dir: string) => {
+		const info = lstatSync(dir);
+		if (!info.isDirectory() || info.isSymbolicLink()) return;
+		chmodSync(dir, 0o700);
+		for (const name of readdirSync(dir)) open(join(dir, name));
+	};
+	try {
+		open(path);
+	} catch {
+		// removed below as far as it can be
+	}
+	rmSync(path, { recursive: true, force: true });
+}
+
+/** Copies a release folder into app/.staging-*, runs its binary's --version, then renames it to app/<VERSION>. */
+function stageRelease(from: string, app: string, version: string, run: Runner): void {
+	const staging = join(app, `.staging-${randomUUID()}`);
+	try {
+		cpSync(from, staging, { recursive: true, verbatimSymlinks: true });
+		const said = run(join(staging, "bin", "orrery"), ["--version"]);
+		if (said.status !== 0 && /ENOEXEC|Exec format error|cannot execute binary/i.test(said.stderr)) throw new Error(`this release cannot run on this machine (${process.platform}-${process.arch}); download the archive for it`);
+		if (said.status !== 0) throw new Error(`the release's orrery --version failed: ${failure(said)}`);
+		if (said.stdout.trim() !== `orrery ${version}`) throw new Error(`the release's binary says ${said.stdout.trim() || "nothing"}, not orrery ${version}`);
 		renameSync(staging, join(app, version));
 	} catch (error) {
-		rmSync(staging, { recursive: true, force: true });
+		removeVersion(staging);
 		throw error;
 	}
+	makeReadOnly(join(app, version));
 }
 
-/** Installs the checkout's HEAD and switches app/current to it. `previous` is what current named before a switch. */
-export function install(options: InstallOptions): { version: string; previous?: string; removed: string[] } {
+/** Installs a release folder and switches app/current to it. `previous` is what current named before the switch. */
+export function installFrom(options: { from: string; env: NodeJS.ProcessEnv; log?: (line: string) => void; run?: Runner }): { version: string; previous?: string; removed: string[] } {
 	const { env } = options;
-	const run = options.run ?? envRunner(env);
+	const run = options.run ?? envRunner(env, 60_000);
 	const log = options.log ?? (() => {});
-	const top = run("git", ["-C", options.checkout, "rev-parse", "--show-toplevel"]);
-	if (top.status !== 0) throw new Error(`${options.checkout} is not a git checkout`);
-	const checkout = top.stdout.trim();
-	if (run("git", ["-C", checkout, "rev-parse", "--verify", "--quiet", "HEAD"]).status !== 0) throw new Error(`${options.checkout} has no commit yet`);
-	if (run("git", ["-C", checkout, "status", "--porcelain"]).stdout.trim() !== "") log("Installing the last commit; uncommitted changes are not included.");
-	const version = versionName(checkout, run);
+	const version = releaseVersion(options.from);
 	const home = orreryHome(env);
 	const app = join(home, "app");
 	mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -293,9 +290,7 @@ export function install(options: InstallOptions): { version: string; previous?: 
 	const release = holdInstallLock(env);
 	try {
 		// Under the lock, a staging folder is what an interrupted install left.
-		for (const name of readdirSync(app)) {
-			if (name.startsWith(".staging-")) rmSync(join(app, name), { recursive: true, force: true });
-		}
+		for (const name of readdirSync(app)) if (name.startsWith(".staging-")) removeVersion(join(app, name));
 		const previous = currentName(app);
 		if (isFolder(join(app, version))) {
 			if (previous === version) {
@@ -303,7 +298,8 @@ export function install(options: InstallOptions): { version: string; previous?: 
 				return { version, removed: [] };
 			}
 		} else {
-			stage(checkout, app, version, options, run, log);
+			log(`Installing ${version}...`);
+			stageRelease(options.from, app, version, run);
 		}
 		switchTo(app, version, true);
 		return { version, ...(previous === undefined ? {} : { previous }), removed: collect(app, env, log, previous) };
@@ -315,7 +311,7 @@ export function install(options: InstallOptions): { version: string; previous?: 
 /** Switches app/current back to the latest version before it in install order (app/history) that still has a folder. */
 export function rollback(env: NodeJS.ProcessEnv): { from: string; to: string } {
 	const app = appDir(env);
-	if (currentName(app) === undefined) throw new Error("Orrery is not installed yet: run npm run install-local in a checkout");
+	if (currentName(app) === undefined) throw new Error("Orrery is not installed yet: see the install line in the README");
 	const release = holdInstallLock(env);
 	try {
 		const from = currentName(app) as string;
@@ -343,6 +339,6 @@ export function listVersions(env: NodeJS.ProcessEnv): { name: string; current: b
 
 /** listVersions as lines: `* ` marks current. */
 export function versionLines(versions: ReturnType<typeof listVersions>): string[] {
-	if (versions.length === 0) return ["No version is installed yet (npm run install-local in a checkout installs one)."];
+	if (versions.length === 0) return ["No version is installed yet."];
 	return versions.map((v) => `${v.current ? "*" : " "} ${v.name}${v.current ? "  (current)" : ""}${v.lanes.length === 0 ? "" : `  run by ${v.lanes.join(", ")}`}`);
 }

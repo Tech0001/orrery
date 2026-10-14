@@ -21,13 +21,24 @@ export const compiled: boolean = fileURLToPath(import.meta.url).startsWith("/$bu
  * package.json (a checkout).
  */
 export function runningRoot(): string {
+	foundRoot ??= findRoot();
+	return foundRoot;
+}
+
+/**
+ * Found once per process. Through app/current a later install would otherwise change the answer: a running pi or OMP
+ * keeps the version it loaded, and its status file says so.
+ */
+let foundRoot: string | undefined;
+
+function findRoot(): string {
 	if (compiled) {
 		const binary = realpathSync(process.execPath);
 		const root = resolve(dirname(binary), "..");
 		if (!existsSync(join(root, "VERSION"))) throw new Error(`no VERSION beside this binary at ${binary} (looked for ${join(root, "VERSION")})`);
 		return root;
 	}
-	const here = fileURLToPath(import.meta.url);
+	const here = realpathSync(fileURLToPath(import.meta.url));
 	for (let dir = dirname(here); ; dir = dirname(dir)) {
 		if (existsSync(join(dir, "VERSION")) || existsSync(join(dir, "package.json"))) return dir;
 		if (dirname(dir) === dir) throw new Error(`no Orrery folder above ${here}`);

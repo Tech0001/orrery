@@ -17,7 +17,7 @@
   },
   "scripts": {
     "demo": "node --disable-warning=ExperimentalWarning scripts/demo.ts",
-    "install-local": "node --disable-warning=ExperimentalWarning scripts/install.ts",
+    "install-local": "bun scripts/install-local.ts",
     "build": "bun scripts/build-release.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",

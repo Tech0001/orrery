@@ -3,10 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { install } from "../../src/install/install.ts";
+import { installFrom, removeVersion } from "../../src/install/install.ts";
 import { checkTools, installSteps, ompExtensionFile, ompExtensionText, orreryRoot, runInstall, type ToolCheck } from "../../src/lane/tools.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
-import { noteNoGitWorkTree, repoIsGitWorkTree, workingTreeCheckout } from "../install/support.ts";
 import { fakeModel, rpc } from "../pi/host-rpc.ts";
 import { realRemoteTurn } from "../pi/remote-real-support.ts";
 import { builtRelease, bunReady, changedSince, installRelease, removeBuiltRelease } from "../release/support.ts";
@@ -30,7 +29,8 @@ function isolated(home: string, extra: Record<string, string> = {}): NodeJS.Proc
 }
 
 const scratch = mkdtempSync(join(tmpdir(), "orrery-real-omp-"));
-afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+afterAll(removeBuiltRelease);
+afterAll(() => removeVersion(scratch)); // installed releases under it are read-only
 
 /** The omp binary: ORRERY_TEST_OMP, or "omp" on PATH; null when there is none. Even --version runs in a scratch HOME. */
 function findOmp(): string | null {
@@ -60,25 +60,24 @@ describe.skipIf(omp === null)("Orrery inside a real OMP (isolated OMP home)", ()
 		await loadCheck(mkdtempSync(join(scratch, "checkout-")), orreryRoot(), "checkout");
 	}, 120_000);
 
-	// Spec call 3: an installed copy without dev packages (npm ci --omit=dev) must load in OMP. src/omp/settings.ts
-	// imports @earendil-works/pi-coding-agent at run time; OMP supplies it, or "OMP settings not applied" fails the check.
-	noteNoGitWorkTree();
-	it.skipIf(!repoIsGitWorkTree)("OMP loads Orrery through app/current", async () => {
+	// An installed release folder is read-only and holds no dev packages; OMP supplies what extensions/omp.js leaves out.
+	it.skipIf(!bunReady)("OMP loads Orrery through app/current", async () => {
 		const base = mkdtempSync(join(scratch, "installed-"));
-		const checkout = workingTreeCheckout();
 		try {
 			const home = join(base, "home");
-			const { version } = install({ checkout, env: isolated(home), checks: "minimal", omitDev: true });
-			expect(existsSync(join(home, ".orrery", "app", version, "node_modules", "@earendil-works", "pi-coding-agent"))).toBe(false);
-			await loadCheck(base, join(home, ".orrery", "app", "current"), version);
+			const { version } = installFrom({ from: await builtRelease(), env: isolated(home) });
+			expect(existsSync(join(home, ".orrery", "app", version, "node_modules"))).toBe(false);
+			const current = join(home, ".orrery", "app", "current");
+			// Written by hand until the wiring knows releases: OMP follows only a relative re-export (research section 3).
+			await loadCheck(base, current, version, (file) => {
+				writeFileSync(file, `export { default } from ${JSON.stringify(relative(dirname(file), join(current, "extensions", "omp.js")))};\n`);
+			});
 		} finally {
-			rmSync(checkout, { recursive: true, force: true });
+			removeVersion(base); // the installed version is read-only
 		}
 	}, 180_000);
 
 	describe.skipIf(!bunReady)("from a release", () => {
-		afterAll(removeBuiltRelease);
-
 		it("OMP loads extensions/omp.js from a read-only installed release, through a relative re-export, and writes nothing there", async () => {
 			const base = mkdtempSync(join(scratch, "release-"));
 			const installed = installRelease(await builtRelease(), join(base, "home"));

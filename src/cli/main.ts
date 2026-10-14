@@ -61,8 +61,8 @@ const USAGE = `Usage: orrery <command> [--config FILE]
   launch <Lane> [--yes]      start the lane's tool (pi, omp, claude, codex) in its folder, after the checks the TUI makes
   tools [--json]             pi, Claude Code, Codex and OMP: found, version, Orrery's side installed
   tools install <pi|claude-code|omp> [--yes]   install or update Orrery's side of a tool (shows what it does first)
+  install --from DIR [--yes]   install an unpacked release folder (install.sh and orrery update run this)
   install --rollback | --list   switch back to the previous installed version, or list versions and which lanes run them
-                             (install a new version from a checkout: npm run install-local)
   claude-setup <Lane> [--mod]  make Claude Code load the lane's memory view (CLAUDE.md, or CLAUDE.local.md in a
                              repo); --mod: from the Orrery mod, in the system prompt
   claude-mod view --cwd DIR [--session ID] [--wait-ms N [--spool-only]]   the Orrery mod's call: the lane's memory
@@ -130,9 +130,16 @@ async function toolsCommand(positionals: string[], values: { json?: boolean; yes
 	return 0;
 }
 
-/** `orrery install --rollback | --list`: the installed copies in the home's app folder. Installing a new one needs a checkout. */
-async function installCommand(values: { rollback?: boolean; list?: boolean }): Promise<number> {
-	const { listVersions, rollback, versionLines } = await import("../install/install.ts");
+/** `orrery install --from DIR | --rollback | --list`: install a release folder, or work with the installed copies in the home's app folder. */
+async function installCommand(values: { from?: string; rollback?: boolean; list?: boolean }): Promise<number> {
+	const { installFrom, listVersions, rollback, versionLines } = await import("../install/install.ts");
+	if (values.from !== undefined) {
+		const say = (line: string) => process.stdout.write(`${line}\n`);
+		const { version, removed } = installFrom({ from: values.from, env: process.env, log: say });
+		say(`Installed ${version}.`);
+		if (removed.length > 0) say(`Removed older versions: ${removed.join(", ")}.`);
+		return 0;
+	}
 	if (values.list === true) {
 		process.stdout.write(`${versionLines(listVersions(process.env)).join("\n")}\n`);
 		return 0;
@@ -142,7 +149,7 @@ async function installCommand(values: { rollback?: boolean; list?: boolean }): P
 		process.stdout.write(`Switched back from ${from} to ${to}. pi and OMP lanes keep their version until they restart.\n`);
 		return 0;
 	}
-	throw new Error("install takes --rollback or --list. To install a new version, run npm run install-local in a checkout.");
+	throw new Error("install takes --from DIR, --rollback or --list.");
 }
 
 /** A lane name as given, or "." for the lane whose workspace holds the project folder (Claude Code's commands use it). */

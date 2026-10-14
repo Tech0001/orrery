@@ -1,14 +1,14 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { holdInstallLock, install, listVersions, rollback } from "../../src/install/install.ts";
+import { holdInstallLock, installFrom, listVersions, makeReadOnly, releaseVersion, removeVersion, rollback } from "../../src/install/install.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
-	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+	for (const d of dirs.splice(0)) removeVersion(d);
 });
 
 function tempDir(prefix: string): string {
@@ -17,10 +17,7 @@ function tempDir(prefix: string): string {
 	return dir;
 }
 
-const SRC = fileURLToPath(new URL("../../src/", import.meta.url));
-const MAIN = join(SRC, "cli", "main.ts");
-/** What src/lane/tools.ts loads: the installed-copy probe below runs it from app/current. */
-const TOOLS_FILES = ["lane/tools.ts", "lane/running.ts", "lane/guard-rules.ts", "lane/guard-paths.ts", "lane/home.ts", "lane/source-labels.ts", "import/scrub.ts"];
+const MAIN = fileURLToPath(new URL("../../src/cli/main.ts", import.meta.url));
 
 /** A scratch home. The environment running the tests may name a config of its own; the installer must not see it. */
 function scratchEnv(): NodeJS.ProcessEnv {
@@ -30,62 +27,45 @@ function scratchEnv(): NodeJS.ProcessEnv {
 	return env;
 }
 
-const git = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir, "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { encoding: "utf8" });
-
-/**
- * A tiny committed tree: no dependencies (npm ci stays offline and fast), a CLI that answers --help, one ignored file.
- * `tools`: also the real src/lane/tools.ts and what it loads, with probe.ts printing what the running copy reports.
- */
-function fixtureCheckout(options: { tools?: boolean; scripts?: Record<string, string> } = {}): string {
-	const dir = tempDir("orrery-fixture-");
-	writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "orrery", version: "0.6.0", type: "module", ...(options.scripts === undefined ? {} : { scripts: options.scripts }) }));
-	writeFileSync(join(dir, "package-lock.json"), JSON.stringify({ name: "orrery", version: "0.6.0", lockfileVersion: 3, requires: true, packages: { "": { name: "orrery", version: "0.6.0" } } }));
-	mkdirSync(join(dir, "src", "cli"), { recursive: true });
-	writeFileSync(join(dir, "src", "cli", "main.ts"), 'if (process.argv.includes("--help")) console.log("ok");\n');
-	writeFileSync(join(dir, ".gitignore"), "secret.env\n");
-	writeFileSync(join(dir, "secret.env"), "never copied\n");
-	if (options.tools === true) {
-		for (const file of TOOLS_FILES) {
-			mkdirSync(dirname(join(dir, "src", file)), { recursive: true });
-			copyFileSync(join(SRC, file), join(dir, "src", file));
-		}
-		writeFileSync(join(dir, "probe.ts"), 'import { runningVersion, wiringRoot } from "./src/lane/tools.ts";\nconsole.log(JSON.stringify({ version: runningVersion(), wiring: wiringRoot() }));\n');
-	}
-	execFileSync("git", ["-C", dir, "init", "-q"]);
-	git(dir, "add", "-A");
-	git(dir, "commit", "-qm", "fixture");
+/** A release folder for `version`: a bin/orrery that answers --version (and can be told to fail), and the files a release has. */
+function fixtureRelease(version: string, options: { versionOutput?: string; exit?: number } = {}): string {
+	const dir = join(tempDir("orrery-release-"), `orrery-${version}-linux-x64`);
+	mkdirSync(join(dir, "bin"), { recursive: true });
+	mkdirSync(join(dir, "extensions"), { recursive: true });
+	writeFileSync(join(dir, "VERSION"), `${version}\n`);
+	writeFileSync(join(dir, "extensions", "pi.js"), "export default () => {};\n");
+	const said = options.versionOutput ?? `orrery ${version}`;
+	writeFileSync(join(dir, "bin", "orrery"), `#!/bin/sh\n[ "$1" = --version ] && { echo "${said}"; exit ${options.exit ?? 0}; }\nexit 0\n`, { mode: 0o755 });
 	return dir;
 }
 
-/** Each scratch env's fixture checkout, for commitAgain. */
-const checkouts = new WeakMap<NodeJS.ProcessEnv, string>();
+/** The next version to install in each scratch env: 0.6.0, 0.6.1, ... */
+const counters = new WeakMap<NodeJS.ProcessEnv, number>();
 
-/** An empty commit in env's checkout, so the next install is a new version. */
-function commitAgain(env: NodeJS.ProcessEnv): string {
-	const checkout = checkouts.get(env) as string;
-	git(checkout, "commit", "-q", "--allow-empty", "-m", "again");
-	return checkout;
+/** Installs the env's next version (0.6.<n>) and returns its name. */
+function installNext(env: NodeJS.ProcessEnv, options: Partial<Parameters<typeof installFrom>[0]> = {}) {
+	const n = counters.get(env) ?? 0;
+	counters.set(env, n + 1);
+	return installFrom({ from: fixtureRelease(`0.6.${n}`), env, ...options });
 }
 
 function freshInstall() {
-	const checkout = fixtureCheckout();
 	const env = scratchEnv();
-	checkouts.set(env, checkout);
-	return { checkout, env, version: install({ checkout, env, checks: "minimal" }).version };
+	return { env, version: installNext(env).version };
 }
 
 function twoInstalls() {
-	const { checkout, env, version } = freshInstall();
-	return { checkout, env, versions: [version, install({ checkout: commitAgain(env), env, checks: "minimal" }).version] };
+	const { env, version } = freshInstall();
+	return { env, versions: [version, installNext(env).version] };
 }
 
 /** v1..v5, current = v5. Lane Atlas starts on v1 and keeps running through the later installs. */
 function fiveInstalls() {
-	const { checkout, env, version } = freshInstall();
+	const { env, version } = freshInstall();
 	const versions = [version];
 	writeLiveStatus(env, "Atlas", version);
-	while (versions.length < 5) versions.push(install({ checkout: commitAgain(env), env, checks: "minimal" }).version);
-	return { checkout, env, versions };
+	while (versions.length < 5) versions.push(installNext(env).version);
+	return { env, versions };
 }
 
 /** A lane in the home's config whose status.json says it runs `version` as `pid` (default: this process, alive). */
@@ -108,60 +88,71 @@ function writeLiveStatus(env: NodeJS.ProcessEnv, lane: string, version: string, 
 
 const currentOf = (env: NodeJS.ProcessEnv) => readlinkSync(join(env.ORRERY_HOME as string, "app", "current"));
 const historyOf = (env: NodeJS.ProcessEnv) => readFileSync(join(env.ORRERY_HOME as string, "app", "history"), "utf8").trim().split("\n");
-const versionFolders = (env: NodeJS.ProcessEnv) => readdirSync(join(env.ORRERY_HOME as string, "app")).filter((n) => /^0\.6\.0-/.test(n)).sort();
+const versionFolders = (env: NodeJS.ProcessEnv) => readdirSync(join(env.ORRERY_HOME as string, "app")).filter((n) => /^0\.6\./.test(n)).sort();
 
 /** A pid that was alive a moment ago and is not now. */
 function deadPid(): number {
 	return spawnSync(process.execPath, ["-e", ""]).pid as number;
 }
 
-describe("install", () => {
-	it("installs the committed tree into app/<version> and points current at it", () => {
-		const checkout = fixtureCheckout();
+describe("installFrom", () => {
+	it("installs a release folder into app/<VERSION>, read-only, and points current at it", () => {
 		const env = scratchEnv();
-		const home = env.HOME as string;
-		const sha = execFileSync("git", ["-C", checkout, "rev-parse", "--short=7", "HEAD"], { encoding: "utf8" }).trim();
-		const result = install({ checkout, env, checks: "minimal" });
-		expect(result.version).toBe(`0.6.0-${sha}`);
-		const app = join(home, ".orrery", "app");
-		expect(readlinkSync(join(app, "current"))).toBe(`0.6.0-${sha}`);
-		expect(existsSync(join(app, result.version, "secret.env"))).toBe(false);
+		const result = installFrom({ from: fixtureRelease("0.6.0"), env });
+		const app = join(env.ORRERY_HOME as string, "app");
+		expect(result.version).toBe("0.6.0");
+		expect(readlinkSync(join(app, "current"))).toBe("0.6.0");
+		expect(statSync(join(app, "0.6.0")).mode & 0o777).toBe(0o555);
+		expect(statSync(join(app, "0.6.0", "VERSION")).mode & 0o777).toBe(0o444);
+		expect(statSync(join(app, "0.6.0", "bin", "orrery")).mode & 0o777).toBe(0o555);
+		expect(() => writeFileSync(join(app, "0.6.0", "VERSION"), "x")).toThrow();
 		expect(readdirSync(app).filter((n) => n.startsWith(".staging-"))).toEqual([]);
-		expect(readFileSync(join(app, "history"), "utf8").trim().split("\n")).toEqual([result.version]);
-		expect(statSync(join(home, ".orrery")).mode & 0o777).toBe(0o700);
+		expect(readFileSync(join(app, "history"), "utf8").trim().split("\n")).toEqual(["0.6.0"]);
+		expect(statSync(join(env.ORRERY_HOME as string)).mode & 0o777).toBe(0o700);
 		expect(statSync(app).mode & 0o777).toBe(0o700);
 		expect(statSync(join(app, "history")).mode & 0o777).toBe(0o600);
 		expect(existsSync(join(app, ".install.lock"))).toBe(false);
+	});
+
+	it("refuses a folder with no usable VERSION, and one whose binary names another version; nothing changes", () => {
+		const env = scratchEnv();
+		installFrom({ from: fixtureRelease("0.6.0"), env });
+		const bad = fixtureRelease("0.6.1");
+		writeFileSync(join(bad, "VERSION"), "../x\n");
+		expect(() => installFrom({ from: bad, env })).toThrow(/VERSION/);
+		expect(() => installFrom({ from: fixtureRelease("0.6.1", { versionOutput: "orrery 0.5.9" }), env })).toThrow(/says orrery 0\.5\.9, not orrery 0\.6\.1/);
+		const app = join(env.ORRERY_HOME as string, "app");
+		expect(readlinkSync(join(app, "current"))).toBe("0.6.0");
+		expect(readdirSync(app).filter((n) => n.startsWith("."))).toEqual([]);
+	});
+
+	it("refuses a folder that is not a release", () => {
+		expect(() => releaseVersion(tempDir("orrery-empty-"))).toThrow(/no VERSION file/);
+	});
+
+	it("says a binary that cannot run here is for another machine", () => {
+		const env = scratchEnv();
+		const other = fixtureRelease("0.6.1");
+		writeFileSync(join(other, "bin", "orrery"), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 0, 0, 0]), { mode: 0o755 });
+		expect(() => installFrom({ from: other, env })).toThrow(/cannot run on this machine/);
 	});
 
 	it("removes a staging folder an interrupted install left", () => {
 		const env = scratchEnv();
 		const leftover = join(env.ORRERY_HOME as string, "app", ".staging-interrupted");
 		mkdirSync(leftover, { recursive: true });
-		writeFileSync(join(leftover, "package.json"), "{}");
+		writeFileSync(join(leftover, "VERSION"), "0.1.0\n");
+		makeReadOnly(leftover);
 		chmodSync(env.ORRERY_HOME as string, 0o755);
-		install({ checkout: fixtureCheckout(), env, checks: "minimal" });
+		installFrom({ from: fixtureRelease("0.6.0"), env });
 		expect(existsSync(leftover)).toBe(false);
 		expect(statSync(env.ORRERY_HOME as string).mode & 0o777).toBe(0o700); // an existing 0755 home is tightened
 	});
 
-	it("says uncommitted changes are not included", () => {
-		const checkout = fixtureCheckout();
-		writeFileSync(join(checkout, "src", "cli", "main.ts"), "changed\n");
-		const lines: string[] = [];
+	it("leaves current alone and removes the staging folder when the binary fails", () => {
 		const env = scratchEnv();
-		const { version } = install({ checkout, env, checks: "minimal", log: (l) => lines.push(l) });
-		expect(lines.join("\n")).toMatch(/uncommitted changes are not included/);
-		expect(readFileSync(join(env.ORRERY_HOME as string, "app", version, "src", "cli", "main.ts"), "utf8")).toContain("--help");
-	});
-
-	it("leaves current alone and removes the staging folder when a check fails", () => {
-		const checkout = fixtureCheckout();
-		const env = scratchEnv();
-		const first = install({ checkout, env, checks: "minimal" });
-		writeFileSync(join(checkout, "src", "cli", "main.ts"), "process.exit(3);\n");
-		execFileSync("git", ["-C", checkout, "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qam", "broken"]);
-		expect(() => install({ checkout, env, checks: "minimal" })).toThrow(/check failed/);
+		const first = installFrom({ from: fixtureRelease("0.6.0"), env });
+		expect(() => installFrom({ from: fixtureRelease("0.6.1", { exit: 3 }), env })).toThrow(/--version failed: exit 3/);
 		const app = join(env.ORRERY_HOME as string, "app");
 		expect(readlinkSync(join(app, "current"))).toBe(first.version);
 		expect(readdirSync(app).filter((n) => n.startsWith(".staging-"))).toEqual([]);
@@ -169,55 +160,31 @@ describe("install", () => {
 		expect(existsSync(join(app, ".install.lock"))).toBe(false);
 	});
 
-	it("names the failing check and its first error line", () => {
-		const checkout = fixtureCheckout();
-		writeFileSync(join(checkout, "src", "cli", "main.ts"), 'console.error("boom: no config");\nconsole.error("second line");\nprocess.exit(1);\n');
-		git(checkout, "commit", "-qam", "broken");
-		expect(() => install({ checkout, env: scratchEnv(), checks: "minimal" })).toThrow("check failed: node src/cli/main.ts --help: boom: no config");
-	});
-
-	it("full checks run a read-only status against the config when there is one, and the Bun store check when bun is on PATH", () => {
-		const checkout = fixtureCheckout({ scripts: { "test:bun": `node -e "console.error('bun store broke'); process.exit(4)"` } });
-		writeFileSync(join(checkout, "src", "cli", "main.ts"), 'if (process.argv.includes("status")) { console.error("status read " + process.argv.at(-1)); process.exit(2); }\n');
-		git(checkout, "commit", "-qam", "status fails");
-		const bin = tempDir("orrery-bun-");
-		writeFileSync(join(bin, "bun"), "#!/bin/sh\n", { mode: 0o755 });
-		const env: NodeJS.ProcessEnv = { ...scratchEnv(), PATH: `${bin}:${process.env.PATH ?? ""}` };
-		// No config: status is skipped, the Bun check runs.
-		expect(() => install({ checkout, env, checks: "full" })).toThrow("check failed: npm run test:bun: bun store broke");
-		const config = join(env.ORRERY_HOME as string, "config.toml");
-		writeFileSync(config, "");
-		expect(() => install({ checkout, env, checks: "full" })).toThrow(`check failed: node src/cli/main.ts status: status read ${config}`);
-		expect(existsSync(join(env.ORRERY_HOME as string, "app", "current"))).toBe(false);
-	});
-
 	it("rolls back to the previous version", () => {
 		const { env, versions } = twoInstalls();
 		expect(rollback(env)).toEqual({ from: versions[1], to: versions[0] });
-		expect(readlinkSync(join(env.ORRERY_HOME as string, "app", "current"))).toBe(versions[0]);
+		expect(currentOf(env)).toBe(versions[0]);
 		expect(historyOf(env)).toEqual([versions[0], versions[1]]); // history is install order; a rollback adds nothing
 	});
 
 	it("walks back in install order: a second rollback goes to the version before, a third refuses", () => {
-		const { checkout, env, versions } = twoInstalls();
-		const third = install({ checkout: commitAgain(env), env, checks: "minimal" }).version;
+		const { env, versions } = twoInstalls();
+		const third = installNext(env).version;
 		expect(rollback(env)).toEqual({ from: third, to: versions[1] });
 		expect(rollback(env)).toEqual({ from: versions[1], to: versions[0] });
 		expect(currentOf(env)).toBe(versions[0]);
 		expect(() => rollback(env)).toThrow(/no earlier version to roll back to/);
 		expect(currentOf(env)).toBe(versions[0]);
-		expect(checkout).toBeTruthy();
 	});
 
 	it("does not cycle: after v1..v3 and two rollbacks, installing v2 again puts it last, and rollback walks the true order", () => {
-		const { checkout, env, versions } = twoInstalls();
-		const v3 = install({ checkout: commitAgain(env), env, checks: "minimal" }).version;
+		const { env, versions } = twoInstalls();
+		const v3 = installNext(env).version;
 		const [v1, v2] = versions;
 		rollback(env);
 		rollback(env);
 		expect(currentOf(env)).toBe(v1);
-		git(checkout, "checkout", "-q", v2.split("-").at(-1) as string); // v2's commit; its folder already exists
-		expect(install({ checkout, env, checks: "minimal" }).version).toBe(v2);
+		expect(installFrom({ from: fixtureRelease(v2), env }).version).toBe(v2); // its folder already exists
 		expect(historyOf(env)).toEqual([v1, v3, v2]);
 		expect(rollback(env)).toEqual({ from: v2, to: v3 });
 		expect(rollback(env)).toEqual({ from: v3, to: v1 });
@@ -225,10 +192,9 @@ describe("install", () => {
 	});
 
 	it("rolls back after a downgrade by install (A, B, A again) to B, then refuses", () => {
-		const { checkout, env, versions } = twoInstalls();
+		const { env, versions } = twoInstalls();
 		const [a, b] = versions;
-		git(checkout, "checkout", "-q", a.split("-").at(-1) as string);
-		install({ checkout, env, checks: "minimal" });
+		installFrom({ from: fixtureRelease(a), env });
 		expect(historyOf(env)).toEqual([b, a]);
 		expect(rollback(env)).toEqual({ from: a, to: b });
 		expect(() => rollback(env)).toThrow(/no earlier version to roll back to/);
@@ -241,7 +207,7 @@ describe("install", () => {
 		rollback(env);
 		rollback(env); // current = v3
 		expect(currentOf(env)).toBe(versions[2]);
-		const result = install({ checkout: commitAgain(env), env, checks: "minimal" }); // v6
+		const result = installNext(env); // v6
 		expect(versionFolders(env)).toContain(versions[2]);
 		expect(versionFolders(env)).toContain(versions[4]);
 		expect(result.removed).not.toContain(versions[2]);
@@ -250,7 +216,7 @@ describe("install", () => {
 	it("makes an install after a rollback current and newest, and rolls back from it to the version before", () => {
 		const { env, versions } = twoInstalls();
 		rollback(env); // current = v1
-		const next = install({ checkout: commitAgain(env), env, checks: "minimal" }).version; // v3
+		const next = installNext(env).version; // v3
 		expect(currentOf(env)).toBe(next);
 		expect(historyOf(env).at(-1)).toBe(next);
 		expect(rollback(env)).toEqual({ from: next, to: versions[1] });
@@ -263,22 +229,38 @@ describe("install", () => {
 	});
 
 	it("switches back to an installed version without staging it again, and says when it is already current", () => {
-		const { checkout, env, versions } = twoInstalls();
+		const { env, versions } = twoInstalls();
 		rollback(env);
-		expect(install({ checkout, env, checks: "minimal" })).toEqual({ version: versions[1], previous: versions[0], removed: [] });
+		expect(installFrom({ from: fixtureRelease(versions[1]), env })).toEqual({ version: versions[1], previous: versions[0], removed: [] });
 		expect(currentOf(env)).toBe(versions[1]);
 		const lines: string[] = [];
-		expect(install({ checkout, env, checks: "minimal", log: (l) => lines.push(l) })).toEqual({ version: versions[1], removed: [] });
+		expect(installFrom({ from: fixtureRelease(versions[1]), env, log: (l) => lines.push(l) })).toEqual({ version: versions[1], removed: [] });
 		expect(lines.join("\n")).toMatch(/already installed/);
 		expect(historyOf(env)).toEqual([versions[0], versions[1]]);
+	});
+
+	it("cleanup removes read-only version folders", () => {
+		const env = scratchEnv();
+		for (const v of ["0.6.0", "0.6.1", "0.6.2", "0.6.3", "0.6.4"]) installFrom({ from: fixtureRelease(v), env });
+		expect(listVersions(env).map((v) => v.name)).toEqual(["0.6.2", "0.6.3", "0.6.4"]);
+	});
+
+	it("keeps a source-style version a live lane runs (0.5.0-<commit>, no VERSION file)", () => {
+		const env = scratchEnv();
+		const app = join(env.ORRERY_HOME as string, "app");
+		mkdirSync(join(app, "0.5.0-9d7452f", "src", "cli"), { recursive: true });
+		writeFileSync(join(app, "history"), "0.5.0-9d7452f\n");
+		symlinkSync("0.5.0-9d7452f", join(app, "current"));
+		writeLiveStatus(env, "Birch", "0.5.0-9d7452f");
+		for (const v of ["0.6.0", "0.6.1", "0.6.2", "0.6.3"]) installFrom({ from: fixtureRelease(v), env });
+		expect(existsSync(join(app, "0.5.0-9d7452f"))).toBe(true);
 	});
 
 	it("keeps the newest three versions, current, and any version a live lane runs", () => {
 		const { env, versions } = fiveInstalls(); // v1..v5, current = v5
 		writeLiveStatus(env, "Atlas", versions[0]); // a lane still running v1, its pid alive (process.pid)
-		const result = install({ checkout: commitAgain(env), env, checks: "minimal" }); // v6
-		const left = readdirSync(join(env.ORRERY_HOME as string, "app")).filter((n) => /^0\.6\.0-/.test(n));
-		expect(left.sort()).toEqual([versions[0], versions[3], versions[4], currentOf(env)].sort());
+		const result = installNext(env); // v6
+		expect(versionFolders(env)).toEqual([versions[0], versions[3], versions[4], currentOf(env)].sort());
 		expect(result.removed).toEqual([versions[2]]);
 		expect(result.previous).toBe(versions[4]);
 	});
@@ -287,7 +269,7 @@ describe("install", () => {
 		const { env, versions } = fiveInstalls();
 		writeLiveStatus(env, "Atlas", versions[0], deadPid());
 		writeLiveStatus(env, "Bea", versions[2], process.pid, false);
-		const { version } = install({ checkout: commitAgain(env), env, checks: "minimal" });
+		const { version } = installNext(env);
 		expect(versionFolders(env)).toEqual([versions[3], versions[4], version].sort());
 	});
 
@@ -297,7 +279,7 @@ describe("install", () => {
 			const before = versionFolders(env).length;
 			writeFileSync(join(env.ORRERY_HOME as string, "data", "lanes", "Atlas", "status.json"), bad);
 			const lines: string[] = [];
-			const result = install({ checkout: commitAgain(env), env, checks: "minimal", log: (l) => lines.push(l) });
+			const result = installNext(env, { log: (l) => lines.push(l) });
 			expect(result.removed, bad).toEqual([]);
 			expect(versionFolders(env).length, bad).toBe(before + 1);
 			expect(lines.join("\n"), bad).toMatch(/Kept every older version/);
@@ -308,7 +290,7 @@ describe("install", () => {
 		for (const status of [{ pid: process.pid, open: false }, { pid: deadPid() }]) {
 			const { env, versions } = fiveInstalls();
 			writeFileSync(join(env.ORRERY_HOME as string, "data", "lanes", "Atlas", "status.json"), JSON.stringify(status));
-			const { removed } = install({ checkout: commitAgain(env), env, checks: "minimal" });
+			const { removed } = installNext(env);
 			expect(removed, JSON.stringify(status)).toContain(versions[0]);
 		}
 	});
@@ -322,7 +304,7 @@ describe("install", () => {
 			const { env } = fiveInstalls();
 			writeFileSync(join(env.ORRERY_HOME as string, "data", "lanes", "Atlas", "status.json"), bad);
 			const lines: string[] = [];
-			expect(install({ checkout: commitAgain(env), env, checks: "minimal", log: (l) => lines.push(l) }).removed, bad).toEqual([]);
+			expect(installNext(env, { log: (l) => lines.push(l) }).removed, bad).toEqual([]);
 			expect(lines.join("\n"), bad).toMatch(reason);
 			expect(lines.join("\n"), bad).not.toMatch(/config.*could not be read/);
 		}
@@ -331,7 +313,7 @@ describe("install", () => {
 	it("reads only pid, open and version from a status: {pid, version} alone protects its version", () => {
 		const { env, versions } = fiveInstalls();
 		writeFileSync(join(env.ORRERY_HOME as string, "data", "lanes", "Atlas", "status.json"), JSON.stringify({ pid: process.pid, version: versions[0] }));
-		install({ checkout: commitAgain(env), env, checks: "minimal" });
+		installNext(env);
 		expect(versionFolders(env)).toContain(versions[0]);
 		expect(versionFolders(env)).not.toContain(versions[2]);
 	});
@@ -341,7 +323,7 @@ describe("install", () => {
 		mkdirSync(join(env.ORRERY_HOME as string, "app"), { recursive: true });
 		const release = holdInstallLock(env); // exported for tests from install.ts
 		try {
-			expect(() => install({ checkout: fixtureCheckout(), env, checks: "minimal" })).toThrow(/another install is running/);
+			expect(() => installFrom({ from: fixtureRelease("0.6.0"), env })).toThrow(/another install is running/);
 		} finally {
 			release();
 		}
@@ -356,13 +338,15 @@ describe("install", () => {
 		expect(currentOf(installed)).toBe(versions[1]);
 	});
 
-	it("refuses outside a git checkout or before the first commit, and creates nothing", () => {
+	it("a SIGINT while the lock is held releases it", async () => {
 		const env = scratchEnv();
-		const plain = tempDir("orrery-plain-");
-		expect(() => install({ checkout: plain, env, checks: "minimal" })).toThrow(/not a git checkout/);
-		execFileSync("git", ["-C", plain, "init", "-q"]);
-		expect(() => install({ checkout: plain, env, checks: "minimal" })).toThrow(/no commit yet/);
-		expect(existsSync(join(env.ORRERY_HOME as string, "app"))).toBe(false);
+		mkdirSync(join(env.ORRERY_HOME as string, "app"), { recursive: true });
+		const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "-e", `import(${JSON.stringify(new URL("../../src/install/install.ts", import.meta.url).href)}).then((m) => { m.holdInstallLock(process.env); console.log("held"); setInterval(() => {}, 1000); })`], { env, stdio: ["ignore", "pipe", "inherit"] });
+		await new Promise<void>((done) => child.stdout.once("data", () => done()));
+		child.kill("SIGINT");
+		const code = await new Promise<number | null>((done) => child.once("exit", done));
+		expect(code).toBe(130);
+		expect(existsSync(join(env.ORRERY_HOME as string, "app", ".install.lock"))).toBe(false);
 	});
 
 	it("lists the versions, which one is current, and which live lanes run each", () => {
@@ -374,15 +358,6 @@ describe("install", () => {
 			{ name: versions[1], current: true, lanes: [] },
 		]);
 		expect(listVersions(scratchEnv())).toEqual([]);
-	});
-
-	it("runs from app/current: the installed code names its version folder and wires app/current", () => {
-		const checkout = fixtureCheckout({ tools: true });
-		const env = scratchEnv();
-		const { version } = install({ checkout, env, checks: "minimal" });
-		const current = join(env.ORRERY_HOME as string, "app", "current");
-		const out = execFileSync(process.execPath, ["--disable-warning=ExperimentalWarning", join(current, "probe.ts")], { env, encoding: "utf8" });
-		expect(JSON.parse(out)).toEqual({ version, wiring: { root: current, installed: true } });
 	});
 });
 
@@ -401,15 +376,24 @@ describe("orrery install", () => {
 		expect(currentOf(env)).toBe(versions[0]);
 	});
 
-	it("points a plain install at npm run install-local", () => {
-		const plain = cli(scratchEnv(), "install");
-		expect(plain.status).toBe(1);
-		expect(plain.stderr).toContain("npm run install-local");
+	it("--from installs a release folder and says so", () => {
+		const env = scratchEnv();
+		const out = cli(env, "install", "--from", fixtureRelease("0.6.0"));
+		expect(out.status, out.stderr).toBe(0);
+		expect(out.stdout).toContain("Installed 0.6.0.");
+		expect(currentOf(env)).toBe("0.6.0");
 	});
 
-	it("answers --help, which the installer's first check runs", () => {
+	it("tells a plain install to use --from", () => {
+		const plain = cli(scratchEnv(), "install");
+		expect(plain.status).toBe(1);
+		expect(plain.stderr).toContain("--from");
+	});
+
+	it("answers --help, which lists install --from", () => {
 		const help = cli(scratchEnv(), "--help");
 		expect(help.status, help.stderr).toBe(0);
+		expect(help.stdout).toContain("install --from DIR");
 		expect(help.stdout).toContain("install --rollback | --list");
 	});
 });
