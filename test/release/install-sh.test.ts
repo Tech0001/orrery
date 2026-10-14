@@ -52,10 +52,9 @@ describe("install.sh", () => {
 		expect(readdirSync(r.tmp)).toEqual([]);
 	});
 
-	it("installs a macOS release with shasum when sha256sum is absent", async () => {
+	it.skipIf(!which("shasum"))("installs a macOS release with shasum when sha256sum is absent (skipped: shasum is not on this machine)", async () => {
 		const { base } = await releasesServer("0.6.1", release("0.6.1", RECORD, undefined, "darwin-arm64"));
 		const r = await runInstall({ ORRERY_RELEASES_URL: base }, toolBin([...BASE_TOOLS, "shasum"], { s: "Darwin", m: "arm64" }));
-		if (!which("shasum")) return; // shasum is not on this machine; the sha256sum cases above cover the check
 		expect(r.out).toContain("orrery-darwin-arm64.tar.gz");
 		expect(r.status).toBe(0);
 		expect(existsSync(join(r.home, "installed"))).toBe(true);
@@ -94,6 +93,30 @@ describe("install.sh", () => {
 		expect(readdirSync(r.tmp)).toEqual([]);
 	});
 
+	it("exits with the exit code of bin/orrery and removes its temporary folder", async () => {
+		const { base } = await releasesServer("0.6.1", release("0.6.1", "#!/bin/sh\nexit 7\n"));
+		const r = await runInstall({ ORRERY_RELEASES_URL: base }, toolBin([...BASE_TOOLS, "sha256sum"]));
+		expect(r.status).toBe(7);
+		expect(readdirSync(r.tmp)).toEqual([]);
+	});
+
+	it("reads SHA256SUMS with CRLF line endings and the *name binary-mode form", async () => {
+		for (const edit of [(line: string) => line.replace("\n", "\r\n"), (line: string) => line.replace("  orrery-", " *orrery-")]) {
+			const files = release("0.6.1", RECORD);
+			files["0.6.1/SHA256SUMS"] = Buffer.from(edit(files["0.6.1/SHA256SUMS"].toString()));
+			const { base } = await releasesServer("0.6.1", files);
+			const r = await runInstall({ ORRERY_RELEASES_URL: base }, toolBin([...BASE_TOOLS, "sha256sum"]));
+			expect(r.out).not.toContain("does not match");
+			expect(r.status).toBe(0);
+		}
+	});
+
+	it("needs gzip", async () => {
+		const r = await runInstall({}, toolBin(BASE_TOOLS.filter((t) => t !== "gzip")));
+		expect(r.status).toBe(1);
+		expect(r.out).toContain("gzip is needed");
+	});
+
 	it("needs sha256sum or shasum", async () => {
 		const { base } = await releasesServer("0.6.1", release("0.6.1", RECORD));
 		const r = await runInstall({ ORRERY_RELEASES_URL: base }, toolBin(BASE_TOOLS));
@@ -112,7 +135,7 @@ describe("install.sh", () => {
 
 	it("refuses musl Linux", async () => {
 		const bin = toolBin(["grep", "sh", "cat"]);
-		writeFileSync(join(bin, "ldd"), `#!/bin/sh\necho "musl libc (x86_64)"\n`, { mode: 0o755 });
+		writeFileSync(join(bin, "ldd"), `#!/bin/sh\necho "musl libc (x86_64)" >&2\nexit 1\n`, { mode: 0o755 });
 		const r = await runInstall({}, bin);
 		expect(r.status).toBe(1);
 		expect(r.out).toContain("musl");
