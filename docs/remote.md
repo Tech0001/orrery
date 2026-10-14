@@ -144,7 +144,7 @@ cannot be reached when a lane opens, that session runs without its memory.
 
 Deploy the Worker in this repository to your own Cloudflare account. Orrery stores encrypted memory there; the Worker never receives your recovery code or encryption key. Cloudflare can see lane names, file sizes and times.
 
-From the Orrery repository:
+This one still needs a checkout of the Orrery repository: the Worker is deployed from its `worker/` folder, and the release does not carry it. Clone the repository, then:
 
 ```sh
 cd worker

@@ -8,7 +8,7 @@ Security problems go through [SECURITY.md](SECURITY.md), not public issues.
 
 Open an issue with:
 
-- the Orrery commit (`git rev-parse --short HEAD`) and Node version (`node --version`)
+- the Orrery version (`orrery --version`; from a checkout, the commit from `git rev-parse --short HEAD`)
 - the coding tool and its version: `orrery tools` lists pi, OMP, Claude Code and Codex
 - what you ran, what you expected and what happened
 - the error text
@@ -25,12 +25,18 @@ npm_config_ignore_scripts=true npm ci
 npm run check
 ```
 
-Orrery needs Node 22.19 or newer. Keep install scripts off for every npm install in this repo, including `worker/`.
-The README's [Development](README.md#development) section covers the Bun store check, the Python parity oracle and the
-real pi, OMP and Ori tests.
+Tests and the typecheck need Node 22.19 or newer. Building the program needs Bun at the version in `.bun-version`
+(`npm run install-local` refuses another version). Keep install scripts off for every npm install in this repo,
+including `worker/`. The README's [Development](README.md#development) section covers the Bun store check, the Python
+parity oracle and the real pi, OMP and Ori tests.
 
-To try a change in your real lanes, commit it and run `npm run install-local`. It installs the last commit into
-`~/.orrery/app`; `orrery install --rollback` undoes it.
+- `npm run check`: typecheck and the full suite on Node.
+- `npm run test:binary`: the compiled program, built for this machine.
+- `npm run test:bun-suite`: the suite on Bun.
+
+To try a change on your own machine, commit it and run `npm run install-local`. It builds a release from the last
+commit and installs it as `<version>-<commit>`, then wires your tools to it. `orrery install --rollback` goes back to the
+previous version, and `orrery update` returns to the latest release.
 
 ## Making a change
 

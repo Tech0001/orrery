@@ -83,12 +83,12 @@ or empty local backup folder also stops the copy.
 
 Copy `deploy/workstation/orrery-backup.service` and `.timer` into `~/.config/systemd/user/`. The service's
 `ExecStart` is the installed script, `~/.orrery/app/current/deploy/workstation/backup.sh`, which
-`npm run install-local` puts in place.
+the installer puts in place.
 Then run `systemctl --user daemon-reload`, `systemctl --user enable --now orrery-backup.timer`, and
 `systemctl --user start orrery-backup.service` once to verify it. Check failures with
 `journalctl --user -u orrery-backup.service`.
 
-After an upgrade (`npm run install-local`), the timer keeps working: its service names `app/current`, which points at
+After an upgrade (`orrery update`), the timer keeps working: its service names `app/current`, which points at
 the new version.
 
 ## Restore

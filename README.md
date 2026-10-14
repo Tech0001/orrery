@@ -6,7 +6,6 @@
 
 <p align="center">
   <a href="https://github.com/Tech0001/orrery/actions/workflows/ci.yml"><img src="https://github.com/Tech0001/orrery/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/node-%E2%89%A5%2022.19-339933" alt="Node 22.19 or newer">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
@@ -45,33 +44,58 @@ on another machine without starting over.
 
 ## Quick start
 
-You need Node **22.19 or newer**, npm, Git and a terminal. Install at least one supported coding tool separately;
-Orrery wires its extension or plugin into that tool. You also need a summary source: a supported sign-in, an API
-key or a compatible local model server.
+You need a terminal and at least one supported coding tool, installed separately; Orrery wires its extension or
+plugin into that tool. You also need a summary source: a supported sign-in, an API key or a compatible local model
+server. Orrery ships as a single program, so you do not need Node, npm or Git to run it.
 
 ### Install
 
-```bash
-git clone https://github.com/Tech0001/orrery.git
-cd orrery
-npm_config_ignore_scripts=true npm ci
-npm run install-local
-```
-
-The install copies the last commit to `~/.orrery/app`, and pi, OMP, Claude Code and the `orrery` command run from
-there. Edits in the checkout that are not committed do not reach your lanes. The installer asks before replacing
-anything that is not Orrery's; `--yes` answers yes. `ORRERY_HOME` moves the whole `~/.orrery` folder.
-
-### Upgrading
+Linux and macOS (x64 and arm64). On Windows, use WSL. Alpine and other musl Linux is not supported yet.
 
 ```bash
-git pull && npm_config_ignore_scripts=true npm ci && npm run install-local
+curl -fsSL https://github.com/Tech0001/orrery/releases/latest/download/install.sh | sh
 ```
 
-pi and OMP lanes keep their version until they restart. For Claude Code, new hook processes use the new version at
-once, while a session's own recorder keeps the old one until the session restarts. `orrery install --rollback` switches back to the previous
-version, and `orrery install --list` shows the installed versions and which lanes run them. `orrery --version`
-prints the version you are running.
+The script checks the download against the release's SHA256SUMS, installs Orrery into `~/.orrery`, and asks before
+connecting it to pi, OMP and Claude Code. Then run `orrery` to add your first lane.
+
+The questions go to your terminal even when the script is piped. `--yes` answers all of them yes
+(`... | sh -s -- --yes`). With no terminal and no `--yes`, whatever needs asking is skipped and listed, and the script
+exits non-zero. `ORRERY_VERSION=0.6.1` before `sh` installs that release instead of the latest, and `ORRERY_HOME` moves
+the whole `~/.orrery` folder.
+
+### Updating
+
+```bash
+orrery update
+```
+
+It downloads the latest release, checks it against SHA256SUMS and hands over to that release's own installer.
+`orrery update --check` only says whether a newer one exists, and `--version 0.6.1` picks a release. Running agents keep
+their version until they restart: the Lanes page marks them "on 0.6.0, restart for 0.6.1". For Claude Code, new hook
+processes use the new version at once, while a session's own recorder keeps the old one until the session restarts.
+`orrery install --rollback` switches back to the previous version, and `orrery install --list` shows the installed
+versions and which lanes run them. `orrery --version` prints the version you are running.
+
+When the TUI opens, Orrery checks for a new release, at most once a day. That is one request to `github.com` (where the
+latest release redirects), which sees your IP address. Turn it off in `~/.orrery/config.toml`:
+
+```toml
+[updates]
+check = false
+```
+
+### Uninstall
+
+```bash
+orrery uninstall
+```
+
+This removes the program and unwires it from pi, OMP and Claude Code. Your lanes' memory, config and logins stay in
+`~/.orrery`. `orrery uninstall --purge` also deletes the whole Orrery folder after you type `delete`; it refuses a
+folder that does not look like an Orrery home.
+
+To work on Orrery itself, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### Try the demo
 
@@ -163,6 +187,8 @@ Model providers receive the context sent to them.
 ```bash
 npm run check                    # TypeScript + the full test suite
 npm run test:bun                 # alternate SQLite store check; requires Bun
+npm run test:binary              # the compiled program; requires Bun (see .bun-version)
+npm run test:bun-suite           # the full suite on Bun
 ```
 
 The suite has more than 1,500 tests and uses synthetic fixtures and scratch data. Install `uv` to run the Python parity oracle as part of the suite;

@@ -115,7 +115,7 @@ The tests use scratch HOME/XDG/config folders and a fake OpenRouter service. Wit
 They never sign in, install extensions globally, or make a live model call.
 
 For a manual memory check, create a scratch lane and point `ORRERY_CONFIG` at its scratch config. Use a private
-tmux server, a scratch pi/OMP agent directory and `-e /path/to/orrery/src/pi/index.ts` (or `src/omp/index.ts`).
+tmux server, a scratch pi/OMP agent directory and `-e /path/to/orrery/src/pi/index.ts` (or `src/omp/index.ts`) from a checkout.
 With the four privacy flags above, launch `ori pi --model <cheap-model>`. State a synthetic fact, ask a second
 turn to recall it using `zoom`, open `/compactor`, cancel with Esc, and quit. Start a new session with a different
 `--model` and ask it to recall the fact. Do the same in `ori omp` after the upstream startup problem is fixed.

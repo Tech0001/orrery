@@ -7,11 +7,11 @@ pi and Tuesday in Claude Code are one memory. Claude's subscription covers Claud
 
 Or run `orrery`, open Tools (4), select Claude Code and press `I` (`orrery tools install claude-code`).
 
-1. Orrery itself, as in [pi.md](pi.md): `npm run install-local`, which installs the `orrery` command, wires the
-   plugin from `~/.orrery/app/current`, and needs `~/.orrery/config.toml`.
+1. Orrery itself, as in the README's install section: it installs the `orrery` command, wires the plugin from
+   `~/.orrery/app/current`, and needs `~/.orrery/config.toml` (the first `orrery` run writes it).
 2. A login for summaries. Summaries run in the background on Orrery's own login, not Claude's. Run
    `orrery login openai` (Sign in with ChatGPT) for the lanes' `compactor_model`.
-3. The plugin: `npm run install-local` wires this. If you must do it by hand, add the installed copy, never a
+3. The plugin: the installer wires this (`orrery setup` redoes it). If you must do it by hand, add the installed copy, never a
    checkout (that would move the plugin off `app/current`):
 
    ```bash
@@ -25,7 +25,7 @@ recorder starts, nothing is kept, and the lane stays free for pi. The first line
 a message to you. The guard still applies there.
 
 The plugin runs `~/.local/bin/orrery`, so it uses the installed version (`~/.orrery/app/current`) and this
-machine's Node. After a change to Orrery's code, run `npm run install-local` again; new hook processes use the new
+machine's Orrery. After `orrery update`, new hook processes use the new
 version at once, while a running session's own recorder keeps the old one until the session restarts. Without that
 launcher the hooks do nothing: they exit quietly and print nothing. Claude Code then lists the `orrery` MCP server as failed to connect.
 
@@ -135,6 +135,9 @@ orrery import Rowan --dry-run --claude none \
   --claude-file ~/.claude/projects/-home-alex-code-sample-project/<session>.jsonl \
   --claude-file ~/.claude/projects/-home-alex-code-sample-project/<other-session>.jsonl
 ```
+
+Claude Code deletes its session files after 30 days by default, so import early, or raise `cleanupPeriodDays` in
+`~/.claude/settings.json`.
 
 Review the report, then `orrery import Rowan --commit <out>/preview.jsonl`, then `orrery compact Rowan`, with Rowan
 closed everywhere. Do it before the first session in the new lane folder. A file that is missing, or is no Claude

@@ -12,7 +12,7 @@ hand, write a one-line extension file that re-exports Orrery's OMP entry by a re
 
 ```bash
 mkdir -p ~/.omp/agent/extensions
-printf 'export { default } from "%s";\n' "$(realpath --relative-to ~/.omp/agent/extensions ~/.orrery/app/current/src/omp/index.ts)" > ~/.omp/agent/extensions/orrery.ts
+printf 'export { default } from "%s";\n' "$(realpath --relative-to ~/.omp/agent/extensions ~/.orrery/app/current/extensions/omp.js)" > ~/.omp/agent/extensions/orrery.ts
 ```
 
 The path must be relative. OMP does not follow an absolute re-export, and Orrery then fails to load ("Cannot find
@@ -24,7 +24,7 @@ them to have both. `PI_CONFIG_DIR` moves OMP's agent folder to `~/$PI_CONFIG_DIR
 folder's `extensions` (the Tools page follows it). A named OMP profile (`~/.omp/profiles/<name>/agent`) needs the same
 file in its `extensions` folder, by hand.
 
-Orrery needs the repo's `node_modules` and its config, as in [pi.md](pi.md).
+Orrery needs its config, as in [pi.md](pi.md). The packed extension carries its own dependencies.
 
 To remove Orrery from OMP, delete `~/.omp/agent/extensions/orrery.ts`.
 

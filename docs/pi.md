@@ -6,43 +6,38 @@ and remote backup copies.
 
 ## Install
 
-`npm run install-local` wires this: it writes pi's extension file and points it at `~/.orrery/app/current`. If pi
-is not on PATH, it prints "not found on PATH; not wired" and carries on (exit 0). If you decline a rewire, it lists
-what is still wired elsewhere and exits 1; rerun `npm run install-local -- --yes`. If pi cannot be checked (an
-unreadable extension file), it says "check pi by hand: <reason>" and also exits 1. The TUI does the same: run `orrery`,
-open Tools (4), select pi and press `I` (or `orrery tools install pi`).
+The installer wires this: it writes pi's extension file and points it at `~/.orrery/app/current`. If pi
+is not on PATH, it prints "not found on PATH; not wired" and carries on. If you decline a rewire, or there is no
+terminal to ask on, it lists what is still wired elsewhere and exits non-zero; rerun `orrery setup --yes`. If pi cannot
+be checked (an unreadable extension file), it says "check pi by hand: <reason>" and also exits non-zero. The TUI does the
+same: run `orrery`, open Tools (4), select pi and press `I` (or `orrery tools install pi`).
 
-If you ever write the file by hand, it is one line that imports Orrery by its absolute path, into the installed copy:
+If you ever write the file by hand, it is one line that imports Orrery's packed extension from the installed copy:
 
 ```bash
-printf 'export { default } from "%s/src/pi/index.ts";\n' ~/.orrery/app/current > ~/.pi/agent/extensions/orrery.ts
+printf 'export { default } from "%s/extensions/pi.js";\n' ~/.orrery/app/current > ~/.pi/agent/extensions/orrery.ts
 ```
 
-Don't symlink `src/pi` into the extensions folder. pi resolves an extension's imports from where it finds the file,
-so a link breaks Orrery's imports, and pi then fails to start at all.
+The packed file carries its own dependencies, so pi needs nothing else installed. Don't symlink it into the extensions
+folder: pi resolves an extension's imports from where it finds the file.
 
 Developing Orrery itself is different: running `orrery` from a checkout is development mode, and `I` on the Tools page then
-points at that checkout. Use `npm run install-local` to put lanes back on the installed copy.
+points at that checkout. See [CONTRIBUTING.md](../CONTRIBUTING.md) for putting lanes back on an installed copy.
 
-Install from a checkout. The install copies the last commit and its runtime packages to `~/.orrery/app`, so pi finds
-typebox and smol-toml there, and pi loads the extension from that copy.
-
-```bash
-cd ~/code/orrery
-npm_config_ignore_scripts=true npm ci
-npm run install-local
-```
-
-To remove Orrery from pi, delete `~/.pi/agent/extensions/orrery.ts`.
+To remove Orrery from pi, delete `~/.pi/agent/extensions/orrery.ts` (or run `orrery uninstall`).
 
 The install also puts `orrery` on your PATH, as `~/.local/bin/orrery`.
 
-Write the config. Start from [deploy/workstation/config.example.toml](../deploy/workstation/config.example.toml).
-`~` works in `data_dir`, which you can leave out to keep memory in `~/.orrery`.
+The first `orrery` run writes the config for you. To write it by hand, start from the example the release carries,
+`~/.orrery/app/current/deploy/workstation/config.example.toml`. `~` works in `data_dir`, which you can leave out to keep
+memory in `~/.orrery`.
 
 ```bash
-install -D deploy/workstation/config.example.toml ~/.orrery/config.toml
+install -D ~/.orrery/app/current/deploy/workstation/config.example.toml ~/.orrery/config.toml
 ```
+
+Most behavior needs no code: models, memory sizes, when compaction happens and each lane's tool are settings in
+`~/.orrery/config.toml`.
 
 The extension targets pi 1.0.4 and is also tested with 1.1.0. If you use mise, select a compatible version:
 
@@ -126,7 +121,8 @@ the other lanes and read their memory. They are read-only.
 
 ## Imports and builds
 
-Import a lane's Claude Code and Codex history. Preview first, review the report, then commit.
+Import a lane's Claude Code and Codex history. Preview first, review the report, then commit. Claude Code deletes its
+session files after 30 days by default, so import early, or raise `cleanupPeriodDays` in `~/.claude/settings.json`.
 
 ```bash
 orrery import Atlas --dry-run
