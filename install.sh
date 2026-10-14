@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs Orrery from a GitHub release (https://github.com/Tech0001/orrery):
 #   curl -fsSL https://github.com/Tech0001/orrery/releases/latest/download/install.sh | sh
-# ORRERY_VERSION=0.6.1 installs that release instead of the latest. The script downloads this machine's archive and
+# Arguments (sh -s -- --yes) go on to `orrery install --from`. ORRERY_VERSION=0.6.1 installs that release instead of the latest. The script downloads this machine's archive and
 # SHA256SUMS, checks the archive against SHA256SUMS, unpacks it in a temporary folder, and runs its
 # `orrery install --from`, which installs it into ~/.orrery and asks before connecting pi, OMP and Claude Code.
 set -eu
@@ -9,6 +9,12 @@ set -eu
 fail() {
 	printf 'orrery install: %s\n' "$*" >&2
 	exit 1
+}
+
+# Prints the one release folder among its arguments (a glob's matches), so main's own "$@" stays untouched.
+one_release() {
+	[ "$#" -eq 1 ] && [ -x "$1/bin/orrery" ] || return 1
+	printf '%s\n' "$1"
 }
 
 main() {
@@ -88,9 +94,8 @@ main() {
 
 	mkdir "$tmp/unpacked"
 	tar -xzf "$tmp/$asset" -C "$tmp/unpacked"
-	set -- "$tmp"/unpacked/orrery-*
-	[ "$#" -eq 1 ] && [ -x "$1/bin/orrery" ] || fail "$asset does not hold one Orrery release"
-	"$1/bin/orrery" install --from "$1"
+	folder="$(one_release "$tmp"/unpacked/orrery-*)" || fail "$asset does not hold one Orrery release"
+	"$folder/bin/orrery" install --from "$folder" "$@"
 }
 
 main "$@"

@@ -29,11 +29,11 @@ function toolBin(tools: string[], uname = { s: "Linux", m: "x86_64" }): string {
 const BASE_TOOLS = ["curl", "tar", "gzip", "awk", "mktemp", "rm", "mkdir", "grep", "ldd", "sh", "cat"];
 
 /** Async: the fake release server lives in this process and must keep answering while the script runs. */
-function runInstall(env: Record<string, string>, bin: string): Promise<{ status: number | null; out: string; home: string; tmp: string }> {
+function runInstall(env: Record<string, string>, bin: string, args: string[] = []): Promise<{ status: number | null; out: string; home: string; tmp: string }> {
 	const home = scratch();
 	const tmp = scratch("orrery-tmp-");
 	return new Promise((done) => {
-		const child = spawn("sh", [INSTALL_SH], { env: { PATH: bin, HOME: home, TMPDIR: tmp, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn("sh", [INSTALL_SH, ...args], { env: { PATH: bin, HOME: home, TMPDIR: tmp, ...env }, stdio: ["ignore", "pipe", "pipe"] });
 		let out = "";
 		child.stdout.on("data", (d) => (out += d));
 		child.stderr.on("data", (d) => (out += d));
@@ -50,6 +50,19 @@ describe("install.sh", () => {
 		expect(hits).toContain("/releases/latest/download/orrery-linux-x64.tar.gz");
 		expect(readFileSync(join(r.home, "installed"), "utf8").trim()).toMatch(new RegExp(`^install --from ${r.tmp}/orrery-install\\.[^/]+/unpacked/orrery-0\\.6\\.1-linux-x64$`));
 		expect(readdirSync(r.tmp)).toEqual([]);
+	});
+
+	it("passes its arguments to orrery install, and none when it has none", async () => {
+		const { base } = await releasesServer("0.6.1", release("0.6.1", RECORD));
+		const bin = toolBin([...BASE_TOOLS, "sha256sum", "shasum"]);
+		const folder = /^install --from (\S+)( --yes)?$/;
+		const plain = await runInstall({ ORRERY_RELEASES_URL: base }, bin);
+		expect(plain.status).toBe(0);
+		expect(readFileSync(join(plain.home, "installed"), "utf8").trim()).toMatch(folder);
+		expect(readFileSync(join(plain.home, "installed"), "utf8").trim()).not.toContain("--yes");
+		const yes = await runInstall({ ORRERY_RELEASES_URL: base }, bin, ["--yes"]);
+		expect(yes.status).toBe(0);
+		expect(readFileSync(join(yes.home, "installed"), "utf8").trim()).toMatch(/^install --from \S+ --yes$/);
 	});
 
 	it.skipIf(!which("shasum"))("installs a macOS release with shasum when sha256sum is absent (skipped: shasum is not on this machine)", async () => {
