@@ -751,6 +751,33 @@ describe("Claude Code: only the agent that owns a folder's memory view reads it"
 		expect(await tool("Write", { file_path: join(home, ".orrery", "config.toml"), content: "[" })).toMatch(/^Orrery guard: .*(Orrery's config|outside)/);
 	});
 
+	it("keeps Orrery's installed program out of shell text and file-tool writes, readable, and opens no ~/ spelling of the own view (fix round 3)", async () => {
+		const { home, config, atlas, birch } = viewLanes();
+		const root = join(atlas, "..");
+		const app = join(home, ".orrery", "app");
+		mkdirSync(join(app, "0.6.0", "src"), { recursive: true });
+		symlinkSync("0.6.0", join(app, "current"));
+		writeFileSync(join(app, "0.6.0", "src", "main.ts"), "");
+		// The guard's home is the lanes' root, so ~/agent-Atlas is Atlas's folder as the guard reads it.
+		const c: HookContext = { config, env: { CLAUDE_PROJECT_DIR: atlas }, claudePid: process.pid, startHolder: () => {}, home: root };
+		const tool = async (tool_name: string, tool_input: object) => {
+			const out = await runHook("pre-tool-use", JSON.stringify({ session_id: "s1", cwd: atlas, tool_name, tool_input }), c);
+			return out === "" ? "allowed" : (JSON.parse(out) as { hookSpecificOutput: { permissionDecisionReason: string } }).hookSpecificOutput.permissionDecisionReason;
+		};
+		for (const command of [`ln -sfn /tmp/x ${app}/current`, `chmod -R u+w ${app}`, `rm -rf ${app}/current`, "ls ~/home/.orrery/app"]) {
+			expect([command, await tool("Bash", { command })]).toEqual([command, REFUSED]);
+		}
+		// Atlas's allowed roots (the workspace's parent) hold it: only the program rule refuses these.
+		const main = join(app, "current", "src", "main.ts");
+		expect(await tool("Write", { file_path: main, content: "planted" })).toMatch(/^Orrery guard: .*Orrery's installed program/);
+		expect(await tool("Edit", { file_path: main, old_string: "a", new_string: "b" })).toMatch(/^Orrery guard: .*Orrery's installed program/);
+		expect(await tool("mcp__fs__delete_file", { path: main })).toMatch(/^Orrery guard: .*Orrery's installed program/);
+		expect(await tool("Read", { file_path: main })).toBe("allowed");
+		const leak = `export HOME=${root}/x; mkdir -p ~; ln -sfn ${birch} ~/agent-Atlas; cat ~/agent-Atlas/.orrery/view.md`;
+		expect(await tool("Bash", { command: leak })).toEqual(REFUSED);
+		expect(await tool("Bash", { command: "cat ~/agent-Atlas/.orrery/view.md" })).toEqual(REFUSED);
+	});
+
 	it("keeps the config file in use read-only and named in no command, wherever it is (fix round 2)", async () => {
 		const { home, config, atlas } = viewLanes();
 		// A config inside Atlas's own folder: only the config rule can refuse a write there.

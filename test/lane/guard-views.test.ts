@@ -139,13 +139,16 @@ describe("the view name rule in commands: only the session's own view, by an abs
 		expect(bash(command(t), asAtlas(t))).toBeUndefined();
 	});
 
-	it("reads an absolute word the same from any folder, and ~/ from the home", () => {
+	it("reads an absolute word the same from any folder, and opens no ~/ spelling (fix round 3)", () => {
 		const t = lanes();
 		expect(bash(`cat ${view(t.atlas)}`, asAtlas(t, t.birch))).toBeUndefined();
 		expect(bash(`cat ${view(t.birch)}`, asAtlas(t, t.birch))).toMatch(/sensitive/);
-		const homeIsProjects = { ...asAtlas(t), home: t.projects };
-		expect(bash("cat ~/agent-Atlas/.orrery/view.md", homeIsProjects)).toBeUndefined();
-		expect(bash("cat ~/agent-Birch/.orrery/view.md", homeIsProjects)).toMatch(/sensitive/);
+		// The shell's ~ follows its HOME, which a command may change; the guard's home is no proof of where ~ leads.
+		const homeIsRoot = { ...asAtlas(t), home: t.root };
+		expect(bash("cat ~/projects/agent-Atlas/.orrery/view.md", homeIsRoot)).toMatch(/sensitive/);
+		const leak = `export HOME=${t.root}/x; mkdir -p ~/projects; ln -sfn ${t.birch} ~/projects/agent-Atlas; cat ~/projects/agent-Atlas/.orrery/view.md`;
+		expect(bash(leak, homeIsRoot)).toMatch(/sensitive/);
+		expect(bash("cat $HOME/projects/agent-Atlas/.orrery/view.md", homeIsRoot)).toMatch(/sensitive/);
 	});
 
 	it("refuses every view file to a refused pick, the folder's own lane's too", () => {
@@ -226,6 +229,61 @@ describe("Orrery's config: file tools may read it, nothing may change it, and sh
 		const env = new NodeExecutionEnv({ cwd: options.workspace });
 		expect(await checkResolvedPath(env, join(data, "config.toml"), "write", options, ctx)).toMatch(/Orrery's config/);
 		expect(await checkResolvedPath(env, join(data, "config.toml"), "read", options, ctx)).toBeUndefined();
+	});
+});
+
+describe("Orrery's installed program: file tools may read it, nothing may change it, and shell text may not name it (fix round 3)", () => {
+	/** An agent opened in its home, so the work area holds Orrery's home and its installed program (app/current). */
+	function inHome() {
+		const t = lanes();
+		const data = join(t.home, ".orrery");
+		const app = join(data, "app");
+		mkdirSync(join(app, "0.6.0", "src"), { recursive: true });
+		symlinkSync("0.6.0", join(app, "current"));
+		writeFileSync(join(app, "0.6.0", "src", "main.ts"), "");
+		return { ...t, data, app, main: join(app, "current", "src", "main.ts"), options: { ...asAtlas(t, t.home), workspace: t.home, orreryData: data } };
+	}
+
+	it("refuses shell text that names it", () => {
+		const { app, options } = inHome();
+		for (const command of [
+			"ln -sfn /tmp/x ~/.orrery/app/current",
+			"chmod -R u+w ~/.orrery/app",
+			"rm -rf ~/.orrery/app/current",
+			"ls ~/.orrery/app",
+			"ls ~/.orrery/app/current/src",
+			`cat ${app}/current/src/main.ts`,
+			"cd ~/.orrery/app && ls",
+			"cp /tmp/x /somewhere/.orrery/app/current/bin/orrery",
+		]) {
+			expect([command, bash(command, options)]).toEqual([command, expect.stringMatching(/sensitive/)]);
+		}
+	});
+
+	it("lets file tools read it and refuses their writes and edits by any spelling or link, though the work area holds it", () => {
+		const { home, app, main, options } = inHome();
+		symlinkSync(join(app, "0.6.0"), join(home, "prog"));
+		expect(guardToolCall("read", { path: main }, options)).toBeUndefined();
+		expect(guardToolCall("read", { path: "~/.orrery/app/current/src/main.ts" }, options)).toBeUndefined();
+		expect(guardToolCall("read", { path: "prog/src/main.ts" }, options)).toBeUndefined();
+		expect(guardToolCall("grep", { pattern: "x", path: join(app, "current") }, options)).toBeUndefined();
+		const paths = [main, "~/.orrery/app/current/src/main.ts", join(app, "0.7.0", "new.ts"), join(app, "current"), "prog/src/main.ts", join(home, ".Orrery", "APP", "x.ts")];
+		for (const tool of ["write", "edit"]) {
+			for (const path of paths) expect([tool, path, guardToolCall(tool, { path, content: "x" }, options)]).toEqual([tool, path, expect.stringMatching(/Orrery's installed program/)]);
+			expect(guardOmpToolCall(tool, { path: main, input: "x", content: "x" }, options)).toMatch(/Orrery's installed program/);
+		}
+		// A custom data folder: its app/ is refused by where it is.
+		const store = join(home, "store");
+		mkdirSync(join(store, "app"), { recursive: true });
+		expect(guardToolCall("write", { path: join(store, "app", "x.ts"), content: "x" }, { ...options, orreryData: store })).toMatch(/Orrery's installed program/);
+		expect(guardToolCall("write", { path: join(home, "notes.md"), content: "x" }, options)).toBeUndefined();
+	});
+
+	it("refuses its writes in the durable harness too", async () => {
+		const { main, options } = inHome();
+		const env = new NodeExecutionEnv({ cwd: options.workspace });
+		expect(await checkResolvedPath(env, main, "write", options, ctx)).toMatch(/Orrery's installed program/);
+		expect(await checkResolvedPath(env, main, "read", options, ctx)).toBeUndefined();
 	});
 });
 

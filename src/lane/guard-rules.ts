@@ -179,15 +179,15 @@ function program(parts: string[] | undefined): boolean {
 const only = (parts: string[] | undefined, name: string) => parts?.length === 1 && parts[0] === name;
 
 /**
- * Whether a reading names Orrery's home, beyond the program (app/), config.toml (not in `shell` text) and the lane view
- * file `views` opens.
+ * Whether a reading names Orrery's home, beyond what a path may name (the program, app/, and config.toml; neither in
+ * `shell` text, where a command could replace them) and the lane view file `views` opens.
  */
 function orreryNamed(form: string, views: ViewRule, shell: boolean): boolean {
 	if (ORRERY_GLOB.test(form)) return true;
 	let opens: ((end: number) => boolean) | undefined;
 	for (const match of form.matchAll(ORRERY_NAME)) {
 		const parts = words(match[1]);
-		if (program(parts) || (!shell && only(parts, "config.toml"))) continue;
+		if (!shell && (program(parts) || only(parts, "config.toml"))) continue;
 		if (!only(parts, "view.md")) return true;
 		opens ??= views(form);
 		if (!opens(match.index + match[0].length)) return true;
@@ -201,6 +201,12 @@ export const orreryConfigNamed = (path: string) => /(^|\/)\.orrery\/config\.toml
 /** Why a write to Orrery's config is refused: a lane's view and the guard's rules come from it. */
 export const CONFIG_READ_ONLY = (path: string) => `${path} is Orrery's config: agents may read it, not change it.`;
 
+/** Orrery's installed program by name (…/.orrery/app and below, folded to lower case): agents may read it, never change it. */
+export const orreryAppNamed = (path: string) => /(^|\/)\.orrery\/app(\/|$)/.test(posix.normalize(path).toLowerCase());
+
+/** Why a write to Orrery's installed program is refused: the hooks and extensions every lane runs are in it. */
+export const APP_READ_ONLY = (path: string) => `${path} is Orrery's installed program: agents may read it, not change it.`;
+
 /**
  * Whether a reading opens the lane view file it names, the name ending at `end`: made once per reading (`views(form)`),
  * then asked for each view file the reading names.
@@ -212,7 +218,7 @@ const NO_VIEW: ViewRule = () => () => false;
 
 /** A session's view rules (GuardOptions.foreignViews): for command text and file-name globs, and for one path. */
 export interface ViewRules {
-	/** Command text's: a view file is open where a plain absolute or "~/" word names the session's own (commandRule). */
+	/** Command text's: a view file is open where a plain absolute word names the session's own (commandRule). */
 	readonly command: ViewRule;
 	/** A path's: its view file is open when the path is a spelling of the session's own view; without a path, none is. */
 	readonly path: (path?: string) => ViewRule;
@@ -227,7 +233,7 @@ const fold = (path: string) => posix.normalize(path).toLowerCase();
 export function viewRules(options: GuardOptions & { readonly home?: string }, own: readonly string[] = options.ownView === undefined ? [] : [options.ownView]): ViewRules {
 	const mine = new Set(own.map(fold));
 	return {
-		command: commandRule(mine, options.home),
+		command: commandRule(mine),
 		path: (path) => {
 			const open = path !== undefined && mine.has(fold(path));
 			return () => () => open;
@@ -241,25 +247,21 @@ const WORD_EDGE = /[ \t\n;|&()<>`]/;
 const PLAIN = /[^ \t\n;|&()<>`"'\\$*?[\]{}~,=:!]/;
 
 /**
- * Command text's view rule: a view file is open only where a plain word names the session's own (`own`, folded) as an
- * absolute path or one from "~/" (`home`). A relative word is refused: a shell may keep a folder of its own (OMP's does,
- * across calls), so the host's cwd is no proof of where it starts. The word must start and end where the shell's words
- * do (an edge, not escaped) and hold no ".." (a link may lead it elsewhere). The guard cannot read a word with quotes,
- * escapes, variables, globs or braces, so a view file named that way is refused.
+ * Command text's view rule: a view file is open only where a plain word names the session's own (`own`, folded) by its
+ * absolute path. A relative word is refused: a shell may keep a folder of its own (OMP's does, across calls), so the
+ * host's cwd is no proof of where it starts. So is "~/": the shell's ~ follows its HOME, which a command may change. The
+ * word must start and end where the shell's words do (an edge, not escaped) and hold no ".." (a link may lead it
+ * elsewhere). The guard cannot read a word with quotes, escapes, variables, globs or braces, so a view file named that way
+ * is refused.
  */
-function commandRule(own: ReadonlySet<string>, home: string | undefined): ViewRule {
+function commandRule(own: ReadonlySet<string>): ViewRule {
 	return (form) => (end) => {
 		if (end < form.length && !WORD_EDGE.test(form[end])) return false;
 		let start = end;
 		while (start > 0 && PLAIN.test(form[start - 1])) start--;
-		let word = form.slice(start, end);
-		if (form[start - 1] === "~" && word.startsWith("/")) {
-			start--;
-			word = `~${word}`;
-		}
+		const word = form.slice(start, end);
 		if (start > 0 && (!WORD_EDGE.test(form[start - 1]) || form[start - 2] === "\\")) return false;
 		if (word.split("/").includes("..")) return false;
-		if (word.startsWith("~/")) return home !== undefined && own.has(fold(posix.join(home, word.slice(2))));
 		return word.startsWith("/") && own.has(fold(word));
 	};
 }
@@ -301,6 +303,7 @@ export function checkToolCall(
 	if (sensitive(raw, named) || sensitive(path, named)) return `${path} is a sensitive file (keys, credentials or Orrery's private data).`;
 	const writes = call.name === "write" || call.name === "edit";
 	if (writes && (orreryConfigNamed(path) || config.includes(path.toLowerCase()))) return CONFIG_READ_ONLY(path);
+	if (writes && orreryAppNamed(path)) return APP_READ_ONLY(path);
 	if (writes && ![options.workspace, ...options.allowedRoots].some((root) => within(path, root))) {
 		return `${path} is outside this lane's workspace and allowed roots.`;
 	}

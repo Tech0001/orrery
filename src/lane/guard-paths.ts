@@ -3,18 +3,24 @@
  * (src/claude/guard.ts). It judges the path the tool will actually touch: resolved the way the tool resolves it (pi's
  * way by default), then with symlinks followed. The rules themselves are src/lane/guard-rules.ts.
  *
- * Another lane's memory view (laneViews) is kept from every tool that reads, writes or searches file contents. Known
- * limits:
- * - A hard link to it is another name for the same file. The guard does not count links; the copy goes stale once
- *   Orrery replaces the view on its next write.
+ * Another lane's memory view (laneViews) is kept from every tool that reads, writes or searches file contents. Orrery's
+ * config (the file in use, GuardOptions.configFile, and any .orrery/config.toml) and its installed program (.orrery/app)
+ * are read-only: file tools may read them, no tool may write them, and shell text may not name them. Known limits:
+ * - A hard link is another name for the same file, and the guard does not count links: one to another lane's view (the
+ *   copy goes stale once Orrery replaces the view on its next write), or to the config file in use, made before the
+ *   guard ran or by a spelling it cannot see, reads or writes the file through a name the guard does not know.
  * - The durable harness (src/lane/guard.ts, `orrery run`) has no search-root rule, for views as for credentials.
  * - Claude Code loads a subfolder's CLAUDE.md (and what it imports) by itself once the session reads files there. That
  *   is no tool call, so the hook never sees it.
  * - Shell text is a seatbelt: a view named through a variable, an escape, or a command that changes folder by its own
- *   flag (`git -C`, `tar -C`), or a shell search of a lane's whole folder, gets through. So does the config file in use
- *   (GuardOptions.configFile) named by a relative path or a variable.
+ *   flag (`git -C`, `tar -C`), or a shell search of a lane's whole folder, gets through. So does a config file in use at a
+ *   custom path (ORRERY_CONFIG) when it is named by a relative path, through a link, or by a variable: only its exact
+ *   path spellings are known (configSpellings).
  * - A deleted config is no config: Claude Code then runs plain, and so do pi and OMP sessions started after it. Deleting
  *   it takes a spelling the guard cannot see (its name and its path are refused in commands; no file tool deletes).
+ * - A pi or OMP session that starts while the config cannot be read (src/pi/index.ts unreadableGuard) knows no lane, so
+ *   its foreignViews is empty: other lanes' views are still refused by name in commands and paths, but a content search
+ *   (grep) of a lane's folder is not, since the guard cannot know which folders hold a view.
  */
 
 import { lstatSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
@@ -24,7 +30,19 @@ import { fileURLToPath } from "node:url";
 import { viewFile } from "../claude/paths.ts";
 import { laneMode } from "../claude/view-file.ts";
 import type { HarnessConfig, LaneConfig } from "./config.ts";
-import { CONFIG_READ_ONLY, checkToolCall, configSpellings, type GuardOptions, inOrreryHome, orreryConfigNamed, sensitive, viewRules, within } from "./guard-rules.ts";
+import {
+	APP_READ_ONLY,
+	CONFIG_READ_ONLY,
+	checkToolCall,
+	configSpellings,
+	type GuardOptions,
+	inOrreryHome,
+	orreryAppNamed,
+	orreryConfigNamed,
+	sensitive,
+	viewRules,
+	within,
+} from "./guard-rules.ts";
 
 const UNICODE_SPACES = /[  -   　]/g;
 
@@ -486,6 +504,8 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	const writes = toolName === "write" || toolName === "edit";
 	const isConfig = (path: string) => orreryConfigNamed(path) || config.includes(path.toLowerCase());
 	if (writes && (isConfig(resolved) || isConfig(target))) return CONFIG_READ_ONLY(raw);
+	// So is Orrery's installed program (app/): the hooks and extensions every lane runs are in it.
+	if (writes && (orreryAppNamed(resolved) || orreryAppNamed(target))) return APP_READ_ONLY(raw);
 	// The credential locations themselves, symlinks followed (a ~/.ssh linked from a dotfiles folder, say). Compared
 	// ignoring case: on a case-insensitive file system (macOS) ~/.SSH and /USERS are the same folders.
 	const fold = (path: string) => path.toLowerCase();
@@ -500,6 +520,7 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	const data = realData === undefined ? undefined : fold(realData);
 	if (realData !== undefined && inOrreryHome(where, realData) && !(search && where === data)) return SENSITIVE_FILE(raw);
 	if (writes && realData !== undefined && where === fold(join(realData, "config.toml"))) return CONFIG_READ_ONLY(raw);
+	if (writes && realData !== undefined && within(where, fold(join(realData, "app")))) return APP_READ_ONLY(raw);
 	// A search reads everything under its root, hidden files too, whatever its glob: judge the root, not the glob's
 	// spelling. Home and above hold the credentials; /proc holds every process's environment.
 	if (search && (credentials.some((location) => within(location, where)) || (data !== undefined && within(data, where)) || within(where, "/proc"))) {

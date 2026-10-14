@@ -262,6 +262,15 @@ describe("Orrery's own home", () => {
 		"cp /tmp/x /somewhere/.orrery/config.toml",
 		// the session's own view by a relative path (fix round 1: a shell may keep a folder of its own)
 		"cat .orrery/view.md",
+		// the own view from ~ (fix round 3: the shell's ~ follows its HOME, which a command may change)
+		"cat ~/Documents/GitHub/agent-Atlas/.orrery/view.md",
+		// Orrery's installed program, by name, in shell text (fix round 3: a command could replace it)
+		"ls ~/.orrery/app/current/src",
+		"ls ~/.orrery/app",
+		"ls ~/.orrery/app/",
+		"ln -sfn /tmp/x ~/.orrery/app/current",
+		"chmod -R u+w ~/.orrery/app",
+		"rm -rf ~/.orrery/app/current",
 	])("refuses the command %s", (command) => {
 		expect(checkToolCall({ name: "bash", arguments: { command } }, options)).toMatch(/sensitive/);
 	});
@@ -329,9 +338,6 @@ describe("Orrery's own home", () => {
 
 	it.each([
 		"cat /home/alex/Documents/GitHub/agent-Atlas/.orrery/view.md",
-		"ls ~/.orrery/app/current/src",
-		"ls ~/.orrery/app",
-		"ls ~/.orrery/app/",
 		"cat ~/.orrery-notes.txt",
 		"git status",
 		"ls ~/Documents",

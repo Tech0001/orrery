@@ -1,7 +1,7 @@
 /**
  * A seatbelt, not a sandbox (spec §6).
  *
- * - write/edit must land inside the workspace and allowed roots, and never in Orrery's config.
+ * - write/edit must land inside the workspace and allowed roots, and never in Orrery's config or installed program.
  * - No file tool may touch ssh keys or credential stores, or another lane's memory view (GuardOptions.foreignViews).
  * - File paths are checked inside the tools themselves, resolved exactly the way pi's tools resolve them (`@`
  *   prefix, `~`, `file://`, relative to cwd) and then through symlinks, so the check and the write see the same file.
@@ -19,7 +19,18 @@ import type { Context } from "@earendil-works/chord";
 import { defineExtension, hook, type ToolRegistration, ToolTask, wrapTool } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
-import { CONFIG_READ_ONLY, checkToolCall, type GuardOptions, inOrreryHome, orreryConfigNamed, sensitive, viewRules, within } from "./guard-rules.ts";
+import {
+	APP_READ_ONLY,
+	CONFIG_READ_ONLY,
+	checkToolCall,
+	type GuardOptions,
+	inOrreryHome,
+	orreryAppNamed,
+	orreryConfigNamed,
+	sensitive,
+	viewRules,
+	within,
+} from "./guard-rules.ts";
 
 export { checkToolCall, type GuardOptions };
 
@@ -98,6 +109,8 @@ export async function checkResolvedPath(
 		if (orreryConfigNamed(target) || orreryConfigNamed(real) || (data !== undefined && lower === posix.join(data, "config.toml").toLowerCase())) return CONFIG_READ_ONLY(real);
 		const config = options.configFile === undefined ? [] : [options.configFile, await realPath(env, options.configFile, context)];
 		if (config.some((file) => lower === posix.normalize(file).toLowerCase())) return CONFIG_READ_ONLY(real);
+		// So is Orrery's installed program (app/).
+		if (orreryAppNamed(target) || orreryAppNamed(real) || (data !== undefined && within(lower, posix.join(data, "app").toLowerCase()))) return APP_READ_ONLY(real);
 		const roots = await Promise.all([options.workspace, ...options.allowedRoots].map((root) => realPath(env, root, context)));
 		if (!roots.some((root) => within(real, root))) return `${real} is outside this lane's workspace and allowed roots.`;
 	}

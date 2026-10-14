@@ -581,6 +581,29 @@ describe("OMP: only the agent that owns a folder's memory view reads it", () => 
 		expect(await call(omp, "write", { path: join(root, "plain", "notes.md"), content: "x" })).toBeUndefined();
 	});
 
+	it("keeps Orrery's installed program out of shell text and file-tool writes, readable, and opens no ~/ spelling of the own view (fix round 3)", async () => {
+		const { root, config, atlas, birch } = viewWorld();
+		const app = join(root, "home", ".orrery", "app");
+		mkdirSync(join(app, "0.6.0", "src"), { recursive: true });
+		symlinkSync("0.6.0", join(app, "current"));
+		writeFileSync(join(app, "0.6.0", "src", "main.ts"), "");
+		// The guard's home is the world's root, so ~/agent-Atlas is Atlas's folder as the guard reads it.
+		const omp = await ompOrrery(atlas, config, { home: root });
+		for (const command of [`ln -sfn /tmp/x ${app}/current`, `chmod -R u+w ${app}`, `rm -rf ${app}/current`, "ls ~/.orrery/app", `ls ${app}/current/src`]) {
+			expect([command, await call(omp, "bash", { command })]).toEqual([command, refused]);
+		}
+		// Atlas's allowed roots (the workspace's parent) hold it: only the program rule refuses these.
+		const main = join(app, "current", "src", "main.ts");
+		const programRule = { block: true, reason: expect.stringMatching(/Orrery's installed program/) };
+		expect(await call(omp, "write", { path: main, content: "planted" })).toEqual(programRule);
+		expect(await call(omp, "edit", { path: main, input: "x" })).toEqual(programRule);
+		expect(await call(omp, "ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [`${app}/current/src`] })).toEqual(programRule);
+		expect(await call(omp, "read", { path: main })).toBeUndefined();
+		const leak = `export HOME=${root}/x; mkdir -p ~; ln -sfn ${birch} ~/agent-Atlas; cat ~/agent-Atlas/.orrery/view.md`;
+		expect(await call(omp, "bash", { command: leak })).toEqual(refused);
+		expect(await call(omp, "bash", { command: "cat ~/agent-Atlas/.orrery/view.md" })).toEqual(refused);
+	});
+
 	it("keeps the config file in use read-only and named in no command, wherever ORRERY_CONFIG puts it (fix round 2)", async () => {
 		const { root, configPath, atlas } = viewWorld();
 		const omp = await ompWithConfig(atlas, root, configPath);

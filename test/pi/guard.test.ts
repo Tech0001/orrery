@@ -340,12 +340,45 @@ describe("pi: only the agent that owns a folder's memory view reads it", () => {
 		expect(readFileSync(configPath, "utf8")).toBe(before);
 	}, 20_000);
 
+	/**
+	 * An Orrery home in the scratch home, with a config and an installed program. pi's bash runs a command the guard lets
+	 * through for real, under the real HOME: these tests name only scratch paths, never "~", so a run against code that
+	 * does not refuse them changes nothing outside the test's folder.
+	 */
+	function scratchOrrery(root: string) {
+		const home = join(root, "home", ".orrery");
+		mkdirSync(join(home, "app", "0.6.0", "src"), { recursive: true });
+		symlinkSync("0.6.0", join(home, "app", "current"));
+		writeFileSync(join(home, "config.toml"), "# config\n");
+		writeFileSync(join(home, "app", "0.6.0", "src", "main.ts"), "// program\n");
+		return { home, config: join(home, "config.toml"), app: join(home, "app") };
+	}
+
 	it("refuses shell text that names Orrery's config, to read or to change it (fix round 1)", async () => {
 		const { root, config } = viewWorld();
+		const orrery = scratchOrrery(root);
 		const atlas = await pi(root, join(root, "agent-Atlas"), config);
-		for (const command of ["cat ~/.orrery/config.toml", "sed -i s/Atlas/Birch/ ~/.orrery/config.toml", "printf '[' >> ~/.orrery/config.toml"]) {
+		for (const command of [`cat ${orrery.config}`, `sed -i s/config/x/ ${orrery.config}`, `printf '[' >> ${orrery.config}`]) {
 			refused(await call(atlas, "bash", { command }));
 		}
+		expect(readFileSync(orrery.config, "utf8")).toBe("# config\n");
+	}, 20_000);
+
+	it("refuses shell text that names Orrery's installed program, and keeps it read-only to file tools (fix round 3)", async () => {
+		const { root, config } = viewWorld();
+		const orrery = scratchOrrery(root);
+		const atlas = await pi(root, join(root, "agent-Atlas"), config);
+		const current = join(orrery.app, "current");
+		for (const command of [`ln -sfn /tmp/x ${current}`, `chmod -R u+w ${orrery.app}`, `rm -rf ${current}`, `ls ${current}/src`]) {
+			refused(await call(atlas, "bash", { command }));
+		}
+		// Atlas's allowed roots (the workspace's parent) hold the scratch home: only the program rule refuses these.
+		const main = join(current, "src", "main.ts");
+		expect(await call(atlas, "write", { path: main, content: "planted" })).toMatch(/Orrery's installed program/);
+		expect(await call(atlas, "edit", { path: main, edits: [{ oldText: "program", newText: "planted" }] })).toMatch(/Orrery's installed program/);
+		expect(await call(atlas, "write", { path: join(orrery.app, "0.7.0", "x.ts"), content: "planted" })).toMatch(/Orrery's installed program/);
+		expect(await call(atlas, "read", { path: main })).toContain("// program");
+		expect(readFileSync(main, "utf8")).toBe("// program\n");
 	}, 20_000);
 
 	it("refuses Birch's view to Atlas opened by ORRERY_AGENT in Birch's folder, and keeps Atlas's own open", async () => {
