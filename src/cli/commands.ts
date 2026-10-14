@@ -1,27 +1,25 @@
 /** Non-interactive and setup commands of lane. */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { Models } from "@earendil-works/pi-ai";
 import { acceptHostKey, scanHostKey } from "@earendil-works/pi-env";
-import { checkClaudeFiles, claudeProjectDir, claudeSessionFiles, extractClaudeFiles } from "../import/claude.ts";
-import { checkCodexFiles, extractCodex, findCodexSessions } from "../import/codex.ts";
-import { interleave, splitNote } from "../import/merge.ts";
-import { buildPreview, commitPreview, readPreview, writePreview } from "../import/preview.ts";
-import { type SplitResult, splitMessage } from "../import/split.ts";
-import { emptyExtract } from "../import/turns.ts";
+import { checkClaudeFiles, claudeProjectDir, claudeSessionFiles } from "../import/claude.ts";
+import { checkCodexFiles, findCodexSessions } from "../import/codex.ts";
+import { dryRun } from "../import/dry-run.ts";
+import { commitPreview, readPreview } from "../import/preview.ts";
 import { findLane, type HarnessConfig, parseModelChoice } from "../lane/config.ts";
 import { FileCredentialStore } from "../lane/credentials.ts";
 import { sshTarget } from "../lane/env.ts";
 import { laneOverview, laneUsage, summaryText, TOOL_LABELS } from "../lane/overview.ts";
 import { laneCompactorTarget } from "../lane/compactor-target.ts";
 import { createLaneCompactor } from "../lane/lane.ts";
-import { compactorModel, createLaneModels, savedSummaryLoginsOnly } from "../lane/models.ts";
+import { createLaneModels, savedSummaryLoginsOnly } from "../lane/models.ts";
 import { openSummarySources, type SummarySources } from "../lane/summary-sources.ts";
 import { runCompactorText } from "../lane/summary-text.ts";
-import { type Compactor, type CompactorModel, MemoryStore, MemoryView, renderMemoryHtml } from "../memory/index.ts";
+import { type Compactor, MemoryStore, MemoryView, renderMemoryHtml } from "../memory/index.ts";
 import { attachRemoteStore, withBriefCheckOut } from "../remote/checkout.ts";
 import { clean } from "./printer.ts";
 import { formatUsage } from "./run.ts";
@@ -109,69 +107,35 @@ export async function importDryRunCommand(config: HarnessConfig, laneName: strin
 	const claudeDir = options.claude === "none" ? undefined : (options.claude ?? (lane.workspace === undefined ? undefined : claudeProjectDir(lane.workspace)));
 	const codexRoot = options.codex === "none" ? undefined : (options.codex ?? join(homedir(), ".codex", "sessions"));
 	const foundClaude = claudeDir === undefined ? [] : claudeSessionFiles(claudeDir);
-	const claude = extractClaudeFiles([...foundClaude, ...namedClaude.filter((file) => !foundClaude.includes(file))]);
 	const found = codexRoot === undefined || lane.workspace === undefined ? [] : findCodexSessions(codexRoot, lane.workspace).map((file) => resolve(file));
-	const codex = extractCodex([...found, ...named.filter((file) => !found.includes(file))]);
-	const notes = options.notes.flatMap((file) =>
-		splitNote(basename(file), readFileSync(file, "utf8"), new Date(statSync(file).mtimeMs).toISOString()).map((message) => ({
-			source: `note:${basename(file)}`,
-			message,
-		})),
-	);
-	const out = options.out ?? join(process.cwd(), `import-${lane.name}`);
-	mkdirSync(out, { recursive: true, mode: 0o700 });
-	const cachePath = join(out, "split-cache.json");
-	const cache = new Map<string, SplitResult>(
-		existsSync(cachePath) ? Object.entries(JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, SplitResult>) : [],
-	);
-	const usage = { calls: 0, input: 0, cacheRead: 0, output: 0 };
-	// Resolve the split model up front, so a misconfigured model fails now rather than once per long message.
-	const model: CompactorModel | undefined = options.split
-		? compactorModel(
-				models ?? createLaneModels({ credentials: new FileCredentialStore(config.credentialsPath), providers: config.providers, savedLoginsOnly: savedSummaryLoginsOnly(lane) }),
-				lane.compactor.model,
-				`import:${lane.name}`,
-			)
-		: undefined;
-	const splitModel = {
-		complete: async (system: string, user: string) => {
-			if (model === undefined) throw new Error("the split model is off (--no-split)");
-			usage.calls++;
-			if (usage.calls % 10 === 0) process.stderr.write(`${usage.calls} long messages sent to the split model\n`);
-			const reply = await model.complete(system, [{ role: "user", blocks: [user] }], AbortSignal.timeout(300_000));
-			usage.input += reply.usage?.input ?? 0;
-			usage.cacheRead += reply.usage?.cacheRead ?? 0;
-			usage.output += reply.usage?.output ?? 0;
-			return reply.text;
-		},
-	};
-	let failures = 0;
-	const split = async (text: string): Promise<SplitResult> => {
-		const threshold = options.split ? options.pasteThreshold : Number.POSITIVE_INFINITY;
-		const result = await splitMessage(text, splitModel, { threshold, lanes: [...config.lanes.keys()], lane: lane.name, cache });
-		if (options.split) writeFileSync(cachePath, JSON.stringify(Object.fromEntries(cache)), { mode: 0o600 });
-		// A model or transport error (not a bad answer) will repeat for every message: stop and say so.
-		failures = result.note?.startsWith("split failed") ? failures + 1 : 0;
-		if (failures >= 3) {
-			throw new Error(`The split model failed 3 times in a row (${result.note}). Fix the model or credentials, or rerun with --no-split.`);
-		}
-		return result;
-	};
-	const omitted = [...claude.omitted, ...codex.omitted];
-	const { lines, report } = await buildPreview({ turns: interleave(claude.turns, codex.turns), notes, split, omitted });
-	const { previewPath, reportPath } = writePreview(out, lines, report);
+	const result = await dryRun({
+		config,
+		name: lane.name,
+		names: [...config.lanes.keys()],
+		summaryModel: lane.compactor.model,
+		savedLoginsOnly: savedSummaryLoginsOnly(lane),
+		claudeFiles: [...foundClaude, ...namedClaude.filter((file) => !foundClaude.includes(file))],
+		codexFiles: [...found, ...named.filter((file) => !found.includes(file))],
+		notes: options.notes,
+		pasteThreshold: options.pasteThreshold,
+		split: options.split,
+		out: options.out ?? join(process.cwd(), `import-${lane.name}`),
+		...(models === undefined ? {} : { models }),
+		progress: (line) => process.stderr.write(`${line}\n`),
+	});
+	const { claude, codex, usage } = result;
 	const splitLine = options.split
-		? `Split model: ${usage.calls} calls, ${usage.input} input + ${usage.cacheRead} cache-read + ${usage.output} output tokens\n`
+		? `Split model: ${result.splitCalls} calls, ${usage.input} input + ${usage.cacheRead} cache-read + ${usage.output} output tokens\n`
 		: "Split model: skipped (--no-split; tagged pastes were still split)\n";
 	return (
-		`Claude: ${claude.stats.turns} turns from ${claude.stats.files} files (${claude.stats.skipped} unreadable lines skipped)\n` +
-		`Codex: ${codex.stats.turns} turns from ${codex.stats.files} sessions (${codex.stats.skipped} unreadable lines skipped)\n` +
-		omitted.map((line) => `${line}\n`).join("") +
-		`Notes: ${notes.length} parts from ${options.notes.length} files\n` +
+		`Claude: ${claude.turns} turns from ${claude.files} files (${claude.skipped} unreadable lines skipped)\n` +
+		`Codex: ${codex.turns} turns from ${codex.files} sessions (${codex.skipped} unreadable lines skipped)\n` +
+		result.omitted.map((line) => `${line}\n`).join("") +
+		`Notes: ${result.noteParts} parts from ${options.notes.length} files\n` +
 		splitLine +
-		`${report.split("\n")[2]}\n` +
-		`Preview: ${previewPath}\nReport:  ${reportPath}\n` +
-		`Review the report, edit the preview if needed, then: orrery import ${lane.name} --commit ${previewPath}\n`
+		`${result.report.split("\n")[2]}\n` +
+		`Preview: ${result.previewPath}\nReport:  ${result.reportPath}\n` +
+		`Review the report, edit the preview if needed, then: orrery import ${lane.name} --commit ${result.previewPath}\n`
 	);
 }
 

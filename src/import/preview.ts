@@ -20,6 +20,21 @@ export interface PreviewOptions {
 	readonly split?: (text: string) => Promise<SplitResult>;
 	/** History the extractors left out on purpose, one line each. */
 	readonly omitted?: readonly string[];
+	/** Called after each turn with how many are done of how many; it may wait (to let a TUI draw). */
+	readonly progress?: (done: number, total: number) => void | Promise<void>;
+}
+
+/** The preview in numbers, for a short report (the TUI's import, spec 2026-10-13-orrery-agents-design §6). */
+export interface PreviewSummary {
+	readonly messages: number;
+	/** The earliest and latest message dates (ISO), when any message has one. */
+	readonly first?: string;
+	readonly last?: string;
+	/** Secrets taken out, by kind. */
+	readonly redactions: Readonly<Record<string, number>>;
+	/** Long pastes split from the person's words, and those kept whole for review. */
+	readonly splits: number;
+	readonly unsplit: number;
 }
 
 function excerpt(text: string): string {
@@ -27,7 +42,7 @@ function excerpt(text: string): string {
 	return flat.length > 90 ? `${flat.slice(0, 89)}…` : flat;
 }
 
-export async function buildPreview(options: PreviewOptions): Promise<{ lines: PreviewLine[]; report: string }> {
+export async function buildPreview(options: PreviewOptions): Promise<{ lines: PreviewLine[]; report: string; summary: PreviewSummary }> {
 	const lines: PreviewLine[] = [];
 	const redactions = new Map<string, number>();
 	const redactedSources = new Set<string>();
@@ -39,6 +54,7 @@ export async function buildPreview(options: PreviewOptions): Promise<{ lines: Pr
 		if (result.kinds.length > 0) redactedSources.add(source);
 		return result.text;
 	};
+	let done = 0;
 	for (const turn of options.turns) {
 		for (const message of turn.messages) {
 			const date = message.date ?? turn.start;
@@ -56,6 +72,7 @@ export async function buildPreview(options: PreviewOptions): Promise<{ lines: Pr
 			}
 			for (const piece of splitToMessages(result, date)) lines.push({ kind: piece.kind, text: piece.text, date, source: turn.source });
 		}
+		await options.progress?.(++done, options.turns.length);
 	}
 	for (const note of options.notes) {
 		lines.push({ kind: note.message.kind, text: clean(note.message.text, note.source), date: note.message.date ?? "", source: note.source });
@@ -93,7 +110,23 @@ export async function buildPreview(options: PreviewOptions): Promise<{ lines: Pr
 		redactedSources.size > 0 ? `\nIn: ${[...redactedSources].join(", ")}` : "",
 		"",
 	].join("\n");
-	return { lines, report };
+	// A loop, not Math.min(...dates): a long history has more dates than a call can take as arguments.
+	let first = Number.POSITIVE_INFINITY;
+	let last = Number.NEGATIVE_INFINITY;
+	for (const line of lines) {
+		const at = Date.parse(line.date);
+		if (Number.isNaN(at)) continue;
+		if (at < first) first = at;
+		if (at > last) last = at;
+	}
+	const summary: PreviewSummary = {
+		messages: lines.length,
+		...(first === Number.POSITIVE_INFINITY ? {} : { first: new Date(first).toISOString(), last: new Date(last).toISOString() }),
+		redactions: Object.fromEntries(redactions),
+		splits: splits.length,
+		unsplit: unsplit.length,
+	};
+	return { lines, report, summary };
 }
 
 function writePrivate(path: string, content: string): void {
