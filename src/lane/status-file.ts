@@ -27,6 +27,11 @@ export interface LaneStatus {
 	readonly updatedAt: string;
 	/** The installed version the lane's process runs, "checkout", or "unknown" (absent in files from before it existed). */
 	readonly version?: string;
+	/**
+	 * instructions.md's modification time when the session read it, or 0 when the agent had none then (absent in files
+	 * from before it existed). The Agents page compares it with the file's (src/lane/overview.ts).
+	 */
+	readonly instructionsAt?: number;
 }
 
 /** The version field a status file records: what runningVersion says, or "unknown" when ORRERY_HOME cannot be read. */
@@ -70,6 +75,7 @@ export function readStatus(dir: string): LaneStatus | undefined {
 			typeof status.compactor.thinking === "string" &&
 			typeof status.compactor.source === "string" &&
 			(status.version === undefined || typeof status.version === "string") &&
+			(status.instructionsAt === undefined || typeof status.instructionsAt === "number") &&
 			troubleValid(status.trouble);
 		return valid ? (status as LaneStatus) : undefined;
 	} catch {

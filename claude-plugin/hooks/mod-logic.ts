@@ -5,6 +5,8 @@
 
 /** The id of the system-prompt section that carries the memory view. */
 export const SECTION_ID = "orrery:memory";
+/** The id of the system-prompt section that carries the agent's instructions; it goes before the memory section. */
+export const INSTRUCTIONS_SECTION_ID = "orrery:instructions";
 /** How long a view request may wait for summaries to catch up, in milliseconds. */
 export const WAIT_MS = 30_000;
 /**
@@ -45,6 +47,8 @@ export type ViewReply =
 			readonly messages: number;
 			readonly remote?: RemoteStatus;
 			readonly section: string | null;
+			/** The agent's instructions section, or null when it has none; absent from an orrery that predates them. */
+			readonly instructions?: string | null;
 			/** Asked with the session (mod mode only): whether its turns reach memory. A compaction drops older turns only then. */
 			readonly recording?: boolean;
 			/** Asked with the session: what its mode file says; absent while the holder has not chosen yet. */
@@ -147,6 +151,7 @@ export function parseViewReply(run: { readonly exitCode: number; readonly stdout
 	}
 	if ("recording" in v && typeof v.recording !== "boolean") return { kind: "error", text: "orrery answered something unexpected" };
 	if ("sessionMode" in v && v.sessionMode !== "recording" && v.sessionMode !== "read-only") return { kind: "error", text: "orrery answered something unexpected" };
+	if ("instructions" in v && !(v.instructions === null || typeof v.instructions === "string")) return { kind: "error", text: "orrery answered something unexpected" };
 	let remote: { remote?: RemoteStatus } = {};
 	if ("remote" in v) {
 		if (v.remote === null || typeof v.remote !== "object") return { kind: "error", text: "orrery answered something unexpected" };
@@ -163,7 +168,8 @@ export function parseViewReply(run: { readonly exitCode: number; readonly stdout
 	}
 	const recording = typeof v.recording === "boolean" ? { recording: v.recording } : {};
 	const sessionMode: { sessionMode?: SessionMode } = v.sessionMode === "recording" || v.sessionMode === "read-only" ? { sessionMode: v.sessionMode } : {};
-	return { kind: "lane", lane: v.lane, mode: v.mode as Mode, compactAt: v.compactAt, messages: v.messages, section: v.section as string | null, ...recording, ...sessionMode, ...remote };
+	const instructions: { instructions?: string | null } = v.instructions === null || typeof v.instructions === "string" ? { instructions: v.instructions } : {};
+	return { kind: "lane", lane: v.lane, mode: v.mode as Mode, compactAt: v.compactAt, messages: v.messages, section: v.section as string | null, ...recording, ...sessionMode, ...instructions, ...remote };
 }
 
 /** True when a row is a real prompt from the user, not a tool result, a reminder-only row or Claude Code's own rows. */

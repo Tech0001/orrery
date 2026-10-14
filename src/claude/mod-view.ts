@@ -16,6 +16,7 @@ import { safeText } from "../lane/source-labels.ts";
 import type { RemoteStatus } from "../remote/types.ts";
 import type { HarnessConfig, LaneConfig } from "../lane/config.ts";
 import { holderFresh, readHolder } from "../lane/handover.ts";
+import { instructionsSection, readInstructions } from "../lane/instructions.ts";
 import { AGENT_ENV, TOKEN_ENV } from "../lane/pick.ts";
 import { processAlive } from "../lane/process.ts";
 import { readStatus } from "../lane/status-file.ts";
@@ -39,6 +40,8 @@ export type ModViewReply =
 			readonly messages: number;
 			readonly remote?: RemoteStatus;
 			readonly section: string | null;
+			/** The agent's instructions section (src/lane/instructions.ts), or null when it has none. */
+			readonly instructions: string | null;
 			/** In mod mode, with --session: whether that session is recorded, so a compaction may drop its older turns. */
 			readonly recording?: boolean;
 			/**
@@ -161,6 +164,8 @@ export async function modView(config: HarnessConfig | undefined, options: ModVie
 		const { lane } = picked;
 		const { session } = options;
 		if (session !== undefined && !validSession(session)) return { error: "not a Claude Code session id" };
+		const found = readInstructions(lane.dir);
+		const instructions = found === undefined ? null : instructionsSection(lane.name, found);
 		const mode = laneMode(lane);
 		const now = options.now ?? Date.now;
 		const remote = () => remoteFields(lane, session, now());
@@ -172,10 +177,10 @@ export async function modView(config: HarnessConfig | undefined, options: ModVie
 		};
 		if (mode !== "mod") {
 			const messages = exists ? withStore(lane, (store) => store.root.length) : 0;
-			return { lane: lane.name, mode, compactAt: lane.compactAt, messages, section: null, ...sessionMode(), ...remote() };
+			return { lane: lane.name, mode, compactAt: lane.compactAt, messages, section: null, instructions, ...sessionMode(), ...remote() };
 		}
 		const recording = (): { recording?: boolean; sessionMode?: SessionMode["mode"] } => (session === undefined ? {} : { recording: recorded(lane, session, now()), ...sessionMode() });
-		if (!exists) return { lane: lane.name, mode, compactAt: lane.compactAt, messages: 0, section: null, ...recording(), ...remote() };
+		if (!exists) return { lane: lane.name, mode, compactAt: lane.compactAt, messages: 0, section: null, instructions, ...recording(), ...remote() };
 		const waitMs = options.waitMs ?? 0;
 		if (waitMs > 0) {
 			const sleep = options.sleep ?? ((ms: number) => sleepFor(ms));
@@ -193,7 +198,7 @@ export async function modView(config: HarnessConfig | undefined, options: ModVie
 		const said = recording();
 		return withStore(lane, (store) => {
 			const view = new MemoryView(store, lane.memory.viewBytes);
-			return { lane: lane.name, mode, compactAt: lane.compactAt, messages: store.root.length, section: memorySection(view, "claude-mod"), ...said, ...remote() };
+			return { lane: lane.name, mode, compactAt: lane.compactAt, messages: store.root.length, section: memorySection(view, "claude-mod"), instructions, ...said, ...remote() };
 		});
 	} catch (error) {
 		const text = error instanceof Error ? error.message : String(error);

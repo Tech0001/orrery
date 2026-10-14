@@ -11,7 +11,6 @@ connect_timeout = 5
 [lanes.Atlas]
 host = "workstation"
 workspace = "/home/alex/code/agent-Atlas"
-instructions = "AGENTS.md"
 # Any model your logins offer: openai/… (ChatGPT sign-in) or anthropic/… ; switch per turn with /model.
 model = "openai/gpt-6.1-sol"
 thinking = "medium"

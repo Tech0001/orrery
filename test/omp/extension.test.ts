@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HarnessConfig } from "../../src/lane/config.ts";
+import { writeInstructions } from "../../src/lane/instructions.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { createOrrery, type LaneSettingsResult, summaryWaitMs } from "../../src/pi/index.ts";
 import { ageVisitMarks, cleanup, scratchHome, summarySourcesFor, world } from "../pi/world.ts";
@@ -104,6 +105,24 @@ describe("Orrery inside OMP (an OMP-shaped host)", () => {
 		expect(result?.systemPrompt[2]).toContain("zoom, date and memory_search are the Orrery memory tools; where this section says search, call memory_search.");
 		expect(memoryOf(root)).toEqual(["user: The codename is Cedar.", "talk: Noted."]);
 		expect(omp.status("orrery")).toMatch(/^Orrery · Atlas · 2 msgs/);
+	});
+
+	it("puts the lane's instructions in a block of their own, before the memory block", async () => {
+		const { root, config } = world();
+		writeInstructions(join(root, "data", "lanes", "Atlas"), "You are Atlas.\n");
+		const omp = await ompOrrery(join(root, "agent-Atlas"), config);
+		const [result] = (await omp.emit("before_agent_start", { prompt: "Hi.", systemPrompt: ["base"] })) as [{ systemPrompt: string[] }];
+		expect(result.systemPrompt[0]).toBe("base");
+		expect(result.systemPrompt[1]).toBe("# Agent: Atlas\n\nYou are Atlas.");
+		expect(result.systemPrompt[2]).toMatch(/^# Memory/);
+	});
+
+	// A guard: it passes before instructions exist too (a subagent gets the guard, never memory or instructions).
+	it("gives a subagent no instructions block (its main session has them)", async () => {
+		const { root, config } = world();
+		writeInstructions(join(root, "data", "lanes", "Atlas"), "You are Atlas.\n");
+		const sub = await ompOrrery(join(root, "agent-Atlas"), config, { agent: "sub" });
+		expect(await sub.emit("before_agent_start", { prompt: "Hi.", systemPrompt: ["base"] })).toEqual([undefined]);
 	});
 
 	it("records /fork, a rewind, /new and /resume (session_switch, session_branch) without copying a message twice", async () => {

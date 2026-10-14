@@ -1,7 +1,7 @@
 /** A lane: one pi-durable conversation with OptChat memory, its compactor, projector, tools and status file. */
 
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { join, posix } from "node:path";
+import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
@@ -24,6 +24,7 @@ import { AGENT_MODEL_KEY, COMPACTOR_MODEL_KEY, storedChoice } from "./choices.ts
 import { createLaneEnv, type LaneEnv } from "./env.ts";
 import { memoryExtension } from "./extension.ts";
 import { guardExtension } from "./guard.ts";
+import { readInstructions } from "./instructions.ts";
 import { laneViews } from "./guard-paths.ts";
 import { compactorModel, createLaneModels, modelContextWindow, savedSummaryLoginsOnly } from "./models.ts";
 import { Projector } from "./projector.ts";
@@ -192,8 +193,8 @@ export class Lane {
 			// A lane with no default folder works where `orrery run` started (only a local lane may lack one).
 			const workspace = config.workspace ?? process.cwd();
 			const env = createLaneEnv(config.host, workspace, options.config.sshDir, context);
-			const instructionsPath = posix.isAbsolute(config.instructions) ? config.instructions : posix.join(workspace, config.instructions);
-			const fresh = await env.readText(instructionsPath);
+			// The lane's instructions.md; the store keeps the last ones read, which stand in when the file is gone.
+			const fresh = readInstructions(config.dir)?.text;
 			if (fresh !== undefined && store.getMeta("instructions") !== fresh) store.setMeta("instructions", fresh);
 			const instructions = fresh ?? store.getMeta("instructions") ?? "";
 			const registry = createRegistry();

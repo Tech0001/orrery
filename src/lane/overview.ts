@@ -14,6 +14,7 @@ import { backupFinder } from "./backup.ts";
 import { COMPACTOR_MODEL_KEY, storedChoice } from "./choices.ts";
 import { type HarnessConfig, type LaneConfig, type LaneLauncher, type LaneTool, type ModelChoice, THINKING_LEVELS, type ThinkingLevel } from "./config.ts";
 import { holderFresh, readHolder } from "./handover.ts";
+import { instructionsFacts, type InstructionsState } from "./instructions.ts";
 import { processAlive } from "./process.ts";
 import { safeText } from "./source-labels.ts";
 import { readStatus } from "./status-file.ts";
@@ -58,6 +59,10 @@ export interface LaneRow {
 	readonly lastBackup?: string;
 	/** The Orrery version the lane's open tool runs (its status file's version): a release, "checkout" or "unknown". Only while the lane is open or working. */
 	readonly runsVersion?: string;
+	/** instructions.md: "ok", "none" (missing or blank), or "too large" (only its first 32 KB are used). */
+	readonly instructions: InstructionsState;
+	/** The open session read older instructions than the file holds now (or had none): it uses them at its next start. */
+	readonly instructionsNewer?: true;
 }
 
 /** A pi status older than this belongs to a pi that is gone: pi rewrites it every 5 s. */
@@ -211,7 +216,7 @@ function unreadableFields(lane: LaneConfig, reason: string) {
 function unreadableRow(lane: LaneConfig, error: unknown): LaneRow {
 	return {
 		name: lane.name, launcher: lane.launcher ?? "direct", ...(lane.oriModel === undefined ? {} : { oriModel: lane.oriModel }), tool: lane.tool ?? "pi", toolSet: lane.tool !== undefined, state: "closed", ...(lane.workspace === undefined ? {} : { workspace: lane.workspace }), dataDir: lane.dir,
-		summaryContextBytes: lane.compactor.contextBytes ?? COMPACTION_VIEW_BYTES, summaryJobs: lane.compactor.jobs, compactAt: lane.compactAt, reads: lane.reads,
+		summaryContextBytes: lane.compactor.contextBytes ?? COMPACTION_VIEW_BYTES, summaryJobs: lane.compactor.jobs, compactAt: lane.compactAt, reads: lane.reads, instructions: instructionsFacts(lane.dir).state,
 		...unreadableFields(lane, shown(errorText(error))),
 	};
 }
@@ -228,6 +233,7 @@ function laneRow(lane: LaneConfig, now: number, cache: OverviewCache, alive: (pi
 		openIn = status.model === "claude-code" ? "claude-code" : status.model === "omp" ? "omp" : "pi";
 		state = status.busy ? "working" : "open";
 	}
+	const instructions = instructionsFacts(lane.dir);
 	const base = {
 		name: lane.name,
 		launcher: lane.launcher ?? "direct",
@@ -243,6 +249,9 @@ function laneRow(lane: LaneConfig, now: number, cache: OverviewCache, alive: (pi
 		summaryJobs: lane.compactor.jobs,
 		compactAt: lane.compactAt,
 		reads: lane.reads,
+		instructions: instructions.state,
+		// Only an open session's status counts: a closed one starts afresh. A status from before the field existed says nothing.
+		...(state !== "closed" && instructions.at !== undefined && status?.instructionsAt !== undefined && instructions.at > status.instructionsAt ? { instructionsNewer: true as const } : {}),
 	} as const;
 	const configured = configuredModel(lane);
 	const file = join(lane.dir, "memory.sqlite");

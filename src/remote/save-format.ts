@@ -41,6 +41,7 @@ export interface LaneSettings {
 	readonly contextBytes?: number;
 	readonly compactorJobs?: number;
 	readonly compactAt?: number;
+	/** Before agents: the lane's instructions file name. Read from older snapshots; never written or used. */
 	readonly instructions?: string;
 	readonly reads?: readonly string[];
 }
@@ -55,7 +56,6 @@ export function laneSettings(lane: LaneConfig): LaneSettings {
 		...(lane.compactor.contextBytes === undefined ? {} : { contextBytes: lane.compactor.contextBytes }),
 		compactorJobs: lane.compactor.jobs,
 		compactAt: lane.compactAt,
-		instructions: lane.instructions,
 		reads: [...lane.reads],
 	};
 }

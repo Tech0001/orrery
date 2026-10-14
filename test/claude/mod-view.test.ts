@@ -80,7 +80,7 @@ describe("orrery claude-mod view", () => {
 		expect(await modView(t.config, { cwd: t.lane.workspace })).toMatchObject({ mode: "mod", messages: 0, section: null });
 		writeMode(t.lane.dir, SESSION, { mode: "recording", pid: process.pid, claudePid: process.pid, nonce: "n", since: 0 });
 		freshHolder(t);
-		expect(await modView(t.config, { cwd: t.lane.workspace, session: SESSION })).toEqual({ lane: t.lane.name, mode: "mod", compactAt: 200_000, messages: 0, section: null, recording: true, sessionMode: "recording" });
+		expect(await modView(t.config, { cwd: t.lane.workspace, session: SESSION })).toEqual({ lane: t.lane.name, mode: "mod", compactAt: 200_000, messages: 0, section: null, instructions: null, recording: true, sessionMode: "recording" });
 	});
 
 	it("an unreadable store: a plain error, no message text", async () => {

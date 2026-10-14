@@ -134,11 +134,22 @@ function remoteState(row: LaneRow, installed?: string): string {
 	return row.heldElsewhere === undefined ? `${row.state}${mark}` : `${row.state} · open on ${safeText(row.heldElsewhere.machine)}${row.heldElsewhere.stale ? " (stale)" : ""}${mark}`;
 }
 
+/** What the state cell adds about the lane's instructions. */
+function instructionsNote(row: LaneRow): string {
+	if (row.instructionsNewer === true) return " · new instructions: restart";
+	if (row.instructions === "none") return " · no instructions";
+	if (row.instructions === "too large") return " · instructions over 32 KB";
+	return "";
+}
+
+/** The state cell: the lane's state and remote, a restart marker, and a note on its instructions. */
+const stateText = (row: LaneRow, installed?: string) => `${remoteState(row, installed)}${instructionsNote(row)}`;
+
 function cells(row: LaneRow, now: number, withRemotes: boolean, installed?: string): string[] {
 	return [
 		row.name,
 		`${SHORT_TOOL[row.tool]}${row.launcher === "ori" ? " · Ori" : ""}`,
-		remoteState(row, installed),
+		stateText(row, installed),
 		row.hasMemory ? String(row.messages) : "—",
 		row.hasMemory ? `${kb(row.viewBytes)}/${kb(row.viewBudget)} KB` : "—",
 		row.unreadable !== undefined ? "unreadable" : summaryText(row),
@@ -163,6 +174,13 @@ function backupText(app: App, row: LaneRow): { text: string; stale: boolean } {
 	return { text: `${row.lastBackup}${folder}`, stale: backupAge(row.lastBackup, app.deps.now()) > BACKUP_STALE_DAYS };
 }
 
+/** The lane page's Instructions field. */
+function instructionsField(row: LaneRow): string {
+	if (row.instructions === "none") return "none yet";
+	if (row.instructions === "too large") return "over 32 KB: only the first 32 KB reach the model";
+	return `instructions.md${row.instructionsNewer === true ? " (newer than the open session's: it uses them at its next start)" : ""}`;
+}
+
 /** Each App's "Tokens, 7 days" text per lane, read when the lane's page opens. */
 const pageUsage = new WeakMap<App, Map<string, string>>();
 
@@ -173,9 +191,10 @@ function detailLines(app: App, row: LaneRow, width: number): string[] {
 	const usage = pageUsage.get(app)?.get(row.name);
 	const backup = backupText(app, row);
 	return [
-		theme.bold(fit(`${row.name} · ${TOOL_LABELS[row.tool]} · ${remoteState(row)}`, width)),
+		theme.bold(fit(`${row.name} · ${TOOL_LABELS[row.tool]} · ${stateText(row)}`, width)),
 		"",
 		...field("Folder", row.workspace === undefined ? "none (it opens wherever it is opened)" : safeText(row.workspace)),
+		...field("Instructions", instructionsField(row)),
 		...field("Data folder", safeText(row.dataDir)),
 		...field("Tool", row.toolSet ? TOOL_LABELS[row.tool] : `${TOOL_LABELS[row.tool]} (guessed: the config has no tool key; set it with E)`),
 		...field("Launcher", row.launcher === "ori" ? `Ori${row.oriModel === undefined ? "" : ` (model ${safeText(row.oriModel)})`}` : "Direct"),
@@ -238,8 +257,8 @@ export const lanesPage: Page = {
 		// Borrow six columns from summaries only when a launcher needs the wider tool cell.
 		let columns = rows.some((r) => r.launcher === "ori") ? baseColumns.map((c) => c.title === "Tool" ? { ...c, width: 12 } : c.title === "Summaries" ? { ...c, width: c.width - 6 } : c) : [...baseColumns];
 		const installed = app.installed;
-		if (rows.some((r) => r.remote !== undefined || restartText(r, installed) !== "")) {
-			const stateWidth = Math.max(9, Math.min(width < 90 ? 24 : 42, Math.max(...rows.map((r) => remoteState(r, installed).length))));
+		if (rows.some((r) => r.remote !== undefined || restartText(r, installed) !== "" || instructionsNote(r) !== "")) {
+			const stateWidth = Math.max(9, Math.min(width < 90 ? 24 : 42, Math.max(...rows.map((r) => stateText(r, installed).length))));
 			const memoryWidth = Math.max(6, Math.min(12, Math.max(...rows.map((r) => (r.remote ?? "local").length))));
 			columns = columns.map((c) => c.title === "State" ? { ...c, width: stateWidth } : c.title === "Memory" ? { ...c, width: memoryWidth } : c.title === "Summaries" ? { ...c, drop: 4 } : c.title === "Msgs" ? { ...c, drop: 5 } : c);
 		}

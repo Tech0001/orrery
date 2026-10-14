@@ -30,7 +30,6 @@ export interface NewLane {
 	readonly contextBytes?: number;
 	readonly compactorJobs?: number;
 	readonly compactAt?: number;
-	readonly instructions?: string;
 	readonly reads?: readonly string[];
 }
 
@@ -176,7 +175,6 @@ export function addLane(text: string, configDir: string, lane: NewLane): string 
 		...(lane.contextBytes === undefined ? {} : { compactor_context_bytes: lane.contextBytes }),
 		...(lane.compactorJobs === undefined ? {} : { compactor_jobs: lane.compactorJobs }),
 		...(lane.compactAt === undefined ? {} : { compact_at: lane.compactAt }),
-		...(lane.instructions === undefined ? {} : { instructions: lane.instructions }),
 		...(lane.reads === undefined ? {} : { reads: lane.reads }),
 	};
 	const block = [`[lanes.${lane.name}]`, ...Object.entries(table).map(([key, value]) => `${key} = ${tomlValue(value)}`)].join(eol);

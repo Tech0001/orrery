@@ -67,7 +67,6 @@ export interface LaneConfig {
 	 * Absent: the lane opens only by name (ORRERY_AGENT), in whatever folder it is opened.
 	 */
 	readonly workspace?: string;
-	readonly instructions: string;
 	readonly allowedRoots: readonly string[];
 	/** The tool the lane is launched in; undefined when the config does not say (the TUI then guesses). */
 	readonly tool?: LaneTool;
@@ -275,6 +274,10 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 		const workspace = optStr(t, "workspace", where);
 		if (workspace !== undefined && !posix.isAbsolute(workspace)) throw new ConfigError(`${where}.workspace must be absolute`);
 		if (workspace === undefined && host.kind !== "local") throw new ConfigError(`${where}: a lane on an SSH host needs a workspace`);
+		// Before agents, this named a file in the workspace; now the lane's own folder holds them (src/lane/instructions.ts).
+		if (t.instructions !== undefined) {
+			throw new ConfigError(`${where}.instructions is no longer read: ${name}'s instructions live in ${join(dataDir, "lanes", name, "instructions.md")}; move them there and remove this key`);
+		}
 		const modelRef = optStr(t, "model", where);
 		const model = modelRef === undefined ? undefined : parseModelChoice(modelRef, str(t, "thinking", where, "medium"), `${where}.model`);
 		const compactorRef = t.compactor_model === undefined && model !== undefined ? `${model.provider}/${model.modelId}` : str(t, "compactor_model", where);
@@ -301,7 +304,6 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 			dir: join(dataDir, "lanes", name),
 			host,
 			...(workspace === undefined ? {} : { workspace }),
-			instructions: str(t, "instructions", where, "AGENTS.md"),
 			allowedRoots: (roots as string[] | undefined) ?? (workspace === undefined ? [] : [posix.dirname(workspace)]),
 			launcher,
 			...(oriModel === undefined ? {} : { oriModel }),

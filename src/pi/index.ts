@@ -12,6 +12,7 @@ import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil
 import { defaultConfigPath, type HarnessConfig, type LaneConfig, laneForCwd, loadConfig } from "../lane/config.ts";
 import { holderFresh, openYielding, readHolder } from "../lane/handover.ts";
 import { orreryHome } from "../lane/home.ts";
+import { cutNotice, instructionsSection, readInstructions } from "../lane/instructions.ts";
 import { compactorCommand } from "../lane/lane-commands.ts";
 import { laneModelSource } from "../lane/model-source.ts";
 import { noticeKey, noticeText, type TroubleState } from "../lane/notices.ts";
@@ -77,6 +78,8 @@ export interface OrreryState {
 	 * says so). A visit mark written since stays when the lane settles the visit (src/lane/session-owner.ts).
 	 */
 	loadedAt?: number;
+	/** The lane's instructions section for this session, read at its start (src/lane/instructions.ts). */
+	instructions?: string;
 }
 
 export interface OrreryOptions {
@@ -279,6 +282,13 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			if (omp && subagent(ctx)) return;
 			// The session is this lane's, whether or not its memory opens.
 			noteRun(state, ctx);
+			// Read once the memory is open (a remote check-out may bring a newer file) or has failed to open: a session
+			// without its memory keeps the lane's identity.
+			const loadInstructions = () => {
+				const found = readInstructions(lane.dir);
+				state.instructions = found === undefined ? undefined : instructionsSection(lane.name, found);
+				if (found?.cut === true) warn(ctx, cutNotice(lane.name));
+			};
 			const { signal } = controller;
 			const deadline = omp && lane.remote !== undefined ? setTimeout(() => controller.abort(new Error("Remote checkout took longer than 25 seconds")), 25_000) : undefined;
 			try {
@@ -302,9 +312,12 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 						open: (open) => openYielding(open, lane.dir),
 					});
 			} catch (error) {
-				if (error !== OPEN_CANCELLED) ctx.ui.notify(notOpened(lane, error, label), "warning");
+				if (error === OPEN_CANCELLED) return;
+				ctx.ui.notify(notOpened(lane, error, label), "warning");
+				loadInstructions();
 				return;
 			} finally { clearTimeout(deadline); }
+			loadInstructions();
 			const left = () => signal.aborted || moved(ctx);
 			const discard = async () => {
 				const memory = state.lane;
@@ -475,6 +488,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 				warn(ctx, `Orrery: closing ${name}'s memory failed: ${errorText(error)}`);
 			}
 			state.guarded = undefined;
+			state.instructions = undefined;
 			lostLane = undefined;
 			state.sources = undefined;
 			state.notice = undefined;
@@ -530,8 +544,11 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			const started = Date.now();
 			// OMP: /move took the session to another folder since the last message.
 			if (omp) await follow({}, ctx);
+			// The lane's instructions go out whether or not its memory does: a session without memory keeps its identity.
+			const intro = state.instructions;
+			const alone = () => (intro === undefined ? undefined : withSections(event.systemPrompt, [intro]));
 			const lane = recordingLane(ctx);
-			if (lane === undefined) return;
+			if (lane === undefined) return alone();
 			try {
 				copySession(lane.view, ctx.sessionManager, lane.config.memory.toolCap);
 			} catch (error) {
@@ -556,7 +573,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 						ctx.signal?.removeEventListener("abort", stop);
 					}
 				}
-				if (recordingLane(ctx) !== lane) return;
+				if (recordingLane(ctx) !== lane) return alone();
 				if (!lane.view.settled) {
 					const trouble = lane.summaryTrouble();
 					const why = trouble === undefined ? "summaries still pending" : `summaries are ${trouble.state} (${trouble.plain})`;
@@ -574,10 +591,8 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			} catch {
 				// The tick reports status failures once.
 			}
-			if (section === undefined) return undefined;
-			// OMP's system prompt is a list of blocks: the section goes last, after OMP's own. pi's is one string.
-			const prompt = event.systemPrompt as string | readonly string[];
-			return (typeof prompt === "string" ? { systemPrompt: `${prompt}\n\n${section}` } : { systemPrompt: [...prompt, section] }) as { systemPrompt: string };
+			const sections = [intro, section].filter((text): text is string => text !== undefined);
+			return sections.length === 0 ? undefined : withSections(event.systemPrompt, sections);
 		});
 
 		pi.on("context", (event, ctx) => {
@@ -669,6 +684,15 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/**
+ * The system prompt with Orrery's sections after it, the instructions before the memory: OMP's is a list of blocks, one
+ * per section, after OMP's own; pi's is one string.
+ */
+function withSections(systemPrompt: unknown, sections: readonly string[]): { systemPrompt: string } {
+	const prompt = systemPrompt as string | readonly string[];
+	return (typeof prompt === "string" ? { systemPrompt: [prompt, ...sections].join("\n\n") } : { systemPrompt: [...prompt, ...sections] }) as { systemPrompt: string };
+}
 
 /** The lane's summary trouble as notices see it (never the raw provider text). */
 function troubleState(lane: PiLane): TroubleState | null {

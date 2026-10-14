@@ -346,7 +346,9 @@ export async function pullLaneCommand(configPath: string | undefined, name: stri
 		const { settings } = await remoteLaneSettings(storage, keyFor(config, remote), name);
 		const missing = settings.reads?.filter((n) => n !== "*" && n !== name && !config.lanes.has(n)) ?? [];
 		if (missing.length) throw new Error(`Pull these lanes first (${missing.map(shown).join(", ")}): ${name}'s reads setting needs them on this machine.`);
-		const lane: NewLane = { ...settings, name, workspace, remote, tool: settings.tool as NewLane["tool"], compactorThinking: settings.compactorThinking as NewLane["compactorThinking"] };
+		// An older snapshot names the lane's instructions file, a key the config no longer takes: it is dropped.
+		const { instructions: _old, ...portable } = settings;
+		const lane: NewLane = { ...portable, name, workspace, remote, tool: portable.tool as NewLane["tool"], compactorThinking: portable.compactorThinking as NewLane["compactorThinking"] };
 		const updated = editConfigFile(path, (text, dir) => {
 			const next = addLane(text, dir, lane);
 			before = text; after = next;

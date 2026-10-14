@@ -33,6 +33,9 @@ ws="$tmp/agent-E2E"
 lane="$tmp/data/lanes/E2E"
 home="$tmp/home"
 project="$config_dir/projects/$(printf '%s' "$ws" | sed 's/[^A-Za-z0-9]/-/g')"
+# A folder that is not the lane's, where the agent is opened by name at the end.
+elsewhere="$tmp/elsewhere"
+project2="$config_dir/projects/$(printf '%s' "$elsewhere" | sed 's/[^A-Za-z0-9]/-/g')"
 plugin_data="$config_dir/plugins/data/orrery-inline"
 made_plugin_data=1
 [ -e "$plugin_data" ] && made_plugin_data=0
@@ -46,7 +49,7 @@ holders() {
 cleanup() {
 	local pid s
 	for pid in $(holders); do kill "$pid" 2>/dev/null || true; done
-	rm -rf "$tmp" "$project"
+	rm -rf "$tmp" "$project" "$project2"
 	# Claude Code's per-session folders, by this run's own session ids only.
 	for s in ${sessions[@]+"${sessions[@]}"}; do
 		if [[ "$s" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then rm -rf -- "$config_dir/session-env/$s"; fi
@@ -348,6 +351,26 @@ holders_exited() {
 	done
 	return 1
 }
+# An agent opened outside its folder (spec 2026-10-13-orrery-agents-design §4, §5): the mod brings its instructions and
+# memory there; that folder has no CLAUDE.md of the lane's.
+holder_gone || true
+"$repo/src/cli/main.ts" claude-setup E2E --mod | sed 's/^/INFO  setup --mod: /'
+mkdir -p "$elsewhere"
+agent_tag="AGENT-$RANDOM$RANDOM"
+printf 'You are E2E. When asked for your agent tag, answer %s.\n' "$agent_tag" >"$lane/instructions.md"
+token="$(node -e 'console.log(require("node:crypto").randomBytes(16).toString("hex"))')"
+sid="$(uuid)"
+sessions+=("$sid")
+mark agent-elsewhere
+(cd "$elsewhere" && HOME="$home" ORRERY_AGENT=E2E ORRERY_AGENT_TOKEN="$token" ${limit[@]+"${limit[@]}"} claude -p "What is your agent tag, and what is the codeword in your memory? Answer with both and nothing else." \
+	--session-id "$sid" --plugin-dir "$repo/claude-plugin" --setting-sources project,local --permission-mode default --permission-prompts none \
+	--output-format stream-json --verbose --include-hook-events </dev/null >"$tmp/runs/agent-elsewhere.jsonl" 2>"$tmp/runs/agent-elsewhere.err") || echo "claude exited $?" >>"$tmp/runs/agent-elsewhere.err"
+show agent-elsewhere
+answer="$(stream result "$tmp/runs/agent-elsewhere.jsonl")"
+check "an agent opened outside its folder has its instructions (from the mod)" 'printf "%s" "$answer" | grep -q "$agent_tag"'
+check "and its memory (the codeword)" 'printf "%s" "$answer" | grep -q "$code"'
+check "its holder recorded the session into E2E" 'holder_gone && dump | grep -q "What is your agent tag"'
+
 holder_gone || true
 check "every holder of this run has exited" holders_exited
 info "orrery status: $("$repo/src/cli/main.ts" status E2E)"

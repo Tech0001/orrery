@@ -26,9 +26,9 @@ workspace = "/w/beta"
 `;
 
 it("adds a remote lane with all portable settings, preserving comments and an unspecified tool", () => {
-	const next = addLane(BASE, "/c", { name: "Gamma", workspace: "/w/gamma", compactorModel: "openai/gpt-6.1-sol", compactorThinking: "high", viewBytes: 64000, compactorJobs: 3, compactAt: 140000, instructions: 'notes/"guide".md', reads: ["Alpha"] });
+	const next = addLane(BASE, "/c", { name: "Gamma", workspace: "/w/gamma", compactorModel: "openai/gpt-6.1-sol", compactorThinking: "high", viewBytes: 64000, compactorJobs: 3, compactAt: 140000, reads: ["Alpha"] });
 	expect(next.startsWith(BASE)).toBe(true);
-	expect(parseConfig(next, "/c").lanes.get("Gamma")).toMatchObject({ memory: { viewBytes: 64000 }, compactor: { jobs: 3, model: { thinking: "high" } }, compactAt: 140000, instructions: 'notes/"guide".md', reads: ["Alpha"] });
+	expect(parseConfig(next, "/c").lanes.get("Gamma")).toMatchObject({ memory: { viewBytes: 64000 }, compactor: { jobs: 3, model: { thinking: "high" } }, compactAt: 140000, reads: ["Alpha"] });
 	expect(parseConfig(next, "/c").lanes.get("Gamma")?.tool).toBeUndefined();
 });
 
@@ -83,7 +83,7 @@ describe("setLaneKey", () => {
 	it("says the config is unchanged, not that it is broken, when a new key would land inside a multi-line value", () => {
 		const roots = BASE.replace("compactor_jobs = 4\n", 'compactor_jobs = 4\nallowed_roots = [\n  "/w",\n]\n');
 		expect(() => setLaneKey(roots, "/x", "Alpha", "tool", "pi")).toThrow("Orrery couldn't place this change safely; the config is unchanged — edit it by hand.");
-		const notes = BASE.replace("compactor_jobs = 4\n", 'compactor_jobs = 4\ninstructions = """\nAGENTS.md"""\n');
+		const notes = BASE.replace("compactor_jobs = 4\n", 'compactor_jobs = 4\nmodel = """\nopenai/gpt-6.1-sol"""\n');
 		expect(() => setLaneKey(notes, "/x", "Alpha", "tool", "pi")).toThrow("That edit would change more than intended; the config is left as it was.");
 		// A bad value still names the key, and a config that is already broken still says so.
 		expect(() => setLaneKey(roots, "/x", "Beta", "tool", "vim")).toThrow("lanes.Beta.tool must be one of pi, claude-code, codex");
@@ -215,8 +215,8 @@ ${note("Beta")}
 	});
 
 	it("refuses a block whose commented copy would not read back the same (a multi-line string ending on a # line)", () => {
-		const odd = THREE.replace('compactor_jobs = 4\n', 'compactor_jobs = 4\ninstructions = """\nAGENTS.md\n# end"""\n');
-		expect(parseConfig(odd, "/x").lanes.get("Alpha")?.instructions).toBe("AGENTS.md\n# end");
+		const odd = THREE.replace('compactor_jobs = 4\n', 'compactor_jobs = 4\nmodel = """\nopenai/gpt-6.1-sol\n# end"""\n');
+		expect(parseConfig(odd, "/x").lanes.get("Alpha")?.model?.modelId).toBe("gpt-6.1-sol\n# end");
 		expect(() => archiveLane(odd, "/x", "Alpha", "2026-10-08")).toThrow("Alpha's block can't be archived safely; edit the config by hand.");
 	});
 

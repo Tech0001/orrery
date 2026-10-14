@@ -73,6 +73,14 @@ describe("viewArgs and parseViewReply", () => {
 		expect(parseViewReply({ exitCode: 0, stdout: "garbage" })).toMatchObject({ kind: "error" });
 		expect(parseViewReply({ exitCode: 0, stdout: '{"lane":"L","mode":"weird"}' })).toMatchObject({ kind: "error" });
 	});
+	it("reads the instructions section, and refuses one that is not text", () => {
+		const reply = (extra: object) => parseViewReply({ exitCode: 0, stdout: JSON.stringify({ lane: "Test", mode: "mod", compactAt: 200_000, messages: 2, section: "M", ...extra }) });
+		expect(reply({ instructions: "# Agent: Test\n\nYou are Test." })).toMatchObject({ kind: "lane", instructions: "# Agent: Test\n\nYou are Test." });
+		expect(reply({ instructions: null })).toMatchObject({ kind: "lane", instructions: null });
+		expect(reply({ instructions: 7 })).toEqual({ kind: "error", text: "orrery answered something unexpected" });
+		// An older orrery says nothing of instructions: none, as before.
+		expect(reply({})).not.toHaveProperty("instructions");
+	});
 	it("reads whether the session is recorded: absent stays absent, anything but a boolean is an error", () => {
 		const reply = (recording: string) => `{"lane":"L","mode":"mod","compactAt":200000,"messages":42,"section":"# Memory\\n\\nview","recording":${recording}}`;
 		expect(parseViewReply({ exitCode: 0, stdout: reply("true") })).toEqual({ ...MOD, recording: true });

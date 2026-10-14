@@ -1,6 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import type { Page } from "../../src/tui/app.ts";
+import type { LaneRow } from "../../src/lane/overview.ts";
 import { lanesPage } from "../../src/tui/pages/lanes.ts";
 import { makeTheme } from "../../src/tui/theme.ts";
 import { fakeDeps, keys, makeApp, row, screen, settle } from "./support.ts";
@@ -30,6 +31,31 @@ describe("the restart marker", () => {
 		for (const text of [screen(lanes("0.6.2", "0.6.1")), screen(lanes("0.6.2-aaa1111", "0.6.1-bbb2222")), screen(lanes("checkout", "0.6.1")), screen(lanes("unknown", "0.6.1")), screen(lanes(undefined, "0.6.1")), screen(lanes("0.6.0", undefined))]) {
 			expect(text).not.toContain("restart for");
 		}
+	});
+});
+
+describe("instructions on the Lanes page", () => {
+	it("the state cell says which lanes have none, which are over 32 KB, and which open ones have newer instructions", () => {
+		const app = makeApp(fakeDeps({}, [row({ name: "Alpha", instructions: "none" }), row({ name: "Birch", instructions: "too large" }), row({ name: "Cedarn", state: "open", openIn: "pi", instructionsNewer: true }), row({ name: "Dunn" })]), [lanesPage]);
+		const text = screen(app, 120);
+		expect(text).toMatch(/Alpha\s+pi\s+closed · no instructions\s/);
+		expect(text).toMatch(/Birch\s+pi\s+closed · instructions over 32 KB\s/);
+		expect(text).toMatch(/Cedarn\s+pi\s+open · new instructions: restart\s/);
+		expect(text).toMatch(/Dunn\s+pi\s+closed\s+10/);
+		for (const width of [60, 81, 99, 100, 120]) expect(app.render(width).every((line) => line.length <= width)).toBe(true);
+	});
+
+	it("the lane's page names its instructions", () => {
+		const page = (fields: Partial<LaneRow>) => {
+			const app = makeApp(fakeDeps({}, [row({ name: "Alpha", ...fields })]), [lanesPage]);
+			keys(app, ENTER);
+			return screen(app, 120);
+		};
+		expect(page({})).toMatch(/Instructions {2,}instructions\.md *\n/);
+		expect(page({ state: "open", openIn: "pi", instructionsNewer: true })).toContain("instructions.md (newer than the open session's: it uses them at its next start)");
+		expect(page({ instructions: "none" })).toMatch(/Instructions\s+none yet/);
+		expect(page({ instructions: "too large" })).toMatch(/Instructions\s+over 32 KB: only the first 32 KB reach the model/);
+		expect(page({ instructions: "none" })).toMatch(/Alpha · pi · closed · no instructions/);
 	});
 });
 

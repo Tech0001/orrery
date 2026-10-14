@@ -6,6 +6,7 @@ import { Compactor, localIso, MemoryStore, MemoryView, type Summarizer } from ".
 import { COMPACTOR_MODEL_KEY, storedChoice } from "./choices.ts";
 import type { HarnessConfig, LaneConfig, ModelChoice } from "./config.ts";
 import { type ModelSource, sourceCompactorModel } from "./model-source.ts";
+import { instructionsFacts } from "./instructions.ts";
 import { explainFailure, safeText } from "./source-labels.ts";
 import { laneSummarizer } from "./summarizer.ts";
 import type { Agent } from "./view-text.ts";
@@ -66,6 +67,8 @@ export class MemoryLane {
 	compactorSource: "config" | "chat";
 	/** Why the compactor never started (its summary model is unknown here); cleared when /compactor starts it. */
 	summariesOff: string | undefined;
+	/** instructions.md's modification time when this lane opened (undefined: it had none); status.json carries it. */
+	readonly instructionsAt: number | undefined;
 
 	private constructor(parts: {
 		config: LaneConfig;
@@ -77,6 +80,7 @@ export class MemoryLane {
 		source: "config" | "chat";
 		off: string | undefined;
 		agent: Agent;
+		instructionsAt: number | undefined;
 	}) {
 		this.config = parts.config;
 		this.store = parts.store;
@@ -87,6 +91,7 @@ export class MemoryLane {
 		this.compactorSource = parts.source;
 		this.summariesOff = parts.off;
 		this.agent = parts.agent;
+		this.instructionsAt = parts.instructionsAt;
 	}
 
 	/** Reserve the local writer through handover first; keep it across remote checkout, restore and the writer's life. */
@@ -164,7 +169,9 @@ export class MemoryLane {
 			);
 			if (off === undefined) compactor.start();
 			else options.report(`Orrery: ${lane.name}: summaries are off: ${off}. Choose a summary model with /compactor provider/id.`);
-			return new MemoryLane({ config: lane, store, view, compactor, models, choice, source: stored.choice ? "chat" : "config", off, agent: options.agent ?? "pi" });
+			// After a remote check-out (openChecked), which may bring newer instructions with the memory.
+			const { at: instructionsAt } = instructionsFacts(lane.dir);
+			return new MemoryLane({ config: lane, store, view, compactor, models, choice, source: stored.choice ? "chat" : "config", off, agent: options.agent ?? "pi", instructionsAt });
 		} catch (error) {
 			store.close();
 			throw error;
@@ -244,6 +251,8 @@ export class MemoryLane {
 			lastError: trouble?.plain ?? null,
 			updatedAt: localIso(),
 			version: statusVersion(),
+			// 0: the agent had no instructions when this lane opened, so any written since are newer.
+			instructionsAt: this.instructionsAt ?? 0,
 		};
 		const file = join(this.config.dir, "status.json");
 		writeFileSync(`${file}.tmp`, JSON.stringify(status), { mode: 0o600 });

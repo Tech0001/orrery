@@ -1,9 +1,10 @@
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseConfig } from "../../src/lane/config.ts";
+import { writeInstructions } from "../../src/lane/instructions.ts";
 import { compactorReport, LaneHeld, MemoryLane } from "../../src/lane/memory-lane.ts";
 import { laneModelSource } from "../../src/lane/model-source.ts";
 import { fauxModels, laneConfigToml, tempDir } from "./support.ts";
@@ -37,6 +38,35 @@ describe("MemoryLane", () => {
 		again.writeStatus();
 		expect(JSON.parse(readFileSync(join(lane.dir, "status.json"), "utf8")).model).toBe("pi");
 		await again.close();
+	});
+
+	it("puts instructions.md's modification time when it opened in status.json, and 0 when the agent had none", async () => {
+		const dir = tempDir("orrery-memory-lane-");
+		dirs.push(dir);
+		const lane = parseConfig(laneConfigToml({ dataDir: join(dir, "data"), workspace: join(dir, "ws") }), dir).lanes.get("Test")!;
+		const models = laneModelSource(fauxModels().models);
+		const status = () => JSON.parse(readFileSync(join(lane.dir, "status.json"), "utf8")) as { instructionsAt?: number };
+		const none = MemoryLane.open({ lane, models, report: () => {} });
+		try {
+			expect(none.instructionsAt).toBeUndefined();
+			none.writeStatus();
+			expect(status().instructionsAt).toBe(0);
+		} finally {
+			await none.close();
+		}
+		writeInstructions(lane.dir, "You are Test.\n");
+		const at = statSync(join(lane.dir, "instructions.md")).mtimeMs;
+		const some = MemoryLane.open({ lane, models, report: () => {} });
+		try {
+			// A later edit does not change what this session read.
+			writeInstructions(lane.dir, "You are Test, changed.\n");
+			utimesSync(join(lane.dir, "instructions.md"), new Date(), new Date(at + 5000));
+			expect(some.instructionsAt).toBe(at);
+			some.writeStatus();
+			expect(status().instructionsAt).toBe(at);
+		} finally {
+			await some.close();
+		}
 	});
 
 	it("words a failing source plainly in the footer and status.json, and resumes on a new model without a restart", async () => {

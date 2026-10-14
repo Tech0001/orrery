@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { INSTRUCTIONS_MAX_BYTES, writeInstructions } from "../../src/lane/instructions.ts";
 import { newToken } from "../../src/lane/pick.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { FAUX_SUMMARY } from "./harness.ts";
@@ -453,5 +454,94 @@ describe("who a session belongs to: a lane never copies turns another agent said
 		await close(again);
 		expect(memoryOf(root, "Birch")).toEqual(["user: One.", "talk: First.", "user: Two.", "talk: Second."]);
 		expect(memoryOf(root)).toEqual(["user: Atlas secret question.", "talk: Atlas secret answer."]);
+	});
+});
+
+describe("a lane's instructions", () => {
+	type Ctx = { systemPrompt?: string; messages: { role: string; content: unknown }[] };
+	const systemText = (context: Ctx) => [context.systemPrompt ?? "", ...context.messages.filter((m) => m.role === "system").map((m) => JSON.stringify(m.content))].join("\n");
+
+	it("go into the system prompt under the lane's name, before the memory section", async () => {
+		const { root, config } = world();
+		writeInstructions(join(root, "data", "lanes", "Atlas"), "You are Atlas. Keep replies short.\n");
+		const run = await pi(root, join(root, "agent-Atlas"), config);
+		let system = "";
+		run.setResponses([fauxAssistantMessage("Noted."), (context: Ctx) => ((system = systemText(context)), fauxAssistantMessage("Cedar."))]);
+		await run.session.prompt("The codename is Cedar.");
+		await run.session.prompt("What is the codename?");
+		expect(system).toContain("# Agent: Atlas");
+		expect(system).toContain("You are Atlas. Keep replies short.");
+		expect(system.indexOf("# Agent: Atlas")).toBeLessThan(system.indexOf("# Memory"));
+	});
+
+	it("reach the prompt when the lane's memory is held elsewhere, without a memory section", async () => {
+		const { root, config } = world();
+		writeInstructions(join(root, "data", "lanes", "Atlas"), "You are Atlas.\n");
+		await pi(root, join(root, "agent-Atlas"), config);
+		const second = await pi(root, join(root, "agent-Atlas"), config);
+		let system = "";
+		second.setResponses([(context: Ctx) => ((system = systemText(context)), fauxAssistantMessage("Hi."))]);
+		await second.session.prompt("Hello.");
+		expect(system).toContain("# Agent: Atlas");
+		expect(system).not.toContain("# Memory");
+	});
+
+	it("over 32 KB: the first 32 KB, and one notice", async () => {
+		const { root, config } = world();
+		writeInstructions(join(root, "data", "lanes", "Atlas"), `${"a".repeat(INSTRUCTIONS_MAX_BYTES)}TAIL`);
+		const run = await pi(root, join(root, "agent-Atlas"), config);
+		let system = "";
+		run.setResponses([(context: Ctx) => ((system = systemText(context)), fauxAssistantMessage("Hi."))]);
+		await run.session.prompt("Hello.");
+		expect(system).toContain("# Agent: Atlas");
+		expect(system).toContain("a".repeat(INSTRUCTIONS_MAX_BYTES));
+		expect(system).not.toContain("TAIL");
+		expect(run.notices.filter((n) => n.message.includes("over 32 KB"))).toEqual([{ type: "warning", message: "Orrery: Atlas's instructions are over 32 KB; only the first 32 KB reach the model. Shorten instructions.md." }]);
+	});
+
+	// A guard: it passes before instructions exist too (D5); it keeps a lane without them as it was.
+	it("none: the prompt has no agent section", async () => {
+		const { root, config } = world();
+		const run = await pi(root, join(root, "agent-Atlas"), config);
+		let system = "";
+		run.setResponses([(context: Ctx) => ((system = systemText(context)), fauxAssistantMessage("Hi."))]);
+		await run.session.prompt("Hello.");
+		expect(system).not.toContain("# Agent: Atlas");
+		expect(system).toContain("# Memory");
+	});
+
+	it("are read at the session's start: an edit reaches the next session, not this one", async () => {
+		const { root, config } = world();
+		const dir = join(root, "data", "lanes", "Atlas");
+		writeInstructions(dir, "You are Atlas, first.\n");
+		const run = await pi(root, join(root, "agent-Atlas"), config);
+		const systems: string[] = [];
+		run.setResponses([(context: Ctx) => (systems.push(systemText(context)), fauxAssistantMessage("One.")), (context: Ctx) => (systems.push(systemText(context)), fauxAssistantMessage("Two."))]);
+		await run.session.prompt("First.");
+		writeInstructions(dir, "You are Atlas, second.\n");
+		await run.session.prompt("Second.");
+		expect(systems.map((text) => text.includes("You are Atlas, first.") && !text.includes("second."))).toEqual([true, true]);
+		await close(run);
+		const next = await pi(root, join(root, "agent-Atlas"), config);
+		let system = "";
+		next.setResponses([(context: Ctx) => ((system = systemText(context)), fauxAssistantMessage("Three."))]);
+		await next.session.prompt("Third.");
+		expect(system).toContain("You are Atlas, second.");
+	});
+
+	it("come with the lane ORRERY_AGENT opens in a folder outside its workspace; a refused name gets none", async () => {
+		const { root, config } = world();
+		writeInstructions(join(root, "data", "lanes", "Atlas"), "You are Atlas, opened by name.\n");
+		const run = await pi(root, join(root, "plain"), config, undefined, { env: { ORRERY_AGENT: "Atlas" } });
+		let system = "";
+		run.setResponses([(context: Ctx) => ((system = systemText(context)), fauxAssistantMessage("Hi."))]);
+		await run.session.prompt("Hello.");
+		expect(system).toContain("# Agent: Atlas");
+		expect(system).toContain("You are Atlas, opened by name.");
+		await close(run);
+		const refused = await pi(root, join(root, "plain"), config, undefined, { env: { ORRERY_AGENT: "Nobody" } });
+		refused.setResponses([(context: Ctx) => ((system = systemText(context)), fauxAssistantMessage("Hi."))]);
+		await refused.session.prompt("Hello.");
+		expect(system).not.toContain("# Agent:");
 	});
 });

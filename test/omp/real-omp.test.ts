@@ -94,29 +94,59 @@ describe.skipIf(omp === null)("Orrery inside a real OMP (isolated OMP home)", ()
 	});
 });
 
-/**
- * The load check, in `base`: Orrery installed into a scratch OMP home the way the Tools page installs it, against
- * `root` (a checkout, or an install's app/current), or by `writeExtension` when given, then a real OMP run in a lane.
- * Its status records `version`.
- */
-async function loadCheck(base: string, root: string, version: string, writeExtension?: (file: string) => void): Promise<void> {
-	const model = await fakeModel("pong");
-	const home = join(base, "home");
-	const lane = join(base, "lane");
-	const data = join(base, "data", "lanes", "Probe");
-	// A Claude Code lane's import line: OMP would put the stale view in its prompt unless Orrery disables CLAUDE.md.
-	mkdirSync(join(lane, ".orrery"), { recursive: true });
-	writeFileSync(join(lane, "CLAUDE.md"), "Lane rules.\n\n@.orrery/view.md\n");
-	writeFileSync(join(lane, ".orrery", "view.md"), "STALE-VIEW-MARKER-77\n");
-	const env = isolated(home, { ORRERY_CONFIG: join(base, "config.toml") });
-	const agentDir = join(home, ".omp", "agent");
+/** spec §9: a real OMP opens an agent, by ORRERY_AGENT, from a folder that is not its own, with its instructions and memory. */
+describe.skipIf(omp === null)("an agent opened outside its folder, inside a real OMP", () => {
+	it("puts its instructions, then its memory, in the system prompt", async () => {
+		const root = mkdtempSync(join(scratch, "agent-"));
+		const home = join(root, "home");
+		const laneDir = join(root, "data", "lanes", "Probe");
+		for (const dir of [join(root, "agent-Probe"), join(root, "elsewhere"), laneDir]) mkdirSync(dir, { recursive: true });
+		writeFileSync(join(laneDir, "instructions.md"), "You are Probe. Your tag is TAG-4712.\n");
+		const store = MemoryStore.open(join(laneDir, "memory.sqlite"));
+		store.appendBatch([{ kind: "user", text: "The codename is Cedar.", date: "2026-10-01T10:00:00.000Z" }, { kind: "talk", text: "Noted.", date: "2026-10-01T10:00:05.000Z" }]);
+		store.close();
+		const model = await fakeModel("pong");
+		try {
+			const env = isolated(home, { ORRERY_CONFIG: join(root, "config.toml"), ORRERY_AGENT: "Probe" });
+			writeOmpModels(join(home, ".omp", "agent"), model.baseUrl);
+			const file = ompExtensionFile(env);
+			mkdirSync(dirname(file), { recursive: true });
+			writeFileSync(file, ompExtensionText(orreryRoot(), file));
+			writeFileSync(join(root, "config.toml"), [`data_dir = ${JSON.stringify(join(root, "data"))}`, "[[providers]]", 'id = "local"', `base_url = ${JSON.stringify(model.baseUrl)}`, "[[providers.models]]", 'id = "m"', 'name = "m"', "context_window = 128000", "max_tokens = 4096", "reasoning = false", "[lanes.Probe]", `workspace = ${JSON.stringify(join(root, "agent-Probe"))}`, 'tool = "omp"', 'compactor_model = "local/m"', 'compactor_thinking = "off"', ""].join("\n"));
+			const child = spawn(omp as string, ["--mode", "rpc"], { cwd: join(root, "elsewhere"), env });
+			const exited = new Promise<void>((done) => child.on("exit", () => done()));
+			const { send, waitFor } = rpc(child);
+			try {
+				await waitFor((f) => f.type === "ready");
+				await waitFor((f) => f.method === "setStatus" && f.statusKey === "orrery" && f.statusText === "Orrery · Probe · 2 msgs");
+				await send({ type: "prompt", message: "Who are you?" });
+				await waitFor((f) => f.type === "agent_end");
+				const system = model.calls.find((call) => call.users.some((text) => text.includes("Who are you?")))?.system ?? "";
+				expect(system).toContain("# Agent: Probe");
+				expect(system).toContain("TAG-4712");
+				expect(system).toContain("The codename is Cedar.");
+				expect(system.indexOf("# Agent: Probe")).toBeLessThan(system.indexOf("# Memory"));
+			} finally {
+				child.stdin.end();
+				const stop = setTimeout(() => child.kill("SIGKILL"), 10_000);
+				await exited;
+				clearTimeout(stop);
+			}
+		} finally {
+			model.close();
+		}
+	}, 90_000);
+});
+
+/** OMP's models (the test's own server as its only provider, `local/m` its default), in `agentDir`, made when needed. */
+function writeOmpModels(agentDir: string, baseUrl: string): void {
 	mkdirSync(agentDir, { recursive: true });
 	writeFileSync(
 		join(agentDir, "models.yml"),
 		[
 			"providers:",
 			"  local:",
-			`    baseUrl: ${model.baseUrl}`,
+			`    baseUrl: ${baseUrl}`,
 			"    apiKey: none",
 			"    api: openai-completions",
 			"    models:",
@@ -135,6 +165,25 @@ async function loadCheck(base: string, root: string, version: string, writeExten
 		].join("\n"),
 	);
 	writeFileSync(join(agentDir, "config.yml"), "modelRoles:\n  default: local/m\nsetupVersion: 2\n");
+}
+
+/**
+ * The load check, in `base`: Orrery installed into a scratch OMP home the way the Tools page installs it, against
+ * `root` (a checkout, or an install's app/current), or by `writeExtension` when given, then a real OMP run in a lane.
+ * Its status records `version`.
+ */
+async function loadCheck(base: string, root: string, version: string, writeExtension?: (file: string) => void): Promise<void> {
+	const model = await fakeModel("pong");
+	const home = join(base, "home");
+	const lane = join(base, "lane");
+	const data = join(base, "data", "lanes", "Probe");
+	// A Claude Code lane's import line: OMP would put the stale view in its prompt unless Orrery disables CLAUDE.md.
+	mkdirSync(join(lane, ".orrery"), { recursive: true });
+	writeFileSync(join(lane, "CLAUDE.md"), "Lane rules.\n\n@.orrery/view.md\n");
+	writeFileSync(join(lane, ".orrery", "view.md"), "STALE-VIEW-MARKER-77\n");
+	const env = isolated(home, { ORRERY_CONFIG: join(base, "config.toml") });
+	const agentDir = join(home, ".omp", "agent");
+	writeOmpModels(agentDir, model.baseUrl);
 	const file = ompExtensionFile(env);
 	expect(file).toBe(join(agentDir, "extensions", "orrery.ts"));
 	if (writeExtension !== undefined) {

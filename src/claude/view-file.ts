@@ -1,6 +1,6 @@
 /**
  * The view file Claude Code loads (spec §4 "The view file and CLAUDE.md"): <workspace>/.orrery/view.md.
- * - It holds memorySection(view, "claude-code").
+ * - It holds the agent's instructions (fenced, under a heading naming it), then memorySection(view, "claude-code").
  * - It is written atomically, 0600 in a 0700 folder.
  * - The workspace is untrusted, since a shared repo decides what is in it. So the view is written only where
  *   claude-setup put it:
@@ -25,8 +25,9 @@
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmdirSync, rmSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { LaneConfig } from "../lane/config.ts";
+import { readInstructions } from "../lane/instructions.ts";
 import { ownFolder, writePrivate } from "../lane/private-file.ts";
-import { memorySection } from "../lane/view-text.ts";
+import { fenced, memorySection } from "../lane/view-text.ts";
 import { MemoryStore, MemoryView } from "../memory/index.ts";
 import { type Exposure, gitExposure, gitTracks } from "./git.ts";
 import { samePath, setupMarker, viewFile } from "./paths.ts";
@@ -313,7 +314,10 @@ export function writeViewFile(lane: LaneConfig, view: MemoryView, onGate?: (gate
 	const gate = viewGate(lane);
 	onGate?.(gate);
 	if (!gate.open || lane.workspace === undefined) return false;
-	writePrivate(viewFile(lane.workspace), memorySection(view, "claude-code"));
+	const found = readInstructions(lane.dir);
+	// The agent's instructions first, fenced like the view: Claude Code evaluates no @path import inside a code block.
+	const head = found === undefined ? "" : `# Agent: ${lane.name}\n\n${fenced(found.text.trimEnd())}\n\n`;
+	writePrivate(viewFile(lane.workspace), `${head}${memorySection(view, "claude-code")}`);
 	return true;
 }
 

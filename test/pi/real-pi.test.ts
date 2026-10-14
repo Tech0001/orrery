@@ -313,6 +313,50 @@ describe.skipIf(pi === null)("ORRERY_AGENT inside a real pi", () => {
 	}, 90_000);
 });
 
+/** spec §9: a real pi opens an agent, by ORRERY_AGENT, from a folder that is not its own, with its instructions and memory. */
+describe.skipIf(pi === null)("an agent opened outside its folder, inside a real pi", () => {
+	it("puts its instructions, then its memory, in the system prompt", async () => {
+		const root = mkdtempSync(join(tmpdir(), "orrery-agent-pi-"));
+		dirs.push(root);
+		const home = join(root, "home");
+		const laneDir = join(root, "data", "lanes", "Probe");
+		for (const dir of [join(root, "agent-Probe"), join(root, "elsewhere"), laneDir]) mkdirSync(dir, { recursive: true });
+		writeFileSync(join(laneDir, "instructions.md"), "You are Probe. Your tag is TAG-4711.\n");
+		const store = MemoryStore.open(join(laneDir, "memory.sqlite"));
+		store.appendBatch([{ kind: "user", text: "The codename is Cedar.", date: "2026-10-01T10:00:00.000Z" }, { kind: "talk", text: "Noted.", date: "2026-10-01T10:00:05.000Z" }]);
+		store.close();
+		const model = await fakeModel("pong");
+		try {
+			const agentDir = join(home, ".pi", "agent");
+			mkdirSync(join(agentDir, "extensions"), { recursive: true });
+			writeFileSync(join(agentDir, "extensions", "orrery.ts"), `export { default } from ${JSON.stringify(join(PI_DIR, "index.ts"))};\n`);
+			writeModels(agentDir, "pi", model.baseUrl);
+			writeFileSync(join(root, "config.toml"), [`data_dir = ${JSON.stringify(join(root, "data"))}`, "[[providers]]", 'id = "local"', `base_url = ${JSON.stringify(model.baseUrl)}`, "[[providers.models]]", 'id = "m"', 'name = "m"', "context_window = 128000", "max_tokens = 4096", "reasoning = false", "[lanes.Probe]", `workspace = ${JSON.stringify(join(root, "agent-Probe"))}`, 'tool = "pi"', 'compactor_model = "local/m"', 'compactor_thinking = "off"', ""].join("\n"));
+			const env = { ...isolated(home), ORRERY_CONFIG: join(root, "config.toml"), PI_CODING_AGENT_DIR: agentDir, ORRERY_AGENT: "Probe" };
+			const child = spawn(pi as string, ["--mode", "rpc", "--provider", "local", "--model", "m", "--thinking", "off"], { cwd: join(root, "elsewhere"), env });
+			const exited = new Promise<void>((done) => child.on("close", () => done()));
+			const { send, waitFor } = rpc(child);
+			try {
+				await waitFor((f) => f.method === "setStatus" && f.statusKey === "orrery" && f.statusText === "Orrery · Probe · 2 msgs");
+				await send({ type: "prompt", message: "Who are you?" });
+				await waitFor((f) => f.type === "agent_end");
+				const system = model.calls.find((call) => call.users.some((text) => text.includes("Who are you?")))?.system ?? "";
+				expect(system).toContain("# Agent: Probe");
+				expect(system).toContain("TAG-4711");
+				expect(system).toContain("The codename is Cedar.");
+				expect(system.indexOf("# Agent: Probe")).toBeLessThan(system.indexOf("# Memory"));
+			} finally {
+				child.stdin.end();
+				const stop = setTimeout(() => child.kill("SIGKILL"), 10_000);
+				await exited;
+				clearTimeout(stop);
+			}
+		} finally {
+			model.close();
+		}
+	}, 90_000);
+});
+
 /**
  * The installed layout end to end: pi loads Orrery through app/current, a second install switches current while pi
  * runs, and the running pi keeps the version it started with (its status says so) while a new pi runs the new one.

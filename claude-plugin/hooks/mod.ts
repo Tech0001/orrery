@@ -30,6 +30,7 @@ import {
 	type Fallback,
 	fallbackLine,
 	footerModes,
+	INSTRUCTIONS_SECTION_ID,
 	laterLine,
 	parseViewReply,
 	personPrompt,
@@ -61,6 +62,8 @@ interface Held {
 	readonly reply: ViewReply;
 	/** The section in this session's prompt; null adds none. */
 	readonly section: string | null;
+	/** The agent's instructions section; null adds none. Read at the session's start; a compaction keeps them. */
+	readonly instructions: string | null;
 }
 
 let held: Held | undefined;
@@ -161,7 +164,8 @@ async function current($: EngineInterface): Promise<Held> {
 	if (fetching?.session !== session) {
 		const done = runView($, session).then((reply) => {
 			if (reply.kind === "error") $.ui.log(sectionFailedLine(reply.text));
-			const next: Held = { session, reply, section: reply.kind === "lane" && reply.mode === "mod" ? reply.section : null };
+			const mod = reply.kind === "lane" && reply.mode === "mod";
+			const next: Held = { session, reply, section: mod ? reply.section : null, instructions: mod ? (reply.instructions ?? null) : null };
 			// A late answer for a session that is no longer the one being fetched does not take the current one's place.
 			if (fetching?.session === session) {
 				held = next;
@@ -356,12 +360,18 @@ export const register: Register = (on) => {
 		return result;
 	}).catch(($, e, next) => next(e));
 
+	// The agent's instructions, then its memory, after Claude Code's own sections.
 	on("prompt.compose", async ($, e, next) => {
 		const result = await next(e);
-		const { section } = await current($);
+		const { section, instructions } = await current($);
 		await flush($);
-		if (section === null) return result;
-		return { sections: [...result.sections.filter((s) => s.id !== SECTION_ID), { id: SECTION_ID, text: section, scope: "session" as const }] };
+		if (section === null && instructions === null) return result;
+		const ours = new Set([SECTION_ID, INSTRUCTIONS_SECTION_ID]);
+		const added = [
+			...(instructions === null ? [] : [{ id: INSTRUCTIONS_SECTION_ID, text: instructions, scope: "session" as const }]),
+			...(section === null ? [] : [{ id: SECTION_ID, text: section, scope: "session" as const }]),
+		];
+		return { sections: [...result.sections.filter((s) => !ours.has(s.id)), ...added] };
 	}).catch(($, e, next) => next(e));
 
 	on("prompt.submit", async ($, e, next) => {
@@ -388,7 +398,7 @@ export const register: Register = (on) => {
 			return ownWay(next(e), known.session, answer.line);
 		}
 		keep(known.session, answer.line);
-		held = { session: known.session, reply, section: answer.section };
+		held = { session: known.session, reply, section: answer.section, instructions: known.instructions };
 		showFacts($, reply);
 		// A fresh toolUses list per row: Claude Code's SessionMessage type wants a mutable one (a turn still in progress keeps
 		// its handles; a finished one goes back built).

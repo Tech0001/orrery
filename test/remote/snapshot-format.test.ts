@@ -48,10 +48,9 @@ node_bytes = 700
 compactor_context_bytes = 24000
 compactor_jobs = 3
 compact_at = 180000
-instructions = "NOTES.md"
 reads = ["*"]
 `, "/tmp/config").lanes.get("Atlas")!;
-		expect(laneSettings(lane)).toEqual({ tool: "omp", compactorModel: "openai/gpt-5.1-mini", compactorThinking: "low", viewBytes: 64000, nodeBytes: 700, contextBytes: 24000, compactorJobs: 3, compactAt: 180000, instructions: lane.instructions, reads: ["*"] });
+		expect(laneSettings(lane)).toEqual({ tool: "omp", compactorModel: "openai/gpt-5.1-mini", compactorThinking: "low", viewBytes: 64000, nodeBytes: 700, contextBytes: 24000, compactorJobs: 3, compactAt: 180000, reads: ["*"] });
 	});
 
 	it("reads settings from the newest authenticated FakeStorage snapshot", async () => {

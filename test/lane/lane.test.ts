@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseConfig, parseModelChoice } from "../../src/lane/config.ts";
+import { writeInstructions } from "../../src/lane/instructions.ts";
 import { Lane, readStatus } from "../../src/lane/lane.ts";
 import { statusVersion } from "../../src/lane/status-file.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
@@ -19,14 +20,16 @@ function fixture() {
 	dirs.push(dir);
 	const workspace = join(dir, "ws");
 	mkdirSync(workspace);
-	writeFileSync(join(workspace, "AGENTS.md"), "You are the Test lane.");
 	const config = parseConfig(laneConfigToml({ dataDir: join(dir, "data"), workspace }), dir);
+	// The lane's instructions are its own (instructions.md in its data folder), not the workspace's AGENTS.md.
+	writeFileSync(join(workspace, "AGENTS.md"), "The workspace's own rules.");
+	writeInstructions(config.lanes.get("Test")!.dir, "You are the Test lane.");
 	return { dir, workspace, config };
 }
 
 describe("Lane", () => {
 	it("answers, logs memory, writes status, and starts the next run from memory after a restart", async () => {
-		const { workspace, config } = fixture();
+		const { config } = fixture();
 		const { agent, models } = fauxModels();
 		const seen: string[][] = [];
 		agent.setResponses([
@@ -51,9 +54,10 @@ describe("Lane", () => {
 		expect(status?.model).toBe("faux-agent/faux-1");
 		expect(status?.version).toBe("checkout");
 		expect(seen[0][0]).toContain("You are the Test lane.");
+		expect(seen[0][0]).not.toContain("The workspace's own rules.");
 		await lane.close();
 
-		rmSync(join(workspace, "AGENTS.md")); // reopen must fall back to the cached copy in memory.sqlite
+		rmSync(join(config.lanes.get("Test")!.dir, "instructions.md")); // reopen must fall back to the cached copy in memory.sqlite
 		const reopened = await Lane.open({ config, lane: "Test", models, context: ctx });
 		expect(reopened.store.root).toHaveLength(2);
 		const second = await reopened.submit("What is the codename?", "r2");
@@ -136,7 +140,7 @@ describe("Lane", () => {
 		reopened.close();
 	});
 
-	it("runs a lane without a workspace in the folder it starts in, with that folder's instructions", async () => {
+	it("runs a lane without a workspace in the folder it starts in, with its own instructions", async () => {
 		const { dir, workspace } = fixture();
 		const config = parseConfig(laneConfigToml({ dataDir: join(dir, "data"), workspace }).replace(/^workspace = .*\n/m, ""), dir);
 		expect(config.lanes.get("Test")?.workspace).toBeUndefined();
@@ -149,6 +153,7 @@ describe("Lane", () => {
 			const run = await lane.submit("Hello.", "r1");
 			await run?.submission.wait(ctx);
 			expect(seen[0][0]).toContain("You are the Test lane.");
+			expect(seen[0][0]).not.toContain("The workspace's own rules.");
 			await lane.close();
 		} finally {
 			vi.restoreAllMocks();

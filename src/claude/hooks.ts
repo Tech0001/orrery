@@ -23,6 +23,7 @@ import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { type HarnessConfig, type LaneConfig, laneForCwd } from "../lane/config.ts";
 import { laneViews, movedAgentDirCredentials, ompCredentials } from "../lane/guard-paths.ts";
+import { cutNotice, readInstructions } from "../lane/instructions.ts";
 import { workArea } from "../lane/pick.ts";
 import { writePrivate } from "../lane/private-file.ts";
 import { selfCommand } from "../lane/running.ts";
@@ -241,6 +242,8 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	const outside = lane.workspace === undefined || workArea(lane, projectDir) !== lane.workspace;
 	const session = input.session_id;
 	const warnings: string[] = [];
+	// Said to the person and the model: the mod's section and the view file carry only the first 32 KB.
+	if (readInstructions(lane.dir)?.cut === true) warnings.push(cutNotice(lane.name));
 	let messages: number | undefined;
 	// The view's own gate, which every write goes through, says why the view is not written. Where git would see it,
 	// the gate has taken the view back.

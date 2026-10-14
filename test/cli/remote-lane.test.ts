@@ -37,7 +37,7 @@ beforeEach(() => {
 	clock = Date.parse("2026-10-12T14:02:00Z"); key = createKey();
 	storage = new FakeStorage({ name: "home", now: () => clock }); setStorageForTests(() => storage);
 	config(path, join(dir, "data"));
-	config(source, join(dir, "source"), `[lanes.Atlas]\nworkspace = ${JSON.stringify(dir)}\ntool = "omp"\ncompactor_model = "openai/gpt-6.1-sol"\ncompactor_thinking = "high"\nview_bytes = 64000\ncompactor_jobs = 3\ncompact_at = 140000\ninstructions = "GUIDE.md"\nreads = ["*"]\n`);
+	config(source, join(dir, "source"), `[lanes.Atlas]\nworkspace = ${JSON.stringify(dir)}\ntool = "omp"\ncompactor_model = "openai/gpt-6.1-sol"\ncompactor_thinking = "high"\nview_bytes = 64000\ncompactor_jobs = 3\ncompact_at = 140000\nreads = ["*"]\n`);
 	const store = MemoryStore.open(join(loadConfig(source).lanes.get("Atlas")!.dir, "memory.sqlite"));
 	store.append("user", "from the first machine"); store.close();
 });
@@ -65,7 +65,8 @@ describe("lane push and pull", () => {
 		expect(await laneRemoteCommand(source, ["push", "atlas"], { to: "home" })).toContain("Atlas");
 		expect(loadConfig(source).lanes.get("Atlas")?.remote).toBe("home");
 		expect(readFileSync(source, "utf8")).toContain("# keep this comment");
-		expect((await remoteLaneSettings(storage, key, "Atlas")).settings).toMatchObject({ tool: "omp", viewBytes: 64000, compactorJobs: 3, compactAt: 140000, instructions: "GUIDE.md", reads: ["*"] });
+		expect((await remoteLaneSettings(storage, key, "Atlas")).settings).toMatchObject({ tool: "omp", viewBytes: 64000, compactorJobs: 3, compactAt: 140000, reads: ["*"] });
+		expect((await remoteLaneSettings(storage, key, "Atlas")).settings).not.toHaveProperty("instructions");
 		expect((await storage.list())[0].lock?.held).toBe(false);
 	});
 
@@ -95,7 +96,7 @@ describe("lane push and pull", () => {
 		await seed(); await saveMore();
 		await laneRemoteCommand(path, ["pull", "Atlas"], { from: "home", folder });
 		expect(texts()).toEqual(["from the first machine", "a newer remote turn"]);
-		expect(loadConfig(path).lanes.get("Atlas")).toMatchObject({ workspace: folder, remote: "home", tool: "omp", memory: { viewBytes: 64000 }, compactor: { jobs: 3, model: { thinking: "high" } }, compactAt: 140000, instructions: "GUIDE.md", reads: ["*"] });
+		expect(loadConfig(path).lanes.get("Atlas")).toMatchObject({ workspace: folder, remote: "home", tool: "omp", memory: { viewBytes: 64000 }, compactor: { jobs: 3, model: { thinking: "high" } }, compactAt: 140000, reads: ["*"] });
 		expect(readFileSync(path, "utf8")).toContain("# keep this comment");
 		expect((await storage.list())[0].lock?.held).toBe(false);
 	});
@@ -103,6 +104,13 @@ describe("lane push and pull", () => {
 		await RemoteSession.push({ ...sourceOptions(), settings: { ...sourceOptions().settings, nodeBytes: 12000, contextBytes: 73000 } });
 		await pull();
 		expect(loadConfig(path).lanes.get("Atlas")).toMatchObject({ memory: { nodeBytes: 12000 }, compactor: { contextBytes: 73000 } });
+	});
+
+	it("drops an older snapshot's instructions setting: the pulled config never names it", async () => {
+		await RemoteSession.push({ ...sourceOptions(), settings: { ...sourceOptions().settings, instructions: "GUIDE.md" } });
+		await pull();
+		expect(readFileSync(path, "utf8")).not.toContain("instructions");
+		expect(loadConfig(path).lanes.get("Atlas")).toMatchObject({ remote: "home", tool: "omp" });
 	});
 
 	it("refuses a duplicate lane case-insensitively before contacting storage", async () => {

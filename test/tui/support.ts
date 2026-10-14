@@ -13,7 +13,7 @@ export function row(fields: Partial<LaneRow> & { name: string }): LaneRow {
 		tool: "pi", toolSet: true, state: "closed", workspace: `/w/${fields.name.toLowerCase()}`, dataDir: `/d/${fields.name}`,
 		hasMemory: true, messages: 10, summaries: 19, viewBytes: 64_000, viewBudget: 128_000, summaryContextBytes: 32_000, summaryJobs: 4, compactAt: 200_000,
 		summary: { state: "ok", waiting: 0 }, summaryModel: { ref: "openai/gpt-6.1-sol", thinking: "low", source: "config" },
-		lastMessageAt: "2026-10-08T11:55:00.000Z", reads: [],
+		lastMessageAt: "2026-10-08T11:55:00.000Z", reads: [], instructions: "ok",
 		...fields,
 	};
 }

@@ -63,11 +63,12 @@ const ENGINE_BAND = "the engine's band";
 function lane(
 	mode: "mod" | "file" | "none",
 	section: string | null,
-	extra: { compactAt?: number; messages?: number; recording?: boolean; sessionMode?: "recording" | "read-only"; name?: string; remote?: { remote: string; state: "saved" | "pending" | "failing" | "lost"; savedAt?: string; reason?: string; movedTo?: string } } = {},
+	extra: { compactAt?: number; messages?: number; recording?: boolean; sessionMode?: "recording" | "read-only"; name?: string; remote?: { remote: string; state: "saved" | "pending" | "failing" | "lost"; savedAt?: string; reason?: string; movedTo?: string }; instructions?: string | null } = {},
 ): string {
 	const recording = extra.recording === undefined ? {} : { recording: extra.recording };
 	const sessionMode = extra.sessionMode === undefined ? {} : { sessionMode: extra.sessionMode };
-	return JSON.stringify({ lane: extra.name ?? "Test", mode, compactAt: extra.compactAt ?? 200_000, messages: extra.messages ?? 10, section, ...recording, ...sessionMode, ...(extra.remote === undefined ? {} : { remote: extra.remote }) });
+	const instructions = extra.instructions === undefined ? {} : { instructions: extra.instructions };
+	return JSON.stringify({ lane: extra.name ?? "Test", mode, compactAt: extra.compactAt ?? 200_000, messages: extra.messages ?? 10, section, ...recording, ...sessionMode, ...instructions, ...(extra.remote === undefined ? {} : { remote: extra.remote }) });
 }
 
 function world(on: On, session: string, answers: readonly Answer[]): World {
@@ -183,6 +184,32 @@ describe("the Orrery mod's memory section", () => {
 		expect(second.sections).toEqual(first.sections);
 		expect(viewCalls(w)).toEqual([["claude-mod", "view", "--cwd", ROOT, "--session", "s-1"]]);
 		expect(w.lines).toEqual([]);
+	});
+
+	test("an agent's instructions get their own section, before memory", async ($, on) => {
+		const w = world(on, "s-instr", [lane("mod", "MEMORY A", { instructions: "# Agent: Test\n\nYou are Test." })]);
+		const composed = await $.prompt.compose(COMPOSE);
+		expect(composed.sections).toEqual([...BASE, { id: "orrery:instructions", text: "# Agent: Test\n\nYou are Test.", scope: "session" }, { id: "orrery:memory", text: "MEMORY A", scope: "session" }]);
+		expect(viewCalls(w)).toHaveLength(1);
+	});
+
+	test("instructions without memory yet still get their section", async ($, on) => {
+		world(on, "s-instr-2", [lane("mod", null, { instructions: "# Agent: Test\n\nYou are Test." })]);
+		expect((await $.prompt.compose(COMPOSE)).sections).toEqual([...BASE, { id: "orrery:instructions", text: "# Agent: Test\n\nYou are Test.", scope: "session" }]);
+	});
+
+	test("a compaction refreshes memory and keeps the instructions the session started with", async ($, on) => {
+		const w = world(on, "s-instr-3", [lane("mod", "MEMORY A", { instructions: "# Agent: Test\n\nAt the start." }), lane("mod", "MEMORY B", { instructions: "# Agent: Test\n\nEdited since." })]);
+		await $.prompt.compose(COMPOSE);
+		expect(await $.session.compact({ trigger: "manual", messages: ROWS })).toEqual({ messages: BUILT_LAST_TURN });
+		expect((await $.prompt.compose(COMPOSE)).sections).toEqual([...BASE, { id: "orrery:instructions", text: "# Agent: Test\n\nAt the start.", scope: "session" }, { id: "orrery:memory", text: "MEMORY B", scope: "session" }]);
+		expect(w.runs).toHaveLength(2);
+	});
+
+	// A guard: it passes before instructions exist too (a file lane gets no section at all).
+	test("a file lane's instructions are its view file's, not a section", async ($, on) => {
+		world(on, "s-instr-4", [lane("file", null, { instructions: "# Agent: Test\n\nYou are Test." })]);
+		expect((await $.prompt.compose(COMPOSE)).sections).toEqual(BASE);
 	});
 
 	test("passes ORRERY_AGENT and its token from Claude Code's environment to the view call", async ($, on) => {

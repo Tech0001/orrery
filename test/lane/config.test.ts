@@ -70,7 +70,6 @@ describe("parseConfig", () => {
 		const atlas = config.lanes.get("Atlas");
 		expect(atlas?.dir).toBe("/var/lib/orrery/lanes/Atlas");
 		expect(atlas?.host.kind).toBe("ssh");
-		expect(atlas?.instructions).toBe("AGENTS.md");
 		expect(atlas?.allowedRoots).toEqual(["/home/alex/Documents/GitHub"]);
 		expect(atlas?.model).toEqual({ provider: "openai", modelId: "gpt-6.1-sol", thinking: "xhigh" });
 		expect(atlas?.compactor).toEqual({ model: { provider: "omlx", modelId: "Bonsai-27B-mlx-1bit", thinking: "off" }, jobs: 2 });
@@ -120,6 +119,12 @@ describe("parseConfig", () => {
 		expect(config.lanes.get("Rooted")?.allowedRoots).toEqual(["/srv"]);
 		expect(laneForCwd(config, "/")).toBeUndefined();
 		expect(laneForCwd(config, "/srv")).toBeUndefined();
+	});
+
+	it("refuses the old instructions key: an agent's instructions live in instructions.md", () => {
+		expect(() => parseConfig(`[lanes.Atlas]\nworkspace = "/w/a"\ncompactor_model = "openai/gpt-6.1-sol"\ninstructions = "GUIDE.md"\n`, "/d")).toThrow(
+			"lanes.Atlas.instructions is no longer read: Atlas's instructions live in /d/lanes/Atlas/instructions.md; move them there and remove this key",
+		);
 	});
 
 	it("needs a workspace for a lane on an SSH host", () => {
