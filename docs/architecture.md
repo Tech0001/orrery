@@ -1,7 +1,7 @@
 # Architecture
 
-Orrery gives a workspace a memory that survives changes of session, coding tool and model.
-A lane names that workspace and its memory store.
+Orrery gives an agent a memory that survives changes of session, folder, coding tool and model.
+An agent is a name, instructions, memory and settings, kept in Orrery's data folder; where it works is wherever it is opened.
 The coding tool still owns the current interaction: its editor, terminal, tools and agent model.
 Orrery records selected conversation events, builds summaries, and supplies a bounded view of the past.
 
@@ -11,13 +11,27 @@ Switching from pi to Claude Code should not create a second, unrelated project h
 Changing the agent model should not change where its memory lives.
 The store is local and inspectable; summaries are derived data rather than the only surviving record.
 
-## A lane from prompt to recall
+## An agent from prompt to recall
 
-A lane has a configured workspace, a directory under `data_dir/lanes/`, and a summary model.
+An agent has a data directory under `data_dir/agents/<Name>/`, a summary model, and optionally a default folder.
 The `tool` setting selects pi, OMP, Claude Code or Codex for launching.
 The optional `launcher` setting selects direct launch or Ori.
 Those launch choices do not select a different memory database.
 Codex currently launches without an Orrery memory adapter.
+
+The data directory holds everything that makes the agent:
+
+```
+<data_dir>/                 ~/.orrery by default; the config has one [agents.<Name>] section per agent
+  agents/<Name>/
+    instructions.md        who the agent is (up to 32 KB reach the model)
+    memory.sqlite          what it remembers
+    status.json, logs, ... everything else the agent needs
+```
+
+`instructions.md` is Markdown the person writes (the TUI's `E`, or `orrery agent edit <Name>`); it is never confused
+with a project's own `AGENTS.md`. The adapter adds it to the system prompt under `# Agent: <Name>`, before the memory
+section, and a longer file is cut at 32 KB with a notice.
 
 ```mermaid
 flowchart LR
@@ -33,7 +47,12 @@ flowchart LR
     G --> E
 ```
 
-At a session boundary, the adapter finds the lane from the working directory.
+At a session boundary, the adapter chooses the agent. It takes, in order, the agent `ORRERY_AGENT` names (set by
+`orrery agent <Name>`; an unknown name gives a notice and no memory), then the agent whose default folder holds the
+working directory, then none. `orrery agent` also sets `ORRERY_AGENT_TOKEN`, a one-time token whose claim the first
+session process takes (a file named by the token in the agent's `claims/` folder). A tool the agent starts itself
+inherits both variables but not the claim, so it falls through to the folder rule and is not the agent. A session
+belongs to the agent that first ran in it; another agent that resumes it records from its tail.
 It opens the writer if available, loads the saved view, and starts summary work.
 Before an agent run it adds memory according to the host's supported prompt mechanism.
 Selected new messages enter the log with stable source identities or cursors where the host provides them.
@@ -47,7 +66,7 @@ Hidden reasoning is not a memory source.
 
 ## The store
 
-Each lane's `memory.sqlite` contains four logical areas:
+Each agent's `memory.sqlite` contains four logical areas:
 
 | Table | Contents |
 |---|---|
@@ -76,20 +95,20 @@ Neither the database nor the export is encrypted by Orrery.
 
 ## One writer, many readers
 
-One process owns a lane's writer at a time.
+One process owns an agent's writer at a time.
 Opening the writer also holds an exclusive SQLite lock on a separate `.lock` database.
 The operating system releases this lock when the process dies.
 There is no stale lock directory to remove and no decision based only on a reused process ID.
 The lock database filename can remain on disk after a clean exit.
 
-Status pages, memory tools, exports and other authorized lanes use read-only snapshots.
+Status pages, memory tools, exports and other authorized agents use read-only snapshots.
 Readers do not take the writer lock or advance the writer's progress.
 A second pi or OMP session cannot quietly become a second recorder.
-It reports the conflict and runs without lane memory, while applicable guard rules remain active.
-Claude Code can provide a read-only window while its recording window owns the lane.
+It reports the conflict and runs without agent memory, while applicable guard rules remain active.
+Claude Code can provide a read-only window while its recording window owns the agent.
 
 The rule applies across tools, not just across two copies of the same executable.
-Close the recording session before opening the lane in another tool.
+Close the recording session before opening the agent in another tool.
 Restoring or importing memory also requires the writer to be closed.
 This keeps ordering and exactly-once recording tractable without a distributed coordination service.
 It intentionally does not support concurrent collaborative writers.
@@ -135,10 +154,10 @@ Larger spans must be aligned powers of two with available children.
 `search` finds words or a regular expression in the original log, newest first.
 OMP calls this last tool `memory_search` to avoid its own search-tool naming conflict.
 
-A lane may grant reads of named other lanes, or `reads = ["*"]`.
-Such a reader also gets `lanes` and `lane_memory`.
-These tools use snapshots; they never append to the other lane.
-Their access checks use the configured lane relationships.
+An agent may be granted reads of named other agents, or `reads = ["*"]`.
+Such a reader also gets `agents` and `agent_memory`.
+These tools use snapshots; they never append to the other agent.
+Their access checks use the configured agent relationships.
 The memory browser exposes the current view, source messages and summary tree to the user.
 
 ## Keeping the prompt prefix stable
@@ -162,7 +181,7 @@ Between merge batches, the existing view lines remain unchanged and new lines ex
 Tests compare those prefixes byte for byte over long synthetic histories.
 
 The selected parts are saved as `view.parts` metadata.
-Reopening a lane loads that selection rather than recomputing a different cut through the same tree.
+Reopening an agent loads that selection rather than recomputing a different cut through the same tree.
 Readers use the same saved selection.
 A missing or invalid saved view is rebuilt once; a read-only reader rebuilds only in memory.
 New messages appended outside the view join as additional lines on the next open.
@@ -185,7 +204,7 @@ The context ends at the node being summarized and includes only built lines.
 A leaf's context stops before that message; a merge can see through the range it covers.
 No placeholder or partial message is presented as a completed summary.
 A fixed summary system prompt precedes the context and task.
-Lane names and changing timestamps do not churn that fixed prefix.
+Agent names and changing timestamps do not churn that fixed prefix.
 
 For providers supporting explicit cache marks, context is grouped into blocks of four lines.
 The Anthropic request path marks a stable whole block as well as the request end.
@@ -202,42 +221,42 @@ The TUI distinguishes subscription-backed usage from priced API usage where that
 ## Adapters and boundaries
 
 The memory core in `src/memory/` does not depend on an agent UI.
-Shared lane code handles configuration, model sources, tools, notices and settings requests.
+Shared agent code handles configuration, model sources, tools, notices and settings requests.
 Each host adapter translates its own event and tool shapes into those shared operations.
-The TUI and CLI use the same lane settings and launch plans.
+The TUI and CLI use the same agent settings and launch plans.
 A launcher does not become an additional memory writer.
 
 **pi:** the extension adds the view to the system prompt and trims already-recorded history at run boundaries.
-It preserves the current interaction while long-term history is represented by the lane view.
+It preserves the current interaction while long-term history is represented by the agent's view.
 Session identities and recording progress prevent ordinary resumes from copying the same messages twice.
 The extension uses pi-supplied pi-ai entry points when loaded by the compiled executable.
 Tests enforce this import boundary because a second, incompatible provider runtime can fail only at call time.
 
 **OMP:** a separate entry point uses the compatible extension layer with host-specific tool and event handling.
-Orrery temporarily disables overlapping OMP memory and compaction behavior for the lane session.
-Those settings are restored when the session leaves the lane.
+Orrery temporarily disables overlapping OMP memory and compaction behavior for the agent's session.
+Those settings are restored when the session leaves the agent.
 This relies on some OMP internals and is version-sensitive; failure produces a visible status notice.
 See [OMP](omp.md) for guard coverage, overflow behavior and tested versions.
 
-**Claude Code plugin:** short-lived hooks spool prompts and final replies to a lane holder process.
+**Claude Code plugin:** short-lived hooks spool prompts and final replies to an agent holder process.
 The holder owns the writer, drains events and runs summaries.
 An MCP server exposes memory tools through read-only access.
-Trusted per-workspace setup controls which folders receive the view file and recording behavior.
+Trusted per-folder setup controls which folders receive the view file and recording behavior. The file setup works in an agent's default folder only; the mod brings the agent anywhere.
 Shared repositories use local files and local Git exclusions rather than changing shared project instructions.
 
-**Claude Code mod:** the optional mod supplies a dedicated system-prompt section for memory.
-The section stays stable between session boundaries and compactions.
+**Claude Code mod:** the optional mod supplies dedicated system-prompt sections for the agent's instructions and its memory.
+The sections stay stable between session boundaries and compactions.
 The mod can replace compaction while the existing hooks continue recording and guarding.
 It depends on the host's mod interface and is more tightly coupled than the plugin alone.
 See [Claude Code](claude-code.md) for setup, compaction behavior and current limitations.
 
 **Ori:** Ori supplies OpenRouter models to the agent executable.
-Orrery launches `ori pi`, `ori omp`, `ori claude` or `ori codex` in the lane workspace.
+Orrery launches `ori pi`, `ori omp`, `ori claude` or `ori codex` in the folder the agent is opened in.
 The optional `ori_model` is passed through as `--model`.
 Ori's pi provider suppression affects the session registry; Orrery's separate summary registry survives it.
 [Ori](ori.md) records the tested startup incompatibility with OMP and the manual Claude check still required.
 
-**Durable runtime:** `orrery run` remains an alternative built on pi-durable.
+**Durable runtime:** `orrery run <Name>`, which starts an agent's own harness in the terminal it runs in, remains an alternative built on pi-durable.
 It owns a durable session database alongside the memory store and can execute tools over SSH.
 Its projector commits recording progress with memory appends.
 This path also underlies the optional always-on deployment helpers.
@@ -267,11 +286,15 @@ Ori's telemetry, updates and cloud-session settings are explained separately in 
 
 The guard rejects known credential paths and disallowed file-tool targets.
 Inside Orrery's home (`~/.orrery`, or `ORRERY_HOME`), file tools are refused everywhere except reading `app/`, the
-installed program, and `config.toml`; no tool may change either, nor a config `ORRERY_CONFIG` names elsewhere. Paths
-are compared by real path, so a link into the home does not get around it.
-Shell commands that name `.orrery` are refused, except for the session's own lane's `view.md` by its full path (OMP's
-own search tools take it from `~/` too, since OMP expands `~` itself). Another lane's view file is refused to every
-file tool and content search (grep), by any path or link; name-only listings (ls, find, glob) may list its folder. In
+installed program, and `config.toml`; the config and the installed program are read-only to agents (no tool may
+change either, nor a config `ORRERY_CONFIG` names elsewhere). Paths are compared by real path, so a link into the home
+does not get around it. Setup commands that name the installed app folder are refused to agents, so a person runs them
+in their own terminal.
+Shell commands that name `.orrery` are refused, except for the session's own agent's `view.md` by its full path (OMP's
+own search tools take it from `~/` too, since OMP expands `~` itself). Only an agent's own sessions read its memory
+view: it is refused to every other agent's file tools and content searches (grep), by any path or link; name-only
+listings (ls, find, glob) may list its folder. Which agent a session is comes from the same choice that picks its
+memory (`ORRERY_AGENT` with its claimed token, else the folder), so a tool an agent starts itself is not that agent. In
 Claude Code, a config that is there but cannot be read refuses every tool call.
 Shared rules handle normalization and symlinks; adapters map each host's arguments to those rules.
 Host-specific checks cover multi-file edits and known credential locations.
@@ -280,6 +303,8 @@ The rules are tested against concrete tool shapes and need review when upstream 
 
 This is a credential guard, not a sandbox.
 Shell and evaluation tools receive text checks, not an operating-system isolation boundary.
+The shell-text rules are a seatbelt; variables, `eval`, `cd`, escape codes and brace names split across words are known
+limits.
 Generated code can reach files through mechanisms the guard cannot see.
 Unknown plugin tools and hook failures can also fall outside the protection offered by a host integration.
 Do not use it as the security boundary for untrusted code or a hostile agent.
@@ -296,7 +321,7 @@ Unit tests cover tree addresses, byte accounting, summary scheduling, view persi
 Long synthetic runs check merge order and the stable-prefix property.
 Python parity tests regenerate expected trees and views through the retained OptChat reference implementation.
 They compare both fresh builds and continuing runs, with Unicode and varying message lengths.
-The Python oracle is a behavioral reference, not the runtime serving a lane.
+The Python oracle is a behavioral reference, not the runtime serving an agent.
 
 Adapter tests exercise resumes, rewinds, tool calls, recording conflicts and cross-tool ownership.
 Real pi and OMP tests load the actual installed binaries with scratch homes and fake model services.

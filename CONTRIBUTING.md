@@ -53,7 +53,7 @@ release).
 
 ## Areas that need extra care
 
-- **The store.** Lanes hold long histories. Existing memory has to keep opening after an upgrade, so a change to the
+- **The store.** Agents hold long histories. Existing memory has to keep opening after an upgrade, so a change to the
   store comes with a test that opens data written the old way.
 - **Summaries and the view.** The summary prompts and view selection follow
   [OptChat](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449). The Python reference in
@@ -64,8 +64,8 @@ release).
   change comes with tests for the bypass it closes. The guard is not a sandbox, and the docs say what it covers.
 - **The pi extension.** Code under `src/pi/` imports pi-ai only through entry points pi supplies. A test enforces this
   ([adapters and boundaries](docs/architecture.md#adapters-and-boundaries)).
-- **Remote lanes.** One machine writes a lane at a time, and memory is encrypted before upload. Storage changes must
-  pass the shared contract tests in `test/remote/` ([remote lanes](docs/remote.md)).
+- **Remote agents.** One machine writes an agent at a time, and memory is encrypted before upload. Storage changes must
+  pass the shared contract tests in `test/remote/` ([remote agents](docs/remote.md)).
 
 ## Dependencies
 

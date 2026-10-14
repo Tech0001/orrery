@@ -19,8 +19,8 @@ Only the latest release receives security fixes.
 
 - Keys or tokens leaking into logs, notices, model context, memory, exports or backups
 - Bypassing the credential guard for a path or tool argument it claims to cover
-- A lane reading another lane's memory beyond the documented `lanes` and `lane_memory` tools
-- Remote lanes: reading or changing memory without the recovery code, or writing past the one-writer lock
+- An agent reading another agent's memory beyond the documented `agents` and `agent_memory` tools
+- Remote agents: reading or changing memory without the recovery code, or writing past the one-writer lock
 - Import scrubbing missing a secret format it claims to catch
 - Hijacking a sign-in flow (OAuth or OpenRouter PKCE)
 

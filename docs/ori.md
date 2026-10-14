@@ -1,6 +1,6 @@
-# Launching lanes through Ori
+# Launching agents through Ori
 
-Ori launches an agent with OpenRouter models. Orrery keeps the memory in the lane, so changing the agent's model
+Ori launches an agent with OpenRouter models. Orrery keeps the memory in the agent, so changing the agent's model
 keeps the same memory. Ori and Orrery have separate jobs and separate sign-ins.
 
 ## Setup
@@ -17,20 +17,20 @@ Orrery's extension or plugin for that agent. Ori adds its own extension or setti
 The Ori row shows its path and an offline version check. Sign-in shows `unknown`: Ori 0.15.7 has no public auth
 command guaranteed to stay offline. Enter shows the install and login commands; Orrery does not run them for you.
 
-Set a lane's launcher with E in the TUI, or:
+Set an agent's launcher with C in the TUI, or:
 
 ```bash
-orrery lane set Atlas launcher ori
-orrery lane set Atlas ori_model openai/gpt-4.1-mini
-orrery launch Atlas
+orrery agent set Atlas launcher ori
+orrery agent set Atlas ori_model openai/gpt-4.1-mini
+orrery agent Atlas
 ```
 
-N offers “Launch through Ori?” when Ori is on PATH; the default is No. The Lanes table shows `pi · Ori`, and the
-lane page shows the selected model. The config form is:
+N offers “Launch through Ori?” when Ori is on PATH; the default is No. The Agents table shows `pi · Ori`, and the
+agent page shows the selected model. The config form is:
 
 ```toml
-[lanes.Atlas]
-workspace = "/absolute/path/to/project"
+[agents.Atlas]
+folder = "/absolute/path/to/project"
 tool = "pi"
 launcher = "ori"
 ori_model = "openai/gpt-4.1-mini"
@@ -41,11 +41,11 @@ compactor_model = "openrouter/openai/gpt-4.1-mini"
 `--launcher` and `--ori-model` are equivalent CLI flags. An empty edit clears either key:
 
 ```bash
-orrery lane set Atlas ori_model ''
-orrery lane set Atlas launcher ''
+orrery agent set Atlas ori_model ''
+orrery agent set Atlas launcher ''
 ```
 
-`orrery lane set Atlas launcher direct` sets the key explicitly to `direct`; it does not clear it.
+`orrery agent set Atlas launcher direct` sets the key explicitly to `direct`; it does not clear it.
 
 Launch mapping: `pi` → `ori pi`, `omp` → `ori omp`, `claude-code` → `ori claude`, `codex` → `ori codex`.
 The folder, existing setup checks, terminal handover and exit status handling are the same as direct launches.
@@ -53,10 +53,10 @@ Codex still has no Orrery memory. If Ori is missing, Orrery refuses the launch a
 
 ## Sign in for summaries
 
-For lanes with `launcher = "ori"`, Orrery's cloud summaries use only its own saved logins. They ignore
+For agents with `launcher = "ori"`, Orrery's cloud summaries use only its own saved logins. They ignore
 `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` from the environment. The same rule applies when
 Ori's `ORI_OPENROUTER_SESSION_ID` launch marker is present, including a hand-typed `ori pi`. They do not read
-Ori's credentials or call its credential helper. Direct lanes without the marker keep their environment fallback.
+Ori's credentials or call its credential helper. Direct agents without the marker keep their environment fallback.
 Choose **Sign in → OpenRouter** in Logins or `/compactor`, or run:
 
 ```bash
@@ -81,7 +81,7 @@ interactive sign-in prompt. Interactive pi/OMP pickers and the TUI can sign in w
 
 ## Privacy and limits
 
-Orrery inherits the user's environment when launching a lane. Ori's own defaults therefore apply. Ori 0.15.7
+Orrery inherits the user's environment when launching an agent. Ori's own defaults therefore apply. Ori 0.15.7
 has telemetry on by default; `ORI_TELEMETRY=0` disables it. `ori claude` also syncs cloud sessions by default;
 `ORI_CLAUDE_CLOUD_SESSION_SYNC=0` disables that. To disable update checks and updates, set
 `ORI_NO_UPDATE_CHECK=1 ORI_DISABLE_UPDATES=1`. Orrery's own probes use these four privacy flags.
@@ -114,16 +114,16 @@ ORRERY_TEST_ORI=/path/to/ori ORRERY_TEST_OMP=/path/to/omp npm test -- test/ori/r
 The tests use scratch HOME/XDG/config folders and a fake OpenRouter service. Without the binaries they skip.
 They never sign in, install extensions globally, or make a live model call.
 
-For a manual memory check, create a scratch lane and point `ORRERY_CONFIG` at its scratch config. Use a private
+For a manual memory check, create a scratch agent and point `ORRERY_CONFIG` at its scratch config. Use a private
 tmux server, a scratch pi/OMP agent directory and `-e /path/to/orrery/src/pi/index.ts` (or `src/omp/index.ts`) from a checkout.
 With the four privacy flags above, launch `ori pi --model <cheap-model>`. State a synthetic fact, ask a second
 turn to recall it using `zoom`, open `/compactor`, cancel with Esc, and quit. Start a new session with a different
 `--model` and ask it to recall the fact. Do the same in `ori omp` after the upstream startup problem is fixed.
-Use at most twelve live turns for the whole check. Never use a real lane for this test.
+Use at most twelve live turns for the whole check. Never use a real agent for this test.
 
-For the owner to check **Claude Code**: use a scratch lane with Orrery's plugin and mod wired as described in
+For the owner to check **Claude Code**: use a scratch agent with Orrery's plugin and mod wired as described in
 [claude-code.md](claude-code.md). With the four privacy flags, launch `ori claude --model <cheap-model>` from that
-lane. Check the Orrery footer, two-turn recording and `zoom`, `/orrery:compactor`, then quit and recall the fact in
+agent's folder. Check the Orrery footer, two-turn recording and `zoom`, `/orrery:compactor`, then quit and recall the fact in
 a new model session. Check that the mod still decides when to compact. Ori writes the real `~/.claude.json`
-model cache in an ordinary launch; this manual check is deliberately left to the owner. Keep its lane data and
+model cache in an ordinary launch; this manual check is deliberately left to the owner. Keep its agent data and
 Orrery config in scratch folders, and list `~/.ori` filenames before and after without reading auth files.
