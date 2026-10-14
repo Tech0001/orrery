@@ -122,13 +122,23 @@ async function fromChat(app: App, config: HarnessConfig): Promise<string | undef
 			break;
 		}
 		const made = app.deps.importCommit({ name, tool, ...(folder === undefined ? {} : { folder }), summary: choice, previewPath: result.previewPath, title: first.title });
-		// Wired before the build starts: while it runs the agent does not open, so a launch plan offers no fix.
-		await wireLane(app, name);
+		// Wired before the build starts (while it runs the agent does not open, so a launch plan offers no fix); the build
+		// starts however the wiring ends: a failed fix, an error, or the TUI quitting during its questions.
+		let setup: string | undefined;
+		let build: string | undefined;
 		try {
-			app.deps.startBuild(name, made.laneDir);
+			await wireLane(app, name);
 		} catch (error) {
-			return `Imported ${made.messages} messages into ${name}, but its memory build did not start (${errorText(error)}): run orrery compact ${name}.`;
+			setup = errorText(error);
+		} finally {
+			try {
+				app.deps.startBuild(name, made.laneDir);
+			} catch (error) {
+				build = errorText(error);
+			}
 		}
+		if (build !== undefined) return `Imported ${made.messages} messages into ${name}, but its memory build did not start (${build}): run orrery compact ${name}.`;
+		if (setup !== undefined) return `Imported ${made.messages} messages into ${name}; its memory is being built, but its setup stopped: ${setup}.`;
 		return `Imported ${made.messages} messages into ${name}; its memory is being built (its row shows how far).`;
 	} finally {
 		rmSync(out, { recursive: true, force: true });

@@ -196,6 +196,21 @@ describe("N: an agent from an existing chat", () => {
 		expect(inputs[0]!.names).toContain("Install-RPCS3-AppImage");
 	});
 
+	it("starts the memory build even when the wiring after the import fails", async () => {
+		const s = scene();
+		const { app, builds } = await tui(s, {
+			tools: () => {
+				throw new Error("the tool check broke");
+			},
+		});
+		await throughToPreview(app);
+		await answer(app, "Import preview for Install-RPCS3-AppImage", ENTER);
+		await app.idle();
+		expect(builds).toEqual(["Install-RPCS3-AppImage"]);
+		expect(loadConfig(s.configPath).lanes.has("Install-RPCS3-AppImage")).toBe(true);
+		expect(screen(app, 160)).toContain("Imported 2 messages into Install-RPCS3-AppImage; its memory is being built, but its setup stopped: the tool check broke.");
+	});
+
 	it("the short report shows a Codex id with escape sequences in it as plain text", async () => {
 		const s = scene();
 		const fork = join(s.home, ".codex", "sessions", "rollout-2026-08-22T09-00-00-f.jsonl");
