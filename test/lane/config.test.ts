@@ -186,6 +186,34 @@ model = "openai/gpt-6.1-sol"
 		}
 	});
 
+	it("takes the deepest workspace by real path, though a shallower one matches as written", () => {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "orrery-lane-nested-")));
+		try {
+			mkdirSync(join(root, "projects", "b", "sub"), { recursive: true });
+			mkdirSync(join(root, "projects", "other"));
+			symlinkSync(join(root, "projects", "b"), join(root, "linkB"));
+			const config = parseConfig(`data_dir = "/d"
+[lanes.A]
+workspace = ${JSON.stringify(join(root, "projects"))}
+model = "openai/gpt-6.1-sol"
+[lanes.B]
+workspace = ${JSON.stringify(join(root, "linkB"))}
+model = "openai/gpt-6.1-sol"
+`, "/etc");
+			// pi in B's folder reports the physical path, which lies inside A as written: B's memory, not A's.
+			expect(laneForCwd(config, join(root, "projects", "b"))?.name).toBe("B");
+			expect(laneForCwd(config, join(root, "projects", "b", "sub"))?.name).toBe("B");
+			expect(laneForCwd(config, join(root, "linkB", "sub"))?.name).toBe("B");
+			expect(laneForCwd(config, join(root, "projects", "other"))?.name).toBe("A");
+			expect(laneForCwd(config, join(root, "projects"))?.name).toBe("A");
+			// A folder not made yet still matches as written.
+			expect(laneForCwd(config, join(root, "linkB", "not-yet"))?.name).toBe("B");
+			expect(laneForCwd(config, join(root, "projects", "not-yet"))?.name).toBe("A");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects reads naming a lane that does not exist", () => {
 		expect(() => parseConfig(toml(`[lanes.Cedar]\nworkspace = "/w/v"\nmodel = "openai/gpt-6.1-sol"\nreads = ["Nobody"]\n`), "/etc")).toThrow(
 			/reads.*Nobody/,

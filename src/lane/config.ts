@@ -333,24 +333,48 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 }
 
 /**
- * The lane whose workspace is cwd or contains it; the longest workspace wins. Paths are compared as written first, then
- * with symlinks followed: pi and Claude Code report the physical folder, and a workspace may be configured through a
- * symlink (on macOS, /tmp and /var are links into /private).
+ * The lane whose workspace is cwd or contains it; the deepest workspace wins. Paths are compared with symlinks followed:
+ * pi and Claude Code report the physical folder, and a workspace may be configured through a symlink (on macOS, /tmp and
+ * /var are links into /private), even one that points inside another lane's workspace. Only when that finds no lane are
+ * the paths compared as written (a folder not made yet).
  */
 export function laneForCwd(config: HarnessConfig, cwd: string): LaneConfig | undefined {
-	return laneHolding(config, resolve(cwd), resolve) ?? laneHolding(config, realOrResolved(cwd), realOrResolved);
+	const lanes = [...config.lanes.values()];
+	const roots = lanes.map(realRoot);
+	const here = resolve(cwd);
+	// A cwd that is a workspace's real path is physical already: no realpath call for it.
+	const physical = roots.includes(here) ? here : realOrResolved(here);
+	return deepest(lanes, roots, physical) ?? deepest(lanes, lanes.map((lane) => resolve(lane.workspace)), here);
 }
 
-function laneHolding(config: HarnessConfig, here: string, path: (path: string) => string): LaneConfig | undefined {
-	let best: { lane: LaneConfig; root: string } | undefined;
-	for (const lane of config.lanes.values()) {
-		const root = path(lane.workspace);
-		if ((here === root || here.startsWith(`${root}/`)) && (best === undefined || root.length > best.root.length)) best = { lane, root };
+function deepest(lanes: LaneConfig[], roots: string[], here: string): LaneConfig | undefined {
+	let best: number | undefined;
+	for (let i = 0; i < lanes.length; i++) {
+		const root = roots[i];
+		if ((here === root || here.startsWith(`${root}/`)) && (best === undefined || root.length > roots[best].length)) best = i;
 	}
-	return best?.lane;
+	return best === undefined ? undefined : lanes[best];
 }
 
-/** The path with symlinks followed, or as written when it cannot be followed (a workspace not made yet). */
+/**
+ * Each lane's workspace with symlinks followed, kept once found (a link changed later counts once the config is loaded
+ * again). A workspace not made yet is tried again on the next call.
+ */
+const realRoots = new WeakMap<LaneConfig, string>();
+
+function realRoot(lane: LaneConfig): string {
+	const known = realRoots.get(lane);
+	if (known !== undefined) return known;
+	try {
+		const real = realpathSync(lane.workspace);
+		realRoots.set(lane, real);
+		return real;
+	} catch {
+		return resolve(lane.workspace);
+	}
+}
+
+/** The path with symlinks followed, or as written when it cannot be followed (a folder not made yet). */
 function realOrResolved(path: string): string {
 	try {
 		return realpathSync(path);
