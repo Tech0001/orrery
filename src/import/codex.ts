@@ -92,7 +92,7 @@ function uuidV7Time(id: unknown): number | undefined {
 }
 
 /** A completed item's text parts, joined as Codex joins them for its message events. */
-function itemText(content: unknown): string {
+export function itemText(content: unknown): string {
 	if (!Array.isArray(content)) return "";
 	return (content as { type?: unknown; text?: unknown }[])
 		.map((part) => ((part?.type === "text" || part?.type === "Text") && typeof part.text === "string" ? part.text : ""))

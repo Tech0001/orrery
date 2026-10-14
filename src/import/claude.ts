@@ -59,7 +59,8 @@ function blockText(content: unknown): string {
 		.join("\n");
 }
 
-function directorText(content: unknown): string | undefined {
+/** A user record's own words: its text without system reminders, or undefined for noise (slash-command wrappers, ! commands, notifications). */
+export function promptText(content: unknown): string | undefined {
 	const text = blockText(content).replace(SYSTEM_REMINDER, "").trim();
 	if (!text || NOISE.some((prefix) => text.startsWith(prefix))) return undefined;
 	return text;
@@ -166,7 +167,7 @@ export function extractClaudeFiles(files: readonly string[]): Extracted {
 						}
 					}
 				}
-				const text = directorText(content);
+				const text = promptText(content);
 				if (text === undefined) {
 					// A slash command ends the turn before it: its reply is noise, and must not stand as that turn's final reply.
 					if (slashCommand(content)) flush();
