@@ -6,8 +6,8 @@ import { RESERVED_NAMES } from "../agent/config.ts";
 const MAX = 32;
 
 /**
- * A valid, free name from a chat's title: its Latin words and digits joined by "-" ("Install RPCS3 AppImage" →
- * "Install-RPCS3-AppImage"), accents dropped, as many whole words as fit. It starts with a letter ("Chat" before a
+ * A valid, free name from a chat's title: its Latin words and digits joined by "-" ("Set up the build cache" →
+ * "Set-up-the-build-cache"), accents dropped, as many whole words as fit. It starts with a letter ("Chat" before a
  * number, or alone when nothing is left), is never a word `orrery agent` uses, and gets "-2", "-3", … when taken
  * (compared without case) or `blocked` (its data folder already has a memory store, say).
  */

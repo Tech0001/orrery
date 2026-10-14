@@ -50,12 +50,12 @@ describe("listChats", () => {
 	it("titles a Claude Code chat by its custom title, else its AI title, else its first prompt, newest first", () => {
 		const h = home();
 		const project = join(h, ".claude", "projects", "-home-someone-Work");
-		put(join(project, "a.jsonl"), lines([{ type: "user", isMeta: true, message: { content: "<local-command-caveat>x" } }, claudeUser("Install RPCS3 AppImage\nand set it up"), { type: "ai-title", aiTitle: "Installing RPCS3", sessionId: "s-1" }]), 60);
+		put(join(project, "a.jsonl"), lines([{ type: "user", isMeta: true, message: { content: "<local-command-caveat>x" } }, claudeUser("Set up the build cache\nand set it up"), { type: "ai-title", aiTitle: "Setting up the build cache", sessionId: "s-1" }]), 60);
 		put(join(project, "b.jsonl"), lines([claudeUser("Fix the build"), { type: "ai-title", aiTitle: "Build fix", sessionId: "s-2" }, { type: "custom-title", customTitle: "My build", sessionId: "s-2" }]), 120);
 		put(join(project, "c.jsonl"), lines([claudeUser("<command-name>/clear</command-name>"), claudeUser("Plan the trip")]), 180);
 		put(join(project, "d.jsonl"), "\n", 200);
 		expect(list(h).map((chat) => [chat.tool, chat.title, chat.folder])).toEqual([
-			["claude-code", "Installing RPCS3", "/home/someone/Work"],
+			["claude-code", "Setting up the build cache", "/home/someone/Work"],
 			["claude-code", "My build", "/home/someone/Work"],
 			["claude-code", "Plan the trip", "/home/someone/Work"],
 		]);
@@ -64,12 +64,12 @@ describe("listChats", () => {
 	it("titles a Codex chat by its thread name, else its first message; skips subagent sessions; lists archived ones", () => {
 		const h = home();
 		const codex = join(h, ".codex");
-		put(join(codex, "sessions", "2026", "10", "10", "rollout-2026-10-10T10-00-00-a.jsonl"), lines([codexMeta("id-a", "/home/someone/Work"), codexUser("Install RPCS3 AppImage")]), 5);
+		put(join(codex, "sessions", "2026", "10", "10", "rollout-2026-10-10T10-00-00-a.jsonl"), lines([codexMeta("id-a", "/home/someone/Work"), codexUser("Set up the build cache")]), 5);
 		put(join(codex, "archived_sessions", "rollout-2026-10-01T10-00-00-b.jsonl"), lines([codexMeta("id-b", "/home/someone/Other"), codexUser("Old question")]), 600);
 		put(join(codex, "sessions", "2026", "10", "10", "rollout-2026-10-10T11-00-00-c.jsonl"), lines([codexMeta("id-c", "/x", { source: { subagent: "review" } }), codexUser("from an agent")]), 30);
 		writeFileSync(join(codex, "session_index.jsonl"), lines([{ id: "id-b", thread_name: "Old name", updated_at: "x" }, { id: "id-b", thread_name: "Archived chat", updated_at: "y" }]));
 		expect(list(h).map((chat) => [chat.tool, chat.title, chat.folder, chat.inUse])).toEqual([
-			["codex", "Install RPCS3 AppImage", "/home/someone/Work", true],
+			["codex", "Set up the build cache", "/home/someone/Work", true],
 			["codex", "Archived chat", "/home/someone/Other", false],
 		]);
 	});
@@ -116,8 +116,8 @@ describe("listChats", () => {
 
 	it("finds a Codex chat's folder and first message when its first line is longer than the head window", () => {
 		const h = home();
-		put(join(h, ".codex", "sessions", "rollout-2026-10-10T10-00-00-big.jsonl"), lines([codexMeta("id-big", "/home/someone/Work", { instructions: "x".repeat(600 * 1024) }), codexUser("Install RPCS3 AppImage")]), 5);
-		expect(list(h).map((chat) => [chat.title, chat.folder])).toEqual([["Install RPCS3 AppImage", "/home/someone/Work"]]);
+		put(join(h, ".codex", "sessions", "rollout-2026-10-10T10-00-00-big.jsonl"), lines([codexMeta("id-big", "/home/someone/Work", { instructions: "x".repeat(600 * 1024) }), codexUser("Set up the build cache")]), 5);
+		expect(list(h).map((chat) => [chat.title, chat.folder])).toEqual([["Set up the build cache", "/home/someone/Work"]]);
 	});
 
 	it("lists a chat whose last line is half written", () => {
@@ -222,8 +222,8 @@ describe("listChats", () => {
 	});
 
 	it("filters by every word, in the title or the folder as the list shows it", () => {
-		const chat = { tool: "codex" as const, file: "/f", id: "i", title: "Install RPCS3 AppImage", folder: "/home/someone/Work/emu", lastActive: NOW, size: 1, inUse: false };
-		expect(chatMatches(chat, "rpcs3 ~/work", "/home/someone")).toBe(true);
-		expect(chatMatches(chat, "rpcs3 other", "/home/someone")).toBe(false);
+		const chat = { tool: "codex" as const, file: "/f", id: "i", title: "Set up the build cache", folder: "/home/someone/Work/build", lastActive: NOW, size: 1, inUse: false };
+		expect(chatMatches(chat, "cache ~/work", "/home/someone")).toBe(true);
+		expect(chatMatches(chat, "cache other", "/home/someone")).toBe(false);
 	});
 });

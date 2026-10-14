@@ -106,33 +106,33 @@ describe("dialogs", () => {
 	});
 
 	it("ChatListModal: once a filter is typed, space is part of it and Tab marks", async () => {
-		const chats = [chat("Install RPCS3", "/w/a", 3), chat("Install Steam", "/w/a", 2), chat("Plan the trip", "/w/a", 1)];
+		const chats = [chat("Install Redis", "/w/a", 3), chat("Install Steam", "/w/a", 2), chat("Plan the trip", "/w/a", 1)];
 		const modal = new ChatListModal("Pick", chats, { home: "/home/x", now: 10 });
-		for (const c of "install rpcs3") modal.handleInput(c);
+		for (const c of "install redis") modal.handleInput(c);
 		const shown = modal.render(120, 20, PLAIN).join("\n");
-		expect(shown).toContain("filter: install rpcs3");
-		expect(shown).toContain("Install RPCS3");
+		expect(shown).toContain("filter: install redis");
+		expect(shown).toContain("Install Redis");
 		expect(shown).not.toContain("Install Steam");
 		expect(shown).toContain("Tab mark several");
 		expect(shown).not.toContain("space or Tab");
 		modal.handleInput(TAB);
-		for (let i = 0; i < "install rpcs3".length; i++) modal.handleInput("\x7f");
+		for (let i = 0; i < "install redis".length; i++) modal.handleInput("\x7f");
 		modal.handleInput(DOWN);
 		modal.handleInput(DOWN);
 		modal.handleInput(TAB);
 		modal.handleInput(ENTER);
-		expect((await modal.result)?.map((c) => c.title)).toEqual(["Install RPCS3", "Plan the trip"]);
+		expect((await modal.result)?.map((c) => c.title)).toEqual(["Install Redis", "Plan the trip"]);
 	});
 
 	it("ChatListModal shows each chat's folder, tool, age, size and use; Enter takes the one under the cursor; Esc leaves", async () => {
 		const now = Date.parse("2026-10-13T12:00:00.000Z");
 		const chats = [
-			chat("Install RPCS3", "/home/x/Work", now - 5 * 60_000, { tool: "codex", size: 2_500_000, inUse: true }),
+			chat("Install Redis", "/home/x/Work", now - 5 * 60_000, { tool: "codex", size: 2_500_000, inUse: true }),
 			chat("Lost folder", undefined, now - 3 * 3_600_000),
 		];
 		const modal = new ChatListModal("Turn which chat into an agent?", chats, { home: "/home/x", now });
 		const lines = modal.render(120, 20, PLAIN);
-		expect(lines.map((line) => line.trimEnd())).toContain("› [ ] Install RPCS3  ·  ~/Work  ·  Codex  ·  5 min  ·  2.5 MB  ·  in use");
+		expect(lines.map((line) => line.trimEnd())).toContain("› [ ] Install Redis  ·  ~/Work  ·  Codex  ·  5 min  ·  2.5 MB  ·  in use");
 		expect(lines.join("\n")).toContain("  [ ] Lost folder  ·  ?  ·  Claude Code  ·  3 h  ·  1 KB");
 		expect(lines.join("\n")).toContain("space or Tab mark several");
 		for (const line of modal.render(60, 20, PLAIN)) expect(visibleWidth(line)).toBeLessThanOrEqual(60);

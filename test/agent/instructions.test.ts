@@ -79,7 +79,7 @@ describe("instructions.md", () => {
 
 	it("starts a new agent with its purpose and where the rest goes; the section's heading names it, once", () => {
 		expect(instructionsTemplate("Atlas")).toBe("What Atlas is for, in one line.\n\nAdd how this agent should work: its role, what it owns, how it reports.\n");
-		expect(instructionsTemplate("Atlas", 'Continues the chat "Install RPCS3".')).toBe('Continues the chat "Install RPCS3".\n\nAdd how this agent should work: its role, what it owns, how it reports.\n');
+		expect(instructionsTemplate("Atlas", 'Continues the chat "Install Redis".')).toBe('Continues the chat "Install Redis".\n\nAdd how this agent should work: its role, what it owns, how it reports.\n');
 		const dir = scratch();
 		writeInstructions(dir, instructionsTemplate("Atlas"));
 		expect(instructionsSection("Atlas", readInstructions(dir)!)).toBe("# Agent: Atlas\n\nWhat Atlas is for, in one line.\n\nAdd how this agent should work: its role, what it owns, how it reports.");

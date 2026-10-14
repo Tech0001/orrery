@@ -36,12 +36,12 @@ function scene() {
 	const root = tempDir("orrery-tui-import-");
 	dirs.push(root);
 	const home = join(root, "home");
-	const chat = join(home, ".claude", "projects", "-w-rpcs3", "s-1.jsonl");
+	const chat = join(home, ".claude", "projects", "-w-cache", "s-1.jsonl");
 	mkdirSync(dirname(chat), { recursive: true });
 	writeFileSync(chat, [
-		line({ type: "user", uuid: "u1", sessionId: "s-1", cwd: "/w/rpcs3", timestamp: "2026-10-13T11:55:00.000Z", message: { role: "user", content: "Install RPCS3 AppImage for me." } }),
-		line({ type: "assistant", uuid: "a1", sessionId: "s-1", timestamp: "2026-10-13T11:56:00.000Z", message: { id: "m1", content: [{ type: "text", text: "Done: it is in ~/Applications." }] } }),
-		line({ type: "ai-title", aiTitle: "Install RPCS3 AppImage", sessionId: "s-1" }),
+		line({ type: "user", uuid: "u1", sessionId: "s-1", cwd: "/w/cache", timestamp: "2026-10-13T11:55:00.000Z", message: { role: "user", content: "Set up the build cache for me." } }),
+		line({ type: "assistant", uuid: "a1", sessionId: "s-1", timestamp: "2026-10-13T11:56:00.000Z", message: { id: "m1", content: [{ type: "text", text: "Done: the cache is warm." }] } }),
+		line({ type: "ai-title", aiTitle: "Set up the build cache", sessionId: "s-1" }),
 		'{"type":"user","mess',
 	].join("\n"));
 	const configPath = join(root, "config.toml");
@@ -104,24 +104,24 @@ describe("N: an agent from an existing chat", () => {
 		// The preview is private, in Orrery's data folder (agents are kept out of it), not the system's temporary folder.
 		expect(outs[0]?.startsWith(join(s.root, "data", "imports", "preview-"))).toBe(true);
 		expect(modes).toEqual([0o700, 0o600]);
-		await answer(app, "Import preview for Install-RPCS3-AppImage", "r");
+		await answer(app, "Import preview for Set-up-the-build-cache", "r");
 		await answer(app, "Full report", ENTER);
-		await answer(app, "Import preview for Install-RPCS3-AppImage", ENTER);
+		await answer(app, "Import preview for Set-up-the-build-cache", ENTER);
 		await app.idle();
-		const agent = loadConfig(s.configPath).agents.get("Install-RPCS3-AppImage");
+		const agent = loadConfig(s.configPath).agents.get("Set-up-the-build-cache");
 		expect(agent).toMatchObject({ tool: "pi", compactor: { model: { provider: "anthropic", modelId: "claude-haiku-4-5" } } });
 		expect(agent?.folder).toBeUndefined();
-		expect(readFileSync(join(agent!.dir, "instructions.md"), "utf8")).toBe(instructionsTemplate("Install-RPCS3-AppImage", 'Continues the chat "Install RPCS3 AppImage".'));
+		expect(readFileSync(join(agent!.dir, "instructions.md"), "utf8")).toBe(instructionsTemplate("Set-up-the-build-cache", 'Continues the chat "Set up the build cache".'));
 		const store = MemoryStore.openReadOnly(join(agent!.dir, "memory.sqlite"));
 		try {
-			expect(store.root.map((m) => `${m.kind}: ${m.text}`)).toEqual(["user: Install RPCS3 AppImage for me.", "talk: Done: it is in ~/Applications."]);
+			expect(store.root.map((m) => `${m.kind}: ${m.text}`)).toEqual(["user: Set up the build cache for me.", "talk: Done: the cache is warm."]);
 		} finally {
 			store.close();
 		}
-		expect(builds).toEqual(["Install-RPCS3-AppImage"]);
+		expect(builds).toEqual(["Set-up-the-build-cache"]);
 		expect(outs).toHaveLength(1);
 		expect(outs.every((out) => !existsSync(out))).toBe(true);
-		expect(screen(app)).toContain("Imported 2 messages into Install-RPCS3-AppImage");
+		expect(screen(app)).toContain("Imported 2 messages into Set-up-the-build-cache");
 		// The source chat is only read.
 		expect(readFileSync(s.chat, "utf8").endsWith('{"type":"user","mess')).toBe(true);
 	});
@@ -130,14 +130,14 @@ describe("N: an agent from an existing chat", () => {
 		const s = scene();
 		const { app, builds, outs } = await tui(s);
 		await throughToPreview(app);
-		await answer(app, "Import preview for Install-RPCS3-AppImage");
+		await answer(app, "Import preview for Set-up-the-build-cache");
 		expect(screen(app)).toContain("2 messages, 2026-10-13 to 2026-10-13");
-		expect(screen(app)).toContain("Chats: Install RPCS3 AppImage");
+		expect(screen(app)).toContain("Chats: Set up the build cache");
 		expect(screen(app)).toContain("Unreadable lines skipped: 1");
 		keys(app, ESC);
 		await app.idle();
 		expect(loadConfig(s.configPath).agents.size).toBe(0);
-		expect(existsSync(join(s.root, "data", "agents", "Install-RPCS3-AppImage"))).toBe(false);
+		expect(existsSync(join(s.root, "data", "agents", "Set-up-the-build-cache"))).toBe(false);
 		expect(outs).toHaveLength(1);
 		expect(outs.every((out) => !existsSync(out))).toBe(true);
 		expect(builds).toEqual([]);
@@ -153,7 +153,7 @@ describe("N: an agent from an existing chat", () => {
 			},
 		});
 		await throughToPreview(app);
-		await answer(app, "Preparing Install-RPCS3-AppImage's memory", ESC);
+		await answer(app, "Preparing Set-up-the-build-cache's memory", ESC);
 		await app.idle();
 		expect(screen(app)).toContain("Not imported; nothing was written.");
 		expect(loadConfig(s.configPath).agents.size).toBe(0);
@@ -181,7 +181,7 @@ describe("N: an agent from an existing chat", () => {
 		const codex = join(s.home, ".codex", "sessions", "rollout-2026-10-12T10-00-00-c.jsonl");
 		mkdirSync(dirname(codex), { recursive: true });
 		writeFileSync(codex, [
-			line({ timestamp: "2026-10-12T10:00:00.000Z", type: "session_meta", payload: { id: "c", cwd: "/w/rpcs3" } }),
+			line({ timestamp: "2026-10-12T10:00:00.000Z", type: "session_meta", payload: { id: "c", cwd: "/w/cache" } }),
 			line({ timestamp: "2026-10-12T10:00:01.000Z", type: "event_msg", payload: { type: "user_message", message: "Which emulator for PS3?" } }),
 		].join("\n"));
 		const hourAgo = new Date(Date.now() - 3_600_000);
@@ -196,12 +196,12 @@ describe("N: an agent from an existing chat", () => {
 		await answer(app, "Summaries from:", ENTER);
 		await answer(app, "Anthropic model:", ...typed("haiku-4-5"), ENTER);
 		await answer(app, "Thinking", ENTER);
-		await answer(app, "Its default folder", ...typed("/w/rpcs3"), ENTER);
-		await answer(app, "Import preview for Install-RPCS3-AppImage", ESC);
+		await answer(app, "Its default folder", ...typed("/w/cache"), ENTER);
+		await answer(app, "Import preview for Set-up-the-build-cache", ESC);
 		await app.idle();
 		expect(inputs).toHaveLength(1);
-		expect(inputs[0]).toMatchObject({ name: "Install-RPCS3-AppImage", claudeFiles: [s.chat], codexFiles: [codex], split: true, pasteThreshold: 1200, notes: [] });
-		expect(inputs[0]!.names).toContain("Install-RPCS3-AppImage");
+		expect(inputs[0]).toMatchObject({ name: "Set-up-the-build-cache", claudeFiles: [s.chat], codexFiles: [codex], split: true, pasteThreshold: 1200, notes: [] });
+		expect(inputs[0]!.names).toContain("Set-up-the-build-cache");
 	});
 
 	it("starts the memory build even when the wiring after the import fails", async () => {
@@ -212,11 +212,11 @@ describe("N: an agent from an existing chat", () => {
 			},
 		});
 		await throughToPreview(app);
-		await answer(app, "Import preview for Install-RPCS3-AppImage", ENTER);
+		await answer(app, "Import preview for Set-up-the-build-cache", ENTER);
 		await app.idle();
-		expect(builds).toEqual(["Install-RPCS3-AppImage"]);
-		expect(loadConfig(s.configPath).agents.has("Install-RPCS3-AppImage")).toBe(true);
-		expect(screen(app, 160)).toContain("Imported 2 messages into Install-RPCS3-AppImage; its memory is being built, but its setup stopped: the tool check broke.");
+		expect(builds).toEqual(["Set-up-the-build-cache"]);
+		expect(loadConfig(s.configPath).agents.has("Set-up-the-build-cache")).toBe(true);
+		expect(screen(app, 160)).toContain("Imported 2 messages into Set-up-the-build-cache; its memory is being built, but its setup stopped: the tool check broke.");
 	});
 
 	it("the short report shows a Codex id with escape sequences in it as plain text", async () => {
@@ -259,15 +259,15 @@ describe("N: an agent from an existing chat", () => {
 		await answer(app, "In use", "n");
 		await app.idle();
 		expect(outs).toEqual([]);
-		writeFileSync(s.configPath, `${readFileSync(s.configPath, "utf8")}[agents.install-rpcs3-appimage]\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+		writeFileSync(s.configPath, `${readFileSync(s.configPath, "utf8")}[agents.set-up-the-build-cache]\ncompactor_model = "openai/gpt-6.1-sol"\n`);
 		app.refresh();
 		keys(app, "N");
 		await answer(app, "New agent:", DOWN, ENTER);
 		await answer(app, "Turn which chat into an agent?", ENTER);
 		await answer(app, "In use", "y");
-		await answer(app, "Agent name", "\x15", ...typed("Install-RPCS3-APPIMAGE"), ENTER);
+		await answer(app, "Agent name", "\x15", ...typed("Set-up-the-BUILD-CACHE"), ENTER);
 		await app.idle();
-		expect(screen(app)).toContain("An agent named Install-RPCS3-APPIMAGE already exists.");
+		expect(screen(app)).toContain("An agent named Set-up-the-BUILD-CACHE already exists.");
 		const empty = makeApp(fakeDeps({ chats: () => ({ chats: [], bytesRead: 0 }) }), [agentsPage]);
 		keys(empty, "N");
 		await answer(empty, "New agent:", DOWN, ENTER);
@@ -278,7 +278,7 @@ describe("N: an agent from an existing chat", () => {
 
 	it("a name whose folder already has a memory store is passed over in the suggestion and refused at the prompt, before any preview", async () => {
 		const s = scene();
-		const left = MemoryStore.open(join(s.root, "data", "agents", "Install-RPCS3-AppImage", "memory.sqlite"));
+		const left = MemoryStore.open(join(s.root, "data", "agents", "Set-up-the-build-cache", "memory.sqlite"));
 		left.close();
 		const { app, outs } = await tui(s);
 		keys(app, "N");
@@ -286,24 +286,24 @@ describe("N: an agent from an existing chat", () => {
 		await answer(app, "Turn which chat into an agent?", ENTER);
 		await answer(app, "In use", "y");
 		await answer(app, "Agent name");
-		expect(screen(app)).toContain("Install-RPCS3-AppImage-2");
-		await answer(app, "Agent name", "\x15", ...typed("Install-RPCS3-AppImage"), ENTER);
+		expect(screen(app)).toContain("Set-up-the-build-cache-2");
+		await answer(app, "Agent name", "\x15", ...typed("Set-up-the-build-cache"), ENTER);
 		await app.idle();
-		expect(screen(app, 320)).toContain(`${join(s.root, "data", "agents", "Install-RPCS3-AppImage")} already has a memory store (an archived agent's, or an import that was cut short); nothing was written. Pick another name, or move that folder aside and try again.`);
+		expect(screen(app, 320)).toContain(`${join(s.root, "data", "agents", "Set-up-the-build-cache")} already has a memory store (an archived agent's, or an import that was cut short); nothing was written. Pick another name, or move that folder aside and try again.`);
 		expect(outs).toEqual([]);
 		expect(loadConfig(s.configPath).agents.size).toBe(0);
 	});
 
 	it("suggests a free name when the title's is taken", async () => {
 		const s = scene();
-		writeFileSync(s.configPath, `${readFileSync(s.configPath, "utf8")}[agents.Install-RPCS3-AppImage]\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+		writeFileSync(s.configPath, `${readFileSync(s.configPath, "utf8")}[agents.Set-up-the-build-cache]\ncompactor_model = "openai/gpt-6.1-sol"\n`);
 		const { app } = await tui(s);
 		keys(app, "N");
 		await answer(app, "New agent:", DOWN, ENTER);
 		await answer(app, "Turn which chat into an agent?", ENTER);
 		await answer(app, "In use", "y");
 		await answer(app, "Agent name");
-		expect(screen(app)).toContain("Install-RPCS3-AppImage-2");
+		expect(screen(app)).toContain("Set-up-the-build-cache-2");
 		keys(app, ESC);
 		await app.idle();
 	});

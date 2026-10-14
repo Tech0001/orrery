@@ -23,11 +23,11 @@ function scene() {
 	const configPath = join(dir, "config.toml");
 	writeFileSync(configPath, `data_dir = ${JSON.stringify(join(dir, "data"))}\n`);
 	const { previewPath } = writePreview(join(dir, "out"), [
-		{ kind: "user", text: "Install RPCS3 AppImage for me.", date: T, source: "claude:s-1.jsonl" },
+		{ kind: "user", text: "Set up the build cache for me.", date: T, source: "claude:s-1.jsonl" },
 		{ kind: "talk", text: "Done.", date: T, source: "claude:s-1.jsonl" },
 	], "# Import preview\n");
-	const request: NewAgentFromChat = { name: "Rpcs3", tool: "pi", summary: { provider: "anthropic", modelId: "claude-haiku-4-5", thinking: "low" }, previewPath, title: "Install RPCS3 AppImage" };
-	return { dir, configPath, request, agentDir: join(dir, "data", "agents", "Rpcs3") };
+	const request: NewAgentFromChat = { name: "Cache", tool: "pi", summary: { provider: "anthropic", modelId: "claude-haiku-4-5", thinking: "low" }, previewPath, title: "Set up the build cache" };
+	return { dir, configPath, request, agentDir: join(dir, "data", "agents", "Cache") };
 }
 
 const texts = (agentDir: string) => {
@@ -43,9 +43,9 @@ describe("createFromPreview", () => {
 	it("adds the agent, writes its instructions from the template, and commits the preview into its memory", () => {
 		const s = scene();
 		expect(createFromPreview(s.configPath, { ...s.request, folder: s.dir })).toEqual({ agentDir: s.agentDir, messages: 2 });
-		expect(loadConfig(s.configPath).agents.get("Rpcs3")).toMatchObject({ folder: s.dir, tool: "pi", compactor: { model: { provider: "anthropic", modelId: "claude-haiku-4-5", thinking: "low" } } });
-		expect(readFileSync(join(s.agentDir, "instructions.md"), "utf8")).toBe(instructionsTemplate("Rpcs3", 'Continues the chat "Install RPCS3 AppImage".'));
-		expect(texts(s.agentDir)).toEqual(["Install RPCS3 AppImage for me.", "Done."]);
+		expect(loadConfig(s.configPath).agents.get("Cache")).toMatchObject({ folder: s.dir, tool: "pi", compactor: { model: { provider: "anthropic", modelId: "claude-haiku-4-5", thinking: "low" } } });
+		expect(readFileSync(join(s.agentDir, "instructions.md"), "utf8")).toBe(instructionsTemplate("Cache", 'Continues the chat "Set up the build cache".'));
+		expect(texts(s.agentDir)).toEqual(["Set up the build cache for me.", "Done."]);
 	});
 
 	it("never imports into a folder that already has a memory store (an archived agent's, even an empty one), and writes nothing then", () => {
@@ -58,7 +58,7 @@ describe("createFromPreview", () => {
 			const before = readFileSync(s.configPath, "utf8");
 			const files = readdirSync(s.agentDir).sort();
 			expect(() => createFromPreview(s.configPath, s.request)).toThrow(`${s.agentDir} already has a memory store (an archived agent's, or an import that was cut short); nothing was written. Pick another name, or move that folder aside and try again.`);
-			expect(storeRefusal(join(s.dir, "data"), "Rpcs3")).toMatch(/already has a memory store/);
+			expect(storeRefusal(join(s.dir, "data"), "Cache")).toMatch(/already has a memory store/);
 			expect(storeRefusal(join(s.dir, "data"), "Other")).toBeUndefined();
 			expect(readFileSync(s.configPath, "utf8")).toBe(before);
 			expect(readdirSync(s.agentDir).sort()).toEqual(files);
@@ -69,16 +69,16 @@ describe("createFromPreview", () => {
 	it("keeps instructions already in the folder", () => {
 		const s = scene();
 		mkdirSync(s.agentDir, { recursive: true });
-		writeFileSync(join(s.agentDir, "instructions.md"), "You are Rpcs3.\n");
+		writeFileSync(join(s.agentDir, "instructions.md"), "You are Cache.\n");
 		createFromPreview(s.configPath, s.request);
-		expect(readFileSync(join(s.agentDir, "instructions.md"), "utf8")).toBe("You are Rpcs3.\n");
+		expect(readFileSync(join(s.agentDir, "instructions.md"), "utf8")).toBe("You are Cache.\n");
 	});
 
 	// Guard: passed before the write order changed; now the taken name must be refused before memory is written.
 	it("refuses a bad name, a taken one, or a broken preview before writing anything", () => {
 		const s = scene();
-		writeFileSync(s.configPath, `${readFileSync(s.configPath, "utf8")}[agents.rpcs3]\ncompactor_model = "openai/gpt-6.1-sol"\n`);
-		expect(() => createFromPreview(s.configPath, s.request)).toThrow(/An agent named Rpcs3 already exists/);
+		writeFileSync(s.configPath, `${readFileSync(s.configPath, "utf8")}[agents.cache]\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+		expect(() => createFromPreview(s.configPath, s.request)).toThrow(/An agent named Cache already exists/);
 		expect(existsSync(join(s.dir, "data"))).toBe(false);
 		writeFileSync(s.configPath, `data_dir = ${JSON.stringify(join(s.dir, "data"))}\n`);
 		const before = readFileSync(s.configPath, "utf8");
@@ -97,10 +97,10 @@ describe("createFromPreview when a step fails", () => {
 	/** After a failure: the config as it was, no file it made, and a retry under the same name works. */
 	function undone(s: ReturnType<typeof scene>, config: string, files: string[], retry = () => createFromPreview(s.configPath, s.request)) {
 		expect(readFileSync(s.configPath, "utf8")).toBe(config);
-		expect(loadConfig(s.configPath).agents.has("Rpcs3")).toBe(false);
+		expect(loadConfig(s.configPath).agents.has("Cache")).toBe(false);
 		expect(tree(s.dir)).toEqual(files);
 		expect(retry()).toEqual({ agentDir: s.agentDir, messages: 2 });
-		expect(texts(s.agentDir)).toEqual(["Install RPCS3 AppImage for me.", "Done."]);
+		expect(texts(s.agentDir)).toEqual(["Set up the build cache for me.", "Done."]);
 	}
 
 	it("instructions: an agent folder that is a symlink is refused, and the link and its target stay as they were", () => {
