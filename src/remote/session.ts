@@ -3,6 +3,15 @@
  * working copy up to the newest save, then save the rows added after each turn, renew the lock every minute, and
  * release it at close. A lock lost to another machine stops all writing; the working copy is never the remote's truth
  * unless this session holds the lock.
+ *
+ * What a check-out can tell of the remote's history (lineageOf, keepBeforeRebuild): its identity (HISTORY_KEY), whether
+ * it is older than this copy, and whether the save or snapshot at this copy's last number is the one this copy has, by
+ * checksum. One case escapes all three: a remote rolled back within one history (restored from a backup) that another
+ * machine has since saved past and covered with a new snapshot. The identity matches, the remote is not older, and a
+ * snapshot past this copy's save carries no checksum of the saves it replaced, so the check-out rebuilds from that
+ * snapshot and keeps only this copy's unsent rows; its acknowledged saves after the rollback point are gone from the
+ * working copy. Telling that apart would need each save to name the one before it (chained hashes), which the format
+ * does not carry.
  */
 
 import { createHash, randomBytes } from "node:crypto";
