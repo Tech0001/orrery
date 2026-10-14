@@ -1,9 +1,9 @@
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createFromPreview, type NewAgentFromChat } from "../../src/import/create-agent.ts";
+import { createFromPreview, type NewAgentFromChat, storeRefusal } from "../../src/import/create-agent.ts";
 import { commitPreview, writePreview } from "../../src/import/preview.ts";
-import { editConfigFile } from "../../src/lane/config-edit.ts";
+import { addLane, editConfigFile } from "../../src/lane/config-edit.ts";
 import { loadConfig } from "../../src/lane/config.ts";
 import { instructionsTemplate, writeInstructions } from "../../src/lane/instructions.ts";
 import { holdWriterLock, MemoryStore } from "../../src/memory/index.ts";
@@ -57,7 +57,9 @@ describe("createFromPreview", () => {
 			store.close();
 			const before = readFileSync(s.configPath, "utf8");
 			const files = readdirSync(s.laneDir).sort();
-			expect(() => createFromPreview(s.configPath, s.request)).toThrow(/already has a memory store/);
+			expect(() => createFromPreview(s.configPath, s.request)).toThrow(`${s.laneDir} already has a memory store (an archived agent's, or an import that was cut short); nothing was written. Pick another name, or move that folder aside and try again.`);
+			expect(storeRefusal(join(s.dir, "data"), "Rpcs3")).toMatch(/already has a memory store/);
+			expect(storeRefusal(join(s.dir, "data"), "Other")).toBeUndefined();
 			expect(readFileSync(s.configPath, "utf8")).toBe(before);
 			expect(readdirSync(s.laneDir).sort()).toEqual(files);
 			expect(texts(s.laneDir)).toEqual(archived);
@@ -183,5 +185,54 @@ describe("createFromPreview when a step fails", () => {
 		expect(() => createFromPreview(s.configPath, s.request, { editConfig: failing })).toThrow(/after the write/);
 		expect(readFileSync(`${s.configPath}.bak`, "utf8")).toBe("an older config\n");
 		undone(s, config, files);
+	});
+
+	it("config: another process's edit made while this call wrote memory survives the rollback", () => {
+		const s = scene();
+		const files = tree(s.dir);
+		let theirs = "";
+		const failing = (store: MemoryStore, lines: Parameters<typeof commitPreview>[1]) => {
+			commitPreview(store, lines);
+			// Another Orrery process adds an agent meanwhile; this call never touches the config before it fails.
+			editConfigFile(s.configPath, (text, dir) => addLane(text, dir, { name: "Other", compactorModel: "openai/gpt-6.1-sol", compactorThinking: "low" }));
+			theirs = readFileSync(s.configPath, "utf8");
+			throw new Error("disk I/O error");
+		};
+		expect(() => createFromPreview(s.configPath, s.request, { commit: failing })).toThrow(/disk I\/O error/);
+		expect(readFileSync(s.configPath, "utf8")).toBe(theirs);
+		expect(loadConfig(s.configPath).lanes.has("Other")).toBe(true);
+		expect(tree(s.dir)).toEqual([...files, "config.toml.bak"].sort());
+	});
+
+	it("config: a save that fails after copying the .bak puts the old .bak back", () => {
+		const s = scene();
+		writeFileSync(`${s.configPath}.bak`, "an older config\n");
+		// The save's temporary file can't be written (a folder is in its place): the .bak copy is made, the rename never.
+		const temp = `${s.configPath}.tmp-${process.pid}`;
+		mkdirSync(temp);
+		const config = readFileSync(s.configPath, "utf8");
+		const files = tree(s.dir);
+		expect(() => createFromPreview(s.configPath, s.request)).toThrow(/EISDIR/);
+		expect(readFileSync(`${s.configPath}.bak`, "utf8")).toBe("an older config\n");
+		undone(s, config, files, () => {
+			rmSync(temp, { recursive: true });
+			return createFromPreview(s.configPath, s.request);
+		});
+	});
+
+	it("takes away only the folders it made: one another process made meanwhile stays", () => {
+		const s = scene();
+		const config = readFileSync(s.configPath, "utf8");
+		const lanes = join(s.dir, "data", "lanes");
+		const failing = (store: MemoryStore, lines: Parameters<typeof commitPreview>[1]) => {
+			commitPreview(store, lines);
+			// Another process makes a folder of its own beside this agent's.
+			mkdirSync(join(lanes, "Theirs"));
+			throw new Error("disk I/O error");
+		};
+		expect(() => createFromPreview(s.configPath, s.request, { commit: failing })).toThrow(/disk I\/O error/);
+		expect(readFileSync(s.configPath, "utf8")).toBe(config);
+		expect(existsSync(join(lanes, "Theirs"))).toBe(true);
+		expect(existsSync(s.laneDir)).toBe(false);
 	});
 });
