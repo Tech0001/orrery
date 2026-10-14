@@ -34,8 +34,9 @@ const withoutTerminal = (args: string[], env: NodeJS.ProcessEnv) => {
 };
 
 /**
- * A scratch home with an installed fixture release, and a plain file at ~/.local/bin/orrery that is not Orrery's: the
- * one thing setup must ask about. PATH finds no pi, OMP or Claude Code, except a fake pi when asked for.
+ * A scratch home with an installed fixture release, and a plain file at ~/.local/bin/orrery that is not Orrery's: a
+ * thing setup must ask about. PATH finds no pi, OMP or Claude Code, except a fake pi when asked for (with no extension
+ * file yet, so setup also asks before connecting it).
  */
 function scratchWithForeignCommand(options: { pi?: boolean } = {}): { env: NodeJS.ProcessEnv; home: string; link: string } {
 	const home = tempDir("orrery-ask-");
@@ -71,15 +72,26 @@ describe.skipIf(!hasScript)("questions under curl | sh", () => {
 		expect(readlinkSync(link)).toBe(commandTarget(env));
 	});
 
+	it("a tool with no Orrery wiring yet is connected only after a yes on the terminal", () => {
+		const { env, link } = scratchWithForeignCommand({ pi: true });
+		const r = inTerminal(`printf 'n\\n' | ${shellCommand("setup")}`, "y\ny\n", env);
+		expect(r.stdout).toMatch(/Connect Orrery to pi\? \(writes .*\.pi\/agent\/extensions\/orrery\.ts\) \(y\/N\)/);
+		expect(r.status, r.stdout).toBe(0);
+		expect(readlinkSync(link)).toBe(commandTarget(env));
+		expect(readFileSync(piExtensionFile(env), "utf8")).toContain(join(env.ORRERY_HOME as string, "app", "current", "extensions", "pi.js"));
+	});
+
 	it("Ctrl-D at a question is no: that one is left, and the rest is wired and reported", () => {
 		const { env, link } = scratchWithForeignCommand({ pi: true });
+		// pi is wired to the other install shape already: moving Orrery's own wiring asks nothing.
+		writePiExtension(env, join(env.ORRERY_HOME as string, "app", "current", "src", "pi", "index.ts"));
 		const r = inTerminal(`${shellCommand("setup")} < /dev/null`, "\x04", env);
 		expect(r.status, r.stdout).toBe(1);
 		expect(r.stdout).toMatch(/replace .*\.local\/bin\/orrery\? \(y\/N\)/);
 		expect(r.stdout).toMatch(/^orrery command: left .* as it is/m);
 		expect(r.stdout).toMatch(/^pi: wrote /m); // a file written after the question
 		expect(r.stdout).toMatch(/^Claude Code: /m);
-		expect(r.stdout).toContain("Still wired elsewhere");
+		expect(r.stdout).toContain("Not everything points at this install:");
 		expect(readFileSync(link, "utf8")).toMatch(/someone else/);
 		expect(readFileSync(piExtensionFile(env), "utf8")).toContain(join(env.ORRERY_HOME as string, "app", "current", "extensions", "pi.js"));
 	});
@@ -112,12 +124,15 @@ describe.skipIf(!hasScript)("questions under curl | sh", () => {
 	});
 
 	it("with no terminal, changes nothing that needs asking, lists it, and exits 1", () => {
-		const { env, link } = scratchWithForeignCommand();
+		const { env, link } = scratchWithForeignCommand({ pi: true });
 		const r = withoutTerminal(["setup"], env);
 		expect(r.status).toBe(1);
-		expect(r.stdout).toMatch(/Skipped \(no terminal to ask; rerun with --yes\)/);
-		expect(r.stdout).toContain("Still wired elsewhere");
+		expect(r.stdout).toMatch(/Skipped \(no terminal to ask; rerun with --yes\): replace /);
+		expect(r.stdout).toMatch(/Skipped \(no terminal to ask; rerun with --yes\): Connect Orrery to pi\? /);
+		expect(r.stdout).toContain("Not everything points at this install:");
+		expect(r.stdout).toContain("  - pi (not connected)");
 		expect(readFileSync(link, "utf8")).toMatch(/someone else/);
+		expect(existsSync(piExtensionFile(env))).toBe(false);
 	});
 
 	it("uninstall --purge deletes the home only when delete is typed on the terminal, and otherwise changes nothing", () => {
@@ -146,10 +161,11 @@ describe.skipIf(!hasScript)("questions under curl | sh", () => {
 	});
 
 	it("--yes answers yes without a terminal", () => {
-		const { env, link } = scratchWithForeignCommand();
+		const { env, link } = scratchWithForeignCommand({ pi: true });
 		const r = withoutTerminal(["setup", "--yes"], env);
 		expect(r.status, r.stdout + r.stderr).toBe(0);
 		expect(readlinkSync(link)).toBe(commandTarget(env));
+		expect(readFileSync(piExtensionFile(env), "utf8")).toContain(join(env.ORRERY_HOME as string, "app", "current", "extensions", "pi.js"));
 	});
 
 	/**

@@ -465,6 +465,9 @@ describe("orrery install", () => {
 		symlinkSync("0.5.0-9d7452f", join(home, "app", "current"));
 		const current = join(home, "app", "current");
 		const piFile = join(env.HOME as string, ".pi", "agent", "extensions", "orrery.ts");
+		// pi is wired to the 0.5.0 install already: moving Orrery's own wiring asks nothing.
+		mkdirSync(join(piFile, ".."), { recursive: true });
+		writeFileSync(piFile, `export { default } from ${JSON.stringify(join(current, "src", "pi", "index.ts"))};\n`);
 		const up = runCli(env, ["install", "--from", fixtureRelease("0.6.0")], bin);
 		expect(up.status, up.stdout + up.stderr).toBe(0);
 		expect(commandLink(env)).toBe(join(current, "bin", "orrery"));

@@ -2,17 +2,18 @@
  * orrery setup, and the end of every install and rollback (spec 2026-10-13-orrery-releases-design §5, §6): the orrery
  * command, the backup service, pi, OMP and Claude Code are pointed at <home>/app/current, never at a version folder, in
  * the shape the version there has (layout.ts). What is already right is left alone; Orrery's own wiring of either shape
- * is moved without asking; anything that is not Orrery's own is replaced only after asking.
+ * is moved without asking; a tool with no Orrery wiring yet is connected only after asking, and anything that is not
+ * Orrery's own is replaced only after asking, with a copy of it kept beside it.
  */
 
 import { chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { orreryHome } from "../lane/home.ts";
-import { checkTools, findOnPath, installSteps, runInstall, type Runner, type ToolCheck } from "../lane/tools.ts";
+import { checkTools, findOnPath, type InstallStep, installSteps, ompExtensionFile, piExtensionFile, runInstall, type Runner, type ToolCheck } from "../lane/tools.ts";
 import { type Confirm, pathAdvice } from "./ask.ts";
 import { envRunner } from "./install.ts";
-import { entries, isOrreryCommand } from "./layout.ts";
+import { ENTRY_TAILS, endsWithSegments, entries, isOrreryCommand, oneLineTarget } from "./layout.ts";
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const firstLine = (text: string) => text.split("\n").map((line) => line.trim()).find((line) => line !== "") ?? "";
@@ -26,10 +27,40 @@ function replaceLink(link: string, target: string): void {
 	renameSync(next, link);
 }
 
+/** Today's date as YYYY-MM-DD, local time. */
+function today(now = new Date()): string {
+	const two = (n: number) => String(n).padStart(2, "0");
+	return `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
+}
+
+const exists = (path: string) => {
+	try {
+		lstatSync(path);
+		return true;
+	} catch {
+		return false;
+	}
+};
+
+/**
+ * Renames something that is not Orrery's out of the way before setup replaces it: <path>.before-orrery-<date>, or
+ * -2, -3… after it when that name is taken. pi and OMP load only files ending in .ts or .js, so a set-aside extension
+ * file is not loaded. Returns the new name.
+ */
+function setAside(path: string): string {
+	const base = `${path}.before-orrery-${today()}`;
+	for (let n = 1; ; n++) {
+		const aside = n === 1 ? base : `${base}-${n}`;
+		if (exists(aside)) continue;
+		renameSync(path, aside);
+		return aside;
+	}
+}
+
 /**
  * ~/.local/bin/orrery → app/current's CLI. A link to Orrery's command (under this home's app/, or a provable Orrery
  * checkout or release elsewhere: layout.ts isOrreryCommand) is replaced; anything else, dangling links included, only
- * when confirmed.
+ * when confirmed, after it is set aside.
  */
 async function linkCommand(env: NodeJS.ProcessEnv, current: string, confirm: Confirm, left: string[]): Promise<string> {
 	const target = entries(current).cli;
@@ -45,16 +76,20 @@ async function linkCommand(env: NodeJS.ProcessEnv, current: string, confirm: Con
 	}
 	if (now === target) return `orrery command: ${link} already links to ${target}`;
 	const older = typeof now === "string" && isOrreryCommand(resolve(dirname(link), now), dirname(current));
-	if (now !== undefined && !older && !(await confirm(`replace ${link}?`))) {
+	const foreign = now !== undefined && !older;
+	if (foreign && !(await confirm(`replace ${link}?`))) {
 		left.push(`the orrery command (${link} is not Orrery's link and was not replaced)`);
 		return `orrery command: left ${link} as it is`;
 	}
+	let aside: string | undefined;
 	try {
+		if (foreign) aside = setAside(link);
 		replaceLink(link, target);
 	} catch (error) {
 		left.push(`the orrery command (${link} could not be linked)`);
-		return `orrery command: could not link ${link}: ${errorText(error)}`;
+		return `orrery command: could not link ${link}: ${errorText(error)}${aside === undefined ? "" : ` (the one there before is now ${aside})`}`;
 	}
+	if (aside !== undefined) return `orrery command: ${link} links to ${target} (the one there before is now ${aside})`;
 	return `orrery command: ${link} links to ${target}${typeof now === "string" ? ` (was ${now})` : ""}`;
 }
 
@@ -66,13 +101,16 @@ function backupScript(env: NodeJS.ProcessEnv, home: string): string {
 }
 
 /** Rewrites the backup service's backup.sh line to app/current (same mode, one rename), then reloads systemd. */
-function pointBackup(env: NodeJS.ProcessEnv, home: string, run: Runner, left: string[]): string[] {
+function pointBackup(env: NodeJS.ProcessEnv, home: string, run: Runner, left: string[], platform: NodeJS.Platform): string[] {
 	const unit = join(env.HOME || homedir(), ".config", "systemd", "user", "orrery-backup.service");
 	let text: string;
 	try {
 		text = readFileSync(unit, "utf8");
 	} catch (error) {
-		if ((error as { code?: unknown }).code === "ENOENT") return ["no backup service; see docs/deploy.md"];
+		if ((error as { code?: unknown }).code === "ENOENT") {
+			// The backup service is a systemd unit; a launchd one for macOS is not built yet.
+			return [platform === "darwin" ? "no scheduled backup on macOS yet; run `orrery backup` when you want one" : "no backup service; see docs/deploy.md"];
+		}
 		left.push(`the backup service (${unit} could not be read)`);
 		return [`backup service: cannot read ${unit}: ${errorText(error)}`];
 	}
@@ -110,10 +148,28 @@ function pointBackup(env: NodeJS.ProcessEnv, home: string, run: Runner, left: st
 	return lines;
 }
 
+/** What connecting a tool does, for its question: the file it writes, or the commands it runs. */
+const connectText = (steps: readonly InstallStep[]) => steps.map((step) => (step.kind === "write" ? `writes ${step.path}` : step.describe)).join(", ");
+
 /**
- * pi, Claude Code and OMP through checkTools and installSteps against app/current: "missing" and "update available" run
- * without asking, "other" (another Orrery, or not Orrery's file) after confirm. A missing pi or OMP extension is written
- * only when that tool is on PATH.
+ * Whether pi's or OMP's extension file is someone else's: a link, or anything but Orrery's one line naming an Orrery
+ * entry (of any install). Orrery's own line pointing elsewhere is replaced without a copy.
+ */
+function foreignExtension(file: string): boolean {
+	try {
+		if (!lstatSync(file).isFile()) return true;
+		const spec = oneLineTarget(readFileSync(file, "utf8"));
+		return spec === undefined || ![...ENTRY_TAILS.pi, ...ENTRY_TAILS.omp].some((tail) => endsWithSegments(resolve(dirname(file), spec), tail));
+	} catch {
+		return false; // gone, or unreadable (then checkTools said "unknown" and nothing is replaced)
+	}
+}
+
+/**
+ * pi, Claude Code and OMP through checkTools and installSteps against app/current: "update available" (Orrery's own
+ * wiring of the other shape or an older plugin) runs without asking; "missing" (no Orrery wiring yet) and "other"
+ * (another Orrery, or not Orrery's file) only after confirm, and a file that is not Orrery's is set aside first. A
+ * missing pi or OMP extension is written only when that tool is on PATH.
  */
 async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: Runner; install: Runner }, confirm: Confirm, left: string[], unchecked: string[], emit: (line: string) => void): Promise<void> {
 	const look = () => checkTools({ root: current, env, run: run.probe });
@@ -131,10 +187,27 @@ async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: 
 			emit(`${check.label}: not found on PATH; not wired`);
 			continue;
 		}
+		if (check.wiring === "missing" && !(await confirm(`Connect Orrery to ${check.label}? (${connectText(steps)})`))) {
+			left.push(`${check.label} (not connected)`);
+			emit(`${check.label}: not connected`);
+			continue;
+		}
 		if (check.wiring === "other" && !(await confirm(`${check.label}: ${steps.map((step) => step.describe).join(", then ")}?`))) {
 			left.push(`${check.label} (still wired to ${check.detail})`);
 			emit(`${check.label}: left as it is (${check.detail})`);
 			continue;
+		}
+		if (check.wiring === "other" && id !== "claude-code") {
+			const file = id === "pi" ? piExtensionFile(env) : ompExtensionFile(env);
+			if (foreignExtension(file)) {
+				try {
+					emit(`${check.label}: set ${file} aside as ${setAside(file)}`);
+				} catch (error) {
+					left.push(`${check.label} (${file} could not be set aside)`);
+					emit(`${check.label}: could not set ${file} aside, so it was left as it is: ${errorText(error)}`);
+					continue;
+				}
+			}
 		}
 		const result = runInstall(steps, run.install);
 		for (const line of result.output.split("\n").filter((line) => line.trim() !== "")) emit(`${check.label}: ${line}`);
@@ -147,7 +220,7 @@ async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: 
 	}
 }
 
-/** What wiring did: one line per thing wired, skipped or failed, and what is still wired elsewhere (skipped, declined or failed). */
+/** What wiring did: one line per thing wired, skipped or failed, and what was left (skipped, declined or failed). */
 export interface WireReport {
 	lines: string[];
 	left: string[];
@@ -157,9 +230,9 @@ export interface WireReport {
 
 /**
  * Points everything at <home>/app/current. `onLine` gets each line as it happens, so what was already done is shown even
- * when a later question is answered with Ctrl-C (which stops the process).
+ * when a later question is answered with Ctrl-C (which stops the process). `platform` is for tests.
  */
-export async function wireReport(env: NodeJS.ProcessEnv, options: { run?: Runner; confirm: Confirm; onLine?: (line: string) => void }): Promise<WireReport> {
+export async function wireReport(env: NodeJS.ProcessEnv, options: { run?: Runner; confirm: Confirm; onLine?: (line: string) => void; platform?: NodeJS.Platform }): Promise<WireReport> {
 	// A tool's --version or plugin list gets 15 s; installing the Claude Code plugin may take longer.
 	const run = options.run ?? envRunner(env, 300_000);
 	const probe = options.run ?? envRunner(env, 15_000);
@@ -175,23 +248,23 @@ export async function wireReport(env: NodeJS.ProcessEnv, options: { run?: Runner
 	};
 	emit(await linkCommand(env, current, options.confirm, left));
 	if (advice !== undefined) emit(advice);
-	for (const line of pointBackup(env, home, run, left)) emit(line);
+	for (const line of pointBackup(env, home, run, left, options.platform ?? process.platform)) emit(line);
 	await wireTools(env, current, { probe, install: run }, options.confirm, left, unchecked, emit);
 	return { lines, left, unchecked };
 }
 
 /** wireReport's lines. */
-export async function wire(env: NodeJS.ProcessEnv, options: { run?: Runner; confirm: Confirm }): Promise<string[]> {
+export async function wire(env: NodeJS.ProcessEnv, options: { run?: Runner; confirm: Confirm; platform?: NodeJS.Platform }): Promise<string[]> {
 	return (await wireReport(env, options)).lines;
 }
 
-/** The closing warning: what is still wired elsewhere (with the fix), and what could not be checked (to check by hand). */
+/** The closing warning: what was left (with the fix), and what could not be checked (to check by hand). */
 export function leftWarning(left: string[], unchecked: string[] = []): string[] {
 	return [
 		...(left.length === 0
 			? []
 			: [
-					"Not everything points at this install. Still wired elsewhere:",
+					"Not everything points at this install:",
 					...left.map((item) => `  - ${item}`),
 					"Fix it with: orrery setup --yes (or run orrery, then Tools, then I).",
 				]),

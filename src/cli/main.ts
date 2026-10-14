@@ -65,7 +65,8 @@ const USAGE = `Usage: orrery <command> [--config FILE]
   install --rollback [--yes] | --list   switch back to the previous installed version and run setup, or list versions
                              and which lanes run them
   setup [--yes]              wire the orrery command, pi, OMP, Claude Code and the backup service to the installed
-                             version; asks on the terminal before replacing anything that is not Orrery's (--yes: replace)
+                             version; asks on the terminal before connecting a tool or replacing anything that is not
+                             Orrery's (--yes: answers yes)
   update [--check] [--version V] [--yes]   install the newest release (or V); --check only says whether one is out
   uninstall [--purge]        unwire pi, OMP and Claude Code, remove the command, the backup service and the installed
                              versions; lanes' memory, config and logins stay (--purge: delete them too, after typing delete)

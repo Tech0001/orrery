@@ -14,7 +14,7 @@ import { realTarget } from "../lane/guard-paths.ts";
 import { orreryHome } from "../lane/home.ts";
 import { findOnPath, ompExtensionFile, orreryPlugin, piExtensionFile, type RunResult, type Runner } from "../lane/tools.ts";
 import { envRunner, holdInstallLock, laneVersions, removeVersion } from "./install.ts";
-import { ENTRY_TAILS, inApp, VERSION_NAME } from "./layout.ts";
+import { ENTRY_TAILS, inApp, oneLineTarget, VERSION_NAME } from "./layout.ts";
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const code = (error: unknown) => (error as { code?: unknown }).code;
@@ -26,9 +26,6 @@ interface Report {
 	readonly lines: string[];
 	ok: boolean;
 }
-
-/** Orrery's extension file is exactly this one line (tools.ts piExtensionText, ompExtensionText). */
-const ONE_LINE = /^export \{ default \} from ("(?:[^"\\]|\\.)*");\n$/;
 
 /** Removes pi's or OMP's extension file when it is Orrery's one line naming an entry under this home's app/. */
 function unwireExtension(report: Report, label: string, file: string, app: string): void {
@@ -48,14 +45,8 @@ function unwireExtension(report: Report, label: string, file: string, app: strin
 		report.ok = false;
 		return;
 	}
-	const quoted = ONE_LINE.exec(text)?.[1];
-	let spec: unknown;
-	try {
-		spec = quoted === undefined ? undefined : JSON.parse(quoted);
-	} catch {
-		spec = undefined;
-	}
-	if (typeof spec !== "string" || JSON.stringify(spec) !== quoted) {
+	const spec = oneLineTarget(text);
+	if (spec === undefined) {
 		report.lines.push(`${label}: left ${file} as it is (not Orrery's one-line extension)`);
 		return;
 	}

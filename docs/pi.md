@@ -6,11 +6,12 @@ and remote backup copies.
 
 ## Install
 
-The installer wires this: it writes pi's extension file and points it at `~/.orrery/app/current`. If pi
-is not on PATH, it prints "not found on PATH; not wired" and carries on. If you decline a rewire, or there is no
-terminal to ask on, it lists what is still wired elsewhere and exits non-zero; rerun `orrery setup --yes`. If pi cannot
-be checked (an unreadable extension file), it says "check pi by hand: <reason>" and also exits non-zero. The TUI does the
-same: run `orrery`, open Tools (4), select pi and press `I` (or `orrery tools install pi`).
+The installer asks, then wires this: it writes pi's extension file and points it at `~/.orrery/app/current`. If pi
+is not on PATH, it prints "not found on PATH; not wired" and carries on. If you say no, or there is no terminal to ask
+on, it lists what it left and exits non-zero; rerun `orrery setup --yes`. A file there that is not Orrery's is renamed
+to `orrery.ts.before-orrery-<date>` before it is replaced. If pi cannot be checked (an unreadable extension file), it
+says "check pi by hand: <reason>" and also exits non-zero. The TUI does the same: run `orrery`, open Tools (4), select
+pi and press `I` (or `orrery tools install pi`).
 
 If you ever write the file by hand, it is one line that imports Orrery's packed extension from the installed copy:
 

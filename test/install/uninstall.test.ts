@@ -14,6 +14,11 @@ afterEach(cleanupScratch);
 const never = async (): Promise<boolean> => {
 	throw new Error("asked");
 };
+/** Yes to connecting a tool that has no Orrery wiring yet; any other question fails the test. */
+const connect = async (what: string): Promise<boolean> => {
+	if (what.startsWith("Connect Orrery to ")) return true;
+	throw new Error(`asked: ${what}`);
+};
 
 /** A fake claude whose plugin list is the file plugins.json beside it (none: an empty list). */
 const CLAUDE = `if [ "$1" = "--version" ]; then echo "2.1.294 (Claude Code)"; elif [ "$1 $2" = "plugin list" ]; then if [ -f "\${0%/*}/plugins.json" ]; then IFS= read -r line < "\${0%/*}/plugins.json"; printf '%s' "$line"; else printf '[]'; fi; fi`;
@@ -33,7 +38,7 @@ async function wiredInstall(style: Style = "binary"): Promise<Scratch> {
 	mkdirSync(unitDir(t), { recursive: true });
 	writeFileSync(join(unitDir(t), "orrery-backup.service"), "[Service]\nType=oneshot\nExecStart=%h/.orrery/app/current/deploy/workstation/backup.sh\n");
 	writeFileSync(join(unitDir(t), "orrery-backup.timer"), "[Timer]\nOnCalendar=*-*-* 01:15:00\n\n[Install]\nWantedBy=timers.target\n");
-	await wire(t.env, { run: fakeRun, confirm: never });
+	await wire(t.env, { run: fakeRun, confirm: connect });
 	pluginList(t, join(t.current, "claude-plugin"));
 	writeFileSync(join(t.orreryHome, "config.toml"), `data_dir = ${JSON.stringify(t.orreryHome)}\n`);
 	writeFileSync(join(t.orreryHome, "credentials.json"), "{}\n", { mode: 0o600 });

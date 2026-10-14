@@ -29,6 +29,21 @@ export function entries(root: string): Entries {
 	return { style: "source", cli: join(root, ENTRY_TAILS.cli[1]), pi: join(root, ENTRY_TAILS.pi[1]), omp: join(root, ENTRY_TAILS.omp[1]) };
 }
 
+/** Orrery's extension file is exactly this one line (tools.ts piExtensionText, ompExtensionText). */
+const ONE_LINE = /^export \{ default \} from ("(?:[^"\\]|\\.)*");\n$/;
+
+/** What an extension file re-exports when its text is exactly Orrery's one line; undefined for anything else. */
+export function oneLineTarget(text: string): string | undefined {
+	const quoted = ONE_LINE.exec(text)?.[1];
+	if (quoted === undefined) return undefined;
+	try {
+		const spec: unknown = JSON.parse(quoted);
+		return typeof spec === "string" && JSON.stringify(spec) === quoted ? spec : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Release versions as folder names: 0.6.0, 0.6.0-<commit>, 1.0.0-rc.1 (no slashes, no leading dot). */
 export const VERSION_NAME = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
 
