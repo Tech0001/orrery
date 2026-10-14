@@ -22,6 +22,9 @@ const BUN_TARGET: Record<Target, string> = {
 	"darwin-x64": "bun-darwin-x64",
 };
 
+/** The Bun releases are built with (.bun-version): bin/orrery carries this Bun's runtime. */
+export const PINNED_BUN = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", ".bun-version"), "utf8").trim();
+
 export function hostTarget(): Target {
 	const os = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : undefined;
 	const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : undefined;
@@ -103,11 +106,13 @@ function licenseIds(expression: string): string[] {
 }
 
 /**
- * THIRD_PARTY_LICENSES: every production package (what the binary and extensions may contain) with its license and
- * author from its package.json, then its license file. A package that ships none is under the standard text of each
- * license it names, given once at the end from `texts` (scripts/licenses/<SPDX id>.txt, from the SPDX license list; MIT's
- * has no copyright line, as the author line names the holder). An id with no text there fails the build, so a new
- * dependency can't ship without its license.
+ * THIRD_PARTY_LICENSES: first the Bun runtime compiled into bin/orrery, with Bun's own LICENSE.md for the pinned version
+ * kept verbatim in `texts` (bun-LICENSE.md: it names what Bun links statically, JavaScriptCore/WebKit under the LGPL
+ * among them, and where Bun's WebKit source is; Bun itself is MIT). Then every production package (what the binary and
+ * extensions may contain) with its license and author from its package.json, then its license file. A package that
+ * ships none is under the standard text of each license it names, given once at the end from `texts` (<SPDX id>.txt,
+ * from the SPDX license list; MIT's has no copyright line, as the author line names the holder). An id with no text
+ * there fails the build, so a new dependency can't ship without its license.
  *
  * The packages are package-lock.json's, less the dev ones, each read from its folder; one not installed here (another
  * platform's optional binary) is left out. Not `npm ls`: it misreads a linked node_modules, and under `bun --bun` npm
@@ -122,10 +127,17 @@ export function thirdPartyLicenses(from: string, texts: string = join(from, "scr
 		shipped.set(`${entry.name ?? folder.slice(folder.lastIndexOf("node_modules/") + "node_modules/".length)}@${entry.version}`, path);
 	}
 	const parts = [
-		"Orrery's release contains code from these packages. Each package's license follows. A package that ships no license\n",
-		"file is under the standard text of its license, given once at the end of this file; its author is the copyright holder.\n",
+		"Orrery's release contains the Bun runtime (in bin/orrery) and code from these packages. Each one's license follows.\n",
+		"A package that ships no license file is under the standard text of its license, given once at the end of this file;\n",
+		"its author is the copyright holder.\n",
 	];
-	const needed = new Map<string, string[]>(); // license id -> the packages that need its standard text
+	const bun = join(texts, "bun-LICENSE.md");
+	if (!existsSync(bun)) throw new Error(`no ${bun}: add Bun's LICENSE.md from github.com/oven-sh/bun at the tag bun-v${PINNED_BUN}, as it is`);
+	parts.push(
+		`\n==== Bun runtime (inside bin/orrery) ====\nBun ${PINNED_BUN}'s LICENSE.md, from github.com/oven-sh/bun at the tag bun-v${PINNED_BUN}. Bun itself is under the MIT license, whose standard text is at the end of this file.\n`,
+		readFileSync(bun, "utf8"),
+	);
+	const needed = new Map<string, string[]>([["MIT", ["the Bun runtime"]]]); // license id -> who needs its standard text
 	for (const [key, path] of [...shipped].sort(([a], [b]) => a.localeCompare(b))) {
 		const json = JSON.parse(readFileSync(join(path, "package.json"), "utf8")) as { license?: unknown; licenses?: unknown; author?: unknown };
 		const license = licenseOf(json);
@@ -194,8 +206,7 @@ export function writeSums(out: string, archives: string[]): string {
 
 if (import.meta.main) {
 	const { values } = parseArgs({ options: { target: { type: "string", multiple: true }, official: { type: "boolean" }, archive: { type: "boolean" }, out: { type: "string" }, from: { type: "string" } } });
-	const pinned = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", ".bun-version"), "utf8").trim();
-	if (Bun.version !== pinned) throw new Error(`build with Bun ${pinned} (this is ${Bun.version}); see CONTRIBUTING.md`);
+	if (Bun.version !== PINNED_BUN) throw new Error(`build with Bun ${PINNED_BUN} (this is ${Bun.version}); see CONTRIBUTING.md`);
 	const targets = (values.target ?? ["host"]).map((t) => (t === "host" ? hostTarget() : t)) as Target[];
 	for (const t of targets) if (!TARGETS.includes(t)) throw new Error(`unknown target ${t} (${TARGETS.join(", ")} or host)`);
 	const out = resolve(values.out ?? "dist");

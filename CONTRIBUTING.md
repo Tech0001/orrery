@@ -26,9 +26,10 @@ npm run check
 ```
 
 Tests and the typecheck need Node 22.19 or newer. Building the program needs Bun at the version in `.bun-version`
-(`npm run install-local` refuses another version). Keep install scripts off for every npm install in this repo,
-including `worker/`. The README's [Development](README.md#development) section covers the Bun store check, the Python
-parity oracle and the real pi, OMP and Ori tests.
+(`npm run install-local` refuses another version). The program carries Bun's runtime, so a change to `.bun-version`
+also replaces `scripts/licenses/bun-LICENSE.md` with that Bun tag's `LICENSE.md`. Keep install scripts off for every
+npm install in this repo, including `worker/`. The README's [Development](README.md#development) section covers the
+Bun store check, the Python parity oracle and the real pi, OMP and Ori tests.
 
 - `npm run check`: typecheck and the full suite on Node.
 - `npm run test:binary`: the compiled program, built for this machine.

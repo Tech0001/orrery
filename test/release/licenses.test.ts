@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { thirdPartyLicenses } from "../../scripts/build-release.ts";
 import { tempDir } from "../lane/support.ts";
-import { REPO } from "./support.ts";
+import { PINNED_BUN, REPO } from "./support.ts";
 
 const TEXTS = join(REPO, "scripts", "licenses");
 const dirs: string[] = [];
@@ -65,9 +65,23 @@ describe("thirdPartyLicenses", () => {
 		expect(text.indexOf(mit)).toBeGreaterThan(standard);
 	});
 
-	it("adds no standard texts when every package ships its own license file", () => {
-		const text = thirdPartyLicenses(tree({ a: { json: { license: "MIT", author: "A" }, licenseFile: "a's text\n" } }), TEXTS);
-		expect(text).not.toContain("Standard license texts");
+	it("adds only the MIT text Bun needs when every package ships its own license file", () => {
+		const text = thirdPartyLicenses(tree({ a: { json: { license: "ISC", author: "A" }, licenseFile: "a's text\n" } }), TEXTS);
+		expect(text).toContain(`\n==== Standard license texts ====\n\n---- MIT ----\n${readFileSync(join(TEXTS, "MIT.txt"), "utf8")}`);
+		expect(text).not.toContain("---- Apache-2.0 ----");
+	});
+
+	it("names the Bun runtime inside bin/orrery first, with Bun's own LICENSE.md for the pinned version", () => {
+		const text = thirdPartyLicenses(tree({ a: { json: { license: "ISC", author: "A" }, licenseFile: "a's text\n" } }), TEXTS);
+		const bun = readFileSync(join(TEXTS, "bun-LICENSE.md"), "utf8");
+		// Bun's LICENSE.md names what it links statically, JavaScriptCore (LGPL) among them, and where its WebKit source is.
+		expect(bun).toMatch(/^Bun itself is MIT-licensed\./);
+		expect(bun).toContain("statically links JavaScriptCore");
+		expect(bun).toContain("https://github.com/oven-sh/webkit");
+		expect(text).toContain(
+			`\n==== Bun runtime (inside bin/orrery) ====\nBun ${PINNED_BUN}'s LICENSE.md, from github.com/oven-sh/bun at the tag bun-v${PINNED_BUN}. Bun itself is under the MIT license, whose standard text is at the end of this file.\n${bun}`,
+		);
+		expect(text.indexOf("==== Bun runtime")).toBeLessThan(text.indexOf("==== a@1.0.0 ===="));
 	});
 
 	it("fails naming each license id that has no standard text, and a package that names no license", () => {
