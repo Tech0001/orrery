@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { newToken } from "../../src/lane/pick.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { FAUX_SUMMARY } from "./harness.ts";
-import { cleanup, close, lastLane, pi, plainPi, summarySourcesFor, world } from "./world.ts";
+import { ageVisitMarks, cleanup, close, lastLane, pi, plainPi, summarySourcesFor, world } from "./world.ts";
 
 afterEach(cleanup);
 
@@ -362,6 +362,7 @@ describe("who a session belongs to: a lane never copies turns another agent said
 		await say(first, "One.", "First.");
 		await close(first);
 		const atlas = await pi(root, join(root, "agent-Birch"), config, "s-b", { env: { ORRERY_AGENT: "Atlas" } });
+		ageVisitMarks(config.dataDir);
 		// The owner opens while the visitor runs: it starts at the tail and settles the visit.
 		const meanwhile = await pi(root, join(root, "agent-Birch"), config, "s-b");
 		await say(atlas, "Atlas secret question.", "Atlas secret answer.");
@@ -380,6 +381,7 @@ describe("who a session belongs to: a lane never copies turns another agent said
 		await say(first, "One.", "First.");
 		await close(first);
 		const atlas = await pi(root, join(root, "agent-Birch"), config, "s-b", { env: { ORRERY_AGENT: "Atlas" } });
+		ageVisitMarks(config.dataDir);
 		// A hook, not timing: the owner's memory opens (summary sources) only once the visitor has run and shut down, so
 		// every note of the visit falls after the owner loaded the session and before it settles the visit.
 		const opening = await pi(root, join(root, "agent-Birch"), config, "s-b", {

@@ -40,10 +40,10 @@ describe("session owners", () => {
 		// The mark stays until the tail is written (a failed write leaves it for the next open).
 		expect(sessionStanding(dir, "s1", "Atlas")).toBe("visited");
 		expect(sessionStanding(dir, "s1", "Atlas")).toBe("visited");
-		settleVisit(dir, "s1", 2_000);
+		settleVisit(dir, "s1", 10_000);
 		expect(sessionStanding(dir, "s1", "Atlas")).toBe("own");
 		// After it is settled, a later visit marks it again.
-		noteSession(dir, "s1", "Birch", 3_000);
+		noteSession(dir, "s1", "Birch", 11_000);
 		expect(sessionStanding(dir, "s1", "Atlas")).toBe("visited");
 	});
 
@@ -52,18 +52,25 @@ describe("session owners", () => {
 		noteSession(dir, "s1", "Atlas", 1_000);
 		noteSession(dir, "s1", "Birch", 2_000); // the visitor starts
 		expect(statSync(`${record(dir, "s1")}.visited`).mtimeMs).toBe(2_000);
-		const loadedAt = 3_000; // the owner loads the session, then opens its memory
+		const loadedAt = 10_000; // the owner loads the session, then opens its memory
 		expect(sessionStanding(dir, "s1", "Atlas")).toBe("visited");
-		noteSession(dir, "s1", "Birch", 4_000); // the visitor's run ends before the owner settles
-		expect(statSync(`${record(dir, "s1")}.visited`).mtimeMs).toBe(4_000);
+		noteSession(dir, "s1", "Birch", 11_000); // the visitor's run ends before the owner settles
+		expect(statSync(`${record(dir, "s1")}.visited`).mtimeMs).toBe(11_000);
 		settleVisit(dir, "s1", loadedAt); // the owner's tail is written: the mark is newer than its load, so it stays
 		expect(sessionStanding(dir, "s1", "Atlas")).toBe("visited");
-		settleVisit(dir, "s1", 5_000); // the owner's next open loaded the session after the mark: it goes
+		settleVisit(dir, "s1", 20_000); // the owner's next open loaded the session well after the mark: it goes
 		expect(sessionStanding(dir, "s1", "Atlas")).toBe("own");
-		// A mark written in the very millisecond the owner loaded stays too (only an older one goes).
-		noteSession(dir, "s1", "Birch", 6_000);
-		settleVisit(dir, "s1", 6_000);
+	});
+
+	it("keeps a mark up to 2 s older than the load (a filesystem may round times down to 1 or 2 s); an older one goes", () => {
+		const dir = data();
+		noteSession(dir, "s1", "Atlas", 1_000);
+		noteSession(dir, "s1", "Birch", 29_000); // 1 s before the load
+		settleVisit(dir, "s1", 30_000);
 		expect(sessionStanding(dir, "s1", "Atlas")).toBe("visited");
+		noteSession(dir, "s1", "Birch", 27_000); // 3 s before the load
+		settleVisit(dir, "s1", 30_000);
+		expect(sessionStanding(dir, "s1", "Atlas")).toBe("own");
 	});
 
 	it("a session under an ORRERY_AGENT that names no agent is foreign to every lane", () => {
@@ -98,7 +105,8 @@ describe("session owners", () => {
 		expect(sessionStanding(dir, "", "Birch")).toBe("own");
 	});
 
-	it("when the data folder cannot be written there is no record, and the session is copied as before (never all tailed)", () => {
+	// Root writes through a 0500 folder, so the folder this test locks would not be locked.
+	it.skipIf(process.getuid?.() === 0)("when the data folder cannot be written there is no record, and the session is copied as before (never all tailed)", () => {
 		const dir = data();
 		const locked = join(dir, "data");
 		mkdirSync(locked);

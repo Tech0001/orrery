@@ -184,7 +184,7 @@ export default function () {}
 		expect(out).not.toContain("Cannot find");
 	}, 90_000);
 
-	it("loads the extension and tells pi from OMP: pi's entry registers its handlers, OMP's only its guard's session_start", async () => {
+	it("loads the extension and tells pi from OMP: pi's entry registers its handlers, OMP's only its guard's session_start and the session-owner notes", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "orrery-real-pi-"));
 		dirs.push(dir);
 		const fixture = join(dir, "fixture.ts");
@@ -217,7 +217,7 @@ export default function (pi) {
 			arktype: false,
 			zod: false,
 			pi: expect.arrayContaining(["session_start", "before_agent_start", "context", "message_end", "agent_end", "session_before_compact"]),
-			omp: ["session_start"],
+			omp: ["session_start", "message_end", "agent_end", "session_shutdown"],
 		});
 	}, 90_000);
 });

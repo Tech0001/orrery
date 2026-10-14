@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { HarnessConfig } from "../../src/lane/config.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { createOrrery, type LaneSettingsResult, summaryWaitMs } from "../../src/pi/index.ts";
-import { cleanup, scratchHome, summarySourcesFor, world } from "../pi/world.ts";
+import { ageVisitMarks, cleanup, scratchHome, summarySourcesFor, world } from "../pi/world.ts";
 import { type FakeOmp, fakeOmp, ompCleanup, ompOrrery, track } from "./world.ts";
 
 afterEach(async () => {
@@ -211,11 +211,12 @@ describe("Orrery inside OMP (an OMP-shaped host)", () => {
 		expect(await call("grep", { pattern: "k", path: "src" })).toBeUndefined();
 	});
 
-	it("runs each entry only in its own tool (pi and OMP may share one extensions folder); in the other, only its guard's session_start", () => {
+	it("runs each entry only in its own tool (pi and OMP may share one extensions folder); in the other, its guard's session_start and the session-owner notes", () => {
 		const { root, config } = world();
 		const cwd = join(root, "agent-Atlas");
-		expect(fakeOmp(cwd, [createOrrery({ config, host: "omp", ...scratchHome(root) })], { omp: false }).events()).toEqual(["session_start"]);
-		expect(fakeOmp(cwd, [createOrrery({ config, ...scratchHome(root) })]).events()).toEqual(["session_start"]);
+		const other = ["session_start", "message_end", "agent_end", "session_shutdown"];
+		expect(fakeOmp(cwd, [createOrrery({ config, host: "omp", ...scratchHome(root) })], { omp: false }).events()).toEqual(other);
+		expect(fakeOmp(cwd, [createOrrery({ config, ...scratchHome(root) })]).events()).toEqual(other);
 		expect(fakeOmp(cwd, [createOrrery({ config, host: "omp", ...scratchHome(root) })]).events()).toContain("session_switch");
 	});
 });
@@ -462,6 +463,50 @@ describe("a session that moves to another folder (OMP's /resume of another folde
 		expect(existsSync(join(root, "data", "lanes"))).toBe(false);
 	});
 
+	it("a visitor on the other tool's entry, running when the owner opens: the turns it says after that stay out of the owner", async () => {
+		const { root, config } = world();
+		const owner = await ompOrrery(join(root, "agent-Birch"), config, { session: "s-b" });
+		await turn(owner, "One.", "First.");
+		const history = [...owner.session.entries];
+		owner.session = { id: "n1", entries: [] };
+		await owner.emit("session_switch", { reason: "new" });
+		// OMP's entry loaded in pi under ORRERY_AGENT=Atlas: the guard and the notes, no memory.
+		const visitor = track(fakeOmp(join(root, "agent-Birch"), [createOrrery({ config, host: "omp", ...scratchHome(dirname(config.dataDir)), env: { ORRERY_AGENT: "Atlas" } })], { omp: false }));
+		visitor.session = { id: "s-b", entries: [...history] };
+		await visitor.emit("session_start");
+		ageVisitMarks(config.dataDir);
+		owner.session = { id: "s-b", entries: [...history] };
+		await owner.emit("session_switch", { reason: "resume" });
+		visitor.say("user", "Atlas secret question.");
+		visitor.say("assistant", "Atlas secret answer.");
+		await visitor.emit("message_end", { message: {} });
+		await visitor.emit("agent_end", { messages: [] });
+		await visitor.emit("session_shutdown");
+		owner.session = { id: "s-b", entries: [...visitor.session.entries] };
+		await owner.emit("session_switch", { reason: "resume" });
+		await turn(owner, "Two.", "Second.");
+		expect(memoryOf(root, "Birch")).toEqual(["user: One.", "talk: First.", "user: Two.", "talk: Second."]);
+	});
+
+	it("a visitor that says a turn after the owner loaded and is then killed (no run end, no shutdown): its turn stays out of the owner", async () => {
+		const { root, config } = world();
+		const owner = await ompOrrery(join(root, "agent-Birch"), config, { session: "s-b" });
+		await turn(owner, "One.", "First.");
+		const history = [...owner.session.entries];
+		owner.session = { id: "n1", entries: [] };
+		await owner.emit("session_switch", { reason: "new" });
+		const visitor = await ompOrrery(join(root, "agent-Birch"), config, { env: { ORRERY_AGENT: "Atlas" }, session: "s-b" });
+		ageVisitMarks(config.dataDir);
+		owner.session = { id: "s-b", entries: [...history] };
+		await owner.emit("session_switch", { reason: "resume" });
+		visitor.say("user", "Atlas secret question.");
+		await visitor.emit("message_end", { message: {} });
+		owner.session = { id: "s-b", entries: [...history, ...visitor.session.entries] };
+		await owner.emit("session_switch", { reason: "resume" });
+		await turn(owner, "Two.", "Second.");
+		expect(memoryOf(root, "Birch")).toEqual(["user: One.", "talk: First.", "user: Two.", "talk: Second."]);
+	});
+
 	it("pi is unchanged: its sessions never move (pi starts a new session instead), so its entry never looks", async () => {
 		const { root, config } = world();
 		const pi = track(fakeOmp(join(root, "agent-Atlas"), [createOrrery({ config, summarySources: async (cfg) => summarySourcesFor(cfg), ...scratchHome(root) })], { omp: false }));
@@ -497,7 +542,7 @@ describe("an entry loaded in the other tool", () => {
 			expect(await host.emit("tool_call", { toolName: "read", toolCallId: "t1", input: { path: config.credentialsPath } })).toEqual([
 				{ block: true, reason: expect.stringMatching(/sensitive file/) },
 			]);
-			expect(host.events().sort()).toEqual(["session_start", "tool_call"]);
+			expect(host.events().sort()).toEqual(["agent_end", "message_end", "session_shutdown", "session_start", "tool_call"]);
 			expect(host.tools.size).toBe(0);
 			expect(host.commands.size).toBe(0);
 			expect(existsSync(join(root, "data", "lanes", "Atlas", "memory.sqlite"))).toBe(false);
@@ -511,7 +556,7 @@ describe("an entry loaded in the other tool", () => {
 			const host = start(join(root, "plain"), config);
 			await host.emit("session_start");
 			expect(host.notices).toEqual([]);
-			expect(host.events()).toEqual(["session_start"]);
+			expect(host.events()).toEqual(["session_start", "message_end", "agent_end", "session_shutdown"]);
 			expect(await host.emit("tool_call", { toolName: "read", toolCallId: "t1", input: { path: config.credentialsPath } })).toEqual([]);
 			expect(host.tools.size + host.commands.size).toBe(0);
 		});

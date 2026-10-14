@@ -139,6 +139,22 @@ function refusedGuard(cwd: string, config: HarnessConfig, options: OrreryOptions
 
 const subagent = (ctx: ExtensionContext) => (ctx as { agent?: { kind?: string } }).agent?.kind === "sub";
 
+/**
+ * Notes that the agent this session runs as (its lane, or NO_AGENT under a refused ORRERY_AGENT) ran in the session now
+ * open (src/lane/session-owner.ts): when it opens, at each message's and run's end, and at shutdown, so a visitor still
+ * running after the owner opened marks the turns it says later, even one killed before its run ended. Both entries do
+ * it, the other tool's too. Not in OMP subagents. Cheap, and it never throws: a note that fails never stops a message,
+ * a run's end or a shutdown (which releases the lane); the session then has no record, as before.
+ */
+function noteRun(state: OrreryState, ctx: ExtensionContext): void {
+	if (state.config === undefined || state.guarded === undefined || subagent(ctx)) return;
+	try {
+		noteSession(state.config.dataDir, ctx.sessionManager.getSessionId(), state.guarded.lane?.name ?? NO_AGENT);
+	} catch {
+		// no record
+	}
+}
+
 /** Which lane a session in `cwd` belongs to (src/lane/pick.ts). */
 const pickFor = (config: HarnessConfig, options: OrreryOptions, cwd: string) => pickLane(config, { env: options.env ?? process.env, cwd, owner: options.owner ?? process.pid });
 
@@ -184,20 +200,6 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 		};
 
 		/**
-		 * Notes that the agent this session runs as (its lane, or NO_AGENT under a refused ORRERY_AGENT) ran in the session
-		 * now open (src/lane/session-owner.ts): when it opens, and again at each run's end and at shutdown, so a visitor
-		 * still running after the owner opened marks the turns it says later too. Not in OMP subagents.
-		 */
-		const noteRun = (ctx: ExtensionContext): void => {
-			if (state.config === undefined || state.guarded === undefined || subagent(ctx)) return;
-			try {
-				noteSession(state.config.dataDir, ctx.sessionManager.getSessionId(), state.guarded.lane?.name ?? NO_AGENT);
-			} catch {
-				// A note that fails never stops a run's end or a shutdown (which releases the lane): no record, as before.
-			}
-		};
-
-		/**
 		 * Opens the session's lane (ORRERY_AGENT's, else the folder's), as a new session does: its guard, then (main session
 		 * only) its memory, OMP's settings, the tools, the session's copy and the status tick. `loaded`: the config already
 		 * read. `arrived`: the session moved here from another folder (OMP), so it records only what comes after the move.
@@ -214,7 +216,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 				guard(pi, state, host);
 				// OMP starts each subagent with this extension too: only the main session says so.
 				if (subagent(ctx)) return;
-				noteRun(ctx);
+				noteRun(state, ctx);
 				warn(ctx, refusedNotice(pick));
 				return;
 			}
@@ -226,7 +228,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			// OMP loads the extension again in each subagent (its task tool): a subagent gets the guard, never the memory.
 			if (omp && subagent(ctx)) return;
 			// The session is this lane's, whether or not its memory opens.
-			noteRun(ctx);
+			noteRun(state, ctx);
 			const { signal } = controller;
 			const deadline = omp && lane.remote !== undefined ? setTimeout(() => controller.abort(new Error("Remote checkout took longer than 25 seconds")), 25_000) : undefined;
 			try {
@@ -410,7 +412,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 
 		// A session moved elsewhere by /move and ended before another message is no longer the lane's to save.
 		pi.on("session_shutdown", (_event, ctx) => {
-			noteRun(ctx);
+			noteRun(state, ctx);
 			return closeLane(ctx, !moved(ctx));
 		});
 
@@ -535,10 +537,13 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			copySession(lane.view, ctx.sessionManager, lane.config.memory.toolCap);
 			status(ctx);
 		};
-		pi.on("message_end", log);
+		pi.on("message_end", (event, ctx) => {
+			noteRun(state, ctx);
+			log(event, ctx);
+		});
 		pi.on("agent_end", (event, ctx) => {
 			state.lastEnd = Date.now();
-			noteRun(ctx);
+			noteRun(state, ctx);
 			log(event, ctx);
 			if (!moved(ctx)) recordingLane(ctx)?.afterTurn();
 		});
@@ -559,7 +564,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 				if (await follow(event, ctx)) return;
 				const id = ctx.sessionManager.getSessionId();
 				// The session now open is this lane's (or no lane's, under a refused ORRERY_AGENT), as at session_start.
-				noteRun(ctx);
+				noteRun(state, ctx);
 				const lane = recordingLane(ctx);
 				if (lane === undefined || state.config === undefined) return;
 				try {
@@ -731,15 +736,20 @@ function mismatched(pi: ExtensionAPI, options: OrreryOptions, omp: boolean): voi
 		if (config === undefined) return;
 		const pick = pickFor(config, options, ctx.cwd);
 		if (pick.kind === "none") return;
+		state.config = config;
 		state.guarded = pick.kind === "lane" ? guarded(pick.lane, pick.by, ctx.cwd, config, options) : refusedGuard(ctx.cwd, config, options);
 		// Judged by the tool this runs in, not the entry's: OMP's tool shapes when pi's entry is loaded in OMP.
 		guard(pi, state, insideOmp(pi) ? "omp" : "pi");
 		// One notice per session: OMP starts each subagent too (its task tool), and a subagent says nothing.
 		if (subagent(ctx)) return;
-		// Whose session this is, as the right entry would note it (src/lane/session-owner.ts).
-		noteSession(config.dataDir, ctx.sessionManager.getSessionId(), state.guarded.lane?.name ?? NO_AGENT);
+		// Whose session this is, as the right entry notes it, now and as the session goes on.
+		noteRun(state, ctx);
 		warn(ctx, notice);
 	});
+	const note = (_event: unknown, ctx: ExtensionContext) => noteRun(state, ctx);
+	pi.on("message_end", note);
+	pi.on("agent_end", note);
+	pi.on("session_shutdown", note);
 }
 
 /** The lane guard on tool calls, registered once per runtime, whether or not the lane's memory opened. */

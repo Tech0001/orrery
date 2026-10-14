@@ -8,14 +8,16 @@
  * - <hash> names the agent that first ran in the session, or NO_AGENT for a session under an ORRERY_AGENT that was
  *   refused. It is made once (exclusive create) and left alone.
  * - <hash>.visited says another agent ran in the session since. A visitor writes it afresh (its time is the visit's)
- *   when it starts, at each run's end and at shutdown. The owner, once its tail is written, removes it only when it is
- *   older than the owner's load of the session: a visitor turn that ended after that load is not in what the owner
- *   loaded, so its mark stays for the owner's next open.
+ *   at every note: when its session opens (pi's and OMP's session_start, OMP's switch and branch, and the other tool's
+ *   entry), at each message's and run's end, and at shutdown (src/pi/index.ts noteRun). The owner, once its tail is
+ *   written, removes it only when it is clearly older than the owner's load of the session (settleVisit). A visitor
+ *   that keeps running keeps rewriting it, so the mark can outlive several of the owner's opens: every open records
+ *   from the tail until one settles it.
  * Agent names only, never content; files 0600 in a 0700 folder.
  *
  * Another agent's session, or the owner's own once marked, is recorded from its tail (src/pi/index.ts). The cost of a
- * mark: the owner's next open skips all of its own uncopied turns too, those from before the visit and those from its
- * runs whose memory did not open (held elsewhere, a failed remote open). Renaming an agent makes its old sessions
+ * mark: each such open of the owner skips all of its own uncopied turns too, those from before the visit and those from
+ * its runs whose memory did not open (held elsewhere, a failed remote open). Renaming an agent makes its old sessions
  * foreign to it.
  *
  * A session with no record is copied as before: one recorded before records existed, and every session when the data
@@ -111,16 +113,23 @@ export function sessionStanding(dataDir: string, sessionId: string, lane: string
 }
 
 /**
+ * How much older than the owner's load a mark must be before the owner removes it. Some filesystems keep times to the
+ * second, or to two (FAT), and round a fresh mark's time down below the load; a mark within this margin counts as
+ * written after the load. The cost of a mark kept too long: one more open from the tail.
+ */
+const COARSE_CLOCK_MS = 2_000;
+
+/**
  * The owner has written its tail of a visited session it loaded at `loadedAt`: the mark goes when it is older than that
- * load, so the session is recorded as usual again. A mark written at or after the load stays: the visit it marks ended
- * after the owner read the session, so its turns are not under the owner's tail, and its next open starts at the tail
- * again.
+ * load (by COARSE_CLOCK_MS), so the session is recorded as usual again. A newer mark stays: the visit it marks may have
+ * ended after the owner read the session, so its turns may not be under the owner's tail, and the next open starts at
+ * the tail again.
  */
 export function settleVisit(dataDir: string, sessionId: string, loadedAt: number): void {
 	if (!recordable(sessionId)) return;
 	const file = visitFile(dataDir, sessionId);
 	try {
-		if (statSync(file).mtimeMs < loadedAt) rmSync(file, { force: true });
+		if (statSync(file).mtimeMs < loadedAt - COARSE_CLOCK_MS) rmSync(file, { force: true });
 	} catch {
 		// no mark
 	}

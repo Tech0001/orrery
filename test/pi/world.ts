@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type FauxProviderHandle, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
@@ -49,6 +49,16 @@ export async function cleanup(): Promise<void> {
 export function lastLane(): PiLane {
 	if (latest === undefined) throw new Error("no lane opened");
 	return latest;
+}
+
+/**
+ * Makes every visit mark under `dataDir` 10 s old, as if the visit began long before the owner opens. The owner keeps a
+ * mark up to 2 s older than its load (src/lane/session-owner.ts), so after this only a later note of the visit keeps it.
+ */
+export function ageVisitMarks(dataDir: string): void {
+	const dir = join(dataDir, "session-owners");
+	const old = new Date(Date.now() - 10_000);
+	for (const name of readdirSync(dir)) if (name.endsWith(".visited")) utimesSync(join(dir, name), old, old);
 }
 
 /** The guard's environment and home in a world `root`: scratch ones, so no test lists or stats the real ~/.omp. */
