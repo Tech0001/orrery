@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ConfigError, findLane, laneForCwd, parseConfig, parseModelChoice } from "../../src/lane/config.ts";
+import { ConfigError, findLane, laneForCwd, laneNameProblem, parseConfig, parseModelChoice, RESERVED_NAMES } from "../../src/lane/config.ts";
 
 const FULL = `
 data_dir = "/var/lib/orrery"
@@ -119,6 +119,18 @@ describe("parseConfig", () => {
 		expect(config.lanes.get("Rooted")?.allowedRoots).toEqual(["/srv"]);
 		expect(laneForCwd(config, "/")).toBeUndefined();
 		expect(laneForCwd(config, "/srv")).toBeUndefined();
+	});
+
+	it("refuses a lane named like an orrery agent subcommand, ignoring case", () => {
+		expect(() => parseConfig(`[lanes.Local]\nworkspace = "/w/l"\ncompactor_model = "openai/gpt-6.1-sol"\n`, "/d")).toThrow(
+			"lanes.Local: Local is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); rename the lane",
+		);
+		for (const word of RESERVED_NAMES) expect(() => parseConfig(`[lanes.${word.toUpperCase()}]\ncompactor_model = "a/b"\n`, "/d")).toThrow(ConfigError);
+		expect(laneNameProblem("Edit")).toBe("Edit is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); pick another name.");
+		expect(laneNameProblem("Editor")).toBeUndefined();
+		expect(laneNameProblem("Atlas")).toBeUndefined();
+		expect(laneNameProblem("9lives")).toBe("Lane names use letters, digits, - and _ (at most 32), starting with a letter.");
+		expect(laneNameProblem("a".repeat(33))).toBe("Lane names use letters, digits, - and _ (at most 32), starting with a letter.");
 	});
 
 	it("refuses the old instructions key: an agent's instructions live in instructions.md", () => {

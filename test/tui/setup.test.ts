@@ -111,6 +111,19 @@ describe("first run", () => {
 		expect(existsSync(configPath)).toBe(true);
 	});
 
+	it("refuses a lane name orrery agent uses, says why, and asks again", async () => {
+		const { configPath, dataDir, app } = world();
+		const done = firstRun(app);
+		await answer(app, "Where should memory live", "\x15", ...typed(dataDir), ENTER);
+		await answer(app, "first lane's name", ...typed("local"), ENTER);
+		await answer(app, "Lane name");
+		expect((app.host.current as unknown as { text: string }).text).toBe("local is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); pick another name.");
+		await answer(app, "Lane name", ENTER);
+		await answer(app, "first lane's name", "\x1b");
+		expect(await done).toBe(false);
+		expect(existsSync(configPath)).toBe(false);
+	});
+
 	it("refuses an empty data folder and asks again", async () => {
 		const { configPath, app } = world();
 		const done = firstRun(app);

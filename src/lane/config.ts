@@ -103,6 +103,18 @@ type Table = Record<string, unknown>;
 const LOCAL_HOST: HostConfig = { name: "local", kind: "local" };
 const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 
+/** Words `orrery agent` takes as subcommands: no lane may be named one of them (compared without case). */
+export const RESERVED_NAMES: readonly string[] = ["add", "set", "edit", "archive", "push", "pull", "takeover", "local"];
+
+const reserved = (name: string) => `${name} is a word orrery agent uses (${RESERVED_NAMES.join(", ")})`;
+
+/** Why `name` cannot name a lane, or undefined when it can. */
+export function laneNameProblem(name: string): string | undefined {
+	if (!NAME.test(name)) return "Lane names use letters, digits, - and _ (at most 32), starting with a letter.";
+	if (RESERVED_NAMES.includes(name.toLowerCase())) return `${reserved(name)}; pick another name.`;
+	return undefined;
+}
+
 function table(value: unknown, where: string): Table {
 	if (value === undefined) return {};
 	if (typeof value !== "object" || value === null || Array.isArray(value)) throw new ConfigError(`${where} must be a table`);
@@ -267,6 +279,7 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 	for (const [name, value] of Object.entries(table(root.lanes, "lanes"))) {
 		const where = `lanes.${name}`;
 		if (!NAME.test(name)) throw new ConfigError(`${where}: lane names use letters, digits, - and _ (max 32)`);
+		if (RESERVED_NAMES.includes(name.toLowerCase())) throw new ConfigError(`${where}: ${reserved(name)}; rename the lane`);
 		const t = table(value, where);
 		const hostName = str(t, "host", where, "local");
 		const host = hosts.get(hostName);

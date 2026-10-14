@@ -3,7 +3,7 @@
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { ConfigError, defaultConfigPath, findLane, type HarnessConfig, type LaneConfig, loadConfig, parseConfig } from "../lane/config.ts";
+import { ConfigError, defaultConfigPath, findLane, type HarnessConfig, type LaneConfig, laneNameProblem, loadConfig, parseConfig } from "../lane/config.ts";
 import { addLane, addRemote, configWritable, type NewLane, type NewRemote, editConfigFile, readOnlyConfigText, removeRemote, saveConfigText, setLaneKey } from "../lane/config-edit.ts";
 import { safeText } from "../lane/source-labels.ts";
 import { holdWriterLock, type WriterLock } from "../memory/store.ts";
@@ -326,7 +326,8 @@ export async function pullLaneCommand(configPath: string | undefined, name: stri
 	writable(path);
 	const config = loadConfig(path);
 	if ([...config.lanes.keys()].some((n) => n.toLowerCase() === name.toLowerCase())) throw new ConfigError(`A lane named ${shown(name)} already exists.`);
-	if (!/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(name)) throw new ConfigError("Lane names use letters, digits, - and _ (at most 32), starting with a letter.");
+	const problem = laneNameProblem(name);
+	if (problem !== undefined) throw new ConfigError(problem);
 	const workspace = folder === "~" || folder.startsWith("~/") ? `${homedir()}${folder.slice(1)}` : folder;
 	if (!isAbsolute(workspace)) throw new Error("The folder must be an absolute path (or start with ~/).");
 	let directory = false;

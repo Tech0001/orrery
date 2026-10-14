@@ -119,6 +119,12 @@ describe("lane push and pull", () => {
 		expect(readFileSync(source, "utf8")).toBe(before); expect(await storage.list()).toEqual([]);
 	});
 
+	it("refuses a name orrery agent uses as a subcommand before contacting storage", async () => {
+		const before = readFileSync(path, "utf8");
+		await expect(pullLaneCommand(path, "Pull", "home", folder)).rejects.toThrow("Pull is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); pick another name.");
+		expect(readFileSync(path, "utf8")).toBe(before); expect(await storage.list()).toEqual([]);
+	});
+
 	it("refuses relative, missing and non-directory workspaces without registering the lane", async () => {
 		await seed(); const before = readFileSync(path, "utf8");
 		for (const bad of ["relative", join(dir, "missing"), path]) await expect(pullLaneCommand(path, "Atlas", "home", bad)).rejects.toThrow(/folder|directory|absolute/i);

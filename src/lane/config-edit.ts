@@ -8,7 +8,7 @@
 import { accessSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse } from "smol-toml";
-import { ConfigError, type HarnessConfig, type LaneTool, type LaneLauncher, parseConfig, type ThinkingLevel } from "./config.ts";
+import { ConfigError, type HarnessConfig, laneNameProblem, type LaneTool, type LaneLauncher, parseConfig, type ThinkingLevel } from "./config.ts";
 import { orreryHome } from "./home.ts";
 
 /** The lane keys the TUI and `orrery lane set` may change. */
@@ -163,7 +163,8 @@ export function setLaneKey(text: string, configDir: string, lane: string, key: E
  * it, but orrery versions before the TUI require it in every lane, and one lane without it makes them refuse the config.
  */
 export function addLane(text: string, configDir: string, lane: NewLane): string {
-	if (!NAME.test(lane.name)) throw new ConfigError("Lane names use letters, digits, - and _ (at most 32), starting with a letter.");
+	const problem = laneNameProblem(lane.name);
+	if (problem !== undefined) throw new ConfigError(problem);
 	if (lane.workspace !== undefined && !isAbsolute(lane.workspace)) throw new ConfigError("The folder must be an absolute path.");
 	const before = parseConfig(text, configDir);
 	if ([...before.lanes.keys()].some((name) => name.toLowerCase() === lane.name.toLowerCase())) throw new ConfigError(`A lane named ${lane.name} already exists.`);

@@ -3,7 +3,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pickSummaryModel } from "../lane/compactor-menu.ts";
-import { LANE_TOOLS, type ModelChoice, parseConfig } from "../lane/config.ts";
+import { LANE_TOOLS, laneNameProblem, type ModelChoice, parseConfig } from "../lane/config.ts";
 import { addLane, newConfigText } from "../lane/config-edit.ts";
 import { TOOL_LABELS } from "../lane/overview.ts";
 import { explainFailure, safeText } from "../lane/source-labels.ts";
@@ -13,7 +13,6 @@ import { InputModal, MessageModal, menuUI, SecretModal, SelectModal } from "./di
 import { expandHome, wireLane } from "./pages/lane-actions.ts";
 import { signInInteraction } from "./signin.ts";
 
-const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 const WAYS = ["Sign in to ChatGPT", "Add an Anthropic key", "Add an OpenAI key", "Add an OpenRouter key", "Sign in to OpenRouter"] as const;
 const KEY_NAMES: Record<string, string> = { "Add an Anthropic key": "anthropic", "Add an OpenAI key": "openai", "Add an OpenRouter key": "openrouter" };
 const errorText = (error: unknown) => safeText(error instanceof Error ? error.message : String(error));
@@ -51,8 +50,9 @@ export async function firstRun(app: App): Promise<boolean> {
 		for (;;) {
 			name = await app.host.open(new InputModal("Your first lane's name (letters, digits, - and _):"));
 			if (name === undefined) return false;
-			if (NAME.test(name)) break;
-			await app.host.open(new MessageModal("Lane name", "Lane names use letters, digits, - and _ (at most 32), starting with a letter."));
+			const problem = laneNameProblem(name);
+			if (problem === undefined) break;
+			await app.host.open(new MessageModal("Lane name", problem));
 		}
 		const folder = await app.host.open(new InputModal("Its folder:", app.deps.cwd));
 		if (folder === undefined) return false;

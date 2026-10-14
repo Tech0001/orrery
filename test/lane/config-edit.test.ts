@@ -108,9 +108,10 @@ describe("addLane", () => {
 		expect(parseConfig(next, "/x").lanes.get("Gamma")?.compactor.model).toEqual({ provider: "anthropic", modelId: "claude-haiku-4-5", thinking: "low" });
 	});
 
-	it("refuses a name that exists in another case, a bad name, and a relative folder", () => {
+	it("refuses a name that exists in another case, a bad or reserved name, and a relative folder", () => {
 		expect(() => addLane(BASE, "/x", { ...lane, name: "alpha" })).toThrow("A lane named alpha already exists.");
 		expect(() => addLane(BASE, "/x", { ...lane, name: "9lives" })).toThrow("Lane names use letters, digits, - and _ (at most 32), starting with a letter.");
+		expect(() => addLane(BASE, "/x", { ...lane, name: "Takeover" })).toThrow("Takeover is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); pick another name.");
 		expect(() => addLane(BASE, "/x", { ...lane, workspace: "rel/dir" })).toThrow("The folder must be an absolute path.");
 	});
 
