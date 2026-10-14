@@ -458,7 +458,7 @@ export class RemoteSession {
 				// row written during the upload can't land in both this snapshot and save n+1. A snapshot still waiting to
 				// upload is retried instead of reading a new one; a snapshot that can't be read never holds the save back.
 				// A store holding an identity other than the one the remote has (a leftover) never makes a snapshot: it would
-				// carry that identity to every copy rebuilt from it.
+				// carry that identity to every copy rebuilt from it. The next check-out replaces such a store with the remote's copy.
 				const due = this.#pendingSnapshot === undefined && (n - this.#snapshotAt >= SNAPSHOT_EVERY_SAVES || this.#bytesSinceSnapshot + file.length >= SNAPSHOT_EVERY_BYTES) && ownIdentity(store, this.#marks);
 				let snapshot: Uint8Array | undefined;
 				if (due) {
@@ -623,12 +623,16 @@ async function bringUpToDate(o: RemoteSessionOptions, lock: number, takeover: { 
 		writeState(laneDir, state);
 	}
 
-	// Unsaved rows of this working copy (a session closed while offline, or one that crashed).
+	// Unsaved rows of this working copy (a session closed while offline, or one that crashed), and whether its store
+	// holds the history's identity. A leftover identity (ownIdentity) never makes a snapshot, so the remote's copy, which
+	// carries the right one, replaces the working copy once its rows are on the remote; nothing is kept aside for that.
 	let pending: StoreRows | undefined;
+	let leftover = false;
 	if (existsSync(dbPath)) {
 		const store = MemoryStore.open(dbPath, o.writer);
 		try {
 			pending = unsentRows(store, state.marks)?.rows;
+			leftover = !ownIdentity(store, state.marks);
 		} finally {
 			store.close();
 		}
@@ -640,13 +644,15 @@ async function bringUpToDate(o: RemoteSessionOptions, lock: number, takeover: { 
 	const nobodySavedSince = fetched.newestSave === state.save;
 
 	if (intact && nobodySavedSince) {
-		if (pending === undefined) return positionOf(state);
-		return pushPending(o, lock, state, dbPath, now(), takeover);
+		const position = pending === undefined ? positionOf(state) : await pushPending(o, lock, state, dbPath, now(), takeover);
+		if (!leftover) return position;
+		return rebuild(o, await storage.fetch(lane, -1), { state: { ...state, ...position }, lineage, now: now(), outcome });
 	}
 
 	if (intact && pending === undefined) {
-		// Catch up: a newer snapshot means a rebuild; otherwise apply the saves after ours.
+		// Catch up: a newer snapshot (or a leftover identity) means a rebuild; otherwise apply the saves after ours.
 		if (fetched.snapshot !== undefined && fetched.snapshot.n > state.save) return rebuild(o, fetched, { state, lineage, now: now(), outcome });
+		if (leftover) return rebuild(o, await storage.fetch(lane, -1), { state, lineage, now: now(), outcome });
 		return catchUp(o, state, fetched, dbPath);
 	}
 

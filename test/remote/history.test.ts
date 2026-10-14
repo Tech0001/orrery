@@ -348,26 +348,56 @@ describe("round 3: what a copy can prove, and what a push leaves behind", () => 
 		expect(texts(db(s.pc))).toEqual(["a PC turn", "a Mac turn", "a Mac turn while moving"]);
 	});
 
-	it("an identity left in a store is never sent over the one its history has, and keeps a due snapshot from being made", async () => {
-		const s = scene();
-		await push(s, s.pc, "a PC turn", "X\n");
-		await open(s, s.mac, "a Mac turn");
-		const before = await remoteMeta(s, HISTORY_KEY);
-		const online = offline(s);
-		await open(s, s.pc, "a PC turn not saved");
-		online();
-		const store = MemoryStore.open(db(s.mac));
-		store.setMeta(HISTORY_KEY, "a leftover");
-		store.close();
-		// Over 5 MB that does not compress: this save is due a snapshot, which must not carry the leftover either.
-		const large = randomBytes(4 * 1024 * 1024).toString("base64");
-		await open(s, s.mac, large);
-		expect((await s.storage.fetch("Atlas", -1)).snapshot?.n ?? 0).toBe(0);
-		expect(await remoteMeta(s, HISTORY_KEY)).toBe(before);
-		await open(s, s.pc);
-		expect(keptMemory(s.pc)).toEqual([]);
-		expect(texts(db(s.pc))).toEqual(["a PC turn", "a Mac turn", large]);
-	});
+	// A save carrying this is over 5 MB sealed (base64 of random bytes hardly compresses), so it is due a snapshot.
+	const dueSnapshot = () => randomBytes(6 * 1024 * 1024).toString("base64");
+
+	for (const leftover of [true, false]) {
+		it(`an identity left in a store while held is never sent over the one its history has, and keeps a due snapshot from being made${leftover ? "" : " (control: without it, the snapshot is made)"}`, async () => {
+			const s = scene();
+			await push(s, s.pc, "a PC turn", "X\n");
+			await open(s, s.mac, "a Mac turn");
+			const before = await remoteMeta(s, HISTORY_KEY);
+			const online = offline(s);
+			await open(s, s.pc, "a PC turn not saved");
+			online();
+			// Left in the store after the check-out settled it (a check-out replaces a store with a leftover: see below).
+			const large = dueSnapshot();
+			const mac = await hold(s, s.mac);
+			if (leftover) mac.store.setMeta(HISTORY_KEY, "a leftover");
+			mac.store.append("user", large);
+			await mac.session.close();
+			mac.store.close();
+			expect((await s.storage.fetch("Atlas", -1)).snapshot?.n ?? 0).toBe(leftover ? 0 : 2);
+			expect(await remoteMeta(s, HISTORY_KEY)).toBe(before);
+			await open(s, s.pc);
+			expect(keptMemory(s.pc)).toEqual([]);
+			expect(texts(db(s.pc))).toEqual(["a PC turn", "a Mac turn", large]);
+		});
+	}
+
+	for (const unsaved of [false, true]) {
+		it(`a leftover identity met at a check-out${unsaved ? ", with an unsaved turn," : ""} is replaced by the history's own, so the next due snapshot is made (one machine)`, async () => {
+			const s = scene();
+			await push(s, s.pc, "a PC turn", "X\n");
+			const before = await remoteMeta(s, HISTORY_KEY);
+			if (unsaved) {
+				const online = offline(s);
+				await open(s, s.pc, "a PC turn not saved");
+				online();
+			}
+			const store = MemoryStore.open(db(s.pc));
+			store.setMeta(HISTORY_KEY, "a leftover");
+			store.close();
+			const large = dueSnapshot();
+			await open(s, s.pc, large);
+			expect(identity(s.pc).id).toBe(before);
+			expect((await s.storage.fetch("Atlas", -1)).snapshot?.n ?? 0).toBe(unsaved ? 2 : 1);
+			expect(await remoteMeta(s, HISTORY_KEY)).toBe(before);
+			expect([...keptMemory(s.pc), ...keptTurns(s.pc), ...keptInstructions(s.pc)]).toEqual([]);
+			expect(s.pc.reports).toEqual([]);
+			expect(texts(db(s.pc))).toEqual(["a PC turn", ...(unsaved ? ["a PC turn not saved"] : []), large]);
+		});
+	}
 
 	it("another history pushed with no instructions: the old history's are not sent into it, but kept aside with a true notice; the pusher is told nothing", async () => {
 		const s = scene();
