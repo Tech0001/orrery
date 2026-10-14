@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import type { Chat } from "../../import/chats.ts";
 import { type DryRunResult, newPreviewFolder } from "../../import/dry-run.ts";
+import { storeRefusal } from "../../import/create-agent.ts";
 import { suggestName } from "../../import/name.ts";
 import { pickSummaryModel } from "../../lane/compactor-menu.ts";
 import { readOnlyConfigText } from "../../lane/config-edit.ts";
@@ -60,11 +61,15 @@ async function fromChat(app: App, config: HarnessConfig): Promise<string | undef
 	}
 	const first = picked[0] as Chat;
 	const taken = [...config.lanes.keys()];
-	const name = await app.host.open(new InputModal("Agent name (letters, digits, - and _):", suggestName(first.title, taken)));
+	const stored = (candidate: string) => storeRefusal(config.dataDir, candidate) !== undefined;
+	const name = await app.host.open(new InputModal("Agent name (letters, digits, - and _):", suggestName(first.title, taken, stored)));
 	if (!name) return undefined;
 	const problem = laneNameProblem(name);
 	if (problem !== undefined) throw new Error(problem);
 	if (taken.some((other) => other.toLowerCase() === name.toLowerCase())) throw new Error(`A lane named ${name} already exists.`);
+	// Said now, not after the preview: the import would refuse this folder at the end.
+	const refusal = storeRefusal(config.dataDir, name);
+	if (refusal !== undefined) throw new Error(refusal);
 	const continues = await app.host.open(new SelectModal("It continues in (Codex has no Orrery memory yet):", CONTINUES_IN.map((id) => TOOL_LABELS[id])));
 	const tool = CONTINUES_IN.find((id) => TOOL_LABELS[id] === continues);
 	if (tool === undefined) return undefined;

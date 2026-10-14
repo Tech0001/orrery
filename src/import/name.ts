@@ -9,9 +9,9 @@ const MAX = 32;
  * A valid, free name from a chat's title: its Latin words and digits joined by "-" ("Install RPCS3 AppImage" →
  * "Install-RPCS3-AppImage"), accents dropped, as many whole words as fit. It starts with a letter ("Chat" before a
  * number, or alone when nothing is left), is never a word `orrery agent` uses, and gets "-2", "-3", … when taken
- * (compared without case).
+ * (compared without case) or `blocked` (its folder already has a memory store, say).
  */
-export function suggestName(title: string, taken: readonly string[]): string {
+export function suggestName(title: string, taken: readonly string[], blocked: (name: string) => boolean = () => false): string {
 	const words = title.normalize("NFKD").replace(/[̀-ͯ]/g, "").split(/[^A-Za-z0-9]+/).filter(Boolean);
 	let base = "";
 	for (const word of words) {
@@ -22,7 +22,7 @@ export function suggestName(title: string, taken: readonly string[]): string {
 	if (base === "" && words.length > 0) base = (words[0] as string).slice(0, MAX);
 	if (!/^[A-Za-z]/.test(base)) base = (base === "" ? "Chat" : `Chat-${base}`).slice(0, MAX).replace(/-+$/, "");
 	if (RESERVED_NAMES.includes(base.toLowerCase())) base = `${base}-agent`;
-	const free = (name: string) => !taken.some((other) => other.toLowerCase() === name.toLowerCase());
+	const free = (name: string) => !taken.some((other) => other.toLowerCase() === name.toLowerCase()) && !blocked(name);
 	if (free(base)) return base;
 	for (let n = 2; ; n++) {
 		const suffix = `-${n}`;

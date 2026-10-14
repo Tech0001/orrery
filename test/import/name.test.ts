@@ -24,4 +24,9 @@ describe("suggestName", () => {
 			expect(laneNameProblem(name), title).toBeUndefined();
 		}
 	});
+
+	it("skips names it is told are not free (a folder that already has a memory store)", () => {
+		const stored = new Set(["Install-RPCS3-AppImage", "Install-RPCS3-AppImage-2"]);
+		expect(suggestName("Install RPCS3 AppImage", [], (name) => stored.has(name))).toBe("Install-RPCS3-AppImage-3");
+	});
 });

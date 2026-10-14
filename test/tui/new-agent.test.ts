@@ -276,6 +276,24 @@ describe("N: an agent from an existing chat", () => {
 		expect(screen(empty)).toContain("No Claude Code or Codex chats were found.");
 	});
 
+	it("a name whose folder already has a memory store is passed over in the suggestion and refused at the prompt, before any preview", async () => {
+		const s = scene();
+		const left = MemoryStore.open(join(s.root, "data", "lanes", "Install-RPCS3-AppImage", "memory.sqlite"));
+		left.close();
+		const { app, outs } = await tui(s);
+		keys(app, "N");
+		await answer(app, "New agent:", DOWN, ENTER);
+		await answer(app, "Turn which chat into an agent?", ENTER);
+		await answer(app, "In use", "y");
+		await answer(app, "Agent name");
+		expect(screen(app)).toContain("Install-RPCS3-AppImage-2");
+		await answer(app, "Agent name", "\x15", ...typed("Install-RPCS3-AppImage"), ENTER);
+		await app.idle();
+		expect(screen(app, 320)).toContain(`${join(s.root, "data", "lanes", "Install-RPCS3-AppImage")} already has a memory store (an archived agent's, or an import that was cut short); nothing was written. Pick another name, or move that folder aside and try again.`);
+		expect(outs).toEqual([]);
+		expect(loadConfig(s.configPath).lanes.size).toBe(0);
+	});
+
 	it("suggests a free name when the title's is taken", async () => {
 		const s = scene();
 		writeFileSync(s.configPath, `${readFileSync(s.configPath, "utf8")}[lanes.Install-RPCS3-AppImage]\ncompactor_model = "openai/gpt-6.1-sol"\n`);
