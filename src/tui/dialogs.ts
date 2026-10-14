@@ -270,7 +270,8 @@ export class ChatListModal extends Modal<readonly Chat[] | undefined> {
 			return at === this.#cursor ? theme.inverse(line) : line;
 		});
 		const empty = visible.length === 0 ? [theme.dim(fit("  nothing matches", width))] : [];
-		return [...head, ...extra, ...rows, ...empty, theme.dim(fit("↑↓ choose · space or Tab mark several · Enter go on · type to filter · Esc back", width))].slice(0, height);
+		const mark = this.#filter === "" ? "space or Tab mark several" : "Tab mark several";
+		return [...head, ...extra, ...rows, ...empty, theme.dim(fit(`↑↓ choose · ${mark} · Enter go on · type to filter · Esc back`, width))].slice(0, height);
 	}
 
 	handleInput(data: string): void {
@@ -354,7 +355,12 @@ export class ReportModal extends Modal<"import" | "full" | undefined> {
 	}
 
 	render(width: number, height: number, theme: Theme): string[] {
-		return [...titleLines(this.title, width, theme), ...hardWrap(this.#text, width).map((line) => fit(line, width)), theme.dim(fit("Enter import · R full report · Esc leave without writing", width))].slice(0, height);
+		const head = titleLines(this.title, width, theme);
+		// The keys stay in view: a report longer than the room ends in a pointer to the full one.
+		const room = Math.max(1, height - head.length - 1);
+		const body = hardWrap(this.#text, width);
+		const shown = body.length > room ? [...body.slice(0, room - 1), "… (R shows the full report)"] : body;
+		return [...head, ...shown.map((line) => fit(line, width)), theme.dim(fit("Enter import · R full report · Esc leave without writing", width))].slice(0, height);
 	}
 
 	handleInput(data: string): void {

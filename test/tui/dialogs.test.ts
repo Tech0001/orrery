@@ -113,6 +113,8 @@ describe("dialogs", () => {
 		expect(shown).toContain("filter: install rpcs3");
 		expect(shown).toContain("Install RPCS3");
 		expect(shown).not.toContain("Install Steam");
+		expect(shown).toContain("Tab mark several");
+		expect(shown).not.toContain("space or Tab");
 		modal.handleInput(TAB);
 		for (let i = 0; i < "install rpcs3".length; i++) modal.handleInput("\x7f");
 		modal.handleInput(DOWN);
@@ -164,6 +166,14 @@ describe("dialogs", () => {
 			answers.push(await report.result);
 		}
 		expect(answers).toEqual(["import", "full", "full", undefined]);
+	});
+
+	it("ReportModal keeps its keys in view when the report is longer than the window", () => {
+		const report = new ReportModal("Import preview for Atlas", Array.from({ length: 30 }, (_, i) => `Left out: line ${i}`).join("\n"));
+		const lines = report.render(60, 10, PLAIN);
+		expect(lines).toHaveLength(10);
+		expect(lines[8]?.trimEnd()).toBe("… (R shows the full report)");
+		expect(lines[9]).toContain("Enter import · R full report · Esc leave without writing");
 	});
 
 	it("ModalHost stacks modals, routes input to the top one, and menuUI asks through it", async () => {
