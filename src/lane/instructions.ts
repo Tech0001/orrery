@@ -66,12 +66,15 @@ export function readInstructions(laneDir: string): Instructions | undefined {
 	}
 }
 
+/** The whole file as it travels to other machines: its text ("" when blank), or a file over the size asked for. */
+export type WholeInstructions = { readonly text: string } | { readonly tooLarge: true };
+
 /**
- * The whole file as it travels with a remote agent's memory to other machines (no cut): its text, "" when it is blank,
- * or undefined when there is no file. Something else in its place, or a file that can't be read, throws: it is never
- * replaced. As in readInstructions, a FIFO never makes it wait.
+ * The whole file as it travels with a remote agent's memory to other machines (no cut), or undefined when there is no
+ * file. A file over `maxBytes` is not read. Something else in its place, or a file that can't be read, throws: it is
+ * never replaced. As in readInstructions, a FIFO never makes it wait.
  */
-export function readWholeInstructions(laneDir: string): string | undefined {
+export function readWholeInstructions(laneDir: string, maxBytes: number): WholeInstructions | undefined {
 	let fd: number;
 	try {
 		fd = openSync(instructionsPath(laneDir), constants.O_RDONLY | constants.O_NONBLOCK);
@@ -80,21 +83,15 @@ export function readWholeInstructions(laneDir: string): string | undefined {
 		throw error;
 	}
 	try {
-		if (!fstatSync(fd).isFile()) throw new Error(`${INSTRUCTIONS_FILE} is not a file`);
-		const text = readFileSync(fd, "utf8");
-		return text.trim() === "" ? "" : text;
+		const stat = fstatSync(fd);
+		if (!stat.isFile()) throw new Error(`${INSTRUCTIONS_FILE} is not a file`);
+		if (stat.size > maxBytes) return { tooLarge: true };
+		const bytes = readFileSync(fd);
+		if (bytes.length > maxBytes) return { tooLarge: true };
+		const text = bytes.toString("utf8");
+		return { text: text.trim() === "" ? "" : text };
 	} finally {
 		closeSync(fd);
-	}
-}
-
-/** The whole file (no cut), or undefined when it is missing, unreadable or blank: what travels to other machines. */
-export function readInstructionsText(laneDir: string): string | undefined {
-	try {
-		const text = readWholeInstructions(laneDir);
-		return text === "" ? undefined : text;
-	} catch {
-		return undefined;
 	}
 }
 

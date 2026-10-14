@@ -13,7 +13,7 @@ import { holdWriterLock, MemoryStore, type StoreMarks, type StoreRows, type Writ
 import { processAlive } from "../lane/process.ts";
 import { writePrivate } from "../lane/private-file.ts";
 import { seal, unseal } from "./crypto.ts";
-import { agreeOn, INSTRUCTIONS_KEY, instructionsIntoStore, pushInstructions, type SettledInstructions, settleInstructions } from "./instructions-sync.ts";
+import { agreeOn, agreeOnOwnRows, forgetAgreement, INSTRUCTIONS_KEY, instructionsIntoStore, pushInstructions, type SettledInstructions, settleInstructions } from "./instructions-sync.ts";
 import { assertWrittenThrough, decodeRows, decodeSnapshot, encodeRows, encodeSnapshot, type LaneSettings, LOCAL_META_KEYS, makeHeader, restoreSnapshot, type SaveHeader, snapshotBytes } from "./save-format.ts";
 import {
 	type FetchResult,
@@ -184,7 +184,7 @@ export class RemoteSession {
 	/** Set after a forced take: the first save names the machine it took the lane from. */
 	#takeoverFrom: string | undefined;
 	#store: MemoryStore | undefined;
-	/** The hash of the instructions the check-out settled the file and the store on; undefined when that failed. */
+	/** The hash of the instructions the check-out settled the file and the store on; undefined when it did not settle them. */
 	#instructions: string | undefined;
 	/** The hash of this machine's instructions put into the store, agreed on once a save carrying them is acknowledged. */
 	#instructionsSent: string | undefined;
@@ -275,9 +275,9 @@ export class RemoteSession {
 		}
 		try {
 			// A first push sends this machine's instructions.md as the agent's (none when there is no file).
-			let instructions: string;
+			let instructions: string | undefined;
 			try {
-				instructions = pushInstructions(store, o.laneDir);
+				instructions = pushInstructions(store, o.laneDir, lane, (message) => guarded(() => o.report(message)));
 			} catch (error) {
 				throw new Error(`${lane}'s instructions.md can't be read (${error instanceof Error ? error.message : String(error)}); fix or remove it, then push again.`, { cause: error });
 			}
@@ -293,7 +293,7 @@ export class RemoteSession {
 				pushed = true;
 				writeState(o.laneDir, { v: 1, remote: storage.name, lock: taken.lock, save: 0, sha256: "", marks, snapshotAt: 0, snapshotSha: sha256(sealed), bytesSinceSnapshot: 0 });
 				try {
-					agreeOn(o.laneDir, instructions);
+					if (instructions !== undefined) agreeOn(o.laneDir, instructions);
 				} catch {
 					// The next check-out finds the file and the remote equal, and agrees then.
 				}
@@ -372,7 +372,7 @@ export class RemoteSession {
 		const settled = this.#instructions;
 		if (store === undefined || settled === undefined) return;
 		try {
-			const sent = instructionsIntoStore(store, this.#o.laneDir, settled);
+			const sent = instructionsIntoStore(store, this.#o.laneDir, settled, this.#o.lane, (message) => guarded(() => this.#o.report(message)));
 			if (sent !== undefined) this.#instructionsSent = sent;
 		} catch {
 			// The file stays as it is; the next check-out compares it again.
@@ -558,6 +558,8 @@ async function bringUpToDate(o: RemoteSessionOptions, lock: number, takeover: { 
 	let state = readState(laneDir, storage.name);
 
 	if (state === undefined) {
+		// No state for this remote: whatever this folder agreed on before belongs to another history.
+		forgetAgreement(laneDir);
 		setAsideLocalMemory(o, dbPath, now());
 		return rebuild(o, await storage.fetch(lane, -1));
 	}
@@ -575,6 +577,8 @@ async function bringUpToDate(o: RemoteSessionOptions, lock: number, takeover: { 
 				adopted = false;
 			}
 		}
+		// The save holds this machine's own rows: instructions it changed are on the remote now.
+		if (adopted) agreeOnOwnRows(laneDir, state.marks, inflight.marks);
 		state = adopted
 			? { ...state, save: inflight.n, sha256: inflight.sha256, marks: inflight.marks, bytesSinceSnapshot: state.bytesSinceSnapshot + (next?.file.length ?? 0), inflight: undefined }
 			: { ...state, inflight: undefined };
@@ -638,6 +642,8 @@ async function pushPending(o: RemoteSessionOptions, lock: number, state: Session
 		const file = seal(key, lane, "save", n, body);
 		writeState(laneDir, { ...state, lock, inflight: { n, sha256: header.sha256, marks: changed.next } });
 		await storage.save(lane, lock, n, file, seal(key, lane, "log", n, Buffer.from(JSON.stringify(header))));
+		// These are this machine's own rows: instructions they changed are on the remote now, before the file is settled.
+		agreeOnOwnRows(laneDir, state.marks, changed.next);
 		takeover.from = undefined; // This checkout's first save may be the locally pending rows sent above.
 		return { ...positionOf(state), save: n, sha256: header.sha256, marks: changed.next, bytesSinceSnapshot: state.bytesSinceSnapshot + file.length };
 	} finally {

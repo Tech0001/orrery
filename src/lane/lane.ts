@@ -16,7 +16,6 @@ import {
 	ModelSummarizer,
 } from "../memory/index.ts";
 import { attachRemoteStore, checkOutLane, remoteOpenNotice } from "../remote/checkout.ts";
-import { INSTRUCTIONS_KEY } from "../remote/instructions-sync.ts";
 import type { RemoteSession } from "../remote/session.ts";
 import { holdWriterLock, type WriterLock } from "../memory/store.ts";
 import { findLane, type HarnessConfig, type LaneConfig, type ModelChoice, parseModelChoice } from "./config.ts";
@@ -25,7 +24,7 @@ import { AGENT_MODEL_KEY, COMPACTOR_MODEL_KEY, storedChoice } from "./choices.ts
 import { createLaneEnv, type LaneEnv } from "./env.ts";
 import { memoryExtension } from "./extension.ts";
 import { guardExtension } from "./guard.ts";
-import { cutNotice, readInstructions, readInstructionsText } from "./instructions.ts";
+import { cutNotice, readInstructions } from "./instructions.ts";
 import { laneViews } from "./guard-paths.ts";
 import { compactorModel, createLaneModels, modelContextWindow, savedSummaryLoginsOnly } from "./models.ts";
 import { Projector } from "./projector.ts";
@@ -191,19 +190,14 @@ export class Lane {
 				? createLaneModels({ credentials: new FileCredentialStore(options.config.credentialsPath), providers: options.config.providers, savedLoginsOnly: true })
 				: models);
 			const compactor = createLaneCompactor(config, summaryModels, store, view, relay, compactorChosen);
-			// A lane with no default folder works where `orrery run` started (only a local lane may lack one).
+			// A lane with no default folder (one added or pulled without one) works where `orrery run` started.
 			const workspace = config.workspace ?? process.cwd();
 			const env = createLaneEnv(config.host, workspace, options.config.sshDir, context);
-			// The lane's instructions.md, read as pi and OMP read it: a missing or blank file is none (memory only). A local
-			// lane's store keeps a copy of the whole file, cleared when it reads none, so it never stands in for instructions
-			// taken away. A remote lane's copy is what travels to other machines: its check-out and close settle it
-			// (src/remote/instructions-sync.ts), never this read, so a missing file or the 32 KB cut never travels.
+			// The lane's instructions.md, read as pi and OMP read it: a missing or blank file is none (memory only). The store
+			// holds no copy here: a remote lane's travelling copy is settled by its check-out and close
+			// (src/remote/instructions-sync.ts), and the "instructions" value older builds wrote is neither read nor written.
 			const found = readInstructions(config.dir);
 			const instructions = found?.text ?? "";
-			if (config.remote === undefined) {
-				const whole = readInstructionsText(config.dir) ?? "";
-				if ((store.getMeta(INSTRUCTIONS_KEY) ?? "") !== whole) store.setMeta(INSTRUCTIONS_KEY, whole);
-			}
 			const registry = createRegistry();
 			registry.install(CodingTools);
 			registry.install(memoryExtension({ view, instructions: () => instructions }));

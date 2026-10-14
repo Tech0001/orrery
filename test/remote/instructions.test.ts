@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { createKey, unseal } from "../../src/remote/crypto.ts";
 import { FakeStorage } from "../../src/remote/fake.ts";
-import { INSTRUCTIONS_KEY } from "../../src/remote/instructions-sync.ts";
+import { INSTRUCTIONS_KEY, SYNCED_FILE } from "../../src/remote/instructions-sync.ts";
 import { decodeRows } from "../../src/remote/save-format.ts";
 import { RemoteSession } from "../../src/remote/session.ts";
 import { RemoteError } from "../../src/remote/types.ts";
@@ -66,6 +67,31 @@ async function pushed(s: Scene): Promise<void> {
 	await firstPush(s);
 	await close(await open(s, s.mac));
 }
+
+/** The store key older builds' `orrery run` wrote, at every start, with the workspace's AGENTS.md text. */
+const LEGACY_KEY = "instructions";
+
+/** An older build on machine `m`: a held session whose `orrery run` writes the workspace's AGENTS.md under LEGACY_KEY. */
+async function olderRun(s: Scene, m: Machine, text: string): Promise<void> {
+	const held = await open(s, m);
+	held.store.setMeta(LEGACY_KEY, text);
+	await close(held);
+}
+
+/** Saves fail as if the remote were offline, until the returned function is called. */
+function offline(s: Scene): () => void {
+	const save = s.storage.save.bind(s.storage);
+	s.storage.save = async () => {
+		throw new RemoteError("unreachable", "offline");
+	};
+	return () => {
+		s.storage.save = save;
+	};
+}
+
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+const tooLarge = "Orrery: Atlas's instructions.md is over 256 KB, so it stays on this machine and does not travel with its memory; shorten it to share it.";
+const conflicts = (m: Machine) => m.reports.filter((text) => text.includes("both here"));
 
 /** What the remote holds now: the store's copy as a machine that never had a file checks it out. */
 async function remoteCopy(s: Scene): Promise<string | undefined> {
@@ -308,5 +334,205 @@ describe("cleared on purpose, or never had any", () => {
 		expect(await remoteCopy(s)).toBe("");
 		await close(await open(s, s.mac));
 		expect(existsSync(join(s.mac.dir, "instructions.md"))).toBe(false);
+	});
+});
+
+describe("an older build's \"instructions\" value is not the agent's", () => {
+	it("written by an older build on another machine while both run: ignored, the file stays, nothing set aside", async () => {
+		const s = scene();
+		await pushed(s);
+		await olderRun(s, s.probe, "LEGACY workspace AGENTS.md\n");
+		await close(await open(s, s.mac));
+		expect(instructions(s.mac)).toBe("v1\n");
+		expect(asides(s.mac)).toEqual([]);
+		expect(s.mac.reports).toEqual([]);
+		expect(await remoteCopy(s)).toBe("v1\n");
+	});
+
+	it("left on the remote by an older build at the upgrade: never taken for the agent's, so this machine's own goes up", async () => {
+		const s = scene();
+		const store = MemoryStore.open(join(s.pc.dir, "memory.sqlite"));
+		store.append("user", "hello");
+		store.close();
+		await RemoteSession.push({ lane: "Atlas", laneDir: s.pc.dir, storage: s.storage, key: s.key, holder: s.pc.holder, report: () => {}, settings });
+		await olderRun(s, s.pc, "LEGACY workspace AGENTS.md\n");
+		expect(existsSync(join(s.pc.dir, "instructions.md"))).toBe(false);
+		write(s.mac, "mine, written for the new build\n");
+		await close(await open(s, s.mac));
+		expect(instructions(s.mac)).toBe("mine, written for the new build\n");
+		expect(asides(s.mac)).toEqual([]);
+		expect(conflicts(s.mac)).toEqual([]);
+		expect(await remoteCopy(s)).toBe("mine, written for the new build\n");
+	});
+
+	it("in this machine's own store, from its older build: ignored, never written to instructions.md, never sent", async () => {
+		const s = scene();
+		await pushed(s);
+		await olderRun(s, s.mac, "LEGACY workspace AGENTS.md\n");
+		rmSync(join(s.mac.dir, "instructions.md"));
+		await close(await open(s, s.mac));
+		expect(instructions(s.mac)).toBe("v1\n");
+		expect(s.mac.reports.filter((text) => text.includes("changed on another machine"))).toEqual([]);
+		// A guard (passes before the fix too): a store holding only the old key pushes no instructions.
+		const fresh = scene();
+		const store = MemoryStore.open(join(fresh.pc.dir, "memory.sqlite"));
+		store.append("user", "hello");
+		store.setMeta(LEGACY_KEY, "LEGACY workspace AGENTS.md\n");
+		store.close();
+		await RemoteSession.push({ lane: "Atlas", laneDir: fresh.pc.dir, storage: fresh.storage, key: fresh.key, holder: fresh.pc.holder, report: () => {}, settings });
+		await close(await open(fresh, fresh.mac));
+		expect(existsSync(join(fresh.mac.dir, "instructions.md"))).toBe(false);
+	});
+
+	it("saves that changed no instructions carry no key, and a remote whose saves never had one leaves this machine's file alone", async () => {
+		const s = scene();
+		const store = MemoryStore.open(join(s.pc.dir, "memory.sqlite"));
+		store.append("user", "hello");
+		store.close();
+		await RemoteSession.push({ lane: "Atlas", laneDir: s.pc.dir, storage: s.storage, key: s.key, holder: s.pc.holder, report: () => {}, settings });
+		const held = await open(s, s.pc);
+		held.store.append("user", "a turn");
+		await close(held);
+		const { saves } = await s.storage.fetch("Atlas", 0);
+		expect(saves.length).toBeGreaterThan(0);
+		for (const save of saves) expect(decodeRows(unseal(s.key, "Atlas", "save", save.n, save.file)).meta).not.toHaveProperty(INSTRUCTIONS_KEY);
+		expect(await remoteCopy(s)).toBeUndefined();
+		await close(await open(s, s.mac));
+		expect(existsSync(join(s.mac.dir, "instructions.md"))).toBe(false);
+		write(s.mac, "the Mac's\n");
+		await close(await open(s, s.mac));
+		expect(instructions(s.mac)).toBe("the Mac's\n");
+		expect(await remoteCopy(s)).toBe("the Mac's\n");
+	});
+});
+
+describe("agreement only with this remote's history", () => {
+	it.each([false, true])("a folder that agreed with an unrelated history keeps its own aside, never replaced silently (memory set aside: %s)", async (memory) => {
+		const s = scene();
+		await firstPush(s, "Z another Atlas\n");
+		if (memory) {
+			const store = MemoryStore.open(join(s.mac.dir, "memory.sqlite"));
+			store.append("user", "an earlier Atlas's turn");
+			store.close();
+		}
+		write(s.mac, "X only here\n");
+		writeFileSync(join(s.mac.dir, SYNCED_FILE), `${sha256("X only here\n")}\n`);
+		await close(await open(s, s.mac));
+		expect(instructions(s.mac)).toBe("Z another Atlas\n");
+		expect(asides(s.mac)).toHaveLength(1);
+		expect(readFileSync(join(s.mac.dir, asides(s.mac)[0] as string), "utf8")).toBe("X only here\n");
+		expect(conflicts(s.mac)).toHaveLength(1);
+		expect(readdirSync(s.mac.dir).filter((name) => name.startsWith("memory-before-remote-"))).toHaveLength(memory ? 1 : 0);
+	});
+
+	it("an edit whose send failed, edited again before the next open: the newest stays and goes up, no false conflict", async () => {
+		const s = scene();
+		await pushed(s);
+		const held = await open(s, s.mac);
+		write(s.mac, "v2 mac\n");
+		const online = offline(s);
+		await close(held);
+		online();
+		write(s.mac, "v3 mac, edited again while offline\n");
+		await close(await open(s, s.mac));
+		expect(instructions(s.mac)).toBe("v3 mac, edited again while offline\n");
+		expect(asides(s.mac)).toEqual([]);
+		expect(conflicts(s.mac)).toEqual([]);
+		await close(await open(s, s.pc));
+		expect(instructions(s.pc)).toBe("v3 mac, edited again while offline\n");
+	});
+
+	it("an edit whose save landed but whose reply was lost, edited again: the newest stays and goes up, no false conflict", async () => {
+		const s = scene();
+		await pushed(s);
+		const held = await open(s, s.mac);
+		write(s.mac, "v2 mac\n");
+		const save = s.storage.save.bind(s.storage);
+		s.storage.save = async (...args) => {
+			await save(...args);
+			throw new RemoteError("unreachable", "the reply was lost");
+		};
+		await close(held);
+		s.storage.save = save;
+		write(s.mac, "v3 mac\n");
+		await close(await open(s, s.mac));
+		expect(instructions(s.mac)).toBe("v3 mac\n");
+		expect(asides(s.mac)).toEqual([]);
+		expect(conflicts(s.mac)).toEqual([]);
+		await close(await open(s, s.pc));
+		expect(instructions(s.pc)).toBe("v3 mac\n");
+	});
+});
+
+describe("instructions.md over 256 KB stays on its machine", () => {
+	const over = `${"b".repeat(256 * 1024)}+`;
+
+	it("exactly 256 KB still travels", async () => {
+		const s = scene();
+		const most = "c".repeat(256 * 1024);
+		await firstPush(s, most);
+		await close(await open(s, s.mac));
+		expect(instructions(s.mac)).toBe(most);
+	});
+
+	it("over 256 KB: it stays local, with a notice; the memory still saves, and the other machine keeps its copy", async () => {
+		const s = scene();
+		await pushed(s);
+		// The remote refuses a save this large, as a Worker refuses an oversized request: one such save would block every later one.
+		const save = s.storage.save.bind(s.storage);
+		s.storage.save = async (lane, lock, n, file, log) => {
+			if (file.byteLength > 256 * 1024) throw new RemoteError("refused", "too large");
+			return save(lane, lock, n, file, log);
+		};
+		write(s.mac, over);
+		const held = await open(s, s.mac);
+		expect(s.mac.reports).toContain(tooLarge);
+		held.store.append("user", "a turn on the Mac");
+		await close(held);
+		expect(instructions(s.mac)).toBe(over);
+		const pc = await open(s, s.pc);
+		expect(pc.store.root.map((m) => m.text)).toContain("a turn on the Mac");
+		await close(pc);
+		expect(instructions(s.pc)).toBe("v1\n");
+		expect(await remoteCopy(s)).toBe("v1\n");
+	});
+
+	it("is never replaced: an edit from another machine leaves it as it is, and says so again", async () => {
+		const s = scene();
+		await pushed(s);
+		write(s.pc, "v2 from the PC\n");
+		await close(await open(s, s.pc));
+		write(s.mac, over);
+		await close(await open(s, s.mac));
+		expect(instructions(s.mac)).toBe(over);
+		expect(asides(s.mac)).toEqual([]);
+		expect(s.mac.reports).toContain(tooLarge);
+		expect(await remoteCopy(s)).toBe("v2 from the PC\n");
+	});
+
+	it("made over 256 KB in a held session: the close sends nothing and says so; the memory still saves", async () => {
+		const s = scene();
+		await pushed(s);
+		const held = await open(s, s.mac);
+		write(s.mac, over);
+		held.store.append("user", "a turn on the Mac");
+		await close(held);
+		expect(s.mac.reports).toContain(tooLarge);
+		expect(await remoteCopy(s)).toBe("v1\n");
+		const pc = await open(s, s.pc);
+		expect(pc.store.root.map((m) => m.text)).toContain("a turn on the Mac");
+		await close(pc);
+	});
+
+	it("a first push of one over 256 KB sends none, and says so", async () => {
+		const s = scene();
+		const store = MemoryStore.open(join(s.pc.dir, "memory.sqlite"));
+		store.append("user", "hello");
+		store.close();
+		write(s.pc, over);
+		await RemoteSession.push({ lane: "Atlas", laneDir: s.pc.dir, storage: s.storage, key: s.key, holder: s.pc.holder, report: (text) => s.pc.reports.push(text), settings });
+		expect(s.pc.reports).toContain(tooLarge);
+		expect(await remoteCopy(s) ?? "").toBe("");
+		expect(instructions(s.pc)).toBe(over);
 	});
 });

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseConfig, parseModelChoice } from "../../src/lane/config.ts";
 import { INSTRUCTIONS_MAX_BYTES, writeInstructions } from "../../src/lane/instructions.ts";
 import { Lane, readStatus } from "../../src/lane/lane.ts";
+import { INSTRUCTIONS_KEY } from "../../src/remote/instructions-sync.ts";
 import { statusVersion } from "../../src/lane/status-file.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { contextLines, ctx, fauxModels, laneConfigToml, tempDir } from "./support.ts";
@@ -55,14 +56,19 @@ describe("Lane", () => {
 		expect(status?.version).toBe("checkout");
 		expect(seen[0][0]).toContain("You are the Test lane.");
 		expect(seen[0][0]).not.toContain("The workspace's own rules.");
-		expect(lane.store.getMeta("instructions")).toBe("You are the Test lane.");
+		// The store keeps no copy: neither the key older builds wrote nor the one a remote agent's copy travels under.
+		expect(lane.store.getMeta("instructions")).toBeUndefined();
+		expect(lane.store.getMeta(INSTRUCTIONS_KEY)).toBeUndefined();
 		await lane.close();
 
-		// A removed instructions.md takes effect: the lane runs with memory only, and the store's copy is cleared.
+		// A removed instructions.md takes effect: the lane runs with memory only, even with an older build's copy in the store.
 		rmSync(join(config.lanes.get("Test")!.dir, "instructions.md"));
+		const old = MemoryStore.open(join(config.lanes.get("Test")!.dir, "memory.sqlite"));
+		old.setMeta("instructions", "You are the Test lane.");
+		old.close();
 		const reopened = await Lane.open({ config, lane: "Test", models, context: ctx });
 		expect(reopened.store.root).toHaveLength(2);
-		expect(reopened.store.getMeta("instructions")).toBe("");
+		expect(reopened.store.getMeta(INSTRUCTIONS_KEY)).toBeUndefined();
 		const second = await reopened.submit("What is the codename?", "r2");
 		await second?.submission.wait(ctx);
 		expect(seen[1][0]).not.toContain("You are the Test lane.");
@@ -171,7 +177,7 @@ describe("Lane", () => {
 		agent.setResponses([(context) => (seen.push(contextLines(context)), fauxAssistantMessage("One.")), (context) => (seen.push(contextLines(context)), fauxAssistantMessage("Two."))]);
 		writeInstructions(dir, " \n\t\n");
 		const blank = await Lane.open({ config, lane: "Test", models, context: ctx });
-		expect(blank.store.getMeta("instructions") ?? "").toBe("");
+		expect(blank.store.getMeta("instructions")).toBeUndefined();
 		await (await blank.submit("Hello.", "r1"))?.submission.wait(ctx);
 		await blank.close();
 		expect(seen[0][0]).not.toContain("You are the Test lane.");
