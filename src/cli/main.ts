@@ -13,6 +13,9 @@ import { exitWhenFlushed } from "./exit.ts";
 const USAGE = `Usage: orrery <command> [--config FILE]
   (no command)               in a terminal: the Orrery TUI (lanes, logins, usage, tools)
   version, --version, -v     the running version (an install's version-commit, or the checkout's package version)
+  agent <Name> [--tool pi|omp|claude-code] [--yes] [-- <tool arguments>]
+                             open the agent here: its tool starts in this folder with its instructions and memory
+  agent edit <Name>          open the agent's instructions in $EDITOR (else nano, else vi)
   run <Lane>                 attach this terminal to a lane (one process per lane)
   status [<Lane>] [--json]   every lane (or one): state, tool, memory, summaries
   lane add <Name> --folder DIR --tool pi|omp|claude-code|codex --summary provider/id [--thinking L]
@@ -58,7 +61,6 @@ const USAGE = `Usage: orrery <command> [--config FILE]
   holder <Lane> --session ID --claude-pid PID [--nonce N] [--since MS]
                              record a Claude Code session into the lane (the plugin's SessionStart hook starts it;
                              --since is when SessionStart ran, in ms since the epoch)
-  launch <Lane> [--yes]      start the lane's tool (pi, omp, claude, codex) in its folder, after the checks the TUI makes
   tools [--json]             pi, Claude Code, Codex and OMP: found, version, Orrery's side installed
   tools install <pi|claude-code|omp> [--yes]   install or update Orrery's side of a tool (shows what it does first)
   install --from DIR [--yes]   install an unpacked release folder, then run setup (install.sh and orrery update run this)
@@ -391,6 +393,15 @@ async function main(rawArgv: string[]): Promise<number> {
 			break;
 		}
 	}
+	// `orrery agent <Name> … -- <tool arguments>`: everything after `--` goes to the tool untouched.
+	let toolArgs: string[] = [];
+	if (first === "agent") {
+		const dash = argv.indexOf("--");
+		if (dash !== -1) {
+			toolArgs = argv.slice(dash + 1);
+			argv = argv.slice(0, dash);
+		}
+	}
 	if (first === "update") {
 		argv = [];
 		let seen = false;
@@ -501,6 +512,14 @@ async function main(rawArgv: string[]): Promise<number> {
 	if (command === "setup") return setupCommand(values);
 	if (command === "update") return updateCommand({ check: values.check, version: updateVersion, yes: values.yes });
 	if (command === "uninstall") return uninstallCommand(values);
+	if (command === "agent") {
+		const [{ editAgentCommand, openAgentCommand }, { laneRemoteCommand }] = await Promise.all([import("./agent.ts"), import("./remote.ts")]);
+		const io = { say, confirm: (question: string) => (values.yes === true ? Promise.resolve(true) : askYes(question)) };
+		if (positionals[1] === "edit") return editAgentCommand(values.config, required(positionals[2], "agent name"), io);
+		return openAgentCommand(values.config, required(positionals[1], "agent name"), { tool: values.tool, args: toolArgs, cwd: process.cwd() }, io, {
+			takeover: (name) => laneRemoteCommand(values.config, ["takeover", name], { yes: true }),
+		});
+	}
 	const config = loadConfig(values.config);
 	switch (command) {
 		case "status": {
@@ -656,30 +675,6 @@ async function main(rawArgv: string[]): Promise<number> {
 			const lane = findLane(config, await laneArg(config, required(arg, "lane")));
 			process.stdout.write(values.mod === true ? setup.modSetupReport(setup.claudeSetupMod(lane)) : setup.setupReport(setup.claudeSetup(lane)));
 			return 0;
-		}
-		case "launch": {
-			const [{ laneOverview }, { applyFix, exitText, launchLabel, launchPlan, runTool }, { checkTools }] = await Promise.all([import("../lane/overview.ts"), import("../lane/launch.ts"), import("../lane/tools.ts")]);
-			const name = findLane(config, await laneArg(config, required(arg, "lane"))).name;
-			const row = laneOverview(config).find((r) => r.name === name);
-			if (row === undefined) throw new Error(`No lane named ${name}.`);
-			const tools = checkTools();
-			const plan = launchPlan(config, row, tools);
-			if (plan.blocked !== undefined) throw new Error(plan.blocked);
-			for (const step of plan.steps) {
-				if (!step.confirm) {
-					process.stdout.write(`${step.text}\n`);
-					continue;
-				}
-				if (values.yes !== true && !(await askYes(step.text))) {
-					process.stdout.write("Not launched.\n");
-					return 1;
-				}
-				if (step.fix !== undefined) process.stdout.write(`${applyFix(step.fix, config, row, tools)}\n`);
-			}
-			const exit = await runTool(plan, typeof values.config === "string" ? { env: { ...process.env, ORRERY_CONFIG: resolvePath(values.config) } } : {});
-			const text = exitText(launchLabel(plan), exit);
-			if (text !== undefined) process.stderr.write(`${text}\n`);
-			return exit.code ?? 1;
 		}
 		default:
 			process.stderr.write(`Unknown command ${command}.\n${USAGE}`);

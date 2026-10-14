@@ -1,8 +1,10 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { laneMode, writeSetupMarker } from "../../src/claude/view-file.ts";
 import { parseConfig } from "../../src/lane/config.ts";
-import { applyFix, exitText, launchLabel, launchPlan, runTool } from "../../src/lane/launch.ts";
+import { applyFix, exitText, launchLabel, launchPlan, runAgent, runTool } from "../../src/lane/launch.ts";
+import { claimToken } from "../../src/lane/pick.ts";
 import { laneOverview } from "../../src/lane/overview.ts";
 import { checkTools, ompExtensionFile, orreryRoot, piExtensionFile } from "../../src/lane/tools.ts";
 import { tempDir } from "./support.ts";
@@ -91,7 +93,7 @@ describe("launchPlan and runTool", () => {
 	it("blocks when the tool is not on PATH, and offers to create a missing folder", () => {
 		const { config, row, env, ws } = setup("pi");
 		const noTools = checkTools({ root: orreryRoot(), env: { ...env, PATH: "/nonexistent" } });
-		expect(launchPlan(config, row, noTools).blocked).toBe('pi is not on PATH (looked for "pi"). Get it at https://pi.dev, or change the lane\'s tool with E.');
+		expect(launchPlan(config, row, noTools).blocked).toBe('pi is not on PATH (looked for "pi"). Get it at https://pi.dev, or change the lane\'s tool with C.');
 		const gone = { ...row, workspace: join(ws, "missing") };
 		const plan = launchPlan(config, gone, checkTools({ root: orreryRoot(), env }));
 		expect(plan.steps[0]).toEqual({ text: `The folder ${gone.workspace} does not exist. Create it?`, confirm: true, fix: "create-folder" });
@@ -118,8 +120,9 @@ describe("launchPlan and runTool", () => {
 			setTimeout(() => h.exit?.(0, null), 0);
 			return { on: (n: string, f: (...a: unknown[]) => void) => { h[n] = f; } };
 		}) as never;
-		await runTool(plan, { env: { ORRERY_CONFIG: "/x.toml" }, spawn: fake });
-		expect(seen).toEqual([{ ORRERY_CONFIG: "/x.toml" }]);
+		await runTool(plan, { env: { ORRERY_CONFIG: "/x.toml", ORRERY_AGENT: "inherited", ORRERY_AGENT_TOKEN: "f".repeat(32) }, spawn: fake });
+		// The plan's agent variables are added, over any the environment had.
+		expect(seen).toEqual([{ ORRERY_CONFIG: "/x.toml", ORRERY_AGENT: "A", ORRERY_AGENT_TOKEN: plan.env.ORRERY_AGENT_TOKEN }]);
 	});
 
 	it("asks before launching OMP without its extension, saying the file it writes, and installs it on yes; omp gets no arguments", () => {
@@ -134,13 +137,114 @@ describe("launchPlan and runTool", () => {
 	it("blocks when OMP is not on PATH, and names OMP when a lane is open in it", () => {
 		const { config, row, env } = setup("omp");
 		const noTools = checkTools({ root: orreryRoot(), env: { ...env, PATH: "/nonexistent" } });
-		expect(launchPlan(config, row, noTools).blocked).toBe('OMP is not on PATH (looked for "omp"). Get it at https://omp.sh, or change the lane\'s tool with E.');
+		expect(launchPlan(config, row, noTools).blocked).toBe('OMP is not on PATH (looked for "omp"). Get it at https://omp.sh, or change the lane\'s tool with C.');
 		const codex = setup("codex");
 		const open = { ...codex.row, state: "open" as const, openIn: "omp" as const };
 		expect(launchPlan(codex.config, open, codex.tools).steps[0]).toEqual({ text: "A is already open in OMP. A second session won't record. Launch anyway?", confirm: true });
 	});
 });
 
+describe("opening an agent in a folder (orrery agent, the TUI)", () => {
+	/** A folder outside the lane's workspace and outside its default allowed root (the workspace's parent). */
+	const elsewhereDir = () => {
+		const dir = tempDir("orrery-launch-elsewhere-");
+		dirs.push(dir);
+		return dir;
+	};
+
+	it("starts the tool there with ORRERY_AGENT, a fresh token and the arguments, and removes the token's claim after", async () => {
+		const { config, row, tools, env, out } = setup("codex");
+		writeFileSync(join(dirname(out), "bin", "codex"), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.0; exit 0; fi\nprintf '%s|%s|%s|%s\\n' "$ORRERY_AGENT" "$ORRERY_AGENT_TOKEN" "$(pwd)" "$*" > ${JSON.stringify(out)}\n`, { mode: 0o755 });
+		const elsewhere = elsewhereDir();
+		const plan = launchPlan(config, row, tools, { cwd: elsewhere, args: ["--model", "m"] });
+		expect(plan.cwd).toBe(elsewhere);
+		expect(plan.laneDir).toBe(config.lanes.get("A")!.dir);
+		const token = plan.env.ORRERY_AGENT_TOKEN as string;
+		expect(token).toMatch(/^[0-9a-f]{32}$/);
+		// Each plan has its own token.
+		expect(launchPlan(config, row, tools).env.ORRERY_AGENT_TOKEN).not.toBe(token);
+		// What the tool's extension does at its start: it claims the token.
+		expect(claimToken(plan.laneDir, token, 999_999)).toBe(true);
+		expect(readdirSync(join(plan.laneDir, "claims"))).toEqual([token]);
+		expect(await runAgent(plan, (p) => runTool(p, { env }))).toEqual({ code: 0, signal: null });
+		const [agent, seen, cwd, args] = readFileSync(out, "utf8").trim().split("|");
+		expect([agent, seen, realpathSync(cwd as string), args]).toEqual(["A", token, realpathSync(elsewhere), "--model m"]);
+		expect(readdirSync(join(plan.laneDir, "claims"))).toEqual([]);
+	});
+
+	it("removes the claim when the tool fails to start too", async () => {
+		const { config, row, tools } = setup("codex");
+		const plan = launchPlan(config, row, tools, { cwd: elsewhereDir() });
+		const token = plan.env.ORRERY_AGENT_TOKEN as string;
+		claimToken(plan.laneDir, token, 999_999);
+		await expect(runAgent(plan, async () => { throw new Error("no spawn"); })).rejects.toThrow("no spawn");
+		expect(readdirSync(join(plan.laneDir, "claims"))).toEqual([]);
+	});
+
+	it("takes the tool for this session, and passes the arguments after Ori's own", () => {
+		const { config, row, tools, env } = setup("pi", undefined, 'launcher = "ori"\nori_model = "vendor/model"\n');
+		const plan = launchPlan(config, row, tools, { env, tool: "omp", args: ["--resume"] });
+		expect(plan.tool).toBe("omp");
+		expect(plan.args).toEqual(["omp", "--model", "vendor/model", "--resume"]);
+		const direct = setup("pi");
+		expect(launchPlan(direct.config, direct.row, direct.tools, { tool: "codex", args: ["-x"] })).toMatchObject({ tool: "codex", command: join(direct.env.PATH, "codex"), args: ["-x"] });
+	});
+
+	it("offers to create the folder it opens in, and creates that folder", () => {
+		const { config, row, tools } = setup("codex");
+		const missing = join(elsewhereDir(), "new", "place");
+		const plan = launchPlan(config, row, tools, { cwd: missing });
+		expect(plan.steps[0]).toEqual({ text: `The folder ${missing} does not exist. Create it?`, confirm: true, fix: "create-folder" });
+		expect(applyFix("create-folder", config, row, tools, { cwd: plan.cwd })).toBe(`Created ${missing}.`);
+		expect(existsSync(missing)).toBe(true);
+	});
+
+	it("Claude Code outside the lane's folder: refused without the mod, opened with it", () => {
+		const { config, row, tools, ws } = setup("claude-code");
+		const elsewhere = elsewhereDir();
+		expect(launchPlan(config, row, tools, { cwd: elsewhere }).blocked).toBe(
+			"Claude Code opens A outside its folder only through the Orrery mod: run orrery claude-setup A --mod (Claude Code 2.1.287 or newer), then open it again.",
+		);
+		// Set up the file way, for its own folder: still refused elsewhere.
+		writeSetupMarker(config.lanes.get("A")!.dir, ws, "CLAUDE.md");
+		expect(launchPlan(config, row, tools, { cwd: elsewhere }).blocked).toContain("only through the Orrery mod");
+		expect(launchPlan(config, row, tools, { cwd: ws }).blocked).toBeUndefined();
+		writeSetupMarker(config.lanes.get("A")!.dir, ws, "mod");
+		const plan = launchPlan(config, row, tools, { cwd: elsewhere });
+		expect(plan.blocked).toBeUndefined();
+		// The mod needs no setup step in any folder.
+		expect(plan.steps.map((s) => s.fix)).not.toContain("claude-setup");
+	});
+
+	it("the claude-setup-mod fix switches the lane to the mod, after which it opens elsewhere", () => {
+		const { config, row, tools } = setup("claude-code");
+		const elsewhere = elsewhereDir();
+		expect(launchPlan(config, row, tools, { cwd: elsewhere }).blocked).toContain("only through the Orrery mod");
+		expect(applyFix("claude-setup-mod", config, row, tools)).toContain("A: mod mode.");
+		expect(laneMode(config.lanes.get("A")!)).toBe("mod");
+		expect(launchPlan(config, row, tools, { cwd: elsewhere }).blocked).toBeUndefined();
+	});
+
+	it("Claude Code in another lane's folder, whose CLAUDE.md loads that lane's memory view: refused", () => {
+		const parent = tempDir("orrery-launch-b-");
+		dirs.push(parent);
+		const other = join(parent, "agent-B");
+		mkdirSync(join(other, "sub"), { recursive: true });
+		const { config, row, tools, ws } = setup("claude-code", undefined, `\n[lanes.B]\nworkspace = ${JSON.stringify(other)}\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+		writeSetupMarker(config.lanes.get("A")!.dir, ws, "mod");
+		writeSetupMarker(config.lanes.get("B")!.dir, other, "CLAUDE.md");
+		expect(launchPlan(config, row, tools, { cwd: other }).blocked).toBe(`${other} is B's folder, where Claude Code loads B's memory through CLAUDE.md; open A in another folder.`);
+		// Claude Code loads every ancestor's CLAUDE.md too.
+		expect(launchPlan(config, row, tools, { cwd: join(other, "sub") }).blocked).toBe(`${join(other, "sub")} is inside B's folder, where Claude Code loads B's memory through CLAUDE.md; open A in another folder.`);
+		// B in mod mode writes no view file: A opens there.
+		writeSetupMarker(config.lanes.get("B")!.dir, other, "mod");
+		expect(launchPlan(config, row, tools, { cwd: other }).blocked).toBeUndefined();
+		// pi has no such rule: its guard keeps it out of B's view.
+		writeSetupMarker(config.lanes.get("B")!.dir, other, "CLAUDE.local.md");
+		expect(launchPlan(config, row, tools, { cwd: other }).blocked).toBe(`${other} is B's folder, where Claude Code loads B's memory through CLAUDE.local.md; open A in another folder.`);
+		expect(launchPlan(config, row, tools, { cwd: other, tool: "pi" }).blocked).toBeUndefined();
+	});
+});
 
 describe("Ori launch plans", () => {
 	it.each(["pi", "omp", "claude-code", "codex"])("launches %s through Ori with and without a model, preserving setup", (tool) => {
