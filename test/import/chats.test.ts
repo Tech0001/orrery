@@ -1,9 +1,10 @@
+import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it } from "vitest";
-import { chatMatches, listChats } from "../../src/import/chats.ts";
+import { chatMatches, folderLabel, listChats, titleLine } from "../../src/import/chats.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -129,6 +130,75 @@ describe("listChats", () => {
 		put(join(h, "cc", "projects", "-p", "moved.jsonl"), lines([claudeUser("From CLAUDE_CONFIG_DIR")]), 2);
 		put(join(h, "cx", "sessions", "rollout-2026-10-10T10-00-00-m.jsonl"), lines([codexMeta("id-m", "/w"), codexUser("From CODEX_HOME")]), 3);
 		expect(list(h, { CLAUDE_CONFIG_DIR: join(h, "cc"), CODEX_HOME: join(h, "cx") }).map((chat) => chat.title)).toEqual(["From CLAUDE_CONFIG_DIR", "From CODEX_HOME"]);
+	});
+
+	const DIRTY = "\u001b[31mred\u001b[0m \u001b]0;x\u0007 \u009b31m \u202eflip\u2028 end";
+	const clean = (text: string | undefined) => expect(text ?? "").not.toMatch(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069\u200e\u200f\u2028\u2029]/);
+
+	it("shows no escape sequences or control characters from a Claude title, a Codex thread name, a first prompt or a cwd", () => {
+		const h = home();
+		const dirty = `${h}/we${DIRTY}ird`;
+		put(join(h, ".claude", "projects", "-p", "a.jsonl"), lines([claudeUser("hello", dirty), { type: "ai-title", aiTitle: DIRTY }]), 1);
+		put(join(h, ".claude", "projects", "-p", "b.jsonl"), lines([claudeUser(DIRTY)]), 2);
+		put(join(h, ".codex", "sessions", "rollout-2026-10-10T10-00-00-n.jsonl"), lines([codexMeta("id-n", dirty), codexUser("plain")]), 3);
+		put(join(h, ".codex", "sessions", "rollout-2026-10-10T10-00-00-o.jsonl"), lines([codexMeta("id-o", "/w"), codexUser(DIRTY)]), 4);
+		writeFileSync(join(h, ".codex", "session_index.jsonl"), lines([{ id: "id-n", thread_name: DIRTY }]));
+		const chats = list(h);
+		expect(chats).toHaveLength(4);
+		for (const chat of chats) {
+			clean(chat.title);
+			clean(folderLabel(chat.folder ?? "", h));
+		}
+		expect(chats.find((chat) => chat.folder === dirty)).toBeDefined(); // the real path is kept for opening
+	});
+
+	it("cuts a title on a code-point boundary", () => {
+		const title = titleLine("😀".repeat(200));
+		expect(Array.from(title)).toHaveLength(80);
+		expect(title.isWellFormed()).toBe(true);
+	});
+
+	it("skips a FIFO named like a chat in each root, promptly", () => {
+		const h = home();
+		mkdirSync(join(h, ".claude", "projects", "-p"), { recursive: true });
+		mkdirSync(join(h, ".codex", "sessions"), { recursive: true });
+		mkdirSync(join(h, ".codex", "archived_sessions"), { recursive: true });
+		execFileSync("mkfifo", [join(h, ".claude", "projects", "-p", "fifo.jsonl"), join(h, ".codex", "sessions", "rollout-fifo.jsonl"), join(h, ".codex", "archived_sessions", "rollout-fifo.jsonl"), join(h, ".codex", "session_index.jsonl")]);
+		put(join(h, ".claude", "projects", "-p", "real.jsonl"), lines([claudeUser("Real one")]), 1);
+		const started = performance.now();
+		expect(list(h).map((chat) => chat.title)).toEqual(["Real one"]);
+		expect(performance.now() - started).toBeLessThan(1000);
+	});
+
+	it("finds a Codex first message after a first line over the head window and a spacer event", () => {
+		const h = home();
+		const spacer = { timestamp: "2026-10-10T10:00:00.500Z", type: "turn_context", payload: { note: "y".repeat(100 * 1024) } };
+		put(join(h, ".codex", "sessions", "rollout-2026-10-10T10-00-00-s.jsonl"), lines([codexMeta("id-s", "/w", { instructions: "x".repeat(300 * 1024) }), spacer, codexUser("After the spacer")]), 5);
+		expect(list(h).map((chat) => chat.title)).toEqual(["After the spacer"]);
+	});
+
+	it("skips Codex's injected context for the first message", () => {
+		const h = home();
+		put(join(h, ".codex", "sessions", "rollout-2026-10-10T10-00-00-i.jsonl"), lines([codexMeta("id-i", "/w"), codexUser("<environment_context>\n<cwd>/w</cwd>"), codexUser("My real question")]), 5);
+		expect(list(h).map((chat) => chat.title)).toEqual(["My real question"]);
+	});
+
+	it("keeps one row per Codex thread across sessions and archived_sessions, the newest file", () => {
+		const h = home();
+		put(join(h, ".codex", "sessions", "rollout-2026-10-10T10-00-00-d.jsonl"), lines([codexMeta("id-d", "/w"), codexUser("Live copy")]), 5);
+		put(join(h, ".codex", "archived_sessions", "rollout-2026-10-10T10-00-00-d.jsonl"), lines([codexMeta("id-d", "/w"), codexUser("Archived copy")]), 50);
+		expect(list(h).map((chat) => chat.title)).toEqual(["Live copy"]);
+	});
+
+	it("reads only the end of an oversized session_index.jsonl, counts it, and keeps the newest names", () => {
+		const h = home();
+		put(join(h, ".codex", "sessions", "rollout-2026-10-10T10-00-00-x.jsonl"), lines([codexMeta("id-x", "/w"), codexUser("Plain")]), 5);
+		const filler = `${JSON.stringify({ id: "other", thread_name: "z".repeat(1000) })}\n`.repeat(8000);
+		writeFileSync(join(h, ".codex", "session_index.jsonl"), `${lines([{ id: "id-x", thread_name: "Stale" }])}${filler}${lines([{ id: "id-x", thread_name: "Newest" }])}`);
+		const { chats, bytesRead } = listChats({ env: {}, home: h, now: NOW });
+		expect(chats.map((chat) => chat.title)).toEqual(["Newest"]);
+		expect(bytesRead).toBeGreaterThan(3 * 1024 * 1024);
+		expect(bytesRead).toBeLessThan(5 * 1024 * 1024);
 	});
 
 	it("filters by every word, in the title or the folder as the list shows it", () => {

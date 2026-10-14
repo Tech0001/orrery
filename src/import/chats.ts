@@ -8,7 +8,7 @@
  * is written.
  */
 
-import { closeSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { promptText } from "./claude.ts";
@@ -22,8 +22,9 @@ export interface Chat {
 	readonly file: string;
 	/** Claude Code's session id, or Codex's thread id. */
 	readonly id: string;
+	/** Safe to show: no control or bidi characters. */
 	readonly title: string;
-	/** The folder the chat ran in, when the file says. */
+	/** The folder the chat ran in, when the file says: the real path, for opening. Show it through `folderLabel`. */
 	readonly folder?: string;
 	/** When the file was last written (ms). */
 	readonly lastActive: number;
@@ -42,6 +43,8 @@ export const IN_USE_MS = 10 * 60 * 1000;
 export const HEAD_BYTES = 256 * 1024;
 export const TAIL_BYTES = 64 * 1024;
 export const FIRST_LINE_BYTES = 4 * 1024 * 1024;
+/** How much of the end of Codex's session_index.jsonl is read; later lines win, so the newest names are kept. */
+const INDEX_BYTES = 4 * 1024 * 1024;
 const CHUNK_BYTES = 32 * 1024;
 const TITLE_CHARS = 80;
 
@@ -63,24 +66,27 @@ function readRange(fd: number, start: number, length: number, counter: Counter):
 
 /**
  * Feeds the file's first whole lines (blank ones skipped) to `onLine`, reading a chunk at a time, until it returns true
- * or the head is used up: HEAD_BYTES, or the first line's end when that comes later (up to FIRST_LINE_BYTES). A file
+ * or the head is used up: HEAD_BYTES past the end of the first line (which may itself run to FIRST_LINE_BYTES). A file
  * within HEAD_BYTES is read through to its end, so its last line counts too.
  */
 function scanHead(fd: number, size: number, counter: Counter, onLine: (line: string) => boolean): void {
 	let offset = 0;
 	let pending = Buffer.alloc(0);
+	let limit = FIRST_LINE_BYTES;
 	let sawLine = false;
+	let consumed = 0;
 	while (offset < size) {
-		const limit = sawLine ? HEAD_BYTES : FIRST_LINE_BYTES;
-		if (offset >= limit || (sawLine && offset >= HEAD_BYTES)) return;
+		if (offset >= limit) return;
 		const chunk = readRange(fd, offset, Math.min(CHUNK_BYTES, size - offset, limit - offset), counter);
 		if (chunk.length === 0) return;
 		offset += chunk.length;
 		pending = Buffer.concat([pending, chunk]);
 		let newline = pending.indexOf(10);
 		while (newline !== -1) {
+			if (!sawLine) limit = Math.min(size, consumed + newline + 1 + HEAD_BYTES); // HEAD_BYTES more after the first line
 			sawLine = true;
 			const line = pending.subarray(0, newline).toString("utf8");
+			consumed += newline + 1;
 			pending = pending.subarray(newline + 1);
 			if (line.trim() !== "" && onLine(line)) return;
 			newline = pending.indexOf(10);
@@ -112,16 +118,25 @@ function parse(line: string): Record<string, unknown> | undefined {
 
 const words = (value: unknown): string | undefined => (typeof value === "string" && value.trim() !== "" ? value : undefined);
 
-/** A title from text: its first non-blank line, spaces collapsed, cut to fit. */
-export function titleLine(text: string): string {
-	const first = text.split("\n").map((line) => line.replace(/\s+/g, " ").trim()).find((line) => line !== "") ?? "";
-	return first.length > TITLE_CHARS ? `${first.slice(0, TITLE_CHARS - 1)}…` : first;
+/** Control characters (C0, DEL, C1), bidi controls and line/paragraph separators: nothing a terminal should be sent from a file. */
+const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029]/g;
+
+/** Text safe to show: whitespace becomes spaces, then control and bidi characters go. */
+export function displayText(text: string): string {
+	return text.replace(/\s+/g, " ").replace(UNSAFE, "").trim();
 }
 
-/** A folder as the list shows it: "~/…" under the home. */
+/** A displayed title from text: its first non-blank line, made safe to show, cut to fit on a code-point boundary. */
+export function titleLine(text: string): string {
+	const first = displayText(text.split("\n").find((line) => displayText(line) !== "") ?? "");
+	const points = Array.from(first);
+	return points.length > TITLE_CHARS ? `${points.slice(0, TITLE_CHARS - 1).join("")}…` : first;
+}
+
+/** A folder as the list shows it: "~/…" under the home, made safe to show. `Chat.folder` stays the real path, for opening. */
 export function folderLabel(folder: string, home: string): string {
 	if (folder === home) return "~";
-	return folder.startsWith(`${home}/`) ? `~${folder.slice(home.length)}` : folder;
+	return displayText(folder.startsWith(`${home}/`) ? `~${folder.slice(home.length)}` : folder);
 }
 
 /** Whether every word of `filter` is in the chat's title or its folder (as the list shows it). */
@@ -129,6 +144,10 @@ export function chatMatches(chat: Chat, filter: string, home: string): boolean {
 	const haystack = `${chat.title} ${chat.folder === undefined ? "" : folderLabel(chat.folder, home)}`.toLowerCase();
 	return filter.toLowerCase().split(/\s+/).filter(Boolean).every((word) => haystack.includes(word));
 }
+
+/** Context Codex injects ahead of a person's words: not a first message. */
+const INJECTED = ["<environment_context>", "<user_instructions>", "<INSTRUCTIONS>", "# AGENTS.md", "<subagent_notification>", "<turn_aborted>", "<permissions instructions>"];
+const injected = (text: string | undefined): boolean => text !== undefined && INJECTED.some((prefix) => text.trimStart().startsWith(prefix));
 
 const TITLE_MARKERS = ['"custom-title"', '"ai-title"', '"summary"'];
 
@@ -199,8 +218,10 @@ function codexChat(file: string, fd: number, size: number, mtime: number, now: n
 		if (!line.includes('"user_message"') && !line.includes('"UserMessage"')) return false;
 		if (record?.type !== "event_msg") return false;
 		const p = record.payload as CodexPayload | undefined;
-		prompt = p?.type === "user_message" ? words(p.message) : p?.type === "item_completed" && p.item?.type === "UserMessage" ? words(itemText(p.item.content)) : undefined;
-		return prompt !== undefined;
+		const text = p?.type === "user_message" ? words(p.message) : p?.type === "item_completed" && p.item?.type === "UserMessage" ? words(itemText(p.item.content)) : undefined;
+		if (text === undefined || injected(text)) return false;
+		prompt = text;
+		return true;
 	});
 	if (skip) return undefined;
 	const title = names.get(id) ?? prompt;
@@ -209,13 +230,26 @@ function codexChat(file: string, fd: number, size: number, mtime: number, now: n
 }
 
 /** Codex's thread names: <codex>/session_index.jsonl lines of id, thread_name and updated_at; the last for an id wins. */
-export function codexThreadNames(codexHome: string): Map<string, string> {
+export function codexThreadNames(codexHome: string, counter: Counter = { bytes: 0 }): Map<string, string> {
 	const names = new Map<string, string>();
-	let raw: string;
+	let raw = "";
+	const file = join(codexHome, "session_index.jsonl");
+	if (!isRegularFile(file)) return names;
+	let fd: number;
 	try {
-		raw = readFileSync(join(codexHome, "session_index.jsonl"), "utf8");
+		fd = openSync(file, "r");
 	} catch {
 		return names;
+	}
+	try {
+		const size = fstatSync(fd).size;
+		const start = Math.max(0, size - INDEX_BYTES);
+		raw = readRange(fd, start, size - start, counter).toString("utf8");
+		if (start > 0) raw = raw.slice(raw.indexOf("\n") + 1); // the first piece may be cut
+	} catch {
+		return names;
+	} finally {
+		closeSync(fd);
 	}
 	for (const line of raw.split("\n")) {
 		const record = parse(line);
@@ -225,8 +259,18 @@ export function codexThreadNames(codexHome: string): Map<string, string> {
 	return names;
 }
 
+/** Whether `file` is a regular file: a FIFO named like a chat must not be opened (it blocks). */
+function isRegularFile(file: string): boolean {
+	try {
+		return statSync(file).isFile();
+	} catch {
+		return false;
+	}
+}
+
 /** One file's row, or undefined when it cannot be read or says nothing. */
 function readChat(file: string, make: (fd: number, size: number, mtime: number) => Chat | undefined): Chat | undefined {
+	if (!isRegularFile(file)) return undefined;
 	let fd: number;
 	try {
 		fd = openSync(file, "r");
@@ -268,7 +312,8 @@ export function listChats(options: { env?: NodeJS.ProcessEnv; home?: string; now
 		}
 	}
 	const codexHome = env.CODEX_HOME || join(home, ".codex");
-	const names = codexThreadNames(codexHome);
+	const names = codexThreadNames(codexHome, counter);
+	const codexChats = new Map<string, Chat>();
 	for (const root of [join(codexHome, "sessions"), join(codexHome, "archived_sessions")]) {
 		let found: string[];
 		try {
@@ -279,9 +324,12 @@ export function listChats(options: { env?: NodeJS.ProcessEnv; home?: string; now
 		for (const relative of found) {
 			const file = join(root, relative);
 			const chat = readChat(file, (fd, size, mtime) => codexChat(file, fd, size, mtime, now, counter, names));
-			if (chat !== undefined) chats.push(chat);
+			// The same thread may sit in sessions and archived_sessions: the newest file wins.
+			const same = chat === undefined ? undefined : codexChats.get(chat.id);
+			if (chat !== undefined && (same === undefined || chat.lastActive > same.lastActive)) codexChats.set(chat.id, chat);
 		}
 	}
+	chats.push(...codexChats.values());
 	chats.sort((a, b) => b.lastActive - a.lastActive);
 	return { chats, bytesRead: counter.bytes };
 }
