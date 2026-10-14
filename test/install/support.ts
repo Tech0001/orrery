@@ -111,7 +111,21 @@ export function fixtureRelease(version: string, options: { versionOutput?: strin
 	return dir;
 }
 
-/** PATH for a spawned orrery that must find no pi, OMP, Claude Code or Codex: only node's folder and the system's. */
-export function bareSystemPath(): string {
-	return [dirname(process.execPath), "/usr/bin", "/bin"].join(":");
+/**
+ * A PATH for a spawned orrery that must find no pi, OMP, Claude Code, Codex or systemctl, wherever the machine installs
+ * them: one scratch folder holding links to only the system commands named (found on the test runner's PATH).
+ */
+export function scratchPath(commands: readonly string[] = []): string {
+	const dir = tempDir("orrery-path-");
+	for (const name of commands) {
+		const found = (process.env.PATH ?? "").split(":").map((d) => join(d, name)).find((file) => existsSync(file));
+		if (found === undefined) throw new Error(`${name} is not on PATH`);
+		symlinkSync(found, join(dir, name));
+	}
+	return dir;
+}
+
+/** A system command's absolute path, for spawning it under a scratch PATH; undefined when it is not installed. */
+export function systemCommand(name: string): string | undefined {
+	return ["/usr/bin", "/bin", ...(process.env.PATH ?? "").split(":")].map((d) => join(d, name)).find((file) => existsSync(file));
 }

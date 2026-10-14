@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { binaryTarget, holdInstallLock, installFrom, listVersions, makeReadOnly, releaseVersion, removeVersion, rollback } from "../../src/install/install.ts";
-import { bareSystemPath, cleanupScratch, fixtureRelease } from "./support.ts";
+import { cleanupScratch, fixtureRelease, scratchPath } from "./support.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -417,7 +417,7 @@ describe("orrery install", () => {
 	 * Claude Code (and no PI_CODING_AGENT_DIR from the environment running the tests); `bin` puts fakes first.
 	 */
 	const runCli = (env: NodeJS.ProcessEnv, args: string[], bin?: string) =>
-		spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, ...args], { env: { HOME: env.HOME, ORRERY_HOME: env.ORRERY_HOME, PATH: [...(bin === undefined ? [] : [bin]), bareSystemPath()].join(":") }, encoding: "utf8" });
+		spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, ...args], { env: { HOME: env.HOME, ORRERY_HOME: env.ORRERY_HOME, PATH: [...(bin === undefined ? [] : [bin]), scratchPath()].join(":") }, encoding: "utf8" });
 	const cli = (env: NodeJS.ProcessEnv, ...args: string[]) => runCli(env, args);
 	const commandLink = (env: NodeJS.ProcessEnv) => readlinkSync(join(env.HOME as string, ".local", "bin", "orrery"));
 

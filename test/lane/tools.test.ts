@@ -475,6 +475,11 @@ describe("wiring names app/current", () => {
 		expect(checkTools({ root, env, run: noTools })[0]).toMatchObject({ wiring: "other", blocked: expect.any(String) });
 		writeFileSync(file, piExtensionText(root));
 		expect(checkTools({ root, env, run: noTools })[3]).toMatchObject({ wiring: "other", blocked: expect.any(String) });
+		// A path that only ends in the same letters is not Orrery's entry, so it does not block the other tool.
+		writeFileSync(file, `export { default } from "/elsewhere/notextensions/omp.js";\n`);
+		const pi = checkTools({ root, env, run: noTools })[0];
+		expect(pi.wiring).toBe("other");
+		expect(pi.blocked).toBeUndefined();
 	});
 
 	it("names this checkout, not installed, when it is not inside the home's app folder", () => {

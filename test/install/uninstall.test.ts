@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { installFrom, makeReadOnly } from "../../src/install/install.ts";
@@ -7,7 +7,7 @@ import { uninstall } from "../../src/install/uninstall.ts";
 import { wire } from "../../src/install/wire.ts";
 import { ompExtensionFile, piExtensionFile } from "../../src/lane/tools.ts";
 import { cliCommand } from "../claude/support.ts";
-import { bareSystemPath, cleanupScratch, fakeRun, fixtureRelease, installedScratch, type Scratch, type Style, tempDir, VERSION, writePiExtension } from "./support.ts";
+import { cleanupScratch, fakeRun, fixtureRelease, installedScratch, type Scratch, scratchPath, type Style, systemCommand, tempDir, VERSION, writePiExtension } from "./support.ts";
 
 afterEach(cleanupScratch);
 
@@ -165,13 +165,26 @@ describe("uninstall", () => {
 		expect(existsSync(join(t.orreryHome, "app", "current"))).toBe(true);
 	});
 
-	it("--purge removes the whole home only when confirmed; declined, it keeps it and fails", async () => {
-		const kept = await wiredInstall();
-		const declined = await uninstall({ env: kept.env, purge: true, confirmPurge: async () => false, run: fakeRun });
-		expect(declined.ok).toBe(false);
-		expect(declined.lines.at(-1)).toBe(`Kept ${kept.orreryHome} (you did not type delete).`);
-		expect(existsSync(join(kept.orreryHome, "config.toml"))).toBe(true);
-		expect(gone(join(kept.orreryHome, "app"))).toBe(true);
+	it("--purge asks before any change: declined, aborted or with no terminal, nothing changes and it says so", async () => {
+		for (const [answer, line] of [
+			[false, "Not uninstalled: you did not type delete; nothing changed."],
+			["no terminal", "Not uninstalled: there is no terminal to ask before deleting everything; nothing changed."],
+		] as const) {
+			const t = await wiredInstall();
+			const before = t.calls().length;
+			const { lines, ok } = await uninstall({ env: t.env, purge: true, confirmPurge: async () => answer, run: fakeRun });
+			expect(ok).toBe(false);
+			expect(lines).toEqual([line]);
+			expect(existsSync(join(t.orreryHome, "app", "current"))).toBe(true);
+			expect(existsSync(piExtensionFile(t.env))).toBe(true);
+			expect(existsSync(ompExtensionFile(t.env))).toBe(true);
+			expect(readlinkSync(join(t.home, ".local", "bin", "orrery"))).toBe(join(t.current, "bin", "orrery"));
+			expect(existsSync(join(unitDir(t), "orrery-backup.service"))).toBe(true);
+			expect(changes(t, before)).toEqual([]);
+		}
+	});
+
+	it("--purge removes the whole home when confirmed", async () => {
 		const purged = await wiredInstall();
 		const confirmed = await uninstall({ env: purged.env, purge: true, confirmPurge: async () => true, run: fakeRun });
 		expect(confirmed.ok, confirmed.lines.join("\n")).toBe(true);
@@ -191,6 +204,45 @@ describe("uninstall", () => {
 		expect(existsSync(join(t.orreryHome, "app", "current"))).toBe(true);
 	});
 
+	it("--purge refuses a folder with nothing of Orrery's in it, a linked home (naming its target), and a missing one", async () => {
+		const t = await wiredInstall();
+		const documents = join(t.home, "Documents");
+		mkdirSync(documents);
+		writeFileSync(join(documents, "notes.txt"), "mine\n");
+		const linked = join(t.home, "orrery-link");
+		symlinkSync(t.orreryHome, linked);
+		const cases: [string, string][] = [
+			[documents, `Not uninstalled: --purge deletes only an Orrery home, and ${documents} holds none of config.toml, lanes, credentials.json, app.`],
+			[linked, `Not uninstalled: ${linked} is a link to ${t.orreryHome}; --purge deletes only the folder itself (set ORRERY_HOME to it).`],
+			[join(t.home, "nowhere"), `Not uninstalled: ${join(t.home, "nowhere")} is not there, so there is nothing to purge.`],
+		];
+		for (const [orreryHome, line] of cases) {
+			const { lines, ok } = await uninstall({ env: { ...t.env, ORRERY_HOME: orreryHome }, purge: true, confirmPurge: never, run: fakeRun });
+			expect(ok).toBe(false);
+			expect(lines).toEqual([line]);
+		}
+		expect(readFileSync(join(documents, "notes.txt"), "utf8")).toBe("mine\n");
+		expect(existsSync(join(t.orreryHome, "app", "current"))).toBe(true);
+		expect(existsSync(piExtensionFile(t.env))).toBe(true);
+	});
+
+	it("says what failed when the backup unit files cannot be removed, without an empty 'removed' line", async () => {
+		const t = await wiredInstall();
+		chmodSync(unitDir(t), 0o555);
+		try {
+			const { lines, ok } = await uninstall({ env: t.env, purge: false, confirmPurge: never, run: fakeRun });
+			expect(ok).toBe(false);
+			const backup = lines.filter((line) => line.startsWith("backup service:"));
+			expect(backup).toEqual([
+				expect.stringMatching(/^backup service: could not remove .*orrery-backup\.timer: /),
+				expect.stringMatching(/^backup service: could not remove .*orrery-backup\.service: /),
+				"backup service: disabled orrery-backup.timer",
+			]);
+		} finally {
+			chmodSync(unitDir(t), 0o755);
+		}
+	});
+
 	it("removes only what Orrery put in app/, and says what it left", async () => {
 		const t = await wiredInstall();
 		const app = join(t.orreryHome, "app");
@@ -208,21 +260,23 @@ describe("uninstall", () => {
 		expect(lines.join("\n")).toContain(`left ${app}: it holds files Orrery did not put there (0.7.0, notes)`);
 	});
 
-	it.skipIf(spawnSync("setsid", ["--version"]).status !== 0)("runs from the command line, and --purge without a terminal keeps the home", () => {
+	const SETSID = systemCommand("setsid");
+	it.skipIf(SETSID === undefined)("runs from the command line; --purge without a terminal changes nothing", () => {
 		const home = tempDir("orrery-uninstall-cli-");
-		const env: NodeJS.ProcessEnv = { HOME: home, ORRERY_HOME: join(home, ".orrery"), PATH: bareSystemPath() };
+		const env: NodeJS.ProcessEnv = { HOME: home, ORRERY_HOME: join(home, ".orrery"), PATH: scratchPath() };
 		installFrom({ from: fixtureRelease("0.6.0"), env });
 		writeFileSync(join(home, ".orrery", "credentials.json"), "{}\n", { mode: 0o600 });
 		const cli = (...args: string[]) => {
 			const c = cliCommand(args);
-			return spawnSync("setsid", ["-w", c.cmd, ...c.args], { env, encoding: "utf8", input: "", timeout: 20_000 });
+			return spawnSync(SETSID as string, ["-w", c.cmd, ...c.args], { env, encoding: "utf8", input: "", timeout: 20_000 });
 		};
 		const purge = cli("uninstall", "--purge");
 		expect(purge.status).toBe(1);
-		expect(purge.stdout).toContain(`Kept ${join(home, ".orrery")} (you did not type delete).`);
-		expect(gone(join(home, ".orrery", "app"))).toBe(true);
-		expect(existsSync(join(home, ".orrery", "credentials.json"))).toBe(true);
+		expect(purge.stdout).toBe("Not uninstalled: there is no terminal to ask before deleting everything; nothing changed.\n");
+		expect(existsSync(join(home, ".orrery", "app", "current"))).toBe(true);
 		const again = cli("uninstall");
 		expect(again.status, again.stdout + again.stderr).toBe(0);
+		expect(gone(join(home, ".orrery", "app"))).toBe(true);
+		expect(existsSync(join(home, ".orrery", "credentials.json"))).toBe(true);
 	});
 });

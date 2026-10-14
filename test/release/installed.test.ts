@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { installFrom, removeVersion } from "../../src/install/install.ts";
+import { cleanupScratch, scratchPath } from "../install/support.ts";
 import { bunReady, builtRelease, removeBuiltRelease } from "./support.ts";
 
 afterAll(removeBuiltRelease);
+afterEach(cleanupScratch);
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -50,8 +52,8 @@ describe.skipIf(!bunReady)("the binary, installed", () => {
 		const bin = join(home, "bin");
 		const log = join(home, "calls.log");
 		fakeTools(bin, log);
-		// The fakes use cat and rm; neither system folder holds a pi, OMP or claude, and no backup unit exists here.
-		const env: NodeJS.ProcessEnv = { HOME: home, ORRERY_HOME: orreryHome, PATH: `${bin}:/usr/bin:/bin` };
+		// The fakes use cat and rm, and nothing else of the system's is on PATH (no system-wide pi, OMP, claude or systemctl).
+		const env: NodeJS.ProcessEnv = { HOME: home, ORRERY_HOME: orreryHome, PATH: `${bin}:${scratchPath(["cat", "rm"])}` };
 		const { version } = installFrom({ from: release, env });
 		const current = join(orreryHome, "app", "current");
 		const orrery = (...args: string[]) => spawnSync(join(current, "bin", "orrery"), args, { env, encoding: "utf8", timeout: 60_000 });

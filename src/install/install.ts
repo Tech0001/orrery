@@ -12,6 +12,7 @@ import { basename, join } from "node:path";
 import { defaultConfigPath, loadConfig } from "../lane/config.ts";
 import { orreryHome } from "../lane/home.ts";
 import type { Runner } from "../lane/tools.ts";
+import { VERSION_NAME } from "./layout.ts";
 
 /** Versions kept by history alone; current and versions live lanes run are kept besides. */
 const KEEP = 3;
@@ -227,9 +228,6 @@ function collect(app: string, env: NodeJS.ProcessEnv, log: (line: string) => voi
 	for (const name of removed) removeVersion(join(app, name));
 	return removed;
 }
-
-/** Release versions as folder names: 0.6.0, 0.6.0-<commit>, 1.0.0-rc.1 (no slashes, no leading dot). */
-export const VERSION_NAME = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
 
 /** A release folder's VERSION, checked. */
 export function releaseVersion(folder: string): string {

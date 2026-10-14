@@ -13,14 +13,57 @@ const neverAsked = async (what: string): Promise<boolean> => {
 	throw new Error(`asked: ${what}`);
 };
 
+/** An Orrery checkout (src/cli/main.ts and a package.json named orrery) or release (bin/orrery and a VERSION) outside the home. */
+function orreryElsewhere(shape: "checkout" | "release"): string {
+	const root = join(tempDir("orrery-elsewhere-"), shape);
+	if (shape === "checkout") {
+		mkdirSync(join(root, "src", "cli"), { recursive: true });
+		writeFileSync(join(root, "src", "cli", "main.ts"), "\n");
+		writeFileSync(join(root, "package.json"), JSON.stringify({ name: "orrery", version: "0.5.0" }));
+		return join(root, "src", "cli", "main.ts");
+	}
+	mkdirSync(join(root, "bin"), { recursive: true });
+	writeFileSync(join(root, "bin", "orrery"), "\n", { mode: 0o755 });
+	writeFileSync(join(root, "VERSION"), "0.5.9\n");
+	return join(root, "bin", "orrery");
+}
+
 describe("the orrery command", () => {
-	it("links ~/.local/bin/orrery to app/current's CLI, replacing an older Orrery link", async () => {
-		const { env, home } = installedScratch();
-		mkdirSync(join(home, ".local", "bin"), { recursive: true });
-		symlinkSync("/old/checkout/src/cli/main.ts", join(home, ".local", "bin", "orrery"));
-		const lines = await wire(env, { run: fakeRun, confirm: async () => true });
-		expect(readlinkSync(join(home, ".local", "bin", "orrery"))).toBe(join(home, ".orrery", "app", "current", "src", "cli", "main.ts"));
-		expect(lines.join("\n")).toMatch(/orrery command/);
+	it("links ~/.local/bin/orrery to app/current's CLI, replacing an Orrery checkout's or release's link without asking", async () => {
+		for (const shape of ["checkout", "release"] as const) {
+			const { env, home } = installedScratch();
+			mkdirSync(join(home, ".local", "bin"), { recursive: true });
+			const old = orreryElsewhere(shape);
+			symlinkSync(old, join(home, ".local", "bin", "orrery"));
+			const lines = await wire(env, { run: fakeRun, confirm: neverAsked });
+			expect(readlinkSync(join(home, ".local", "bin", "orrery"))).toBe(join(home, ".orrery", "app", "current", "src", "cli", "main.ts"));
+			expect(lines.join("\n")).toContain(`(was ${old})`);
+		}
+	});
+
+	it("asks before replacing a link that is not provably Orrery's: another program, a lookalike path, a dangling link", async () => {
+		const other = join(tempDir("orrery-other-"), "opt", "other");
+		mkdirSync(join(other, "bin"), { recursive: true });
+		writeFileSync(join(other, "bin", "orrery"), "#!/bin/sh\n", { mode: 0o755 });
+		const notOrrery = join(tempDir("orrery-other-"), "tool");
+		mkdirSync(join(notOrrery, "src", "cli"), { recursive: true });
+		writeFileSync(join(notOrrery, "src", "cli", "main.ts"), "\n");
+		writeFileSync(join(notOrrery, "package.json"), JSON.stringify({ name: "not-orrery" }));
+		const lookalike = join(tempDir("orrery-other-"), "x");
+		mkdirSync(join(lookalike, "mybin"), { recursive: true });
+		writeFileSync(join(lookalike, "mybin", "orrery"), "#!/bin/sh\n", { mode: 0o755 });
+		writeFileSync(join(lookalike, "VERSION"), "0.6.0\n");
+		for (const target of [join(other, "bin", "orrery"), join(notOrrery, "src", "cli", "main.ts"), join(lookalike, "mybin", "orrery"), "/old/release/bin/orrery", "/x/mybin/orrery"]) {
+			const { env, home } = installedScratch();
+			const link = join(home, ".local", "bin", "orrery");
+			mkdirSync(dirname(link), { recursive: true });
+			symlinkSync(target, link);
+			const asked: string[] = [];
+			const lines = await wire(env, { run: fakeRun, confirm: async (what) => (asked.push(what), false) });
+			expect(asked, target).toEqual([`replace ${link}?`]);
+			expect(readlinkSync(link)).toBe(target);
+			expect(lines.join("\n")).toMatch(/orrery command: left .* as it is/);
+		}
 	});
 
 	it("creates ~/.local/bin when it is missing, and says when the link is already right", async () => {
@@ -175,12 +218,22 @@ describe("both install shapes", () => {
 		expect(text).toMatch(/^export \{ default \} from "\.\.?\/.*app\/current\/extensions\/omp\.js";\n$/);
 	});
 
-	it("replaces an older Orrery's bin/orrery link without asking", async () => {
+	it("asks before replacing a dangling link to a release that is gone", async () => {
 		const t = installedScratch();
 		mkdirSync(join(t.home, ".local", "bin"), { recursive: true });
 		symlinkSync("/old/release/bin/orrery", join(t.home, ".local", "bin", "orrery"));
-		await wire(t.env, { run: fakeRun, confirm: never });
+		const asked: string[] = [];
+		await wire(t.env, { run: fakeRun, confirm: async (what) => (asked.push(what), true) });
+		expect(asked).toEqual([`replace ${join(t.home, ".local", "bin", "orrery")}?`]);
 		expect(readlinkSync(join(t.home, ".local", "bin", "orrery"))).toBe(join(t.current, "src", "cli", "main.ts"));
+	});
+
+	it("moves a link to a version folder of this home without asking, even after cleanup removed that version", async () => {
+		const t = installedScratch({ style: "binary" });
+		mkdirSync(join(t.home, ".local", "bin"), { recursive: true });
+		symlinkSync(join(t.orreryHome, "app", "0.5.0-gone", "src", "cli", "main.ts"), join(t.home, ".local", "bin", "orrery"));
+		await wire(t.env, { run: fakeRun, confirm: never });
+		expect(readlinkSync(join(t.home, ".local", "bin", "orrery"))).toBe(join(t.current, "bin", "orrery"));
 	});
 
 	it("says how to put ~/.local/bin on PATH, for zsh and for bash, when it is not", () => {

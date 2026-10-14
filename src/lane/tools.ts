@@ -7,7 +7,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { accessSync, constants, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { ENTRY_TAILS, entries, type Style } from "../install/layout.ts";
+import { ENTRY_TAILS, endsWithSegments, entries, type Style } from "../install/layout.ts";
 import type { LaneTool } from "./config.ts";
 import { realTarget } from "./guard-paths.ts";
 import { runningRoot, wiringRoot } from "./running.ts";
@@ -123,8 +123,8 @@ function sharedFolder(env: NodeJS.ProcessEnv): boolean {
 /** Which Orrery entry an extension file's target is, by its tail (either install shape's). */
 function entryOf(file: string, target: string): "pi" | "omp" | undefined {
 	const full = resolve(dirname(file), target);
-	if (ENTRY_TAILS.pi.some((tail) => full.endsWith(tail))) return "pi";
-	if (ENTRY_TAILS.omp.some((tail) => full.endsWith(tail))) return "omp";
+	if (ENTRY_TAILS.pi.some((tail) => endsWithSegments(full, tail))) return "pi";
+	if (ENTRY_TAILS.omp.some((tail) => endsWithSegments(full, tail))) return "omp";
 	return undefined;
 }
 

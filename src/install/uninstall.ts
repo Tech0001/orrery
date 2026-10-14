@@ -2,18 +2,19 @@
  * orrery uninstall [--purge] (spec 2026-10-13-orrery-releases-design §5): unwires pi, OMP and Claude Code, and removes
  * the command link, the Linux backup service and app/. Only what is provably Orrery's own is touched: an extension file
  * that is exactly Orrery's one line naming an entry under this home's app/, a command link, plugin or backup unit that
- * names this home's app/, and in app/ only what installs put there. Lanes' memory, config and logins stay; --purge
- * deletes the whole home after the person types delete.
+ * names this home's app/, and in app/ only what installs put there. Lanes' memory, config and logins stay. --purge
+ * asks first and then also deletes the whole home, only when the person types delete and the folder is a real Orrery
+ * home that does not hold their home folder.
  */
 
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, rmdirSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { homedir, userInfo } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { realTarget } from "../lane/guard-paths.ts";
 import { orreryHome } from "../lane/home.ts";
 import { findOnPath, ompExtensionFile, orreryPlugin, piExtensionFile, type RunResult, type Runner } from "../lane/tools.ts";
-import { envRunner, holdInstallLock, laneVersions, removeVersion, VERSION_NAME } from "./install.ts";
-import { ENTRY_TAILS } from "./layout.ts";
+import { envRunner, holdInstallLock, laneVersions, removeVersion } from "./install.ts";
+import { ENTRY_TAILS, inApp, VERSION_NAME } from "./layout.ts";
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const code = (error: unknown) => (error as { code?: unknown }).code;
@@ -24,18 +25,6 @@ const failure = (r: RunResult) => firstLine(r.stderr) || (r.status === null ? "d
 interface Report {
 	readonly lines: string[];
 	ok: boolean;
-}
-
-/** Whether `path` is `<app>/<one folder>/<tail>` for one of `tails`: an entry in this home's current or a version. */
-function inApp(app: string, path: string, tails: readonly string[]): boolean {
-	for (const root of new Set([resolve(app), realTarget(app)])) {
-		const rel = relative(root, resolve(path));
-		if (rel === "" || isAbsolute(rel)) continue;
-		const [folder, ...rest] = rel.split(sep);
-		if (folder === ".." || rest.includes("..")) continue;
-		if (tails.includes(rest.join(sep))) return true;
-	}
-	return false;
 }
 
 /** Orrery's extension file is exactly this one line (tools.ts piExtensionText, ompExtensionText). */
@@ -196,7 +185,8 @@ function unwireBackup(report: Report, env: NodeJS.ProcessEnv, userHome: string, 
 			report.ok = false;
 		}
 	}
-	report.lines.push(`backup service: ${timerIsOurs ? "disabled orrery-backup.timer, " : ""}removed ${removed.join(" and ")}`);
+	const done = [...(timerIsOurs ? ["disabled orrery-backup.timer"] : []), ...(removed.length === 0 ? [] : [`removed ${removed.join(" and ")}`])];
+	if (done.length > 0) report.lines.push(`backup service: ${done.join(", ")}`);
 	const reload = run(systemctl, ["--user", "daemon-reload"]);
 	if (reload.status !== 0) {
 		report.lines.push(`backup service: systemctl --user daemon-reload failed (${failure(reload)}); run it again`);
@@ -303,28 +293,60 @@ function removeApp(report: Report, env: NodeJS.ProcessEnv, app: string): void {
 	report.lines.push(`removed ${app}${versions.length === 0 ? "" : ` (${versions.sort().join(", ")})`}`);
 }
 
-/** Whether `home` is the user's home folder, holds it, or is the file system's root: never purged. */
-function holdsUserHome(home: string, userHome: string): boolean {
-	for (const h of new Set([resolve(home), realTarget(home)])) {
-		if (h === "/") return true;
-		for (const u of new Set([resolve(userHome), realTarget(userHome)])) if (u === h || u.startsWith(`${h}/`)) return true;
+/** The user's home folder by every account Orrery can see: $HOME as given, the process's, and the system's record. */
+function userHomes(env: NodeJS.ProcessEnv): string[] {
+	const homes = [env.HOME, homedir()];
+	try {
+		homes.push(userInfo().homedir);
+	} catch {
+		// no passwd entry
 	}
-	return false;
+	return homes.filter((home): home is string => typeof home === "string" && home !== "");
 }
 
-export async function uninstall(options: { env: NodeJS.ProcessEnv; purge: boolean; confirmPurge: () => Promise<boolean>; run?: Runner }): Promise<{ lines: string[]; ok: boolean }> {
+/** What Orrery keeps in a home: purge needs one of them as evidence that the folder is an Orrery home. */
+const HOME_MARKS = ["config.toml", "lanes", "credentials.json", "app"];
+
+/** Why `home` may not be purged, or undefined: it must be a real folder, not hold the user's home, and look like Orrery's. */
+function purgeRefusal(home: string, env: NodeJS.ProcessEnv): string | undefined {
+	try {
+		if (lstatSync(home).isSymbolicLink()) return `${home} is a link to ${readlinkSync(home)}; --purge deletes only the folder itself (set ORRERY_HOME to it).`;
+	} catch {
+		return `${home} is not there, so there is nothing to purge.`;
+	}
+	for (const h of new Set([resolve(home), realTarget(home)])) {
+		const holds = h === "/" || userHomes(env).some((user) => [resolve(user), realTarget(user)].some((u) => u === h || u.startsWith(`${h}/`)));
+		if (holds) return `--purge deletes only a folder of Orrery's own, and ${home} is your home folder or holds it.`;
+	}
+	if (!HOME_MARKS.some((mark) => existsSync(join(home, mark)))) return `--purge deletes only an Orrery home, and ${home} holds none of ${HOME_MARKS.join(", ")}.`;
+	return undefined;
+}
+
+/**
+ * Unwires and removes this install; with `purge`, also deletes the home. Everything that can stop it (open lanes, a home
+ * that is not Orrery's, the purge question) comes before the first change, so a refusal or a no changes nothing.
+ * `confirmPurge` answers "no terminal" when there was none to ask.
+ */
+export async function uninstall(options: { env: NodeJS.ProcessEnv; purge: boolean; confirmPurge: () => Promise<boolean | "no terminal">; run?: Runner }): Promise<{ lines: string[]; ok: boolean }> {
 	const { env } = options;
 	const run = options.run ?? envRunner(env, 120_000);
 	const home = orreryHome(env);
 	const app = join(home, "app");
 	const userHome = env.HOME || homedir();
-	if (options.purge && holdsUserHome(home, userHome)) {
-		return { lines: [`Not uninstalled: --purge deletes only a folder of Orrery's own, and ${home} is your home folder or holds it.`], ok: false };
+	const refused = (why: string) => ({ lines: [`Not uninstalled: ${why}`], ok: false });
+	if (options.purge) {
+		const why = purgeRefusal(home, env);
+		if (why !== undefined) return refused(why);
 	}
 	const { versions, unreadable } = laneVersions(env);
 	const open = [...versions.values()].flat();
 	if (open.length > 0) return { lines: [`Close these lanes first: ${open.join(", ")}`], ok: false };
 	if (unreadable !== undefined) return { lines: [`Cannot tell whether lanes are open: ${unreadable}. Close every lane and fix that, then run orrery uninstall again.`], ok: false };
+	if (options.purge) {
+		const answer = await options.confirmPurge();
+		if (answer === "no terminal") return refused("there is no terminal to ask before deleting everything; nothing changed.");
+		if (answer !== true) return refused("you did not type delete; nothing changed.");
+	}
 
 	const report: Report = { lines: [], ok: true };
 	const pi = piExtensionFile(env);
@@ -342,11 +364,12 @@ export async function uninstall(options: { env: NodeJS.ProcessEnv; purge: boolea
 		report.lines.push(`Kept ${home}: your config, logins and lanes' memory (orrery uninstall --purge deletes them).`);
 		return report;
 	}
-	if (!(await options.confirmPurge())) {
-		report.lines.push(`Kept ${home} (you did not type delete).`);
+	try {
+		removeVersion(home); // makes read-only folders writable, then removes everything
+	} catch (error) {
+		report.lines.push(`Could not delete all of ${home}: ${errorText(error)}`);
 		return { lines: report.lines, ok: false };
 	}
-	removeVersion(home); // makes read-only folders writable, then removes everything
 	if (existsSync(home)) {
 		report.lines.push(`Could not delete all of ${home}.`);
 		return { lines: report.lines, ok: false };

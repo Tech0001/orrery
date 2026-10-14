@@ -141,8 +141,8 @@ const say = (line: string) => process.stdout.write(`${line}\n`);
 async function setupCommand(values: { yes?: boolean }): Promise<number> {
 	const [{ existsSync }, { orreryHome }, { wireReport, leftWarning }, { terminalConfirm }] = await Promise.all([import("node:fs"), import("../lane/home.ts"), import("../install/wire.ts"), import("../install/ask.ts")]);
 	if (!existsSync(join(orreryHome(process.env), "app", "current"))) throw new Error("Orrery is not installed yet: see the install line in the README");
-	const { lines, left, unchecked } = await wireReport(process.env, { confirm: terminalConfirm({ yes: values.yes === true, say }) });
-	for (const line of lines) say(line);
+	// Each line is printed as it happens: Ctrl-C at a later question stops the process, and what was done is shown.
+	const { left, unchecked } = await wireReport(process.env, { confirm: terminalConfirm({ yes: values.yes === true, say }), onLine: say });
 	if (left.length > 0 || unchecked.length > 0) {
 		for (const line of leftWarning(left, unchecked)) say(line);
 		return 1;

@@ -7,12 +7,12 @@
 
 import { chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { orreryHome } from "../lane/home.ts";
 import { checkTools, findOnPath, installSteps, runInstall, type Runner, type ToolCheck } from "../lane/tools.ts";
 import { type Confirm, pathAdvice } from "./ask.ts";
 import { envRunner } from "./install.ts";
-import { ENTRY_TAILS, entries } from "./layout.ts";
+import { entries, isOrreryCommand } from "./layout.ts";
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const firstLine = (text: string) => text.split("\n").map((line) => line.trim()).find((line) => line !== "") ?? "";
@@ -26,7 +26,11 @@ function replaceLink(link: string, target: string): void {
 	renameSync(next, link);
 }
 
-/** ~/.local/bin/orrery → app/current's CLI. An older Orrery's link (either shape) is replaced; anything else only when confirmed. */
+/**
+ * ~/.local/bin/orrery → app/current's CLI. A link to Orrery's command (under this home's app/, or a provable Orrery
+ * checkout or release elsewhere: layout.ts isOrreryCommand) is replaced; anything else, dangling links included, only
+ * when confirmed.
+ */
 async function linkCommand(env: NodeJS.ProcessEnv, current: string, confirm: Confirm, left: string[]): Promise<string> {
 	const target = entries(current).cli;
 	const link = join(env.HOME || homedir(), ".local", "bin", "orrery");
@@ -40,7 +44,7 @@ async function linkCommand(env: NodeJS.ProcessEnv, current: string, confirm: Con
 		}
 	}
 	if (now === target) return `orrery command: ${link} already links to ${target}`;
-	const older = typeof now === "string" && ENTRY_TAILS.cli.some((tail) => (now as string).endsWith(tail));
+	const older = typeof now === "string" && isOrreryCommand(resolve(dirname(link), now), dirname(current));
 	if (now !== undefined && !older && !(await confirm(`replace ${link}?`))) {
 		left.push(`the orrery command (${link} is not Orrery's link and was not replaced)`);
 		return `orrery command: left ${link} as it is`;
@@ -111,8 +115,7 @@ function pointBackup(env: NodeJS.ProcessEnv, home: string, run: Runner, left: st
  * without asking, "other" (another Orrery, or not Orrery's file) after confirm. A missing pi or OMP extension is written
  * only when that tool is on PATH.
  */
-async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: Runner; install: Runner }, confirm: Confirm, left: string[], unchecked: string[]): Promise<string[]> {
-	const lines: string[] = [];
+async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: Runner; install: Runner }, confirm: Confirm, left: string[], unchecked: string[], emit: (line: string) => void): Promise<void> {
 	const look = () => checkTools({ root: current, env, run: run.probe });
 	let checks = look();
 	for (const id of ["pi", "claude-code", "omp"] as const) {
@@ -121,28 +124,27 @@ async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: 
 		if (steps.length === 0) {
 			// "unknown" is a tool Orrery could not check; "other" with nothing to run is blocked (shared folder), only info.
 			if (check.wiring === "unknown") unchecked.push(`${check.label}: ${check.detail}`);
-			lines.push(`${check.label}: ${check.wiring === "installed" ? `already wired (${check.detail})` : check.detail}`);
+			emit(`${check.label}: ${check.wiring === "installed" ? `already wired (${check.detail})` : check.detail}`);
 			continue;
 		}
 		if (check.wiring === "missing" && check.path === undefined) {
-			lines.push(`${check.label}: not found on PATH; not wired`);
+			emit(`${check.label}: not found on PATH; not wired`);
 			continue;
 		}
 		if (check.wiring === "other" && !(await confirm(`${check.label}: ${steps.map((step) => step.describe).join(", then ")}?`))) {
 			left.push(`${check.label} (still wired to ${check.detail})`);
-			lines.push(`${check.label}: left as it is (${check.detail})`);
+			emit(`${check.label}: left as it is (${check.detail})`);
 			continue;
 		}
 		const result = runInstall(steps, run.install);
-		lines.push(...result.output.split("\n").filter((line) => line.trim() !== "").map((line) => `${check.label}: ${line}`));
+		for (const line of result.output.split("\n").filter((line) => line.trim() !== "")) emit(`${check.label}: ${line}`);
 		if (!result.ok) {
 			left.push(`${check.label} (the install failed)`);
-			lines.push(`${check.label}: not wired; orrery tools install ${id} tries again`);
+			emit(`${check.label}: not wired; orrery tools install ${id} tries again`);
 		}
 		// pi and OMP may share one extensions folder: OMP is judged after pi's file is written.
 		checks = look();
 	}
-	return lines;
 }
 
 /** What wiring did: one line per thing wired, skipped or failed, and what is still wired elsewhere (skipped, declined or failed). */
@@ -153,8 +155,11 @@ export interface WireReport {
 	unchecked: string[];
 }
 
-/** Points everything at <home>/app/current. */
-export async function wireReport(env: NodeJS.ProcessEnv, options: { run?: Runner; confirm: Confirm }): Promise<WireReport> {
+/**
+ * Points everything at <home>/app/current. `onLine` gets each line as it happens, so what was already done is shown even
+ * when a later question is answered with Ctrl-C (which stops the process).
+ */
+export async function wireReport(env: NodeJS.ProcessEnv, options: { run?: Runner; confirm: Confirm; onLine?: (line: string) => void }): Promise<WireReport> {
 	// A tool's --version or plugin list gets 15 s; installing the Claude Code plugin may take longer.
 	const run = options.run ?? envRunner(env, 300_000);
 	const probe = options.run ?? envRunner(env, 15_000);
@@ -163,12 +168,15 @@ export async function wireReport(env: NodeJS.ProcessEnv, options: { run?: Runner
 	const left: string[] = [];
 	const unchecked: string[] = [];
 	const advice = pathAdvice(env, join(env.HOME || homedir(), ".local", "bin"));
-	const lines = [
-		await linkCommand(env, current, options.confirm, left),
-		...(advice === undefined ? [] : [advice]),
-		...pointBackup(env, home, run, left),
-		...(await wireTools(env, current, { probe, install: run }, options.confirm, left, unchecked)),
-	];
+	const lines: string[] = [];
+	const emit = (line: string) => {
+		lines.push(line);
+		options.onLine?.(line);
+	};
+	emit(await linkCommand(env, current, options.confirm, left));
+	if (advice !== undefined) emit(advice);
+	for (const line of pointBackup(env, home, run, left)) emit(line);
+	await wireTools(env, current, { probe, install: run }, options.confirm, left, unchecked, emit);
 	return { lines, left, unchecked };
 }
 
