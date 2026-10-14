@@ -3,6 +3,7 @@
 export {
 	guardOmpToolCall,
 	guardToolCall,
+	laneViews,
 	movedAgentDirCredentials,
 	ompCredentials,
 	type PathGuardOptions as PiGuardOptions,

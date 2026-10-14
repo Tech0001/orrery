@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { editTargets, globBase, guardOmpToolCall, guardToolCall, ompCredentials, ompToolPath, pathParts } from "../../src/lane/guard-paths.ts";
+import { cleanup, world } from "../pi/world.ts";
+import { type FakeOmp, ompCleanup, ompOrrery } from "./world.ts";
 
 let dir: string;
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -461,5 +463,74 @@ describe("final review: OMP's .env and secrets.yml, and the stores PI_CONFIG_DIR
 		expect(guardToolCall("read", { path: "models-link.yml" }, options)).toMatch(/sensitive/);
 		// Their neighbours are not credentials.
 		for (const path of ["~/.omp/agent/config.yml", "~/.omp-alt/agent/config.yml", "~/.omp/agent/.envrc"]) expect([path, guardToolCall("read", { path }, options)]).toEqual([path, undefined]);
+	});
+});
+
+describe("OMP: only the agent that owns a folder's memory view reads it", () => {
+	afterEach(async () => {
+		await ompCleanup();
+		await cleanup();
+	});
+
+	/** The world's two lanes, Atlas and Birch, each set up the file way: a memory view in its folder. */
+	function viewWorld() {
+		const made = world();
+		dir = made.root;
+		const views = { atlasView: join(made.root, "agent-Atlas", ".orrery", "view.md"), birchView: join(made.root, "agent-Birch", ".orrery", "view.md") };
+		for (const [name, path] of [
+			["Atlas", views.atlasView],
+			["Birch", views.birchView],
+		]) {
+			mkdirSync(join(path, ".."), { recursive: true });
+			writeFileSync(path, `${name}'s view: secret`);
+		}
+		return { ...made, ...views, atlas: join(made.root, "agent-Atlas"), birch: join(made.root, "agent-Birch") };
+	}
+	const call = async (omp: FakeOmp, toolName: string, input: Record<string, unknown>) => (await omp.emit("tool_call", { toolName, toolCallId: "t1", input }))[0];
+	const refused = { block: true, reason: expect.stringMatching(/sensitive|memory view/) };
+
+	it("refuses Atlas a read of Birch's view and any search whose root holds it; Atlas's own view stays open", async () => {
+		const { config, atlas, birch, birchView } = viewWorld();
+		symlinkSync(birchView, join(atlas, "notes.md"));
+		const omp = await ompOrrery(atlas, config);
+		expect(omp.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
+		const calls: [string, Record<string, unknown>][] = [
+			["read", { path: birchView }],
+			["read", { path: "../agent-Birch/.orrery/view.md" }],
+			["read", { path: "notes.md" }],
+			["read", { path: `src/a.ts ${birchView}` }],
+			["read", { path: `${birchView}:1-5` }],
+			["edit", { path: birchView, input: "x" }],
+			["write", { path: birchView, content: "planted" }],
+			["grep", { pattern: "secret", path: birch }],
+			["grep", { pattern: "secret", path: "../agent-Birch" }],
+			["glob", { path: `${birch}/**/*.md` }],
+			["ast_grep", { pat: "x", path: birch }],
+			["find", { query: "secret", grep_keywords: [], path: birch }],
+			["bash", { command: `cat ${birchView}` }],
+			["eval", { language: "py", code: `open('${birchView}').read()` }],
+		];
+		for (const [tool, input] of calls) expect([tool, input, await call(omp, tool, input)]).toEqual([tool, input, refused]);
+		expect(await call(omp, "read", { path: ".orrery/view.md" })).toBeUndefined();
+		expect(await call(omp, "grep", { pattern: "secret", path: "." })).toBeUndefined();
+		expect(await call(omp, "bash", { command: "cat .orrery/view.md" })).toBeUndefined();
+	});
+
+	it("refuses Birch's view to Atlas opened by ORRERY_AGENT in Birch's folder, and keeps Atlas's own open", async () => {
+		const { config, atlasView, birch } = viewWorld();
+		const omp = await ompOrrery(birch, config, { env: { ORRERY_AGENT: "Atlas" } });
+		expect(omp.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
+		expect(await call(omp, "read", { path: ".orrery/view.md" })).toEqual(refused);
+		expect(await call(omp, "grep", { pattern: "secret", path: "." })).toEqual(refused);
+		expect(await call(omp, "bash", { command: "cat .orrery/view.md" })).toEqual(refused);
+		expect(await call(omp, "read", { path: atlasView })).toBeUndefined();
+	});
+
+	it("refuses every lane's view to a refused ORRERY_AGENT, the folder's own lane's too", async () => {
+		const { config, atlas, birchView } = viewWorld();
+		const omp = await ompOrrery(atlas, config, { env: { ORRERY_AGENT: "Nobody" } });
+		expect(await call(omp, "read", { path: ".orrery/view.md" })).toEqual(refused);
+		expect(await call(omp, "grep", { pattern: "secret", path: "." })).toEqual(refused);
+		expect(await call(omp, "read", { path: birchView })).toEqual(refused);
 	});
 });

@@ -23,7 +23,7 @@ import { browse, memoryReport, pageOpener } from "./commands.ts";
 import { compactorMenu, laneTarget, signInFromMenu } from "../lane/compactor-menu.ts";
 import { LaneHeld, PiLane } from "./lane.ts";
 import { copySession, markSessionCopied, moveCursor, startAtTail } from "./log.ts";
-import { guardOmpToolCall, guardToolCall, movedAgentDirCredentials, ompCredentials } from "./guard.ts";
+import { guardOmpToolCall, guardToolCall, laneViews, movedAgentDirCredentials, ompCredentials } from "./guard.ts";
 import { memoryTools, readerTools } from "./tools.ts";
 import { compactionDecision, memorySection, trimToRun } from "./turn.ts";
 import { remoteFooter, remoteOpenNotice } from "../remote/checkout.ts";
@@ -114,6 +114,10 @@ interface Guarded {
 	readonly credentials: readonly string[];
 	readonly orreryData: string;
 	readonly home: string;
+	/** Every other lane's memory view file, which no tool may read (src/lane/guard-paths.ts laneViews). */
+	readonly foreignViews: readonly string[];
+	/** The session's own lane's view file, if it has one. */
+	readonly ownView?: string;
 }
 
 /** What every guard keeps out: orrery's credentials, pi's in a moved agent dir, and OMP's stores (in every tool). */
@@ -123,18 +127,19 @@ function guardBase(config: HarnessConfig, options: OrreryOptions): Pick<Guarded,
 	return { home, orreryData: config.dataDir, credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)] };
 }
 
-/** The guard for `lane` in `cwd`. */
+/** The guard for `lane` in `cwd`: no other lane's view. */
 function guarded(lane: LaneConfig, by: "env" | "folder", cwd: string, config: HarnessConfig, options: OrreryOptions): Guarded {
-	return { lane, by, workArea: workArea(lane, cwd), allowedRoots: lane.allowedRoots, ...guardBase(config, options) };
+	return { lane, by, workArea: workArea(lane, cwd), allowedRoots: lane.allowedRoots, ...guardBase(config, options), ...laneViews(config, lane) };
 }
 
 /**
  * The guard for a session whose ORRERY_AGENT was refused: no lane and no memory, but the same rules as the lane whose
- * folder it runs in, or, outside lanes, an agent's with no default folder (the session's folder, no allowed roots).
+ * folder it runs in, or, outside lanes, an agent's with no default folder (the session's folder, no allowed roots). It
+ * is no lane's, so every lane's view is another's, the folder's lane's too.
  */
 function refusedGuard(cwd: string, config: HarnessConfig, options: OrreryOptions): Guarded {
 	const rules = laneForCwd(config, cwd);
-	return { by: "refused", workArea: workArea(rules ?? {}, cwd), allowedRoots: rules?.allowedRoots ?? [], ...guardBase(config, options) };
+	return { by: "refused", workArea: workArea(rules ?? {}, cwd), allowedRoots: rules?.allowedRoots ?? [], ...guardBase(config, options), ...laneViews(config) };
 }
 
 const subagent = (ctx: ExtensionContext) => (ctx as { agent?: { kind?: string } }).agent?.kind === "sub";
@@ -760,8 +765,8 @@ function guard(pi: ExtensionAPI, state: OrreryState, host: "pi" | "omp"): void {
 	const judge = host === "omp" ? guardOmpToolCall : guardToolCall;
 	pi.on("tool_call", (event, ctx) => {
 		if (state.guarded === undefined) return;
-		const { workArea: area, allowedRoots, credentials, orreryData, home } = state.guarded;
-		const reason = judge(event.toolName, event.input as Record<string, unknown>, { workspace: area, allowedRoots, cwd: ctx.cwd, credentials, orreryData, home });
+		const { workArea: area, allowedRoots, credentials, orreryData, home, foreignViews, ownView } = state.guarded;
+		const reason = judge(event.toolName, event.input as Record<string, unknown>, { workspace: area, allowedRoots, cwd: ctx.cwd, credentials, orreryData, home, foreignViews, ownView });
 		return reason === undefined ? undefined : { block: true, reason };
 	});
 }

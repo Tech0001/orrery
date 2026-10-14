@@ -24,6 +24,7 @@ import { AGENT_MODEL_KEY, COMPACTOR_MODEL_KEY, storedChoice } from "./choices.ts
 import { createLaneEnv, type LaneEnv } from "./env.ts";
 import { memoryExtension } from "./extension.ts";
 import { guardExtension } from "./guard.ts";
+import { laneViews } from "./guard-paths.ts";
 import { compactorModel, createLaneModels, modelContextWindow, savedSummaryLoginsOnly } from "./models.ts";
 import { Projector } from "./projector.ts";
 import { laneSummarizer } from "./summarizer.ts";
@@ -198,7 +199,9 @@ export class Lane {
 			const registry = createRegistry();
 			registry.install(CodingTools);
 			registry.install(memoryExtension({ view, instructions: () => instructions }));
-			registry.install(guardExtension({ workspace, allowedRoots: config.allowedRoots, credentials: [options.config.credentialsPath], orreryData: options.config.dataDir }));
+			registry.install(
+				guardExtension({ workspace, allowedRoots: config.allowedRoots, credentials: [options.config.credentialsPath], orreryData: options.config.dataDir, ...laneViews(options.config, config) }),
+			);
 			const storage = await openNodeSqliteStorage(join(config.dir, "session.sqlite"));
 			const harness = await Harness.open(
 				storage,

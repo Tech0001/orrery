@@ -1,8 +1,11 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it } from "vitest";
 import { guardToolCall, movedAgentDirCredentials } from "../../src/pi/guard.ts";
+import type { PiRun } from "./harness.ts";
+import { cleanup, pi, world } from "./world.ts";
 
 let dir: string;
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -211,4 +214,72 @@ describe("guardToolCall keeps Orrery's home out", () => {
 		expect(guardToolCall("grep", { pattern: "x", path: join(data, "lanes") }, guarded)).toMatch(/sensitive/);
 		expect(guardToolCall("read", { path: join(data, "config.toml") }, guarded)).toBeUndefined();
 	});
+});
+
+describe("pi: only the agent that owns a folder's memory view reads it", () => {
+	afterEach(cleanup);
+
+	/** The world's two lanes, Atlas and Birch, each set up the file way: a memory view in its folder. */
+	function viewWorld() {
+		const made = world();
+		dir = made.root;
+		const views = { atlasView: join(made.root, "agent-Atlas", ".orrery", "view.md"), birchView: join(made.root, "agent-Birch", ".orrery", "view.md") };
+		for (const [name, path] of [
+			["Atlas", views.atlasView],
+			["Birch", views.birchView],
+		]) {
+			mkdirSync(join(path, ".."), { recursive: true });
+			writeFileSync(path, `${name}'s view: secret`);
+		}
+		return { ...made, ...views };
+	}
+
+	/** One tool call in `run`, as the model makes it: its result's text. */
+	async function call(run: PiRun, name: string, args: Parameters<typeof fauxToolCall>[1]): Promise<string> {
+		run.setResponses([fauxAssistantMessage([fauxToolCall(name, args)]), fauxAssistantMessage("done")]);
+		await run.session.prompt(`${name}, please`);
+		const results = run.session.messages.filter((m: { role: string }) => m.role === "toolResult") as { content: { text?: string }[] }[];
+		return results.at(-1)?.content.map((c) => c.text ?? "").join("") ?? "";
+	}
+	const refused = (text: string) => {
+		expect(text).toMatch(/sensitive|memory view/);
+		expect(text).not.toContain("secret");
+	};
+	const edit = (path: string) => ({ path, edits: [{ oldText: "secret", newText: "planted" }] });
+
+	it("refuses Birch's view to Atlas in read, edit and write, by absolute and relative path and through a link; Atlas's own stays open", async () => {
+		const { root, config, atlasView, birchView } = viewWorld();
+		symlinkSync(birchView, join(root, "agent-Atlas", "notes.md"));
+		const atlas = await pi(root, join(root, "agent-Atlas"), config);
+		expect(atlas.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
+		for (const path of [birchView, "../agent-Birch/.orrery/view.md", "notes.md"]) {
+			refused(await call(atlas, "read", { path }));
+			refused(await call(atlas, "edit", edit(path)));
+			refused(await call(atlas, "write", { path, content: "planted" }));
+		}
+		refused(await call(atlas, "bash", { command: `cat ${birchView}` }));
+		expect(readFileSync(birchView, "utf8")).toBe("Birch's view: secret");
+		expect(await call(atlas, "read", { path: ".orrery/view.md" })).toContain("Atlas's view: secret");
+		expect(await call(atlas, "read", { path: atlasView })).toContain("Atlas's view: secret");
+		expect(await call(atlas, "bash", { command: "cat .orrery/view.md" })).toContain("Atlas's view: secret");
+	}, 20_000);
+
+	it("refuses Birch's view to Atlas opened by ORRERY_AGENT in Birch's folder, and keeps Atlas's own open", async () => {
+		const { root, config, atlasView } = viewWorld();
+		const atlas = await pi(root, join(root, "agent-Birch"), config, undefined, { env: { ORRERY_AGENT: "Atlas" } });
+		expect(atlas.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
+		refused(await call(atlas, "read", { path: ".orrery/view.md" }));
+		refused(await call(atlas, "edit", edit(".orrery/view.md")));
+		refused(await call(atlas, "bash", { command: "cat .orrery/view.md" }));
+		expect(await call(atlas, "read", { path: atlasView })).toContain("Atlas's view: secret");
+	}, 20_000);
+
+	it("refuses every lane's view to a refused ORRERY_AGENT, the folder's own lane's too", async () => {
+		const { root, config, birchView } = viewWorld();
+		const run = await pi(root, join(root, "agent-Atlas"), config, undefined, { env: { ORRERY_AGENT: "Nobody" } });
+		expect(run.tool("zoom")).toBeUndefined();
+		refused(await call(run, "read", { path: ".orrery/view.md" }));
+		refused(await call(run, "bash", { command: "cat .orrery/view.md" }));
+		refused(await call(run, "read", { path: birchView }));
+	}, 20_000);
 });

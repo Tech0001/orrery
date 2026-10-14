@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { type HarnessConfig, type LaneConfig, laneForCwd } from "../lane/config.ts";
-import { movedAgentDirCredentials, ompCredentials } from "../lane/guard-paths.ts";
+import { laneViews, movedAgentDirCredentials, ompCredentials } from "../lane/guard-paths.ts";
 import { workArea } from "../lane/pick.ts";
 import { writePrivate } from "../lane/private-file.ts";
 import { selfCommand } from "../lane/running.ts";
@@ -332,8 +332,9 @@ function unreadToolCall(ctx: HookContext): object | undefined {
  * may write where the session works (workArea: the lane's workspace, or the folder it was opened in) and the lane's
  * allowed roots, and Claude Code's own state (claudeStateRoots). A session whose ORRERY_AGENT was refused keeps the
  * guard with the rules of the lane whose folder it runs in, or outside lanes those of a lane with no folder (its own
- * folder, no allowed roots), as pi's refusedGuard does. A call it cannot judge is refused, since a hook that crashed
- * would let it through.
+ * folder, no allowed roots), as pi's refusedGuard does. No session reads another lane's memory view file (laneViews):
+ * a refused one is no lane's, so every lane's view is another's. A call it cannot judge is refused, since a hook that
+ * crashed would let it through.
  */
 export function preToolUse(input: HookInput, ctx: HookContext): object | undefined {
 	const found = pickHere(input, ctx);
@@ -351,6 +352,7 @@ export function preToolUse(input: HookInput, ctx: HookContext): object | undefin
 			credentials: [ctx.config.credentialsPath, ...movedAgentDirCredentials(ctx.env, home), ...movedConfigDirCredentials(ctx.env), ...ompCredentials(ctx.env, home)],
 			orreryData: ctx.config.dataDir,
 			home,
+			...laneViews(ctx.config, pick.kind === "lane" ? pick.lane : undefined),
 		});
 	} catch (error) {
 		reason = `this call could not be checked (${errorText(error)}).`;

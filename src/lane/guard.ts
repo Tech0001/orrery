@@ -2,7 +2,7 @@
  * A seatbelt, not a sandbox (spec §6).
  *
  * - write/edit must land inside the workspace and allowed roots.
- * - No file tool may touch ssh keys or credential stores.
+ * - No file tool may touch ssh keys or credential stores, or another lane's memory view (GuardOptions.foreignViews).
  * - File paths are checked inside the tools themselves, resolved exactly the way pi's tools resolve them (`@`
  *   prefix, `~`, `file://`, relative to cwd) and then through symlinks, so the check and the write see the same file.
  *
@@ -16,7 +16,7 @@ import type { Context } from "@earendil-works/chord";
 import { defineExtension, hook, type ToolRegistration, ToolTask, wrapTool } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
-import { checkToolCall, type GuardOptions, inOrreryHome, sensitive, within } from "./guard-rules.ts";
+import { checkToolCall, type GuardOptions, inOrreryHome, sensitive, viewRules, within } from "./guard-rules.ts";
 
 export { checkToolCall, type GuardOptions };
 
@@ -79,9 +79,15 @@ export async function checkResolvedPath(
 	const target = mode === "read" ? await readTarget(env, resolved.value, context) : resolved.value;
 	const real = await realPath(env, target, context);
 	const refused = `${real} is a sensitive file (keys, credentials or Orrery's private data).`;
-	if (sensitive(target) || sensitive(real)) return refused;
+	// Which view files the path may be (GuardOptions.foreignViews): the session's own, as given and where it really is.
+	const views = viewRules(options, options.ownView === undefined ? [] : [options.ownView, await realPath(env, options.ownView, context)]);
+	if (sensitive(target, views?.path(target)) || sensitive(real, views?.path(real))) return refused;
 	const lower = real.toLowerCase();
 	for (const credential of options.credentials ?? []) if (within(lower, (await realPath(env, credential, context)).toLowerCase())) return refused;
+	// Another lane's view file, as given and where it really is.
+	for (const view of options.foreignViews ?? []) {
+		if (within(lower, view.toLowerCase()) || within(lower, (await realPath(env, view, context)).toLowerCase())) return `${real} is another agent's memory view.`;
+	}
 	if (options.orreryData !== undefined && inOrreryHome(real, await realPath(env, options.orreryData, context))) return refused;
 	if (mode === "write") {
 		const roots = await Promise.all([options.workspace, ...options.allowedRoots].map((root) => realPath(env, root, context)));

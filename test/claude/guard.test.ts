@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { claudeGuard, claudeProjectFolder, claudeStateRoots } from "../../src/claude/guard.ts";
 import { type HookContext, type HookInput, preToolUse, runHook } from "../../src/claude/hooks.ts";
+import { VIEW_IMPORT, writeSetupMarker } from "../../src/claude/view-file.ts";
+import { type HarnessConfig, parseConfig } from "../../src/lane/config.ts";
 import { ownFolder } from "../../src/lane/private-file.ts";
 import { cleanupDirs, hookCli, testLane } from "./support.ts";
 
@@ -658,5 +660,82 @@ describe("claudeGuard keeps Orrery's home out", () => {
 		expect(JSON.parse(await call("Read", { file_path: join(data, "remotes.json") })).hookSpecificOutput.permissionDecisionReason).toMatch(/sensitive/);
 		const options = { workspace: t.workspace, allowedRoots: [] as string[], cwd: t.workspace, home, orreryData: data };
 		expect(claudeGuard("Grep", { pattern: "x", path: data }, options)).toMatch(/credential/);
+	});
+});
+
+describe("Claude Code: only the agent that owns a folder's memory view reads it", () => {
+	/** Atlas and Birch, each set up the file way (its CLAUDE.md imports its memory view), and a scratch home. */
+	function viewLanes() {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "orrery-claude-views-")));
+		dir = root;
+		const home = join(root, "home");
+		mkdirSync(home);
+		const folder = (name: string) => join(root, `agent-${name}`);
+		let toml = `data_dir = ${JSON.stringify(join(root, "data"))}\n`;
+		for (const name of ["Atlas", "Birch"]) {
+			mkdirSync(join(folder(name), ".orrery"), { recursive: true });
+			writeFileSync(join(folder(name), ".orrery", "view.md"), `${name}'s view: secret`);
+			writeFileSync(join(folder(name), "CLAUDE.md"), `${VIEW_IMPORT}\n`);
+			toml += `[lanes.${name}]\nworkspace = ${JSON.stringify(folder(name))}\nmodel = "faux-agent/faux-1"\ncompactor_model = "faux-compactor/faux-1"\ncompactor_thinking = "off"\n`;
+		}
+		const config = parseConfig(toml, root);
+		for (const lane of config.lanes.values()) writeSetupMarker(lane.dir, lane.workspace as string, "CLAUDE.md");
+		const view = (name: string) => join(folder(name), ".orrery", "view.md");
+		return { home, config, atlas: folder("Atlas"), birch: folder("Birch"), atlasView: view("Atlas"), birchView: view("Birch") };
+	}
+	/** A Claude Code session in `projectDir`: its SessionStart, and the PreToolUse answer to one tool call. */
+	const session = (config: HarnessConfig, home: string, projectDir: string, env: NodeJS.ProcessEnv = {}) => {
+		const c: HookContext = { config, env: { CLAUDE_PROJECT_DIR: projectDir, ...env }, claudePid: process.pid, startHolder: () => {}, home };
+		return {
+			start: () => runHook("session-start", JSON.stringify({ session_id: "s1", cwd: projectDir }), c),
+			tool: async (tool_name: string, tool_input: object) => {
+				const out = await runHook("pre-tool-use", JSON.stringify({ session_id: "s1", cwd: projectDir, tool_name, tool_input }), c);
+				return out === "" ? "allowed" : (JSON.parse(out) as { hookSpecificOutput: { permissionDecisionReason: string } }).hookSpecificOutput.permissionDecisionReason;
+			},
+		};
+	};
+	const REFUSED = expect.stringMatching(/^Orrery guard: .*(sensitive|memory view)/);
+
+	it("denies Atlas Read, Edit, Grep, Glob and Bash cat and grep -r of Birch's view, and allows them on its own", async () => {
+		const { home, config, atlas, birch, atlasView, birchView } = viewLanes();
+		symlinkSync(birchView, join(atlas, "notes.md"));
+		const { tool } = session(config, home, atlas);
+		const calls: [string, object][] = [
+			["Read", { file_path: birchView }],
+			["Read", { file_path: join(atlas, "notes.md") }],
+			["Read", { file_path: `${atlas}/../agent-Birch/.orrery/view.md` }],
+			["Edit", { file_path: birchView, old_string: "secret", new_string: "planted" }],
+			["Write", { file_path: birchView, content: "planted" }],
+			["Grep", { pattern: "secret", path: birch }],
+			["Grep", { pattern: "secret", path: birchView }],
+			["Glob", { pattern: "**/*.md", path: birch }],
+			["Glob", { pattern: `${birch}/**/*.md` }],
+			["Bash", { command: `cat ${birchView}` }],
+			["Bash", { command: `grep -r secret ${birchView}` }],
+			["Bash", { command: `cd ${birch} && cat .orrery/view.md` }],
+		];
+		for (const [name, input] of calls) expect([name, input, await tool(name, input)]).toEqual([name, input, REFUSED]);
+		const own: [string, object][] = [
+			["Read", { file_path: atlasView }],
+			["Grep", { pattern: "secret", path: atlas }],
+			["Grep", { pattern: "secret" }],
+			["Glob", { pattern: "**/*.md" }],
+			["Bash", { command: "cat .orrery/view.md" }],
+			["Bash", { command: "grep -r secret .orrery/view.md" }],
+		];
+		for (const [name, input] of own) expect([name, input, await tool(name, input)]).toEqual([name, input, "allowed"]);
+	});
+
+	it("denies a refused ORRERY_AGENT every lane's view, the folder's own lane's too", async () => {
+		const { home, config, atlas, atlasView, birchView } = viewLanes();
+		const { start, tool } = session(config, home, atlas, { ORRERY_AGENT: "Nobody" });
+		expect(await start()).toContain("ORRERY_AGENT names Nobody");
+		const calls: [string, object][] = [
+			["Read", { file_path: atlasView }],
+			["Read", { file_path: birchView }],
+			["Grep", { pattern: "secret" }],
+			["Bash", { command: "cat .orrery/view.md" }],
+		];
+		for (const [name, input] of calls) expect([name, input, await tool(name, input)]).toEqual([name, input, REFUSED]);
 	});
 });
