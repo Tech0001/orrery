@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +17,8 @@ const memoryOf = (root: string, lane = "Atlas") => {
 	store.close();
 	return rows;
 };
+/** A session's owner record (src/lane/session-owner.ts): named by the id's sha256. */
+const ownerRecord = (root: string, id: string) => join(root, "data", "session-owners", createHash("sha256").update(id).digest("hex"));
 const lastReply = (messages: readonly { role: string; content?: unknown }[]) =>
 	JSON.stringify(messages.filter((m) => m.role === "assistant").at(-1)?.content);
 
@@ -336,7 +339,39 @@ describe("who a session belongs to: a lane never copies turns another agent said
 		await close(birch);
 		expect(memoryOf(root, "Birch")).toEqual(["user: Birch question.", "talk: Birch answer."]);
 		expect(memoryOf(root)).toEqual(["user: Atlas secret question.", "talk: Atlas secret answer."]);
-		expect(readFileSync(join(root, "data", "session-owners", "s-x"), "utf8")).toBe("Atlas\n");
+		expect(readFileSync(ownerRecord(root, "s-x"), "utf8")).toBe("Atlas\n");
+	});
+
+	for (const [what, id] of [["with a dot in its id", "s.x"], ["with an id longer than 128 characters", `s-${"x".repeat(150)}`]] as const) {
+		it(`a session ${what} (pi takes it): another agent's turns stay out of the folder's lane`, async () => {
+			const { root, config } = world();
+			const atlas = await pi(root, join(root, "agent-Birch"), config, id, { env: { ORRERY_AGENT: "Atlas" } });
+			await say(atlas, "Atlas secret question.", "Atlas secret answer.");
+			await close(atlas);
+			const birch = await pi(root, join(root, "agent-Birch"), config, id);
+			await say(birch, "Birch question.", "Birch answer.");
+			await close(birch);
+			expect(memoryOf(root, "Birch")).toEqual(["user: Birch question.", "talk: Birch answer."]);
+			expect(readFileSync(ownerRecord(root, id), "utf8")).toBe("Atlas\n");
+		});
+	}
+
+	it("a visitor still running when the owner opens: the turns it says after that stay out of the owner too", async () => {
+		const { root, config } = world();
+		const first = await pi(root, join(root, "agent-Birch"), config, "s-b");
+		await say(first, "One.", "First.");
+		await close(first);
+		const atlas = await pi(root, join(root, "agent-Birch"), config, "s-b", { env: { ORRERY_AGENT: "Atlas" } });
+		// The owner opens while the visitor runs: it starts at the tail and settles the visit.
+		const meanwhile = await pi(root, join(root, "agent-Birch"), config, "s-b");
+		await say(atlas, "Atlas secret question.", "Atlas secret answer.");
+		await close(meanwhile);
+		await close(atlas);
+		const again = await pi(root, join(root, "agent-Birch"), config, "s-b");
+		await say(again, "Two.", "Second.");
+		await close(again);
+		expect(memoryOf(root, "Birch")).toEqual(["user: One.", "talk: First.", "user: Two.", "talk: Second."]);
+		expect(memoryOf(root)).toEqual(["user: Atlas secret question.", "talk: Atlas secret answer."]);
 	});
 
 	it("a session first run under an ORRERY_AGENT that names no agent: the folder's lane records only what comes after", async () => {
@@ -369,14 +404,14 @@ describe("who a session belongs to: a lane never copies turns another agent said
 		const first = await pi(root, join(root, "agent-Birch"), config, "s-old");
 		await say(first, "One.", "First.");
 		await close(first);
-		rmSync(join(root, "data", "session-owners", "s-old"));
+		rmSync(ownerRecord(root, "s-old"));
 		const plain = await plainPi(root, join(root, "agent-Birch"), "s-old");
 		await say(plain, "Said without Orrery.", "Plain.");
 		await close(plain);
 		const again = await pi(root, join(root, "agent-Birch"), config, "s-old");
 		await close(again);
 		expect(memoryOf(root, "Birch")).toEqual(["user: One.", "talk: First.", "user: Said without Orrery.", "talk: Plain."]);
-		expect(readFileSync(join(root, "data", "session-owners", "s-old"), "utf8")).toBe("Birch\n");
+		expect(readFileSync(ownerRecord(root, "s-old"), "utf8")).toBe("Birch\n");
 	});
 
 	it("the owner resuming its session after another agent ran in it records only what comes after the visit", async () => {

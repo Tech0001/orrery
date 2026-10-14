@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -515,6 +516,21 @@ describe("an entry loaded in the other tool", () => {
 			expect(host.tools.size + host.commands.size).toBe(0);
 		});
 	}
+
+	it("records who the session belongs to, as the right entry does: the folder's lane, or - under a refused ORRERY_AGENT", async () => {
+		const { root, config } = world();
+		const owner = (id: string) => readFileSync(join(root, "data", "session-owners", createHash("sha256").update(id).digest("hex")), "utf8");
+		const home = scratchHome(dirname(config.dataDir));
+		const inLane = track(fakeOmp(join(root, "agent-Atlas"), [createOrrery({ config, ...home })]));
+		inLane.session.id = "m1";
+		await inLane.emit("session_start");
+		expect(owner("m1")).toBe("Atlas\n");
+		const refused = track(fakeOmp(join(root, "agent-Atlas"), [createOrrery({ config, host: "omp", ...home, env: { ORRERY_AGENT: "Nobody" } })], { omp: false }));
+		refused.session.id = "m2";
+		await refused.emit("session_start");
+		expect(owner("m2")).toBe("-\n");
+		expect(existsSync(join(root, "data", "lanes", "Atlas", "memory.sqlite"))).toBe(false);
+	});
 
 	it("pi's entry in an OMP subagent: the guard, no second notice", async () => {
 		const { root, config } = world();

@@ -14,7 +14,7 @@ import { compactorCommand } from "../lane/lane-commands.ts";
 import { laneModelSource } from "../lane/model-source.ts";
 import { noticeKey, noticeText, type TroubleState } from "../lane/notices.ts";
 import { pickLane, refusedNotice, workArea } from "../lane/pick.ts";
-import { foreignSession, NO_AGENT, noteSession } from "../lane/session-owner.ts";
+import { NO_AGENT, noteSession, sessionStanding, settleVisit } from "../lane/session-owner.ts";
 import { takeRequest } from "../lane/settings-request.ts";
 import { safeText } from "../lane/source-labels.ts";
 import { openSummarySources, type SummarySources } from "../lane/summary-sources.ts";
@@ -179,6 +179,20 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 		};
 
 		/**
+		 * Notes that the agent this session runs as (its lane, or NO_AGENT under a refused ORRERY_AGENT) ran in the session
+		 * now open (src/lane/session-owner.ts): when it opens, and again at each run's end and at shutdown, so a visitor
+		 * still running after the owner opened marks the turns it says later too. Not in OMP subagents.
+		 */
+		const noteRun = (ctx: ExtensionContext): void => {
+			if (state.config === undefined || state.guarded === undefined || subagent(ctx)) return;
+			try {
+				noteSession(state.config.dataDir, ctx.sessionManager.getSessionId(), state.guarded.lane?.name ?? NO_AGENT);
+			} catch {
+				// A note that fails never stops a run's end or a shutdown (which releases the lane): no record, as before.
+			}
+		};
+
+		/**
 		 * Opens the session's lane (ORRERY_AGENT's, else the folder's), as a new session does: its guard, then (main session
 		 * only) its memory, OMP's settings, the tools, the session's copy and the status tick. `loaded`: the config already
 		 * read. `arrived`: the session moved here from another folder (OMP), so it records only what comes after the move.
@@ -195,7 +209,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 				guard(pi, state, host);
 				// OMP starts each subagent with this extension too: only the main session says so.
 				if (subagent(ctx)) return;
-				noteSession(config.dataDir, ctx.sessionManager.getSessionId(), NO_AGENT);
+				noteRun(ctx);
 				warn(ctx, refusedNotice(pick));
 				return;
 			}
@@ -206,8 +220,8 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			guard(pi, state, host);
 			// OMP loads the extension again in each subagent (its task tool): a subagent gets the guard, never the memory.
 			if (omp && subagent(ctx)) return;
-			// The session is this lane's, whether or not its memory opens (src/lane/session-owner.ts).
-			noteSession(config.dataDir, ctx.sessionManager.getSessionId(), lane.name);
+			// The session is this lane's, whether or not its memory opens.
+			noteRun(ctx);
 			const { signal } = controller;
 			const deadline = omp && lane.remote !== undefined ? setTimeout(() => controller.abort(new Error("Remote checkout took longer than 25 seconds")), 25_000) : undefined;
 			try {
@@ -270,9 +284,12 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			// privacy). So does a session another agent owns or ran in since (src/lane/session-owner.ts), and one a lane opened
 			// by ORRERY_AGENT finds with turns in it (`pi --session`, /resume): they were not said in this run, and may be
 			// another lane's.
-			const foreign = foreignSession(config.dataDir, ctx.sessionManager.getSessionId(), lane.name);
-			if (arrived || foreign || (pick.by === "env" && ctx.sessionManager.getBranch().length > 0)) startAtTail(state.lane.store, ctx.sessionManager);
+			const id = ctx.sessionManager.getSessionId();
+			const standing = sessionStanding(config.dataDir, id, lane.name);
+			if (arrived || standing !== "own" || (pick.by === "env" && ctx.sessionManager.getBranch().length > 0)) startAtTail(state.lane.store, ctx.sessionManager);
 			else if (event.reason === "fork" || ctx.sessionManager.getHeader()?.parentSession !== undefined) markSessionCopied(state.lane.store, ctx.sessionManager);
+			// Only once the tail is written: a write that failed (it threw) leaves the mark for the next open.
+			if (standing === "visited") settleVisit(config.dataDir, id);
 			copySession(state.lane.view, ctx.sessionManager, lane.memory.toolCap);
 			state.runStart = Date.now(); // a first model call that is not a prompt (resumed session) is trimmed too
 			state.lastEnd = state.runSince = state.runStart;
@@ -384,7 +401,10 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			omp && state.config !== undefined && state.guarded?.by !== "env" && state.guarded?.by !== "refused" && laneForCwd(state.config, ctx.cwd)?.name !== state.guarded?.lane?.name;
 
 		// A session moved elsewhere by /move and ended before another message is no longer the lane's to save.
-		pi.on("session_shutdown", (_event, ctx) => closeLane(ctx, !moved(ctx)));
+		pi.on("session_shutdown", (_event, ctx) => {
+			noteRun(ctx);
+			return closeLane(ctx, !moved(ctx));
+		});
 
 		/** Leaves the lane the session had, as its end would but without saving: its guard and OMP settings go, the footer clears. */
 		const leave = async (ctx: ExtensionContext): Promise<void> => {
@@ -510,6 +530,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 		pi.on("message_end", log);
 		pi.on("agent_end", (event, ctx) => {
 			state.lastEnd = Date.now();
+			noteRun(ctx);
 			log(event, ctx);
 			if (!moved(ctx)) recordingLane(ctx)?.afterTurn();
 		});
@@ -528,17 +549,19 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 				if (await follow(event, ctx)) return;
 				const id = ctx.sessionManager.getSessionId();
 				// The session now open is this lane's (or no lane's, under a refused ORRERY_AGENT), as at session_start.
-				if (state.config !== undefined && state.guarded !== undefined && !subagent(ctx)) noteSession(state.config.dataDir, id, state.guarded.lane?.name ?? NO_AGENT);
+				noteRun(ctx);
 				const lane = recordingLane(ctx);
 				if (lane === undefined || state.config === undefined) return;
 				try {
 					// From its tail: a session another agent owns or ran in since; and, for a lane opened by ORRERY_AGENT, any
 					// switch into a session with turns in it (a resume, a fork, a reason OMP adds later): they were not said in
 					// this run. A branch (a rewind, /btw) is this run's own session.
-					const foreign = foreignSession(state.config.dataDir, id, lane.config.name);
+					const standing = sessionStanding(state.config.dataDir, id, lane.config.name);
 					const byEnv = state.guarded?.by === "env" && event.type === "session_switch" && ctx.sessionManager.getBranch().length > 0;
-					if (foreign || byEnv) startAtTail(lane.store, ctx.sessionManager);
+					if (standing !== "own" || byEnv) startAtTail(lane.store, ctx.sessionManager);
 					else if (event.type === "session_branch" || event.reason === "fork" || ctx.sessionManager.getHeader()?.parentSession !== undefined) markSessionCopied(lane.store, ctx.sessionManager, leaf);
+					// Only once the tail is written: a write that failed (it threw) leaves the mark for the next open.
+					if (standing === "visited") settleVisit(state.config.dataDir, id);
 					copySession(lane.view, ctx.sessionManager, lane.config.memory.toolCap);
 				} catch (error) {
 					warn(ctx, `Orrery: logging the new session into memory failed: ${errorText(error)}`);
@@ -702,7 +725,10 @@ function mismatched(pi: ExtensionAPI, options: OrreryOptions, omp: boolean): voi
 		// Judged by the tool this runs in, not the entry's: OMP's tool shapes when pi's entry is loaded in OMP.
 		guard(pi, state, insideOmp(pi) ? "omp" : "pi");
 		// One notice per session: OMP starts each subagent too (its task tool), and a subagent says nothing.
-		if (!subagent(ctx)) warn(ctx, notice);
+		if (subagent(ctx)) return;
+		// Whose session this is, as the right entry would note it (src/lane/session-owner.ts).
+		noteSession(config.dataDir, ctx.sessionManager.getSessionId(), state.guarded.lane?.name ?? NO_AGENT);
+		warn(ctx, notice);
 	});
 }
 
