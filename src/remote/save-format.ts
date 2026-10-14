@@ -151,14 +151,24 @@ function tempPath(dbPath: string, kind: string): string {
 	return join(dirname(dbPath), `.${kind}-${process.pid}-${randomBytes(12).toString("hex")}.sqlite`);
 }
 
-/** Recover files left by interrupted snapshot/restore operations, without disturbing recent work. */
+/** The private folder vacuumInto (src/memory/sqlite.ts) writes in, `<target>-XXXXXX`, beside a snapshot or a set-aside copy. */
+const VACUUM_FOLDER = /^(\.snapshot-.+|memory-before-remote-.+)\.sqlite-[A-Za-z0-9]{6}$/;
+
+/**
+ * Recover files left by interrupted snapshot/restore operations, and vacuumInto's folders left by interrupted snapshots
+ * and set-asides, without disturbing recent work. Links are never followed or removed.
+ */
 function cleanOldTemps(dbPath: string): void {
 	const cutoff = Date.now() - 60 * 60 * 1000;
 	for (const name of readdirSync(dirname(dbPath))) {
-		if (!name.startsWith(".restore-") && !name.startsWith(".snapshot-")) continue;
+		const file = name.startsWith(".restore-") || name.startsWith(".snapshot-");
+		const folder = VACUUM_FOLDER.test(name);
+		if (!file && !folder) continue;
 		const path = join(dirname(dbPath), name);
 		const stat = lstatSync(path, { throwIfNoEntry: false });
-		if (stat?.isFile() && stat.mtimeMs < cutoff) rmSync(path, { force: true });
+		if (stat === undefined || stat.mtimeMs >= cutoff) continue;
+		if (file && stat.isFile()) rmSync(path, { force: true });
+		else if (folder && stat.isDirectory()) rmSync(path, { recursive: true, force: true });
 	}
 }
 

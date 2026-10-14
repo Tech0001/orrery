@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, lutimesSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -218,22 +218,37 @@ describe("reviewed save boundaries", () => {
 		} finally { source.close(); target.close(); }
 	});
 
-	it.each(["snapshot", "restore"])("cleans only old snapshot/restore temporary files before %s", (operation) => {
+	it.each(["snapshot", "restore"])("cleans only old snapshot/restore temporary files and vacuum folders before %s", (operation) => {
 		const source = MemoryStore.open(join(dir, "source.sqlite"));
 		try {
 			const snapshot = snapshotBytes(source.path);
 			const old = new Date(Date.now() - 3_601_000);
-			for (const name of [".restore-old.sqlite", ".snapshot-old.sqlite", ".restore-old.sqlite-wal", "unrelated.sqlite"]) {
+			const aged = (path: string) => utimesSync(path, old, old);
+			for (const name of [".restore-old.sqlite", ".snapshot-old.sqlite", ".restore-old.sqlite-wal", "unrelated.sqlite", "memory-before-remote-old.sqlite"]) {
 				const path = join(dir, name);
 				writeFileSync(path, "old");
-				utimesSync(path, old, old);
+				aged(path);
 			}
+			// vacuumInto's folders, interrupted: old ones go with what they hold; a fresh one, other names and links stay.
+			const folders = [".snapshot-old.sqlite-AbC123", "memory-before-remote-2026-10-13T10-00-00.sqlite-xYz789"];
+			const kept = [".snapshot-fresh.sqlite-Fre5h0", ".snapshot-old-folder", "memory-before-remote-old.sqlite-toolong", "other.sqlite-AbC123"];
+			for (const name of [...folders, ...kept]) {
+				mkdirSync(join(dir, name));
+				writeFileSync(join(dir, name, "copy.sqlite"), "memory text");
+				if (name !== ".snapshot-fresh.sqlite-Fre5h0") aged(join(dir, name));
+			}
+			const outside = join(dir, "outside");
+			mkdirSync(outside);
+			writeFileSync(join(outside, "keep"), "keep");
+			symlinkSync(outside, join(dir, ".snapshot-link.sqlite-Lnk123"));
+			lutimesSync(join(dir, ".snapshot-link.sqlite-Lnk123"), old, old);
 			writeFileSync(join(dir, ".snapshot-fresh.sqlite"), "active");
 			if (operation === "snapshot") snapshotBytes(source.path);
 			else restoreSnapshot(join(dir, "target.sqlite"), snapshot);
-			for (const name of [".restore-old.sqlite", ".snapshot-old.sqlite", ".restore-old.sqlite-wal"]) expect(existsSync(join(dir, name))).toBe(false);
-			expect(existsSync(join(dir, "unrelated.sqlite"))).toBe(true);
-			expect(existsSync(join(dir, ".snapshot-fresh.sqlite"))).toBe(true);
+			for (const name of [".restore-old.sqlite", ".snapshot-old.sqlite", ".restore-old.sqlite-wal", ...folders]) expect(existsSync(join(dir, name))).toBe(false);
+			for (const name of ["unrelated.sqlite", "memory-before-remote-old.sqlite", ".snapshot-fresh.sqlite", ...kept]) expect(existsSync(join(dir, name))).toBe(true);
+			expect(lstatSync(join(dir, ".snapshot-link.sqlite-Lnk123")).isSymbolicLink()).toBe(true);
+			expect(readFileSync(join(outside, "keep"), "utf8")).toBe("keep");
 		} finally { source.close(); }
 	});
 });
