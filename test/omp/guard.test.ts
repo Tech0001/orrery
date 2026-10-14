@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { editTargets, globBase, guardOmpToolCall, guardToolCall, ompCredentials, ompToolPath, pathParts } from "../../src/lane/guard-paths.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
-import type { LaneConfig } from "../../src/lane/config.ts";
-import { cleanup, world } from "../pi/world.ts";
-import { type FakeOmp, ompCleanup, ompOrrery } from "./world.ts";
+import type { HarnessConfig, LaneConfig } from "../../src/lane/config.ts";
+import { createOrrery } from "../../src/pi/index.ts";
+import { cleanup, scratchHome, summarySourcesFor, world } from "../pi/world.ts";
+import { type FakeOmp, fakeOmp, ompCleanup, ompOrrery, track } from "./world.ts";
 
 let dir: string;
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -545,6 +546,53 @@ describe("OMP: only the agent that owns a folder's memory view reads it", () => 
 		const omp = await ompOrrery(atlas, config);
 		expect(await call(omp, "grep", { pattern: "secret", path: birch })).toEqual(refused);
 		expect(await call(omp, "glob", { path: birch })).toBeUndefined();
+	});
+
+	/**
+	 * Orrery's OMP entry in a fake OMP in `cwd`, started with the config ORRERY_CONFIG names (`file`), as OMP loads it:
+	 * no config passed in. ORRERY_CONFIG is put back once the session has started.
+	 */
+	async function ompWithConfig(cwd: string, root: string, file: string): Promise<FakeOmp> {
+		const saved = process.env.ORRERY_CONFIG;
+		process.env.ORRERY_CONFIG = file;
+		try {
+			const options = { host: "omp" as const, summarySources: async (cfg: HarnessConfig) => summarySourcesFor(cfg), ...scratchHome(root) };
+			const host = track(fakeOmp(cwd, [createOrrery(options)]));
+			await host.emit("session_start");
+			return host;
+		} finally {
+			if (saved === undefined) delete process.env.ORRERY_CONFIG;
+			else process.env.ORRERY_CONFIG = saved;
+		}
+	}
+
+	it("keeps the default guard on in a session that starts while Orrery's config cannot be read (fix round 2)", async () => {
+		const { root } = viewWorld();
+		const key = join(root, "home", ".ssh", "id_test");
+		mkdirSync(join(key, ".."), { recursive: true });
+		writeFileSync(key, "fake key");
+		const broken = join(root, "broken.toml");
+		writeFileSync(broken, "lanes = [");
+		const omp = await ompWithConfig(join(root, "plain"), root, broken);
+		expect(omp.notices).toEqual([{ type: "warning", message: expect.stringMatching(/; running without memory$/) }]);
+		expect(await call(omp, "read", { path: key })).toEqual(refused);
+		expect(await call(omp, "write", { path: `${root}-escape.txt`, content: "x" })).toEqual({ block: true, reason: expect.stringMatching(/outside this lane's workspace/) });
+		expect(await call(omp, "bash", { command: `printf '[' >> ${broken}` })).toEqual(refused);
+		expect(await call(omp, "write", { path: join(root, "plain", "notes.md"), content: "x" })).toBeUndefined();
+	});
+
+	it("keeps the config file in use read-only and named in no command, wherever ORRERY_CONFIG puts it (fix round 2)", async () => {
+		const { root, configPath, atlas } = viewWorld();
+		const omp = await ompWithConfig(atlas, root, configPath);
+		expect(omp.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
+		for (const command of [`printf '[' >> ${configPath}`, `sed -i s/Atlas/Birch/ ${configPath}`, `cat "${configPath}"`]) {
+			expect([command, await call(omp, "bash", { command })]).toEqual([command, refused]);
+		}
+		expect(await call(omp, "eval", { language: "py", code: `open('${configPath}', 'a').write('[')` })).toEqual(refused);
+		const configRule = { block: true, reason: expect.stringMatching(/Orrery's config/) };
+		expect(await call(omp, "write", { path: configPath, content: "[" })).toEqual(configRule);
+		expect(await call(omp, "edit", { path: configPath, input: "x" })).toEqual(configRule);
+		expect(await call(omp, "read", { path: configPath })).toBeUndefined();
 	});
 
 	it("refuses shell text that names Orrery's config, to read or to change it (fix round 1)", async () => {

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readMode } from "../../src/claude/spool.ts";
@@ -95,5 +95,18 @@ describe("the hooks as Claude Code runs them", () => {
 		}
 		// The same call with the lane's good config goes through.
 		expect(hookCli("pre-tool-use", call, { ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: t.workspace }).stdout).toBe("");
+	}, 60_000);
+
+	it("PreToolUse keeps the config file ORRERY_CONFIG names read-only and named in no command (fix round 2)", () => {
+		const t = testLane();
+		// The config inside the lane's own folder: only the config rule can refuse a write there.
+		const file = join(t.workspace, "orrery.toml");
+		writeFileSync(file, readFileSync(t.configPath, "utf8"));
+		const tool = (tool_name: string, tool_input: object) =>
+			hookCli("pre-tool-use", { session_id: "s1", cwd: t.workspace, tool_name, tool_input }, { ORRERY_CONFIG: file, CLAUDE_PROJECT_DIR: t.workspace }).stdout;
+		expect(tool("Bash", { command: `printf '[' >> ${file}` })).toMatch(/"permissionDecision":"deny".*sensitive/);
+		expect(tool("Write", { file_path: file, content: "[" })).toMatch(/"permissionDecision":"deny".*Orrery's config/);
+		expect(tool("Read", { file_path: file })).toBe("");
+		expect(tool("Write", { file_path: join(t.workspace, "notes.md"), content: "x" })).toBe("");
 	}, 60_000);
 });

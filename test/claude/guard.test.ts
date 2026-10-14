@@ -751,6 +751,26 @@ describe("Claude Code: only the agent that owns a folder's memory view reads it"
 		expect(await tool("Write", { file_path: join(home, ".orrery", "config.toml"), content: "[" })).toMatch(/^Orrery guard: .*(Orrery's config|outside)/);
 	});
 
+	it("keeps the config file in use read-only and named in no command, wherever it is (fix round 2)", async () => {
+		const { home, config, atlas } = viewLanes();
+		// A config inside Atlas's own folder: only the config rule can refuse a write there.
+		const file = join(atlas, "orrery.toml");
+		writeFileSync(file, "# lanes\n");
+		symlinkSync(file, join(atlas, "settings.toml"));
+		const c: HookContext = { config, env: { CLAUDE_PROJECT_DIR: atlas }, claudePid: process.pid, startHolder: () => {}, home, configFile: file };
+		const tool = async (tool_name: string, tool_input: object) => {
+			const out = await runHook("pre-tool-use", JSON.stringify({ session_id: "s1", cwd: atlas, tool_name, tool_input }), c);
+			return out === "" ? "allowed" : (JSON.parse(out) as { hookSpecificOutput: { permissionDecisionReason: string } }).hookSpecificOutput.permissionDecisionReason;
+		};
+		for (const command of [`printf '[' >> ${file}`, `sed -i s/a/b/ ${file}`, `cat '${file}'`, `cp /tmp/x ${file}`]) expect([command, await tool("Bash", { command })]).toEqual([command, REFUSED]);
+		for (const path of [file, join(atlas, "settings.toml")]) {
+			expect(await tool("Write", { file_path: path, content: "[" })).toMatch(/^Orrery guard: .*Orrery's config/);
+			expect(await tool("Edit", { file_path: path, old_string: "lanes", new_string: "x" })).toMatch(/^Orrery guard: .*Orrery's config/);
+			expect(await tool("Read", { file_path: path })).toBe("allowed");
+		}
+		expect(await tool("Write", { file_path: join(atlas, "notes.md"), content: "x" })).toBe("allowed");
+	});
+
 	it("denies a call when choosing the session's lane throws, rather than let it through (fix round 1)", async () => {
 		const { home, config, atlas } = viewLanes();
 		const broken = Object.create(config, {

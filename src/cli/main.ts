@@ -7,7 +7,7 @@
 import { join, resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
 import type { LaneTool } from "../lane/memory-tools.ts";
-import { findLane, type HarnessConfig, type LaneConfig, loadConfig } from "../lane/config.ts";
+import { defaultConfigPath, findLane, type HarnessConfig, type LaneConfig, loadConfig } from "../lane/config.ts";
 import { exitWhenFlushed } from "./exit.ts";
 
 const USAGE = `Usage: orrery <command> [--config FILE]
@@ -767,7 +767,9 @@ async function claudeHook(event: string | undefined, configPath: string | undefi
 		const stdin = await readStdin(hooks.hookInputMax(event ?? ""));
 		const claudePid = Number(process.env.CLAUDE_PID) || process.ppid;
 		const startHolder = (lane: LaneConfig, session: string, nonce: string, since: number) => hooks.spawnHolder(lane, session, nonce, claudePid, since, configPath);
-		const answer = await hooks.runHook(event ?? "", stdin, { config, env: process.env, claudePid, startHolder });
+		// The file the config came from, as loadConfig found it: the guard keeps it read-only, wherever it is.
+		const configFile = resolvePath(configPath ?? defaultConfigPath());
+		const answer = await hooks.runHook(event ?? "", stdin, { config, env: process.env, claudePid, startHolder, configFile });
 		process.stdout.write(answer);
 	} catch (error) {
 		process.stderr.write(`Orrery: ${event ?? "claude-hook"}: ${errorText(error)}\n`);

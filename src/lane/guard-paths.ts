@@ -11,7 +11,10 @@
  * - Claude Code loads a subfolder's CLAUDE.md (and what it imports) by itself once the session reads files there. That
  *   is no tool call, so the hook never sees it.
  * - Shell text is a seatbelt: a view named through a variable, an escape, or a command that changes folder by its own
- *   flag (`git -C`, `tar -C`), or a shell search of a lane's whole folder, gets through.
+ *   flag (`git -C`, `tar -C`), or a shell search of a lane's whole folder, gets through. So does the config file in use
+ *   (GuardOptions.configFile) named by a relative path or a variable.
+ * - A deleted config is no config: Claude Code then runs plain, and so do pi and OMP sessions started after it. Deleting
+ *   it takes a spelling the guard cannot see (its name and its path are refused in commands; no file tool deletes).
  */
 
 import { lstatSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
@@ -21,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import { viewFile } from "../claude/paths.ts";
 import { laneMode } from "../claude/view-file.ts";
 import type { HarnessConfig, LaneConfig } from "./config.ts";
-import { CONFIG_READ_ONLY, checkToolCall, type GuardOptions, inOrreryHome, orreryConfigNamed, sensitive, viewRules, within } from "./guard-rules.ts";
+import { CONFIG_READ_ONLY, checkToolCall, configSpellings, type GuardOptions, inOrreryHome, orreryConfigNamed, sensitive, viewRules, within } from "./guard-rules.ts";
 
 const UNICODE_SPACES = /[  -   　]/g;
 
@@ -468,9 +471,11 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	const nameKey = toolName === "grep" ? "glob" : toolName === "find" ? "pattern" : undefined;
 	const names = nameKey === undefined ? undefined : input[nameKey];
 	if (typeof names === "string" && sensitive(names, views.path())) return `${toolName} ${nameKey} "${names}" names sensitive files (keys, credentials or Orrery's private data).`;
+	// The config file in use, as given and where it really is: named in no command, written by no tool.
+	const config = configSpellings({ ...options, home }, options.configFile === undefined ? undefined : realTarget(options.configFile));
 	const given = typeof input.path === "string" && input.path !== "" ? input.path : undefined;
 	const raw = given ?? (search ? "." : undefined);
-	if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, options, views);
+	if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, options, views, config);
 	// All three forms: what the model wrote, where the tool resolves it, and where it really lands.
 	const resolved = (options.resolvePath ?? piToolPath)(raw, options.cwd, home);
 	const named = views.path(resolved);
@@ -479,7 +484,8 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	if (sensitive(target, views.path(target))) return SENSITIVE_FILE(raw);
 	// Orrery's config is read, never written: a lane's view and these rules come from it.
 	const writes = toolName === "write" || toolName === "edit";
-	if (writes && (orreryConfigNamed(resolved) || orreryConfigNamed(target))) return CONFIG_READ_ONLY(raw);
+	const isConfig = (path: string) => orreryConfigNamed(path) || config.includes(path.toLowerCase());
+	if (writes && (isConfig(resolved) || isConfig(target))) return CONFIG_READ_ONLY(raw);
 	// The credential locations themselves, symlinks followed (a ~/.ssh linked from a dotfiles folder, say). Compared
 	// ignoring case: on a case-insensitive file system (macOS) ~/.SSH and /USERS are the same folders.
 	const fold = (path: string) => path.toLowerCase();
@@ -510,6 +516,7 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 		{ name: toolName, arguments: { ...input, path: target } },
 		{ workspace: realRoot(options.workspace), allowedRoots: options.allowedRoots.map(realRoot), cwd: realRoot(options.cwd), foreignViews: options.foreignViews },
 		views,
+		config,
 	);
 }
 

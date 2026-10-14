@@ -7,9 +7,11 @@
  */
 
 import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { defaultConfigPath, type HarnessConfig, type LaneConfig, laneForCwd, loadConfig } from "../lane/config.ts";
 import { holderFresh, openYielding, readHolder } from "../lane/handover.ts";
+import { orreryHome } from "../lane/home.ts";
 import { compactorCommand } from "../lane/lane-commands.ts";
 import { laneModelSource } from "../lane/model-source.ts";
 import { noticeKey, noticeText, type TroubleState } from "../lane/notices.ts";
@@ -106,8 +108,11 @@ export interface OrreryOptions {
 interface Guarded {
 	/** The session's lane; absent when its ORRERY_AGENT was refused (then the guard alone runs, with no memory). */
 	readonly lane?: LaneConfig;
-	/** How the session found its lane: ORRERY_AGENT, its folder, or neither because ORRERY_AGENT was refused. */
-	readonly by: "env" | "folder" | "refused";
+	/**
+	 * How the session found its lane: ORRERY_AGENT, its folder, or neither, because ORRERY_AGENT was refused or Orrery's
+	 * config could not be read (unreadableGuard).
+	 */
+	readonly by: "env" | "folder" | "refused" | "unreadable";
 	/** Where writes may go besides allowedRoots (src/lane/pick.ts workArea). */
 	readonly workArea: string;
 	readonly allowedRoots: readonly string[];
@@ -120,13 +125,43 @@ interface Guarded {
 	readonly fileModeViews: readonly string[];
 	/** The session's own lane's view file, if it has one. */
 	readonly ownView?: string;
+	/** The config file the session read (or could not read): read-only, and named in no command. */
+	readonly configFile?: string;
 }
 
-/** What every guard keeps out: orrery's credentials, pi's in a moved agent dir, and OMP's stores (in every tool). */
-function guardBase(config: HarnessConfig, options: OrreryOptions): Pick<Guarded, "credentials" | "orreryData" | "home"> {
+/** The file each config the extension read came from (orreryConfig); none for a config passed in (OrreryOptions.config). */
+const configFiles = new WeakMap<HarnessConfig, string>();
+
+/** What every guard keeps out: orrery's credentials, pi's in a moved agent dir, OMP's stores (in every tool), and the config's file from writes. */
+function guardBase(config: HarnessConfig, options: OrreryOptions): Pick<Guarded, "credentials" | "orreryData" | "home" | "configFile"> {
 	const env = options.env ?? process.env;
 	const home = options.home ?? homedir();
-	return { home, orreryData: config.dataDir, credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)] };
+	const configFile = configFiles.get(config);
+	return {
+		home,
+		orreryData: config.dataDir,
+		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)],
+		...(configFile === undefined ? {} : { configFile }),
+	};
+}
+
+/**
+ * The guard for a session that starts while Orrery's config is there (or named) but cannot be read: no lane and no
+ * memory, and the default rules, since a guard that cannot judge refuses. The session's folder is its work area, with no
+ * allowed roots. Orrery's default home is kept out (where the config would put the data is unknown), and so are the
+ * logins beside it and beside the config, every other credential store, every lane's view by name, and the config file.
+ */
+function unreadableGuard(file: string, cwd: string, options: OrreryOptions): Guarded {
+	const env = options.env ?? process.env;
+	const home = options.home ?? homedir();
+	let data: string;
+	try {
+		data = orreryHome({ ...env, HOME: home });
+	} catch {
+		data = join(home, ".orrery"); // a relative ORRERY_HOME: the default home
+	}
+	const credentials = [join(data, "credentials.json"), join(dirname(resolve(file)), "credentials.json"), ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)];
+	return { by: "unreadable", workArea: workArea({}, cwd), allowedRoots: [], home, orreryData: data, credentials, foreignViews: [], fileModeViews: [], configFile: file };
 }
 
 /** The guard for `lane` in `cwd`: no other lane's view. */
@@ -212,8 +247,16 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 		 * read. `arrived`: the session moved here from another folder (OMP), so it records only what comes after the move.
 		 */
 		const openNow = async (event: { reason?: string }, ctx: ExtensionContext, controller: AbortController, loaded?: HarnessConfig, arrived = false): Promise<void> => {
-			const config = loaded ?? orreryConfig(options, ctx);
-			if (config === undefined) return;
+			const { config, unreadable } = loaded === undefined ? orreryConfig(options, ctx) : { config: loaded, unreadable: undefined };
+			if (config === undefined) {
+				// A guard that cannot judge refuses: an unreadable config leaves the default guard on (no lane, no memory).
+				if (unreadable !== undefined) {
+					state.config = undefined;
+					state.guarded = unreadableGuard(unreadable, ctx.cwd, options);
+					guard(pi, state, host);
+				}
+				return;
+			}
 			state.config = config;
 			const pick = pickFor(config, options, ctx.cwd);
 			if (pick.kind === "none") return;
@@ -467,6 +510,11 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 				state.guarded = refusedGuard(ctx.cwd, state.config, options);
 				return false;
 			}
+			// Nor does a session without a readable config: its default guard's work area is the folder it moved to.
+			if (state.guarded?.by === "unreadable") {
+				state.guarded = { ...state.guarded, workArea: workArea({}, ctx.cwd) };
+				return false;
+			}
 			if (!moved(ctx)) return false;
 			const before = state.guarded?.lane?.name;
 			const closed = state.lane !== undefined;
@@ -659,16 +707,22 @@ function warn(ctx: ExtensionContext, message: string): void {
 	}
 }
 
-/** The orrery config, or undefined for plain pi. Silent only when there is no config at all; anything else warns. */
-function orreryConfig(options: OrreryOptions, ctx: ExtensionContext): HarnessConfig | undefined {
-	if (options.config !== undefined) return options.config;
+/**
+ * The orrery config, or none: plain pi when there is no config at all (silent), and `unreadable` (the file) when one is
+ * there or named but cannot be read (it warns; the session keeps the default guard, unreadableGuard).
+ */
+function orreryConfig(options: OrreryOptions, ctx: ExtensionContext): { readonly config?: HarnessConfig; readonly unreadable?: string } {
+	if (options.config !== undefined) return { config: options.config };
 	const file = defaultConfigPath();
 	try {
-		return loadConfig(file);
+		const config = loadConfig(file);
+		configFiles.set(config, resolve(file));
+		return { config };
 	} catch (error) {
 		const absent = (error as { code?: unknown }).code === "ENOENT" && !process.env.ORRERY_CONFIG;
-		if (!absent) warn(ctx, `Orrery: ${file}: ${errorText(error)}; running without memory`);
-		return undefined;
+		if (absent) return {};
+		warn(ctx, `Orrery: ${file}: ${errorText(error)}; running without memory`);
+		return { unreadable: resolve(file) };
 	}
 }
 
@@ -739,8 +793,15 @@ function mismatched(pi: ExtensionAPI, options: OrreryOptions, omp: boolean): voi
 		? "Orrery's OMP extension is loaded in pi: no memory in this session (the guard still runs). Install Orrery for pi from orrery's Tools page."
 		: "Orrery's pi extension is loaded in OMP: no memory in this session (the guard still runs). Install Orrery for OMP from orrery's Tools page.";
 	pi.on("session_start", async (_event, ctx) => {
-		const config = orreryConfig(options, ctx);
-		if (config === undefined) return;
+		const { config, unreadable } = orreryConfig(options, ctx);
+		if (config === undefined) {
+			// A guard that cannot judge refuses: an unreadable config leaves the default guard on.
+			if (unreadable !== undefined) {
+				state.guarded = unreadableGuard(unreadable, ctx.cwd, options);
+				guard(pi, state, insideOmp(pi) ? "omp" : "pi");
+			}
+			return;
+		}
 		const pick = pickFor(config, options, ctx.cwd);
 		if (pick.kind === "none") return;
 		state.config = config;
@@ -767,8 +828,8 @@ function guard(pi: ExtensionAPI, state: OrreryState, host: "pi" | "omp"): void {
 	const judge = host === "omp" ? guardOmpToolCall : guardToolCall;
 	pi.on("tool_call", (event, ctx) => {
 		if (state.guarded === undefined) return;
-		const { workArea: area, allowedRoots, credentials, orreryData, home, foreignViews, fileModeViews, ownView } = state.guarded;
-		const options = { workspace: area, allowedRoots, cwd: ctx.cwd, credentials, orreryData, home, foreignViews, fileModeViews, ownView };
+		const { workArea: area, allowedRoots, credentials, orreryData, home, foreignViews, fileModeViews, ownView, configFile } = state.guarded;
+		const options = { workspace: area, allowedRoots, cwd: ctx.cwd, credentials, orreryData, home, foreignViews, fileModeViews, ownView, configFile };
 		const reason = judge(event.toolName, event.input as Record<string, unknown>, options);
 		return reason === undefined ? undefined : { block: true, reason };
 	});

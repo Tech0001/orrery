@@ -20,6 +20,11 @@ export interface GuardOptions {
 	readonly fileModeViews?: readonly string[];
 	/** The session's own lane's view file, if it has one. */
 	readonly ownView?: string;
+	/**
+	 * The config file in use, wherever it is (ORRERY_CONFIG may name any path): file tools may read it, no tool may write
+	 * it, and shell text may not name it by its path (configSpellings). ~/.orrery/config.toml is kept so by name too.
+	 */
+	readonly configFile?: string;
 }
 
 const SENSITIVE = [
@@ -58,14 +63,35 @@ export function sensitive(text: string, views: ViewRule = NO_VIEW): boolean {
 
 /**
  * sensitive for shell text (a command line, code to run): Orrery's config is refused by name too, since a command could
- * rewrite it (a lane's view and the guard's rules come from it). File tools may still read it.
+ * rewrite it (a lane's view and the guard's rules come from it), and so is the config file in use by any of `config`,
+ * its spellings (configSpellings). File tools may still read it.
  */
-export function shellSensitive(command: string, views: ViewRule = NO_VIEW): boolean {
-	return flagged(command, views, true);
+export function shellSensitive(command: string, views: ViewRule = NO_VIEW, config: readonly string[] = []): boolean {
+	return flagged(command, views, true, config);
 }
 
-function flagged(text: string, views: ViewRule, shell: boolean): boolean {
-	return readings(text.toLowerCase()).some((form) => SENSITIVE.some((pattern) => pattern.test(form)) || orreryNamed(form, views, shell));
+function flagged(text: string, views: ViewRule, shell: boolean, config: readonly string[] = []): boolean {
+	return readings(text.toLowerCase()).some(
+		(form) => SENSITIVE.some((pattern) => pattern.test(form)) || orreryNamed(form, views, shell) || config.some((spelling) => form.includes(spelling)),
+	);
+}
+
+/**
+ * The spellings of the config file in use (GuardOptions.configFile) that shell text may not hold: its path as given and
+ * `real` (where it really is), each also from "~", "$HOME" and "${HOME}" when it is under `home`. Lower case, as the
+ * readings are. A relative spelling, or one through another link, is not caught (shell text is a seatbelt).
+ */
+export function configSpellings(options: Pick<GuardOptions, "configFile"> & { readonly home?: string }, real?: string): string[] {
+	if (options.configFile === undefined) return [];
+	const home = options.home === undefined ? undefined : posix.normalize(options.home).replace(/\/+$/, "");
+	const spellings = new Set<string>();
+	for (const path of real === undefined ? [options.configFile] : [options.configFile, real]) {
+		const file = posix.normalize(path);
+		spellings.add(file.toLowerCase());
+		if (home === undefined || home === "" || !file.startsWith(`${home}/`)) continue;
+		for (const start of ["~", "$HOME", "${HOME}"]) spellings.add(`${start}${file.slice(home.length)}`.toLowerCase());
+	}
+	return [...spellings];
 }
 
 /**
@@ -254,14 +280,18 @@ export function within(path: string, root: string): boolean {
 	return path === normalizedRoot || path.startsWith(`${normalizedRoot}/`);
 }
 
-/** A cheap pre-filter on the raw arguments; the authoritative file check is checkResolvedPath. `views`: viewRules. */
+/**
+ * A cheap pre-filter on the raw arguments; the authoritative file check is checkResolvedPath. `views`: viewRules;
+ * `config`: configSpellings.
+ */
 export function checkToolCall(
 	call: { readonly name: string; readonly arguments: Readonly<Record<string, unknown>> },
 	options: GuardOptions,
 	views: ViewRules = viewRules(options),
+	config: readonly string[] = configSpellings(options),
 ): string | undefined {
 	const command = call.arguments.command;
-	if (call.name === "bash" && typeof command === "string" && shellSensitive(command, views.command)) {
+	if (call.name === "bash" && typeof command === "string" && shellSensitive(command, views.command, config)) {
 		return "This command touches sensitive files (keys, credentials or Orrery's private data).";
 	}
 	const raw = call.arguments.path;
@@ -270,7 +300,7 @@ export function checkToolCall(
 	const named = views.path(path);
 	if (sensitive(raw, named) || sensitive(path, named)) return `${path} is a sensitive file (keys, credentials or Orrery's private data).`;
 	const writes = call.name === "write" || call.name === "edit";
-	if (writes && orreryConfigNamed(path)) return CONFIG_READ_ONLY(path);
+	if (writes && (orreryConfigNamed(path) || config.includes(path.toLowerCase()))) return CONFIG_READ_ONLY(path);
 	if (writes && ![options.workspace, ...options.allowedRoots].some((root) => within(path, root))) {
 		return `${path} is outside this lane's workspace and allowed roots.`;
 	}

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -285,6 +285,60 @@ describe("pi: only the agent that owns a folder's memory view reads it", () => {
 		expect(await tool("grep", { pattern: "secret" })).toEqual({ block: true, reason: expect.stringMatching(/memory view/) });
 		expect(await tool("grep", { pattern: "secret", path: "." })).toEqual({ block: true, reason: expect.stringMatching(/memory view/) });
 	});
+
+	/** Runs `run` with ORRERY_CONFIG set to `file`, as the session's process would have it, and puts it back after. */
+	async function withConfig(file: string, run: () => Promise<void>): Promise<void> {
+		const saved = process.env.ORRERY_CONFIG;
+		process.env.ORRERY_CONFIG = file;
+		try {
+			await run();
+		} finally {
+			if (saved === undefined) delete process.env.ORRERY_CONFIG;
+			else process.env.ORRERY_CONFIG = saved;
+		}
+	}
+
+	it("keeps the default guard on in a session that starts while Orrery's config cannot be read (fix round 2)", async () => {
+		const { root } = viewWorld();
+		// A key in the scratch home: the guard refuses it by name, and nothing real is read if it does not.
+		const key = join(root, "home", ".ssh", "id_test");
+		mkdirSync(join(key, ".."), { recursive: true });
+		writeFileSync(key, "fake key: secret");
+		const broken = join(root, "broken.toml");
+		writeFileSync(broken, "lanes = [");
+		const escape = `${root}-escape.txt`;
+		try {
+			await withConfig(broken, async () => {
+				const run = await pi(root, join(root, "plain"), undefined);
+				expect(run.tool("zoom")).toBeUndefined();
+				expect(run.notices).toEqual([{ type: "warning", message: expect.stringMatching(/; running without memory$/) }]);
+				refused(await call(run, "read", { path: key }));
+				expect(await call(run, "write", { path: escape, content: "x" })).toMatch(/outside this lane's workspace/);
+				expect(existsSync(escape)).toBe(false);
+				refused(await call(run, "bash", { command: `printf '[' >> ${broken}` }));
+				// The session's own folder is its work area.
+				await call(run, "write", { path: join(root, "plain", "notes.md"), content: "x" });
+				expect(readFileSync(join(root, "plain", "notes.md"), "utf8")).toBe("x");
+			});
+		} finally {
+			rmSync(escape, { force: true });
+		}
+	}, 20_000);
+
+	it("keeps the config file in use read-only and named in no command, wherever ORRERY_CONFIG puts it (fix round 2)", async () => {
+		const { root, configPath } = viewWorld();
+		const before = readFileSync(configPath, "utf8");
+		await withConfig(configPath, async () => {
+			const atlas = await pi(root, join(root, "agent-Atlas"), undefined);
+			expect(atlas.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
+			for (const command of [`printf '[' >> ${configPath}`, `sed -i s/Atlas/Birch/ ${configPath}`, `cat "${configPath}"`]) refused(await call(atlas, "bash", { command }));
+			// Its folder is in Atlas's allowed roots (the workspace's parent): only the config rule refuses these.
+			expect(await call(atlas, "write", { path: configPath, content: "[" })).toMatch(/Orrery's config/);
+			expect(await call(atlas, "edit", { path: configPath, edits: [{ oldText: "Atlas", newText: "Birch" }] })).toMatch(/Orrery's config/);
+			expect(await call(atlas, "read", { path: configPath })).toContain("[lanes.Atlas]");
+		});
+		expect(readFileSync(configPath, "utf8")).toBe(before);
+	}, 20_000);
 
 	it("refuses shell text that names Orrery's config, to read or to change it (fix round 1)", async () => {
 		const { root, config } = viewWorld();

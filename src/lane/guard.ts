@@ -96,6 +96,8 @@ export async function checkResolvedPath(
 	if (mode === "write") {
 		// Orrery's config is read, never written: a lane's view and these rules come from it.
 		if (orreryConfigNamed(target) || orreryConfigNamed(real) || (data !== undefined && lower === posix.join(data, "config.toml").toLowerCase())) return CONFIG_READ_ONLY(real);
+		const config = options.configFile === undefined ? [] : [options.configFile, await realPath(env, options.configFile, context)];
+		if (config.some((file) => lower === posix.normalize(file).toLowerCase())) return CONFIG_READ_ONLY(real);
 		const roots = await Promise.all([options.workspace, ...options.allowedRoots].map((root) => realPath(env, root, context)));
 		if (!roots.some((root) => within(real, root))) return `${real} is outside this lane's workspace and allowed roots.`;
 	}

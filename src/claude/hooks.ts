@@ -106,6 +106,8 @@ export interface HookContext {
 	readonly modeWaitMs?: number;
 	/** The home folder "~" means (default: the OS's); tests set it. */
 	readonly home?: string;
+	/** The file `config` was read from: the guard keeps it read-only and named in no command (GuardOptions.configFile). */
+	readonly configFile?: string;
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -358,6 +360,7 @@ export function preToolUse(input: HookInput, ctx: HookContext): object | undefin
 			orreryData: ctx.config.dataDir,
 			home,
 			...laneViews(ctx.config, pick.kind === "lane" ? pick.lane : undefined),
+			...(ctx.configFile === undefined ? {} : { configFile: ctx.configFile }),
 		});
 	} catch (error) {
 		reason = `this call could not be checked (${errorText(error)}).`;
