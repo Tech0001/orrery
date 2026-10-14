@@ -139,6 +139,18 @@ async function olderPush(remote: Remote, m: Machine, turn: string): Promise<void
 	await remote.storage.release("Atlas", taken.lock);
 }
 
+/** A backup of the remote as it is now, under the same name: restored later, it is the remote rolled back to this point. */
+async function backupOf(s: Scene): Promise<Remote> {
+	const backup = { storage: new FakeStorage({ name: "home" }), key: s.key };
+	const now = await s.storage.fetch("Atlas", -1);
+	const taken = await backup.storage.take("Atlas", s.pc.holder, { force: true });
+	if (!taken.ok || now.snapshot === undefined) throw new Error("setup");
+	await backup.storage.snapshot("Atlas", taken.lock, now.snapshot.n, now.snapshot.file);
+	for (const save of now.saves) await backup.storage.save("Atlas", taken.lock, save.n, save.file, new Uint8Array([1]));
+	await backup.storage.release("Atlas", taken.lock);
+	return backup;
+}
+
 /** The lane is taken off the remote (orrery lane local --delete-remote on some machine). */
 async function drop(remote: Remote, m: Machine): Promise<void> {
 	const taken = await remote.storage.take("Atlas", m.holder, { force: true });
@@ -198,22 +210,30 @@ describe("another history under the same names", () => {
 		expect(s.mac.reports.filter((text) => text.includes("changed on another machine"))).toEqual([]);
 	});
 
-	it("a rebuild within one history (a snapshot covering this machine's last save, uploaded late) sets nothing aside", async () => {
+	it("a snapshot at this machine's last save that is not the one it saw made: kept aside once as a rollback saved over would be, nothing lost", async () => {
+		// A snapshot at n is made and uploaded only by the session that made save n, under its lock (every storage refuses
+		// a snapshot under a lock that is not current), so one uploaded after another machine caught up with save n from
+		// the save itself does not happen in use. Only its checksum tells it from a rollback another machine saved over
+		// with a snapshot at that number, which loses this copy's saves (round 4), so both are kept aside.
 		const s = scene();
 		await push(s, s.pc, "a PC turn", "v1\n");
 		await open(s, s.mac);
 		await open(s, s.pc, "a second PC turn");
 		await open(s, s.mac);
 		// The snapshot of saves 1..1, uploaded after the Mac caught up with save 1 from the save itself.
-		const taken = await s.storage.take("Atlas", s.pc.holder, { force: true });
-		if (!taken.ok) throw new Error("held");
-		const plain = encodeSnapshot({ v: 1, n: 1, lock: taken.lock, machine: "pc", at: new Date().toISOString(), settings }, snapshotBytes(db(s.pc)));
-		await s.storage.snapshot("Atlas", taken.lock, 1, seal(s.key, "Atlas", "snapshot", 1, plain));
-		await s.storage.release("Atlas", taken.lock);
+		await snapshotFrom(s, s.pc, 1);
 		s.mac.reports.length = 0;
 		await open(s, s.mac, "a Mac turn");
 		expect(texts(db(s.mac))).toEqual(["a PC turn", "a second PC turn", "a Mac turn"]);
-		expect([...keptMemory(s.mac), ...keptTurns(s.mac), ...keptInstructions(s.mac)]).toEqual([]);
+		expect(keptMemory(s.mac)).toHaveLength(1);
+		const aside = join(s.mac.dir, keptMemory(s.mac)[0] as string);
+		expect(texts(aside)).toEqual(["a PC turn", "a second PC turn"]);
+		expect([...keptTurns(s.mac), ...keptInstructions(s.mac)]).toEqual([]);
+		expect(s.mac.reports).toEqual([`Orrery: Atlas: home's copy does not continue the one on this machine; the memory on this machine was kept aside as ${aside}, and the lane now uses home's copy.`]);
+		s.mac.reports.length = 0;
+		await open(s, s.pc);
+		await open(s, s.mac);
+		expect(keptMemory(s.mac)).toHaveLength(1);
 		expect(s.mac.reports).toEqual([]);
 	});
 });
@@ -376,13 +396,7 @@ describe("round 3: what a copy can prove, and what a push leaves behind", () => 
 		await push(s, s.pc, "a PC turn", "v1\n");
 		await open(s, s.mac, "Mac turn 1");
 		// The backup: the remote as it is now (snapshot 0 and save 1).
-		const backup = { storage: new FakeStorage({ name: "home" }), key: s.key };
-		const now = await s.storage.fetch("Atlas", -1);
-		const taken = await backup.storage.take("Atlas", s.pc.holder, { force: true });
-		if (!taken.ok || now.snapshot === undefined) throw new Error("setup");
-		await backup.storage.snapshot("Atlas", taken.lock, 0, now.snapshot.file);
-		for (const save of now.saves) await backup.storage.save("Atlas", taken.lock, save.n, save.file, new Uint8Array([1]));
-		await backup.storage.release("Atlas", taken.lock);
+		const backup = await backupOf(s);
 		await open(s, s.mac, "Mac turn 2");
 		await open(s, s.mac, "Mac turn 3");
 		s.mac.reports.length = 0;
@@ -393,6 +407,41 @@ describe("round 3: what a copy can prove, and what a push leaves behind", () => 
 		expect(texts(aside)).toEqual(["a PC turn", "Mac turn 1", "Mac turn 2", "Mac turn 3"]);
 		expect(s.mac.reports[0]).toBe(`Orrery: Atlas: home's copy is older than the one on this machine (rolled back, or restored from a backup), so this machine's newer saves are not on it; the memory on this machine was kept aside as ${aside}, and the lane now uses home's copy.`);
 	});
+});
+
+describe("round 4: a rollback another machine has saved over", () => {
+	// The remote is not older then, and the identity matches; only the save at this copy's number tells, by its checksum.
+	for (const past of [false, true]) {
+		it(`a remote rolled back within one history, then saved ${past ? "past" : "up to"} this copy's acknowledged save: its memory and instructions are kept aside, with true notices`, async () => {
+			const s = scene();
+			await push(s, s.pc, "a PC turn", "v1\n");
+			await open(s, s.mac, "Mac turn 1");
+			await open(s, s.pc);
+			// The backup: the remote as it is now (snapshot 0 and save 1), which both machines have.
+			const backup = await backupOf(s);
+			writeFileSync(join(s.mac.dir, "instructions.md"), "v2 edited on the Mac\n");
+			await open(s, s.mac, "Mac turn 2");
+			await open(s, s.mac, "Mac turn 3");
+			// The restored remote: the PC saves over the Mac's saves 2 and 3, and past them.
+			const restored = ["PC turn 2 on the restored remote", "PC turn 3 on the restored remote", ...(past ? ["PC turn 4 on the restored remote"] : [])];
+			for (const turn of restored) await open(backup, s.pc, turn);
+			s.mac.reports.length = 0;
+			await open(backup, s.mac);
+			expect(texts(db(s.mac))).toEqual(["a PC turn", "Mac turn 1", ...restored]);
+			expect(keptMemory(s.mac)).toHaveLength(1);
+			const aside = join(s.mac.dir, keptMemory(s.mac)[0] as string);
+			expect(texts(aside)).toEqual(["a PC turn", "Mac turn 1", "Mac turn 2", "Mac turn 3"]);
+			expect(keptTurns(s.mac)).toEqual([]);
+			expect(instructions(s.mac)).toBe("v1\n");
+			expect(keptInstructions(s.mac)).toHaveLength(1);
+			const instructionsAside = join(s.mac.dir, keptInstructions(s.mac)[0] as string);
+			expect(readFileSync(instructionsAside, "utf8")).toBe("v2 edited on the Mac\n");
+			expect(s.mac.reports).toEqual([
+				`Orrery: Atlas: home's copy does not continue the one on this machine; the memory on this machine was kept aside as ${aside}, and the lane now uses home's copy.`,
+				`Orrery: Atlas's instructions.md here came with the memory set aside; the copy that travels with this memory is used now, and this machine's is kept in ${instructionsAside}.`,
+			]);
+		});
+	}
 });
 
 describe("older-pushed lanes: identities given by two machines converge (guards)", () => {

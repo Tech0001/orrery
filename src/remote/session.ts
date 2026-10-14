@@ -670,9 +670,11 @@ interface Rebuilding {
 /**
  * Before the remote's copy replaces this one, all of this machine's memory is kept aside, as foreign, when the remote
  * holds another history (an identity other than the one recorded), is older than this copy (its newest save before the
- * one this copy last had acknowledged: rolled back, or restored from a backup), or, with no identity recorded, cannot be
- * shown to continue this copy by a save's or snapshot's checksum. The instructions agreement made with the old history
- * is forgotten too. Otherwise (one history) only unsaved rows are kept (spec §5.9).
+ * one this copy last had acknowledged: rolled back, or restored from a backup), holds another save or snapshot at this
+ * copy's last number (the same rollback, which another machine has since saved up to or past: the identity still
+ * matches, so only the checksum tells), or, with no identity recorded, cannot be shown to continue this copy by a save's
+ * or snapshot's checksum. The instructions agreement made with the old history is forgotten too. Otherwise (one history)
+ * only unsaved rows are kept (spec §5.9).
  */
 function keepBeforeRebuild(o: RemoteSessionOptions, known: Rebuilding, remoteMarks: StoreMarks, remoteNewest: number, dbPath: string): void {
 	const { lane, storage } = o;
@@ -680,7 +682,7 @@ function keepBeforeRebuild(o: RemoteSessionOptions, known: Rebuilding, remoteMar
 	const remoteId = remoteMarks.meta[HISTORY_KEY];
 	const differs = recorded !== undefined && remoteId !== recorded;
 	const older = remoteNewest < known.state.save;
-	if (differs || older || (recorded === undefined && known.lineage !== "proven")) {
+	if (differs || older || known.lineage === "broken" || (recorded === undefined && known.lineage !== "proven")) {
 		forget(o);
 		// Another identity proves another history; a remote with none and fewer saves was most likely rolled back past it.
 		const why = differs && (remoteId !== undefined || !older)
