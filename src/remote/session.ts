@@ -8,7 +8,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { openDatabase } from "../memory/sqlite.ts";
+import { openDatabase, vacuumInto } from "../memory/sqlite.ts";
 import { holdWriterLock, MemoryStore, type StoreMarks, type StoreRows, type WriterLock } from "../memory/store.ts";
 import { processAlive } from "../lane/process.ts";
 import { writePrivate } from "../lane/private-file.ts";
@@ -638,7 +638,7 @@ function setAsideLocalMemory(o: RemoteSessionOptions, dbPath: string, now: numbe
 		closeSync(openSync(aside, "wx", 0o600));
 		const db = openDatabase(dbPath, { readOnly: true });
 		try {
-			db.prepare("VACUUM INTO ?").run(aside);
+			vacuumInto(db, aside);
 		} finally {
 			db.close();
 		}

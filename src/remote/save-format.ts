@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { gzipSync, gunzipSync } from "node:zlib";
 import type { LaneConfig } from "../lane/config.ts";
 import { validDate } from "../memory/bytes.ts";
-import { openDatabase, type Database } from "../memory/sqlite.ts";
+import { openDatabase, type Database, vacuumInto } from "../memory/sqlite.ts";
 import { MemoryStore, type StoreRows } from "../memory/store.ts";
 import { isKind } from "../memory/types.ts";
 import { unseal } from "./crypto.ts";
@@ -177,11 +177,11 @@ function removeLocalMeta(db: Database): void {
 export function snapshotBytes(dbPath: string): Uint8Array {
 	cleanOldTemps(dbPath);
 	const temp = tempPath(dbPath, "snapshot");
-	// VACUUM INTO accepts an empty destination. Reserve it privately before SQLite writes any memory text.
+	// Reserve it privately before SQLite writes any memory text.
 	closeSync(openSync(temp, "wx", 0o600));
 	try {
 		const db = openDatabase(dbPath, { readOnly: true });
-		try { db.prepare("VACUUM INTO ?").run(temp); } finally { db.close(); }
+		try { vacuumInto(db, temp); } finally { db.close(); }
 		// Local metadata is excluded from full snapshots as well as incremental saves.
 		const copy = openDatabase(temp);
 		try {

@@ -3,7 +3,9 @@
  * Bun 1.3.14, which has no node:sqlite; the CLI and tests run on Node. ORRERY_SQLITE=node|bun forces one.
  */
 
+import { chmodSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import { join } from "node:path";
 
 export type SqlValue = null | number | bigint | string | Uint8Array;
 
@@ -45,6 +47,40 @@ function withErrcode<T>(call: () => T): T {
 
 const load = createRequire(import.meta.url);
 
+type BunDatabaseClass = new (path: string, options?: object) => BunDatabase;
+
+const SQLITE_CANTOPEN = 14;
+
+/**
+ * A read-only bun:sqlite connection. A read-only connection to a WAL-mode file needs its -wal file, and a file no
+ * connection has open has none (rebuilds and restores remove it; a SQLite that deletes it on close leaves none). The
+ * system SQLite that Bun uses on macOS will not create one for a read-only connection: the first read fails with
+ * SQLITE_CANTOPEN. That file is opened read-write instead, never created. Callers only read through it (VACUUM INTO
+ * writes another file); like any last connection, its close checkpoints the WAL.
+ */
+function openBunReadOnly(Database: BunDatabaseClass, path: string): BunDatabase {
+	const db = withErrcode(() => new Database(path, { readonly: true }));
+	try {
+		withErrcode(() => {
+			const probe = db.prepare("PRAGMA schema_version");
+			try {
+				probe.get();
+			} finally {
+				probe.finalize();
+			}
+		});
+		return db;
+	} catch (error) {
+		db.close(false);
+		if ((error as { errcode?: number }).errcode !== SQLITE_CANTOPEN) throw error;
+		try {
+			return withErrcode(() => new Database(path, { readwrite: true, create: false }));
+		} catch {
+			throw error;
+		}
+	}
+}
+
 export function sqliteBackend(): "node" | "bun" {
 	const forced = process.env.ORRERY_SQLITE;
 	if (forced === "node" || forced === "bun") return forced;
@@ -53,8 +89,8 @@ export function sqliteBackend(): "node" | "bun" {
 
 export function openDatabase(path: string, options: { readOnly?: boolean } = {}): Database {
 	if (sqliteBackend() === "bun") {
-		const { Database } = load("bun:sqlite") as { Database: new (path: string, options?: object) => BunDatabase };
-		const db = withErrcode(() => new Database(path, options.readOnly === true ? { readonly: true } : { create: true }));
+		const { Database } = load("bun:sqlite") as { Database: BunDatabaseClass };
+		const db = options.readOnly === true ? openBunReadOnly(Database, path) : withErrcode(() => new Database(path, { create: true }));
 		// bun:sqlite's close() leaves the connection open while any prepared statement is unfinalized, until garbage
 		// collection: the WAL stays beside the file and the file stays open. A rebuilt copy renamed into place then
 		// lost every save in its WAL. Statements are kept per SQL text (the store prepares some on every call, and a lane
@@ -114,4 +150,21 @@ export function openDatabase(path: string, options: { readOnly?: boolean } = {})
 		},
 		close: () => db.close(),
 	};
+}
+
+/**
+ * VACUUM INTO `target`, a file the caller reserved empty and private (0600) so that no one else can read what SQLite
+ * writes. The system SQLite that Bun uses on macOS refuses an existing file, even an empty one, so SQLite writes a new
+ * file in a private folder (0700) beside the target, and that file is renamed over the reservation.
+ */
+export function vacuumInto(db: Database, target: string): void {
+	const folder = mkdtempSync(`${target}-`);
+	try {
+		const copy = join(folder, "copy.sqlite");
+		db.prepare("VACUUM INTO ?").run(copy);
+		chmodSync(copy, 0o600);
+		renameSync(copy, target);
+	} finally {
+		rmSync(folder, { recursive: true, force: true });
+	}
 }
