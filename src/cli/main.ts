@@ -26,7 +26,7 @@ const USAGE = `Usage: orrery <command> [--config FILE]
   lane archive <Name>        take a closed lane out of the config (its settings kept as comments at the end);
                              its memory stays in its data folder (the TUI's A)
   lane push <Lane> --to <remote>   upload a closed lane's memory, then use that remote
-  lane pull <Lane> --from <remote> --folder <dir>   add a remote lane here and fetch its memory
+  lane pull <Lane> --from <remote> [--folder <dir>]   add a remote lane here and fetch its memory and instructions
   lane takeover <Lane> [--yes]    confirm taking a stale lock, then release it for the next open
   lane local <Lane> [--delete-remote]   fetch the newest memory and keep it locally (deletion asks)
   remote add <name> --server <host>:<folder> | --cloudflare <url> [--token-file FILE] [--code-file FILE]

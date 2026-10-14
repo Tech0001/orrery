@@ -100,6 +100,20 @@ describe("lane push and pull", () => {
 		expect(readFileSync(path, "utf8")).toContain("# keep this comment");
 		expect((await storage.list())[0].lock?.held).toBe(false);
 	});
+	it("pulls without a folder: the lane has no workspace, and its instructions.md comes along", async () => {
+		writeFileSync(join(loadConfig(source).lanes.get("Atlas")!.dir, "instructions.md"), "You are Atlas.\n");
+		await seed();
+		expect(await pullLaneCommand(path, "Atlas", "home")).toContain("Pulled Atlas from remote home.");
+		const lane = loadConfig(path).lanes.get("Atlas")!;
+		expect(lane.workspace).toBeUndefined();
+		expect(readFileSync(join(lane.dir, "instructions.md"), "utf8")).toBe("You are Atlas.\n");
+	});
+	it("lane pull takes --folder only when it is given", async () => {
+		await seed();
+		await expect(laneRemoteCommand(path, ["pull", "Atlas"], { folder })).rejects.toThrow("lane pull needs --from <remote> (and --folder <dir> for a default folder).");
+		expect(await laneRemoteCommand(path, ["pull", "Atlas"], { from: "home" })).toBe("Pulled Atlas from remote home.\n");
+		expect(loadConfig(path).lanes.get("Atlas")?.workspace).toBeUndefined();
+	});
 	it("preserves the snapshot's summary size and summary-call size when pulling", async () => {
 		await RemoteSession.push({ ...sourceOptions(), settings: { ...sourceOptions().settings, nodeBytes: 12000, contextBytes: 73000 } });
 		await pull();

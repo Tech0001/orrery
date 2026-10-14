@@ -40,7 +40,8 @@ export interface AppDeps {
 	takeoverLane?(name: string): Promise<string>;
 	addRemote?(name: string, options: RemoteOptions, interaction: RemoteInteraction): Promise<RemoteAddResult>;
 	remoteLanes?(config: HarnessConfig, name: string): Promise<readonly LaneEntry[]>;
-	pullLane?(name: string, remote: string, folder: string): Promise<string>;
+	/** Without a folder the pulled lane has no default folder. */
+	pullLane?(name: string, remote: string, folder?: string): Promise<string>;
 	pushLane?(name: string, remote: string): Promise<string>;
 	localLane?(name: string): Promise<string>;
 	/** Token use over the last `days` days, for every lane with memory, or only `only`. */

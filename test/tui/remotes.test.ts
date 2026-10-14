@@ -109,11 +109,12 @@ describe("background remote overview", () => {
 });
 
 describe("N add a lane from a remote", () => {
-	async function seedImport() {
+	async function seedImport(instructions?: string) {
 		const key = createKey();
 		const laneDir = join(dir, "source", "Cedar");
 		const store = MemoryStore.open(join(laneDir, "memory.sqlite"));
 		store.append("user", "memory from another machine"); store.close();
+		if (instructions !== undefined) writeFileSync(join(laneDir, "instructions.md"), instructions);
 		await RemoteSession.push({ lane: "Cedar", laneDir, storage, key, holder: peer, report: () => {}, settings: { tool: "claude-code", compactorModel: "openai/gpt-6.1-sol", compactorThinking: "high", viewBytes: 73000, compactorJobs: 5, reads: ["Birch"] } });
 		saveRemoteSecret(loadConfig(path), "home", { key: keyToCode(key), token: "hidden-cloud-token" });
 		setStorageForTests(() => storage);
@@ -132,7 +133,7 @@ describe("N add a lane from a remote", () => {
 		await startImport(app); await answer(app, "Remote:", ...typed("home"), ENTER);
 		expect(screen(app)).toContain("Cedar"); expect(screen(app)).not.toContain("Atlas");
 		await answer(app, "Lane on home:", ...typed("Cedar"), ENTER);
-		await answer(app, "Its folder:", "\x15", ...typed(dir), ENTER);
+		await answer(app, "Its default folder", ...typed(dir), ENTER);
 		await app.idle();
 		const lane = loadConfig(path).lanes.get("Cedar")!;
 		expect(lane).toMatchObject({ remote: "home", workspace: dir, tool: "claude-code", memory: { viewBytes: 73000 }, compactor: { jobs: 5 }, reads: ["Birch"] });
@@ -142,12 +143,25 @@ describe("N add a lane from a remote", () => {
 		expect(screen(app)).toContain("Pulled Cedar"); expect(screen(app)).not.toContain("hidden-cloud-token");
 	});
 
-	it.each(["Add a lane:", "Remote:", "Lane on home:", "Its folder:"])("cancelling %s leaves config and remote locks unchanged", async (at) => {
+	it("pulls with no default folder when it is left empty, and brings the lane's instructions", async () => {
+		await seedImport("You are Cedar.\n");
+		const { app } = setup();
+		await startImport(app); await answer(app, "Remote:", ...typed("home"), ENTER);
+		await answer(app, "Lane on home:", ...typed("Cedar"), ENTER);
+		await answer(app, "Its default folder (empty: none, it opens wherever you open it):", ENTER);
+		await app.idle();
+		const lane = loadConfig(path).lanes.get("Cedar")!;
+		expect(lane.workspace).toBeUndefined();
+		expect(readFileSync(join(lane.dir, "instructions.md"), "utf8")).toBe("You are Cedar.\n");
+		expect(screen(app)).toContain("Pulled Cedar from remote home.");
+	});
+
+	it.each(["Add a lane:", "Remote:", "Lane on home:", "Its default folder"])("cancelling %s leaves config and remote locks unchanged", async (at) => {
 		await seedImport(); const before = readFileSync(path, "utf8"); const locks = await storage.list();
 		const { app } = setup(); keys(app, "N"); await settle(); expect(screen(app)).toContain("Add a lane from a remote");
 		if (at !== "Add a lane:") await answer(app, "Add a lane:", ...typed("from a remote"), ENTER);
-		if (at === "Lane on home:" || at === "Its folder:") await answer(app, "Remote:", ENTER);
-		if (at === "Its folder:") await answer(app, "Lane on home:", ENTER);
+		if (at === "Lane on home:" || at === "Its default folder") await answer(app, "Remote:", ENTER);
+		if (at === "Its default folder") await answer(app, "Lane on home:", ENTER);
 		await answer(app, at, "\x1b"); await app.idle();
 		expect(readFileSync(path, "utf8")).toBe(before); expect(await storage.list()).toEqual(locks);
 	});

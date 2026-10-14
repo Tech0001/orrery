@@ -320,19 +320,25 @@ function sessionOptions(config: HarnessConfig, lane: LaneConfig, storage: Storag
 	return { lane: lane.name, laneDir: lane.dir, storage, key: keyFor(config, storage.name), holder: holderFor(config), settings: laneSettings(lane), report, renewMs: 0 };
 }
 
-/** Pull shared by the CLI and N: copy portable settings once, then check out and close to fetch the working copy. */
-export async function pullLaneCommand(configPath: string | undefined, name: string, remote: string, folder: string): Promise<string> {
+/**
+ * Pull shared by the CLI and N: copy portable settings once, then check out and close to fetch the working copy and its
+ * instructions.md. Without a folder the lane has no default folder: it opens wherever it is opened.
+ */
+export async function pullLaneCommand(configPath: string | undefined, name: string, remote: string, folder?: string): Promise<string> {
 	const path = configPath ?? defaultConfigPath();
 	writable(path);
 	const config = loadConfig(path);
 	if ([...config.lanes.keys()].some((n) => n.toLowerCase() === name.toLowerCase())) throw new ConfigError(`A lane named ${shown(name)} already exists.`);
 	const problem = laneNameProblem(name);
 	if (problem !== undefined) throw new ConfigError(problem);
-	const workspace = folder === "~" || folder.startsWith("~/") ? `${homedir()}${folder.slice(1)}` : folder;
-	if (!isAbsolute(workspace)) throw new Error("The folder must be an absolute path (or start with ~/).");
-	let directory = false;
-	try { directory = statSync(workspace).isDirectory(); } catch { /* report a missing folder below */ }
-	if (!directory) throw new Error(`The folder must already exist and be a directory: ${shown(workspace)}`);
+	let workspace: string | undefined;
+	if (folder !== undefined) {
+		workspace = folder === "~" || folder.startsWith("~/") ? `${homedir()}${folder.slice(1)}` : folder;
+		if (!isAbsolute(workspace)) throw new Error("The folder must be an absolute path (or start with ~/).");
+		let directory = false;
+		try { directory = statSync(workspace).isDirectory(); } catch { /* report a missing folder below */ }
+		if (!directory) throw new Error(`The folder must already exist and be a directory: ${shown(workspace)}`);
+	}
 	const storage = remoteStorage(config, remote);
 	const secret = readRemoteSecret(config, remote);
 	let before: string | undefined;
@@ -349,7 +355,7 @@ export async function pullLaneCommand(configPath: string | undefined, name: stri
 		if (missing.length) throw new Error(`Pull these lanes first (${missing.map(shown).join(", ")}): ${name}'s reads setting needs them on this machine.`);
 		// An older snapshot names the lane's instructions file, a key the config no longer takes: it is dropped.
 		const { instructions: _old, ...portable } = settings;
-		const lane: NewLane = { ...portable, name, workspace, remote, tool: portable.tool as NewLane["tool"], compactorThinking: portable.compactorThinking as NewLane["compactorThinking"] };
+		const lane: NewLane = { ...portable, name, ...(workspace === undefined ? {} : { workspace }), remote, tool: portable.tool as NewLane["tool"], compactorThinking: portable.compactorThinking as NewLane["compactorThinking"] };
 		const updated = editConfigFile(path, (text, dir) => {
 			const next = addLane(text, dir, lane);
 			before = text; after = next;
@@ -358,7 +364,7 @@ export async function pullLaneCommand(configPath: string | undefined, name: stri
 		const notices: string[] = [];
 		const session = await RemoteSession.checkOut({ ...sessionOptions(updated, updated.lanes.get(name)!, storage, (m) => notices.push(shown(m))), writer });
 		await session.close();
-		return [...notices, `Pulled ${name} from remote ${remote} into ${shown(workspace)}.\n`].join("\n");
+		return [...notices, `Pulled ${name} from remote ${remote}${workspace === undefined ? "" : ` into ${shown(workspace)}`}.\n`].join("\n");
 	} catch (error) {
 		failed = true;
 		if (before !== undefined && after !== undefined) {
@@ -379,7 +385,7 @@ export async function laneRemoteCommand(configPath: string | undefined, args: re
 	if (args.length !== 2 || !name || !["push", "pull", "takeover", "local"].includes(action)) throw new Error("Use orrery lane push|pull|takeover|local <Lane>.");
 	if ((options.to !== undefined && action !== "push") || ((options.from !== undefined || options.folder !== undefined) && action !== "pull") || (options.yes === true && action !== "takeover") || (options["delete-remote"] === true && action !== "local")) throw new Error("These options do not apply to this lane command.");
 	if (action === "pull") {
-		if (!options.from || !options.folder) throw new Error("lane pull needs --from <remote> and --folder <dir>.");
+		if (!options.from) throw new Error("lane pull needs --from <remote> (and --folder <dir> for a default folder).");
 		return pullLaneCommand(configPath, name, options.from, options.folder);
 	}
 	const path = configPath ?? defaultConfigPath();

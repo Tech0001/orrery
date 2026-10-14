@@ -269,10 +269,10 @@ async function addFromRemote(app: App): Promise<string | undefined> {
 	const labels = lanes.map((lane) => safeText(lane.lane));
 	const selected = await app.host.open(new SelectModal(`Lane on ${remote}:`, labels));
 	if (selected === undefined) return undefined;
-	const folder = await app.host.open(new InputModal("Its folder:", app.deps.cwd));
-	if (!folder) return undefined;
+	const folder = await app.host.open(new InputModal("Its default folder (empty: none, it opens wherever you open it):", ""));
+	if (folder === undefined) return undefined;
 	app.say(`Pulling ${selected} from ${remote}…`);
-	return app.deps.pullLane(lanes[labels.indexOf(selected)].lane, remote, expandHome(folder));
+	return app.deps.pullLane(lanes[labels.indexOf(selected)].lane, remote, folder === "" ? undefined : expandHome(folder));
 }
 
 /** N: offers remote import, or asks for a new local lane's settings and then offers the wiring. */
