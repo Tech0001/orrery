@@ -168,6 +168,17 @@ describe("dialogs", () => {
 		expect(answers).toEqual(["import", "full", "full", undefined]);
 	});
 
+	it("ReportModal and ProgressModal show no control characters or escape sequences, whoever made the text", () => {
+		const dirty = "Left out: parent \u001b]0;owned\u0007\u001b[31mred\u001b[0m \u009b2J end";
+		const report = new ReportModal("Import preview for Atlas", `2 messages\n${dirty}`);
+		const shown = report.render(80, 10, PLAIN).join("\n");
+		expect(shown).toContain("Left out: parent ]0;owned[31mred[0m 2J end");
+		expect(shown).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+		const progress = new ProgressModal("Preparing");
+		progress.say(dirty);
+		expect(progress.render(80, 10, PLAIN).join("\n")).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+	});
+
 	it("ReportModal keeps its keys in view when the report is longer than the window", () => {
 		const report = new ReportModal("Import preview for Atlas", Array.from({ length: 30 }, (_, i) => `Left out: line ${i}`).join("\n"));
 		const lines = report.render(60, 10, PLAIN);

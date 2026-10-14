@@ -9,6 +9,7 @@ import { Input, matchesKey, sliceByColumn, visibleWidth, wrapTextWithAnsi } from
 import { type Chat, chatMatches, folderLabel } from "../import/chats.ts";
 import type { MenuUI } from "../lane/compactor-menu.ts";
 import { ago } from "../lane/overview.ts";
+import { safeText } from "../lane/source-labels.ts";
 import { fit } from "./table.ts";
 import type { Theme } from "./theme.ts";
 
@@ -322,8 +323,9 @@ export class ProgressModal extends Modal<void> {
 		return this.#controller.signal;
 	}
 
+	/** Shown made safe: whatever said it, no control character reaches the terminal. */
 	say(line: string): void {
-		this.#line = line;
+		this.#line = safeText(line);
 	}
 
 	/** The work is over: closes without aborting. */
@@ -345,13 +347,16 @@ export class ProgressModal extends Modal<void> {
 	}
 }
 
-/** A report to act on: Enter does it, R shows the full report, Esc leaves. */
+/**
+ * A report to act on: Enter does it, R shows the full report, Esc leaves. Its lines carry text from the chats (a Codex
+ * rollout's ids, say), so each is made safe here, whoever wrote the report.
+ */
 export class ReportModal extends Modal<"import" | "full" | undefined> {
 	readonly #text: string;
 
 	constructor(title: string, text: string) {
 		super(title);
-		this.#text = text;
+		this.#text = text.split(/\r?\n/).map(safeText).join("\n");
 	}
 
 	render(width: number, height: number, theme: Theme): string[] {

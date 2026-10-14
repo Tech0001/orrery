@@ -196,6 +196,37 @@ describe("N: an agent from an existing chat", () => {
 		expect(inputs[0]!.names).toContain("Install-RPCS3-AppImage");
 	});
 
+	it("the short report shows a Codex id with escape sequences in it as plain text", async () => {
+		const s = scene();
+		const fork = join(s.home, ".codex", "sessions", "rollout-2026-08-22T09-00-00-f.jsonl");
+		mkdirSync(dirname(fork), { recursive: true });
+		writeFileSync(fork, [
+			line({ timestamp: "2026-08-21T18:41:08.000Z", type: "session_meta", payload: { id: "01910000-0000-7000-8000-000000000002", forked_from_id: "\u001b]0;owned\u0007\u001b[31mparent", cwd: "/w/fork" } }),
+			line({ timestamp: "2026-08-21T18:41:08.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "01900000-1000-7000-8000-000000000003" } }),
+			line({ timestamp: "2026-08-21T18:41:08.000Z", type: "event_msg", payload: { type: "user_message", message: "Old question." } }),
+			line({ timestamp: "2026-08-22T09:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "01910000-1000-7000-8000-000000000004" } }),
+			line({ timestamp: "2026-08-22T09:00:01.000Z", type: "event_msg", payload: { type: "user_message", message: "New question." } }),
+		].join("\n"));
+		const hourAgo = new Date(Date.now() - 3_600_000);
+		utimesSync(fork, hourAgo, hourAgo);
+		const { app } = await tui(s);
+		keys(app, "N");
+		await answer(app, "New agent:", DOWN, ENTER);
+		await answer(app, "Turn which chat into an agent?", ...typed("old"), ENTER);
+		await answer(app, "Agent name", ENTER);
+		await answer(app, "It continues in", ENTER);
+		await answer(app, "Summaries from:", ENTER);
+		await answer(app, "Anthropic model:", ...typed("haiku-4-5"), ENTER);
+		await answer(app, "Thinking", ENTER);
+		await answer(app, "Its default folder", ENTER);
+		await answer(app, "Import preview for Old-question");
+		const shown = screen(app);
+		expect(shown).toContain("Left out: Warning: 1 messages replayed from parent ]0;owned[31mparent in Codex");
+		expect(shown).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+		keys(app, ESC);
+		await app.idle();
+	});
+
 	it("says No to an in-use chat and leaves; a taken name is refused; no chats, it says so", async () => {
 		const s = scene();
 		const { app, outs } = await tui(s);
