@@ -115,10 +115,14 @@ export function selectedLane(app: App): LaneRow | undefined {
 
 const VERSION_START = /^[0-9]+\.[0-9]+\.[0-9]+/;
 
-/** "on 0.6.0, restart for 0.6.1" when the lane's open tool runs an older Orrery than the installed current one; a checkout or an unknown version is never marked. */
+/**
+ * "on 0.6.0, restart for 0.6.1" when the lane's open tool runs another Orrery than the installed current one and not a
+ * newer release (0.6.0-aaa under a current 0.6.0-bbb is marked; a lane left newer by a rollback is not). A checkout or an
+ * unknown version is never marked.
+ */
 function restartText(row: LaneRow, installed: string | undefined): string {
 	const v = row.runsVersion;
-	if (v === undefined || installed === undefined || !VERSION_START.test(v) || !VERSION_START.test(installed) || !newer(installed, v)) return "";
+	if (v === undefined || installed === undefined || !VERSION_START.test(v) || !VERSION_START.test(installed) || v === installed || newer(v, installed)) return "";
 	return `on ${safeText(v)}, restart for ${safeText(installed)}`;
 }
 

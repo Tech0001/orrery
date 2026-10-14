@@ -19,8 +19,15 @@ describe("the restart marker", () => {
 		expect(screen(lanes("0.6.1", "0.6.1"))).not.toContain("restart for");
 	});
 
+	it("marks a lane on another local build of the same release, and one on a local build when the release is current", () => {
+		// The State column holds 42 characters, so the second local build's name is cut short.
+		expect(screen(lanes("0.6.0-aaa1111", "0.6.0-bbb2222"))).toMatch(/open · on 0\.6\.0-aaa1111, restart for 0\.6\./);
+		expect(screen(lanes("0.6.1-aaa1111", "0.6.1"))).toMatch(/open · on 0\.6\.1-aaa1111, restart for 0\.6\.1/);
+		expect(screen(lanes("0.6.0-bbb2222", "0.6.0-bbb2222"))).not.toContain("restart for");
+	});
+
 	it("marks nothing for a lane newer than current (after a rollback), a checkout, unknown, no version, or nothing installed", () => {
-		for (const text of [screen(lanes("0.6.2", "0.6.1")), screen(lanes("checkout", "0.6.1")), screen(lanes("unknown", "0.6.1")), screen(lanes(undefined, "0.6.1")), screen(lanes("0.6.0", undefined))]) {
+		for (const text of [screen(lanes("0.6.2", "0.6.1")), screen(lanes("0.6.2-aaa1111", "0.6.1-bbb2222")), screen(lanes("checkout", "0.6.1")), screen(lanes("unknown", "0.6.1")), screen(lanes(undefined, "0.6.1")), screen(lanes("0.6.0", undefined))]) {
 			expect(text).not.toContain("restart for");
 		}
 	});
