@@ -7,11 +7,17 @@ on:
 permissions:
   contents: read
 
+# bash runs each step with -e and pipefail, so a crash on the left of a pipe (status | grep) fails the step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   check:
     runs-on: ubuntu-latest
     env:
       ORRERY_REQUIRE_BUN: "1"
+      ORRERY_REQUIRE_PI: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -74,10 +80,10 @@ jobs:
           HOME="$PWD/home" "$orrery" --version | grep -qx "orrery $version"
           HOME="$PWD/home" "$orrery" --help >/dev/null
           HOME="$PWD/home" "$orrery" status | grep -qx "No lanes configured."
-      - name: Real pi loads the packed extension (Linux x64)
-        if: matrix.target == 'linux-x64'
+      - name: Real pi loads the packed extension (Linux)
+        if: startsWith(matrix.target, 'linux-')
         run: |
-          rel=$(ls -d "$PWD"/dist/orrery-*-linux-x64)
+          rel=$(ls -d "$PWD"/dist/orrery-*-${{ matrix.target }})
           test -n "$rel"
           ORRERY_TEST_RELEASE="$rel" npm test -- test/pi/real-pi.test.ts
         env:

@@ -8,12 +8,19 @@ on:
 permissions:
   contents: read
 
+# bash runs each step with -e and pipefail, so a crash on the left of a pipe fails the step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   check:
     runs-on: ubuntu-latest
     env:
       # The Node 24 leg has Bun and must run the release tests; a missing Bun is an error there, not a skip.
       ORRERY_REQUIRE_BUN: ${{ matrix.node == '24' && '1' || '0' }}
+      # npm ci installs pi (a devDependency, Node 22.19 or newer) on both legs: the real-pi tests must run, not skip.
+      ORRERY_REQUIRE_PI: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +47,7 @@ jobs:
     runs-on: macos-latest
     env:
       ORRERY_REQUIRE_BUN: "1"
+      ORRERY_REQUIRE_PI: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
