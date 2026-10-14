@@ -53,6 +53,8 @@ export interface LaunchOptions {
 	readonly tool?: LaneTool;
 	/** Handed to the tool as they are (orrery agent … -- <tool arguments>). */
 	readonly args?: readonly string[];
+	/** How the person picks another tool where they are, ending the not-on-PATH text (default: the TUI's C). */
+	readonly changeTool?: string;
 }
 
 /** "<what>. Installing it will:\n  <step>\n  <step>\nInstall it now?": an install question that lists what a yes does first (spec §4.6). */
@@ -102,7 +104,7 @@ export function launchPlan(config: HarnessConfig, row: LaneRow, tools: readonly 
 	};
 	const ori = lane.launcher === "ori" ? findOnPath("ori", options.env ?? process.env) : undefined;
 	if (lane.launcher === "ori" && ori === undefined) return { ...base, steps: [], blocked: 'Ori isn\'t installed: see docs/ori.md (or set launcher = "direct")' };
-	if (check?.path === undefined) return { ...base, steps: [], blocked: `${label} is not on PATH (looked for "${BINARIES[tool]}"). ${HINTS[tool]}, or change the lane's tool with C.` };
+	if (check?.path === undefined) return { ...base, steps: [], blocked: `${label} is not on PATH (looked for "${BINARIES[tool]}"). ${HINTS[tool]}, or ${options.changeTool ?? "change the lane's tool with C"}.` };
 	const inFolder = lane.workspace !== undefined && workArea(lane, cwd) === lane.workspace;
 	const refused = tool === "claude-code" ? claudeCodeRefusal(config, lane, cwd, inFolder) : undefined;
 	if (refused !== undefined) return { ...base, steps: [], blocked: refused };

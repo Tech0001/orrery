@@ -58,8 +58,8 @@ export interface AppDeps {
 	launch(plan: LaunchPlan): Promise<ToolExit>;
 	/** `cwd`: the folder the launch opens in (create-folder makes it). */
 	applyFix(fix: LaunchFix, config: HarnessConfig, row: LaneRow, tools: readonly ToolCheck[], cwd?: string): string;
-	/** Gives the terminal to $EDITOR on `path` and takes it back (src/lane/editor.ts). */
-	edit(path: string): Promise<ToolExit>;
+	/** Gives the terminal to $EDITOR on `path` and takes it back (src/lane/editor.ts). Absent in the read-only demo. */
+	edit?(path: string): Promise<ToolExit>;
 	installSteps(check: ToolCheck): InstallStep[];
 	install(steps: readonly InstallStep[]): { ok: boolean; output: string };
 	/** Opens a link in the browser; the opener's name, or undefined without a display. */

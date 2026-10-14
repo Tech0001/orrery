@@ -123,7 +123,7 @@ describe("parseConfig", () => {
 
 	it("refuses a lane named like an orrery agent subcommand, ignoring case", () => {
 		expect(() => parseConfig(`[lanes.Local]\nworkspace = "/w/l"\ncompactor_model = "openai/gpt-6.1-sol"\n`, "/d")).toThrow(
-			"lanes.Local: Local is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); rename the lane",
+			"lanes.Local: Local is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); rename the lane, and its folder /d/lanes/Local to the same name, or it starts without its memory",
 		);
 		for (const word of RESERVED_NAMES) expect(() => parseConfig(`[lanes.${word.toUpperCase()}]\ncompactor_model = "a/b"\n`, "/d")).toThrow(ConfigError);
 		expect(laneNameProblem("Edit")).toBe("Edit is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); pick another name.");

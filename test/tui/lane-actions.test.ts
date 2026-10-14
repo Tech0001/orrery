@@ -1,4 +1,4 @@
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseConfig } from "../../src/lane/config.ts";
@@ -179,6 +179,16 @@ describe("E instructions", () => {
 		expect(edited).toEqual([path]);
 		expect(readFileSync(path, "utf8")).toBe(instructionsTemplate("Alpha"));
 		expect(screen(app)).toContain("Saved Alpha's instructions.");
+	});
+
+	it("writes nothing where there is no editor (the demo)", async () => {
+		const data = tempDir("orrery-tui-data-");
+		dirs.push(data);
+		const app = makeApp(fakeDeps({ loadConfig: () => alpha(data), edit: undefined }), [lanesPage]);
+		keys(app, "E");
+		await app.idle();
+		expect(screen(app)).toContain("Editing instructions is unavailable here.");
+		expect(existsSync(join(data, "lanes"))).toBe(false);
 	});
 
 	it("keeps instructions that are there, says when an open agent reads them, and how the editor failed", async () => {

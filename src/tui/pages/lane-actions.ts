@@ -121,8 +121,11 @@ export function editInstructions(app: App, row: LaneRow | undefined): void {
 	const config = app.config;
 	if (row === undefined || config === undefined) return;
 	app.run(`Editing ${row.name}'s instructions`, async () => {
+		// Before the template is written: where nothing may be edited (the demo), nothing is written either.
+		const editor = app.deps.edit;
+		if (editor === undefined) throw new Error("Editing instructions is unavailable here.");
 		const lane = findLane(config, row.name);
-		const done = await editInstructionsFile(lane, () => app.deps.overview(config).find((r) => r.name === row.name), (path) => app.deps.edit(path));
+		const done = await editInstructionsFile(lane, () => app.deps.overview(config).find((r) => r.name === row.name), (path) => editor(path));
 		if (done.failed !== undefined) throw new Error(`The editor ${done.failed}; the file is as it left it.`);
 		return done.readsAt === undefined ? `Saved ${row.name}'s instructions.` : `Saved. ${row.name} reads them at its ${done.readsAt}.`;
 	});

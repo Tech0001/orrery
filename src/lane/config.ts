@@ -279,7 +279,9 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 	for (const [name, value] of Object.entries(table(root.lanes, "lanes"))) {
 		const where = `lanes.${name}`;
 		if (!NAME.test(name)) throw new ConfigError(`${where}: lane names use letters, digits, - and _ (max 32)`);
-		if (RESERVED_NAMES.includes(name.toLowerCase())) throw new ConfigError(`${where}: ${reserved(name)}; rename the lane`);
+		if (RESERVED_NAMES.includes(name.toLowerCase())) {
+			throw new ConfigError(`${where}: ${reserved(name)}; rename the lane, and its folder ${join(dataDir, "lanes", name)} to the same name, or it starts without its memory`);
+		}
 		const t = table(value, where);
 		const hostName = str(t, "host", where, "local");
 		const host = hosts.get(hostName);

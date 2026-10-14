@@ -379,15 +379,78 @@ async function laneCommand(args: string[], values: Record<string, string | boole
 	throw new Error(`lane needs add, set, archive, push, pull, takeover or local.\n${USAGE}`);
 }
 
+/** The command line's options; parseArgs reads them, and main's command finder skips a string option's value. */
+const OPTIONS = {
+	config: { type: "string" },
+	"api-key": { type: "boolean" },
+	key: { type: "string" },
+	"from-pi": { type: "boolean" },
+	days: { type: "string" },
+	keep: { type: "string" },
+	from: { type: "string" },
+	to: { type: "string" },
+	"delete-remote": { type: "boolean" },
+	"dry-run": { type: "boolean" },
+	commit: { type: "string" },
+	claude: { type: "string" },
+	"claude-file": { type: "string", multiple: true },
+	codex: { type: "string" },
+	"codex-file": { type: "string", multiple: true },
+	notes: { type: "string", multiple: true },
+	"paste-threshold": { type: "string" },
+	"no-split": { type: "boolean" },
+	out: { type: "string" },
+	session: { type: "string" },
+	cwd: { type: "string" },
+	"wait-ms": { type: "string" },
+	"spool-only": { type: "boolean" },
+	agent: { type: "string" },
+	"agent-token": { type: "string" },
+	"claude-pid": { type: "string" },
+	nonce: { type: "string" },
+	since: { type: "string" },
+	open: { type: "boolean" },
+	mod: { type: "boolean" },
+	manual: { type: "boolean" },
+	"no-browser": { type: "boolean" },
+	prefix: { type: "string" },
+	folder: { type: "string" },
+	tool: { type: "string" },
+	launcher: { type: "string" },
+	"ori-model": { type: "string" },
+	summary: { type: "string" },
+	thinking: { type: "string" },
+	"view-kb": { type: "string" },
+	"summary-kb": { type: "string" },
+	jobs: { type: "string" },
+	"compact-at": { type: "string" },
+	server: { type: "string" },
+	cloudflare: { type: "string" },
+	"token-file": { type: "string" },
+	"code-file": { type: "string" },
+	new: { type: "boolean" },
+	json: { type: "boolean" },
+	yes: { type: "boolean" },
+	rollback: { type: "boolean" },
+	list: { type: "boolean" },
+	purge: { type: "boolean" },
+	check: { type: "boolean" },
+	help: { type: "boolean", short: "h" },
+	version: { type: "boolean", short: "v" },
+} as const;
+
+/** "--config", "--tool", …: the options whose next token is their value, not the command. */
+const VALUED = new Set(Object.entries(OPTIONS).flatMap(([name, option]) => (option.type === "string" ? [`--${name}`] : [])));
+
 async function main(rawArgv: string[]): Promise<number> {
 	// --version is the version flag everywhere but `update`, where it names a release: take its value out first.
-	// The command is the first token that is not an option (--config takes a value).
+	// The command is the first token that is neither an option nor a string option's value (--config X, --tool T, …).
 	let updateVersion: string | undefined;
 	let argv = rawArgv;
 	let first: string | undefined;
 	for (let i = 0; i < rawArgv.length; i++) {
 		const a = rawArgv[i] as string;
-		if (a === "--config") i++;
+		if (VALUED.has(a)) i++;
 		else if (!a.startsWith("-")) {
 			first = a;
 			break;
@@ -421,64 +484,7 @@ async function main(rawArgv: string[]): Promise<number> {
 	const { positionals, values } = parseArgs({
 		args: argv,
 		allowPositionals: true,
-		options: {
-			config: { type: "string" },
-			"api-key": { type: "boolean" },
-			key: { type: "string" },
-			"from-pi": { type: "boolean" },
-			days: { type: "string" },
-			keep: { type: "string" },
-			from: { type: "string" },
-			to: { type: "string" },
-			"delete-remote": { type: "boolean" },
-			"dry-run": { type: "boolean" },
-			commit: { type: "string" },
-			claude: { type: "string" },
-			"claude-file": { type: "string", multiple: true },
-			codex: { type: "string" },
-			"codex-file": { type: "string", multiple: true },
-			notes: { type: "string", multiple: true },
-			"paste-threshold": { type: "string" },
-			"no-split": { type: "boolean" },
-			out: { type: "string" },
-			session: { type: "string" },
-			cwd: { type: "string" },
-			"wait-ms": { type: "string" },
-			"spool-only": { type: "boolean" },
-			agent: { type: "string" },
-			"agent-token": { type: "string" },
-			"claude-pid": { type: "string" },
-			nonce: { type: "string" },
-			since: { type: "string" },
-			open: { type: "boolean" },
-			mod: { type: "boolean" },
-			manual: { type: "boolean" },
-			"no-browser": { type: "boolean" },
-			prefix: { type: "string" },
-			folder: { type: "string" },
-			tool: { type: "string" },
-			launcher: { type: "string" },
-			"ori-model": { type: "string" },
-			summary: { type: "string" },
-			thinking: { type: "string" },
-			"view-kb": { type: "string" },
-			"summary-kb": { type: "string" },
-			jobs: { type: "string" },
-			"compact-at": { type: "string" },
-			server: { type: "string" },
-			cloudflare: { type: "string" },
-			"token-file": { type: "string" },
-			"code-file": { type: "string" },
-			new: { type: "boolean" },
-			json: { type: "boolean" },
-			yes: { type: "boolean" },
-			rollback: { type: "boolean" },
-			list: { type: "boolean" },
-			purge: { type: "boolean" },
-			check: { type: "boolean" },
-			help: { type: "boolean", short: "h" },
-			version: { type: "boolean", short: "v" },
-		},
+		options: OPTIONS,
 	});
 	const [command, arg] = positionals;
 	if (values.help === true) {
@@ -515,7 +521,14 @@ async function main(rawArgv: string[]): Promise<number> {
 	if (command === "agent") {
 		const [{ editAgentCommand, openAgentCommand }, { laneRemoteCommand }] = await Promise.all([import("./agent.ts"), import("./remote.ts")]);
 		const io = { say, confirm: (question: string) => (values.yes === true ? Promise.resolve(true) : askYes(question)) };
-		if (positionals[1] === "edit") return editAgentCommand(values.config, required(positionals[2], "agent name"), io);
+		if (positionals[1] === "edit") {
+			if (positionals.length > 3) throw new Error(`orrery agent edit takes one agent name (got ${positionals.slice(2).join(" ")}).`);
+			return editAgentCommand(values.config, required(positionals[2], "agent name"), io);
+		}
+		if (positionals.length > 2) {
+			const name = positionals[1] as string;
+			throw new Error(`orrery agent takes one agent name; ${positionals.slice(2).join(" ")} would be dropped. The tool's arguments go after --: orrery agent ${name} -- ${positionals.slice(2).join(" ")}`);
+		}
 		return openAgentCommand(values.config, required(positionals[1], "agent name"), { tool: values.tool, args: toolArgs, cwd: process.cwd() }, io, {
 			takeover: (name) => laneRemoteCommand(values.config, ["takeover", name], { yes: true }),
 		});

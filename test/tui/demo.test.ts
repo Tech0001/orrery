@@ -76,6 +76,18 @@ describe("throwaway demo", () => {
 		for (const probe of [spawn, spawnSync, execFile]) expect(probe).not.toHaveBeenCalled();
 	});
 
+	it("E writes nothing, not even the template for a lane without instructions", async () => {
+		const demo = createDemo(home());
+		const deps = demoDeps(demo, controls);
+		const file = join(deps.loadConfig().lanes.get("Bellwick")!.dir, "instructions.md");
+		rmSync(file);
+		const app = makeApp(deps, PAGES);
+		app.handleInput("E");
+		await app.idle();
+		expect(screen(app)).toContain("Editing instructions is unavailable here.");
+		expect(existsSync(file)).toBe(false);
+	});
+
 	it("drops inherited config, credentials, agent settings and PATH", () => {
 		const root = home();
 		const env = demoEnvironment(root, { HOME: "/real", XDG_CONFIG_HOME: "/real-config", ORRERY_CONFIG: "/real/config.toml", PI_CODING_AGENT_DIR: "/real/pi", ANTHROPIC_API_KEY: "synthetic", PATH: "/real/bin", TERM: "xterm-256color" });

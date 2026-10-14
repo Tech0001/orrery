@@ -46,7 +46,8 @@ export async function openAgentCommand(
 	const gate = await remoteGate(config, row, { refreshRemote: (c, n) => cache.refreshRemote(c, n), overview: (c) => laneOverview(c, { cache }), say: io.say });
 	if (!gate.go) throw new Error(gate.text);
 	const tools = checkTools();
-	const plan = launchPlan(config, gate.row, tools, { cwd: options.cwd, tool, args: options.args });
+	const changeTool = `open ${lane.name} in another tool: --tool for this session, orrery lane set ${lane.name} --tool T for good`;
+	const plan = launchPlan(config, gate.row, tools, { cwd: options.cwd, tool, args: options.args, changeTool });
 	if (plan.blocked !== undefined) throw new Error(plan.blocked);
 	if (gate.takeover !== undefined) {
 		if (!(await io.confirm(gate.takeover))) {
@@ -73,7 +74,19 @@ export async function openAgentCommand(
 	return exit.code ?? 1;
 }
 
-export async function editAgentCommand(configPath: string | undefined, name: string, io: AgentIo, edit: (path: string) => Promise<ToolExit> = (path) => runEditor(path)): Promise<number> {
+/**
+ * `orrery agent edit`: only a person edits an agent's instructions (spec §2, call 2), so it needs a terminal on stdin and
+ * stdout (`terminal`), checked before anything is written. An agent's shell would otherwise run it with an EDITOR of its
+ * own making and rewrite its own rules. A seatbelt, as the guard's shell rules are: a shell can make a pseudo-terminal.
+ */
+export async function editAgentCommand(
+	configPath: string | undefined,
+	name: string,
+	io: AgentIo,
+	edit: (path: string) => Promise<ToolExit> = (path) => runEditor(path),
+	terminal = process.stdin.isTTY === true && process.stdout.isTTY === true,
+): Promise<number> {
+	if (!terminal) throw new Error(`orrery agent edit needs a terminal: an agent's instructions are edited by a person, in a terminal (run orrery agent edit ${name} in yours).`);
 	const config = loadConfig(configPath);
 	const lane = findLane(config, name);
 	let row: LaneRow | undefined;
