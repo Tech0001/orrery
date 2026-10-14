@@ -208,6 +208,19 @@ describe("installFrom", () => {
 		expect(existsSync(join(app, ".install.lock"))).toBe(false);
 	});
 
+	it("keeps a damaged version folder and current as they were when the replacement copy fails its check", () => {
+		const env = scratchEnv();
+		installFrom({ from: fixtureRelease("0.6.0"), env });
+		const app = join(env.ORRERY_HOME as string, "app");
+		chmodSync(join(app, "0.6.0", "bin"), 0o755);
+		rmSync(join(app, "0.6.0", "bin", "orrery")); // damaged: not whole
+		const before = readdirSync(join(app, "0.6.0"));
+		expect(() => installFrom({ from: fixtureRelease("0.6.0", { exit: 3 }), env })).toThrow(/--version failed: exit 3/);
+		expect(readlinkSync(join(app, "current"))).toBe("0.6.0");
+		expect(readdirSync(join(app, "0.6.0"))).toEqual(before);
+		expect(readdirSync(app).filter((n) => n.startsWith("."))).toEqual([]);
+	});
+
 	it("rolls back to the previous version", () => {
 		const { env, versions } = twoInstalls();
 		expect(rollback(env)).toEqual({ from: versions[1], to: versions[0] });

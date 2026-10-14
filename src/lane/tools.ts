@@ -7,7 +7,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { accessSync, constants, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { ENTRY_TAILS, endsWithSegments, entries, type Style } from "../install/layout.ts";
+import { ENTRY_TAILS, endsWithSegments, entries, oneLineTarget, type Style } from "../install/layout.ts";
 import type { LaneTool } from "./config.ts";
 import { realTarget } from "./guard-paths.ts";
 import { runningRoot, wiringRoot } from "./running.ts";
@@ -396,13 +396,62 @@ export function installSteps(check: ToolCheck, root: string, env: NodeJS.Process
 	return [];
 }
 
-/** Writes `text` to a temporary file beside `path`, then renames it over `path`: a link there is replaced, never written through. */
-function replaceFile(path: string, text: string): void {
+/** Today's date as YYYY-MM-DD, local time. */
+function today(now = new Date()): string {
+	const two = (n: number) => String(n).padStart(2, "0");
+	return `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
+}
+
+const taken = (path: string) => {
+	try {
+		lstatSync(path);
+		return true;
+	} catch {
+		return false;
+	}
+};
+
+/**
+ * Renames something that is not Orrery's out of the way before it is replaced: <path>.before-orrery-<date>, or
+ * -2, -3… after it when that name is taken. pi and OMP load only files ending in .ts or .js, so a set-aside extension
+ * file is not loaded. Returns the new name.
+ */
+export function setAside(path: string): string {
+	const base = `${path}.before-orrery-${today()}`;
+	for (let n = 1; ; n++) {
+		const aside = n === 1 ? base : `${base}-${n}`;
+		if (taken(aside)) continue;
+		renameSync(path, aside);
+		return aside;
+	}
+}
+
+/**
+ * Whether pi's or OMP's extension file is someone else's: a link, or anything but Orrery's one line naming an Orrery
+ * entry (of any install). Orrery's own line pointing elsewhere is replaced without a copy.
+ */
+function foreignExtension(file: string): boolean {
+	try {
+		if (!lstatSync(file).isFile()) return true;
+		const spec = oneLineTarget(readFileSync(file, "utf8"));
+		return spec === undefined || ![...ENTRY_TAILS.pi, ...ENTRY_TAILS.omp].some((tail) => endsWithSegments(resolve(dirname(file), spec), tail));
+	} catch {
+		return false; // gone, or unreadable (then checkTools said "unknown" and nothing is replaced)
+	}
+}
+
+/**
+ * Writes `text` to a temporary file beside `path`, then renames it over `path`: a link there is replaced, never written
+ * through. A file that is not Orrery's one line is renamed aside first (setAside); the new name is returned.
+ */
+function replaceFile(path: string, text: string): string | undefined {
 	mkdirSync(dirname(path), { recursive: true });
 	const temp = `${path}.tmp-${process.pid}`;
 	try {
 		writeFileSync(temp, text);
+		const aside = foreignExtension(path) ? setAside(path) : undefined;
 		renameSync(temp, path);
+		return aside;
 	} catch (error) {
 		rmSync(temp, { force: true });
 		throw error;
@@ -415,7 +464,8 @@ export function runInstall(steps: readonly InstallStep[], run: Runner = realRunn
 	for (const step of steps) {
 		if (step.kind === "write") {
 			try {
-				replaceFile(step.path, step.text);
+				const aside = replaceFile(step.path, step.text);
+				if (aside !== undefined) output += `set ${step.path} aside as ${aside}\n`;
 			} catch (error) {
 				return { ok: false, output: `${output}could not write ${step.path}: ${error instanceof Error ? error.message : String(error)}\n` };
 			}

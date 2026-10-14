@@ -325,6 +325,7 @@ function stageRelease(from: string, app: string, version: string, run: Runner): 
 		if (said.status !== 0) throw new Error(`the release's orrery --version failed: ${failure(said)}`);
 		if (said.stdout.trim() !== `orrery ${version}`) throw new Error(`the release's binary says ${said.stdout.trim() || "nothing"}, not orrery ${version}`);
 		makeReadOnly(staging); // before the rename, so a folder under app/<VERSION> is never writable
+		if (isFolder(join(app, version))) dropVersion(app, version); // a damaged folder goes only now the new copy has checked out
 		renameSync(staging, join(app, version));
 	} catch (error) {
 		removeVersion(staging);
@@ -354,7 +355,6 @@ export function installFrom(options: { from: string; env: NodeJS.ProcessEnv; log
 				return { version, removed: [] };
 			}
 		} else {
-			if (isFolder(join(app, version))) dropVersion(app, version); // part of a folder a removal cut short
 			log(`Installing ${version}...`);
 			stageRelease(options.from, app, version, run);
 		}

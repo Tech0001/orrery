@@ -10,7 +10,7 @@ import { chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { orreryHome } from "../lane/home.ts";
-import { checkTools, findOnPath, type InstallStep, installSteps, ompExtensionFile, piExtensionFile, runInstall, type Runner, type ToolCheck } from "../lane/tools.ts";
+import { checkTools, findOnPath, setAside, type InstallStep, installSteps, ompExtensionFile, piExtensionFile, runInstall, type Runner, type ToolCheck } from "../lane/tools.ts";
 import { type Confirm, pathAdvice } from "./ask.ts";
 import { envRunner } from "./install.ts";
 import { ENTRY_TAILS, endsWithSegments, entries, isOrreryCommand, oneLineTarget } from "./layout.ts";
@@ -25,36 +25,6 @@ function replaceLink(link: string, target: string): void {
 	rmSync(next, { force: true });
 	symlinkSync(target, next);
 	renameSync(next, link);
-}
-
-/** Today's date as YYYY-MM-DD, local time. */
-function today(now = new Date()): string {
-	const two = (n: number) => String(n).padStart(2, "0");
-	return `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
-}
-
-const exists = (path: string) => {
-	try {
-		lstatSync(path);
-		return true;
-	} catch {
-		return false;
-	}
-};
-
-/**
- * Renames something that is not Orrery's out of the way before setup replaces it: <path>.before-orrery-<date>, or
- * -2, -3… after it when that name is taken. pi and OMP load only files ending in .ts or .js, so a set-aside extension
- * file is not loaded. Returns the new name.
- */
-function setAside(path: string): string {
-	const base = `${path}.before-orrery-${today()}`;
-	for (let n = 1; ; n++) {
-		const aside = n === 1 ? base : `${base}-${n}`;
-		if (exists(aside)) continue;
-		renameSync(path, aside);
-		return aside;
-	}
 }
 
 /**
@@ -152,20 +122,6 @@ function pointBackup(env: NodeJS.ProcessEnv, home: string, run: Runner, left: st
 const connectText = (steps: readonly InstallStep[]) => steps.map((step) => (step.kind === "write" ? `writes ${step.path}` : step.describe)).join(", ");
 
 /**
- * Whether pi's or OMP's extension file is someone else's: a link, or anything but Orrery's one line naming an Orrery
- * entry (of any install). Orrery's own line pointing elsewhere is replaced without a copy.
- */
-function foreignExtension(file: string): boolean {
-	try {
-		if (!lstatSync(file).isFile()) return true;
-		const spec = oneLineTarget(readFileSync(file, "utf8"));
-		return spec === undefined || ![...ENTRY_TAILS.pi, ...ENTRY_TAILS.omp].some((tail) => endsWithSegments(resolve(dirname(file), spec), tail));
-	} catch {
-		return false; // gone, or unreadable (then checkTools said "unknown" and nothing is replaced)
-	}
-}
-
-/**
  * pi, Claude Code and OMP through checkTools and installSteps against app/current: "update available" (Orrery's own
  * wiring of the other shape or an older plugin) runs without asking; "missing" (no Orrery wiring yet) and "other"
  * (another Orrery, or not Orrery's file) only after confirm, and a file that is not Orrery's is set aside first. A
@@ -196,18 +152,6 @@ async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: 
 			left.push(`${check.label} (still wired to ${check.detail})`);
 			emit(`${check.label}: left as it is (${check.detail})`);
 			continue;
-		}
-		if (check.wiring === "other" && id !== "claude-code") {
-			const file = id === "pi" ? piExtensionFile(env) : ompExtensionFile(env);
-			if (foreignExtension(file)) {
-				try {
-					emit(`${check.label}: set ${file} aside as ${setAside(file)}`);
-				} catch (error) {
-					left.push(`${check.label} (${file} could not be set aside)`);
-					emit(`${check.label}: could not set ${file} aside, so it was left as it is: ${errorText(error)}`);
-					continue;
-				}
-			}
 		}
 		const result = runInstall(steps, run.install);
 		for (const line of result.output.split("\n").filter((line) => line.trim() !== "")) emit(`${check.label}: ${line}`);

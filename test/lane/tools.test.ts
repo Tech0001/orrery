@@ -1,5 +1,5 @@
-import { chmodSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkTools, probeOri, shortHome, toolVersionNumber, installSteps, ompAgentDir, ompExtensionFile, ompExtensionText, orreryRoot, piExtensionFile, piExtensionText, pluginVersion, runInstall, runningRoot, wiringRoot, type Runner, type ToolCheck } from "../../src/lane/tools.ts";
 import { tempDir } from "./support.ts";
@@ -485,5 +485,28 @@ describe("wiring names app/current", () => {
 	it("names this checkout, not installed, when it is not inside the home's app folder", () => {
 		const { env } = installedHome();
 		expect(wiringRoot(env)).toEqual({ root: runningRoot(), installed: false });
+	});
+});
+
+describe("replacing a foreign extension file", () => {
+	const asides = (file: string) => readdirSync(dirname(file)).filter((n) => n.startsWith(`${basename(file)}.before-orrery-`));
+
+	it("keeps a copy of a file that is not Orrery's one line, and moves Orrery's own without one", () => {
+		const env = scratchAgentEnv();
+		const file = piExtensionFile(env);
+		mkdirSync(dirname(file), { recursive: true });
+		writeFileSync(file, "// someone's own extension\nexport default () => {};\n");
+		const steps = installSteps({ ...missingPiCheck, wiring: "other", detail: "x" }, "/opt/orrery/app/current", env);
+		const result = runInstall(steps);
+		expect(result.ok).toBe(true);
+		const [aside] = asides(file);
+		expect(aside).toMatch(/\.before-orrery-\d{4}-\d{2}-\d{2}$/);
+		expect(readFileSync(join(dirname(file), aside as string), "utf8")).toContain("someone's own extension");
+		expect(result.output).toContain(`set ${file} aside as ${join(dirname(file), aside as string)}`);
+		expect(readFileSync(file, "utf8")).toBe(piExtensionText("/opt/orrery/app/current"));
+		writePiExtension(env, "/old/checkout/src/pi/index.ts");
+		rmSync(join(dirname(file), aside as string));
+		expect(runInstall(steps).ok).toBe(true);
+		expect(asides(file)).toEqual([]);
 	});
 });
