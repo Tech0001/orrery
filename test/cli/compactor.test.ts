@@ -151,7 +151,7 @@ describe("`.`, this session's lane (Claude Code's commands)", () => {
 		const unknown = status({ ORRERY_AGENT: "Nobody" });
 		expect([unknown.status, unknown.stderr]).toEqual([1, "Orrery: ORRERY_AGENT names Nobody, which is not a configured agent; this session runs without memory.\n"]);
 		// A skill's command runs with Claude Code's CLAUDE_PID: "." is what that process decided (here this test's
-		// SessionStart), whatever the command is told; a command never decides.
+		// SessionStart) under the same ORRERY_AGENT and token; a command never decides.
 		const token = newToken();
 		const record = join(t.config.dataDir, "claude-processes", `${process.pid}.json`);
 		try {
@@ -164,13 +164,16 @@ describe("`.`, this session's lane (Claude Code's commands)", () => {
 				home: join(t.dir, "home"),
 			});
 			expect(status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: String(process.pid) }).stdout).toMatch(/^Test\s/);
-			expect(status({ ORRERY_AGENT: "Nobody", CLAUDE_PID: String(process.pid) }).stdout).toMatch(/^Test\s/);
+			const refusedHere = [1, "Orrery: ORRERY_AGENT is set, but no choice of agent is recorded for this Claude Code under this ORRERY_AGENT; this session runs without memory.\n"];
+			// A descendant that inherited CLAUDE_PID but runs under another ORRERY_AGENT, or without the token: the record is
+			// not its own, so it is refused rather than given the ancestor's lane.
+			const descendant = status({ ORRERY_AGENT: "Other", CLAUDE_PID: String(process.pid) });
+			expect([descendant.status, descendant.stderr]).toEqual(refusedHere);
+			const tokenless = status({ ORRERY_AGENT: "Test", CLAUDE_PID: String(process.pid) });
+			expect([tokenless.status, tokenless.stderr]).toEqual(refusedHere);
 			// A Claude Code process that decided nothing: refused, never its folder's.
 			const undecided = status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: String(process.ppid) });
-			expect([undecided.status, undecided.stderr]).toEqual([
-				1,
-				"Orrery: ORRERY_AGENT is set, but no choice of agent is recorded for this Claude Code (its session start made none); this session runs without memory.\n",
-			]);
+			expect([undecided.status, undecided.stderr]).toEqual(refusedHere);
 			// Outside Claude Code "." is picked there, and its parent (this test, which claimed the token) is the claimant.
 			expect(status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token }).stdout).toMatch(/^Test\s/);
 			// It never takes a dead agent's claim over (only a Claude Code process's first decision may).

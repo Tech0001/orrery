@@ -350,8 +350,10 @@ describe("the CLI", () => {
 			});
 			expect(view(["--agent", "Test", "--agent-token", token])).toMatchObject({ lane: "Test", mode: "mod", messages: 2, section: expect.stringContaining("one") });
 			expect(view([], env)).toMatchObject({ lane: "Test", mode: "mod" });
-			// It reads the decision, whatever it is told.
-			expect(view(["--agent", "Nobody"])).toMatchObject({ lane: "Test" });
+			// The record is the process's under that ORRERY_AGENT and token only: told another agent, or the token missing, it
+			// answers no lane (it never picks one itself).
+			expect(view(["--agent", "Nobody"])).toEqual({ lane: null });
+			expect(view(["--agent", "Test"])).toEqual({ lane: null });
 			// Without ORRERY_AGENT the folder decides.
 			expect(view([])).toEqual({ lane: null });
 			// The view's Claude Code is its parent, never CLAUDE_PID: a claude started from an agent's Bash inherits the agent's.

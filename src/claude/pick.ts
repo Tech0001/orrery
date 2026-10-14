@@ -8,15 +8,20 @@
  * every later event of the process reads it and never picks again: later SessionStarts (compact, clear, an in-process
  * resume), the other hooks, the mod view, a restarted MCP server and ".". So a dead agent's token claim is taken over
  * only in that first decision, and the hooks, the view and the tools never split between lanes. The record holds names
- * only: the kind of pick, the lane, and how it was decided. SessionEnd at the process's end removes it
- * (forgetProcess); a new decision first prunes the records of processes that are gone.
+ * only: whose decision it is (ORRERY_AGENT, and a sha256 digest of ORRERY_AGENT_TOKEN), the kind of pick, the lane, and
+ * how it was decided. SessionEnd at the process's end removes it (forgetProcess); a new decision first prunes the
+ * records of processes that are gone.
  *
- * Fail closed: a decision that cannot be recorded, or a later event with ORRERY_AGENT set that finds no record for its
- * process, is refused (no memory, nothing recorded, no view, no tools, the guard on with the folder lane's rules), never
- * "none".
+ * A record of another identity is stale: another process's whose pid this one reuses (pids wrap, at 99999 on a Mac), or
+ * an ancestor's whose CLAUDE_PID a descendant inherited. A decider replaces it whole (a temporary file renamed over it);
+ * any other reader is refused.
+ *
+ * Fail closed: a decision that cannot be recorded, or a later event with ORRERY_AGENT set that finds no record of its
+ * own for its process, is refused (no memory, nothing recorded, no view, no tools, the guard on with the folder lane's
+ * rules), never "none".
  *
  * Known limit: a reused pid whose old record survived (its process died without SessionEnd, and no decision has pruned
- * it since) inherits that record's pick.
+ * it since) and was made under the same ORRERY_AGENT and token inherits that record's pick.
  *
  * One rule of Claude Code's own: an agent opened by ORRERY_AGENT in a folder that a lane set up the file way holds (its
  * own or an ancestor's: Claude Code loads every ancestor's CLAUDE.md and CLAUDE.local.md) is refused when that lane is
@@ -25,11 +30,11 @@
  * cannot intercept that loading. The Orrery mod avoids it (mod mode writes no view file).
  */
 
-import { randomBytes } from "node:crypto";
-import { linkSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type HarnessConfig, inWorkspace } from "../lane/config.ts";
-import { AGENT_ENV, type Picked, pickLane, type Refused, refusedNotice, type Where } from "../lane/pick.ts";
+import { AGENT_ENV, type Picked, pickLane, type Refused, refusedNotice, TOKEN_ENV, type Where } from "../lane/pick.ts";
 import { processAlive } from "../lane/process.ts";
 import { safeText } from "../lane/source-labels.ts";
 import { laneMode } from "./view-file.ts";
@@ -41,7 +46,7 @@ export type ClaudeRefused =
 	| { readonly kind: "in-view-folder"; readonly name: string; readonly host: string }
 	/** The first decision could not be recorded (`why`). */
 	| { readonly kind: "unrecorded"; readonly why: string }
-	/** A later event found no recorded decision for its process. */
+	/** A later event found no recorded decision of its own (its ORRERY_AGENT and token) for its process. */
 	| { readonly kind: "undecided" };
 
 export type ClaudePicked = Exclude<Picked, Refused> | ClaudeRefused;
@@ -69,7 +74,7 @@ export function claudeRefusedNotice(pick: ClaudeRefused): string {
 		case "unrecorded":
 			return `Orrery: ORRERY_AGENT is set, but which agent this Claude Code is could not be recorded (${safeText(pick.why)}); this session runs without memory.`;
 		case "undecided":
-			return "Orrery: ORRERY_AGENT is set, but no choice of agent is recorded for this Claude Code (its session start made none); this session runs without memory.";
+			return "Orrery: ORRERY_AGENT is set, but no choice of agent is recorded for this Claude Code under this ORRERY_AGENT; this session runs without memory.";
 		default:
 			return refusedNotice(pick);
 	}
@@ -88,11 +93,26 @@ export interface ClaudeProcess {
 	readonly alive?: (pid: number) => boolean;
 }
 
-/** The record: names only. */
+/** A decision, as recorded: names only. */
 type Decision =
 	| { readonly kind: "lane"; readonly lane: string; readonly by: "env" | "folder" }
 	| { readonly kind: "none" }
 	| { readonly kind: "refused"; readonly why: "unknown" | "bad-token" | "in-view-folder"; readonly name: string; readonly host?: string };
+
+/**
+ * Whose decision a record is: ORRERY_AGENT as set (trimmed), and the sha256 (hex) of ORRERY_AGENT_TOKEN, or "" without
+ * one. A record whose identity is not the asker's is another process's, whose pid this one reuses, or an ancestor's
+ * whose CLAUDE_PID a descendant inherited: never this session's.
+ */
+interface Identity {
+	readonly agent: string;
+	readonly token: string;
+}
+
+function identityOf(env: NodeJS.ProcessEnv): Identity {
+	const token = env[TOKEN_ENV];
+	return { agent: env[AGENT_ENV]?.trim() ?? "", token: token === undefined ? "" : createHash("sha256").update(token).digest("hex") };
+}
 
 const processesDir = (config: HarnessConfig) => join(config.dataDir, "claude-processes");
 const recordFile = (config: HarnessConfig, pid: number) => join(processesDir(config), `${pid}.json`);
@@ -126,37 +146,54 @@ function fromDecision(config: HarnessConfig, decision: Decision): ClaudePicked {
 	}
 }
 
+/** What the record said; `identity` is missing from a record that names none (one written before identities). */
+interface Recorded {
+	readonly identity?: Identity;
+	readonly decision: Decision;
+}
+
 /** The process's record: undefined when there is none; "unreadable" when there is one that cannot be read as one. */
-function readDecision(config: HarnessConfig, pid: number): Decision | "unreadable" | undefined {
+function readRecord(config: HarnessConfig, pid: number): Recorded | "unreadable" | undefined {
 	let text: string;
 	try {
 		text = readFileSync(recordFile(config, pid), "utf8");
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : "unreadable";
 	}
+	let value: Record<string, unknown>;
 	try {
-		const value = JSON.parse(text) as Record<string, unknown>;
-		if (value.kind === "none") return { kind: "none" };
-		if (value.kind === "lane" && typeof value.lane === "string" && (value.by === "env" || value.by === "folder")) return { kind: "lane", lane: value.lane, by: value.by };
-		if (value.kind === "refused" && typeof value.name === "string" && (value.why === "unknown" || value.why === "bad-token" || value.why === "in-view-folder")) {
-			return { kind: "refused", why: value.why, name: value.name, ...(typeof value.host === "string" ? { host: value.host } : {}) };
-		}
+		value = JSON.parse(text) as Record<string, unknown>;
 	} catch {
-		// not JSON
+		return "unreadable";
+	}
+	if (typeof value !== "object" || value === null) return "unreadable";
+	const identity = typeof value.agent === "string" && typeof value.token === "string" ? { agent: value.agent, token: value.token } : undefined;
+	const recorded = (decision: Decision): Recorded => ({ ...(identity === undefined ? {} : { identity }), decision });
+	if (value.kind === "none") return recorded({ kind: "none" });
+	if (value.kind === "lane" && typeof value.lane === "string" && (value.by === "env" || value.by === "folder")) return recorded({ kind: "lane", lane: value.lane, by: value.by });
+	if (value.kind === "refused" && typeof value.name === "string" && (value.why === "unknown" || value.why === "bad-token" || value.why === "in-view-folder")) {
+		return recorded({ kind: "refused", why: value.why, name: value.name, ...(typeof value.host === "string" ? { host: value.host } : {}) });
 	}
 	return "unreadable";
 }
 
+const sameIdentity = (recorded: Identity | undefined, asker: Identity) => recorded !== undefined && recorded.agent === asker.agent && recorded.token === asker.token;
+
 /**
- * Records the process's decision, exclusively: written whole to a temporary file, then linked into place, so no reader
- * ever sees half of it. "exists" when another consumer of the process recorded first; else the error's text.
+ * Records the process's decision, whole: written to a temporary file, then put in place, so no reader ever sees half of
+ * it. A first decision is linked into place, exclusively: "exists" when another consumer of the process recorded first.
+ * A decision that replaces a stale record (`replace`) is renamed over it. Else the error's text.
  */
-function recordDecision(config: HarnessConfig, pid: number, decision: Decision): true | "exists" | string {
+function recordDecision(config: HarnessConfig, pid: number, record: Identity & Decision, replace: boolean): true | "exists" | string {
 	const file = recordFile(config, pid);
 	const temporary = `${file}.${randomBytes(6).toString("hex")}`;
 	try {
 		mkdirSync(processesDir(config), { recursive: true, mode: 0o700 });
-		writeFileSync(temporary, `${JSON.stringify(decision)}\n`, { flag: "wx", mode: 0o600 });
+		writeFileSync(temporary, `${JSON.stringify(record)}\n`, { flag: "wx", mode: 0o600 });
+		if (replace) {
+			renameSync(temporary, file);
+			return true;
+		}
 		try {
 			linkSync(temporary, file);
 			return true;
@@ -194,23 +231,26 @@ function prune(config: HarnessConfig, alive: (pid: number) => boolean): void {
 	}
 }
 
-/** The session's lane for Claude Code process `process`: its recorded decision, made here when it may (module doc). */
+/** The session's lane for Claude Code process `asking`: its recorded decision, made here when it may (module doc). */
 export function claudeSession(config: HarnessConfig, asking: ClaudeProcess): ClaudePicked {
 	const where = { env: asking.env, cwd: asking.cwd, owner: asking.pid, ...(asking.alive === undefined ? {} : { alive: asking.alive }) };
 	// No ORRERY_AGENT: no token, and nothing to decide once; the folder decides, as it always has.
 	if (!asking.env[AGENT_ENV]?.trim()) return claudePick(config, { ...where, takeover: false });
-	const recorded = readDecision(config, asking.pid);
+	const identity = identityOf(asking.env);
+	const recorded = readRecord(config, asking.pid);
 	if (recorded === "unreadable") return { kind: "unrecorded", why: "its record is unreadable" };
-	if (recorded !== undefined) return fromDecision(config, recorded);
+	if (recorded !== undefined && sameIdentity(recorded.identity, identity)) return fromDecision(config, recorded.decision);
+	// No record, or a stale one (another identity's): only a decider makes this process's decision.
 	if (!asking.decide) return { kind: "undecided" };
 	prune(config, asking.alive ?? processAlive);
 	const pick = claudePick(config, { ...where, takeover: true });
-	const written = recordDecision(config, asking.pid, toDecision(pick));
+	const written = recordDecision(config, asking.pid, { ...identity, ...toDecision(pick) }, recorded !== undefined);
 	if (written === true) return pick;
 	if (written !== "exists") return { kind: "unrecorded", why: written };
 	// Another consumer of this process decided first: its decision holds.
-	const theirs = readDecision(config, asking.pid);
-	return theirs === undefined || theirs === "unreadable" ? { kind: "unrecorded", why: "its record is unreadable" } : fromDecision(config, theirs);
+	const theirs = readRecord(config, asking.pid);
+	if (theirs === undefined || theirs === "unreadable") return { kind: "unrecorded", why: "its record is unreadable" };
+	return sameIdentity(theirs.identity, identity) ? fromDecision(config, theirs.decision) : { kind: "undecided" };
 }
 
 /** SessionEnd at the process's end: its decision goes. */

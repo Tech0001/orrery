@@ -294,6 +294,33 @@ describe("one decision per Claude Code process (src/claude/pick.ts)", () => {
 		expect(started).toEqual(["Test"]);
 	});
 
+	it("a stale record left under a reused pid is never this session's: another agent's gets nothing spooled, a stale none keeps the guard on, and SessionStart replaces it", async () => {
+		const { root, config, lane } = lanes();
+		const [atlas, birch] = [lane("Atlas"), lane("Birch")];
+		const dir = elsewhere();
+		const pid = live().pid;
+		const record = join(config.dataDir, "claude-processes", `${pid}.json`);
+		mkdirSync(dirname(record), { recursive: true, mode: 0o700 });
+		const started: string[] = [];
+		const c = ctx(config, join(root, "home"), dir, { ORRERY_AGENT: "Atlas" }, { claudePid: pid, startHolder: recording(started) });
+		// Birch's decision, from a process that died without SessionEnd and whose pid this Claude Code now has.
+		writeFileSync(record, JSON.stringify({ agent: "Birch", token: "", kind: "lane", lane: "Birch", by: "env" }));
+		await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "Atlas's words." }), c);
+		expect(spooled(birch, "s1")).toEqual([]);
+		expect(spooled(atlas, "s1")).toEqual([]);
+		// One from before records named their agent: Birch's, read as Birch's under the old format.
+		writeFileSync(record, JSON.stringify({ kind: "lane", lane: "Birch", by: "env" }));
+		await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "Atlas's words." }), c);
+		expect(spooled(birch, "s1")).toEqual([]);
+		// A stale "none" would turn the guard off outside lanes.
+		writeFileSync(record, JSON.stringify({ kind: "none" }));
+		expect(await runHook("pre-tool-use", hookInput("s1", dir, { tool_name: "Read", tool_input: { file_path: config.credentialsPath } }), c)).toContain("Orrery guard");
+		// This process's SessionStart replaces the stale record with its own decision.
+		expect(JSON.parse(await runHook("session-start", hookInput("s1", dir), c)).hookSpecificOutput.additionalContext).toMatch(/^Orrery · Atlas · /);
+		expect(started).toEqual(["Atlas"]);
+		expect(JSON.parse(readFileSync(record, "utf8"))).toEqual({ agent: "Atlas", token: "", kind: "lane", lane: "Atlas", by: "env" });
+	});
+
 	it("a decision that cannot be recorded refuses the session: nothing recorded, and the guard on", async () => {
 		const t = testLane();
 		claudeSetupMod(t.lane);

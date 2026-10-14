@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -117,6 +117,24 @@ describe("pickLane", () => {
 		expect(pickLane(config, { env, cwd: join(root, "plain"), owner: 4244, alive, takeover: false })).toEqual({ kind: "none" });
 		expect(pickLane(config, { env, cwd: join(root, "plain"), owner: 4244, alive })).toMatchObject({ kind: "lane", by: "env", lane: { name: "Birch" } });
 		expect(readFileSync(join(birch, "claims", dead), "utf8")).toBe("4244\n");
+	});
+
+	it("makes a claim whole (no temporary file left), and prunes only stray temporary files old enough to be dead", () => {
+		const { config } = world();
+		const birch = join(config.dataDir, "lanes", "Birch");
+		const [mine, other] = [newToken(), newToken()];
+		const alive = (pid: number) => pid === me;
+		expect(claimToken(birch, mine, me, alive)).toBe(true);
+		expect(readdirSync(join(birch, "claims"))).toEqual([mine]);
+		// Another process's claim being made, and one left by a crash long ago.
+		const [making, stray] = [join(birch, "claims", `${other}.0a0b0c0d0e0f`), join(birch, "claims", `${other}.1a1b1c1d1e1f`)];
+		writeFileSync(making, "");
+		writeFileSync(stray, "4243\n");
+		const longAgo = new Date(Date.now() - 120_000);
+		utimesSync(stray, longAgo, longAgo);
+		expect(claimToken(birch, newToken(), me, alive)).toBe(true);
+		expect(existsSync(making)).toBe(true);
+		expect(existsSync(stray)).toBe(false);
 	});
 
 	it("never makes a file from a token that is not hex", () => {
