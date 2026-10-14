@@ -1,10 +1,14 @@
 /**
  * The TUI's dialogs (spec §3): a list to pick from (type to filter), a text field, a hidden field for keys, a yes/no
- * question, a message. Each resolves its `result` once. ModalHost stacks them; the App draws the top one.
+ * question, a message; and for turning a chat into an agent (spec 2026-10-13-orrery-agents-design §6) the chat list,
+ * a progress line and a report to act on. Each resolves its `result` once. ModalHost stacks them; the App draws the
+ * top one.
  */
 
 import { Input, matchesKey, sliceByColumn, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { type Chat, chatMatches, folderLabel } from "../import/chats.ts";
 import type { MenuUI } from "../lane/compactor-menu.ts";
+import { ago } from "../lane/overview.ts";
 import { fit } from "./table.ts";
 import type { Theme } from "./theme.ts";
 
@@ -220,6 +224,147 @@ export class MessageModal extends Modal<void> {
 
 	cancel(): void {
 		this.finish();
+	}
+}
+
+const sizeText = (bytes: number) => (bytes < 1_000_000 ? `${Math.max(1, Math.round(bytes / 1000))} KB` : `${(bytes / 1_000_000).toFixed(1)} MB`);
+
+/**
+ * The chats to turn into an agent, one row each (title, folder, tool, last active, size, "in use"), newest first. Typing
+ * filters by title or folder. Space marks several chats of one folder, to import together, while no filter is typed
+ * (then a space is part of the filter); Tab marks always. Enter goes on with the marked ones, or the one under the
+ * cursor.
+ */
+export class ChatListModal extends Modal<readonly Chat[] | undefined> {
+	readonly #chats: readonly Chat[];
+	readonly #home: string;
+	readonly #now: number;
+	/** The marked chats' files. */
+	readonly #marked = new Set<string>();
+	#filter = "";
+	#cursor = 0;
+	#note = "";
+
+	constructor(title: string, chats: readonly Chat[], options: { readonly home: string; readonly now: number }) {
+		super(title);
+		this.#chats = chats;
+		this.#home = options.home;
+		this.#now = options.now;
+	}
+
+	#visible(): Chat[] {
+		return this.#chats.filter((chat) => chatMatches(chat, this.#filter, this.#home));
+	}
+
+	render(width: number, height: number, theme: Theme): string[] {
+		const head = titleLines(this.title, width, theme);
+		const visible = this.#visible();
+		const extra = [...(this.#filter === "" ? [] : [theme.dim(fit(`filter: ${this.#filter}`, width))]), ...(this.#note === "" ? [] : [theme.yellow(fit(this.#note, width))])];
+		const room = Math.max(1, height - head.length - extra.length - 1);
+		const start = this.#cursor >= room ? this.#cursor - room + 1 : 0;
+		const rows = visible.slice(start, start + room).map((chat, k) => {
+			const at = start + k;
+			const where = chat.folder === undefined ? "?" : folderLabel(chat.folder, this.#home);
+			const tool = chat.tool === "codex" ? "Codex" : "Claude Code";
+			const line = fit(`${at === this.#cursor ? "› " : "  "}${this.#marked.has(chat.file) ? "[x]" : "[ ]"} ${chat.title}  ·  ${where}  ·  ${tool}  ·  ${ago(new Date(chat.lastActive).toISOString(), this.#now)}  ·  ${sizeText(chat.size)}${chat.inUse ? "  ·  in use" : ""}`, width);
+			return at === this.#cursor ? theme.inverse(line) : line;
+		});
+		const empty = visible.length === 0 ? [theme.dim(fit("  nothing matches", width))] : [];
+		return [...head, ...extra, ...rows, ...empty, theme.dim(fit("↑↓ choose · space or Tab mark several · Enter go on · type to filter · Esc back", width))].slice(0, height);
+	}
+
+	handleInput(data: string): void {
+		const visible = this.#visible();
+		if (matchesKey(data, "escape")) return this.cancel();
+		if (matchesKey(data, "enter")) {
+			const marked = this.#chats.filter((chat) => this.#marked.has(chat.file));
+			const current = visible[this.#cursor];
+			if (marked.length > 0) this.finish(marked);
+			else if (current !== undefined) this.finish([current]);
+			return;
+		}
+		if (matchesKey(data, "up")) this.#cursor = Math.max(0, this.#cursor - 1);
+		else if (matchesKey(data, "down")) this.#cursor = Math.min(Math.max(0, visible.length - 1), this.#cursor + 1);
+		else if (matchesKey(data, "tab") || (data === " " && this.#filter === "")) this.#toggle(visible[this.#cursor]);
+		else if (matchesKey(data, "backspace")) {
+			this.#filter = this.#filter.slice(0, -1);
+			this.#cursor = 0;
+		} else if (isPrintable(data)) {
+			this.#filter += data;
+			this.#cursor = 0;
+		}
+	}
+
+	#toggle(chat: Chat | undefined): void {
+		if (chat === undefined) return;
+		this.#note = "";
+		if (this.#marked.delete(chat.file)) return;
+		const first = this.#chats.find((other) => this.#marked.has(other.file));
+		if (first !== undefined && first.folder !== chat.folder) {
+			this.#note = `Mark chats of one folder: the first is in ${first.folder === undefined ? "an unknown folder" : folderLabel(first.folder, this.#home)}.`;
+			return;
+		}
+		this.#marked.add(chat.file);
+	}
+
+	cancel(): void {
+		this.finish(undefined);
+	}
+}
+
+/** Work in progress: one line the work updates; Esc cancels it (its `signal` aborts) and closes it. */
+export class ProgressModal extends Modal<void> {
+	readonly #controller = new AbortController();
+	#line = "Starting…";
+
+	get signal(): AbortSignal {
+		return this.#controller.signal;
+	}
+
+	say(line: string): void {
+		this.#line = line;
+	}
+
+	/** The work is over: closes without aborting. */
+	close(): void {
+		this.finish();
+	}
+
+	render(width: number, height: number, theme: Theme): string[] {
+		return [...titleLines(this.title, width, theme), fit(this.#line, width), theme.dim(fit("Esc cancels (nothing is written)", width))].slice(0, height);
+	}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, "escape")) this.cancel();
+	}
+
+	cancel(): void {
+		this.#controller.abort();
+		this.finish();
+	}
+}
+
+/** A report to act on: Enter does it, R shows the full report, Esc leaves. */
+export class ReportModal extends Modal<"import" | "full" | undefined> {
+	readonly #text: string;
+
+	constructor(title: string, text: string) {
+		super(title);
+		this.#text = text;
+	}
+
+	render(width: number, height: number, theme: Theme): string[] {
+		return [...titleLines(this.title, width, theme), ...hardWrap(this.#text, width).map((line) => fit(line, width)), theme.dim(fit("Enter import · R full report · Esc leave without writing", width))].slice(0, height);
+	}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, "enter")) this.finish("import");
+		else if (data === "r" || data === "R") this.finish("full");
+		else if (matchesKey(data, "escape")) this.cancel();
+	}
+
+	cancel(): void {
+		this.finish(undefined);
 	}
 }
 
