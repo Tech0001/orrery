@@ -106,8 +106,9 @@ the new version.
 
 ## Restore
 
-Snapshots contain `memory.sqlite`, `memory.jsonl` and, for durable-runtime agents, `session.sqlite`. Workstation
-backups are under `~/.orrery/backups/<date>/<Name>/`; server backups use `/var/lib/orrery/backups/`.
+Snapshots contain `memory.sqlite`, `memory.jsonl`, the agent's `instructions.md` when it has one and, for
+durable-runtime agents, `session.sqlite`. Workstation backups are under `~/.orrery/backups/<date>/<Name>/`; server
+backups use `/var/lib/orrery/backups/`.
 Keep remote backups and exports private: they contain conversation content.
 
 Close the agent in every tool before restoring:
@@ -118,5 +119,6 @@ orrery restore Atlas --from 2026-10-01
 ```
 
 Restore refuses while an agent's writer is running. It removes old WAL/SHM sidecars and status before copying snapshots,
-so a crashed writer's pending journal cannot be replayed onto an older database. Restart the agent after verifying
-its restored state.
+so a crashed writer's pending journal cannot be replayed onto an older database. It puts the backup's `instructions.md`
+back only when the agent has none (no file, or a blank one). When the agent has its own, restore keeps it and prints
+where the backup's copy is. Restart the agent after verifying its restored state.

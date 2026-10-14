@@ -1,14 +1,16 @@
 /**
- * Backups (spec §8): a consistent snapshot of each agent's databases, taken while agents run, and a plain JSONL export
- * of its memory that can be read without this code. Both databases are WAL without an exclusive lock, so a read-only
- * connection's VACUUM INTO sees one committed state and never blocks the agent.
+ * Backups (spec §8): a consistent snapshot of each agent's databases, taken while agents run, a plain JSONL export
+ * of its memory that can be read without this code, and a copy of its instructions.md. Both databases are WAL without
+ * an exclusive lock, so a read-only connection's VACUUM INTO sees one committed state and never blocks the agent.
  */
 
-import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { openDatabase } from "../memory/sqlite.ts";
 import { localIso, MemoryStore } from "../memory/index.ts";
 import { findAgent, type HarnessConfig } from "./config.ts";
+import { INSTRUCTIONS_FILE, instructionsPath } from "./instructions.ts";
+import { writePrivate as writeAtomically } from "./private-file.ts";
 
 export interface BackupReport {
 	readonly dir: string;
@@ -32,11 +34,39 @@ function snapshot(source: string, target: string): void {
 	chmodSync(target, 0o600);
 }
 
-function writePrivate(path: string, content: string): void {
+function writePrivate(path: string, content: string | Buffer): void {
 	const fd = openSync(path, "w", 0o600);
 	try {
-		writeSync(fd, content);
+		writeFileSync(fd, content);
 		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+}
+
+/**
+ * What is at `path`: a regular file's bytes, "missing", or "other". A symlink is never followed, and a FIFO or device
+ * is never read: lstat looks first, then O_NOFOLLOW and O_NONBLOCK (a FIFO opens at once) with fstat cover a swap in
+ * between. A file that can't be read throws.
+ */
+function regularFile(path: string): Buffer | "missing" | "other" {
+	try {
+		if (!lstatSync(path).isFile()) return "other";
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+		throw error;
+	}
+	let fd: number;
+	try {
+		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") return "missing";
+		if (code === "ELOOP") return "other";
+		throw error;
+	}
+	try {
+		return fstatSync(fd).isFile() ? readFileSync(fd) : "other";
 	} finally {
 		closeSync(fd);
 	}
@@ -85,6 +115,11 @@ export function backupAgents(config: HarnessConfig, options: { now?: Date; keep?
 		}
 		const counts = exportMemory(join(out, "memory.sqlite"), join(out, "memory.jsonl"), agent.name, now);
 		files.push("memory.jsonl");
+		const instructions = regularFile(instructionsPath(agent.dir));
+		if (Buffer.isBuffer(instructions)) {
+			writePrivate(join(out, INSTRUCTIONS_FILE), instructions);
+			files.push(INSTRUCTIONS_FILE);
+		}
 		agents.push({ name: agent.name, ...counts, files });
 	}
 	rmSync(dir, { recursive: true, force: true });
@@ -149,12 +184,18 @@ export interface RestoreReport {
 	readonly messages: number;
 	readonly nodes: number;
 	readonly files: string[];
+	/**
+	 * The backup's instructions.md: "restored" (the agent had none: no file, or a blank one), "kept" (the agent has its
+	 * own, which stays; the backup's copy is in `from`), or "none" (the backup holds none, or only a blank one).
+	 */
+	readonly instructions: "restored" | "kept" | "none";
 }
 
 /**
  * Puts a backup back in place of a stopped agent's databases. The agent's -wal/-shm files are removed first: replayed
  * onto an older snapshot they would mix two states of the database. Backups snapshot memory before session, so the
- * session is never older than the memory's projection cursor.
+ * session is never older than the memory's projection cursor. The backup's instructions.md goes back only where the
+ * agent has none: instructions written since the backup are the person's, and newer.
  */
 export function restoreAgent(config: HarnessConfig, agentName: string, options: { from: string }): RestoreReport {
 	const agent = findAgent(config, agentName);
@@ -185,10 +226,24 @@ export function restoreAgent(config: HarnessConfig, agentName: string, options: 
 		chmodSync(join(agent.dir, name), 0o600);
 		files.push(name);
 	}
+	const instructions = restoreInstructions(join(from, INSTRUCTIONS_FILE), instructionsPath(agent.dir));
+	if (instructions === "restored") files.push(INSTRUCTIONS_FILE);
 	const store = MemoryStore.openReadOnly(memory);
 	try {
-		return { agent: agent.name, from, messages: store.root.length, nodes: store.nodeCount, files };
+		return { agent: agent.name, from, messages: store.root.length, nodes: store.nodeCount, files, instructions };
 	} finally {
 		store.close();
 	}
+}
+
+const blank = (bytes: Buffer): boolean => bytes.toString("utf8").trim() === "";
+
+/** Puts `saved` (a backup's instructions.md) at `own` when the agent has none there: no file, or a blank one. */
+function restoreInstructions(saved: string, own: string): RestoreReport["instructions"] {
+	const copy = regularFile(saved);
+	if (!Buffer.isBuffer(copy) || blank(copy)) return "none";
+	const current = regularFile(own);
+	if (current !== "missing" && !(Buffer.isBuffer(current) && blank(current))) return "kept";
+	writeAtomically(own, copy);
+	return "restored";
 }

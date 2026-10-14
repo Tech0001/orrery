@@ -1,5 +1,5 @@
 import { execFileSync, type SpawnSyncReturns, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { statusCommand } from "../../src/cli/commands.ts";
@@ -167,5 +167,38 @@ describe("orrery", () => {
 		const missing = run(["restore", "Test", "--from", "2026-01-01"]);
 		expect(missing.status).toBe(1);
 		expect(missing.stderr).toContain("No backup of Test");
+	});
+
+	it("restore says what it did with the backup's instructions.md: put back when the agent has none, else kept aside", () => {
+		const dir = tempDir("orrery-main-");
+		dirs.push(dir);
+		const dataDir = join(dir, "data");
+		const configPath = join(dir, "config.toml");
+		writeFileSync(configPath, agentConfigToml({ dataDir, folder: join(dir, "ws") }));
+		const agentDir = join(dataDir, "agents", "Test");
+		mkdirSync(agentDir, { recursive: true });
+		const store = MemoryStore.open(join(agentDir, "memory.sqlite"));
+		store.appendBatch([{ kind: "user", text: "hello" }]);
+		store.close();
+		writeFileSync(join(agentDir, "instructions.md"), "Test reviews pull requests.\n", { mode: 0o600 });
+		const env = { ...process.env, HOME: dir, ORRERY_CONFIG: "", ORRERY_HOME: "" };
+		const run = (args: string[]) => {
+			const c = cliCommand([...args, "--config", configPath]);
+			return execFileSync(c.cmd, c.args, { encoding: "utf8", env });
+		};
+		run(["backup"]);
+		const day = readdirSync(join(dataDir, "backups")).find((entry) => /^\d{4}-\d{2}-\d{2}$/.test(entry))!;
+		const from = join(dataDir, "backups", day, "Test");
+
+		rmSync(join(agentDir, "instructions.md"));
+		const restored = run(["restore", "Test", "--from", day]);
+		expect(restored).toContain("(memory.sqlite, instructions.md)");
+		expect(restored).toContain("Test had no instructions; put back the backup's instructions.md");
+		expect(readFileSync(join(agentDir, "instructions.md"), "utf8")).toBe("Test reviews pull requests.\n");
+
+		writeFileSync(join(agentDir, "instructions.md"), "Test reviews pull requests and releases.\n");
+		const kept = run(["restore", "Test", "--from", day]);
+		expect(kept).toContain(`Kept Test's own instructions.md; the backup's copy is ${join(from, "instructions.md")}`);
+		expect(readFileSync(join(agentDir, "instructions.md"), "utf8")).toBe("Test reviews pull requests and releases.\n");
 	});
 });

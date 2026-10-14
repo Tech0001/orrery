@@ -20,7 +20,7 @@ export function ownFolder(dir: string): boolean | undefined {
  * (and the chmod) elsewhere, so it throws instead. `keepFolderMode` leaves an existing folder's mode alone, for a
  * folder that is the user's rather than orrery's (a folder's root, a repo's .git/info).
  */
-export function writePrivate(path: string, text: string, options: { keepFolderMode?: boolean } = {}): void {
+export function writePrivate(path: string, text: string | Uint8Array, options: { keepFolderMode?: boolean } = {}): void {
 	const dir = dirname(path);
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	if (ownFolder(dir) !== true) throw new Error(`${dir} is not a real folder of this user's (a symlink, or someone else's); nothing was written`);
