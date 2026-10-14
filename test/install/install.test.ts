@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -168,6 +168,33 @@ describe("installFrom", () => {
 		installFrom({ from: fixtureRelease("0.6.0"), env });
 		expect(existsSync(leftover)).toBe(false);
 		expect(statSync(env.ORRERY_HOME as string).mode & 0o777).toBe(0o700); // an existing 0755 home is tightened
+	});
+
+	it("removes a .removing-* folder a cleanup cut short left", () => {
+		const env = scratchEnv();
+		const leftover = join(env.ORRERY_HOME as string, "app", ".removing-interrupted");
+		mkdirSync(join(leftover, "bin"), { recursive: true });
+		writeFileSync(join(leftover, "VERSION"), "0.5.9\n");
+		makeReadOnly(leftover);
+		installFrom({ from: fixtureRelease("0.6.0"), env });
+		expect(existsSync(leftover)).toBe(false);
+	});
+
+	it("a version folder that is not whole is skipped by rollback and staged again by install", () => {
+		const { env, versions } = twoInstalls(); // 0.6.0, 0.6.1
+		const broken = join(env.ORRERY_HOME as string, "app", versions[0] as string);
+		chmodSync(join(broken, "bin"), 0o755);
+		rmSync(join(broken, "bin", "orrery")); // as a removal cut short leaves it
+		installNext(env); // 0.6.2
+		expect(rollback(env)).toEqual({ from: "0.6.2", to: versions[1] });
+		expect(() => rollback(env)).toThrow(/no earlier version to roll back to/);
+		expect(currentOf(env)).toBe(versions[1]);
+		const lines: string[] = [];
+		installFrom({ from: fixtureRelease(versions[0] as string), env, log: (line) => lines.push(line) });
+		expect(lines).toContain(`Installing ${versions[0]}...`);
+		expect(currentOf(env)).toBe(versions[0]);
+		expect(existsSync(join(broken, "bin", "orrery"))).toBe(true);
+		expect(readdirSync(join(env.ORRERY_HOME as string, "app")).filter((n) => n.startsWith("."))).toEqual([]);
 	});
 
 	it("leaves current alone and removes the staging folder when the binary fails", () => {

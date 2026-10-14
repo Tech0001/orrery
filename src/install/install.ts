@@ -1,7 +1,8 @@
 /**
  * orrery install --from DIR (spec 2026-10-13-orrery-releases-design §5): a release folder is copied to
  * <home>/app/.staging-*, its binary checked, renamed to app/<VERSION>, made read-only, and app/current is switched to
- * it in one rename. Older versions go, except the newest three and any a live lane runs. Lanes' data is never touched.
+ * it in one rename. Older versions go, except the newest three and any a live lane runs, each renamed to a dot folder
+ * before it is deleted. Lanes' data is never touched.
  */
 
 import { spawnSync } from "node:child_process";
@@ -12,7 +13,7 @@ import { basename, join } from "node:path";
 import { defaultConfigPath, loadConfig } from "../lane/config.ts";
 import { orreryHome } from "../lane/home.ts";
 import type { Runner } from "../lane/tools.ts";
-import { VERSION_NAME } from "./layout.ts";
+import { ENTRY_TAILS, VERSION_NAME } from "./layout.ts";
 
 /** Versions kept by history alone; current and versions live lanes run are kept besides. */
 const KEEP = 3;
@@ -96,7 +97,7 @@ function readHistory(app: string): string[] {
 	}
 }
 
-/** The version folders: every real folder in app/ but the dot ones (staging). */
+/** The version folders: every real folder in app/ but the dot ones (staging, and folders being removed). */
 function versionFolders(app: string): string[] {
 	try {
 		return readdirSync(app, { withFileTypes: true }).filter((entry) => entry.isDirectory() && !entry.name.startsWith(".")).map((entry) => entry.name);
@@ -112,6 +113,14 @@ const isFolder = (path: string) => {
 		return false;
 	}
 };
+
+/**
+ * Whether a version folder looks whole, so current may name it: VERSION and bin/orrery (a release), or src/cli/main.ts
+ * (a 0.5.0 source copy). A removal cut short by an older Orrery can leave a folder that is neither.
+ */
+function isWhole(path: string): boolean {
+	return (existsSync(join(path, "VERSION")) && existsSync(join(path, ENTRY_TAILS.cli[0]))) || existsSync(join(path, ENTRY_TAILS.cli[1]));
+}
 
 /**
  * Points app/current at `version` in one rename. app/history is install order, each version once, latest install last:
@@ -135,11 +144,11 @@ function switchTo(app: string, version: string, record: boolean): void {
 	}
 }
 
-/** The version a rollback from `from` goes to: the latest earlier one in install order that still has a folder. */
+/** The version a rollback from `from` goes to: the latest earlier one in install order that still has a whole folder. */
 function rollbackTarget(app: string, from: string): string | undefined {
 	const history = readHistory(app);
 	const at = history.lastIndexOf(from);
-	return history.slice(0, at < 0 ? history.length : at).reverse().find((name) => name !== from && isFolder(join(app, name)));
+	return history.slice(0, at < 0 ? history.length : at).reverse().find((name) => name !== from && isWhole(join(app, name)));
 }
 
 function alive(pid: number): boolean {
@@ -225,7 +234,7 @@ function collect(app: string, env: NodeJS.ProcessEnv, log: (line: string) => voi
 	if (previous !== undefined) keep.add(previous); // what the user was on before this switch (maybe just rolled back to)
 	for (const version of live.keys()) keep.add(version);
 	const removed = versionFolders(app).filter((name) => !keep.has(name)).sort();
-	for (const name of removed) removeVersion(join(app, name));
+	for (const name of removed) dropVersion(app, name);
 	return removed;
 }
 
@@ -268,6 +277,19 @@ export function removeVersion(path: string): void {
 	}
 	rmSync(path, { recursive: true, force: true });
 }
+
+/**
+ * Removes app/<name>, renamed to app/.removing-<random> first: a removal cut short (Ctrl-C) leaves a dot folder, which
+ * the next install removes, never a half-deleted folder under a version's name for a switch to land on.
+ */
+export function dropVersion(app: string, name: string): void {
+	const doomed = join(app, `.removing-${randomUUID()}`);
+	renameSync(join(app, name), doomed);
+	removeVersion(doomed);
+}
+
+/** What an install or a removal cut short left in app/: staging folders and folders being removed. */
+export const isLeftover = (name: string) => name.startsWith(".staging-") || name.startsWith(".removing-");
 
 /** The os-arch a binary was built for, from its ELF or Mach-O header; undefined for anything else (a script). */
 export function binaryTarget(file: string): string | undefined {
@@ -323,15 +345,16 @@ export function installFrom(options: { from: string; env: NodeJS.ProcessEnv; log
 	mkdirSync(app, { recursive: true, mode: 0o700 });
 	const release = holdInstallLock(env);
 	try {
-		// Under the lock, a staging folder is what an interrupted install left.
-		for (const name of readdirSync(app)) if (name.startsWith(".staging-")) removeVersion(join(app, name));
+		// Under the lock, a staging or .removing- folder is what an interrupted install or cleanup left.
+		for (const name of readdirSync(app)) if (isLeftover(name)) removeVersion(join(app, name));
 		const previous = currentName(app);
-		if (isFolder(join(app, version))) {
+		if (isWhole(join(app, version))) {
 			if (previous === version) {
 				log(`${version} is already installed.`);
 				return { version, removed: [] };
 			}
 		} else {
+			if (isFolder(join(app, version))) dropVersion(app, version); // part of a folder a removal cut short
 			log(`Installing ${version}...`);
 			stageRelease(options.from, app, version, run);
 		}
