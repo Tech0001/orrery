@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { dryRun, type DryRunInput } from "../../src/import/dry-run.ts";
+import { dryRun, type DryRunInput, newPreviewFolder } from "../../src/import/dry-run.ts";
 import { parseConfig } from "../../src/lane/config.ts";
 import { fauxModels, laneConfigToml, tempDir } from "../lane/support.ts";
 
@@ -72,5 +72,47 @@ describe("dryRun", () => {
 		await expect(run).rejects.toMatchObject({ name: "AbortError" });
 		expect(existsSync(join(input.out, "preview.jsonl"))).toBe(false);
 		expect(existsSync(join(input.out, "report.md"))).toBe(false);
+	});
+});
+
+describe("newPreviewFolder", () => {
+	const DAY = 24 * 60 * 60 * 1000;
+	/** A folder `name` under `root` with one file, last changed `ago` ms before `now`. */
+	function leftover(root: string, name: string, now: number, ago: number): string {
+		const dir = join(root, name);
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "preview.jsonl"), "{}\n");
+		const at = new Date(now - ago);
+		utimesSync(join(dir, "preview.jsonl"), at, at);
+		utimesSync(dir, at, at);
+		return dir;
+	}
+
+	it("makes a private folder under the data folder's imports, after sweeping away previews left more than a day ago", () => {
+		const data = tempDir("orrery-previews-");
+		dirs.push(data);
+		const root = join(data, "imports");
+		mkdirSync(root, { mode: 0o755 });
+		chmodSync(root, 0o755);
+		const now = Date.now();
+		leftover(root, "preview-old", now, 2 * DAY);
+		leftover(root, "preview-recent", now, 60 * 60 * 1000);
+		leftover(root, "not-a-preview", now, 2 * DAY);
+		const out = newPreviewFolder(data, now);
+		expect(out.startsWith(join(root, "preview-"))).toBe(true);
+		expect(statSync(out).mode & 0o777).toBe(0o700);
+		expect(statSync(root).mode & 0o777).toBe(0o700);
+		expect(readdirSync(root).sort()).toEqual(["not-a-preview", "preview-recent", out.slice(root.length + 1)].sort());
+	});
+
+	it("refuses an imports folder that is a symlink, and sweeps nothing through it", () => {
+		const data = tempDir("orrery-previews-");
+		const elsewhere = tempDir("orrery-previews-elsewhere-");
+		dirs.push(data, elsewhere);
+		const now = Date.now();
+		leftover(elsewhere, "preview-old", now, 2 * DAY);
+		symlinkSync(elsewhere, join(data, "imports"));
+		expect(() => newPreviewFolder(data, now)).toThrow(/not a real folder/);
+		expect(readdirSync(elsewhere)).toEqual(["preview-old"]);
 	});
 });

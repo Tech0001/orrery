@@ -4,12 +4,13 @@
  * report.md for review. Nothing goes into memory here; `orrery import --commit` and the TUI's Import do that.
  */
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Models } from "@earendil-works/pi-ai";
 import type { HarnessConfig, ModelChoice } from "../lane/config.ts";
 import { FileCredentialStore } from "../lane/credentials.ts";
 import { compactorModel, createLaneModels } from "../lane/models.ts";
+import { ownFolder } from "../lane/private-file.ts";
 import type { CompactorModel } from "../memory/index.ts";
 import { extractClaudeFiles } from "./claude.ts";
 import { extractCodex } from "./codex.ts";
@@ -51,6 +52,33 @@ export interface DryRunResult {
 	readonly report: string;
 	readonly previewPath: string;
 	readonly reportPath: string;
+}
+
+/** The TUI's previews live in <data folder>/imports: Orrery's own folder, which agents are kept out of. */
+export const PREVIEWS_FOLDER = "imports";
+const PREVIEW_PREFIX = "preview-";
+/** A preview folder older than this was left by a TUI that never finished (killed mid-preview): the next one sweeps it. */
+export const PREVIEW_LEFTOVER_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A fresh private folder (0700) for one TUI preview under <dataDir>/imports (0700), after sweeping away preview folders
+ * left there more than a day ago. The caller removes its own when done. `orrery import --dry-run` writes where it is told.
+ */
+export function newPreviewFolder(dataDir: string, now = Date.now()): string {
+	const root = join(dataDir, PREVIEWS_FOLDER);
+	mkdirSync(root, { recursive: true, mode: 0o700 });
+	if (ownFolder(root) !== true) throw new Error(`${root} is not a real folder of this user's (a symlink, or someone else's); nothing was written`);
+	chmodSync(root, 0o700);
+	for (const entry of readdirSync(root)) {
+		if (!entry.startsWith(PREVIEW_PREFIX)) continue;
+		const path = join(root, entry);
+		try {
+			if (now - lstatSync(path).mtimeMs > PREVIEW_LEFTOVER_MS) rmSync(path, { recursive: true, force: true });
+		} catch {
+			// another TUI swept it first
+		}
+	}
+	return mkdtempSync(join(root, PREVIEW_PREFIX));
 }
 
 /** Lets the event loop run: a TUI draws the progress line and takes Esc in between. */

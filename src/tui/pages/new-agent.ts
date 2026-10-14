@@ -3,11 +3,11 @@
  * Codex chat, or (with remotes) one from a remote. Each asks through dialogs and writes nothing before its last step.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { rmSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute } from "node:path";
 import type { Chat } from "../../import/chats.ts";
-import type { DryRunResult } from "../../import/dry-run.ts";
+import { type DryRunResult, newPreviewFolder } from "../../import/dry-run.ts";
 import { suggestName } from "../../import/name.ts";
 import { pickSummaryModel } from "../../lane/compactor-menu.ts";
 import { readOnlyConfigText } from "../../lane/config-edit.ts";
@@ -78,8 +78,9 @@ async function fromChat(app: App, config: HarnessConfig): Promise<string | undef
 	if (folderText === undefined) return undefined;
 	const folder = folderText === "" ? undefined : expandHome(folderText);
 	if (folder !== undefined && !isAbsolute(folder)) throw new Error("The folder must be an absolute path.");
-	// The preview holds the chats' text: a private folder of its own (0700), removed however this ends.
-	const out = mkdtempSync(join(tmpdir(), "orrery-import-"));
+	// The preview holds the chats' text: a private folder of its own (0700) in Orrery's data folder, removed however this
+	// ends (one a killed TUI leaves is swept by a later preview).
+	const out = newPreviewFolder(config.dataDir);
 	try {
 		const progress = new ProgressModal(`Preparing ${name}'s memory`);
 		const shown = app.host.open(progress);

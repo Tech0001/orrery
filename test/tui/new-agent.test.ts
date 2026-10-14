@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -57,6 +57,8 @@ async function tui(s: ReturnType<typeof scene>, overrides: Partial<AppDeps> = {}
 	const builds: string[] = [];
 	const outs: string[] = [];
 	const inputs: DryRunInput[] = [];
+	/** Each preview folder's mode as the dry run starts, and its preview file's once written. */
+	const modes: number[] = [];
 	const deps = fakeDeps({
 		configPath: s.configPath,
 		loadConfig: () => loadConfig(s.configPath),
@@ -64,17 +66,20 @@ async function tui(s: ReturnType<typeof scene>, overrides: Partial<AppDeps> = {}
 		overview: (config) => laneOverview(config),
 		sources: async () => sources,
 		chats: () => listChats({ env: {}, home: s.home, now: Date.now() }),
-		importPreview: (input: DryRunInput) => {
+		importPreview: async (input: DryRunInput) => {
 			outs.push(input.out);
 			inputs.push(input);
-			return dryRun({ ...input, summaryModel: { provider: "faux-compactor", modelId: "faux-1", thinking: "off" }, models: faux.models });
+			modes.push(statSync(input.out).mode & 0o777);
+			const result = await dryRun({ ...input, summaryModel: { provider: "faux-compactor", modelId: "faux-1", thinking: "off" }, models: faux.models });
+			modes.push(statSync(result.previewPath).mode & 0o777);
+			return result;
 		},
 		importCommit: (request) => createFromPreview(s.configPath, request),
 		startBuild: (name) => builds.push(name),
 		writeInstructions: () => {},
 		...overrides,
 	}, []);
-	return { app: makeApp(deps, [lanesPage]), deps, builds, outs, inputs };
+	return { app: makeApp(deps, [lanesPage]), deps, builds, outs, inputs, modes };
 }
 
 /** N, From an existing chat, the chat, yes to "in use", the suggested name, pi, a summary model, no folder. */
@@ -94,8 +99,11 @@ async function throughToPreview(app: ReturnType<typeof makeApp>) {
 describe("N: an agent from an existing chat", () => {
 	it("lists the chat, asks before an in-use one, previews, and imports into a new agent whose memory is then built", async () => {
 		const s = scene();
-		const { app, builds, outs } = await tui(s);
+		const { app, builds, outs, modes } = await tui(s);
 		await throughToPreview(app);
+		// The preview is private, in Orrery's data folder (agents are kept out of it), not the system's temporary folder.
+		expect(outs[0]?.startsWith(join(s.root, "data", "imports", "preview-"))).toBe(true);
+		expect(modes).toEqual([0o700, 0o600]);
 		await answer(app, "Import preview for Install-RPCS3-AppImage", "r");
 		await answer(app, "Full report", ENTER);
 		await answer(app, "Import preview for Install-RPCS3-AppImage", ENTER);
