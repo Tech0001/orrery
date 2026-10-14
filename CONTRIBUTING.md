@@ -37,7 +37,8 @@ Bun store check, the Python parity oracle and the real pi, OMP and Ori tests.
 
 To try a change on your own machine, commit it and run `npm run install-local`. It builds a release from the last
 commit and installs it as `<version>-<commit>`, then wires your tools to it. `orrery install --rollback` goes back to the
-previous version, and `orrery update` returns to the latest release.
+previous version, and `orrery update --version <X>` returns to release X (plain `orrery update` installs only a newer
+release).
 
 ## Making a change
 

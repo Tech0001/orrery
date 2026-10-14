@@ -97,19 +97,6 @@ folder that does not look like an Orrery home.
 
 To work on Orrery itself, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-### Try the demo
-
-Explore the TUI with fictional lanes before setting anything up:
-
-```bash
-npm run demo
-```
-
-The demo has five fictional lanes across pi, Claude Code, OMP and Codex, with canned memory, summaries and
-illustrative usage costs. Browse with **1–4**, open a lane with **Enter**, and quit with **q**. It makes no model
-calls, needs no tools or sign-ins, and removes its temporary home on exit. Your config and data stay untouched;
-editing, sign-in, installation and launching are disabled in the demo. Codex remains launch-only, with no memory.
-
 ### Set up your lanes
 
 The install puts the `orrery` command in `~/.local/bin`. Add that folder to your shell's PATH if it is not there
@@ -206,10 +193,25 @@ ORRERY_TEST_ORI=/path/to/ori ORRERY_TEST_PI=/path/to/pi ORRERY_TEST_OMP=/path/to
 
 These tests isolate agent homes and use fake model services. `ORRERY_TEST_ORI_STRICT=1` turns the named upstream
 Ori/OMP compatibility skip into a failure. [Claude Code testing](docs/claude-code.md#testing) describes the separate
-opt-in live script, which makes paid calls. CI checks Node 22 and 24 without requiring agent binaries or credentials.
+opt-in live script, which makes paid calls. CI runs the suite on Node 22.19 and 24 and on macOS. There the real-pi
+tests use the npm pi from the dev dependencies and fail rather than skip (`ORRERY_REQUIRE_PI=1`); CI needs no other
+agent binaries and no credentials.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) covers bug reports and pull requests. Report security problems privately as
 [SECURITY.md](SECURITY.md) describes.
+
+### Try the demo
+
+From a checkout (set up as [CONTRIBUTING.md](CONTRIBUTING.md#setup) shows), explore the TUI with fictional lanes:
+
+```bash
+npm run demo
+```
+
+The demo has five fictional lanes across pi, Claude Code, OMP and Codex, with canned memory, summaries and
+illustrative usage costs. Browse with **1–4**, open a lane with **Enter**, and quit with **q**. It makes no model
+calls, needs no tools or sign-ins, and removes its temporary home on exit. Your config and data stay untouched;
+editing, sign-in, installation and launching are disabled in the demo. Codex remains launch-only, with no memory.
 
 ## Credits
 
