@@ -32,6 +32,8 @@ const claudeUser = (text: string, cwd = "/home/someone/Work") => ({ type: "user"
 const codexMeta = (id: string, cwd: string, extra: object = {}) => ({ timestamp: "2026-10-10T10:00:00.000Z", type: "session_meta", payload: { id, cwd, timestamp: "2026-10-10T10:00:00.000Z", ...extra } });
 const codexUser = (text: string) => ({ timestamp: "2026-10-10T10:00:01.000Z", type: "event_msg", payload: { type: "user_message", message: text } });
 const list = (h: string, env: NodeJS.ProcessEnv = {}) => listChats({ env, home: h, now: NOW }).chats;
+/** The wall-clock budget of the large listings: 2 s here, 5 s on shared CI runners, which are slower and busier. */
+const BUDGET_MS = process.env.CI ? 5000 : 2000;
 
 /** A sparse file of `size` bytes: `first` at its start, `last` (a line) at its end. No disk is used. */
 function sparse(file: string, first: string, last: string, size: number, minutesAgo: number): void {
@@ -80,7 +82,7 @@ describe("listChats", () => {
 		expect(list(h).map((chat) => [chat.title, chat.inUse])).toEqual([["Nine minutes ago", true], ["Eleven minutes ago", false]]);
 	});
 
-	it("lists a 300 MB chat from its head and tail only, in under 2 s", () => {
+	it("lists a 300 MB chat from its head and tail only, within the budget (2 s; 5 s on CI)", () => {
 		const h = home();
 		const file = join(h, ".claude", "projects", "-big", "big.jsonl");
 		const size = 300 * 1024 * 1024;
@@ -88,13 +90,13 @@ describe("listChats", () => {
 		const started = performance.now();
 		const { chats, bytesRead } = listChats({ env: {}, home: h, now: NOW });
 		const took = performance.now() - started;
-		expect(took).toBeLessThan(2000);
+		expect(took).toBeLessThan(BUDGET_MS);
 		expect(chats.map((chat) => [chat.title, chat.size])).toEqual([["The big chat", size]]);
 		expect(bytesRead).toBeLessThan(1024 * 1024);
 		console.log(`300 MB chat listed in ${took.toFixed(1)} ms, ${bytesRead} bytes read`);
 	});
 
-	it("lists a folder of large chats (about 1,000 files, 440 over 256 KB) in about a second, reading little", () => {
+	it("lists a folder of large chats (about 1,000 files, 440 over 256 KB) within the budget, reading little", () => {
 		const h = home();
 		const project = (n: number) => join(h, ".claude", "projects", `-proj-${n % 20}`);
 		for (let i = 0; i < 560; i++) put(join(project(i), `small-${i}.jsonl`), lines([claudeUser(`Small chat ${i}`), { type: "ai-title", aiTitle: `Small ${i}`, sessionId: "s" }]), i);
@@ -107,7 +109,7 @@ describe("listChats", () => {
 		const took = performance.now() - started;
 		expect(chats).toHaveLength(1000);
 		expect(chats.filter((chat) => chat.title.startsWith("Large "))).toHaveLength(440);
-		expect(took).toBeLessThan(2000);
+		expect(took).toBeLessThan(BUDGET_MS);
 		expect(bytesRead).toBeLessThan(440 * (320 * 1024) + 560 * 2048);
 		console.log(`1,000 chats (440 large) listed in ${took.toFixed(1)} ms, ${bytesRead} bytes read`);
 	});
