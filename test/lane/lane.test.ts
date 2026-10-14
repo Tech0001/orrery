@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseConfig, parseModelChoice } from "../../src/lane/config.ts";
-import { writeInstructions } from "../../src/lane/instructions.ts";
+import { INSTRUCTIONS_MAX_BYTES, writeInstructions } from "../../src/lane/instructions.ts";
 import { Lane, readStatus } from "../../src/lane/lane.ts";
 import { statusVersion } from "../../src/lane/status-file.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
@@ -55,14 +55,17 @@ describe("Lane", () => {
 		expect(status?.version).toBe("checkout");
 		expect(seen[0][0]).toContain("You are the Test lane.");
 		expect(seen[0][0]).not.toContain("The workspace's own rules.");
+		expect(lane.store.getMeta("instructions")).toBe("You are the Test lane.");
 		await lane.close();
 
-		rmSync(join(config.lanes.get("Test")!.dir, "instructions.md")); // reopen must fall back to the cached copy in memory.sqlite
+		// A removed instructions.md takes effect: the lane runs with memory only, and the store's copy is cleared.
+		rmSync(join(config.lanes.get("Test")!.dir, "instructions.md"));
 		const reopened = await Lane.open({ config, lane: "Test", models, context: ctx });
 		expect(reopened.store.root).toHaveLength(2);
+		expect(reopened.store.getMeta("instructions")).toBe("");
 		const second = await reopened.submit("What is the codename?", "r2");
 		await second?.submission.wait(ctx);
-		expect(seen[1][0]).toContain("You are the Test lane.");
+		expect(seen[1][0]).not.toContain("You are the Test lane.");
 		expect(seen[1][0]).toContain("user: The codename is Cedar.");
 		expect(seen[1].slice(1)).toEqual(["user:What is the codename?"]);
 		await reopened.close();
@@ -158,6 +161,33 @@ describe("Lane", () => {
 		} finally {
 			vi.restoreAllMocks();
 		}
+	});
+
+	it("a blank instructions.md is none; over 32 KB the first 32 KB go out, with a notice", async () => {
+		const { config } = fixture();
+		const dir = config.lanes.get("Test")!.dir;
+		const { agent, models } = fauxModels();
+		const seen: string[][] = [];
+		agent.setResponses([(context) => (seen.push(contextLines(context)), fauxAssistantMessage("One.")), (context) => (seen.push(contextLines(context)), fauxAssistantMessage("Two."))]);
+		writeInstructions(dir, " \n\t\n");
+		const blank = await Lane.open({ config, lane: "Test", models, context: ctx });
+		expect(blank.store.getMeta("instructions") ?? "").toBe("");
+		await (await blank.submit("Hello.", "r1"))?.submission.wait(ctx);
+		await blank.close();
+		expect(seen[0][0]).not.toContain("You are the Test lane.");
+		writeInstructions(dir, `${"a".repeat(INSTRUCTIONS_MAX_BYTES)}TAIL`);
+		const said: string[] = [];
+		vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => (said.push(String(chunk)), true));
+		try {
+			const long = await Lane.open({ config, lane: "Test", models, context: ctx });
+			await (await long.submit("Hello again.", "r2"))?.submission.wait(ctx);
+			await long.close();
+		} finally {
+			vi.restoreAllMocks();
+		}
+		expect(said).toContain("Orrery: Test's instructions are over 32 KB; only the first 32 KB reach the model. Shorten instructions.md.\n");
+		expect(seen[1][0]).toContain("a".repeat(INSTRUCTIONS_MAX_BYTES));
+		expect(seen[1][0]).not.toContain("TAIL");
 	});
 
 	it("refuses to run a lane that has no agent model", async () => {

@@ -77,9 +77,12 @@ describe("instructions.md", () => {
 		expect(instructionsFacts(dir)).toEqual({ state: "none" });
 	});
 
-	it("starts a new agent with three lines: its name, its purpose, and where the rest goes", () => {
-		expect(instructionsTemplate("Atlas")).toBe("# Atlas\n\nWhat this agent is for, in one line.\n\nAdd how this agent should work: its role, what it owns, how it reports.\n");
-		expect(instructionsTemplate("Atlas", 'Continues the chat "Install RPCS3".')).toContain('\n\nContinues the chat "Install RPCS3".\n\n');
+	it("starts a new agent with its purpose and where the rest goes; the section's heading names it, once", () => {
+		expect(instructionsTemplate("Atlas")).toBe("What Atlas is for, in one line.\n\nAdd how this agent should work: its role, what it owns, how it reports.\n");
+		expect(instructionsTemplate("Atlas", 'Continues the chat "Install RPCS3".')).toBe('Continues the chat "Install RPCS3".\n\nAdd how this agent should work: its role, what it owns, how it reports.\n');
+		const dir = scratch();
+		writeInstructions(dir, instructionsTemplate("Atlas"));
+		expect(instructionsSection("Atlas", readInstructions(dir)!)).toBe("# Agent: Atlas\n\nWhat Atlas is for, in one line.\n\nAdd how this agent should work: its role, what it owns, how it reports.");
 	});
 
 	it("the overview says which lanes have none, and which open lanes have newer instructions than their session", () => {

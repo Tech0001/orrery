@@ -76,9 +76,12 @@ export function cutNotice(name: string): string {
 	return `Orrery: ${name}'s instructions are over 32 KB; only the first 32 KB reach the model. Shorten instructions.md.`;
 }
 
-/** A new agent's instructions: its name, one line of purpose, and where the rest goes. */
-export function instructionsTemplate(name: string, purpose = "What this agent is for, in one line."): string {
-	return `# ${name}\n\n${purpose}\n\nAdd how this agent should work: its role, what it owns, how it reports.\n`;
+/**
+ * A new agent's instructions: one line of purpose (by default naming the agent), and where the rest goes. No heading of
+ * its own: instructionsSection puts "# Agent: <Name>" above it.
+ */
+export function instructionsTemplate(name: string, purpose = `What ${name} is for, in one line.`): string {
+	return `${purpose}\n\nAdd how this agent should work: its role, what it owns, how it reports.\n`;
 }
 
 /** Writes the instructions (0600, atomically) into the lane's folder (0700, made when needed). */

@@ -24,7 +24,7 @@ import { AGENT_MODEL_KEY, COMPACTOR_MODEL_KEY, storedChoice } from "./choices.ts
 import { createLaneEnv, type LaneEnv } from "./env.ts";
 import { memoryExtension } from "./extension.ts";
 import { guardExtension } from "./guard.ts";
-import { readInstructions } from "./instructions.ts";
+import { cutNotice, readInstructions } from "./instructions.ts";
 import { laneViews } from "./guard-paths.ts";
 import { compactorModel, createLaneModels, modelContextWindow, savedSummaryLoginsOnly } from "./models.ts";
 import { Projector } from "./projector.ts";
@@ -193,10 +193,11 @@ export class Lane {
 			// A lane with no default folder works where `orrery run` started (only a local lane may lack one).
 			const workspace = config.workspace ?? process.cwd();
 			const env = createLaneEnv(config.host, workspace, options.config.sshDir, context);
-			// The lane's instructions.md; the store keeps the last ones read, which stand in when the file is gone.
-			const fresh = readInstructions(config.dir)?.text;
-			if (fresh !== undefined && store.getMeta("instructions") !== fresh) store.setMeta("instructions", fresh);
-			const instructions = fresh ?? store.getMeta("instructions") ?? "";
+			// The lane's instructions.md, read as pi and OMP read it: a missing or blank file is none (memory only). The store's
+			// copy follows the file, cleared when it reads none, so it never stands in for instructions taken away.
+			const found = readInstructions(config.dir);
+			const instructions = found?.text ?? "";
+			if ((store.getMeta("instructions") ?? "") !== instructions) store.setMeta("instructions", instructions);
 			const registry = createRegistry();
 			registry.install(CodingTools);
 			registry.install(memoryExtension({ view, instructions: () => instructions }));
@@ -239,6 +240,7 @@ export class Lane {
 			for (const stale of [agentChoice.stale, compactorChoice.stale]) {
 				if (stale !== undefined) lane.report(`The model chosen in chat (${stale}) is no longer available; using the config's.`);
 			}
+			if (found?.cut === true) lane.report(cutNotice(config.name));
 			compactor.start();
 			projector.start(harness);
 			await projector.drain();

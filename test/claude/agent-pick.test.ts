@@ -103,7 +103,7 @@ describe("Claude Code outside the lane's folder, by ORRERY_AGENT", () => {
 		const started: string[] = [];
 		const out = JSON.parse(await runHook("session-start", hookInput("s1", dir), at(t, dir, { ORRERY_AGENT: "Test" }, { startHolder: recording(started) }))) as { systemMessage?: string };
 		expect(started).toEqual(["Test"]);
-		expect(out.systemMessage).toBe("Orrery: Test is open outside its folder, where only the Orrery mod brings its memory into Claude Code; run `orrery claude-setup Test --mod`, then start a new session.");
+		expect(out.systemMessage).toBe("Orrery: Test is open outside its folder, where only the Orrery mod brings its memory and instructions into Claude Code; run `orrery claude-setup Test --mod`, then start a new session.");
 	});
 
 	it("an ORRERY_AGENT that names no lane, or a malformed token: a notice for the person (not in a subagent), and nothing recorded", async () => {

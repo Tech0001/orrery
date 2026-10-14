@@ -1,6 +1,7 @@
 /**
  * The view file Claude Code loads (spec §4 "The view file and CLAUDE.md"): <workspace>/.orrery/view.md.
- * - It holds the agent's instructions (fenced, under a heading naming it), then memorySection(view, "claude-code").
+ * - It holds the agent's instructions (fenced, under a heading naming it), then memorySection(view, "claude-code"); before
+ *   the lane has memory, the instructions alone.
  * - It is written atomically, 0600 in a 0700 folder.
  * - The workspace is untrusted, since a shared repo decides what is in it. So the view is written only where
  *   claude-setup put it:
@@ -308,27 +309,31 @@ export function viewGate(lane: LaneConfig): ViewGate {
 
 /**
  * Writes the view into the lane's workspace if its gate (viewGate) lets it; false otherwise. `onGate` hears what the
- * gate said (the holder logs a withdrawal, SessionStart warns).
+ * gate said (the holder logs a withdrawal, SessionStart warns). The agent's instructions come first; `view` undefined
+ * (no memory yet) leaves the memory section out.
  */
-export function writeViewFile(lane: LaneConfig, view: MemoryView, onGate?: (gate: ViewGate) => void): boolean {
+export function writeViewFile(lane: LaneConfig, view: MemoryView | undefined, onGate?: (gate: ViewGate) => void): boolean {
 	const gate = viewGate(lane);
 	onGate?.(gate);
 	if (!gate.open || lane.workspace === undefined) return false;
 	const found = readInstructions(lane.dir);
-	// The agent's instructions first, fenced like the view: Claude Code evaluates no @path import inside a code block.
-	const head = found === undefined ? "" : `# Agent: ${lane.name}\n\n${fenced(found.text.trimEnd())}\n\n`;
-	writePrivate(viewFile(lane.workspace), `${head}${memorySection(view, "claude-code")}`);
+	// Fenced like the view: Claude Code evaluates no @path import inside a code block.
+	const parts = [...(found === undefined ? [] : [`# Agent: ${lane.name}\n\n${fenced(found.text.trimEnd())}`]), ...(view === undefined ? [] : [memorySection(view, "claude-code")])];
+	writePrivate(viewFile(lane.workspace), parts.join("\n\n"));
 	return true;
 }
 
 /**
  * Writes the view from a read-only snapshot of the lane's memory (SessionStart, claude-setup), where writeViewFile
- * would; `onGate` as there. Returns the message count, or undefined when the lane has no memory yet (then no gate
- * runs).
+ * would; `onGate` as there. Returns the message count, or undefined when the lane has no memory yet: then the view
+ * file holds the agent's instructions alone when it has some, and otherwise no gate runs and nothing is written.
  */
 export function refreshViewFile(lane: LaneConfig, onGate?: (gate: ViewGate) => void): number | undefined {
 	const file = join(lane.dir, "memory.sqlite");
-	if (!existsSync(file)) return undefined;
+	if (!existsSync(file)) {
+		if (readInstructions(lane.dir) !== undefined) writeViewFile(lane, undefined, onGate);
+		return undefined;
+	}
 	const store = MemoryStore.openReadOnly(file);
 	try {
 		writeViewFile(lane, new MemoryView(store, lane.memory.viewBytes), onGate);

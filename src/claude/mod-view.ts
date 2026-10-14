@@ -40,7 +40,7 @@ export type ModViewReply =
 			readonly messages: number;
 			readonly remote?: RemoteStatus;
 			readonly section: string | null;
-			/** The agent's instructions section (src/lane/instructions.ts), or null when it has none. */
+			/** In mod mode, the agent's instructions section (src/lane/instructions.ts); null when it has none, and in other modes. */
 			readonly instructions: string | null;
 			/** In mod mode, with --session: whether that session is recorded, so a compaction may drop its older turns. */
 			readonly recording?: boolean;
@@ -164,9 +164,10 @@ export async function modView(config: HarnessConfig | undefined, options: ModVie
 		const { lane } = picked;
 		const { session } = options;
 		if (session !== undefined && !validSession(session)) return { error: "not a Claude Code session id" };
-		const found = readInstructions(lane.dir);
-		const instructions = found === undefined ? null : instructionsSection(lane.name, found);
 		const mode = laneMode(lane);
+		// Only the mod puts them in the prompt; in file mode the view file carries them.
+		const found = mode === "mod" ? readInstructions(lane.dir) : undefined;
+		const instructions = found === undefined ? null : instructionsSection(lane.name, found);
 		const now = options.now ?? Date.now;
 		const remote = () => remoteFields(lane, session, now());
 		const exists = existsSync(join(lane.dir, "memory.sqlite"));

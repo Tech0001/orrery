@@ -217,6 +217,10 @@ async function waitForMode(laneDir: string, session: string, nonce: string, ms: 
 	}
 }
 
+/** SessionStart's notice for instructions over 32 KB in a session that gets none of them (file mode outside the folder, or not set up). */
+const cutNoneNotice = (name: string) =>
+	`Orrery: ${name}'s instructions are over 32 KB, and none of them reach the model in this session: only the Orrery mod, or the view file in ${name}'s folder, brings them. Shorten instructions.md.`;
+
 /** SessionStart's line for the model in mod mode: an old Claude Code, or mods turned off, leaves no memory section. */
 const MOD_CHECK = "If your system prompt has no Orrery memory section (its text begins \"Earlier conversation reaches you only through the view below\"), the Orrery mod is not loaded; tell the user.";
 
@@ -242,8 +246,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	const outside = lane.workspace === undefined || workArea(lane, projectDir) !== lane.workspace;
 	const session = input.session_id;
 	const warnings: string[] = [];
-	// Said to the person and the model: the mod's section and the view file carry only the first 32 KB.
-	if (readInstructions(lane.dir)?.cut === true) warnings.push(cutNotice(lane.name));
+	const cut = readInstructions(lane.dir)?.cut === true;
 	let messages: number | undefined;
 	// The view's own gate, which every write goes through, says why the view is not written. Where git would see it,
 	// the gate has taken the view back.
@@ -284,7 +287,10 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 		if (!genericHeld && typeof mode?.reason === "string" && !(mode.mode === "recording" && noticeShownBefore(lane.dir, session, mode.nonce))) warnings.push(safeText(mode.reason));
 	}
 	const mod = gate.mod === true;
-	const fix = `Make git ignore .orrery/ and track nothing there, then run \`orrery claude-setup ${lane.name}\`.`;
+	// Said to the person and the model, as this session gets them: the mod's section, and the view file in the lane's own
+	// folder, carry the first 32 KB; anywhere else none reach the model.
+	if (cut) warnings.push(mod || (gate.open && !outside) ? cutNotice(lane.name) : cutNoneNotice(lane.name));
+	const fix =`Make git ignore .orrery/ and track nothing there, then run \`orrery claude-setup ${lane.name}\`.`;
 	if (mod) {
 		// The mod puts the view in the prompt: no view-file warnings, but a stale view that stays is said.
 		if (gate.failed !== undefined) warnings.push(`Orrery: ${lane.name}'s old memory view file could not be removed (${gate.failed}); remove ${lane.workspace}/.orrery/view.md yourself.`);
@@ -299,7 +305,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 			`Orrery: ${lane.name}'s memory view could not be checked against git this time (${gate.unchecked}), so it is taken out of ${lane.workspace}/.orrery/ until git answers again; nothing to set up, a later session puts it back.`,
 		);
 	} else if (setUp && outside) {
-		warnings.push(`Orrery: ${lane.name} is open outside its folder, where only the Orrery mod brings its memory into Claude Code; run \`orrery claude-setup ${lane.name} --mod\`, then start a new session.`);
+		warnings.push(`Orrery: ${lane.name} is open outside its folder, where only the Orrery mod brings its memory and instructions into Claude Code; run \`orrery claude-setup ${lane.name} --mod\`, then start a new session.`);
 	} else if (setUp && !gate.open) {
 		// (Where nothing is set up, the status already says what to run.)
 		warnings.push(`Orrery: CLAUDE.md does not load ${lane.name}'s memory view; run \`orrery claude-setup ${lane.name}\`, then start a new session.`);
