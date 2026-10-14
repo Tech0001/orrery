@@ -11,6 +11,9 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      # The Node 24 leg has Bun and must run the release tests; a missing Bun is an error there, not a skip.
+      ORRERY_REQUIRE_BUN: ${{ matrix.node == '24' && '1' || '0' }}
     strategy:
       fail-fast: false
       matrix:
@@ -21,5 +24,13 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+      - if: matrix.node == '24'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
       - run: npm_config_ignore_scripts=true npm ci
       - run: npm run check
+      - if: matrix.node == '24'
+        run: npm run test:binary
+      - if: matrix.node == '24'
+        run: npm run test:bun-suite

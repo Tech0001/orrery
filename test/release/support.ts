@@ -13,14 +13,25 @@ export const bunReady: boolean = (() => {
 	return r.status === 0 && r.stdout.trim() === PINNED_BUN;
 })();
 
+/** With ORRERY_REQUIRE_BUN=1 (CI), a missing or wrong Bun is an error, not a quiet skip. */
+export function assertBunWhenRequired(env: NodeJS.ProcessEnv, ready: boolean, pinned: string): void {
+	if (env.ORRERY_REQUIRE_BUN === "1" && !ready) {
+		throw new Error(`ORRERY_REQUIRE_BUN is set, but bun ${pinned} (the version in .bun-version) is not on PATH`);
+	}
+}
+assertBunWhenRequired(process.env, bunReady, PINNED_BUN);
+
 let built: Promise<string> | undefined;
 let out: string | undefined;
 
 /**
  * One host release folder for this test file, built once (about a second). It is about 100 MB, and a temp folder can
- * be memory (tmpfs): a file that builds one removes it with afterAll(removeBuiltRelease).
+ * be memory (tmpfs): a file that builds one removes it with afterAll(removeBuiltRelease). When ORRERY_TEST_RELEASE
+ * names a release folder, that one is returned instead and is never built or removed here.
  */
 export function builtRelease(): Promise<string> {
+	const given = process.env.ORRERY_TEST_RELEASE;
+	if (given !== undefined && given !== "") return Promise.resolve(given);
 	built ??= (async () => {
 		out = mkdtempSync(join(tmpdir(), "orrery-release-"));
 		const r = spawnSync("bun", [join(REPO, "scripts", "build-release.ts"), "--target", "host", "--out", out], { encoding: "utf8", cwd: REPO });

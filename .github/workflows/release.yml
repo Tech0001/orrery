@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      ORRERY_REQUIRE_BUN: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: The tag names package.json's version
+        run: test "$GITHUB_REF_NAME" = "v$(node -p 'require("./package.json").version')"
+      - run: npm_config_ignore_scripts=true npm ci
+      - run: npm run check
+      - run: npm run test:binary
+      - run: npm run test:bun-suite
+
+  draft:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --title "Orrery ${GITHUB_REF_NAME#v}" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build:
+    needs: draft
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: linux-x64, runner: ubuntu-latest }
+          - { target: linux-arm64, runner: ubuntu-24.04-arm }
+          - { target: darwin-arm64, runner: macos-latest }
+          - { target: darwin-x64, runner: macos-15-intel }
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: npm_config_ignore_scripts=true npm ci
+      - name: Build on the machine it is for
+        run: bun scripts/build-release.ts --official --archive --target ${{ matrix.target }} --out dist
+      - name: Smoke test through install.sh
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p "serve/download/v$version" home
+          cp dist/orrery-${{ matrix.target }}.tar.gz dist/SHA256SUMS "serve/download/v$version/"
+          HOME="$PWD/home" ORRERY_VERSION="$version" ORRERY_RELEASES_URL="file://$PWD/serve" sh install.sh </dev/null
+          home/.orrery/app/current/bin/orrery --version | grep -qx "orrery $version"
+          home/.orrery/app/current/bin/orrery --help >/dev/null
+          HOME="$PWD/home" home/.orrery/app/current/bin/orrery status || true
+      - name: Real pi loads the packed extension (Linux x64)
+        if: matrix.target == 'linux-x64'
+        run: ORRERY_TEST_RELEASE="$(ls -d $PWD/dist/orrery-*-linux-x64)" npm test -- test/pi/real-pi.test.ts
+        env:
+          ORRERY_REQUIRE_BUN: "1"
+      - run: gh release upload "$GITHUB_REF_NAME" dist/orrery-${{ matrix.target }}.tar.gz --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  sums:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: SHA256SUMS over the uploaded archives, and install.sh
+        run: |
+          mkdir dist && cd dist
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern 'orrery-*.tar.gz'
+          sha256sum orrery-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS ../install.sh --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
