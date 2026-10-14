@@ -292,7 +292,7 @@ does not get around it. Setup commands that name the installed app folder are re
 in their own terminal.
 Shell commands that name `.orrery` are refused, except for the session's own agent's `view.md` by its full path (OMP's
 own search tools take it from `~/` too, since OMP expands `~` itself). Only an agent's own sessions read its memory
-view: it is refused to every other agent's file tools and content searches (grep), by any path or link; name-only
+view: it is refused to every other agent's file tools and content searches (grep), by its path or a symbolic link to it (a hard link is not caught); name-only
 listings (ls, find, glob) may list its folder. Which agent a session is comes from the same choice that picks its
 memory (`ORRERY_AGENT` with its claimed token, else the folder), so a tool an agent starts itself is not that agent. In
 Claude Code, a config that is there but cannot be read refuses every tool call.
@@ -303,8 +303,7 @@ The rules are tested against concrete tool shapes and need review when upstream 
 
 This is a credential guard, not a sandbox.
 Shell and evaluation tools receive text checks, not an operating-system isolation boundary.
-The shell-text rules are a seatbelt; variables, `eval`, `cd`, escape codes and brace names split across words are known
-limits.
+The shell-text rules are a seatbelt. Known limits include variables, `eval`, `cd`, escape codes, brace names split across words, commands that change folder with their own flag (`git -C`, `tar -C`), a swap of the session's own folder in the same command, a shell search of an agent's whole folder, and hard links to a protected file.
 Generated code can reach files through mechanisms the guard cannot see.
 Unknown plugin tools and hook failures can also fall outside the protection offered by a host integration.
 Do not use it as the security boundary for untrusted code or a hostile agent.

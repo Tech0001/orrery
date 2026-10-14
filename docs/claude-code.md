@@ -175,7 +175,7 @@ The easiest way is the TUI: on the Agents page press `N`, then "From an existing
 Codex chat, newest first, and marks one written to in the last ten minutes "in use". Pick one or several, name the
 agent, choose the tool it continues in and its summary model, and review a short report before anything is written.
 The import is a snapshot: the source chats are only read, never changed, and anything said in them afterwards is not in
-the agent. Its memory builds in the background, and the agent opens once that is done.
+the agent. Its memory builds in the background, and you can open the agent once that is done.
 
 From a shell, note that Claude Code files a session under the project folder it started in. An agent whose past lives
 under another project can be imported by naming those files, with the agent's own folder skipped:
@@ -290,7 +290,7 @@ as well as writes (`~/.ssh`, credential stores, `~/.claude/.credentials.json`, `
 `credentials.json`). So is Orrery's data folder, except reading the installed program (`app/`) and `config.toml`. The
 config and the installed program are read-only to agents: no tool may change either. An agent's memory view
 (`.orrery/view.md` in its folder) is read only by that agent's own sessions; every other agent's file tools and content
-searches are refused it, by any path or link. Writes stay inside the folder the agent was opened in and its
+searches are refused it, by their path or a symbolic link to it (a hard link is not caught). Writes stay inside the folder the agent was opened in and its
 `allowed_roots`. Setup commands that name the installed app folder (the plugin install above, for one) are refused to
 agents, so run them in your own terminal.
 
@@ -303,8 +303,7 @@ Claude Code's own per-user state stays writable, and only this:
 The guard runs before every tool. A hook that crashes does not block. It is a seatbelt, not a sandbox. Its known limits:
 
 - The shell-text rules read a command's text, not what it does. Shell commands that name an `.orrery` folder or a
-  custom `ORRERY_CONFIG` file by a path the guard can read are refused, but variables, `eval`, `cd`, escape codes and
-  brace names split across words get through, and so does a relative path or a link to the config.
+  custom `ORRERY_CONFIG` file by a path the guard can read are refused, but known limits include variables, `eval`, `cd`, escape codes, brace names split across words, commands that change folder with their own flag (`git -C`, `tar -C`), a swap of the session's own folder in the same command, a shell search of an agent's whole folder, and hard links to a protected file, and a relative path or a link to the config.
 - Tools the guard does not know are judged by heuristics: path-like keys (`path`, `file`, `dir`, `source`, …),
   destination keys (`out_dir`, `output`, `dest`, `target`, `save_path`), write verbs in the tool's name, and strings
   that start like a path. A tool that names a file under another key, or writes without a verb or a destination key, is

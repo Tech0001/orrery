@@ -98,8 +98,7 @@ file tools and content searches are refused it. Writes go to the folder the agen
 It is a credential guard, not a sandbox. `bash` and `eval` get only a check of their text for ssh keys and credential
 stores. The check also refuses commands that name Orrery's home (`.orrery`), except the agent's own `view.md` by its
 full path; a search or `ast_edit` root may name that file from `~/` too, since OMP expands `~` in its own process,
-where a shell's `export HOME` does not reach. These shell-text rules are a seatbelt: variables, `eval`, `cd`, escape
-codes and brace names split across words get past them. The code they run can reach any file.
+where a shell's `export HOME` does not reach. These shell-text rules are a seatbelt. Known limits include variables, `eval`, `cd`, escape codes, brace names split across words, commands that change folder with their own flag (`git -C`, `tar -C`), a swap of the session's own folder in the same command, a shell search of an agent's whole folder, and hard links to a protected file. The code they run can reach any file.
 Tools from OMP plugins are not checked.
 
 Where OMP's own parsers may read more than the guard can, the guard refuses rather than guesses. In an agent's OMP

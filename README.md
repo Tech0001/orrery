@@ -138,11 +138,11 @@ agent's instructions and memory, and the folder's own AGENTS.md or CLAUDE.md as 
 a default folder (`folder = "…"`); starting its tool there finds it without the command, as before.
 
 In the TUI (`orrery`), Enter opens the selected agent (here, or in its folder), E edits its instructions, C its
-settings, and N makes a new one: empty, or from an existing Claude Code or Codex chat picked from a list.
+settings, and N makes a new one: empty, from an existing Claude Code or Codex chat picked from a list, or (when a remote is configured) from a remote.
 
 The list shows every chat, and marks the ones written to in the last ten minutes "in use". An import is a snapshot:
 the source chats are only read, never changed, and anything said in them afterwards is not in the agent. The memory
-builds in the background, and the agent opens once it is done. `orrery import <Name> --dry-run` previews the same
+builds in the background, and you can open the agent once it is done. `orrery import <Name> --dry-run` previews the same
 import from the command line and also prints progress lines.
 
 The instructions go to the model ahead of the memory in pi, OMP and Claude Code's mod. Only a person edits them
@@ -199,15 +199,14 @@ Orrery's credential guard refuses agents' file tools anywhere in `~/.orrery` exc
 the installed program are read-only to agents: no file tool may change `config.toml` (or the file `ORRERY_CONFIG`
 names) or `app/`. Setup commands that name the installed program's folder are refused to agents too, so run them in
 your own terminal. Only an agent's own sessions read its memory view (`.orrery/view.md`, which Claude Code's file mode
-imports): other agents' file tools and content searches are refused by any path or link. Shell commands that name an
+imports): other agents' file tools and content searches are refused by their path or a symbolic link to it (a hard link is not caught). Shell commands that name an
 `.orrery` folder are refused, except for the agent's own `view.md` named by its full path, and so are shell commands
 that name a custom `ORRERY_CONFIG` file by its full path (or from `~` or `$HOME`). A config that is there but cannot be
 read refuses every tool call in Claude Code, and leaves pi and OMP with the default guard (the session's folder as its
 work area).
 
-**It is not a sandbox.** The shell-text rules are a seatbelt: they read a command's text, not what it does. Their
-known limits are variables, `eval`, `cd`, escape codes and brace names split across words; a relative path or a link
-to a config file is not caught either. Shell code, unknown plugin tools and host hook failures can also exceed the
+**It is not a sandbox.** The shell-text rules are a seatbelt: they read a command's text, not what it does. Known
+limits include variables, `eval`, `cd`, escape codes, brace names split across words, commands that change folder with their own flag (`git -C`, `tar -C`), a swap of the session's own folder in the same command, a shell search of an agent's whole folder, and hard links to a protected file; a relative path or a link to a config file is not caught either. Shell code, unknown plugin tools and host hook failures can also exceed the
 guard's coverage. See each tool guide for limits.
 
 Credentials are stored outside the repository in private files with mode 0600. Enter keys through Logins or the

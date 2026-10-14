@@ -152,7 +152,7 @@ the other agents and read their memory. They are read-only.
 In the TUI, `N` on the Agents page, then "From an existing chat", turns Claude Code and Codex chats into an agent. The
 list shows every chat and marks one written to in the last ten minutes "in use". The import is a snapshot: the source
 chats are only read, never changed, and anything said in them afterwards is not in the agent. The memory builds in the
-background, and the agent opens once it is done.
+background, and you can open the agent once it is done.
 
 From a shell, import an agent's Claude Code and Codex history. Preview first (the dry run prints progress lines),
 review the report, then commit. Claude Code deletes its
@@ -242,9 +242,8 @@ still applies to it. Close the first one, or work in it.
   sandbox.
 - Orrery's data folder is refused to file tools, except reading the installed program (`app/`) and `config.toml`; the
   config and the installed program are read-only to agents. Only an agent's own sessions read its memory view: other
-  agents' file tools and content searches are refused it. The shell-text rules are a seatbelt too: variables, `eval`,
-  `cd`, escape codes and brace names split across words get past them, and so does a relative path or a link to the
-  config.
+  agents' file tools and content searches are refused it. The shell-text rules are a seatbelt too. Known limits include
+  variables, `eval`, `cd`, escape codes, brace names split across words, commands that change folder with their own flag (`git -C`, `tar -C`), a swap of the session's own folder in the same command, a shell search of an agent's whole folder, and hard links to a protected file; a relative path or a link to the config is not caught either.
 - Credential files: the guard blocks ssh keys and credential stores, `~/.pi/agent/models.json` and `/proc/*/environ`.
   It refuses a grep, find or ls rooted at home or above, at a folder that holds credentials (like `~/.pi` or Orrery's
   data folder), or in `/proc`. Search a narrower folder instead. Reads elsewhere are allowed: agents read other repos.

@@ -33,9 +33,18 @@ Edit `/etc/orrery/config.toml` using [the server example](../deploy/config.examp
 DNS name, account, absolute folder paths and models. Put provider secrets in `/etc/orrery/env`, with owner
 `root:orrery` and mode 0640. The service and `orrery` login shell read it; secrets do not belong in the checkout.
 
-A config from before Orrery 0.6.0 is refused with a message naming the renames: each `[lanes.<Name>]` section becomes
-`[agents.<Name>]`, and its `workspace` key becomes `folder`. The data folder `lanes/<Name>/` moves to
-`agents/<Name>/` too. Stop every agent first.
+A config from before Orrery 0.6.0 is refused with a message naming two renames: each `[lanes.<Name>]` section becomes
+`[agents.<Name>]`, and its `workspace` key becomes `folder`. Orrery does not move the data folder: you rename
+`lanes/<Name>/` to `agents/<Name>/` yourself, with every agent stopped:
+
+```bash
+sudo systemctl stop orrery@Atlas                      # every agent
+sudo -u orrery mv /var/lib/orrery/lanes /var/lib/orrery/agents
+sudoedit /etc/orrery/config.toml                      # [lanes.X] -> [agents.X], workspace -> folder
+sudo systemctl start orrery@Atlas
+```
+
+Adjust the data path if `data_dir` is not `/var/lib/orrery`.
 
 Authorize the generated `/var/lib/orrery/ssh/id_ed25519.pub` on the workstation. Restrict the authorized key to your
 server's source address if appropriate. Then trust the workstation's host key and sign in for summaries:
