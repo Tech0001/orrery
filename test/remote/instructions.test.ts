@@ -92,7 +92,7 @@ function offline(s: Scene): () => void {
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 const tooLarge = "Orrery: Atlas's instructions.md is over 256 KB, so it stays on this machine and does not travel with its memory; shorten it to share it.";
 /** Every notice that this machine's instructions were kept aside for another copy. */
-const conflicts = (m: Machine) => m.reports.filter((text) => text.includes("both here") || text.includes("is not the copy that travels"));
+const conflicts = (m: Machine) => m.reports.filter((text) => text.includes("both here") || text.includes("is not the copy that travels") || text.includes("came with the memory set aside"));
 
 /** What the remote holds now: the store's copy as a machine that never had a file checks it out. */
 async function remoteCopy(s: Scene): Promise<string | undefined> {

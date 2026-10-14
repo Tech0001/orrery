@@ -183,8 +183,11 @@ function removeLocalMeta(db: Database): void {
 	for (const [key] of localMeta(db)) remove.run(key);
 }
 
-/** A VACUUM copy sees committed WAL data without changing the source's tree rowids. */
-export function snapshotBytes(dbPath: string): Uint8Array {
+/**
+ * A VACUUM copy sees committed WAL data without changing the source's tree rowids. `meta` is written into the copy only
+ * (a first push's values, which the working copy takes once the push has landed).
+ */
+export function snapshotBytes(dbPath: string, meta: Readonly<Record<string, string>> = {}): Uint8Array {
 	cleanOldTemps(dbPath);
 	const temp = tempPath(dbPath, "snapshot");
 	// Reserve it privately before SQLite writes any memory text.
@@ -197,6 +200,8 @@ export function snapshotBytes(dbPath: string): Uint8Array {
 		try {
 			copy.exec("PRAGMA secure_delete = ON");
 			removeLocalMeta(copy);
+			const upsert = copy.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+			for (const [key, value] of Object.entries(meta)) upsert.run(key, value);
 		} finally { copy.close(); }
 		return gzipSync(readFileSync(temp));
 	} finally {

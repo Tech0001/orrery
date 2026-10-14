@@ -117,8 +117,11 @@ export interface SettledInstructions {
  * module comment). Afterwards both hold the same text, or undefined is returned: the file is over TRAVEL_MAX_BYTES and
  * stays this machine's alone (a shortened one goes up at a later check-out). Throws when something other than a
  * readable file is in the file's place; nothing is changed then.
+ *
+ * `foreign`: this check-out set the memory on this machine aside as another history's (or a rolled-back one's). The
+ * file came with that memory, so it is never sent: the remote's copy is taken, and this machine's is kept aside.
  */
-export function settleInstructions(store: MemoryStore, laneDir: string, lane: string, now: number, report: (message: string) => void): SettledInstructions | undefined {
+export function settleInstructions(store: MemoryStore, laneDir: string, lane: string, now: number, report: (message: string) => void, foreign = false): SettledInstructions | undefined {
 	const found = readWholeInstructions(laneDir, TRAVEL_MAX_BYTES);
 	if (found !== undefined && "tooLarge" in found) {
 		report(tooLargeNotice(lane));
@@ -138,6 +141,17 @@ export function settleInstructions(store: MemoryStore, laneDir: string, lane: st
 		return { hash: instructionsHash(text), sent: instructionsHash(text) };
 	};
 
+	if (foreign) {
+		if (local === remote) {
+			agreeOn(laneDir, instructionsHash(local));
+			return { hash: instructionsHash(local) };
+		}
+		if (local === undefined && remote === "") return { hash: instructionsHash("") };
+		if (local === undefined || local === "") return take();
+		const aside = keepAside(laneDir, local, now);
+		const used = remote === "" ? "this memory has none, so the file is now empty" : "the copy that travels with this memory is used now";
+		return take(`Orrery: ${lane}'s instructions.md here came with the memory set aside; ${used}, and this machine's is kept in ${aside}.`);
+	}
 	if (local === undefined) {
 		// No file: a machine that never had one, or one deleted here. Neither travels; the remote's copy comes (back).
 		if (remote === "") {
@@ -194,15 +208,16 @@ export function instructionsIntoStore(store: MemoryStore, laneDir: string, settl
 
 /**
  * A first push: this machine's file is the agent's instructions, and no file is none (a copy the store kept from before
- * never travels in its place); a file over TRAVEL_MAX_BYTES is none too, and the person is told. Returns the hash to
- * agree on once the push's snapshot lands, or undefined when the file stays this machine's alone.
+ * never travels in its place); a file over TRAVEL_MAX_BYTES is none too, and the person is told. Nothing is written: the
+ * push puts `text` into its snapshot, and into the store once it has landed, then agrees on `hash` (undefined when the
+ * file stays this machine's alone).
  */
-export function pushInstructions(store: MemoryStore, laneDir: string, lane: string, report: (message: string) => void): string | undefined {
+export function pushInstructions(laneDir: string, lane: string, report: (message: string) => void): { readonly text: string; readonly hash?: string } {
 	const found = readWholeInstructions(laneDir, TRAVEL_MAX_BYTES);
-	const tooLarge = found !== undefined && "tooLarge" in found;
-	const local = found === undefined || "tooLarge" in found ? "" : found.text;
-	if ((store.getMeta(INSTRUCTIONS_KEY) ?? "") !== local) store.setMeta(INSTRUCTIONS_KEY, local);
-	if (!tooLarge) return instructionsHash(local);
-	report(tooLargeNotice(lane));
-	return undefined;
+	if (found !== undefined && "tooLarge" in found) {
+		report(tooLargeNotice(lane));
+		return { text: "" };
+	}
+	const text = found?.text ?? "";
+	return { text, hash: instructionsHash(text) };
 }

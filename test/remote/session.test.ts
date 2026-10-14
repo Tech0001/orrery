@@ -350,7 +350,7 @@ describe("RemoteSession", () => {
 		expect((await storage.list())[0].lock?.held).toBe(false);
 	});
 
-	it("14: a replaced remote history rebuilds from the snapshot, keeping unsaved rows aside", async () => {
+	it("14: a replaced remote history rebuilds from the snapshot, keeping this machine's whole memory aside", async () => {
 		const a = machine("a", pc);
 		await RemoteSession.push(a);
 		await session(a, (store) => void store.append("user", "pc saved this"));
@@ -365,6 +365,7 @@ describe("RemoteSession", () => {
 		const s = await RemoteSession.checkOut(a);
 		await s.close();
 		expect(texts(a)).toEqual(["turn 100", "turn 101", "turn 102", "mac saved this"]);
+		expect(readdirSync(a.laneDir).filter((name) => name.startsWith("memory-before-remote-"))).toHaveLength(1);
 	});
 
 	it("15: push refuses a lane already on the remote", async () => {
