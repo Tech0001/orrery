@@ -1,11 +1,15 @@
 /**
  * Claude Code's hooks (spec §4 "Hooks"), run as `orrery claude-hook <event>` with the hook's JSON on stdin.
- * - They find the lane from the project folder (CLAUDE_PROJECT_DIR, else the hook's cwd).
+ * - They find the session's lane at every event (src/lane/pick.ts): the one ORRERY_AGENT names, in any folder, else the
+ *   one whose workspace holds the project folder (CLAUDE_PROJECT_DIR, else the hook's cwd). Claude Code's own process
+ *   (CLAUDE_PID) is the one an ORRERY_AGENT_TOKEN claim is made for.
  * - They never write the store, and they return quickly: SessionEnd gets about 1.5 s.
  * - Subagent events (agent_id) are not memory.
- * - Outside a lane they print and write nothing.
- * - They record only in a lane where `orrery claude-setup` ran (its marker names the workspace). In any other lane
- *   they start no holder and spool nothing, SessionStart says the session is not recorded, and the guard still applies.
+ * - Outside a lane they print and write nothing. An ORRERY_AGENT that is refused (it names no lane, or its token is
+ *   malformed) gets a notice at SessionStart, records nothing, and keeps the guard.
+ * - They record only where `orrery claude-setup` ran: in mod mode in any folder, in file mode for the lane's
+ *   workspace. In any other lane they start no holder and spool nothing, SessionStart says the session is not recorded,
+ *   and the guard still applies.
  * - Their stdout is only their JSON answer, and they never put message contents on stderr.
  */
 
@@ -17,7 +21,7 @@ import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { type HarnessConfig, type LaneConfig, laneForCwd } from "../lane/config.ts";
 import { movedAgentDirCredentials, ompCredentials } from "../lane/guard-paths.ts";
-import { workArea } from "../lane/pick.ts";
+import { type Picked, pickLane, refusedNotice, workArea } from "../lane/pick.ts";
 import { writePrivate } from "../lane/private-file.ts";
 import { selfCommand } from "../lane/running.ts";
 import { safeText } from "../lane/source-labels.ts";
@@ -26,7 +30,7 @@ import { claudeGuard, claudeStateRoots, movedConfigDirCredentials } from "./guar
 import { summaryNotice } from "./notices.ts";
 import { holderLog, samePath, validSession } from "./paths.ts";
 import { readMode, type SessionMode, spoolEvent } from "./spool.ts";
-import { markedHere, refreshViewFile, type ViewGate, viewGate } from "./view-file.ts";
+import { laneMode, markedHere, refreshViewFile, type ViewGate, viewGate } from "./view-file.ts";
 
 /**
  * Whether this recorder start's notice was already shown to this session (a /compact reuses the recorder and runs
@@ -108,11 +112,20 @@ interface Here {
 	readonly projectDir: string;
 }
 
-function here(input: HookInput, ctx: HookContext): Here | undefined {
+/** Which lane the session belongs to (src/lane/pick.ts), for the project folder and Claude Code's own process. */
+function pickFor(ctx: HookContext, projectDir: string): Picked {
+	return pickLane(ctx.config, { env: ctx.env, cwd: projectDir, owner: ctx.claudePid });
+}
+
+function pickHere(input: HookInput, ctx: HookContext): { readonly pick: Picked; readonly projectDir: string } | undefined {
 	const projectDir = ctx.env.CLAUDE_PROJECT_DIR || (typeof input.cwd === "string" ? input.cwd : undefined);
 	if (projectDir === undefined) return undefined;
-	const lane = laneForCwd(ctx.config, projectDir);
-	return lane === undefined ? undefined : { lane, projectDir };
+	return { pick: pickFor(ctx, projectDir), projectDir };
+}
+
+function here(input: HookInput, ctx: HookContext): Here | undefined {
+	const found = pickHere(input, ctx);
+	return found?.pick.kind === "lane" ? { lane: found.pick.lane, projectDir: found.projectDir } : undefined;
 }
 
 /** A prompt that is a slash command (`/compact`, `/orrery:memory`), not words for memory. `/tmp is full` is words. */
@@ -195,14 +208,20 @@ const MOD_CHECK = "If your system prompt has no Orrery memory section (its text 
  * Brings the view file up to date (in mod mode it writes none, and deletes a stale one) and starts this session's holder, unless one already records it (/compact). It
  * then tells the model the lane, its size and whether this session records. What the user should fix is also
  * shown to them. In a lane where claude-setup never ran (or its gate just took the setup back), it starts no holder:
- * the session is not recorded, and the status says so to both.
+ * the session is not recorded, and the status says so to both. Under a refused ORRERY_AGENT it only tells the person.
  */
 export async function sessionStart(input: HookInput, ctx: HookContext): Promise<object | undefined> {
-	const found = here(input, ctx);
-	if (found === undefined || !validSession(input.session_id)) return undefined;
+	const picked = pickHere(input, ctx);
+	if (picked === undefined || !validSession(input.session_id)) return undefined;
+	const { pick, projectDir } = picked;
+	// A refused ORRERY_AGENT: said once, to the person, in the main session; nothing is recorded.
+	if (pick.kind === "unknown" || pick.kind === "bad-token") return input.agent_id === undefined ? { systemMessage: refusedNotice(pick) } : undefined;
+	if (pick.kind !== "lane") return undefined;
+	const { lane } = pick;
 	// The holder's cut-off: this session's events from now on belong to this run.
 	const since = Date.now();
-	const { lane, projectDir } = found;
+	// Outside the lane's folder only the mod puts memory into the prompt: no CLAUDE.md there loads a view of this lane.
+	const outside = lane.workspace === undefined || workArea(lane, projectDir) !== lane.workspace;
 	const session = input.session_id;
 	const warnings: string[] = [];
 	let messages: number | undefined;
@@ -259,11 +278,22 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 		warnings.push(
 			`Orrery: ${lane.name}'s memory view could not be checked against git this time (${gate.unchecked}), so it is taken out of ${lane.workspace}/.orrery/ until git answers again; nothing to set up, a later session puts it back.`,
 		);
+	} else if (setUp && outside) {
+		warnings.push(`Orrery: ${lane.name} is open outside its folder, where only the Orrery mod brings its memory into Claude Code; run \`orrery claude-setup ${lane.name} --mod\`, then start a new session.`);
 	} else if (setUp && !gate.open) {
 		// (Where nothing is set up, the status already says what to run.)
 		warnings.push(`Orrery: CLAUDE.md does not load ${lane.name}'s memory view; run \`orrery claude-setup ${lane.name}\`, then start a new session.`);
 	} else if (setUp && lane.workspace !== undefined && !samePath(projectDir, lane.workspace)) {
 		warnings.push(`Orrery: Claude Code started in a subfolder of ${lane.workspace}; start it there, or CLAUDE.md may not load the memory view.`);
+	}
+	// Opened by ORRERY_AGENT in another lane's folder set up the file way: Claude Code loads that lane's view there too
+	// (the folder's CLAUDE.md or CLAUDE.local.md imports it). `orrery agent` refuses that; ORRERY_AGENT set by hand still
+	// gets here.
+	const host = pick.by === "env" ? laneForCwd(ctx.config, projectDir) : undefined;
+	if (host !== undefined && host.name !== lane.name && laneMode(host) === "file") {
+		warnings.push(
+			`Orrery: this folder is ${host.name}'s, set up to load ${host.name}'s memory view into Claude Code, so ${host.name}'s memory is in this session too; open ${lane.name} in another folder, or switch ${host.name} to the mod (\`orrery claude-setup ${host.name} --mod\`).`,
+		);
 	}
 	// For the user only (systemMessage), never the model's context; this also records the session's key.
 	const summaries = notice(input, ctx) as { systemMessage?: string } | undefined;
@@ -281,31 +311,37 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: `Orrery guard: ${reason}` } });
 
 /**
- * A PreToolUse input over TOOL_INPUT_MAX, refused unread: in a lane's folder (CLAUDE_PROJECT_DIR), and when Claude
- * Code does not say where the call runs, since only the unread input would.
+ * A PreToolUse input over TOOL_INPUT_MAX, refused unread: wherever the guard runs (a lane's session, or a refused
+ * ORRERY_AGENT's, by CLAUDE_PROJECT_DIR), and when Claude Code does not say where the call runs, since only the unread
+ * input would.
  */
 function unreadToolCall(ctx: HookContext): object | undefined {
 	const projectDir = ctx.env.CLAUDE_PROJECT_DIR;
-	if (projectDir && laneForCwd(ctx.config, projectDir) === undefined) return undefined;
+	if (projectDir && pickFor(ctx, projectDir).kind === "none") return undefined;
 	return deny("this call's input is over 1 MB, too long to check; nothing was run.");
 }
 
 /**
- * The guard (spec §4 PreToolUse): every tool call in a lane folder, subagents' too, whatever the memory's mode. The
- * lane may also write Claude Code's own state (claudeStateRoots). A call it cannot judge is refused, since a hook
- * that crashed would let it through.
+ * The guard (spec §4 PreToolUse): every tool call of a lane's session, subagents' too, whatever the memory's mode. It
+ * may write where the session works (workArea: the lane's workspace, or the folder it was opened in) and the lane's
+ * allowed roots, and Claude Code's own state (claudeStateRoots). A session whose ORRERY_AGENT was refused keeps the
+ * guard with the rules of the lane whose folder it runs in, or outside lanes those of a lane with no folder (its own
+ * folder, no allowed roots), as pi's refusedGuard does. A call it cannot judge is refused, since a hook that crashed
+ * would let it through.
  */
 export function preToolUse(input: HookInput, ctx: HookContext): object | undefined {
-	const found = here(input, ctx);
-	if (found === undefined || typeof input.tool_name !== "string") return undefined;
+	const found = pickHere(input, ctx);
+	if (found === undefined || found.pick.kind === "none" || typeof input.tool_name !== "string") return undefined;
+	const { pick, projectDir } = found;
+	const rules = pick.kind === "lane" ? pick.lane : laneForCwd(ctx.config, projectDir);
 	const toolInput = typeof input.tool_input === "object" && input.tool_input !== null ? (input.tool_input as Record<string, unknown>) : {};
 	const home = ctx.home ?? homedir();
 	let reason: string | undefined;
 	try {
 		reason = claudeGuard(input.tool_name, toolInput, {
-			workspace: workArea(found.lane, found.projectDir),
-			allowedRoots: [...found.lane.allowedRoots, ...claudeStateRoots(found.projectDir, home, ctx.env)],
-			cwd: typeof input.cwd === "string" ? input.cwd : found.projectDir,
+			workspace: workArea(rules ?? {}, projectDir),
+			allowedRoots: [...(rules?.allowedRoots ?? []), ...claudeStateRoots(projectDir, home, ctx.env)],
+			cwd: typeof input.cwd === "string" ? input.cwd : projectDir,
 			credentials: [ctx.config.credentialsPath, ...movedAgentDirCredentials(ctx.env, home), ...movedConfigDirCredentials(ctx.env), ...ompCredentials(ctx.env, home)],
 			orreryData: ctx.config.dataDir,
 			home,

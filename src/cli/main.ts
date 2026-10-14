@@ -7,7 +7,7 @@
 import { join, resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
 import type { LaneTool } from "../lane/memory-tools.ts";
-import { findLane, type HarnessConfig, type LaneConfig, laneForCwd, loadConfig } from "../lane/config.ts";
+import { findLane, type HarnessConfig, type LaneConfig, loadConfig } from "../lane/config.ts";
 import { exitWhenFlushed } from "./exit.ts";
 
 const USAGE = `Usage: orrery <command> [--config FILE]
@@ -72,12 +72,14 @@ const USAGE = `Usage: orrery <command> [--config FILE]
                              versions; lanes' memory, config and logins stay (--purge: delete them too, after typing delete)
   claude-setup <Lane> [--mod]  make Claude Code load the lane's memory view (CLAUDE.md, or CLAUDE.local.md in a
                              repo); --mod: from the Orrery mod, in the system prompt
-  claude-mod view --cwd DIR [--session ID] [--wait-ms N [--spool-only]]   the Orrery mod's call: the lane's memory
-                             section as JSON; --spool-only waits for the session's spool alone, not for summaries
-  mcp                        the Claude Code plugin's MCP server: memory tools for the project folder's lane
+  claude-mod view --cwd DIR [--session ID] [--agent NAME [--agent-token T]] [--wait-ms N [--spool-only]]   the Orrery
+                             mod's call: the session's lane's memory section as JSON (--agent: the ORRERY_AGENT Claude
+                             Code has); --spool-only waits for the session's spool alone, not for summaries
+  mcp                        the Claude Code plugin's MCP server: memory tools for the session's lane (ORRERY_AGENT's,
+                             else the project folder's)
   claude-hook <event>        a Claude Code plugin hook (session-start, user-prompt-submit, stop, session-end,
                              pre-tool-use)
-A lane named "." is the lane whose workspace holds the current folder.
+A lane named "." is this session's lane: the one ORRERY_AGENT names, else the one whose workspace holds the current folder.
 Config: --config, $ORRERY_CONFIG, ~/.orrery/config.toml (or under $ORRERY_HOME), or /etc/orrery/config.toml
 `;
 
@@ -279,13 +281,20 @@ async function uninstallCommand(values: { purge?: boolean }): Promise<number> {
 	return ok ? 0 : 1;
 }
 
-/** A lane name as given, or "." for the lane whose workspace holds the project folder (Claude Code's commands use it). */
+/**
+ * A lane name as given, or "." for this session's lane (Claude Code's commands use it): the one ORRERY_AGENT names, as
+ * the hooks pick it (src/lane/pick.ts), else the one whose workspace holds the project folder. A token is claimed for
+ * Claude Code's process (CLAUDE_PID, which Claude Code gives the commands it runs, else this command's parent), so a
+ * tool the agent started with the same variables falls back to its folder.
+ */
 async function laneArg(config: HarnessConfig, name: string): Promise<string> {
 	if (name !== ".") return name;
+	const { pickLane, refusedNotice } = await import("../lane/pick.ts");
 	const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-	const lane = laneForCwd(config, dir);
-	if (lane === undefined) throw new Error(`${dir} is in no lane's workspace.`);
-	return lane.name;
+	const pick = pickLane(config, { env: process.env, cwd: dir, owner: Number(process.env.CLAUDE_PID) || process.ppid });
+	if (pick.kind === "lane") return pick.lane.name;
+	if (pick.kind === "none") throw new Error(`${dir} is in no lane's workspace.`);
+	throw new Error(refusedNotice(pick));
 }
 
 /**
@@ -420,6 +429,8 @@ async function main(rawArgv: string[]): Promise<number> {
 			cwd: { type: "string" },
 			"wait-ms": { type: "string" },
 			"spool-only": { type: "boolean" },
+			agent: { type: "string" },
+			"agent-token": { type: "string" },
 			"claude-pid": { type: "string" },
 			nonce: { type: "string" },
 			since: { type: "string" },
@@ -688,14 +699,19 @@ function optionalConfig(configPath: string | undefined, label: string): HarnessC
 	}
 }
 
-/** Claude Code's MCP server. Outside a lane, or without an orrery config, it serves no tools rather than failing. */
+/**
+ * Claude Code's MCP server, for the session's lane (src/lane/pick.ts: ORRERY_AGENT's, else the project folder's).
+ * Outside a lane, under a refused ORRERY_AGENT, or without an orrery config, it serves no tools rather than failing.
+ */
 async function mcpServer(configPath: string | undefined): Promise<number> {
 	const { laneTools, runMcp } = await import("../claude/mcp.ts");
 	let tools: LaneTool[] = [];
 	const config = optionalConfig(configPath, "orrery mcp");
 	if (config !== undefined) {
-		const lane = laneForCwd(config, process.env.CLAUDE_PROJECT_DIR || process.cwd());
-		if (lane !== undefined) tools = laneTools(config, lane);
+		const { pickLane } = await import("../lane/pick.ts");
+		// Claude Code starts the server itself: its pid is CLAUDE_PID when given, else this process's parent.
+		const pick = pickLane(config, { env: process.env, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), owner: Number(process.env.CLAUDE_PID) || process.ppid });
+		if (pick.kind === "lane") tools = laneTools(config, pick.lane);
 	}
 	await runMcp(process.stdin, process.stdout, tools);
 	return 0;
@@ -739,12 +755,16 @@ async function claudeHook(event: string | undefined, configPath: string | undefi
 }
 
 /**
- * `orrery claude-mod view --cwd DIR [--session ID] [--wait-ms N [--spool-only]]`: the Orrery mod's one call
- * (src/claude/mod-view.ts).
+ * `orrery claude-mod view --cwd DIR [--session ID] [--agent NAME [--agent-token T]] [--wait-ms N [--spool-only]]`: the
+ * Orrery mod's one call (src/claude/mod-view.ts). --agent and --agent-token are ORRERY_AGENT and its token as the mod
+ * read them from Claude Code's environment.
  * It prints one JSON line; exit 1 with { error } when the config or memory cannot be read. Nothing goes to stderr.
  * No config at all (none named, none at the default paths) is not an error: the reply is { lane: null }.
  */
-async function claudeModCommand(action: string | undefined, values: { config?: string; cwd?: string; session?: string; "wait-ms"?: string; "spool-only"?: boolean }): Promise<number> {
+async function claudeModCommand(
+	action: string | undefined,
+	values: { config?: string; cwd?: string; session?: string; "wait-ms"?: string; "spool-only"?: boolean; agent?: string; "agent-token"?: string },
+): Promise<number> {
 	let reply: object;
 	try {
 		if (action !== "view") throw new Error("claude-mod needs view");
@@ -758,7 +778,8 @@ async function claudeModCommand(action: string | undefined, values: { config?: s
 			const absent = (error as { code?: unknown }).code === "ENOENT" && values.config === undefined && !process.env.ORRERY_CONFIG;
 			if (!absent) throw error;
 		}
-		reply = await modView(config, { cwd: values.cwd ?? process.cwd(), ...(values.session === undefined ? {} : { session: values.session }), waitMs, spoolOnly: values["spool-only"] === true });
+		const agent = values.agent === undefined ? {} : { agent: values.agent, ...(values["agent-token"] === undefined ? {} : { agentToken: values["agent-token"] }) };
+		reply = await modView(config, { cwd: values.cwd ?? process.cwd(), ...(values.session === undefined ? {} : { session: values.session }), waitMs, spoolOnly: values["spool-only"] === true, ...agent });
 	} catch (error) {
 		reply = { error: errorText(error).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, 300) };
 	}

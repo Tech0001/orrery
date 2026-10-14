@@ -110,14 +110,19 @@ export function plain(text: string): string {
 
 /**
  * The command that asks orrery for the view. The session and wait are added only when given; `spoolOnly` makes the wait
- * one for the session's spool alone, not for summaries.
+ * one for the session's spool alone, not for summaries. `agent` is the agent `orrery agent` opened this session as
+ * (ORRERY_AGENT, and the token that tells the session from tools it starts), when Claude Code's environment has one.
  */
-export function viewArgs(pluginRoot: string, cwd: string, session?: string, waitMs?: number, spoolOnly = false): string[] {
+export function viewArgs(pluginRoot: string, cwd: string, session?: string, waitMs?: number, spoolOnly = false, agent?: { readonly name: string; readonly token?: string }): string[] {
 	const args = ["sh", `${pluginRoot}/bin/orrery-run`, "claude-mod", "view", "--cwd", cwd];
 	if (session !== undefined) args.push("--session", session);
 	if (waitMs !== undefined && waitMs > 0) {
 		args.push("--wait-ms", String(waitMs));
 		if (spoolOnly) args.push("--spool-only");
+	}
+	if (agent !== undefined) {
+		args.push("--agent", agent.name);
+		if (agent.token !== undefined) args.push("--agent-token", agent.token);
 	}
 	return args;
 }

@@ -21,16 +21,18 @@ function withView(t: TestLane, use: (view: MemoryView) => void): void {
 }
 
 describe("the view file", () => {
-	it("reads a mod-mode marker, and laneMode tells none, file and mod apart", () => {
+	it("reads a mod-mode marker, and laneMode tells none, file and mod apart; a mod marker holds for any folder", () => {
 		const t = testLane({ setup: false });
 		expect(laneMode(t.lane)).toBe("none");
 		writeSetupMarker(t.lane.dir, t.lane.workspace, "CLAUDE.md");
 		expect(laneMode(t.lane)).toBe("file");
+		writeSetupMarker(t.lane.dir, "/somewhere/else", "CLAUDE.md");
+		expect(laneMode(t.lane)).toBe("none");
 		writeSetupMarker(t.lane.dir, t.lane.workspace, "mod");
 		expect(readSetupMarker(t.lane.dir)?.file).toBe("mod");
 		expect(laneMode(t.lane)).toBe("mod");
 		writeSetupMarker(t.lane.dir, "/somewhere/else", "mod");
-		expect(laneMode(t.lane)).toBe("none");
+		expect(laneMode(t.lane)).toBe("mod");
 	});
 
 	it("for a lane without a workspace: no mode, no gate, and no view written, even with a marker", () => {

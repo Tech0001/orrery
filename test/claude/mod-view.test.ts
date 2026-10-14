@@ -6,6 +6,7 @@ import { modView } from "../../src/claude/mod-view.ts";
 import { pendingEvents, writeMode } from "../../src/claude/spool.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { holderFile } from "../../src/lane/handover.ts";
+import { claimToken, newToken } from "../../src/lane/pick.ts";
 import { MemoryStore, MemoryView, Part } from "../../src/memory/index.ts";
 import { cleanEnv, cleanupDirs, cliCommand, seed, spool, type TestLane, testLane } from "./support.ts";
 
@@ -317,6 +318,27 @@ describe("the CLI", () => {
 		expect(bad.status).toBe(1);
 		expect(typeof JSON.parse(bad.stdout).error).toBe("string");
 		expect(bad.stderr).toBe("");
+	});
+
+	it("answers for the lane --agent (or ORRERY_AGENT) names, in any folder; with a token, only for the Claude Code that claimed it", () => {
+		const t = modLane();
+		const elsewhere = join(t.dir, "elsewhere");
+		mkdirSync(elsewhere);
+		const view = (args: string[], env: Record<string, string> = {}) => {
+			const c = cliCommand(["claude-mod", "view", "--cwd", elsewhere, "--session", SESSION, ...args]);
+			const run = spawnSync(c.cmd, c.args, { env: cleanEnv({ ORRERY_CONFIG: t.configPath, ...env }), encoding: "utf8", timeout: 20_000 });
+			expect([run.status, run.stderr]).toEqual([0, ""]);
+			return JSON.parse(run.stdout);
+		};
+		expect(view(["--agent", "Test"])).toMatchObject({ lane: "Test", mode: "mod", messages: 2, section: expect.stringContaining("one") });
+		expect(view([])).toEqual({ lane: null });
+		expect(view([], { ORRERY_AGENT: "Test" })).toMatchObject({ lane: "Test", mode: "mod" });
+		expect(view(["--agent", "Nobody"], { ORRERY_AGENT: "Test" })).toEqual({ lane: null });
+		const token = newToken();
+		expect(claimToken(t.lane.dir, token, process.pid)).toBe(true);
+		// The view's Claude Code is CLAUDE_PID, else its parent (here this test, which claimed the token).
+		expect(view(["--agent", "Test", "--agent-token", token])).toMatchObject({ lane: "Test" });
+		expect(view(["--agent", "Test", "--agent-token", token], { CLAUDE_PID: String(process.ppid) })).toEqual({ lane: null });
 	});
 
 	it("takes --spool-only with --wait-ms", () => {

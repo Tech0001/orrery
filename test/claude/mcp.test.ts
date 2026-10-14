@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { handleMessage, laneTools, MAX_LINE_CHARS, runMcp } from "../../src/claude/mcp.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import type { LaneTool } from "../../src/lane/memory-tools.ts";
+import { claimToken, newToken } from "../../src/lane/pick.ts";
 import { seedAtlas } from "../lane/support.ts";
 import { cleanup, pi, world } from "../pi/world.ts";
 import { cleanEnv, cliCommand } from "./support.ts";
@@ -128,7 +129,7 @@ describe("Orrery's MCP server", () => {
 		expect(reply.result.content[0].text.length).toBeGreaterThan(100_000);
 	});
 
-	it("runs over stdio as `orrery mcp`, finds the lane from CLAUDE_PROJECT_DIR, and serves no tools outside a lane", { timeout: 60_000 }, async () => {
+	it("runs over stdio as `orrery mcp`, finds the lane by ORRERY_AGENT or from CLAUDE_PROJECT_DIR, and serves no tools outside a lane", { timeout: 60_000 }, async () => {
 		const { root, configPath } = world();
 		seedAtlas(root);
 		const session = async (projectDir: string, env: Record<string, string> = { ORRERY_CONFIG: configPath }) => {
@@ -155,6 +156,17 @@ describe("Orrery's MCP server", () => {
 		expect(outside.replies.get(2).result.tools).toEqual([]);
 		expect(outside.replies.get(3).result.isError).toBe(true);
 		expect(outside.err).toBe("");
+		// ORRERY_AGENT names the lane wherever Claude Code runs; one that names no lane serves none, in a lane folder too.
+		const named = await session(join(root, "plain"), { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas" });
+		expect(named.replies.get(2).result.tools.map((tool: { name: string }) => tool.name)).toEqual(["zoom", "date", "search"]);
+		expect(named.replies.get(3).result.content[0].text).toContain("#0 2026-02-10 user");
+		expect((await session(join(root, "agent-Atlas"), { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Nobody" })).replies.get(2).result.tools).toEqual([]);
+		// With a token, only the Claude Code that claimed it (CLAUDE_PID) is the agent.
+		const token = newToken();
+		expect(claimToken(join(root, "data", "lanes", "Atlas"), token, process.pid)).toBe(true);
+		const asAgent = { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token };
+		expect((await session(join(root, "plain"), { ...asAgent, CLAUDE_PID: String(process.pid) })).replies.get(2).result.tools).toHaveLength(3);
+		expect((await session(join(root, "plain"), { ...asAgent, CLAUDE_PID: String(process.ppid) })).replies.get(2).result.tools).toEqual([]);
 		// No config anywhere: quiet, no tools.
 		if (!existsSync("/etc/orrery/config.toml")) expect((await session(join(root, "agent-Atlas"), {})).replies.get(2).result.tools).toEqual([]);
 	});

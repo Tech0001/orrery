@@ -60,6 +60,11 @@ describe("viewArgs and parseViewReply", () => {
 		expect(viewArgs("/p", "/w", "s1", 5_000, false)).toEqual(["sh", "/p/bin/orrery-run", "claude-mod", "view", "--cwd", "/w", "--session", "s1", "--wait-ms", "5000"]);
 		expect(viewArgs("/p", "/w", "s1", undefined, true)).toEqual(["sh", "/p/bin/orrery-run", "claude-mod", "view", "--cwd", "/w", "--session", "s1"]);
 	});
+	it("adds the agent and its token to the view call when Claude Code has them", () => {
+		expect(viewArgs("/p", "/w", "s", undefined, false, { name: "Atlas", token: "ab".repeat(16) })).toEqual(["sh", "/p/bin/orrery-run", "claude-mod", "view", "--cwd", "/w", "--session", "s", "--agent", "Atlas", "--agent-token", "ab".repeat(16)]);
+		expect(viewArgs("/p", "/w", "s", undefined, false, { name: "Atlas" })).toEqual(["sh", "/p/bin/orrery-run", "claude-mod", "view", "--cwd", "/w", "--session", "s", "--agent", "Atlas"]);
+		expect(viewArgs("/p", "/w", "s", 5_000, true, { name: "Atlas" })).toEqual(["sh", "/p/bin/orrery-run", "claude-mod", "view", "--cwd", "/w", "--session", "s", "--wait-ms", "5000", "--spool-only", "--agent", "Atlas"]);
+	});
 	it("reads each reply", () => {
 		expect(parseViewReply({ exitCode: 0, stdout: "" })).toEqual({ kind: "outside" });
 		expect(parseViewReply({ exitCode: 0, stdout: '{"lane":null}\n' })).toEqual({ kind: "outside" });

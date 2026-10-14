@@ -51,6 +51,8 @@ interface World {
 	readonly clock: MockClock;
 	/** The test's engine, through which Claude Code's own /compact compacts (a hook's own `$` may not). */
 	engine?: Engine;
+	/** Claude Code's own environment, as `$.env.get` reads it (`orrery agent` sets ORRERY_AGENT and its token there). */
+	readonly env: Record<string, string>;
 }
 
 /** What Claude Code's `/compact` row says (the test's command hook answers it). */
@@ -69,8 +71,9 @@ function lane(
 }
 
 function world(on: On, session: string, answers: readonly Answer[]): World {
-	const w: World = { session, root: ROOT, cwd: CWD, denyId: false, surfaces: ["terminal"], answers, hold: new Map(), own: OWN, runs: [], cwds: [], lines: [], compacts: [], rows: ROWS, clock: mock.clock(on) };
+	const w: World = { session, root: ROOT, cwd: CWD, denyId: false, surfaces: ["terminal"], answers, hold: new Map(), own: OWN, runs: [], cwds: [], lines: [], compacts: [], rows: ROWS, clock: mock.clock(on), env: {} };
 	on("session.id", () => (w.denyId ? { deny: "no session id here" } : { value: w.session }));
+	on("env.get", ($, e) => ({ value: w.env[e.name] }));
 	on("session.root", () => ({ value: w.root }));
 	on("session.cwd", () => ({ value: w.cwd }));
 	on("session.surfaces", () => ({ value: [...w.surfaces] }));
@@ -180,6 +183,31 @@ describe("the Orrery mod's memory section", () => {
 		expect(second.sections).toEqual(first.sections);
 		expect(viewCalls(w)).toEqual([["claude-mod", "view", "--cwd", ROOT, "--session", "s-1"]]);
 		expect(w.lines).toEqual([]);
+	});
+
+	test("passes ORRERY_AGENT and its token from Claude Code's environment to the view call", async ($, on) => {
+		const w = world(on, "s-agent", [lane("mod", "MEMORY A")]);
+		w.env.ORRERY_AGENT = "Test";
+		w.env.ORRERY_AGENT_TOKEN = "ab".repeat(16);
+		await $.prompt.compose(COMPOSE);
+		expect(viewCalls(w)).toEqual([["claude-mod", "view", "--cwd", ROOT, "--session", "s-agent", "--agent", "Test", "--agent-token", "ab".repeat(16)]]);
+	});
+
+	test("passes ORRERY_AGENT alone when Claude Code has no token, a token as it is, and nothing for a blank name", async ($, on) => {
+		const w = world(on, "s-agent-2", [lane("mod", "MEMORY A")]);
+		w.env.ORRERY_AGENT = " Test ";
+		await $.prompt.compose(COMPOSE);
+		w.session = "s-agent-3";
+		w.env.ORRERY_AGENT_TOKEN = "";
+		await $.prompt.compose(COMPOSE);
+		w.session = "s-agent-4";
+		w.env.ORRERY_AGENT = "  ";
+		await $.prompt.compose(COMPOSE);
+		expect(viewCalls(w)).toEqual([
+			["claude-mod", "view", "--cwd", ROOT, "--session", "s-agent-2", "--agent", "Test"],
+			["claude-mod", "view", "--cwd", ROOT, "--session", "s-agent-3", "--agent", "Test", "--agent-token", ""],
+			["claude-mod", "view", "--cwd", ROOT, "--session", "s-agent-4"],
+		]);
 	});
 
 	test("the lane is looked up from the project root, not the folder a shell cd moved to", async ($, on) => {

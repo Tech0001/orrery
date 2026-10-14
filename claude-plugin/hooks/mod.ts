@@ -13,7 +13,8 @@
  *   read facts of their own, fetched at session start and again after each turn's end; they never change the section.
  * Elsewhere it adds nothing and passes everything on. It reaches Orrery only through `orrery claude-mod view`, run by
  * the plugin's launcher in the session's project root as first read in this process (a shell cd, `/cd` or a worktree
- * move does not change the lane); memory is read read-only, and the classic hooks keep recording.
+ * move does not change the lane), with the ORRERY_AGENT Claude Code was started with (`orrery agent`), which names the
+ * lane in any folder; memory is read read-only, and the classic hooks keep recording.
  */
 
 import type { EngineInterface, Register, SessionCompactResult, Timer } from "claude-code";
@@ -116,11 +117,28 @@ async function projectRoot($: EngineInterface): Promise<string> {
 	return root;
 }
 
+/**
+ * ORRERY_AGENT and ORRERY_AGENT_TOKEN as Claude Code's own environment has them (`orrery agent` sets them), read at each
+ * view call. The names are string literals, as Claude Code's review of a mod's calls requires. A token is passed as it
+ * is, an empty one too, so orrery refuses a malformed one here as Claude Code's hooks do. A Claude Code without $.env
+ * answers nothing here, and the view call still inherits the environment.
+ */
+async function agentFromEnv($: EngineInterface): Promise<{ readonly name: string; readonly token?: string } | undefined> {
+	try {
+		const name = await $.env.get("ORRERY_AGENT");
+		if (typeof name !== "string" || name.trim() === "") return undefined;
+		const token = await $.env.get("ORRERY_AGENT_TOKEN");
+		return { name: name.trim(), ...(typeof token === "string" ? { token } : {}) };
+	} catch {
+		return undefined;
+	}
+}
+
 async function runView($: EngineInterface, session: string, waitMs?: number, spoolOnly = false): Promise<ViewReply> {
 	try {
 		// The pinned project root, not the working folder: the Bash tool's cd moves the latter, never the lane.
 		const cwd = await projectRoot($);
-		const run = await $.process.run(viewArgs($.plugin.root, cwd, session, waitMs, spoolOnly), { cwd, timeoutMs: (waitMs ?? 0) + 15_000 });
+		const run = await $.process.run(viewArgs($.plugin.root, cwd, session, waitMs, spoolOnly, await agentFromEnv($)), { cwd, timeoutMs: (waitMs ?? 0) + 15_000 });
 		return parseViewReply(run);
 	} catch (error) {
 		return { kind: "error", text: `orrery did not answer: ${String(error)}` };

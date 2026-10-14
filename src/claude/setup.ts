@@ -126,7 +126,7 @@ function setupFileName(exclude: string | undefined, claudeMdLink: string | undef
 /** Sets the lane's workspace up for Claude Code (see the module doc). Throws, with what to fix, when it refuses. */
 export function claudeSetup(lane: LaneConfig): SetupResult {
 	const workspace = lane.workspace;
-	if (workspace === undefined) throw new Error(`${lane.name} has no workspace, so Claude Code's setup has no folder to set up.`);
+	if (workspace === undefined) throw new Error(`${lane.name} has no workspace; Claude Code's file setup needs one. Use orrery claude-setup ${lane.name} --mod.`);
 	if (!existsSync(workspace)) throw new Error(`${lane.name}'s workspace ${workspace} does not exist`);
 	// The configured path is trusted, even through a symlink; what is inside the workspace is not.
 	const root = realpathSync(workspace);
@@ -220,6 +220,8 @@ export interface ModSetupResult {
 	readonly keptIn?: string;
 	/** The lane's message count, once it has memory. */
 	readonly messages?: number;
+	/** The lane has no workspace: only the marker was written, and the file setup cannot switch it back. */
+	readonly noWorkspace?: true;
 }
 
 /**
@@ -231,11 +233,16 @@ export interface ModSetupResult {
  *   lines stay. In a repo CLAUDE.md's line is the repo's: that file is only read, never edited, so it never refuses;
  * - deletes .orrery/view.md (not one git tracks) and then .orrery/ if empty;
  * - writes the marker with file "mod".
- * Every check comes before the first write. Plain claudeSetup switches back.
+ * Every check comes before the first write. Plain claudeSetup switches back. A lane with no workspace gets the marker
+ * alone (workspace ""): there is no CLAUDE.md to take a line out of, and mod mode holds in whatever folder it opens.
  */
 export function claudeSetupMod(lane: LaneConfig): ModSetupResult {
+	if (lane.workspace === undefined) {
+		writeSetupMarker(lane.dir, "", "mod");
+		const messages = messageCount(lane);
+		return { lane: lane.name, removedFrom: [], viewDeleted: false, noWorkspace: true, ...(messages === undefined ? {} : { messages }) };
+	}
 	const workspace = lane.workspace;
-	if (workspace === undefined) throw new Error(`${lane.name} has no workspace, so Claude Code's setup has no folder to set up.`);
 	if (!existsSync(workspace)) throw new Error(`${lane.name}'s workspace ${workspace} does not exist`);
 	const root = realpathSync(workspace);
 	if (ownFolder(root) !== true) throw new Error(`${lane.name}'s workspace ${workspace} is not a folder of yours`);
@@ -269,6 +276,10 @@ export function modSetupReport(result: ModSetupResult): string {
 	if (result.keptIn !== undefined) out.push(`${result.keptIn} imports ${VIEW_IMPORT}; that line is the repo's and stays (harmless: the view file is no longer written).`);
 	if (result.viewDeleted) out.push("Deleted the view file .orrery/view.md");
 	out.push(result.messages === undefined ? "Memory: none yet; the mod adds it once the lane has some." : `Memory: ${result.messages} messages.`);
-	out.push(`Start a new Claude Code session in the lane's folder (Claude Code 2.1.287 or newer, Orrery plugin 0.3.0). \`orrery claude-setup ${result.lane}\` switches back.`);
+	out.push(
+		result.noWorkspace === true
+			? `Open it with \`orrery agent ${result.lane}\` in any folder (Claude Code 2.1.287 or newer, Orrery plugin 0.3.0).`
+			: `Open it with \`orrery agent ${result.lane}\` in any folder, or start Claude Code in its folder (Claude Code 2.1.287 or newer, Orrery plugin 0.3.0). \`orrery claude-setup ${result.lane}\` switches back.`,
+	);
 	return `${out.join("\n")}\n`;
 }

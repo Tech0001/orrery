@@ -39,11 +39,10 @@ function excludeText(t: TestLane): string {
 }
 
 describe("claude-setup --mod", () => {
-	it("refuses a lane without a workspace, plain and --mod, writing nothing", () => {
+	it("refuses the file setup for a lane without a workspace, writing nothing (--mod takes it: test/claude/agent-pick.test.ts)", () => {
 		const t = testLane();
 		const { workspace: _, ...nomad } = t.lane;
-		expect(() => claudeSetup(nomad)).toThrow("Test has no workspace, so Claude Code's setup has no folder to set up.");
-		expect(() => claudeSetupMod(nomad)).toThrow("Test has no workspace, so Claude Code's setup has no folder to set up.");
+		expect(() => claudeSetup(nomad)).toThrow("Test has no workspace; Claude Code's file setup needs one. Use orrery claude-setup Test --mod.");
 		expect(readSetupMarker(t.lane.dir)).toBeUndefined();
 	});
 

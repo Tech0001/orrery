@@ -11,6 +11,7 @@ import { sessionDir } from "../../src/claude/paths.ts";
 import { writeHolder } from "../../src/lane/handover.ts";
 import { takeRequest } from "../../src/lane/settings-request.ts";
 import { laneModelSource } from "../../src/lane/model-source.ts";
+import { claimToken, newToken } from "../../src/lane/pick.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { cleanEnv, cleanupDirs, cliCommand, testLane } from "../claude/support.ts";
 import { fauxModels, tempDir } from "../lane/support.ts";
@@ -132,5 +133,28 @@ describe("orrery compactor", () => {
 		expect(statSync(join(dir, "data", "lanes", "Test", "memory.html")).mode & 0o777).toBe(0o600);
 		const nowhere = orrery(["usage", "."], { ORRERY_CONFIG: config, CLAUDE_PROJECT_DIR: dir });
 		expect([nowhere.status, nowhere.stderr]).toEqual([1, `${dir} is in no lane's workspace.\n`]);
+	}, 60_000);
+});
+
+describe("`.`, this session's lane (Claude Code's commands)", () => {
+	it("is the lane ORRERY_AGENT names, in any folder; with a token, only for the Claude Code that claimed it; else the folder's", () => {
+		const t = testLane();
+		const elsewhere = join(t.dir, "elsewhere");
+		mkdirSync(elsewhere);
+		const status = (env: Record<string, string>) => orrery(["status", "."], { ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: elsewhere, ...env });
+		expect(status({ ORRERY_AGENT: "Test" }).stdout).toMatch(/^Test\s/);
+		expect(status({ ORRERY_AGENT: "test" }).stdout).toMatch(/^Test\s/);
+		const nowhere = status({});
+		expect([nowhere.status, nowhere.stderr]).toEqual([1, `${elsewhere} is in no lane's workspace.\n`]);
+		const unknown = status({ ORRERY_AGENT: "Nobody" });
+		expect([unknown.status, unknown.stderr]).toEqual([1, "Orrery: ORRERY_AGENT names Nobody, which is not a configured agent; this session runs without memory.\n"]);
+		const token = newToken();
+		expect(claimToken(t.lane.dir, token, process.pid)).toBe(true);
+		// A skill's command runs with Claude Code's CLAUDE_PID; without one, its parent (here this test, the claimant) stands in.
+		expect(status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: String(process.pid) }).stdout).toMatch(/^Test\s/);
+		expect(status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token }).stdout).toMatch(/^Test\s/);
+		const child = status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: String(process.ppid) });
+		expect([child.status, child.stderr]).toEqual([1, `${elsewhere} is in no lane's workspace.\n`]);
+		expect(orrery(["status", "."], { ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: t.workspace, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: String(process.ppid) }).stdout).toMatch(/^Test\s/);
 	}, 60_000);
 });

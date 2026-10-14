@@ -1,6 +1,7 @@
 /**
  * `orrery claude-mod view` (spec 2026-10-08-claude-code-mod §4.2): what the Orrery mod in Claude Code needs from the
- * lane of a folder, as one JSON document. It opens memory read-only, so it works while the holder, pi or nothing
+ * session's lane (ORRERY_AGENT's, as the mod passes it on, else the folder's), as one JSON document. The reply keeps its
+ * names (`lane`): a cached older mod reads it. It opens memory read-only, so it works while the holder, pi or nothing
  * holds the lane; the holder stays the single writer. It never prints message contents anywhere but the section.
  * It runs at every Claude Code session start and compaction, so it imports nothing heavy (not lane/overview.ts).
  */
@@ -11,8 +12,9 @@ import { setTimeout as sleepFor } from "node:timers/promises";
 import { stripVTControlCharacters } from "node:util";
 import { safeText } from "../lane/source-labels.ts";
 import type { RemoteStatus } from "../remote/types.ts";
-import { type HarnessConfig, type LaneConfig, laneForCwd } from "../lane/config.ts";
+import type { HarnessConfig, LaneConfig } from "../lane/config.ts";
 import { holderFresh, readHolder } from "../lane/handover.ts";
+import { AGENT_ENV, pickLane, TOKEN_ENV } from "../lane/pick.ts";
 import { processAlive } from "../lane/process.ts";
 import { readStatus } from "../lane/status-file.ts";
 import { memorySection } from "../lane/view-text.ts";
@@ -56,6 +58,12 @@ export interface ModViewOptions {
 	/** Tests replace the clock and the pause between looks. */
 	readonly now?: () => number;
 	readonly sleep?: (ms: number) => Promise<void>;
+	/** ORRERY_AGENT and its token as the Orrery mod read them from Claude Code's environment: they stand in for it. */
+	readonly agent?: string;
+	readonly agentToken?: string;
+	/** The environment and Claude Code's process (default: this process's environment, and CLAUDE_PID or the parent). */
+	readonly env?: NodeJS.ProcessEnv;
+	readonly owner?: number;
 }
 
 /** Runs `use` on a read-only open of the lane's memory, closed again after. */
@@ -137,8 +145,12 @@ function remoteFields(lane: LaneConfig, session: string | undefined, now: number
 export async function modView(config: HarnessConfig | undefined, options: ModViewOptions): Promise<ModViewReply> {
 	try {
 		if (config === undefined) return { lane: null };
-		const lane = laneForCwd(config, options.cwd);
-		if (lane === undefined) return { lane: null };
+		// The session's lane (src/lane/pick.ts): the agent the mod passed on, else ORRERY_AGENT here, else the folder's.
+		const base = options.env ?? process.env;
+		const env = options.agent === undefined ? base : { ...base, [AGENT_ENV]: options.agent, [TOKEN_ENV]: options.agentToken };
+		const picked = pickLane(config, { env, cwd: options.cwd, owner: options.owner ?? (Number(base.CLAUDE_PID) || process.ppid) });
+		if (picked.kind !== "lane") return { lane: null };
+		const { lane } = picked;
 		const { session } = options;
 		if (session !== undefined && !validSession(session)) return { error: "not a Claude Code session id" };
 		const mode = laneMode(lane);

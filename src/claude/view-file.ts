@@ -16,8 +16,9 @@
  *     delete fails, the marker stays and the next gate tries again.
  *   - Where git cannot say (or a check throws), the view is taken out until git answers again: it is deleted and not
  *     written, but the marker stays, so the next gate that passes writes it back with no setup to redo.
- * - In mod mode (marker `file: "mod"`) the gate is closed: nothing is written, and a stale view is deleted, unless git
- *   tracks it (then it is the repo's file) or cannot say (then a later gate asks again).
+ * - In mod mode (marker `file: "mod"`) the gate is closed: nothing is written, and a stale view in the lane's own
+ *   workspace is deleted, unless git tracks it (then it is the repo's file) or cannot say (then a later gate asks
+ *   again). Mod mode holds wherever the session runs; a lane with no workspace has a mod marker naming none ("").
  * Every writer (claude-setup, SessionStart, the holder) goes through one gate, viewGate, in writeViewFile.
  */
 
@@ -161,14 +162,26 @@ export function deleteViewFile(workspace: string): boolean {
 	return deleted;
 }
 
-/** How the lane's workspace gets its memory into Claude Code: the Orrery mod, the view file, or not set up here. */
+/** How the lane gets its memory into Claude Code: the Orrery mod (in any folder), the view file, or not set up. */
 export type LaneMode = "mod" | "file" | "none";
 
-/** "none" when the marker is missing, malformed or names another workspace; "mod" when it says mod; else "file". */
+/**
+ * Whether the marker names `workspace`, the folder claude-setup set up. A lane switched to the mod with no workspace has
+ * a marker naming none (""), which must never pass for the folder a process runs in.
+ */
+function names(marker: SetupMarker, workspace: string | undefined): workspace is string {
+	return workspace !== undefined && marker.workspace !== "" && samePath(marker.workspace, workspace);
+}
+
+/**
+ * "mod" when the marker says mod, wherever the session runs (the mod needs no file in any folder); "file" when it names
+ * the lane's workspace; else "none" (no marker, a malformed one, or a file-mode marker for another workspace).
+ */
 export function laneMode(lane: LaneConfig): LaneMode {
 	const marker = readSetupMarker(lane.dir);
-	if (marker === undefined || lane.workspace === undefined || !samePath(marker.workspace, lane.workspace)) return "none";
-	return marker.file === "mod" ? "mod" : "file";
+	if (marker === undefined) return "none";
+	if (marker.file === "mod") return "mod";
+	return names(marker, lane.workspace) ? "file" : "none";
 }
 
 /** The lane's message count, read-only; undefined when it has no memory yet. */
@@ -184,21 +197,20 @@ export function messageCount(lane: LaneConfig): number | undefined {
 }
 
 /**
- * Whether the lane's setup marker names its workspace: claude-setup ran there. Only then did orrery write a view
- * there, and only then does a Claude Code session in it record (src/claude/hooks.ts).
+ * Whether claude-setup ran for this lane: in mod mode for any folder, in file mode for its workspace. Only then does a
+ * Claude Code session of it record (src/claude/hooks.ts).
  */
 export function markedHere(lane: LaneConfig): boolean {
-	const marker = readSetupMarker(lane.dir);
-	return marker !== undefined && lane.workspace !== undefined && samePath(marker.workspace, lane.workspace);
+	return laneMode(lane) !== "none";
 }
 
 /**
  * Takes the view out of the lane's workspace while git cannot say whether it would see it, keeping the marker: the
- * next gate that passes writes it back. Only where the marker names this workspace (so orrery wrote the view).
- * Returns whether it deleted one.
+ * next gate that passes writes it back. Only in file mode for this workspace (so orrery wrote the view there). Returns
+ * whether it deleted one.
  */
 export function takeOutView(lane: LaneConfig): boolean {
-	return lane.workspace !== undefined && markedHere(lane) && deleteView(lane.workspace);
+	return laneMode(lane) === "file" && deleteView(lane.workspace as string);
 }
 
 /**
@@ -210,7 +222,7 @@ export function takeOutView(lane: LaneConfig): boolean {
 export function withdrawView(lane: LaneConfig): void {
 	const marker = readSetupMarker(lane.dir);
 	if (marker === undefined) return;
-	if (lane.workspace !== undefined && samePath(marker.workspace, lane.workspace)) deleteView(lane.workspace);
+	if (names(marker, lane.workspace)) deleteView(lane.workspace);
 	removeSetupMarker(lane.dir);
 }
 
@@ -251,18 +263,18 @@ export interface ViewGate {
  * - git must not see the view (gitExposure). When it would, the view is withdrawn (withdrawView) and `exposed` says
  *   why. When git cannot say, the view is taken out until it can (takeOutView) and `unchecked` says why;
  * - the marker's file must still import the view, and nothing may be planted at .orrery.
- * In mod mode (marker file "mod") none of that applies: the gate is closed (`mod`), a stale view file is deleted
- * (deleteUntrackedView: not one git tracks), and `failed` says why when it could not be.
+ * In mod mode (marker file "mod") none of that applies: the gate is closed (`mod`), a stale view file in the workspace
+ * the marker names is deleted (deleteUntrackedView: not one git tracks), and `failed` says why when it could not be.
  * A check that throws counts as unchecked: the view is taken out as far as it can be, and nothing is written.
  */
 export function viewGate(lane: LaneConfig): ViewGate {
 	try {
 		const marker = readSetupMarker(lane.dir);
 		const workspace = lane.workspace;
-		if (marker === undefined || workspace === undefined || !samePath(marker.workspace, workspace) || !existsSync(workspace)) return { open: false };
-		// Mod mode (spec 2026-10-08-claude-code-mod §4.6): the Orrery mod puts the view in the system prompt, so no view
-		// file is written, and one left from file mode is deleted.
-		if (marker.file === "mod") {
+		// Mod mode (spec 2026-10-08-claude-code-mod §4.6), wherever the session runs: the Orrery mod puts the view in the
+		// system prompt, so no view file is written, and one left from file mode in the lane's own folder is deleted.
+		if (marker?.file === "mod") {
+			if (!names(marker, workspace) || !existsSync(workspace)) return { open: false, mod: true };
 			try {
 				return { open: false, mod: true, removed: deleteUntrackedView(workspace) };
 			} catch (error) {
@@ -270,6 +282,7 @@ export function viewGate(lane: LaneConfig): ViewGate {
 				return { open: false, mod: true, failed: errorText(error) };
 			}
 		}
+		if (marker === undefined || !names(marker, workspace) || !existsSync(workspace)) return { open: false };
 		const exposure = gitExposure(workspace);
 		if (exposure?.kind === "unchecked") return { open: false, unchecked: exposure.reason, removed: takeOutView(lane) };
 		if (exposure !== undefined) {
