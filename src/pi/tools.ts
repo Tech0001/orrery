@@ -2,7 +2,7 @@
 
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { HarnessConfig } from "../agent/config.ts";
-import { type AgentTool, memoryTools as agentMemoryTools, readerTools as agentReaderTools } from "../agent/memory-tools.ts";
+import { type ReaderTool, memoryTools as agentMemoryTools, readerTools as agentReaderTools } from "../agent/memory-tools.ts";
 import type { MemoryView } from "../memory/index.ts";
 import type { OrreryState } from "./index.ts";
 
@@ -19,7 +19,7 @@ type AnyTool = ToolDefinition<any, undefined>;
 /** OMP folds a tool named search into its own grep (its tools/builtin-names.ts): there Orrery's is memory_search. */
 export const OMP_TOOL_NAMES: Readonly<Record<string, string>> = { search: "memory_search" };
 
-function piTool(tool: AgentTool, host: "pi" | "omp"): AnyTool {
+function piTool(tool: ReaderTool, host: "pi" | "omp"): AnyTool {
 	return {
 		name: host === "omp" ? (OMP_TOOL_NAMES[tool.name] ?? tool.name) : tool.name,
 		// OMP hides an extension tool behind its xd:// devices unless it is essential (its tools/essential-tools.ts).

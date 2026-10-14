@@ -31,7 +31,7 @@ export class CloudflareStorage implements Storage {
 		this.#url = remote.url.replace(/\/+$/, ""); this.#token = token; this.#fetch = options.fetch ?? fetch;
 	}
 	#lane(lane: string): string {
-		if (!/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(lane)) throw new RemoteError("refused", "Lane names use letters, digits, - and _ (max 32)");
+		if (!/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(lane)) throw new RemoteError("refused", "Agent names use letters, digits, - and _ (max 32)");
 		return `/v1/lanes/${lane}`;
 	}
 	#number(n: number, min = 0): number {

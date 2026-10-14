@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Keeps one agent running inside its tmux pane: restarts `orrery run <Agent>` whenever it exits (a crash, or a fatal
+# Keeps one agent running inside its tmux pane: restarts `orrery run <Name>` whenever it exits (a crash, or a fatal
 # stop such as a poisoned store), with backoff, and stops cleanly on SIGTERM/SIGHUP (systemctl stop, tmux kill).
 #
 #   ORRERY_RESTART_DELAY  first delay in seconds (default 2); doubles up to 60
 #   ORRERY_RESTART_RESET  a run at least this many seconds long resets the delay (default 300)
 set -u
 
-agent="${1:?usage: orrery-agent <Agent>}"
+agent="${1:?usage: orrery-agent <Name>}"
 first_delay="${ORRERY_RESTART_DELAY:-2}"
 reset_after="${ORRERY_RESTART_RESET:-300}"
 delay="$first_delay"

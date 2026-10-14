@@ -49,8 +49,8 @@ function textOf(path: string): string | undefined {
 }
 
 /**
- * Why `name` can't be made in `dataDir`: its folder already has a memory store, even an empty one (an archived agent's,
- * or an import that was cut short), which an import never writes into or takes away. Undefined when it can.
+ * Why `name` can't be made in `dataDir`: its data folder already has a memory store, even an empty one (an archived
+ * agent's, or an import that was cut short), which an import never writes into or takes away. Undefined when it can.
  */
 export function storeRefusal(dataDir: string, name: string): string | undefined {
 	const agentDir = join(dataDir, "agents", name);
@@ -68,7 +68,7 @@ interface ConfigEdit {
 
 /**
  * Adds the agent and fills its memory from the preview. Everything that can refuse (the name, the preview, a memory
- * store already in its folder, a config that would not take it) is checked before anything is written. On a later
+ * store already in its data folder, a config that would not take it) is checked before anything is written. On a later
  * failure the folders and files this call made are removed, and the config and its .bak put back only while they hold
  * what this call wrote there; nothing that was there before, or that another process made meanwhile, is removed.
  */

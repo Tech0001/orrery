@@ -1,5 +1,5 @@
 /**
- * `orrery claude-setup <Agent>` (spec §4 "The view file and CLAUDE.md") makes Claude Code load the agent's AGENTS.md
+ * `orrery claude-setup <Name>` (spec §4 "The view file and CLAUDE.md") makes Claude Code load the agent's AGENTS.md
  * and memory view.
  * - An agent folder of its own gets the import lines in CLAUDE.md.
  * - A git repo (shared with other people) stays untouched: the lines go in CLAUDE.local.md, and CLAUDE.local.md
@@ -210,7 +210,7 @@ export function setupReport(result: SetupResult): string {
 	return `${out.join("\n")}\n`;
 }
 
-/** What `orrery claude-setup <Agent> --mod` did, for modSetupReport. */
+/** What `orrery claude-setup <Name> --mod` did, for modSetupReport. */
 export interface ModSetupResult {
 	readonly agent: string;
 	/** The files whose view import line was removed. */
@@ -225,7 +225,7 @@ export interface ModSetupResult {
 }
 
 /**
- * `orrery claude-setup <Agent> --mod` (spec 2026-10-08-claude-code-mod §4.6): the Orrery mod gives Claude Code the view
+ * `orrery claude-setup <Name> --mod` (spec 2026-10-08-claude-code-mod §4.6): the Orrery mod gives Claude Code the view
  * in the system prompt. It
  * - removes the view import line from CLAUDE.local.md, and from CLAUDE.md only where plain claudeSetup would have put it
  *   there: git definitely says the folder is in no work tree (a git that cannot answer counts as a repo), and

@@ -189,7 +189,7 @@ describe("the App and the Agents page", () => {
 		] }];
 		const app = makeApp(fakeDeps({ usage: () => usage }), [agentsPage]);
 		keys(app, "i");
-		expect(screen(app)).toMatch(/Tokens, 7 days\s+agent 5\.2M in \(81% cached\), 41\.8K out · summaries 1\.0K in \(10% cached\), 30 out/);
+		expect(screen(app)).toMatch(/Tokens, 7 days\s+chat 5\.2M in \(81% cached\), 41\.8K out · summaries 1\.0K in \(10% cached\), 30 out/);
 	});
 
 	it("asks the usage of the one agent whose page opens", () => {

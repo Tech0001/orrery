@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# systemd ExecStop for orrery@<Agent>: ask the agent to close itself (SIGTERM to the restart loop, which forwards it),
+# systemd ExecStop for orrery@<Name>: ask the agent to close itself (SIGTERM to the restart loop, which forwards it),
 # wait up to 20 s, then remove the agent's tmux server.
 set -u
-agent="${1:?usage: orrery-stop <Agent>}"
+agent="${1:?usage: orrery-stop <Name>}"
 export TMUX_TMPDIR="${TMUX_TMPDIR:-/var/lib/orrery/run}"
 socket="orrery-$agent"
 # The pane running the restart loop, wherever it is: a second window may be the current one. Before 0.6.0 the loop

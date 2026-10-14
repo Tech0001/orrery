@@ -163,7 +163,7 @@ describe("claude-setup --mod", () => {
 		expect(existsSync(viewFile(t.agent.folder))).toBe(true);
 	});
 
-	it("is run by `orrery claude-setup <Agent> --mod`", () => {
+	it("is run by `orrery claude-setup <Name> --mod`", () => {
 		const t = testAgent({ setup: false });
 		const run = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, "--config", t.configPath, "claude-setup", t.agent.name, "--mod"], { env: cleanEnv({}), encoding: "utf8", timeout: 20_000 });
 		expect(run.status).toBe(0);

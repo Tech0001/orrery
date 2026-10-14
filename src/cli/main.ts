@@ -6,7 +6,7 @@
 
 import { join, resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
-import type { AgentTool } from "../agent/memory-tools.ts";
+import type { ReaderTool } from "../agent/memory-tools.ts";
 import { defaultConfigPath, findAgent, type HarnessConfig, type AgentConfig, loadConfig } from "../agent/config.ts";
 import { exitWhenFlushed } from "./exit.ts";
 
@@ -27,39 +27,39 @@ const USAGE = `Usage: orrery <command> [--config FILE]
   agent pull <Name> --from <remote> [--folder <dir>]   add a remote agent here and fetch its memory and instructions
   agent takeover <Name> [--yes]   confirm taking a stale lock, then release it for the next open
   agent local <Name> [--delete-remote]   fetch the newest memory and keep it locally (deletion asks)
-  run <Agent>                start the agent's own harness in this terminal (one process per agent)
-  status [<Agent>] [--json]  every agent (or one): state, tool, memory, summaries
+  run <Name>                 start the agent's own harness in this terminal (one process per agent)
+  status [<Name>] [--json]   every agent (or one): state, tool, memory, summaries
   remote add <name> --server <host>:<folder> | --cloudflare <url> [--token-file FILE] [--code-file FILE]
                              add a memory remote; token and recovery code are entered hidden
   remote add <name> [--token-file FILE] [--code-file FILE] [--new]
                              recover this machine's key for an already configured remote
   remote test <name>         test reachability, lock and key
   remote key <name>          show the secret recovery code
-  remote log <Agent> [--json]  show decrypted saves and recorded takeovers
+  remote log <Name> [--json]  show decrypted saves and recorded takeovers
   remote agents <name> [--json]  list agents stored on a remote and where each is open
   remote remove <name> --yes  remove an unused remote and its saved key (save the recovery code first)
-  usage [<Agent>] [--days N] [--json]  token usage per day, role and model (default 7 days)
+  usage [<Name>] [--days N] [--json]  token usage per day, role and model (default 7 days)
   login openai|openrouter [--manual]  sign in for summaries (--manual: paste URL/code, no browser)
   login --key <openai|anthropic|openrouter> [--from-pi]
                              save an API key (typed hidden, or copied from pi's /login)
   logins [--json]            what is saved (never the keys)
   logout openai | --key <name>   remove one login
   trust-host <host>          verify and trust an SSH host key for tools
-  compact <Agent> [--progress FILE]   build every missing summary (agent must not be running); --progress: write how
+  compact <Name> [--progress FILE]   build every missing summary (agent must not be running); --progress: write how
                              far it is to FILE
-  import <Agent> --dry-run [--claude DIR|none] [--claude-file FILE]... [--codex DIR|none] [--codex-file FILE]... [--notes FILE]... [--paste-threshold N] [--no-split] [--out DIR]
+  import <Name> --dry-run [--claude DIR|none] [--claude-file FILE]... [--codex DIR|none] [--codex-file FILE]... [--notes FILE]... [--paste-threshold N] [--no-split] [--out DIR]
                              preview a history import for review (defaults: this agent's Claude Code
                              project and ~/.codex/sessions; --no-split skips the model pass; --claude-file adds a
                              Claude Code session that lives under another project folder; --codex-file adds a
                              rollout that started elsewhere and was resumed in the agent's folder)
-  import <Agent> --commit FILE   append a reviewed preview to the agent's empty memory
-  browse <Agent> [--out FILE] [--open]   write an HTML explorer of the agent's memory (--open: into the agent's
+  import <Name> --commit FILE   append a reviewed preview to the agent's empty memory
+  browse <Name> [--out FILE] [--open]   write an HTML explorer of the agent's memory (--open: into the agent's
                              data folder, then open it)
-  compactor <Agent> [signin|key|local [name [words] | name/model [thinking]] | provider/id [thinking] | reset]
+  compactor <Name> [signin|key|local [name [words] | name/model [thinking]] | provider/id [thinking] | reset]
                                          show, list or switch the agent's summary model (shared with pi's /compactor)
   backup [--keep N]          snapshot every agent's memory and export it as JSONL (keeps N days, default 14)
-  restore <Agent> --from DATE|DIR   put a backup back (the agent must be stopped)
-  holder <Agent> --session ID --claude-pid PID [--nonce N] [--since MS]
+  restore <Name> --from DATE|DIR   put a backup back (the agent must be stopped)
+  holder <Name> --session ID --claude-pid PID [--nonce N] [--since MS]
                              record a Claude Code session into the agent (the plugin's SessionStart hook starts it;
                              --since is when SessionStart ran, in ms since the epoch)
   tools [--json]             pi, Claude Code, Codex and OMP: found, version, Orrery's side installed
@@ -73,7 +73,7 @@ const USAGE = `Usage: orrery <command> [--config FILE]
   update [--check] [--version V] [--yes]   install the newest release (or V); --check only says whether one is out
   uninstall [--purge]        unwire pi, OMP and Claude Code, remove the command, the backup service and the installed
                              versions; agents' memory, config and logins stay (--purge: delete them too, after typing delete)
-  claude-setup <Agent> [--mod]  make Claude Code load the agent's memory view (CLAUDE.md, or CLAUDE.local.md in a
+  claude-setup <Name> [--mod]  make Claude Code load the agent's memory view (CLAUDE.md, or CLAUDE.local.md in a
                              repo); --mod: from the Orrery mod, in the system prompt
   claude-mod view --cwd DIR [--session ID] [--agent NAME [--agent-token T]] [--wait-ms N [--spool-only]]   the Orrery
                              mod's call: the session's agent's memory section as JSON (--agent: the ORRERY_AGENT Claude
@@ -734,7 +734,7 @@ const denyToolCall = (reason: string) =>
  */
 async function mcpServer(configPath: string | undefined): Promise<number> {
 	const { agentTools, runMcp } = await import("../claude/mcp.ts");
-	let tools: AgentTool[] = [];
+	let tools: ReaderTool[] = [];
 	const config = optionalConfig(configPath, "orrery mcp");
 	if (config !== undefined) {
 		const { claudeSession } = await import("../claude/pick.ts");

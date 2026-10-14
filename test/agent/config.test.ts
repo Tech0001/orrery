@@ -123,7 +123,7 @@ describe("parseConfig", () => {
 
 	it("refuses an agent named like an orrery agent subcommand, ignoring case", () => {
 		expect(() => parseConfig(`[agents.Local]\nfolder = "/w/l"\ncompactor_model = "openai/gpt-6.1-sol"\n`, "/d")).toThrow(
-			"agents.Local: Local is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); rename the agent, and its folder /d/agents/Local to the same name, or it starts without its memory",
+			"agents.Local: Local is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); rename the agent, and its data folder /d/agents/Local to the same name, or it starts without its memory",
 		);
 		for (const word of RESERVED_NAMES) expect(() => parseConfig(`[agents.${word.toUpperCase()}]\ncompactor_model = "a/b"\n`, "/d")).toThrow(ConfigError);
 		expect(agentNameProblem("Edit")).toBe("Edit is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); pick another name.");

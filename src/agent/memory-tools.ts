@@ -17,7 +17,7 @@ import { agentOpenHere, readCopyPath } from "../remote/read-copy.ts";
 import type { LaneEntry } from "../remote/types.ts";
 
 /** One memory tool, independent of the agent that calls it. */
-export interface AgentTool {
+export interface ReaderTool {
 	readonly name: string;
 	readonly label: string;
 	readonly description: string;
@@ -54,7 +54,7 @@ function withPathView<T>(agent: AgentConfig, file: string, use: (view: MemoryVie
 }
 
 /** zoom, date and search over the agent's own memory, reached through `access`. */
-export function memoryTools(access: ViewAccess): AgentTool[] {
+export function memoryTools(access: ViewAccess): ReaderTool[] {
 	return [
 		{
 			name: "zoom",
@@ -151,7 +151,7 @@ function agentsText(config: HarnessConfig, reader: AgentConfig): string | Promis
 }
 
 /** `reader()` is the agent asking; it throws when there is none (pi without memory). */
-export function readerTools(reader: () => AgentConfig, config: HarnessConfig): AgentTool[] {
+export function readerTools(reader: () => AgentConfig, config: HarnessConfig): ReaderTool[] {
 	const readable = (name: string) => {
 		const self = reader();
 		const agent = findAgent(config, name);

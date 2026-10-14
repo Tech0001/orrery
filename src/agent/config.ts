@@ -281,7 +281,7 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 		const where = `agents.${name}`;
 		if (!NAME.test(name)) throw new ConfigError(`${where}: agent names use letters, digits, - and _ (max 32)`);
 		if (RESERVED_NAMES.includes(name.toLowerCase())) {
-			throw new ConfigError(`${where}: ${reserved(name)}; rename the agent, and its folder ${join(dataDir, "agents", name)} to the same name, or it starts without its memory`);
+			throw new ConfigError(`${where}: ${reserved(name)}; rename the agent, and its data folder ${join(dataDir, "agents", name)} to the same name, or it starts without its memory`);
 		}
 		const t = table(value, where);
 		if (t.workspace !== undefined) throw new ConfigError(`${where}.workspace is now folder: rename the key`);

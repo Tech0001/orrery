@@ -2,7 +2,7 @@ import { PassThrough } from "node:stream";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type AgentTool, memoryTools, readerTools, withAgentView } from "../../src/agent/memory-tools.ts";
+import { type ReaderTool, memoryTools, readerTools, withAgentView } from "../../src/agent/memory-tools.ts";
 import { agentTools, runMcp } from "../../src/claude/mcp.ts";
 import { readerTools as piReaderTools } from "../../src/pi/tools.ts";
 import type { OrreryState } from "../../src/pi/index.ts";
@@ -16,7 +16,7 @@ import { seedAtlas } from "./support.ts";
 
 afterEach(cleanup);
 
-const run = (tools: AgentTool[], name: string, params: object = {}) => {
+const run = (tools: ReaderTool[], name: string, params: object = {}) => {
 	const tool = tools.find((t) => t.name === name);
 	if (tool === undefined) throw new Error(`no tool ${name}`);
 	return tool.run(params as Record<string, unknown>);

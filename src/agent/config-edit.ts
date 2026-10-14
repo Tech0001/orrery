@@ -45,7 +45,7 @@ function tomlValue(value: ConfigValue | readonly string[]): string {
 	return JSON.stringify(value);
 }
 
-/** The agent a `[agents.Name]` header line names, or undefined. */
+/** The agent an `[agents.Name]` header line names, or undefined. */
 function agentHeader(line: string): string | undefined {
 	const m = /^\s*\[\s*agents\s*\.\s*(?:"([^"]+)"|([A-Za-z0-9_-]+))\s*\]\s*(?:#.*)?\r?$/.exec(line);
 	return m === null ? undefined : (m[1] ?? m[2]);
@@ -202,7 +202,7 @@ export function archiveAgent(text: string, configDir: string, agent: string, day
 	const lines = (noFinal ? `${text}${eol}` : text).split("\n");
 	const bare = (i: number) => lines[i].replace(/\r$/, "");
 	const start = lines.findIndex((line) => agentHeader(line) === agent);
-	if (start === -1) throw new ConfigError(`${agent} is not written as a [agents.${agent}] block; archive it by hand.`);
+	if (start === -1) throw new ConfigError(`${agent} is not written as an [agents.${agent}] block; archive it by hand.`);
 	let next = start + 1;
 	while (next < lines.length && !/^\s*\[/.test(lines[next])) next++;
 	let end = start;

@@ -6,7 +6,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { handleMessage, agentTools, MAX_LINE_CHARS, runMcp } from "../../src/claude/mcp.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
-import type { AgentTool } from "../../src/agent/memory-tools.ts";
+import type { ReaderTool } from "../../src/agent/memory-tools.ts";
 import { claimToken, newToken } from "../../src/agent/pick.ts";
 import { runHook } from "../../src/claude/hooks.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
@@ -19,10 +19,10 @@ afterEach(cleanup);
 isolatedHome();
 
 // biome-ignore lint/suspicious/noExplicitAny: JSON-RPC replies are checked field by field.
-const call = (tools: readonly AgentTool[], method: string, params: object = {}): any => JSON.parse(JSON.stringify(handleMessage({ jsonrpc: "2.0", id: 1, method, params }, tools)));
+const call = (tools: readonly ReaderTool[], method: string, params: object = {}): any => JSON.parse(JSON.stringify(handleMessage({ jsonrpc: "2.0", id: 1, method, params }, tools)));
 
 /** Feeds `chunks` to runMcp on a stream and returns the lines it printed. */
-async function serve(chunks: string[], tools: readonly AgentTool[] = []): Promise<string[]> {
+async function serve(chunks: string[], tools: readonly ReaderTool[] = []): Promise<string[]> {
 	const input = new PassThrough();
 	const output = new PassThrough();
 	let out = "";

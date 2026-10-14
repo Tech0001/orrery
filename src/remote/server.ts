@@ -26,7 +26,7 @@ function privateSshFolder(dir: string): void {
 }
 
 function validLane(lane: string): void {
-	if (!NAME.test(lane)) throw new RemoteError("refused", "Lane names use letters, digits, - and _ (max 32)");
+	if (!NAME.test(lane)) throw new RemoteError("refused", "Agent names use letters, digits, - and _ (max 32)");
 }
 function numberArg(n: number, min = 0): string {
 	// Keep shell arithmetic inside the signed 64-bit range, including counters raised by one.
@@ -199,7 +199,7 @@ export class ServerStorage implements Storage {
 				if (code === 0) resolve(Buffer.concat(chunks));
 				else if (code === 3) reject(new RemoteError("lock-lost", `${lane}: the lock is no longer current`));
 				else if (code === 4) reject(new RemoteError("out-of-order", `${lane}: the save number or bytes do not match`));
-				else if (code === 5) reject(new RemoteError("not-found", `No lane ${lane} on remote ${this.name}`));
+				else if (code === 5) reject(new RemoteError("not-found", `No agent ${lane} on remote ${this.name}`));
 				else if (code === 255) reject(new RemoteError(/Permission denied|Host key verification failed/i.test(stderr) ? "auth" : "unreachable", message || `Cannot reach remote ${this.name}`));
 				else if (signal !== null) reject(new RemoteError("unreachable", `The connection to remote ${this.name} closed`));
 				else reject(new RemoteError("refused", message || `Remote ${this.name} refused the operation`));

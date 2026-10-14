@@ -1,8 +1,8 @@
 /**
- * An agent's instructions (spec 2026-10-13-orrery-agents-design §5): who it is, in <agent folder>/instructions.md, apart
- * from any folder's project files. At most INSTRUCTIONS_MAX_BYTES reach the model; a longer file is cut there, with a
- * notice. A missing, empty or blank file is "no instructions". Node built-ins and relative imports only: pi and OMP load
- * this file.
+ * An agent's instructions (spec 2026-10-13-orrery-agents-design §5): who it is, in <agent data folder>/instructions.md,
+ * apart from any folder's project files. At most INSTRUCTIONS_MAX_BYTES reach the model; a longer file is cut there,
+ * with a notice. A missing, empty or blank file is "no instructions". Node built-ins and relative imports only: pi and
+ * OMP load this file.
  */
 
 import { closeSync, constants, fstatSync, openSync, readFileSync, readSync } from "node:fs";

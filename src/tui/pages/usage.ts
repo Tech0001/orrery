@@ -1,5 +1,5 @@
 /**
- * Page 3, Usage (spec §3.3): tokens per agent per day, agent and summaries, with the share read from cache, and what
+ * Page 3, Usage (spec §3.3): tokens per agent per day, its chat and its summaries, with the share read from cache, and what
  * summaries on API keys cost at the catalog's price.
  */
 
@@ -13,7 +13,7 @@ export const USAGE_SPANS = [1, 7, 14, 30, 90] as const;
 const COLUMNS: readonly Column[] = [
 	{ title: "Agent", width: 12 },
 	{ title: "Day", width: 10 },
-	{ title: "Agent in", width: 8, align: "right" },
+	{ title: "Chat in", width: 8, align: "right" },
 	{ title: "cache-read", width: 10, align: "right", drop: 3 },
 	{ title: "share", width: 6, align: "right", drop: 1 },
 	{ title: "out", width: 8, align: "right", drop: 6 },

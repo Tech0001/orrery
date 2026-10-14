@@ -4,7 +4,7 @@
 #   sudo bash ~/orrery-stage/deploy/install.sh ~/orrery-stage
 #
 # Idempotent. It never overwrites /etc/orrery/config.toml or the orrery SSH key, never enables an agent
-# (systemctl enable --now orrery@<Agent>) and never restarts a running one.
+# (systemctl enable --now orrery@<Name>) and never restarts a running one.
 set -euo pipefail
 
 src="${1:?usage: install.sh <staged orrery tree>}"

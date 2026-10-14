@@ -375,7 +375,7 @@ function asModAgent(reply: ViewReply | undefined): ModAgentReply | undefined {
 }
 
 /**
- * The startup band's two lines for the session's `reply`: `Orrery · <Agent>`, then the memory and the session's mode as
+ * The startup band's two lines for the session's `reply`: `Orrery · <Name>`, then the memory and the session's mode as
  * its mode file says (left out while not known). Undefined outside a mod-mode agent: no band.
  */
 export function bandLines(reply: ViewReply | undefined): readonly [string, string] | undefined {
@@ -424,7 +424,7 @@ function remoteFooter(status: RemoteStatus): string {
 	return `${remote} ✓${status.savedAt === undefined ? "" : ` ${plain(status.savedAt)}`}`;
 }
 
-/** The footer's mode label for the session's `reply`, as pi's status reads: `Orrery · <Agent> · <N> msgs`. Undefined outside a mod-mode agent. */
+/** The footer's mode label for the session's `reply`, as pi's status reads: `Orrery · <Name> · <N> msgs`. Undefined outside a mod-mode agent. */
 export function footerLabel(reply: ViewReply | undefined): string | undefined {
 	const shown = asModAgent(reply);
 	return shown === undefined ? undefined : `${MODE_LABEL} · ${plain(shown.lane)} · ${shown.messages} msgs${shown.remote === undefined ? "" : ` · ${remoteFooter(shown.remote)}`}`;

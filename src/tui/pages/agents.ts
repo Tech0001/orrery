@@ -217,7 +217,7 @@ function detailLines(app: App, row: AgentRow, width: number): string[] {
 	];
 }
 
-/** "agent 5.2M in (81% cached), 41.8K out · summaries 900 in (10% cached), 30 out", or "unreadable: <reason>". */
+/** "chat 5.2M in (81% cached), 41.8K out · summaries 900 in (10% cached), 30 out", or "unreadable: <reason>". */
 function usageLine(app: App, agent: string): string {
 	if (app.config === undefined) return "—";
 	let rows: readonly UsageRow[];
@@ -234,7 +234,7 @@ function usageLine(app: App, agent: string): string {
 		const out = mine.reduce((s, r) => s + r.output, 0);
 		return `${label} ${compactCount(input)} in (${input === 0 ? 0 : Math.round((100 * cached) / input)}% cached), ${compactCount(out)} out`;
 	};
-	return `${part("agent", "agent")} · ${part("compactor", "summaries")}`;
+	return `${part("agent", "chat")} · ${part("compactor", "summaries")}`;
 }
 
 /** i: the agent's page, with its token use read once as it opens. */

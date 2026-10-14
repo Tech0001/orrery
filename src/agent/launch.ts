@@ -37,7 +37,7 @@ export interface LaunchPlan {
 	readonly cwd: string;
 	/** Added to the tool's environment: ORRERY_AGENT and ORRERY_AGENT_TOKEN (src/agent/pick.ts). */
 	readonly env: Readonly<Record<string, string>>;
-	/** The agent's folder in Orrery's home, where the tool's extension claims the token, and runAgent removes the claim. */
+	/** The agent's data folder in Orrery's home, where the tool's extension claims the token, and runAgent removes the claim. */
 	readonly agentDir: string;
 	readonly steps: readonly LaunchStep[];
 	/** Why it cannot launch at all. */

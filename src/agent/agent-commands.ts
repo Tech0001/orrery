@@ -15,7 +15,7 @@ export function memoryReport(agent: MemoryAgent): string {
 	return [
 		`${agent.config.name}: ${stats.messages} messages, ${stats.nodes} summaries, view ${Math.round(stats.viewBytes / 1000)}/${Math.round(stats.viewBudget / 1000)} KB${stats.settled ? "" : ` (summarizing from #${stats.firstUnsummarized})`}`,
 		`summaries: ${agent.compactorModel.provider}/${agent.compactorModel.modelId} (${agent.compactorModel.thinking})${troubleText(agent)}`,
-		`tokens: agent ${sum("agent", "input")} in + ${sum("agent", "cacheRead")} cached, ${sum("agent", "output")} out; summaries ${sum("compactor", "input")} in + ${sum("compactor", "cacheRead")} cached, ${sum("compactor", "output")} out`,
+		`tokens: chat ${sum("agent", "input")} in + ${sum("agent", "cacheRead")} cached, ${sum("agent", "output")} out; summaries ${sum("compactor", "input")} in + ${sum("compactor", "cacheRead")} cached, ${sum("compactor", "output")} out`,
 		agent.config.reads.length > 0 ? `reads: ${agent.config.reads.join(", ")}` : "",
 	]
 		.filter(Boolean)

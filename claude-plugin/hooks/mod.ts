@@ -1,5 +1,5 @@
 /**
- * The Orrery mod (spec 2026-10-08-claude-code-mod): in an agent switched to mod mode (`orrery claude-setup <Agent> --mod`)
+ * The Orrery mod (spec 2026-10-08-claude-code-mod): in an agent switched to mod mode (`orrery claude-setup <Name> --mod`)
  * - prompt.compose adds the agent's memory view as the system-prompt section orrery:memory, fetched once per session
  *   id and again only at a compaction, so the prompt cache holds between compactions;
  * - session.compact answers Claude Code's compactions (/compact, its own threshold, the mod's) with the last turn,
@@ -8,7 +8,7 @@
  *   only the last turn was too large to keep: then it tries again after a later turn);
  * - session.measure starts a compaction once the conversation passes the agent's compact_at (interactive sessions);
  * - it shows that it is loaded (sections 11 and 12): a startup band above the prompt until the person's first prompt,
- *   a footer label with the agent and its message count (`Orrery · <Agent> · <N> msgs`), and each compaction's line after
+ *   a footer label with the agent and its message count (`Orrery · <Name> · <N> msgs`), and each compaction's line after
  *   the compaction, where it can be seen (right under the /compact row, or at the next event). The band and the label
  *   read facts of their own, fetched at session start and again after each turn's end; they never change the section.
  * Elsewhere it adds nothing and passes everything on. It reaches Orrery only through `orrery claude-mod view`, run by
@@ -475,7 +475,7 @@ export const register: Register = (on) => {
 		});
 	}).catch(($, e, next) => next(e));
 
-	// The footer label: `Orrery · <Agent> · <N> msgs` among the mode labels at the right of the prompt footer, for the
+	// The footer label: `Orrery · <Name> · <N> msgs` among the mode labels at the right of the prompt footer, for the
 	// whole session.
 	on("ui.render", { component: "SessionMode" }, ($, e, next) => {
 		const modes = footerModes(e.props.modes, display);

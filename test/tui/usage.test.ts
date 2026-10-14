@@ -23,10 +23,12 @@ describe("compactCount", () => {
 });
 
 describe("the Usage page", () => {
-	it("shows tokens per agent per day, agent and summaries, with the cached share", () => {
+	it("shows tokens per agent per day, its chat and its summaries, with the cached share", () => {
 		const app = makeApp(fakeDeps({ usage: () => USAGE }, [row({ name: "Alpha" }), row({ name: "Cedarn", tool: "claude-code" })]), [usagePage]);
 		const text = screen(app);
 		expect(text).toContain("last 7 days");
+		// The agent's own model's tokens are "Chat in", so they are not read as the Agent column's.
+		expect(text).toMatch(/Agent\s+Day\s+Chat in\s+cache-read\s+share\s+out\s+Summaries in\s+cache-read\s+share\s+out/);
 		expect(text).toMatch(/Alpha\s+2026-10-08\s+400\s+300\s+75%\s+20\s+100\s+50\s+50%\s+5/);
 		expect(text).toMatch(/Cedarn\s+2026-10-07\s+—\s+—\s+—\s+—\s+10\s+0\s+0%\s+1/);
 	});

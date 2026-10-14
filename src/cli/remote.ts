@@ -383,7 +383,7 @@ export async function pullAgentCommand(configPath: string | undefined, name: str
 /** Moves agent memory between its local working copy and remote home; independent of agent checkout adapters. */
 export async function agentRemoteCommand(configPath: string | undefined, args: readonly string[], options: AgentRemoteOptions = {}, interaction: AgentRemoteInteraction = terminalAgentInteraction): Promise<string> {
 	const [action, name] = args;
-	if (args.length !== 2 || !name || !["push", "pull", "takeover", "local"].includes(action)) throw new Error("Use orrery agent push|pull|takeover|local <Agent>.");
+	if (args.length !== 2 || !name || !["push", "pull", "takeover", "local"].includes(action)) throw new Error("Use orrery agent push|pull|takeover|local <Name>.");
 	if ((options.to !== undefined && action !== "push") || ((options.from !== undefined || options.folder !== undefined) && action !== "pull") || (options.yes === true && action !== "takeover") || (options["delete-remote"] === true && action !== "local")) throw new Error("These options do not apply to this agent command.");
 	if (action === "pull") {
 		if (!options.from) throw new Error("agent pull needs --from <remote> (and --folder <dir> for a default folder).");

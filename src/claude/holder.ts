@@ -1,6 +1,6 @@
 /**
  * The agent holder (spec §4 "The agent holder"):
- * `orrery holder <Agent> --session <id> --claude-pid <pid> --nonce <n> --since <ms>`, started detached by SessionStart,
+ * `orrery holder <Name> --session <id> --claude-pid <pid> --nonce <n> --since <ms>`, started detached by SessionStart,
  * one per Claude Code session.
  * - While it holds the agent's store (the same writer lock pi takes), it ingests the hooks' spool in order, runs the
  *   compactor on orrery's own login, and keeps <folder>/.orrery/view.md current.

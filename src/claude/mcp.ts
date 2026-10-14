@@ -12,7 +12,7 @@
 import { StringDecoder } from "node:string_decoder";
 import { Value } from "typebox/value";
 import type { HarnessConfig, AgentConfig } from "../agent/config.ts";
-import { type AgentTool, memoryTools, readerTools, withAgentView } from "../agent/memory-tools.ts";
+import { type ReaderTool, memoryTools, readerTools, withAgentView } from "../agent/memory-tools.ts";
 import { versionNumber } from "../agent/running.ts";
 
 /** Claude Code saves a result over 50,000 characters to a file unless the tool raises this; its ceiling is 500,000. */
@@ -24,7 +24,7 @@ export const MAX_LINE_CHARS = 1_000_000;
 const VERSION = versionNumber();
 
 /** The agent's own tools, plus the reader tools for an agent that reads others (Birch). */
-export function agentTools(config: HarnessConfig, agent: AgentConfig): AgentTool[] {
+export function agentTools(config: HarnessConfig, agent: AgentConfig): ReaderTool[] {
 	const own = memoryTools((use) => withAgentView(agent, use, config));
 	return agent.reads.length > 0 ? [...own, ...readerTools(() => agent, config)] : own;
 }
@@ -35,7 +35,7 @@ const failure = (id: Id, code: number, message: string) => ({ jsonrpc: "2.0", id
 const text = (value: string, isError = false) => ({ content: [{ type: "text", text: value }], ...(isError ? { isError: true } : {}) });
 
 /** A tool as tools/list shows it. */
-function describe(tool: AgentTool): object {
+function describe(tool: ReaderTool): object {
 	return {
 		name: tool.name,
 		description: tool.description,
@@ -46,7 +46,7 @@ function describe(tool: AgentTool): object {
 }
 
 /** The reply to one JSON-RPC message, or undefined for a notification (a message without an id). */
-export function handleMessage(message: unknown, tools: readonly AgentTool[]): object | undefined | Promise<object> {
+export function handleMessage(message: unknown, tools: readonly ReaderTool[]): object | undefined | Promise<object> {
 	if (typeof message !== "object" || message === null || Array.isArray(message)) return failure(null, -32600, "Invalid request");
 	const { id, method, params } = message as { id?: Id; method?: unknown; params?: unknown };
 	if (id === undefined) return undefined;
@@ -92,7 +92,7 @@ async function asyncToolReply(id: Id, result: Promise<string>): Promise<object> 
 }
 
 /** The reply to one input line: a parse error for bad JSON (never quoting it), else handleMessage's. */
-async function handleLine(line: string, tools: readonly AgentTool[]): Promise<object | undefined> {
+async function handleLine(line: string, tools: readonly ReaderTool[]): Promise<object | undefined> {
 	let message: unknown;
 	try {
 		message = JSON.parse(line);
@@ -112,7 +112,7 @@ async function handleLine(line: string, tools: readonly AgentTool[]): Promise<ob
  * Serves `tools` on newline-delimited JSON-RPC until `input` ends. A line over MAX_LINE_CHARS gets one error and is
  * dropped as it arrives, so an input that never ends a line cannot grow memory.
  */
-export async function runMcp(input: NodeJS.ReadableStream, output: NodeJS.WritableStream, tools: readonly AgentTool[]): Promise<void> {
+export async function runMcp(input: NodeJS.ReadableStream, output: NodeJS.WritableStream, tools: readonly ReaderTool[]): Promise<void> {
 	const decoder = new StringDecoder("utf8");
 	let pending = "";
 	let skipping = false; // inside an over-long line, up to its newline

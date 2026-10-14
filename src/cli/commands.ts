@@ -25,7 +25,7 @@ import { attachRemoteStore, withBriefCheckOut } from "../remote/checkout.ts";
 import { clean } from "./printer.ts";
 import { formatUsage } from "./run.ts";
 
-/** `orrery status [<Agent>] [--json]`: one line per agent (or the named one): state, tool, memory, summaries. */
+/** `orrery status [<Name>] [--json]`: one line per agent (or the named one): state, tool, memory, summaries. */
 export function statusCommand(config: HarnessConfig, only?: string, options: { json?: boolean } = {}): string {
 	const name = only === undefined ? undefined : findAgent(config, only).name;
 	const rows = agentOverview(config).filter((row) => name === undefined || row.name === name);
@@ -64,7 +64,7 @@ export async function trustHostCommand(config: HarnessConfig, hostName: string):
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /**
- * `orrery compact <Agent> [--progress FILE]`: builds every missing summary. With `progress`, FILE (the agent's build.json,
+ * `orrery compact <Name> [--progress FILE]`: builds every missing summary. With `progress`, FILE (the agent's build.json,
  * src/agent/build.ts) says how far it is and what its summaries cost so far, every 5 s and when it ends.
  */
 export async function compactCommand(config: HarnessConfig, agentName: string, models?: Models, options: { readonly progress?: string } = {}): Promise<void> {
@@ -208,7 +208,7 @@ export function browseCommand(config: HarnessConfig, agentName: string, out?: st
 }
 
 /**
- * `orrery compactor <Agent> [signin|key|local ... | provider/id [thinking] | reset]`, which Claude Code's /orrery:compactor runs, shows or
+ * `orrery compactor <Name> [signin|key|local ... | provider/id [thinking] | reset]`, which Claude Code's /orrery:compactor runs, shows or
  * switches the agent's summary model.
  * - The choice lives where pi's /compactor keeps it (COMPACTOR_MODEL_KEY), so both agents share it.
  * - It is tested with one call first (summary-sources testChoice), with orrery's own logins, which Claude Code's holder summarizes with.

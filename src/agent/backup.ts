@@ -58,7 +58,7 @@ function exportMemory(database: string, target: string, agent: string, now: Date
 	}
 }
 
-/** Writes `<data_dir>/backups/<YYYY-MM-DD>/<Agent>/`, replacing that day's backup, and keeps the newest `keep` days. */
+/** Writes `<data_dir>/backups/<YYYY-MM-DD>/<Name>/`, replacing that day's backup, and keeps the newest `keep` days. */
 export function backupAgents(config: HarnessConfig, options: { now?: Date; keep?: number } = {}): BackupReport {
 	const now = options.now ?? new Date();
 	const keep = options.keep ?? 14;
