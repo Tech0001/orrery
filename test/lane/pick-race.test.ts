@@ -106,7 +106,7 @@ describe("claimToken, two claims at once", () => {
 		});
 	}
 
-	it("a taker whose rename of the dead claim loses (another took it over first) does not own the token", () => {
+	it("a taker whose rename moves a live claim made since its judgment (another's whole takeover ran between) puts it back, and does not own the token", () => {
 		const dir = lane();
 		const token = newToken();
 		const claim = join(dir, "claims", token);

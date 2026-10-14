@@ -5,8 +5,11 @@
  *   (publish). The file appears whole or not at all, and of two publishers one gets EEXIST and loses.
  * - A stale file (a dead claim, a record of another identity) is taken down by first renaming it to a graveyard name
  *   beside it (removeStale). Only one rename of a name succeeds; the other gets ENOENT and loses. The file is judged
- *   again in the graveyard, where no one else can change it, and removed only if it is still stale: a fresh file that
- *   took the name between the caller's judgment and the rename goes back.
+ *   again in the graveyard and removed only if it is still stale: a fresh file that took the name between the caller's
+ *   judgment and the rename goes back. Nobody writes to a graveyard file, but a pruner may sweep it: it keeps the moved
+ *   file's mtime, so one older than STRAY_MS is a stray to another process's prune (pruneClaims, src/claude/pick.ts
+ *   prune) and can go between the move and the judgment. A missing file then counts as stale (it is gone either way),
+ *   and a put-back that finds it gone is "removed".
  * - Where links fail otherwise (no hard links: FAT and exFAT, some network and FUSE mounts) publish falls back to an
  *   exclusive create of the name and a write into it. The file is empty for a moment; pruning and a claim's takeover
  *   treat an empty file younger than STRAY_MS as one being made (beingMade), never as dead.
@@ -14,6 +17,17 @@
  * then made fresh, and until then a session's later events fall back to the folder, as they did on a dead claim; a
  * Claude Code event finds no record and refuses with the guard on. The graveyard file itself is a stray (stray) and
  * goes with the next prune.
+ *
+ * Known limit: three processes. Two claimers of one token, and a third claimer in the same lane whose pruneClaims takes
+ * that token's dead claim down: if the first claimer's fresh claim takes the name between the pruner's judgment and
+ * its rename, the pruner moves that live claim, and if the second claimer then links its own before the put-back, the
+ * put-back replaces it. Both claimers believe they hold the token. With two processes exactly one wins.
+ * Known limit: a crash between moving a live claim and putting it back leaves that live owner without its claim (the
+ * graveyard file is swept as a stray after STRAY_MS), so a later claimer of its token finds none and takes it over
+ * while the owner lives.
+ * Known limit: without hard links, a second consumer of the same process (Claude Code's MCP server and its
+ * SessionStart) that arrives in the fallback's empty moment finds a file being made: its record is unreadable
+ * ("unrecorded"), or it loses the claim and falls back to the folder. That fails closed, and is accepted.
  * Node built-ins only: pi and OMP load this file.
  */
 
@@ -26,7 +40,7 @@ export const STRAY_MS = 60_000;
 /** A temporary name beside `file`, for content written whole before publish. */
 export const temporaryOf = (file: string): string => `${file}.${randomBytes(6).toString("hex")}`;
 
-/** A graveyard name beside `file`: where a stale file goes to be judged, and removed, by one process alone. */
+/** A graveyard name beside `file`: where a stale file goes to be judged, and removed, by the one process that moved it. */
 const graveOf = (file: string): string => `${file}.dead-${randomBytes(6).toString("hex")}`;
 
 const code = (error: unknown): string | undefined => (error as NodeJS.ErrnoException).code;
@@ -58,9 +72,10 @@ export function publish(temporary: string, file: string, content: string): true 
 }
 
 /**
- * Takes `file` down exclusively when `stale` still says so of it in the graveyard: "removed"; "lost" when another
- * process renamed it away first (or it was gone); "kept" when it was no longer the file the caller judged (a fresh one
- * took the name between), and is back in place: the same inode, so a writer still filling it lands its content there.
+ * Takes `file` down exclusively when `stale` still says so of it in the graveyard (`stale` counts a missing file as
+ * stale: a pruner may have swept the graveyard, module doc): "removed"; "lost" when another process renamed it away
+ * first (or it was gone); "kept" when it was no longer the file the caller judged (a fresh one took the name between),
+ * and is back in place: the same inode, so a writer still filling it lands its content there.
  */
 export function removeStale(file: string, stale: (file: string) => boolean): "removed" | "lost" | "kept" {
 	const grave = graveOf(file);
@@ -74,7 +89,13 @@ export function removeStale(file: string, stale: (file: string) => boolean): "re
 		rmSync(grave, { force: true });
 		return "removed";
 	}
-	renameSync(grave, file);
+	try {
+		renameSync(grave, file);
+	} catch (error) {
+		// Swept by a pruner between the judgment and the put-back: gone, as a stale file would be.
+		if (code(error) === "ENOENT") return "removed";
+		throw error;
+	}
 	return "kept";
 }
 

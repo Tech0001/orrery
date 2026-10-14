@@ -5,7 +5,7 @@
  * away. The first then finds the second's record there and must answer with it, not its own.
  */
 
-import { mkdirSync, type PathLike, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, type PathLike, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type ClaudePicked, claudeSession } from "../../src/claude/pick.ts";
@@ -13,15 +13,19 @@ import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { parseConfig } from "../../src/lane/config.ts";
 import { tempDir } from "../lane/support.ts";
 
-/** Runs once, before the first decider's first link or first rename. */
-const hook = vi.hoisted(() => ({ beforeLink: undefined as (() => void) | undefined, beforeRename: undefined as (() => void) | undefined }));
+/** Runs once, before the first decider's first link or first rename, or right after that rename. */
+const hook = vi.hoisted(() => ({
+	beforeLink: undefined as (() => void) | undefined,
+	beforeRename: undefined as (() => void) | undefined,
+	afterRename: undefined as ((source: string, target: string) => void) | undefined,
+}));
 
 vi.mock("node:fs", async (importOriginal) => {
 	const fs = await importOriginal<typeof import("node:fs")>();
-	const once = (slot: "beforeLink" | "beforeRename") => {
-		const run = hook[slot];
+	const once = <A extends unknown[]>(slot: "beforeLink" | "beforeRename" | "afterRename", ...args: A) => {
+		const run = hook[slot] as ((...args: A) => void) | undefined;
 		hook[slot] = undefined;
-		run?.();
+		run?.(...args);
 	};
 	return {
 		...fs,
@@ -32,7 +36,8 @@ vi.mock("node:fs", async (importOriginal) => {
 		},
 		renameSync: (source: PathLike, target: PathLike) => {
 			once("beforeRename");
-			return fs.renameSync(source, target);
+			fs.renameSync(source, target);
+			once("afterRename", String(source), String(target));
 		},
 	};
 });
@@ -41,6 +46,7 @@ const dirs: string[] = [];
 afterEach(() => {
 	hook.beforeLink = undefined;
 	hook.beforeRename = undefined;
+	hook.afterRename = undefined;
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -83,6 +89,20 @@ describe("two deciders of one Claude Code process", () => {
 		expect(winner).toEqual({ kind: "in-view-folder", name: "Test", host: "Other" });
 		expect(loser).toEqual(winner);
 		expect(JSON.parse(readFileSync(join(records, `${process.pid}.json`), "utf8"))).toEqual({ agent: "Test", token: "", kind: "refused", why: "in-view-folder", name: "Test", host: "Other" });
+		expect(readdirSync(records)).toEqual([`${process.pid}.json`]);
+	});
+
+	it("a stale record's graveyard swept as a stray by another decider's prune, between the move and the judgment: the decision is still recorded", () => {
+		const { root, config, records } = world();
+		mkdirSync(records, { recursive: true, mode: 0o700 });
+		const file = join(records, `${process.pid}.json`);
+		writeFileSync(file, JSON.stringify({ agent: "Birch", token: "", kind: "none" }));
+		// An old stale record: its graveyard keeps the mtime, so another process's prune takes it for a stray.
+		const longAgo = new Date(Date.now() - 3_600_000);
+		utimesSync(file, longAgo, longAgo);
+		hook.afterRename = (_source, target) => rmSync(target);
+		expect(claudeSession(config, { env, cwd: join(root, "elsewhere"), pid: process.pid, decide: true })).toMatchObject({ kind: "lane", by: "env", lane: { name: "Test" } });
+		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ agent: "Test", token: "", kind: "lane", lane: "Test", by: "env" });
 		expect(readdirSync(records)).toEqual([`${process.pid}.json`]);
 	});
 });

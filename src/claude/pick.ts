@@ -184,10 +184,13 @@ function readRecordFile(file: string): Recorded | "unreadable" | undefined {
 
 const sameIdentity = (recorded: Identity | undefined, asker: Identity) => recorded !== undefined && recorded.agent === asker.agent && recorded.token === asker.token;
 
-/** A readable record of another identity: never this session's, and a decider's to replace. */
+/**
+ * A readable record of another identity: never this session's, and a decider's to replace. A missing one is stale too:
+ * in the graveyard, a pruner may have swept it (src/lane/exclusive.ts).
+ */
 const staleFor = (asker: Identity) => (file: string) => {
 	const recorded = readRecordFile(file);
-	return recorded !== undefined && recorded !== "unreadable" && !sameIdentity(recorded.identity, asker);
+	return recorded === undefined || (recorded !== "unreadable" && !sameIdentity(recorded.identity, asker));
 };
 
 /**
