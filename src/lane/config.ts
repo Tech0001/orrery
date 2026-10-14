@@ -352,7 +352,17 @@ export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string 
 }
 
 export function loadConfig(file: string = defaultConfigPath()): HarnessConfig {
-	return parseConfig(readFileSync(file, "utf8"), dirname(resolve(file)));
+	let text: string;
+	try {
+		text = readFileSync(file, "utf8");
+	} catch (error) {
+		// Neither <home>/config.toml nor the server path exists: say where Orrery looks, not the server path alone.
+		if (file === DEFAULT_CONFIG_PATH && (error as { code?: unknown }).code === "ENOENT" && !process.env.ORRERY_CONFIG) {
+			throw Object.assign(new Error(`no Orrery config at ${join(orreryHome(), "config.toml")}; run orrery to set one up`), { code: "ENOENT" });
+		}
+		throw error;
+	}
+	return parseConfig(text, dirname(resolve(file)));
 }
 
 /** Finds a lane by name, ignoring case; an exact match wins. Throws ConfigError listing the lanes otherwise. */

@@ -10,7 +10,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { installFrom, listVersions, removeVersion } from "../../src/install/install.ts";
 import { readStatus } from "../../src/lane/status-file.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
-import { builtRelease, bunReady, changedSince, installRelease, REPO, removeBuiltRelease } from "../release/support.ts";
+import { assertPiWhenRequired, builtRelease, bunReady, changedSince, installRelease, REPO, removeBuiltRelease } from "../release/support.ts";
 import { fakeModel, rpc } from "./host-rpc.ts";
 import { realRemoteRebuild, realRemoteTurn, streamReply, writeModels } from "./remote-real-support.ts";
 
@@ -65,6 +65,7 @@ const npmPi: string | null = (() => {
 	const path = join(REPO, "node_modules", ".bin", "pi");
 	return existsSync(path) && script(path) && spawnSync(path, ["--version"], { cwd: scratch, env: isolated(scratch), timeout: 30_000 }).status === 0 ? path : null;
 })();
+assertPiWhenRequired(process.env, npmPi);
 const LANE_DIR = resolve(fileURLToPath(new URL("../../src/lane", import.meta.url)));
 const PI_DIR = resolve(fileURLToPath(new URL("../../src/pi", import.meta.url)));
 const dirs: string[] = [];

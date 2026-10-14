@@ -52,6 +52,22 @@ describe("orrery", () => {
 		expect(runCli([])).toContain("Usage: orrery");
 	});
 
+	// A fresh install has no config anywhere: say where Orrery looks, not a raw ENOENT for the server path.
+	it.skipIf(existsSync("/etc/orrery/config.toml"))("status without any config says where Orrery looks and exits non-zero; an empty config lists no lanes", () => {
+		const home = tempDir("orrery-main-");
+		dirs.push(home);
+		const c = cliCommand(["status"]);
+		const env = { ...process.env, HOME: home, ORRERY_CONFIG: "", ORRERY_HOME: "" };
+		const none = spawnSync(c.cmd, c.args, { encoding: "utf8", env });
+		expect(none.status).not.toBe(0);
+		expect(none.stderr).toContain(`no Orrery config at ${join(home, ".orrery", "config.toml")}; run orrery to set one up`);
+		expect(none.stderr).not.toContain("/etc/orrery");
+		mkdirSync(join(home, ".orrery"));
+		writeFileSync(join(home, ".orrery", "config.toml"), "");
+		const empty = spawnSync(c.cmd, c.args, { encoding: "utf8", env });
+		expect({ status: empty.status, stdout: empty.stdout }).toEqual({ status: 0, stdout: "No lanes configured.\n" });
+	});
+
 	it("prints its version: a release's VERSION, or a checkout's package.json version and path", () => {
 		const { version } = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string };
 		// A built binary (ORRERY_TEST_BIN) is a release's bin/orrery: it prints that release's VERSION, not this checkout.

@@ -21,6 +21,13 @@ export function assertBunWhenRequired(env: NodeJS.ProcessEnv, ready: boolean, pi
 }
 assertBunWhenRequired(process.env, bunReady, PINNED_BUN);
 
+/** With ORRERY_REQUIRE_PI=1 (the release workflow's real-pi step), a missing npm pi is an error: the step must not pass with no test run. */
+export function assertPiWhenRequired(env: NodeJS.ProcessEnv, npmPi: string | null): void {
+	if (env.ORRERY_REQUIRE_PI === "1" && npmPi === null) {
+		throw new Error("ORRERY_REQUIRE_PI is set, but pi from node_modules/.bin/pi was not found or did not run --version");
+	}
+}
+
 let built: Promise<string> | undefined;
 let out: string | undefined;
 

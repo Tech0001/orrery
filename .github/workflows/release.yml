@@ -69,15 +69,21 @@ jobs:
           mkdir -p "serve/download/v$version" home
           cp dist/orrery-${{ matrix.target }}.tar.gz dist/SHA256SUMS "serve/download/v$version/"
           HOME="$PWD/home" ORRERY_VERSION="$version" ORRERY_RELEASES_URL="file://$PWD/serve" sh install.sh </dev/null
-          home/.orrery/app/current/bin/orrery --version | grep -qx "orrery $version"
-          home/.orrery/app/current/bin/orrery --help >/dev/null
-          HOME="$PWD/home" home/.orrery/app/current/bin/orrery status || true
+          : > home/.orrery/config.toml
+          orrery="$PWD/home/.orrery/app/current/bin/orrery"
+          HOME="$PWD/home" "$orrery" --version | grep -qx "orrery $version"
+          HOME="$PWD/home" "$orrery" --help >/dev/null
+          HOME="$PWD/home" "$orrery" status | grep -qx "No lanes configured."
       - name: Real pi loads the packed extension (Linux x64)
         if: matrix.target == 'linux-x64'
-        run: ORRERY_TEST_RELEASE="$(ls -d $PWD/dist/orrery-*-linux-x64)" npm test -- test/pi/real-pi.test.ts
+        run: |
+          rel=$(ls -d "$PWD"/dist/orrery-*-linux-x64)
+          test -n "$rel"
+          ORRERY_TEST_RELEASE="$rel" npm test -- test/pi/real-pi.test.ts
         env:
           ORRERY_REQUIRE_BUN: "1"
-      - run: gh release upload "$GITHUB_REF_NAME" dist/orrery-${{ matrix.target }}.tar.gz --repo "$GITHUB_REPOSITORY"
+          ORRERY_REQUIRE_PI: "1"
+      - run: gh release upload "$GITHUB_REF_NAME" dist/orrery-${{ matrix.target }}.tar.gz --repo "$GITHUB_REPOSITORY" --clobber
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -94,6 +100,6 @@ jobs:
           gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern 'orrery-*.tar.gz'
           sha256sum orrery-*.tar.gz > SHA256SUMS
           cat SHA256SUMS
-          gh release upload "$GITHUB_REF_NAME" SHA256SUMS ../install.sh --repo "$GITHUB_REPOSITORY"
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS ../install.sh --repo "$GITHUB_REPOSITORY" --clobber
         env:
           GH_TOKEN: ${{ github.token }}
