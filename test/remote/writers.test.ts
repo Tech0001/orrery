@@ -6,11 +6,13 @@ import { compactCommand, importCommitCommand } from "../../src/cli/commands.ts";
 import { restoreLane } from "../../src/lane/backup.ts";
 import { COMPACTOR_MODEL_KEY } from "../../src/lane/choices.ts";
 import { laneCompactorTarget } from "../../src/lane/compactor-target.ts";
+import { INSTRUCTIONS_MAX_BYTES, writeInstructions } from "../../src/lane/instructions.ts";
 import { readStatus } from "../../src/lane/status-file.ts";
 import { laneOpenHere } from "../../src/remote/read-copy.ts";
 import { Lane } from "../../src/lane/lane.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { attachRemoteStore, withBriefCheckOut } from "../../src/remote/checkout.ts";
+import { INSTRUCTIONS_KEY } from "../../src/remote/instructions-sync.ts";
 import * as remotes from "../../src/remote/index.ts";
 import { decodeRows, encodeSnapshot, laneSettings, snapshotBytes } from "../../src/remote/save-format.ts";
 import { seal, unseal } from "../../src/remote/crypto.ts";
@@ -119,6 +121,13 @@ describe("orrery run", () => {
 		await vi.waitFor(async () => expect(JSON.stringify(await rows())).toContain("remote run reply"));
 		await lane.close(); lane = undefined;
 		expect((await f.storage.list())[0].lock?.held).toBe(false);
+	});
+	it("sends the whole instructions.md, never only the 32 KB that reach the model", async () => {
+		const long = `${"a".repeat(INSTRUCTIONS_MAX_BYTES)}TAIL\n`;
+		writeInstructions(f.lane.dir, long);
+		lane = await Lane.open({ config: f.config, lane: "Test", models: fauxModels().models, context: ctx });
+		await lane.close(); lane = undefined;
+		expect((await rows()).map((r) => r.meta[INSTRUCTIONS_KEY]).filter((text) => text !== undefined)).toEqual([long]);
 	});
 	it("refuses a remotely held lane before starting the harness", async () => {
 		await held();

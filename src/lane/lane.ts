@@ -16,6 +16,7 @@ import {
 	ModelSummarizer,
 } from "../memory/index.ts";
 import { attachRemoteStore, checkOutLane, remoteOpenNotice } from "../remote/checkout.ts";
+import { INSTRUCTIONS_KEY } from "../remote/instructions-sync.ts";
 import type { RemoteSession } from "../remote/session.ts";
 import { holdWriterLock, type WriterLock } from "../memory/store.ts";
 import { findLane, type HarnessConfig, type LaneConfig, type ModelChoice, parseModelChoice } from "./config.ts";
@@ -24,7 +25,7 @@ import { AGENT_MODEL_KEY, COMPACTOR_MODEL_KEY, storedChoice } from "./choices.ts
 import { createLaneEnv, type LaneEnv } from "./env.ts";
 import { memoryExtension } from "./extension.ts";
 import { guardExtension } from "./guard.ts";
-import { cutNotice, readInstructions } from "./instructions.ts";
+import { cutNotice, readInstructions, readInstructionsText } from "./instructions.ts";
 import { laneViews } from "./guard-paths.ts";
 import { compactorModel, createLaneModels, modelContextWindow, savedSummaryLoginsOnly } from "./models.ts";
 import { Projector } from "./projector.ts";
@@ -193,11 +194,16 @@ export class Lane {
 			// A lane with no default folder works where `orrery run` started (only a local lane may lack one).
 			const workspace = config.workspace ?? process.cwd();
 			const env = createLaneEnv(config.host, workspace, options.config.sshDir, context);
-			// The lane's instructions.md, read as pi and OMP read it: a missing or blank file is none (memory only). The store's
-			// copy follows the file, cleared when it reads none, so it never stands in for instructions taken away.
+			// The lane's instructions.md, read as pi and OMP read it: a missing or blank file is none (memory only). A local
+			// lane's store keeps a copy of the whole file, cleared when it reads none, so it never stands in for instructions
+			// taken away. A remote lane's copy is what travels to other machines: its check-out and close settle it
+			// (src/remote/instructions-sync.ts), never this read, so a missing file or the 32 KB cut never travels.
 			const found = readInstructions(config.dir);
 			const instructions = found?.text ?? "";
-			if ((store.getMeta("instructions") ?? "") !== instructions) store.setMeta("instructions", instructions);
+			if (config.remote === undefined) {
+				const whole = readInstructionsText(config.dir) ?? "";
+				if ((store.getMeta(INSTRUCTIONS_KEY) ?? "") !== whole) store.setMeta(INSTRUCTIONS_KEY, whole);
+			}
 			const registry = createRegistry();
 			registry.install(CodingTools);
 			registry.install(memoryExtension({ view, instructions: () => instructions }));

@@ -5,7 +5,7 @@
  * this file.
  */
 
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { writePrivate } from "./private-file.ts";
 
@@ -63,6 +63,38 @@ export function readInstructions(laneDir: string): Instructions | undefined {
 		return undefined;
 	} finally {
 		closeSync(fd);
+	}
+}
+
+/**
+ * The whole file as it travels with a remote agent's memory to other machines (no cut): its text, "" when it is blank,
+ * or undefined when there is no file. Something else in its place, or a file that can't be read, throws: it is never
+ * replaced. As in readInstructions, a FIFO never makes it wait.
+ */
+export function readWholeInstructions(laneDir: string): string | undefined {
+	let fd: number;
+	try {
+		fd = openSync(instructionsPath(laneDir), constants.O_RDONLY | constants.O_NONBLOCK);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+	try {
+		if (!fstatSync(fd).isFile()) throw new Error(`${INSTRUCTIONS_FILE} is not a file`);
+		const text = readFileSync(fd, "utf8");
+		return text.trim() === "" ? "" : text;
+	} finally {
+		closeSync(fd);
+	}
+}
+
+/** The whole file (no cut), or undefined when it is missing, unreadable or blank: what travels to other machines. */
+export function readInstructionsText(laneDir: string): string | undefined {
+	try {
+		const text = readWholeInstructions(laneDir);
+		return text === "" ? undefined : text;
+	} catch {
+		return undefined;
 	}
 }
 

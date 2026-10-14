@@ -13,6 +13,7 @@ import { holdWriterLock, MemoryStore, type StoreMarks, type StoreRows, type Writ
 import { processAlive } from "../lane/process.ts";
 import { writePrivate } from "../lane/private-file.ts";
 import { seal, unseal } from "./crypto.ts";
+import { agreeOn, INSTRUCTIONS_KEY, instructionsIntoStore, pushInstructions, type SettledInstructions, settleInstructions } from "./instructions-sync.ts";
 import { assertWrittenThrough, decodeRows, decodeSnapshot, encodeRows, encodeSnapshot, type LaneSettings, LOCAL_META_KEYS, makeHeader, restoreSnapshot, type SaveHeader, snapshotBytes } from "./save-format.ts";
 import {
 	type FetchResult,
@@ -183,6 +184,10 @@ export class RemoteSession {
 	/** Set after a forced take: the first save names the machine it took the lane from. */
 	#takeoverFrom: string | undefined;
 	#store: MemoryStore | undefined;
+	/** The hash of the instructions the check-out settled the file and the store on; undefined when that failed. */
+	#instructions: string | undefined;
+	/** The hash of this machine's instructions put into the store, agreed on once a save carrying them is acknowledged. */
+	#instructionsSent: string | undefined;
 	#unacked: Unacked | undefined;
 	/** A snapshot not yet acknowledged: still valid (it covers saves 1..n), sealed once and retried with the same bytes. */
 	#pendingSnapshot: { readonly n: number; readonly sealed: Uint8Array; readonly sha256: string } | undefined;
@@ -236,7 +241,10 @@ export class RemoteSession {
 			const pending = pendingTakeover(o.laneDir);
 			const takeover = { from: takeoverFrom ?? pending };
 			const position = await bringUpToDate(o, lock, takeover);
+			const settled = settleAfterCheckOut(o);
 			const session = new RemoteSession(o, lock, position, takeover.from);
+			session.#instructions = settled?.hash;
+			session.#instructionsSent = settled?.sent;
 			writeState(o.laneDir, session.#state());
 			if (pending !== undefined) rmSync(join(o.laneDir, TAKEOVER_FILE));
 			OPEN_HERE.add(openKey(storage, lane));
@@ -266,6 +274,13 @@ export class RemoteSession {
 			throw error;
 		}
 		try {
+			// A first push sends this machine's instructions.md as the agent's (none when there is no file).
+			let instructions: string;
+			try {
+				instructions = pushInstructions(store, o.laneDir);
+			} catch (error) {
+				throw new Error(`${lane}'s instructions.md can't be read (${error instanceof Error ? error.message : String(error)}); fix or remove it, then push again.`, { cause: error });
+			}
 			const taken = await storage.take(lane, o.holder, { force: true });
 			if (!taken.ok) throw new RemoteError("held", heldMessage(lane, taken.held));
 			let pushed = false;
@@ -277,6 +292,11 @@ export class RemoteSession {
 				await storage.snapshot(lane, taken.lock, 0, sealed);
 				pushed = true;
 				writeState(o.laneDir, { v: 1, remote: storage.name, lock: taken.lock, save: 0, sha256: "", marks, snapshotAt: 0, snapshotSha: sha256(sealed), bytesSinceSnapshot: 0 });
+				try {
+					agreeOn(o.laneDir, instructions);
+				} catch {
+					// The next check-out finds the file and the remote equal, and agrees then.
+				}
 			} finally {
 				// A lane without its first snapshot can't be opened anywhere: take it off the remote again.
 				if (!pushed) await storage.drop(lane, taken.lock).catch(() => {});
@@ -329,6 +349,7 @@ export class RemoteSession {
 		this.#timer = undefined;
 		try {
 			if (!this.#lost) {
+				this.#instructionsIntoStore();
 				await this.save();
 				if (!this.#lost) {
 					try {
@@ -342,6 +363,31 @@ export class RemoteSession {
 			this.#closed = true;
 			this.#store = undefined;
 			OPEN_HERE.delete(openKey(this.#o.storage, this.#o.lane));
+		}
+	}
+
+	/** This session's own edit of instructions.md goes up with its last save; when that fails, the next check-out compares again. */
+	#instructionsIntoStore(): void {
+		const store = this.#store;
+		const settled = this.#instructions;
+		if (store === undefined || settled === undefined) return;
+		try {
+			const sent = instructionsIntoStore(store, this.#o.laneDir, settled);
+			if (sent !== undefined) this.#instructionsSent = sent;
+		} catch {
+			// The file stays as it is; the next check-out compares it again.
+		}
+	}
+
+	/** This machine's instructions, in a save the remote has acknowledged: the file and the remote agree on them now. */
+	#agreeSent(): void {
+		const sent = this.#instructionsSent;
+		if (sent === undefined || this.#marks.meta[INSTRUCTIONS_KEY] !== sent) return;
+		this.#instructionsSent = undefined;
+		try {
+			agreeOn(this.#o.laneDir, sent);
+		} catch {
+			// The next check-out finds the file and the remote equal, and agrees then.
 		}
 	}
 
@@ -405,6 +451,7 @@ export class RemoteSession {
 			this.#save = pending.n;
 			this.#sha = pending.sha256;
 			this.#marks = pending.next;
+			this.#agreeSent();
 			this.#bytesSinceSnapshot += pending.file.length;
 			writeState(this.#o.laneDir, this.#state());
 			this.#status = { remote: storage.name, state: "saved", savedAt: hhmm(this.#now()) };
@@ -483,6 +530,24 @@ async function take(o: RemoteSessionOptions): Promise<{ lock: number; takeoverFr
 
 function positionOf(state: SessionState): Position {
 	return { save: state.save, sha256: state.sha256, marks: state.marks, snapshotAt: state.snapshotAt, snapshotSha: state.snapshotSha, bytesSinceSnapshot: state.bytesSinceSnapshot };
+}
+
+/**
+ * instructions.md against the store's copy, now that the store is the remote's newest (src/remote/instructions-sync.ts).
+ * A failure is said and changes nothing: the memory opens as usual.
+ */
+function settleAfterCheckOut(o: RemoteSessionOptions): SettledInstructions | undefined {
+	try {
+		const store = MemoryStore.open(join(o.laneDir, DB_FILE), o.writer);
+		try {
+			return settleInstructions(store, o.laneDir, o.lane, (o.now ?? Date.now)(), (message) => guarded(() => o.report(message)));
+		} finally {
+			store.close();
+		}
+	} catch (error) {
+		guarded(() => o.report(`Orrery: ${o.lane}'s instructions could not be brought up to date (${error instanceof Error ? error.message : String(error)}); its memory opens as usual.`));
+		return undefined;
+	}
 }
 
 /** Fetch and apply, keeping this machine's unsaved rows: pushed when nobody saved since, else kept aside. */
