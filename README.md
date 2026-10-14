@@ -161,12 +161,13 @@ are encrypted with a recovery code you keep. See [remote lane setup and commands
 
 Orrery's credential guard refuses agents' file tools anywhere in `~/.orrery` except the installed program (`app/`)
 and reading `config.toml`, and it checks other known sensitive paths and supported tool arguments. No tool may change
-`config.toml`. Shell commands that name `~/.orrery` are refused unless they point at `app/` or, by its full path, the
-agent's own `view.md`. Only the agent that owns a folder's memory view (`.orrery/view.md`, which Claude Code's file mode
-imports) may read it: other agents' file tools, content searches and plainly written shell commands are refused. In
-Claude Code, a config that is there but cannot be read refuses every tool call until it is fixed. **It is not a
-sandbox**: shell code, unknown plugin tools and host hook failures can exceed its coverage. See each tool guide for
-limits.
+the config in use (`config.toml`, or the file `ORRERY_CONFIG` names), and shell commands may not name it. Shell
+commands that name `~/.orrery` are refused unless they point at `app/` or, by its full path, the agent's own
+`view.md`. Only the agent that owns a folder's memory view (`.orrery/view.md`, which Claude Code's file mode imports)
+may read it: other agents' file tools, content searches and plainly written shell commands are refused. A config that
+is there but cannot be read refuses every tool call in Claude Code, and leaves pi and OMP with the default guard (the
+session's folder as its work area). **It is not a sandbox**: shell code, unknown plugin tools and host hook failures
+can exceed its coverage. See each tool guide for limits.
 
 Credentials are stored outside the repository in private files with mode 0600. Enter keys through Logins or the
 hidden terminal prompt, never in chat or committed config. Keep real conversations, exports, backup settings and

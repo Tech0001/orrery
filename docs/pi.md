@@ -198,8 +198,9 @@ still applies to it. Close the first one, or work in it.
 
 ## Limits
 
-- No memory without a good config. A malformed config file shows a warning ("running without memory") and pi runs
-  as usual.
+- No memory without a good config. A malformed config file shows a warning ("running without memory"), and pi runs
+  with the default guard on: its folder is the only place it may write, and credentials stay out. With no config file
+  at all, pi runs as usual.
 - pi's own compaction is cancelled in lanes. The memory view replaces it. The one exception is overflow recovery:
   if the model's window overflows, pi may compact once to recover.
 - The path guard judges a path the way pi's tools resolve it (`~`, a leading `@`, `file://`, relative to pi's cwd)
