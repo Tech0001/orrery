@@ -44,6 +44,15 @@ describe("laneOverview", () => {
 		expect(b).toMatchObject({ name: "B", tool: "codex", toolSet: true, state: "closed" });
 	});
 
+	it("gives a lane without a workspace a row without one", () => {
+		const dir = tempDir("orrery-overview-");
+		dirs.push(dir);
+		const config = parseConfig(`data_dir = ${JSON.stringify(join(dir, "data"))}\n[lanes.Nomad]\ncompactor_model = "openai/gpt-6.1-sol"\n`, dir);
+		const [nomad] = laneOverview(config, { now: NOW, alive });
+		expect(nomad).toMatchObject({ name: "Nomad", state: "closed", hasMemory: false });
+		expect(Object.keys(nomad)).not.toContain("workspace");
+	});
+
 	it("reads a fresh pi status as open or working, with its trouble in plain words", () => {
 		const { config, laneDir } = setup();
 		writeFileSync(join(laneDir, "status.json"), JSON.stringify(status({ busy: true, trouble: { state: "failing", plain: "quota\x1b]0;x\x07 reached" } })));

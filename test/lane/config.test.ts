@@ -111,6 +111,21 @@ describe("parseConfig", () => {
 		expect(() => parseConfig(`[hosts.local]\nhost = "h"\nidentity_file = "k"\n`, "/x")).toThrow(/reserved/);
 		expect(() => parseConfig(`[lanes.A]\nworkspace = "/w"\nmodel = "a/b"\nnode_bytes = 10\n`, "/x")).toThrow(/nodeBytes/);
 	});
+
+	it("takes a lane without a workspace: no allowed roots unless set, and laneForCwd never picks it", () => {
+		const config = parseConfig(`[lanes.Nomad]\ncompactor_model = "openai/gpt-6.1-sol"\n[lanes.Rooted]\ncompactor_model = "openai/gpt-6.1-sol"\nallowed_roots = ["/srv"]\n`, "/d");
+		const nomad = config.lanes.get("Nomad")!;
+		expect(nomad.workspace).toBeUndefined();
+		expect(nomad.allowedRoots).toEqual([]);
+		expect(config.lanes.get("Rooted")?.allowedRoots).toEqual(["/srv"]);
+		expect(laneForCwd(config, "/")).toBeUndefined();
+		expect(laneForCwd(config, "/srv")).toBeUndefined();
+	});
+
+	it("needs a workspace for a lane on an SSH host", () => {
+		const text = `[hosts.box]\nhost = "box.invalid"\nidentity_file = "ssh/id"\n[lanes.Far]\nhost = "box"\ncompactor_model = "openai/gpt-6.1-sol"\n`;
+		expect(() => parseConfig(text, "/d")).toThrow("lanes.Far: a lane on an SSH host needs a workspace");
+	});
 });
 
 describe("[updates]", () => {

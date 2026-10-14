@@ -85,6 +85,19 @@ describe("orrery import and browse", () => {
 		expect(readFileSync(join(dir, "out", "report.md"), "utf8")).toContain("needs review: 1");
 	});
 
+	it("finds no history by folder for a lane without a workspace: only the files named", async () => {
+		const { dir, config, claude, codex } = fixture();
+		const text = readFileSync(config, "utf8").replace(/^workspace = .*\n/m, "").replace(/^allowed_roots = .*\n/m, "");
+		const nomad = parseConfig(text, dir);
+		expect(nomad.lanes.get("Test")?.workspace).toBeUndefined();
+		const options = { codex, notes: [], pasteThreshold: 1200, split: false, out: join(dir, "out") };
+		const none = await importDryRunCommand(nomad, "Test", options, fauxModels().models);
+		expect(none).toContain("Claude: 0 turns from 0 files");
+		expect(none).toContain("Codex: 0 turns from 0 sessions");
+		const named = await importDryRunCommand(nomad, "Test", { ...options, claude, out: join(dir, "out2") }, fauxModels().models);
+		expect(named).toContain("Claude: 1 turns from 1 files");
+	});
+
 	it("fails fast on an unknown split model, and stops after three split errors in a row", async () => {
 		const { dir, config, claude, codex } = fixture();
 		const text = readFileSync(config, "utf8");

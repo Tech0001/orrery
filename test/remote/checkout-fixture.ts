@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseConfig } from "../../src/lane/config.ts";
+import { type LaneConfig, parseConfig } from "../../src/lane/config.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { createKey, keyToCode } from "../../src/remote/crypto.ts";
 import { FakeStorage } from "../../src/remote/fake.ts";
@@ -19,7 +19,7 @@ export async function checkoutFixture() {
 kind = "cloudflare"
 url = "https://example.invalid"
 `, root);
-	const lane = config.lanes.get("Test")!;
+	const lane = config.lanes.get("Test") as LaneConfig & { readonly workspace: string };
 	const key = createKey();
 	saveRemoteSecret(config, "home", { key: keyToCode(key), token: "fake-token" });
 	const clock = { value: Date.now() };

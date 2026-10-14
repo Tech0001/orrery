@@ -36,7 +36,8 @@ export interface LaneRow {
 	readonly state: LaneState;
 	/** The tool that has the lane open, when one does. */
 	readonly openIn?: "pi" | "omp" | "claude-code";
-	readonly workspace: string;
+	/** The lane's default folder; absent: it opens wherever it is opened. */
+	readonly workspace?: string;
 	readonly dataDir: string;
 	readonly hasMemory: boolean;
 	readonly messages: number;
@@ -209,7 +210,7 @@ function unreadableFields(lane: LaneConfig, reason: string) {
 /** The row for a lane that threw while being read: closed, its config's facts, and the reason. */
 function unreadableRow(lane: LaneConfig, error: unknown): LaneRow {
 	return {
-		name: lane.name, launcher: lane.launcher ?? "direct", ...(lane.oriModel === undefined ? {} : { oriModel: lane.oriModel }), tool: lane.tool ?? "pi", toolSet: lane.tool !== undefined, state: "closed", workspace: lane.workspace, dataDir: lane.dir,
+		name: lane.name, launcher: lane.launcher ?? "direct", ...(lane.oriModel === undefined ? {} : { oriModel: lane.oriModel }), tool: lane.tool ?? "pi", toolSet: lane.tool !== undefined, state: "closed", ...(lane.workspace === undefined ? {} : { workspace: lane.workspace }), dataDir: lane.dir,
 		summaryContextBytes: lane.compactor.contextBytes ?? COMPACTION_VIEW_BYTES, summaryJobs: lane.compactor.jobs, compactAt: lane.compactAt, reads: lane.reads,
 		...unreadableFields(lane, shown(errorText(error))),
 	};
@@ -236,7 +237,7 @@ function laneRow(lane: LaneConfig, now: number, cache: OverviewCache, alive: (pi
 		state,
 		...(openIn === undefined ? {} : { openIn }),
 		...(openIn === undefined || (state !== "open" && state !== "working") || status?.version === undefined ? {} : { runsVersion: status.version }),
-		workspace: lane.workspace,
+		...(lane.workspace === undefined ? {} : { workspace: lane.workspace }),
 		dataDir: lane.dir,
 		summaryContextBytes: lane.compactor.contextBytes ?? COMPACTION_VIEW_BYTES,
 		summaryJobs: lane.compactor.jobs,

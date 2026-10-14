@@ -80,11 +80,19 @@ describe("launchPlan and runTool", () => {
 		expect(plan.steps.map((s) => s.fix)).toEqual(["claude-setup"]);
 	});
 
+	it("opens a lane without a folder in the current folder, with nothing to create", () => {
+		const { config, row, tools } = setup("codex");
+		const { workspace: _, ...bare } = row;
+		const plan = launchPlan(config, bare, tools);
+		expect(plan.cwd).toBe(process.cwd());
+		expect(plan.steps).toEqual([{ text: "Codex has no Orrery memory yet: this session won't be recorded.", confirm: false }]);
+	});
+
 	it("blocks when the tool is not on PATH, and offers to create a missing folder", () => {
-		const { config, row, env } = setup("pi");
+		const { config, row, env, ws } = setup("pi");
 		const noTools = checkTools({ root: orreryRoot(), env: { ...env, PATH: "/nonexistent" } });
 		expect(launchPlan(config, row, noTools).blocked).toBe('pi is not on PATH (looked for "pi"). Get it at https://pi.dev, or change the lane\'s tool with E.');
-		const gone = { ...row, workspace: join(row.workspace, "missing") };
+		const gone = { ...row, workspace: join(ws, "missing") };
 		const plan = launchPlan(config, gone, checkTools({ root: orreryRoot(), env }));
 		expect(plan.steps[0]).toEqual({ text: `The folder ${gone.workspace} does not exist. Create it?`, confirm: true, fix: "create-folder" });
 		applyFix("create-folder", config, gone, []);

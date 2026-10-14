@@ -62,7 +62,11 @@ export interface LaneConfig {
 	readonly name: string;
 	readonly dir: string;
 	readonly host: HostConfig;
-	readonly workspace: string;
+	/**
+	 * The lane's default folder: where the TUI opens it, and how a session started in it finds it (src/lane/pick.ts).
+	 * Absent: the lane opens only by name (ORRERY_AGENT), in whatever folder it is opened.
+	 */
+	readonly workspace?: string;
 	readonly instructions: string;
 	readonly allowedRoots: readonly string[];
 	/** The tool the lane is launched in; undefined when the config does not say (the TUI then guesses). */
@@ -268,8 +272,9 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 		const hostName = str(t, "host", where, "local");
 		const host = hosts.get(hostName);
 		if (host === undefined) throw new ConfigError(`${where}: unknown host "${hostName}"`);
-		const workspace = str(t, "workspace", where);
-		if (!posix.isAbsolute(workspace)) throw new ConfigError(`${where}.workspace must be absolute`);
+		const workspace = optStr(t, "workspace", where);
+		if (workspace !== undefined && !posix.isAbsolute(workspace)) throw new ConfigError(`${where}.workspace must be absolute`);
+		if (workspace === undefined && host.kind !== "local") throw new ConfigError(`${where}: a lane on an SSH host needs a workspace`);
 		const modelRef = optStr(t, "model", where);
 		const model = modelRef === undefined ? undefined : parseModelChoice(modelRef, str(t, "thinking", where, "medium"), `${where}.model`);
 		const compactorRef = t.compactor_model === undefined && model !== undefined ? `${model.provider}/${model.modelId}` : str(t, "compactor_model", where);
@@ -295,9 +300,9 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 			name,
 			dir: join(dataDir, "lanes", name),
 			host,
-			workspace,
+			...(workspace === undefined ? {} : { workspace }),
 			instructions: str(t, "instructions", where, "AGENTS.md"),
-			allowedRoots: (roots as string[] | undefined) ?? [posix.dirname(workspace)],
+			allowedRoots: (roots as string[] | undefined) ?? (workspace === undefined ? [] : [posix.dirname(workspace)]),
 			launcher,
 			...(oriModel === undefined ? {} : { oriModel }),
 			...(tool === undefined ? {} : { tool: tool as LaneTool }),
@@ -332,14 +337,18 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 	};
 }
 
+/** A lane with a default folder: the only kind a folder can find. */
+type Rooted = { readonly workspace: string };
+const rooted = <T extends { readonly workspace?: string }>(lane: T): lane is T & Rooted => lane.workspace !== undefined;
+
 /**
  * The lane whose workspace is cwd or contains it; the deepest workspace wins. Paths are compared with symlinks followed:
  * pi and Claude Code report the physical folder, and a workspace may be configured through a symlink (on macOS, /tmp and
  * /var are links into /private), even one that points inside another lane's workspace. Only when that finds no lane are
- * the paths compared as written (a folder not made yet).
+ * the paths compared as written (a folder not made yet). A lane without a workspace is never found by folder.
  */
 export function laneForCwd(config: HarnessConfig, cwd: string): LaneConfig | undefined {
-	const lanes = [...config.lanes.values()];
+	const lanes = [...config.lanes.values()].filter(rooted);
 	const roots = lanes.map(realRoot);
 	const here = resolve(cwd);
 	// A cwd that is a workspace's real path is physical already: no realpath call for it.
@@ -347,11 +356,24 @@ export function laneForCwd(config: HarnessConfig, cwd: string): LaneConfig | und
 	return deepest(lanes, roots, physical) ?? deepest(lanes, lanes.map((lane) => resolve(lane.workspace)), here);
 }
 
+/**
+ * Whether `dir` is the lane's workspace or inside it, compared as laneForCwd compares: symlinks followed, else as
+ * written. False for a lane without a workspace.
+ */
+export function inWorkspace(lane: { readonly workspace?: string }, dir: string): boolean {
+	if (!rooted(lane)) return false;
+	const here = resolve(dir);
+	return holds(realRoot(lane), realOrResolved(here)) || holds(resolve(lane.workspace), here);
+}
+
+/** Whether `here` is `root` or inside it. */
+const holds = (root: string, here: string) => here === root || here.startsWith(`${root}/`);
+
 function deepest(lanes: LaneConfig[], roots: string[], here: string): LaneConfig | undefined {
 	let best: number | undefined;
 	for (let i = 0; i < lanes.length; i++) {
 		const root = roots[i];
-		if ((here === root || here.startsWith(`${root}/`)) && (best === undefined || root.length > roots[best].length)) best = i;
+		if (holds(root, here) && (best === undefined || root.length > roots[best].length)) best = i;
 	}
 	return best === undefined ? undefined : lanes[best];
 }
@@ -360,9 +382,9 @@ function deepest(lanes: LaneConfig[], roots: string[], here: string): LaneConfig
  * Each lane's workspace with symlinks followed, kept once found (a link changed later counts once the config is loaded
  * again). A workspace not made yet is tried again on the next call.
  */
-const realRoots = new WeakMap<LaneConfig, string>();
+const realRoots = new WeakMap<Rooted, string>();
 
-function realRoot(lane: LaneConfig): string {
+function realRoot(lane: Rooted): string {
 	const known = realRoots.get(lane);
 	if (known !== undefined) return known;
 	try {

@@ -30,7 +30,7 @@ describe("throwaway demo", () => {
 		const config = deps.loadConfig();
 		expect(config.lanes.size).toBe(5);
 		expect(new Set([...config.lanes.values()].map((lane) => lane.tool))).toEqual(new Set(["pi", "claude-code", "omp", "codex"]));
-		for (const path of [demo.configPath, config.dataDir, config.credentialsPath, config.deviceIdPath, ...[...config.lanes.values()].flatMap((lane) => [lane.dir, lane.workspace])]) expect(path.startsWith(`${root}/`)).toBe(true);
+		for (const path of [demo.configPath, config.dataDir, config.credentialsPath, config.deviceIdPath, ...[...config.lanes.values()].flatMap((lane) => [lane.dir, lane.workspace ?? "(no workspace)"])]) expect(path.startsWith(`${root}/`)).toBe(true);
 		const rows = deps.overview(config);
 		expect(new Set(rows.map((row) => row.state))).toEqual(new Set(["working", "open", "closed"]));
 		expect(rows.filter((row) => row.summary.state === "failing")).toHaveLength(1);

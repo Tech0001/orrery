@@ -114,6 +114,14 @@ describe("addLane", () => {
 		expect(() => addLane(BASE, "/x", { ...lane, workspace: "rel/dir" })).toThrow("The folder must be an absolute path.");
 	});
 
+	it("adds a lane with no workspace, and clears a workspace with an empty value", () => {
+		const added = addLane("", "/d", { name: "Nomad", compactorModel: "openai/gpt-6.1-sol", compactorThinking: "low" });
+		expect(added).not.toContain("workspace");
+		const set = setLaneKey(added, "/d", "Nomad", "workspace", "/w/nomad");
+		expect(parseConfig(set, "/d").lanes.get("Nomad")?.workspace).toBe("/w/nomad");
+		expect(parseConfig(setLaneKey(set, "/d", "Nomad", "workspace", ""), "/d").lanes.get("Nomad")?.workspace).toBeUndefined();
+	});
+
 	it("starts a new config with a header and a data folder", () => {
 		const next = addLane(newConfigText("~/.local/share/orrery"), "/x", lane);
 		const config = parseConfig(next, "/x");

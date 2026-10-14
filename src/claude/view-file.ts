@@ -167,7 +167,7 @@ export type LaneMode = "mod" | "file" | "none";
 /** "none" when the marker is missing, malformed or names another workspace; "mod" when it says mod; else "file". */
 export function laneMode(lane: LaneConfig): LaneMode {
 	const marker = readSetupMarker(lane.dir);
-	if (marker === undefined || !samePath(marker.workspace, lane.workspace)) return "none";
+	if (marker === undefined || lane.workspace === undefined || !samePath(marker.workspace, lane.workspace)) return "none";
 	return marker.file === "mod" ? "mod" : "file";
 }
 
@@ -189,7 +189,7 @@ export function messageCount(lane: LaneConfig): number | undefined {
  */
 export function markedHere(lane: LaneConfig): boolean {
 	const marker = readSetupMarker(lane.dir);
-	return marker !== undefined && samePath(marker.workspace, lane.workspace);
+	return marker !== undefined && lane.workspace !== undefined && samePath(marker.workspace, lane.workspace);
 }
 
 /**
@@ -198,7 +198,7 @@ export function markedHere(lane: LaneConfig): boolean {
  * Returns whether it deleted one.
  */
 export function takeOutView(lane: LaneConfig): boolean {
-	return markedHere(lane) && deleteView(lane.workspace);
+	return lane.workspace !== undefined && markedHere(lane) && deleteView(lane.workspace);
 }
 
 /**
@@ -210,14 +210,15 @@ export function takeOutView(lane: LaneConfig): boolean {
 export function withdrawView(lane: LaneConfig): void {
 	const marker = readSetupMarker(lane.dir);
 	if (marker === undefined) return;
-	if (samePath(marker.workspace, lane.workspace)) deleteView(lane.workspace);
+	if (lane.workspace !== undefined && samePath(marker.workspace, lane.workspace)) deleteView(lane.workspace);
 	removeSetupMarker(lane.dir);
 }
 
 /** The marker's file still imports the view, and nothing planted at .orrery would misdirect the write. */
 function viewWanted(lane: LaneConfig, file: SetupFile): boolean {
-	if (!importsView(join(lane.workspace, file))) return false;
-	return ownFolder(dirname(viewFile(lane.workspace))) !== false;
+	const workspace = lane.workspace;
+	if (workspace === undefined || !importsView(join(workspace, file))) return false;
+	return ownFolder(dirname(viewFile(workspace))) !== false;
 }
 
 /** Whether the view may be written now, and when not because of git, what happened to it. */
@@ -257,18 +258,19 @@ export interface ViewGate {
 export function viewGate(lane: LaneConfig): ViewGate {
 	try {
 		const marker = readSetupMarker(lane.dir);
-		if (marker === undefined || !samePath(marker.workspace, lane.workspace) || !existsSync(lane.workspace)) return { open: false };
+		const workspace = lane.workspace;
+		if (marker === undefined || workspace === undefined || !samePath(marker.workspace, workspace) || !existsSync(workspace)) return { open: false };
 		// Mod mode (spec 2026-10-08-claude-code-mod §4.6): the Orrery mod puts the view in the system prompt, so no view
 		// file is written, and one left from file mode is deleted.
 		if (marker.file === "mod") {
 			try {
-				return { open: false, mod: true, removed: deleteUntrackedView(lane.workspace) };
+				return { open: false, mod: true, removed: deleteUntrackedView(workspace) };
 			} catch (error) {
 				// A view that cannot be deleted now is tried again at the next gate.
 				return { open: false, mod: true, failed: errorText(error) };
 			}
 		}
-		const exposure = gitExposure(lane.workspace);
+		const exposure = gitExposure(workspace);
 		if (exposure?.kind === "unchecked") return { open: false, unchecked: exposure.reason, removed: takeOutView(lane) };
 		if (exposure !== undefined) {
 			try {
@@ -297,7 +299,7 @@ export function viewGate(lane: LaneConfig): ViewGate {
 export function writeViewFile(lane: LaneConfig, view: MemoryView, onGate?: (gate: ViewGate) => void): boolean {
 	const gate = viewGate(lane);
 	onGate?.(gate);
-	if (!gate.open) return false;
+	if (!gate.open || lane.workspace === undefined) return false;
 	writePrivate(viewFile(lane.workspace), memorySection(view, "claude-code"));
 	return true;
 }

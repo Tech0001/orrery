@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { installFrom, listVersions, removeVersion } from "../../src/install/install.ts";
+import { newToken } from "../../src/lane/pick.ts";
 import { readStatus } from "../../src/lane/status-file.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { assertPiWhenRequired, builtRelease, changedSince, installRelease, REPO, releaseReady, removeBuiltRelease } from "../release/support.ts";
@@ -218,6 +219,97 @@ export default function (pi) {
 			pi: expect.arrayContaining(["session_start", "before_agent_start", "context", "message_end", "agent_end", "session_before_compact"]),
 			omp: ["session_start"],
 		});
+	}, 90_000);
+});
+
+/**
+ * ORRERY_AGENT in a real pi: the named lane opens in a folder outside its workspace, and the ORRERY_AGENT_TOKEN claim
+ * names that pi's own process, so a second pi started with the same variables (a tool the agent ran) is not the agent.
+ */
+describe.skipIf(pi === null)("ORRERY_AGENT inside a real pi", () => {
+	it("opens the named lane in a plain folder and records there; a second pi with the same token is not the agent", async () => {
+		const root = mkdtempSync(join(tmpdir(), "orrery-agent-pi-"));
+		const model = await fakeModel("pong");
+		try {
+			const home = join(root, "home");
+			const plain = join(root, "plain");
+			const agentDir = join(home, ".pi", "agent");
+			const orreryHome = join(home, ".orrery");
+			for (const dir of [agentDir, plain, orreryHome]) mkdirSync(dir, { recursive: true });
+			writeModels(agentDir, "pi", model.baseUrl);
+			const data = join(root, "data");
+			writeFileSync(
+				join(orreryHome, "config.toml"),
+				[
+					`data_dir = ${JSON.stringify(data)}`,
+					"[[providers]]",
+					'id = "local"',
+					`base_url = ${JSON.stringify(model.baseUrl)}`,
+					"[[providers.models]]",
+					'id = "m"',
+					'name = "m"',
+					"context_window = 128000",
+					"max_tokens = 4096",
+					"reasoning = false",
+					"[lanes.Probe]",
+					`workspace = ${JSON.stringify(join(root, "agent-Probe"))}`,
+					'tool = "pi"',
+					'compactor_model = "local/m"',
+					'compactor_thinking = "off"',
+					"",
+				].join("\n"),
+				{ mode: 0o600 },
+			);
+			const token = newToken();
+			const env = { ...isolated(home), ORRERY_HOME: orreryHome, PI_CODING_AGENT_DIR: agentDir, ORRERY_AGENT: "Probe", ORRERY_AGENT_TOKEN: token };
+			const laneDir = join(data, "lanes", "Probe");
+			const rows = () => {
+				if (!existsSync(join(laneDir, "memory.sqlite"))) return [];
+				const store = MemoryStore.openReadOnly(join(laneDir, "memory.sqlite"));
+				try {
+					return store.root.map((m) => `${m.kind}: ${m.text}`);
+				} finally {
+					store.close();
+				}
+			};
+			const start = () => {
+				const child = spawn(pi as string, ["--mode", "rpc", "--provider", "local", "--model", "m", "--thinking", "off", "-ne", "-e", join(PI_DIR, "index.ts")], { cwd: plain, env });
+				const exited = new Promise<void>((done) => child.on("close", () => done()));
+				return { child, exited, ...rpc(child) };
+			};
+			const stop = async (run: ReturnType<typeof start>) => {
+				run.child.stdin.end();
+				const kill = setTimeout(() => run.child.kill("SIGKILL"), 10_000);
+				await run.exited;
+				clearTimeout(kill);
+			};
+			const agent = start();
+			try {
+				await agent.waitFor((f) => f.method === "setStatus" && f.statusKey === "orrery" && f.statusText === "Orrery · Probe · 0 msgs");
+				expect(readFileSync(join(laneDir, "claims", token), "utf8")).toBe(`${agent.child.pid}\n`);
+				await agent.send({ type: "prompt", message: "The codename is Cedar." });
+				await agent.waitFor((f) => f.type === "agent_end");
+				const deadline = Date.now() + 30_000;
+				while (rows().length < 2 && Date.now() < deadline) await delay(50);
+				expect(rows()).toEqual(["user: The codename is Cedar.", "talk: pong"]);
+				const tool = start();
+				try {
+					await tool.send({ type: "prompt", message: "Said by a tool the agent started." });
+					await tool.waitFor((f) => f.type === "agent_end");
+					expect(tool.frames.filter((f) => f.method === "setStatus" && f.statusKey === "orrery")).toEqual([]);
+				} finally {
+					await stop(tool);
+				}
+				expect(rows()).toEqual(["user: The codename is Cedar.", "talk: pong"]);
+				expect(`${agent.stderr()}\n${JSON.stringify(agent.frames)}`).not.toMatch(/Cannot find (package|module)|ResolveMessage/);
+			} finally {
+				await stop(agent);
+			}
+			expect(readStatus(laneDir)?.open).toBe(false);
+		} finally {
+			model.close();
+			rmSync(root, { recursive: true, force: true });
+		}
 	}, 90_000);
 });
 

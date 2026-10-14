@@ -58,8 +58,10 @@ export function createDemo(home: string, now = Date.now()): Demo {
 	const config = loadConfig(configPath);
 	for (const [index, fixture] of LANES.entries()) {
 		const lane = config.lanes.get(fixture.name)!;
-		mkdirSync(lane.workspace, { recursive: true });
-		writeFileSync(join(lane.workspace, "README.md"), `# ${fixture.name}\n\nA fictional demo project: ${fixture.task}.\n`);
+		if (lane.workspace !== undefined) {
+			mkdirSync(lane.workspace, { recursive: true });
+			writeFileSync(join(lane.workspace, "README.md"), `# ${fixture.name}\n\nA fictional demo project: ${fixture.task}.\n`);
+		}
 		// Codex is launch-only: do not imply that it records Orrery memory.
 		if (fixture.tool === "codex") continue;
 		const store = MemoryStore.open(join(lane.dir, "memory.sqlite"));

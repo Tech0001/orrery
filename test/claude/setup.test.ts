@@ -39,6 +39,14 @@ function excludeText(t: TestLane): string {
 }
 
 describe("claude-setup --mod", () => {
+	it("refuses a lane without a workspace, plain and --mod, writing nothing", () => {
+		const t = testLane();
+		const { workspace: _, ...nomad } = t.lane;
+		expect(() => claudeSetup(nomad)).toThrow("Test has no workspace, so Claude Code's setup has no folder to set up.");
+		expect(() => claudeSetupMod(nomad)).toThrow("Test has no workspace, so Claude Code's setup has no folder to set up.");
+		expect(readSetupMarker(t.lane.dir)).toBeUndefined();
+	});
+
 	it("removes the view import, deletes the view and .orrery when empty, and marks the lane mod", () => {
 		const t = testLane({ setup: false });
 		seed(t.lane, ["a"]);

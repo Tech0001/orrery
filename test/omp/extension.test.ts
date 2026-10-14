@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HarnessConfig } from "../../src/lane/config.ts";
@@ -364,6 +365,52 @@ describe("a session that moves to another folder (OMP's /resume of another folde
 		expect(statusOf(root, "Atlas").open).toBe(true);
 		await turn(omp, "Two.", "Second.");
 		expect(memoryOf(root)).toEqual(["user: Two.", "talk: Second."]);
+	});
+
+	it("a lane opened by ORRERY_AGENT stays the session's when /move takes it into another lane's folder", async () => {
+		const { root, config } = world();
+		const omp = await ompOrrery(join(root, "plain"), config, { env: { ORRERY_AGENT: "Atlas" } });
+		await turn(omp, "One.", "First.");
+		omp.cwd = join(root, "agent-Birch");
+		await promptedTurn(omp, "Two.", "Second.");
+		expect(memoryOf(root)).toEqual(["user: One.", "talk: First.", "user: Two.", "talk: Second."]);
+		expect(existsSync(join(root, "data", "lanes", "Birch", "memory.sqlite"))).toBe(false);
+		expect(omp.notices.filter((n) => n.message.includes("moved"))).toEqual([]);
+	});
+
+	it("a lane opened by ORRERY_AGENT: /resume of a session from another lane's folder copies none of its turns", async () => {
+		const { root, config } = world();
+		const omp = await ompOrrery(join(root, "plain"), config, { env: { ORRERY_AGENT: "Atlas" } });
+		await turn(omp, "One.", "First.");
+		await resume(omp, join(root, "agent-Birch"), "birch-1", "Birch question.", "Birch answer.");
+		expect(omp.notices).toEqual([]);
+		expect(omp.status("orrery")).toMatch(/^Orrery · Atlas · 2 msgs/);
+		await turn(omp, "Two.", "Second.");
+		expect(memoryOf(root)).toEqual(["user: One.", "talk: First.", "user: Two.", "talk: Second."]);
+		expect(existsSync(join(root, "data", "lanes", "Birch"))).toBe(false);
+	});
+
+	it("a lane opened by ORRERY_AGENT: its guard lets it write where the session moved, and no longer where it was", async () => {
+		const { root, config } = world();
+		const outside = mkdtempSync(join(tmpdir(), "orrery-outside-"));
+		try {
+			const write = async (omp: FakeOmp, path: string) => (await omp.emit("tool_call", { toolName: "write", toolCallId: "t1", input: { path, content: "x" } }))[0];
+			const blocked = { block: true, reason: expect.stringMatching(/outside this lane's workspace/) };
+			const omp = await ompOrrery(outside, config, { env: { ORRERY_AGENT: "Atlas" } });
+			const elsewhere = mkdtempSync(join(tmpdir(), "orrery-elsewhere-"));
+			try {
+				expect(await write(omp, join(outside, "a.md"))).toBeUndefined();
+				expect(await write(omp, join(elsewhere, "a.md"))).toEqual(blocked);
+				omp.cwd = elsewhere;
+				await promptedTurn(omp, "Moved.", "Here.");
+				expect(await write(omp, join(elsewhere, "a.md"))).toBeUndefined();
+				expect(await write(omp, join(outside, "a.md"))).toEqual(blocked);
+			} finally {
+				rmSync(elsewhere, { recursive: true, force: true });
+			}
+		} finally {
+			rmSync(outside, { recursive: true, force: true });
+		}
 	});
 
 	it("pi is unchanged: its sessions never move (pi starts a new session instead), so its entry never looks", async () => {

@@ -1,15 +1,17 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { newToken } from "../../src/lane/pick.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { FAUX_SUMMARY } from "./harness.ts";
 import { cleanup, close, lastLane, pi, world } from "./world.ts";
 
 afterEach(cleanup);
 
-const memoryOf = (root: string) => {
-	const store = MemoryStore.openReadOnly(join(root, "data", "lanes", "Atlas", "memory.sqlite"));
+const memoryOf = (root: string, lane = "Atlas") => {
+	const store = MemoryStore.openReadOnly(join(root, "data", "lanes", lane, "memory.sqlite"));
 	const rows = store.root.map((m) => `${m.kind}: ${m.text}`);
 	store.close();
 	return rows;
@@ -224,5 +226,86 @@ describe("orrery inside pi", () => {
 		expect(lastLane().view.render()).toContain("Codename Cedar, padded.");
 		await run.session.prompt("What is the codename?");
 		expect(lastReply(run.session.messages)).toContain("Cedar.");
+	});
+});
+
+describe("a lane named by ORRERY_AGENT", () => {
+	const writeTo = async (run: Awaited<ReturnType<typeof pi>>, path: string) => {
+		run.setResponses([fauxAssistantMessage([fauxToolCall("write", { path, content: "x" })]), fauxAssistantMessage("done")]);
+		await run.session.prompt(`write ${path}`);
+	};
+
+	it("opens in a folder outside its workspace, writes there, and nowhere outside it and its allowed roots", async () => {
+		const { root, config } = world();
+		const outside = mkdtempSync(join(tmpdir(), "orrery-outside-"));
+		try {
+			const run = await pi(root, outside, config, undefined, { env: { ORRERY_AGENT: "Atlas" } });
+			expect(run.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
+			await writeTo(run, join(outside, "notes.md"));
+			expect(readFileSync(join(outside, "notes.md"), "utf8")).toBe("x");
+			await writeTo(run, `${outside}-escape.txt`);
+			expect(existsSync(`${outside}-escape.txt`)).toBe(false);
+			expect(memoryOf(root)[0]).toBe(`user: write ${join(outside, "notes.md")}`);
+		} finally {
+			rmSync(outside, { recursive: true, force: true });
+			rmSync(`${outside}-escape.txt`, { force: true });
+		}
+	});
+
+	it("in another lane's folder: that lane is neither opened nor held, and a session there by folder still gets it", async () => {
+		const { root, config } = world();
+		const atlas = await pi(root, join(root, "agent-Birch"), config, undefined, { env: { ORRERY_AGENT: "Atlas" } });
+		expect(atlas.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
+		expect(existsSync(join(root, "data", "lanes", "Birch"))).toBe(false);
+		const birch = await pi(root, join(root, "agent-Birch"), config);
+		expect(birch.status("orrery")).toBe("Orrery · Birch · 0 msgs");
+	});
+
+	it("an ORRERY_AGENT that names no lane: one notice, no memory, and no fallback to the folder", async () => {
+		const { root, config } = world();
+		const run = await pi(root, join(root, "agent-Atlas"), config, undefined, { env: { ORRERY_AGENT: "Nobody" } });
+		expect(run.tool("zoom")).toBeUndefined();
+		expect(run.notices).toEqual([{ type: "warning", message: "Orrery: ORRERY_AGENT names Nobody, which is not a configured agent; this session runs without memory." }]);
+	});
+
+	it("a pi the agent started (same variables, another process) gets its folder's lane, or none", async () => {
+		const { root, config } = world();
+		const env = { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: newToken() };
+		const parent = await pi(root, join(root, "plain"), config, undefined, { env, owner: process.pid });
+		expect(parent.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
+		const inBirch = await pi(root, join(root, "agent-Birch"), config, undefined, { env, owner: process.ppid });
+		expect(inBirch.status("orrery")).toBe("Orrery · Birch · 0 msgs");
+		const inPlain = await pi(root, join(root, "plain"), config, undefined, { env, owner: process.ppid });
+		expect(inPlain.tool("zoom")).toBeUndefined();
+		expect(inPlain.notices).toEqual([]);
+	});
+
+	it("resuming a session recorded in another lane's folder copies none of its turns, only what comes after", async () => {
+		const { root, config } = world();
+		const birch = await pi(root, join(root, "agent-Birch"), config, "s-birch");
+		birch.setResponses([fauxAssistantMessage("Birch's answer.")]);
+		await birch.session.prompt("Birch's question.");
+		await close(birch);
+		const atlas = await pi(root, join(root, "agent-Birch"), config, "s-birch", { env: { ORRERY_AGENT: "Atlas" } });
+		expect(atlas.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
+		atlas.setResponses([fauxAssistantMessage("Atlas's answer.")]);
+		await atlas.session.prompt("Atlas's question.");
+		await close(atlas);
+		expect(memoryOf(root)).toEqual(["user: Atlas's question.", "talk: Atlas's answer."]);
+		expect(memoryOf(root, "Birch")).toEqual(["user: Birch's question.", "talk: Birch's answer."]);
+	});
+
+	it("resuming its own session in a plain folder goes on recording it, each turn once", async () => {
+		const { root, config } = world();
+		const env = { ORRERY_AGENT: "Atlas" };
+		const first = await pi(root, join(root, "plain"), config, "s-own", { env });
+		first.setResponses([fauxAssistantMessage("One.")]);
+		await first.session.prompt("First.");
+		await close(first);
+		const again = await pi(root, join(root, "plain"), config, "s-own", { env });
+		again.setResponses([fauxAssistantMessage("Two.")]);
+		await again.session.prompt("Second.");
+		await close(again);
+		expect(memoryOf(root)).toEqual(["user: First.", "talk: One.", "user: Second.", "talk: Two."]);
 	});
 });

@@ -188,15 +188,17 @@ export class Lane {
 				? createLaneModels({ credentials: new FileCredentialStore(options.config.credentialsPath), providers: options.config.providers, savedLoginsOnly: true })
 				: models);
 			const compactor = createLaneCompactor(config, summaryModels, store, view, relay, compactorChosen);
-			const env = createLaneEnv(config.host, config.workspace, options.config.sshDir, context);
-			const instructionsPath = posix.isAbsolute(config.instructions) ? config.instructions : posix.join(config.workspace, config.instructions);
+			// A lane with no default folder works where `orrery run` started (only a local lane may lack one).
+			const workspace = config.workspace ?? process.cwd();
+			const env = createLaneEnv(config.host, workspace, options.config.sshDir, context);
+			const instructionsPath = posix.isAbsolute(config.instructions) ? config.instructions : posix.join(workspace, config.instructions);
 			const fresh = await env.readText(instructionsPath);
 			if (fresh !== undefined && store.getMeta("instructions") !== fresh) store.setMeta("instructions", fresh);
 			const instructions = fresh ?? store.getMeta("instructions") ?? "";
 			const registry = createRegistry();
 			registry.install(CodingTools);
 			registry.install(memoryExtension({ view, instructions: () => instructions }));
-			registry.install(guardExtension({ workspace: config.workspace, allowedRoots: config.allowedRoots, credentials: [options.config.credentialsPath], orreryData: options.config.dataDir }));
+			registry.install(guardExtension({ workspace, allowedRoots: config.allowedRoots, credentials: [options.config.credentialsPath], orreryData: options.config.dataDir }));
 			const storage = await openNodeSqliteStorage(join(config.dir, "session.sqlite"));
 			const harness = await Harness.open(
 				storage,
@@ -204,7 +206,7 @@ export class Lane {
 				context,
 			);
 			const conversation = await harness.root(context, {
-				agent: { model: { provider: model.provider, modelId: model.modelId }, thinkingLevel: model.thinking, cwd: config.workspace },
+				agent: { model: { provider: model.provider, modelId: model.modelId }, thinkingLevel: model.thinking, cwd: workspace },
 			});
 			// An existing conversation keeps its own settings: apply the lane's model explicitly before anything runs.
 			await conversation.configure({ model: { provider: model.provider, modelId: model.modelId }, thinkingLevel: model.thinking }, context);

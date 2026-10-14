@@ -18,7 +18,8 @@ export type ConfigValue = string | number;
 
 export interface NewLane {
 	readonly name: string;
-	readonly workspace: string;
+	/** The lane's default folder; absent: it opens wherever it is opened. */
+	readonly workspace?: string;
 	readonly tool?: LaneTool;
 	readonly remote?: string;
 	readonly launcher?: LaneLauncher;
@@ -129,7 +130,7 @@ export function setLaneKey(text: string, configDir: string, lane: string, key: E
 	if (start === -1) throw new ConfigError(`No lane named ${lane} in the config.`);
 	let end = start + 1;
 	while (end < lines.length && !/^\s*\[/.test(lines[end])) end++;
-	const clear = value === "" && (key === "launcher" || key === "ori_model" || key === "remote");
+	const clear = value === "" && (key === "launcher" || key === "ori_model" || key === "remote" || key === "workspace");
 	const written = tomlValue(value);
 	const keyLine = new RegExp(`^(\\s*)${key}(\\s*=\\s*)(.*)$`);
 	const change = (before: Table | undefined) => {
@@ -164,11 +165,11 @@ export function setLaneKey(text: string, configDir: string, lane: string, key: E
  */
 export function addLane(text: string, configDir: string, lane: NewLane): string {
 	if (!NAME.test(lane.name)) throw new ConfigError("Lane names use letters, digits, - and _ (at most 32), starting with a letter.");
-	if (!isAbsolute(lane.workspace)) throw new ConfigError("The folder must be an absolute path.");
+	if (lane.workspace !== undefined && !isAbsolute(lane.workspace)) throw new ConfigError("The folder must be an absolute path.");
 	const before = parseConfig(text, configDir);
 	if ([...before.lanes.keys()].some((name) => name.toLowerCase() === lane.name.toLowerCase())) throw new ConfigError(`A lane named ${lane.name} already exists.`);
 	const eol = text.includes("\r\n") ? "\r\n" : "\n";
-	const table = { workspace: lane.workspace, ...(lane.tool === undefined ? {} : { tool: lane.tool }), ...(lane.launcher === "ori" ? { launcher: "ori" } : {}), model: lane.compactorModel, compactor_model: lane.compactorModel, compactor_thinking: lane.compactorThinking,
+	const table = { ...(lane.workspace === undefined ? {} : { workspace: lane.workspace }), ...(lane.tool === undefined ? {} : { tool: lane.tool }), ...(lane.launcher === "ori" ? { launcher: "ori" } : {}), model: lane.compactorModel, compactor_model: lane.compactorModel, compactor_thinking: lane.compactorThinking,
 		...(lane.remote === undefined ? {} : { remote: lane.remote }),
 		...(lane.viewBytes === undefined ? {} : { view_bytes: lane.viewBytes }),
 		...(lane.nodeBytes === undefined ? {} : { node_bytes: lane.nodeBytes }),

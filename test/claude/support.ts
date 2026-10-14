@@ -32,7 +32,8 @@ export interface TestLane {
 	readonly workspace: string;
 	readonly configPath: string;
 	readonly config: HarnessConfig;
-	readonly lane: LaneConfig;
+	/** Its workspace is always set. */
+	readonly lane: LaneConfig & { readonly workspace: string };
 }
 
 /**
@@ -48,7 +49,7 @@ export function testLane(options: { setup?: boolean } = {}): TestLane {
 	const configPath = join(dir, "config.toml");
 	writeFileSync(configPath, laneConfigToml({ dataDir: join(dir, "data"), workspace }));
 	const config = parseConfig(readFileSync(configPath, "utf8"), dir);
-	const lane = config.lanes.get("Test") as LaneConfig;
+	const lane = config.lanes.get("Test") as LaneConfig & { readonly workspace: string };
 	if (options.setup === true) {
 		writeFileSync(join(workspace, "CLAUDE.md"), `${VIEW_IMPORT}\n`);
 		writeSetupMarker(lane.dir, workspace, "CLAUDE.md");

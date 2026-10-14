@@ -140,7 +140,7 @@ export function editLane(app: App, row: LaneRow | undefined): void {
 		return;
 	}
 	app.run(`Editing ${row.name}`, async () => {
-		const items = [`Tool: ${TOOL_LABELS[row.tool]}`, `Folder: ${safeText(row.workspace)}`, `View size: ${kb(row.viewBudget)} KB`, `Summary-call size: ${kb(row.summaryContextBytes)} KB`, `Summary jobs: ${row.summaryJobs}`, `Claude Code compacts at: ${Math.round(row.compactAt / 1000)}K tokens`, `Launcher: ${row.launcher === "ori" ? "Ori" : "Direct"}`, `Ori model: ${safeText(row.oriModel ?? "default")}`, ...(row.remote !== undefined || (app.config?.remotes.size ?? 0) > 0 ? [`Memory home: ${row.remote ?? "local"}`] : [])];
+		const items = [`Tool: ${TOOL_LABELS[row.tool]}`, `Folder: ${row.workspace === undefined ? "none" : safeText(row.workspace)}`, `View size: ${kb(row.viewBudget)} KB`, `Summary-call size: ${kb(row.summaryContextBytes)} KB`, `Summary jobs: ${row.summaryJobs}`, `Claude Code compacts at: ${Math.round(row.compactAt / 1000)}K tokens`, `Launcher: ${row.launcher === "ori" ? "Ori" : "Direct"}`, `Ori model: ${safeText(row.oriModel ?? "default")}`, ...(row.remote !== undefined || (app.config?.remotes.size ?? 0) > 0 ? [`Memory home: ${row.remote ?? "local"}`] : [])];
 		const picked = await app.host.open(new SelectModal(`${row.name}: change which setting?`, items));
 		if (picked === undefined) return undefined;
 		let key: EditableKey;
@@ -155,10 +155,10 @@ export function editLane(app: App, row: LaneRow | undefined): void {
 				break;
 			}
 			case 1: {
-				const folder = await app.host.open(new InputModal("Folder (an absolute path):", row.workspace));
-				if (!folder) return undefined;
+				const folder = await app.host.open(new InputModal("Folder (an absolute path; empty: none, it opens wherever it is opened):", row.workspace ?? ""));
+				if (folder === undefined) return undefined;
 				key = "workspace";
-				value = expandHome(folder);
+				value = folder === "" ? "" : expandHome(folder);
 				break;
 			}
 			case 2: {

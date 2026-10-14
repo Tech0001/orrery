@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { type HarnessConfig, type LaneConfig, laneForCwd } from "../lane/config.ts";
 import { movedAgentDirCredentials, ompCredentials } from "../lane/guard-paths.ts";
+import { workArea } from "../lane/pick.ts";
 import { writePrivate } from "../lane/private-file.ts";
 import { selfCommand } from "../lane/running.ts";
 import { safeText } from "../lane/source-labels.ts";
@@ -261,7 +262,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	} else if (setUp && !gate.open) {
 		// (Where nothing is set up, the status already says what to run.)
 		warnings.push(`Orrery: CLAUDE.md does not load ${lane.name}'s memory view; run \`orrery claude-setup ${lane.name}\`, then start a new session.`);
-	} else if (setUp && !samePath(projectDir, lane.workspace)) {
+	} else if (setUp && lane.workspace !== undefined && !samePath(projectDir, lane.workspace)) {
 		warnings.push(`Orrery: Claude Code started in a subfolder of ${lane.workspace}; start it there, or CLAUDE.md may not load the memory view.`);
 	}
 	// For the user only (systemMessage), never the model's context; this also records the session's key.
@@ -302,7 +303,7 @@ export function preToolUse(input: HookInput, ctx: HookContext): object | undefin
 	let reason: string | undefined;
 	try {
 		reason = claudeGuard(input.tool_name, toolInput, {
-			workspace: found.lane.workspace,
+			workspace: workArea(found.lane, found.projectDir),
 			allowedRoots: [...found.lane.allowedRoots, ...claudeStateRoots(found.projectDir, home, ctx.env)],
 			cwd: typeof input.cwd === "string" ? input.cwd : found.projectDir,
 			credentials: [ctx.config.credentialsPath, ...movedAgentDirCredentials(ctx.env, home), ...movedConfigDirCredentials(ctx.env), ...ompCredentials(ctx.env, home)],

@@ -75,7 +75,7 @@ function sortLanes(rows: readonly LaneRow[], order: Order): LaneRow[] {
 /** The lanes the filter leaves, in the list's order. */
 export function visibleLanes(app: App): LaneRow[] {
 	const words = app.filterText().toLowerCase().split(/\s+/).filter(Boolean);
-	const rows = app.lanes.filter((row) => words.every((w) => `${row.name} ${TOOL_LABELS[row.tool]} ${row.launcher ?? "direct"} ${row.state} ${row.remote ?? ""} ${row.heldElsewhere?.machine ?? ""} ${row.workspace}`.toLowerCase().includes(w)));
+	const rows = app.lanes.filter((row) => words.every((w) => `${row.name} ${TOOL_LABELS[row.tool]} ${row.launcher ?? "direct"} ${row.state} ${row.remote ?? ""} ${row.heldElsewhere?.machine ?? ""} ${row.workspace ?? ""}`.toLowerCase().includes(w)));
 	return sortLanes(rows, orderOf(app));
 }
 
@@ -175,7 +175,7 @@ function detailLines(app: App, row: LaneRow, width: number): string[] {
 	return [
 		theme.bold(fit(`${row.name} · ${TOOL_LABELS[row.tool]} · ${remoteState(row)}`, width)),
 		"",
-		...field("Folder", safeText(row.workspace)),
+		...field("Folder", row.workspace === undefined ? "none (it opens wherever it is opened)" : safeText(row.workspace)),
 		...field("Data folder", safeText(row.dataDir)),
 		...field("Tool", row.toolSet ? TOOL_LABELS[row.tool] : `${TOOL_LABELS[row.tool]} (guessed: the config has no tool key; set it with E)`),
 		...field("Launcher", row.launcher === "ori" ? `Ori${row.oriModel === undefined ? "" : ` (model ${safeText(row.oriModel)})`}` : "Direct"),

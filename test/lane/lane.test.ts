@@ -2,7 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseConfig, parseModelChoice } from "../../src/lane/config.ts";
 import { Lane, readStatus } from "../../src/lane/lane.ts";
 import { statusVersion } from "../../src/lane/status-file.ts";
@@ -134,6 +134,25 @@ describe("Lane", () => {
 		// A failed open must release the memory writer lock.
 		const reopened = MemoryStore.open(join(broken.lanes.get("Test")!.dir, "memory.sqlite"));
 		reopened.close();
+	});
+
+	it("runs a lane without a workspace in the folder it starts in, with that folder's instructions", async () => {
+		const { dir, workspace } = fixture();
+		const config = parseConfig(laneConfigToml({ dataDir: join(dir, "data"), workspace }).replace(/^workspace = .*\n/m, ""), dir);
+		expect(config.lanes.get("Test")?.workspace).toBeUndefined();
+		const { agent, models } = fauxModels();
+		const seen: string[][] = [];
+		agent.setResponses([(context) => (seen.push(contextLines(context)), fauxAssistantMessage("Here."))]);
+		vi.spyOn(process, "cwd").mockReturnValue(workspace);
+		try {
+			const lane = await Lane.open({ config, lane: "Test", models, context: ctx });
+			const run = await lane.submit("Hello.", "r1");
+			await run?.submission.wait(ctx);
+			expect(seen[0][0]).toContain("You are the Test lane.");
+			await lane.close();
+		} finally {
+			vi.restoreAllMocks();
+		}
 	});
 
 	it("refuses to run a lane that has no agent model", async () => {

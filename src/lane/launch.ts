@@ -46,12 +46,14 @@ export function launchPlan(config: HarnessConfig, row: LaneRow, tools: readonly 
 	const lane = findLane(config, row.name);
 	const label = TOOL_LABELS[row.tool];
 	const check = tools.find((t) => t.id === row.tool);
-	const base = { lane: row.name, tool: row.tool, ...(lane.launcher === "ori" ? { launcher: "ori" as const } : {}), args: [] as string[], cwd: row.workspace };
+	// A lane with no default folder opens here.
+	const cwd = row.workspace ?? process.cwd();
+	const base = { lane: row.name, tool: row.tool, ...(lane.launcher === "ori" ? { launcher: "ori" as const } : {}), args: [] as string[], cwd };
 	const ori = lane.launcher === "ori" ? findOnPath("ori", options.env ?? process.env) : undefined;
 	if (lane.launcher === "ori" && ori === undefined) return { ...base, steps: [], blocked: 'Ori isn\'t installed: see docs/ori.md (or set launcher = "direct")' };
 	if (check?.path === undefined) return { ...base, steps: [], blocked: `${label} is not on PATH (looked for "${BINARIES[row.tool]}"). ${HINTS[row.tool]}, or change the lane's tool with E.` };
 	const steps: LaunchStep[] = [];
-	if (!existsSync(row.workspace)) steps.push({ text: `The folder ${row.workspace} does not exist. Create it?`, confirm: true, fix: "create-folder" });
+	if (!existsSync(cwd)) steps.push({ text: `The folder ${cwd} does not exist. Create it?`, confirm: true, fix: "create-folder" });
 	if ((row.state === "open" || row.state === "working") && row.openIn !== undefined) {
 		steps.push({ text: `${row.name} is already open in ${TOOL_LABELS[row.openIn]}. A second session won't record. Launch anyway?`, confirm: true });
 	}
@@ -71,7 +73,7 @@ export function launchPlan(config: HarnessConfig, row: LaneRow, tools: readonly 
 	if (row.tool === "codex") steps.push({ text: "Codex has no Orrery memory yet: this session won't be recorded.", confirm: false });
 	if (ori !== undefined) {
 		if (row.tool === "omp") steps.push({ text: 'Ori 0.15.7 can\'t start OMP: its model registration fails before startup. See docs/ori.md, or set launcher = "direct".', confirm: false });
-		steps.push({ text: `Launching ${label} through Ori in ${row.workspace}`, confirm: false });
+		steps.push({ text: `Launching ${label} through Ori in ${cwd}`, confirm: false });
 		return { ...base, command: ori, args: [BINARIES[row.tool], ...(lane.oriModel === undefined ? [] : ["--model", lane.oriModel])], steps };
 	}
 	return { ...base, command: check.path, steps };
@@ -80,8 +82,9 @@ export function launchPlan(config: HarnessConfig, row: LaneRow, tools: readonly 
 /** Does what a yes to a launch step asked; returns what it did, for showing. Throws when it fails. */
 export function applyFix(fix: LaunchFix, config: HarnessConfig, row: LaneRow, tools: readonly ToolCheck[], options: { root?: string; env?: NodeJS.ProcessEnv; run?: Runner } = {}): string {
 	if (fix === "create-folder") {
-		mkdirSync(row.workspace, { recursive: true });
-		return `Created ${row.workspace}.`;
+		const folder = row.workspace ?? process.cwd();
+		mkdirSync(folder, { recursive: true });
+		return `Created ${folder}.`;
 	}
 	if (fix === "claude-setup") return setupReport(claudeSetup(findLane(config, row.name)));
 	const check = tools.find((t) => t.id === (fix === "install-pi" ? "pi" : fix === "install-omp" ? "omp" : "claude-code"));

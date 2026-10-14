@@ -147,6 +147,25 @@ describe("E edit", () => {
 		expect(refused.edits).toEqual([]);
 	});
 
+	it("clears the folder with an empty value; a lane without one shows none, in its page and in E", async () => {
+		const deps = fakeDeps();
+		const app = makeApp(deps, [lanesPage]);
+		keys(app, "E");
+		await answer(app, "change which setting", ...typed("Folder"), ENTER);
+		await answer(app, "Folder (an absolute path; empty: none", "\x15", ENTER);
+		await app.idle();
+		expect(deps.edits.at(-1)).toContain('[lanes.Alpha]\ncompactor_model = "openai/gpt-6.1-sol"\n[lanes.Cedarn]');
+		expect(screen(app)).toContain("Saved. Alpha launches with it next time.");
+		const bare = makeApp(fakeDeps({}, [row({ name: "Alpha", workspace: undefined })]), [lanesPage]);
+		keys(bare, ENTER);
+		expect(screen(bare, 120)).toContain("none (it opens wherever it is opened)");
+		keys(bare, "\x1b", "E");
+		await answer(bare, "change which setting", ...typed("Folder: none"), ENTER);
+		await answer(bare, "Folder (an absolute path; empty: none", ...typed("/w/new"), ENTER);
+		await bare.idle();
+		expect(screen(bare)).toContain("Saved. Alpha launches with it next time.");
+	});
+
 	it("refuses a number that is not one, and a config it cannot write", async () => {
 		const deps = fakeDeps();
 		const app = makeApp(deps, [lanesPage]);

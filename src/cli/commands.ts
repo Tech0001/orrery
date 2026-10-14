@@ -106,11 +106,11 @@ export async function importDryRunCommand(config: HarnessConfig, laneName: strin
 	const lane = findLane(config, laneName);
 	const namedClaude = checkClaudeFiles(options.claudeFiles ?? []);
 	const named = checkCodexFiles(options.codexFiles ?? []);
-	const claudeDir = options.claude === "none" ? undefined : (options.claude ?? claudeProjectDir(lane.workspace));
+	const claudeDir = options.claude === "none" ? undefined : (options.claude ?? (lane.workspace === undefined ? undefined : claudeProjectDir(lane.workspace)));
 	const codexRoot = options.codex === "none" ? undefined : (options.codex ?? join(homedir(), ".codex", "sessions"));
 	const foundClaude = claudeDir === undefined ? [] : claudeSessionFiles(claudeDir);
 	const claude = extractClaudeFiles([...foundClaude, ...namedClaude.filter((file) => !foundClaude.includes(file))]);
-	const found = codexRoot === undefined ? [] : findCodexSessions(codexRoot, lane.workspace).map((file) => resolve(file));
+	const found = codexRoot === undefined || lane.workspace === undefined ? [] : findCodexSessions(codexRoot, lane.workspace).map((file) => resolve(file));
 	const codex = extractCodex([...found, ...named.filter((file) => !found.includes(file))]);
 	const notes = options.notes.flatMap((file) =>
 		splitNote(basename(file), readFileSync(file, "utf8"), new Date(statSync(file).mtimeMs).toISOString()).map((message) => ({

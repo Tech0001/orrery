@@ -33,6 +33,17 @@ describe("the view file", () => {
 		expect(laneMode(t.lane)).toBe("none");
 	});
 
+	it("for a lane without a workspace: no mode, no gate, and no view written, even with a marker", () => {
+		const t = testLane({ setup: true });
+		seed(t.lane, ["one", "two"]);
+		const { workspace: _, ...nomad } = t.lane;
+		expect(laneMode(nomad)).toBe("none");
+		expect(markedHere(nomad)).toBe(false);
+		expect(viewGate(nomad)).toEqual({ open: false });
+		withView(t, (view) => expect(writeViewFile(nomad, view)).toBe(false));
+		expect(existsSync(viewFile(t.workspace))).toBe(false);
+	});
+
 	it("in mod mode the gate writes nothing and deletes a stale view file", () => {
 		const t = testLane();
 		seed(t.lane, ["one", "two"]);

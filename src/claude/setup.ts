@@ -125,10 +125,12 @@ function setupFileName(exclude: string | undefined, claudeMdLink: string | undef
 
 /** Sets the lane's workspace up for Claude Code (see the module doc). Throws, with what to fix, when it refuses. */
 export function claudeSetup(lane: LaneConfig): SetupResult {
-	if (!existsSync(lane.workspace)) throw new Error(`${lane.name}'s workspace ${lane.workspace} does not exist`);
+	const workspace = lane.workspace;
+	if (workspace === undefined) throw new Error(`${lane.name} has no workspace, so Claude Code's setup has no folder to set up.`);
+	if (!existsSync(workspace)) throw new Error(`${lane.name}'s workspace ${workspace} does not exist`);
 	// The configured path is trusted, even through a symlink; what is inside the workspace is not.
-	const root = realpathSync(lane.workspace);
-	if (ownFolder(root) !== true) throw new Error(`${lane.name}'s workspace ${lane.workspace} is not a folder of yours`);
+	const root = realpathSync(workspace);
+	if (ownFolder(root) !== true) throw new Error(`${lane.name}'s workspace ${workspace} is not a folder of yours`);
 	const exclude = gitExclude(root);
 	const claudeMdLink = linkTarget(join(root, "CLAUDE.md"));
 	const name = setupFileName(exclude, claudeMdLink);
@@ -151,7 +153,7 @@ export function claudeSetup(lane: LaneConfig): SetupResult {
 	const exposure = gitExposure(root);
 	if (exposure !== undefined) {
 		const kept = exclude !== undefined && excludeAdded.length > 0 ? ` The lines it listed in ${exclude} stay; they only make git ignore more.` : "";
-		const stuck = (error: unknown) => ` The view there could not be removed (${errorText(error)}); remove ${viewFile(lane.workspace)} yourself.`;
+		const stuck = (error: unknown) => ` The view there could not be removed (${errorText(error)}); remove ${viewFile(workspace)} yourself.`;
 		if (exposure.kind === "unchecked") {
 			// Git could not say this time: an earlier setup's view is taken out until it can, and its marker stays.
 			let left = "";
@@ -169,17 +171,17 @@ export function claudeSetup(lane: LaneConfig): SetupResult {
 			left = stuck(error);
 		}
 		const fix = `Make git ignore .orrery/ and track nothing there, then rerun \`orrery claude-setup ${lane.name}\`.`;
-		throw new Error(`${lane.name}: ${exposure.reason}, so the memory view in ${join(lane.workspace, ".orrery")} could reach a commit. ${fix} Claude Code was not set up.${left}${kept}`);
+		throw new Error(`${lane.name}: ${exposure.reason}, so the memory view in ${join(workspace, ".orrery")} could reach a commit. ${fix} Claude Code was not set up.${left}${kept}`);
 	}
 	append(join(root, name), text, added);
-	writeSetupMarker(lane.dir, lane.workspace, name);
+	writeSetupMarker(lane.dir, workspace, name);
 	const messages = refreshViewFile(lane);
 	return {
 		lane: lane.name,
-		file: join(lane.workspace, name),
+		file: join(workspace, name),
 		added,
 		...(exclude === undefined ? {} : { exclude: { file: exclude, added: excludeAdded } }),
-		view: viewFile(lane.workspace),
+		view: viewFile(workspace),
 		...(messages === undefined ? {} : { messages }),
 		...(claudeMdLink === undefined ? {} : { claudeMdLink }),
 	};
@@ -232,9 +234,11 @@ export interface ModSetupResult {
  * Every check comes before the first write. Plain claudeSetup switches back.
  */
 export function claudeSetupMod(lane: LaneConfig): ModSetupResult {
-	if (!existsSync(lane.workspace)) throw new Error(`${lane.name}'s workspace ${lane.workspace} does not exist`);
-	const root = realpathSync(lane.workspace);
-	if (ownFolder(root) !== true) throw new Error(`${lane.name}'s workspace ${lane.workspace} is not a folder of yours`);
+	const workspace = lane.workspace;
+	if (workspace === undefined) throw new Error(`${lane.name} has no workspace, so Claude Code's setup has no folder to set up.`);
+	if (!existsSync(workspace)) throw new Error(`${lane.name}'s workspace ${workspace} does not exist`);
+	const root = realpathSync(workspace);
+	if (ownFolder(root) !== true) throw new Error(`${lane.name}'s workspace ${workspace} is not a folder of yours`);
 	const ownsClaudeMd = linkTarget(join(root, "CLAUDE.md")) === undefined && inWorkTree(root) === false;
 	const edits: { name: string; text: string }[] = [];
 	let keptIn: string | undefined;
@@ -243,7 +247,7 @@ export function claudeSetupMod(lane: LaneConfig): ModSetupResult {
 		if (linkTarget(path) !== undefined) continue; // a symlink is never written through, and setup never wrote there
 		if (name === "CLAUDE.md" && !ownsClaudeMd) {
 			// The repo's file and its line, not Orrery's: read only to say that the line stays.
-			if (importsView(path)) keptIn = join(lane.workspace, name);
+			if (importsView(path)) keptIn = join(workspace, name);
 			continue;
 		}
 		const text = editable(path);
@@ -252,10 +256,10 @@ export function claudeSetupMod(lane: LaneConfig): ModSetupResult {
 		if (kept.length !== lines.length) edits.push({ name, text: kept.join("\n") });
 	}
 	for (const { name, text } of edits) writePrivate(join(root, name), text, { keepFolderMode: true });
-	const viewDeleted = deleteViewFile(lane.workspace);
-	writeSetupMarker(lane.dir, lane.workspace, "mod");
+	const viewDeleted = deleteViewFile(workspace);
+	writeSetupMarker(lane.dir, workspace, "mod");
 	const messages = messageCount(lane);
-	return { lane: lane.name, removedFrom: edits.map((e) => join(lane.workspace, e.name)), viewDeleted, ...(keptIn === undefined ? {} : { keptIn }), ...(messages === undefined ? {} : { messages }) };
+	return { lane: lane.name, removedFrom: edits.map((e) => join(workspace, e.name)), viewDeleted, ...(keptIn === undefined ? {} : { keptIn }), ...(messages === undefined ? {} : { messages }) };
 }
 
 /** What claude-setup --mod did, as lines for the terminal. */
