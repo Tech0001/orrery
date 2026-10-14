@@ -7,7 +7,7 @@
 import { join, resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
 import type { LaneTool } from "../lane/memory-tools.ts";
-import { findLane, type HarnessConfig, type LaneConfig, loadConfig } from "../lane/config.ts";
+import { findLane, type HarnessConfig, type LaneConfig, laneForCwd, loadConfig } from "../lane/config.ts";
 import { exitWhenFlushed } from "./exit.ts";
 
 const USAGE = `Usage: orrery <command> [--config FILE]
@@ -267,9 +267,8 @@ async function uninstallCommand(values: { purge?: boolean }): Promise<number> {
 /** A lane name as given, or "." for the lane whose workspace holds the project folder (Claude Code's commands use it). */
 async function laneArg(config: HarnessConfig, name: string): Promise<string> {
 	if (name !== ".") return name;
-	const { laneHere } = await import("../claude/paths.ts");
 	const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-	const lane = laneHere(config, dir);
+	const lane = laneForCwd(config, dir);
 	if (lane === undefined) throw new Error(`${dir} is in no lane's workspace.`);
 	return lane.name;
 }
@@ -676,11 +675,11 @@ function optionalConfig(configPath: string | undefined, label: string): HarnessC
 
 /** Claude Code's MCP server. Outside a lane, or without an orrery config, it serves no tools rather than failing. */
 async function mcpServer(configPath: string | undefined): Promise<number> {
-	const [{ laneTools, runMcp }, { laneHere }] = await Promise.all([import("../claude/mcp.ts"), import("../claude/paths.ts")]);
+	const { laneTools, runMcp } = await import("../claude/mcp.ts");
 	let tools: LaneTool[] = [];
 	const config = optionalConfig(configPath, "orrery mcp");
 	if (config !== undefined) {
-		const lane = laneHere(config, process.env.CLAUDE_PROJECT_DIR || process.cwd());
+		const lane = laneForCwd(config, process.env.CLAUDE_PROJECT_DIR || process.cwd());
 		if (lane !== undefined) tools = laneTools(config, lane);
 	}
 	await runMcp(process.stdin, process.stdout, tools);

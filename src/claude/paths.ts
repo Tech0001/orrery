@@ -12,7 +12,6 @@
 
 import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { type HarnessConfig, type LaneConfig, laneForCwd } from "../lane/config.ts";
 
 /** The spool: one folder per Claude Code session. */
 export const sessionsDir = (laneDir: string) => join(laneDir, "claude", "sessions");
@@ -41,20 +40,4 @@ function real(path: string): string {
 /** Whether two paths name the same folder, symlinks followed. */
 export function samePath(a: string, b: string): boolean {
 	return real(a) === real(b);
-}
-
-/**
- * The lane whose workspace holds `dir`, matched as pi matches it (laneForCwd). Failing that, it compares real paths,
- * since Claude Code reports the physical folder (a workspace configured through a symlink, /tmp on macOS).
- */
-export function laneHere(config: HarnessConfig, dir: string): LaneConfig | undefined {
-	const found = laneForCwd(config, dir);
-	if (found !== undefined) return found;
-	const here = real(dir);
-	let best: { lane: LaneConfig; root: string } | undefined;
-	for (const lane of config.lanes.values()) {
-		const root = real(lane.workspace);
-		if ((here === root || here.startsWith(`${root}/`)) && (best === undefined || root.length > best.root.length)) best = { lane, root };
-	}
-	return best?.lane;
 }

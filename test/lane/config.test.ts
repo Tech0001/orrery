@@ -1,4 +1,5 @@
-import { homedir } from "node:os";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ConfigError, findLane, laneForCwd, parseConfig, parseModelChoice } from "../../src/lane/config.ts";
@@ -161,6 +162,28 @@ ${extra}`;
 		expect(laneForCwd(config, "/w/agent-Atlas/sub/dir")?.name).toBe("Atlas");
 		expect(laneForCwd(config, "/w/agent-AtlasX")?.name).toBe("AtlasX");
 		expect(laneForCwd(config, "/w/elsewhere")).toBeUndefined();
+	});
+
+	it("matches a workspace configured through a symlink: pi and Claude Code report the folder the link points to", () => {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "orrery-lane-link-")));
+		try {
+			mkdirSync(join(root, "real", "Atlas", "inner"), { recursive: true });
+			symlinkSync(join(root, "real"), join(root, "link"));
+			const config = parseConfig(`data_dir = "/d"
+[lanes.Atlas]
+workspace = ${JSON.stringify(join(root, "link", "Atlas"))}
+model = "openai/gpt-6.1-sol"
+[lanes.Inner]
+workspace = ${JSON.stringify(join(root, "link", "Atlas", "inner"))}
+model = "openai/gpt-6.1-sol"
+`, "/etc");
+			expect(laneForCwd(config, join(root, "real", "Atlas"))?.name).toBe("Atlas");
+			expect(laneForCwd(config, join(root, "real", "Atlas", "sub"))?.name).toBe("Atlas");
+			expect(laneForCwd(config, join(root, "real", "Atlas", "inner", "sub"))?.name).toBe("Inner");
+			expect(laneForCwd(config, join(root, "real"))).toBeUndefined();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("rejects reads naming a lane that does not exist", () => {

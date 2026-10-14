@@ -11,13 +11,13 @@ import { setTimeout as sleepFor } from "node:timers/promises";
 import { stripVTControlCharacters } from "node:util";
 import { safeText } from "../lane/source-labels.ts";
 import type { RemoteStatus } from "../remote/types.ts";
-import type { HarnessConfig, LaneConfig } from "../lane/config.ts";
+import { type HarnessConfig, type LaneConfig, laneForCwd } from "../lane/config.ts";
 import { holderFresh, readHolder } from "../lane/handover.ts";
 import { processAlive } from "../lane/process.ts";
 import { readStatus } from "../lane/status-file.ts";
 import { memorySection } from "../lane/view-text.ts";
 import { MemoryStore, MemoryView } from "../memory/index.ts";
-import { laneHere, validSession } from "./paths.ts";
+import { validSession } from "./paths.ts";
 import { pendingEvents, readMode, type SessionMode } from "./spool.ts";
 import { type LaneMode, laneMode } from "./view-file.ts";
 
@@ -137,7 +137,7 @@ function remoteFields(lane: LaneConfig, session: string | undefined, now: number
 export async function modView(config: HarnessConfig | undefined, options: ModViewOptions): Promise<ModViewReply> {
 	try {
 		if (config === undefined) return { lane: null };
-		const lane = laneHere(config, options.cwd);
+		const lane = laneForCwd(config, options.cwd);
 		if (lane === undefined) return { lane: null };
 		const { session } = options;
 		if (session !== undefined && !validSession(session)) return { error: "not a Claude Code session id" };

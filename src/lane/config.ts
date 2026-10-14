@@ -1,6 +1,6 @@
 /** orrery configuration: one TOML file describing data paths, custom model servers, SSH hosts and lanes. */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { parse } from "smol-toml";
@@ -332,15 +332,31 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 	};
 }
 
-/** The lane whose workspace is cwd or contains it; the longest workspace wins. */
+/**
+ * The lane whose workspace is cwd or contains it; the longest workspace wins. Paths are compared as written first, then
+ * with symlinks followed: pi and Claude Code report the physical folder, and a workspace may be configured through a
+ * symlink (on macOS, /tmp and /var are links into /private).
+ */
 export function laneForCwd(config: HarnessConfig, cwd: string): LaneConfig | undefined {
-	const here = resolve(cwd);
-	let best: LaneConfig | undefined;
+	return laneHolding(config, resolve(cwd), resolve) ?? laneHolding(config, realOrResolved(cwd), realOrResolved);
+}
+
+function laneHolding(config: HarnessConfig, here: string, path: (path: string) => string): LaneConfig | undefined {
+	let best: { lane: LaneConfig; root: string } | undefined;
 	for (const lane of config.lanes.values()) {
-		const root = resolve(lane.workspace);
-		if ((here === root || here.startsWith(`${root}/`)) && (best === undefined || root.length > resolve(best.workspace).length)) best = lane;
+		const root = path(lane.workspace);
+		if ((here === root || here.startsWith(`${root}/`)) && (best === undefined || root.length > best.root.length)) best = { lane, root };
 	}
-	return best;
+	return best?.lane;
+}
+
+/** The path with symlinks followed, or as written when it cannot be followed (a workspace not made yet). */
+function realOrResolved(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return resolve(path);
+	}
 }
 
 /** ORRERY_CONFIG, then <home>/config.toml, then the server path. */

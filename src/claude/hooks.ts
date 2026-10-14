@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { HarnessConfig, LaneConfig } from "../lane/config.ts";
+import { type HarnessConfig, type LaneConfig, laneForCwd } from "../lane/config.ts";
 import { movedAgentDirCredentials, ompCredentials } from "../lane/guard-paths.ts";
 import { writePrivate } from "../lane/private-file.ts";
 import { selfCommand } from "../lane/running.ts";
@@ -23,7 +23,7 @@ import { safeText } from "../lane/source-labels.ts";
 import { holderFresh, readHolder } from "../lane/handover.ts";
 import { claudeGuard, claudeStateRoots, movedConfigDirCredentials } from "./guard.ts";
 import { summaryNotice } from "./notices.ts";
-import { holderLog, laneHere, samePath, validSession } from "./paths.ts";
+import { holderLog, samePath, validSession } from "./paths.ts";
 import { readMode, type SessionMode, spoolEvent } from "./spool.ts";
 import { markedHere, refreshViewFile, type ViewGate, viewGate } from "./view-file.ts";
 
@@ -110,7 +110,7 @@ interface Here {
 function here(input: HookInput, ctx: HookContext): Here | undefined {
 	const projectDir = ctx.env.CLAUDE_PROJECT_DIR || (typeof input.cwd === "string" ? input.cwd : undefined);
 	if (projectDir === undefined) return undefined;
-	const lane = laneHere(ctx.config, projectDir);
+	const lane = laneForCwd(ctx.config, projectDir);
 	return lane === undefined ? undefined : { lane, projectDir };
 }
 
@@ -285,7 +285,7 @@ const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToo
  */
 function unreadToolCall(ctx: HookContext): object | undefined {
 	const projectDir = ctx.env.CLAUDE_PROJECT_DIR;
-	if (projectDir && laneHere(ctx.config, projectDir) === undefined) return undefined;
+	if (projectDir && laneForCwd(ctx.config, projectDir) === undefined) return undefined;
 	return deny("this call's input is over 1 MB, too long to check; nothing was run.");
 }
 
