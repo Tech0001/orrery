@@ -54,6 +54,26 @@ function compile(from: string, folder: string, target: Target): void {
 	rmSync(join(folder, "bin", "orrery.map"), { force: true });
 }
 
+const BOTH = (names: string[]) => names.flatMap((n) => [`@earendil-works/${n}`, `@mariozechner/${n}`]);
+/** What pi gives extensions, compiled (virtualModules) and npm (aliases) alike. */
+export const PI_SUPPLIED: readonly string[] = [
+	"typebox", "typebox/compile", "typebox/value", "@sinclair/typebox", "@sinclair/typebox/compile", "@sinclair/typebox/value",
+	...BOTH(["pi-agent-core", "pi-tui", "pi-ai", "pi-ai/compat", "pi-ai/oauth", "pi-ai/providers/all", "pi-coding-agent"]),
+];
+/**
+ * What OMP rewrites onto its own copies; providers/all and typebox are not among them, so omp.js carries those. The bare
+ * pi-ai is left off too: Bun keeps out every subpath of an external package name, and that would leave providers/all
+ * to OMP, which has none. OMP's config registry is its own; src/omp/settings.ts loads it inside a try.
+ */
+export const OMP_SUPPLIED: readonly string[] = [...BOTH(["pi-agent-core", "pi-tui", "pi-ai/compat", "pi-ai/oauth", "pi-coding-agent"]), "@oh-my-pi/pi-coding-agent/config/registry"];
+/** src/lane/models.ts's import of this repo's own pi-ai, which only OMP takes: pi.js leaves it out (omp.js packs it). */
+const OMP_FALLBACK = "*/node_modules/@earendil-works/pi-ai/dist/compat.js";
+
+/** extensions/<name>.js (+ .map) from one entry point, leaving `external` to the host. */
+function pack(from: string, folder: string, entry: string, name: string, external: readonly string[]): void {
+	run(process.execPath, ["build", join(from, entry), "--target=node", "--format=esm", "--sourcemap=linked", "--outdir", join(folder, "extensions"), `--entry-naming=${name}.[ext]`, ...external.flatMap((e) => ["--external", e])], from);
+}
+
 /** A package-lock.json (lockfileVersion 3) entry, keyed by its folder ("node_modules/a/node_modules/b"). */
 interface LockEntry {
 	name?: string;
@@ -145,6 +165,8 @@ export async function buildRelease(options: { from: string; out: string; targets
 		rmSync(folder, { recursive: true, force: true });
 		mkdirSync(join(folder, "extensions"), { recursive: true });
 		compile(from, folder, target);
+		pack(from, folder, "src/pi/index.ts", "pi", [...PI_SUPPLIED, OMP_FALLBACK]);
+		pack(from, folder, "src/omp/index.ts", "omp", OMP_SUPPLIED);
 		cpSync(join(from, ".claude-plugin"), join(folder, ".claude-plugin"), { recursive: true });
 		cpSync(join(from, "claude-plugin"), join(folder, "claude-plugin"), { recursive: true, filter: (src) => basename(src) !== "tests" });
 		cpSync(join(from, "deploy", "workstation"), join(folder, "deploy", "workstation"), { recursive: true });

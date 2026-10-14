@@ -13,6 +13,8 @@ import { readStatus } from "../../src/lane/status-file.ts";
 import { piExtensionFile, piExtensionText } from "../../src/lane/tools.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { commitAll, noteNoGitWorkTree, repoIsGitWorkTree, workingTreeCheckout } from "../install/support.ts";
+import { builtRelease, bunReady, changedSince, installRelease, REPO, removeBuiltRelease } from "../release/support.ts";
+import { fakeModel, rpc } from "./host-rpc.ts";
 import { realRemoteRebuild, realRemoteTurn, streamReply, writeModels } from "./remote-real-support.ts";
 
 function isolated(home: string): NodeJS.ProcessEnv {
@@ -61,6 +63,11 @@ function findPi(compiled = false): string | null {
 
 const pi = findPi();
 const compiledPi = findPi(true);
+/** pi's npm build (Node) from the repo's devDependency: a script, where the compiled pi is a binary. Null without it. */
+const npmPi: string | null = (() => {
+	const path = join(REPO, "node_modules", ".bin", "pi");
+	return existsSync(path) && script(path) && spawnSync(path, ["--version"], { cwd: scratch, env: isolated(scratch), timeout: 30_000 }).status === 0 ? path : null;
+})();
 const LANE_DIR = resolve(fileURLToPath(new URL("../../src/lane", import.meta.url)));
 const PI_DIR = resolve(fileURLToPath(new URL("../../src/pi", import.meta.url)));
 const dirs: string[] = [];
@@ -363,3 +370,97 @@ describe.skipIf(compiledPi === null || !repoIsGitWorkTree)("Orrery installed in 
 		}
 	}, 300_000);
 });
+
+/**
+ * A release as installed: app/<version> read-only, app/current linking to it, and pi's one-line extension file
+ * re-exporting extensions/pi.js by absolute path. pi of both kinds must supply what pi.js leaves out: the compiled one
+ * through its virtual modules (Bun), the npm one through its aliases (Node).
+ */
+describe.skipIf(!bunReady)("Orrery from a read-only installed release, inside a real pi", () => {
+	afterAll(removeBuiltRelease);
+
+	for (const [kind, binary] of [["compiled", compiledPi], ["npm", npmPi]] as const) {
+		it.skipIf(binary === null)(`the ${kind} pi loads extensions/pi.js, summarizes through Orrery's registry, records a turn, and writes nothing into the release`, async () => {
+			await releaseCheck(binary as string);
+		}, 120_000);
+	}
+});
+
+async function releaseCheck(binary: string): Promise<void> {
+	const root = mkdtempSync(join(tmpdir(), "orrery-release-pi-"));
+	dirs.push(root);
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	const data = join(root, "data");
+	mkdirSync(workspace);
+	const installed = installRelease(await builtRelease(), home);
+	const model = await fakeModel("pong");
+	try {
+		const agentDir = join(home, ".pi", "agent");
+		mkdirSync(join(agentDir, "extensions"), { recursive: true });
+		writeFileSync(join(agentDir, "extensions", "orrery.ts"), `export { default } from ${JSON.stringify(join(installed.current, "extensions", "pi.js"))};\n`);
+		writeModels(agentDir, "pi", model.baseUrl);
+		writeFileSync(
+			join(home, ".orrery", "config.toml"),
+			[
+				`data_dir = ${JSON.stringify(data)}`,
+				"[[providers]]",
+				'id = "local"',
+				`base_url = ${JSON.stringify(model.baseUrl)}`,
+				"[[providers.models]]",
+				'id = "m"',
+				'name = "m"',
+				"context_window = 128000",
+				"max_tokens = 4096",
+				"reasoning = false",
+				"[lanes.Probe]",
+				`workspace = ${JSON.stringify(workspace)}`,
+				'tool = "pi"',
+				'compactor_model = "local/m"',
+				'compactor_thinking = "off"',
+				"",
+			].join("\n"),
+			{ mode: 0o600 },
+		);
+		const env = { ...isolated(home), ORRERY_HOME: join(home, ".orrery"), PI_CODING_AGENT_DIR: agentDir };
+		const child = spawn(binary, ["--mode", "rpc", "--provider", "local", "--model", "m", "--thinking", "off"], { cwd: workspace, env });
+		const exited = new Promise<void>((done) => child.on("close", () => done()));
+		const { frames, send, waitFor, stderr } = rpc(child);
+		const laneDir = join(data, "lanes", "Probe");
+		try {
+			await waitFor((f) => f.method === "setStatus" && f.statusKey === "orrery" && f.statusText === "Orrery · Probe · 0 msgs");
+			// The version comes from the release's VERSION, found from extensions/pi.js (src/lane/running.ts).
+			expect(readStatus(laneDir)).toMatchObject({ lane: "Probe", pid: child.pid, open: true, version: installed.version });
+			// The summary call: /compactor reset tests the lane's config model through Orrery's registry, then says so.
+			const calls = model.calls.length;
+			await send({ type: "prompt", message: "/compactor reset" });
+			await waitFor((f) => f.method === "notify" && f.message === "summaries: local/m (off) · from config");
+			expect(model.calls.length).toBe(calls + 1);
+			await send({ type: "prompt", message: "The codename is Cedar." });
+			await waitFor((f) => f.type === "agent_end");
+			const deadline = Date.now() + 30_000;
+			const rows = () => {
+				if (!existsSync(join(laneDir, "memory.sqlite"))) return [];
+				const store = MemoryStore.openReadOnly(join(laneDir, "memory.sqlite"));
+				try {
+					return store.root.map((m) => `${m.kind}: ${m.text}`);
+				} finally {
+					store.close();
+				}
+			};
+			while (rows().length < 2 && Date.now() < deadline) await delay(50);
+			expect(rows()).toEqual(["user: The codename is Cedar.", "talk: pong"]);
+			expect(`${stderr()}\n${JSON.stringify(frames)}`).not.toMatch(/Cannot find (package|module)|ResolveMessage/);
+		} finally {
+			child.stdin.end();
+			const stop = setTimeout(() => child.kill("SIGKILL"), 10_000);
+			await exited;
+			clearTimeout(stop);
+		}
+		expect(readStatus(laneDir)?.open).toBe(false);
+		expect(changedSince(installed.folder, installed.marker)).toEqual([]);
+	} finally {
+		model.close();
+		installed.remove();
+	}
+}
