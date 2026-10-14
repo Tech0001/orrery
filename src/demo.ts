@@ -129,7 +129,7 @@ export function demoDeps(demo: Demo, controls: Pick<AppDeps, "rows" | "quit" | "
 		})),
 		sources, target: disabled, loginRows: (source, rows) => loginRows(source, rows, {}),
 		saveKey: async () => disabled(), signIn: async () => disabled(), removeLogin: async () => disabled(),
-		testChoice: async () => disabled(), launch: async () => disabled(), applyFix: disabled,
+		testChoice: async () => disabled(), launch: async () => disabled(), applyFix: disabled, edit: async () => disabled(),
 		installSteps: disabled, install: disabled, openUrl: () => undefined,
 		browse: (config, lane) => ({ path: browseCommand(config, lane, join(config.lanes.get(lane)!.dir, "memory.html")) }),
 		about: () => ({ version: `${versionNumber()} (demo)`, root: runningRoot() }),

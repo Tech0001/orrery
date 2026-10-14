@@ -4,18 +4,20 @@ import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { type Picked, pickSummaryModel } from "../../lane/compactor-menu.ts";
 import { addLane, archiveLane, type EditableKey, readOnlyConfigText, setLaneKey } from "../../lane/config-edit.ts";
-import { COMPACT_AT_MIN, LANE_TOOLS, type ModelChoice } from "../../lane/config.ts";
+import { COMPACT_AT_MIN, findLane, type HarnessConfig, LANE_TOOLS, laneNameProblem, type ModelChoice } from "../../lane/config.ts";
+import { editInstructionsFile } from "../../lane/editor.ts";
 import { summaryLine } from "../../lane/lane-commands.ts";
-import { exitText, launchLabel, launchPlan } from "../../lane/launch.ts";
+import { exitText, launchLabel, launchPlan, remoteGate, runAgent } from "../../lane/launch.ts";
 import { archiveRefusal, type LaneRow, TOOL_LABELS } from "../../lane/overview.ts";
+import { workArea } from "../../lane/pick.ts";
 import { safeText } from "../../lane/source-labels.ts";
 import { switchSummaryModel } from "../../lane/summary-text.ts";
+import { shortHome } from "../../lane/tools.ts";
 import { localIso } from "../../memory/index.ts";
 import type { App } from "../app.ts";
 import { ConfirmModal, hardWrap, InputModal, MessageModal, menuUI, SelectModal } from "../dialogs.ts";
 
 export const NO_LOGINS = "No summary logins saved yet. Add one on the Logins page (2), then try again.";
-const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 const kb = (bytes: number) => Math.round(bytes / 1000);
 
 /** "~/x" becomes "/home/me/x"; other paths stay as they are. */
@@ -60,36 +62,44 @@ export async function wireLane(app: App, name: string): Promise<void> {
 		if (!(await app.host.open(new ConfirmModal(safeLines(step.text))))) continue;
 		const { fix } = step;
 		const config = app.config;
-		await runFix(app, () => app.deps.applyFix(fix, config, row, tools));
+		await runFix(app, () => app.deps.applyFix(fix, config, row, tools, plan.cwd));
 	}
 }
 
-/** L: shows or asks what the launch plan says, then gives the terminal to the tool. */
+/**
+ * Where Enter or L opens `row` (spec 2026-10-13-orrery-agents-design §4): its folder when Orrery runs there (or below),
+ * here when it has none, else the person picks. Undefined when they leave the question.
+ */
+async function whereToOpen(app: App, row: LaneRow): Promise<string | undefined> {
+	const here = app.deps.cwd;
+	if (row.workspace === undefined) return here;
+	if (workArea(row, here) === row.workspace) return row.workspace;
+	const options = [`here (${shortHome(here)})`, `its folder (${shortHome(row.workspace)})`];
+	const picked = await app.host.open(new SelectModal(`Open ${row.name} where?`, options));
+	if (picked === undefined) return undefined;
+	return picked === options[0] ? here : row.workspace;
+}
+
+/**
+ * Enter and L: open the lane in its tool as the agent (src/lane/launch.ts), where the person says, after what the launch
+ * plan asks. A remote lane's remote is asked first, so a lane open on another machine is refused before any question.
+ */
 export function launchLane(app: App, row: LaneRow | undefined): void {
 	const config = app.config;
 	if (row === undefined || config === undefined) return;
 	app.run(`Launching ${row.name}`, async () => {
-		let current = row;
-		if (row.remote !== undefined) {
-			if (app.deps.refreshRemote === undefined) throw new Error("Remote launch is unavailable here.");
-			app.say(`Checking ${row.name} on ${row.remote}…`);
-			await app.deps.refreshRemote(config, row.remote);
-			const refreshed = app.deps.overview(config).find((lane) => lane.name === row.name);
-			if (refreshed?.remoteReachable !== true) throw new Error(`Could not check remote ${row.remote}; ${row.name} was not launched. Try again when it is reachable.`);
-			current = refreshed;
-		}
-		const held = current.heldElsewhere;
-		const at = held === undefined ? undefined : new Date(held.lastSeen);
-		const lastSeen = at === undefined ? "" : `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
-		if (held !== undefined && !held.stale) throw new Error(`${row.name} is open on ${held.machine} (last seen ${lastSeen})`);
+		const refresh = app.deps.refreshRemote;
+		const gate = await remoteGate(config, row, { overview: (c) => app.deps.overview(c), say: (text) => app.say(text), ...(refresh === undefined ? {} : { refreshRemote: (c: HarnessConfig, name: string) => refresh(c, name) }) });
+		if (!gate.go) throw new Error(gate.text);
+		const cwd = await whereToOpen(app, gate.row);
+		if (cwd === undefined) return undefined;
 		const tools = app.deps.tools();
-		const plan = launchPlan(config, current, tools);
+		const plan = launchPlan(config, gate.row, tools, { cwd });
 		const label = launchLabel(plan);
 		if (plan.blocked !== undefined) throw new Error(plan.blocked);
-		if (held !== undefined) {
+		if (gate.takeover !== undefined) {
 			if (app.deps.takeoverLane === undefined) throw new Error("Remote takeover is unavailable here.");
-			const question = `${row.name} was open on ${held.machine}, last seen ${lastSeen}, saved up to save ${held.newestSave}. Take over?`;
-			if (!(await app.host.open(new ConfirmModal(safeLines(question))))) return "Not launched.";
+			if (!(await app.host.open(new ConfirmModal(safeLines(gate.takeover))))) return "Not launched.";
 			await app.deps.takeoverLane(row.name);
 		}
 		for (const step of plan.steps) {
@@ -99,10 +109,22 @@ export function launchLane(app: App, row: LaneRow | undefined): void {
 			}
 			if (!(await app.host.open(new ConfirmModal(safeLines(step.text))))) return "Not launched.";
 			const { fix } = step;
-			if (fix !== undefined && !(await runFix(app, () => app.deps.applyFix(fix, config, current, tools)))) return "Not launched.";
+			if (fix !== undefined && !(await runFix(app, () => app.deps.applyFix(fix, config, gate.row, tools, plan.cwd)))) return "Not launched.";
 		}
-		const exit = await app.deps.launch(plan);
+		const exit = await runAgent(plan, (p) => app.deps.launch(p));
 		return exitText(label, exit) ?? `Back from ${label} (${row.name}).`;
+	});
+}
+
+/** E: the lane's instructions in $EDITOR (the template first, when it has none; src/lane/editor.ts). */
+export function editInstructions(app: App, row: LaneRow | undefined): void {
+	const config = app.config;
+	if (row === undefined || config === undefined) return;
+	app.run(`Editing ${row.name}'s instructions`, async () => {
+		const lane = findLane(config, row.name);
+		const done = await editInstructionsFile(lane, () => app.deps.overview(config).find((r) => r.name === row.name), (path) => app.deps.edit(path));
+		if (done.failed !== undefined) throw new Error(`The editor ${done.failed}; the file is as it left it.`);
+		return done.readsAt === undefined ? `Saved ${row.name}'s instructions.` : `Saved. ${row.name} reads them at its ${done.readsAt}.`;
 	});
 }
 
@@ -132,7 +154,7 @@ async function askKb(app: App, title: string, bytes: number): Promise<number | u
 	return n * 1000;
 }
 
-/** E: changes one of the lane's settings in the config file. */
+/** C: changes one of the lane's settings in the config file. */
 export function editLane(app: App, row: LaneRow | undefined): void {
 	if (row === undefined || app.config === undefined) return;
 	if (!app.deps.configWritable()) {
@@ -266,7 +288,8 @@ export function newLane(app: App): void {
 		}
 		const name = await app.host.open(new InputModal("New lane's name (letters, digits, - and _):"));
 		if (!name) return undefined;
-		if (!NAME.test(name)) throw new Error("Lane names use letters, digits, - and _ (at most 32), starting with a letter.");
+		const problem = laneNameProblem(name);
+		if (problem !== undefined) throw new Error(problem);
 		if ([...config.lanes.keys()].some((n) => n.toLowerCase() === name.toLowerCase())) throw new Error(`A lane named ${name} already exists.`);
 		const folderText = await app.host.open(new InputModal("Its folder:", app.deps.cwd));
 		if (!folderText) return undefined;

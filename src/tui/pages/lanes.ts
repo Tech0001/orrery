@@ -1,4 +1,7 @@
-/** Page 1, Lanes (spec §3.1): one row per lane; Enter opens the lane's page. Actions are added in lane-actions.ts. */
+/**
+ * Page 1, Lanes (spec §3.1): one row per lane. Enter (or L) opens the lane in its tool (spec 2026-10-13-orrery-agents-design
+ * §4), i shows its page. Actions are added in lane-actions.ts.
+ */
 
 import { join } from "node:path";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
@@ -10,7 +13,7 @@ import { localIso } from "../../memory/index.ts";
 import type { UsageRow } from "../../memory/types.ts";
 import type { App, Page } from "../app.ts";
 import { type Column, compactCount, fit, renderTable } from "../table.ts";
-import { archiveLaneAction, browseLane, chooseSummaryModel, editLane, launchLane, newLane } from "./lane-actions.ts";
+import { archiveLaneAction, browseLane, chooseSummaryModel, editInstructions, editLane, launchLane, newLane } from "./lane-actions.ts";
 
 /**
  * The full row needs exactly 100 columns (with the 2-column gutter and 2-space gaps): the summary model drops below
@@ -196,7 +199,7 @@ function detailLines(app: App, row: LaneRow, width: number): string[] {
 		...field("Folder", row.workspace === undefined ? "none (it opens wherever it is opened)" : safeText(row.workspace)),
 		...field("Instructions", instructionsField(row)),
 		...field("Data folder", safeText(row.dataDir)),
-		...field("Tool", row.toolSet ? TOOL_LABELS[row.tool] : `${TOOL_LABELS[row.tool]} (guessed: the config has no tool key; set it with E)`),
+		...field("Tool", row.toolSet ? TOOL_LABELS[row.tool] : `${TOOL_LABELS[row.tool]} (guessed: the config has no tool key; set it with C)`),
 		...field("Launcher", row.launcher === "ori" ? `Ori${row.oriModel === undefined ? "" : ` (model ${safeText(row.oriModel)})`}` : "Direct"),
 		...(row.remote !== undefined || (app.config?.remotes.size ?? 0) > 0 ? field("Memory home", row.remote ?? "local") : []),
 		...field("Memory", row.hasMemory ? `${row.messages} messages, ${row.summaries} summaries, view ${kb(row.viewBytes)}/${kb(row.viewBudget)} KB` : "no memory yet"),
@@ -208,7 +211,7 @@ function detailLines(app: App, row: LaneRow, width: number): string[] {
 		...field("Last backup", backup.text).map((line) => (backup.stale ? theme.yellow(line) : line)),
 		...field("Tokens, 7 days", usage ?? "—"),
 		"",
-		theme.dim(fit("L launch · M summary model · E edit · B browse memory · A archive · Esc back", width)),
+		theme.dim(fit("Enter or L open · M summary model · E instructions · C settings · B browse memory · A archive · Esc back", width)),
 	];
 }
 
@@ -232,12 +235,22 @@ function usageLine(app: App, lane: string): string {
 	return `${part("agent", "agent")} · ${part("compactor", "summaries")}`;
 }
 
+/** i: the lane's page, with its token use read once as it opens. */
+function showDetails(app: App): void {
+	const row = selectedLane(app);
+	if (row === undefined) return;
+	app.detail = row.name;
+	const usage = pageUsage.get(app) ?? new Map<string, string>();
+	usage.set(row.name, usageLine(app, row.name));
+	pageUsage.set(app, usage);
+}
+
 export const lanesPage: Page = {
 	id: "lanes",
 	title: "Lanes",
-	// Short words, so the order and "q quit" still fit at 120 columns.
+	// Short words, so the order and "q quit" still fit at 120 columns: the list leaves B and A to the lane's page and ?.
 	hints: (app) =>
-		app.detail !== undefined ? "Esc back · L launch · M model · E edit · B browse · A archive" : `Enter open · L launch · N new · M model · E edit · B browse · A archive · s sort: ${orderOf(app)}`,
+		app.detail !== undefined ? "Esc back · Enter open · M model · E instructions · C settings · B browse · A archive" : `Enter open · i details · N new · M model · E instructions · C settings · s sort: ${orderOf(app)}`,
 	refresh(app) {
 		// A lane taken out of the config closes its page.
 		if (app.detail !== undefined && !app.lanes.some((r) => r.name === app.detail)) app.detail = undefined;
@@ -276,12 +289,7 @@ export const lanesPage: Page = {
 		});
 	},
 	enter(app) {
-		const row = selectedLane(app);
-		if (row === undefined || app.detail !== undefined) return;
-		app.detail = row.name;
-		const usage = pageUsage.get(app) ?? new Map<string, string>();
-		usage.set(row.name, usageLine(app, row.name));
-		pageUsage.set(app, usage);
+		launchLane(app, selectedLane(app));
 	},
 	back(app) {
 		if (app.detail === undefined) return false;
@@ -295,6 +303,10 @@ export const lanesPage: Page = {
 			case "l":
 				launchLane(app, row);
 				return true;
+			case "i":
+				if (app.detail !== undefined) return false;
+				showDetails(app);
+				return true;
 			case "n":
 				newLane(app);
 				return true;
@@ -302,6 +314,9 @@ export const lanesPage: Page = {
 				chooseSummaryModel(app, row);
 				return true;
 			case "e":
+				editInstructions(app, row);
+				return true;
+			case "c":
 				editLane(app, row);
 				return true;
 			case "b":

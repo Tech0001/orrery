@@ -48,7 +48,7 @@ describe("instructions on the Lanes page", () => {
 	it("the lane's page names its instructions", () => {
 		const page = (fields: Partial<LaneRow>) => {
 			const app = makeApp(fakeDeps({}, [row({ name: "Alpha", ...fields })]), [lanesPage]);
-			keys(app, ENTER);
+			keys(app, "i");
 			return screen(app, 120);
 		};
 		expect(page({})).toMatch(/Instructions {2,}instructions\.md *\n/);
@@ -85,7 +85,7 @@ describe("the App and the Lanes page", () => {
 		const app = makeApp(fakeDeps({}, [claude]), [lanesPage]);
 		expect(screen(app, 120)).toContain("sonnet-5-5 low");
 		expect(screen(app, 120)).not.toContain("claude-sonnet");
-		keys(app, ENTER);
+		keys(app, "i");
 		expect(screen(app, 120)).toContain("anthropic/claude-sonnet-5-5 low");
 	});
 
@@ -100,9 +100,9 @@ describe("the App and the Lanes page", () => {
 		expect(screen(app)).toContain("Cedarn");
 	});
 
-	it("opens a lane's page with Enter and goes back with Esc", () => {
+	it("opens a lane's page with i and goes back with Esc", () => {
 		const app = makeApp(fakeDeps({}, [row({ name: "Alpha", toolSet: false, reads: ["*"], summary: { state: "stopped", waiting: 4, plain: "unknown model x/y" } })]), [lanesPage]);
-		keys(app, ENTER);
+		keys(app, "i");
 		const text = screen(app);
 		expect(text).toContain("Folder");
 		expect(text).toContain("/w/alpha");
@@ -137,7 +137,7 @@ describe("the App and the Lanes page", () => {
 
 	it("draws a lane's folder and data folder without their control characters", () => {
 		const app = makeApp(fakeDeps({}, [row({ name: "Alpha", workspace: "/w/a\x1b]0;evil\x07b", dataDir: "/d/\x1b[31mred" })]), [lanesPage]);
-		keys(app, ENTER);
+		keys(app, "i");
 		const text = screen(app);
 		expect(text).toContain("/w/a]0;evilb");
 		expect(text).toContain("/d/[31mred");
@@ -170,13 +170,13 @@ describe("the App and the Lanes page", () => {
 
 	it("keeps the list's selection while a lane's page is open: the arrows do nothing there", () => {
 		const app = makeApp(fakeDeps(), [lanesPage]);
-		keys(app, DOWN, ENTER, DOWN, "\x1b[A", "j", "k", ESC);
+		keys(app, DOWN, "i", DOWN, "\x1b[A", "j", "k", ESC);
 		expect(screen(app)).toMatch(/› Cedarn/);
 	});
 
 	it("shows a lane whose usage cannot be read as unreadable, and keeps running", () => {
 		const app = makeApp(fakeDeps({ usage: () => { throw new Error("database is locked"); } }), [lanesPage]);
-		keys(app, ENTER);
+		keys(app, "i");
 		expect(screen(app)).toMatch(/Tokens, 7 days\s+unreadable: database is locked/);
 		keys(app, ESC);
 		expect(screen(app)).toContain("Summaries");
@@ -188,7 +188,7 @@ describe("the App and the Lanes page", () => {
 			{ at: "2026-10-08T09:00:00.000Z", role: "compactor" as const, model: "m", input: 900, cacheRead: 100, cacheWrite: 0, output: 30, ok: true },
 		] }];
 		const app = makeApp(fakeDeps({ usage: () => usage }), [lanesPage]);
-		keys(app, ENTER);
+		keys(app, "i");
 		expect(screen(app)).toMatch(/Tokens, 7 days\s+agent 5\.2M in \(81% cached\), 41\.8K out · summaries 1\.0K in \(10% cached\), 30 out/);
 	});
 
@@ -198,7 +198,7 @@ describe("the App and the Lanes page", () => {
 			asked.push(only);
 			return [];
 		} }), [lanesPage]);
-		keys(app, DOWN, ENTER);
+		keys(app, DOWN, "i");
 		expect(asked).toEqual(["Cedarn"]);
 	});
 
@@ -319,7 +319,7 @@ describe("the header's warning", () => {
 describe("a lane's last backup", () => {
 	const page = (fields: Partial<ReturnType<typeof row>>, theme = fakeDeps().theme) => {
 		const app = makeApp(fakeDeps({ theme }, [row({ name: "Alpha", ...fields })]), [lanesPage]);
-		keys(app, ENTER);
+		keys(app, "i");
 		return app.render(120);
 	};
 
@@ -389,7 +389,7 @@ describe("sorting the Lanes list with s", () => {
 		expect(screen(app)).toMatch(/› Mid/);
 		app.refresh();
 		expect(drawn(app)[0]).toBe("Mid");
-		keys(app, ENTER);
+		keys(app, "i");
 		expect(screen(app)).toContain("Mid · pi · open");
 	});
 
@@ -402,6 +402,13 @@ describe("sorting the Lanes list with s", () => {
 		keys(app, "s");
 		expect(drawn(app)).toEqual(["Kappa", "Alpha", "Bravo"]);
 		expect(screen(app)).toMatch(/› Kappa/);
+	});
+
+	it("names the keys that open, show, edit instructions and change settings, in the list and on a lane's page", () => {
+		const app = makeApp(fakeDeps({}, lanes), [lanesPage]);
+		expect(hint(app)).toMatch(/^Enter open · i details · N new · M model · E instructions · C settings · s sort: config/);
+		keys(app, "i");
+		expect(hint(app)).toMatch(/^Esc back · Enter open · M model · E instructions · C settings · B browse · A archive/);
 	});
 
 	it("fits its hint and every line in the window", () => {
@@ -419,6 +426,8 @@ describe("the help screen", () => {
 		const text = screen(app);
 		expect(text).toContain("A archive");
 		expect(text).toMatch(/s sort \(config, name, last message, needs attention\)/);
+		expect(text).toContain("Enter        open ");
+		expect(text).toContain("Lanes:  Enter or L open · i details · N new lane · M summary model · E instructions · C settings");
 		for (const width of [60, 120]) for (const line of app.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 	});
 });
@@ -430,6 +439,6 @@ it("shows Ori in the tool column at 80 and 100 columns, and the model on the lan
 		expect(app.render(width).every((line) => visibleWidth(line) <= width)).toBe(true);
 	}
 	expect(screen(app, 100)).toContain("Summary model");
-	keys(app, ENTER);
+	keys(app, "i");
 	expect(screen(app)).toMatch(/Launcher\s+Ori \(model vendor\/model\)/);
 });

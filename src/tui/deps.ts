@@ -9,6 +9,7 @@ import { defaultConfigPath, loadConfig } from "../lane/config.ts";
 import { configWritable, editConfigFile } from "../lane/config-edit.ts";
 import { configureHttp } from "../lane/http.ts";
 import { pageOpener } from "../lane/lane-commands.ts";
+import { runEditor } from "../lane/editor.ts";
 import { applyFix, runTool } from "../lane/launch.ts";
 import { loginRows, removeLogin, saveKey, signIn } from "../lane/logins.ts";
 import { laneOverview, laneUsage, OverviewCache } from "../lane/overview.ts";
@@ -61,7 +62,17 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 				tui.requestRender(true);
 			}
 		},
-		applyFix: (fix, config, row, tools) => applyFix(fix, config, row, tools),
+		applyFix: (fix, config, row, tools, cwd) => applyFix(fix, config, row, tools, cwd === undefined ? {} : { cwd }),
+		edit: async (path) => {
+			// As launch does: the editor gets the terminal, and the TUI comes back when it exits.
+			tui.stop({ preserveScreen: true });
+			try {
+				return await runEditor(path);
+			} finally {
+				tui.start();
+				tui.requestRender(true);
+			}
+		},
 		installSteps: (check) => installSteps(check, wiringRoot().root),
 		install: (steps) => runInstall(steps),
 		browse: (config, lane) => {

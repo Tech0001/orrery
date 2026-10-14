@@ -56,7 +56,10 @@ export interface AppDeps {
 	testChoice(sources: SummarySources, choice: ModelChoice): Promise<TestResult>;
 	/** Gives the terminal to the tool and takes it back when the tool exits. */
 	launch(plan: LaunchPlan): Promise<ToolExit>;
-	applyFix(fix: LaunchFix, config: HarnessConfig, row: LaneRow, tools: readonly ToolCheck[]): string;
+	/** `cwd`: the folder the launch opens in (create-folder makes it). */
+	applyFix(fix: LaunchFix, config: HarnessConfig, row: LaneRow, tools: readonly ToolCheck[], cwd?: string): string;
+	/** Gives the terminal to $EDITOR on `path` and takes it back (src/lane/editor.ts). */
+	edit(path: string): Promise<ToolExit>;
 	installSteps(check: ToolCheck): InstallStep[];
 	install(steps: readonly InstallStep[]): { ok: boolean; output: string };
 	/** Opens a link in the browser; the opener's name, or undefined without a display. */
@@ -109,12 +112,12 @@ const HELP = [
 	"",
 	"1-4 or ← →   switch pages",
 	"↑ ↓ or k j   select",
-	"Enter        open details      Esc   back",
+	"Enter        open             Esc   back",
 	"/            filter the list   ?     this help",
 	"q            quit (lanes keep running in their tools)",
 	"",
-	"Lanes:  L launch · N new lane · M summary model · E edit · B browse memory",
-	"        A archive · s sort (config, name, last message, needs attention)",
+	"Lanes:  Enter or L open · i details · N new lane · M summary model · E instructions · C settings",
+	"        B browse memory · A archive · s sort (config, name, last message, needs attention)",
 	"Logins: A add or replace · T test · D remove · R add remote",
 	"Usage:  + more days · - fewer days",
 	"Tools:  I install or repair",

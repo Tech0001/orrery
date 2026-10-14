@@ -189,14 +189,14 @@ describe("memory home and remote dialogs", () => {
 		}
 	});
 
-	it("E fetches the newest remote memory before making the lane local, preserving comments", async () => {
+	it("C fetches the newest remote memory before making the lane local, preserving comments", async () => {
 		const key = createKey(); const lane = loadConfig(path).lanes.get("Atlas")!;
 		const laneDir = join(dir, "peer"); const store = MemoryStore.open(join(laneDir, "memory.sqlite"));
 		store.append("user", "newest remote memory"); store.close();
 		await RemoteSession.push({ lane: "Atlas", laneDir, storage, key, holder: peer, report: () => {}, settings: laneSettings(lane) });
 		saveRemoteSecret(loadConfig(path), "home", { key: keyToCode(key), token: "token" }); setStorageForTests(() => storage);
 		const { app } = setup();
-		keys(app, "E"); await answer(app, "change which setting", ...typed("Memory home"), ENTER);
+		keys(app, "C"); await answer(app, "change which setting", ...typed("Memory home"), ENTER);
 		await answer(app, "Memory home", ...typed("local"), ENTER); await app.idle();
 		expect(loadConfig(path).lanes.get("Atlas")?.remote).toBeUndefined();
 		expect(readFileSync(path, "utf8")).toContain("# keep this");
@@ -205,13 +205,13 @@ describe("memory home and remote dialogs", () => {
 		expect((await storage.list())[0].lock?.held).toBe(false);
 	});
 
-	it("E pushes local memory before selecting its remote home", async () => {
+	it("C pushes local memory before selecting its remote home", async () => {
 		editConfigFile(path, (text, d) => setLaneKey(text, d, "Atlas", "remote", ""));
 		const key = createKey(); const lane = loadConfig(path).lanes.get("Atlas")!;
 		saveRemoteSecret(loadConfig(path), "home", { key: keyToCode(key), token: "token" }); setStorageForTests(() => storage);
 		const store = MemoryStore.open(join(lane.dir, "memory.sqlite")); store.append("user", "my local memory"); store.close();
 		const { app } = setup();
-		keys(app, "E"); await answer(app, "change which setting", ...typed("Memory home"), ENTER);
+		keys(app, "C"); await answer(app, "change which setting", ...typed("Memory home"), ENTER);
 		await answer(app, "Memory home", ...typed("home"), ENTER); await app.idle();
 		expect(loadConfig(path).lanes.get("Atlas")?.remote).toBe("home");
 		expect((await remoteLaneSettings(storage, key, "Atlas")).settings.compactorModel).toBe("openai/gpt-6.1-sol");
@@ -220,21 +220,21 @@ describe("memory home and remote dialogs", () => {
 		try { expect(fetched.root.map((m) => m.text)).toEqual(["my local memory"]); } finally { fetched.close(); }
 	});
 
-	it("E refuses moving between two remotes and leaves the config alone", async () => {
+	it("C refuses moving between two remotes and leaves the config alone", async () => {
 		writeFileSync(path, `${readFileSync(path, "utf8")}\n[remotes.other]\nkind = "cloudflare"\nurl = "https://other.example.com"\n`);
 		const before = readFileSync(path, "utf8"); const { app } = setup();
-		keys(app, "E"); await answer(app, "change which setting", ...typed("Memory home"), ENTER);
+		keys(app, "C"); await answer(app, "change which setting", ...typed("Memory home"), ENTER);
 		await answer(app, "Memory home", ...typed("other"), ENTER); await app.idle();
 		expect(screen(app)).toContain("make it local first"); expect(readFileSync(path, "utf8")).toBe(before);
 	});
 
-	it.each(["local", "home"])("E keeps memory home unchanged when the %s operation fails", async (target) => {
+	it.each(["local", "home"])("C keeps memory home unchanged when the %s operation fails", async (target) => {
 		if (target === "home") editConfigFile(path, (text, d) => setLaneKey(text, d, "Atlas", "remote", ""));
 		saveRemoteSecret(loadConfig(path), "home", { key: keyToCode(createKey()), token: "token" }); setStorageForTests(() => storage);
 		storage.fetch = async () => { throw new RemoteError("unreachable", "offline"); };
 		storage.snapshot = async () => { throw new RemoteError("unreachable", "offline"); };
 		const before = readFileSync(path, "utf8"); const { app } = setup();
-		keys(app, "E"); await answer(app, "change which setting", ...typed("Memory home"), ENTER);
+		keys(app, "C"); await answer(app, "change which setting", ...typed("Memory home"), ENTER);
 		await answer(app, "Memory home", ...typed(target), ENTER); await app.idle();
 		expect(screen(app)).toContain("offline"); expect(readFileSync(path, "utf8")).toBe(before);
 	});

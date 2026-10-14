@@ -1,7 +1,9 @@
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseConfig } from "../../src/lane/config.ts";
+import { instructionsTemplate } from "../../src/lane/instructions.ts";
+import type { LaunchPlan } from "../../src/lane/launch.ts";
 import { saveKey } from "../../src/lane/logins.ts";
 import { summarySources } from "../../src/lane/summary-sources.ts";
 import type { CompactorTarget } from "../../src/lane/summary-text.ts";
@@ -11,6 +13,7 @@ import { tempDir } from "../lane/support.ts";
 import { answer, fakeDeps, keys, makeApp, row, screen, settle, typed } from "./support.ts";
 
 const ENTER = "\r";
+const DOWN = "\x1b[B";
 const dirs: string[] = [];
 beforeEach(() => {
 	for (const name of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]) vi.stubEnv(name, "");
@@ -36,6 +39,7 @@ describe("L launch", () => {
 		const deps = fakeDeps({ tools: () => [tool("pi"), tool("claude-code"), tool("codex")] }, [row({ name: "Alpha", tool: "codex", workspace: "/" })]);
 		const app = makeApp(deps, [lanesPage]);
 		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
 		await answer(app, "Codex", ENTER);
 		await app.idle();
 		expect(deps.launched).toEqual(["Alpha"]);
@@ -46,6 +50,7 @@ describe("L launch", () => {
 		const deps = fakeDeps({ tools: () => [tool("pi"), tool("claude-code"), tool("codex")] }, [row({ name: "Alpha", workspace: "/", state: "open", openIn: "pi" })]);
 		const app = makeApp(deps, [lanesPage]);
 		keys(app, "l");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
 		await answer(app, "already open in pi", "n");
 		await app.idle();
 		expect(deps.launched).toEqual([]);
@@ -56,12 +61,141 @@ describe("L launch", () => {
 		const deps = fakeDeps({ tools: () => [tool("pi"), tool("claude-code"), tool("codex")], launch: async () => ({ code: 2, signal: null }) }, [row({ name: "Alpha", workspace: "/" })]);
 		const app = makeApp(deps, [lanesPage]);
 		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
 		await app.idle();
 		expect(screen(app)).toContain("pi exited with code 2.");
 		const none = makeApp(fakeDeps({ tools: () => [tool("pi", { path: undefined }), tool("claude-code"), tool("codex")] }, [row({ name: "Alpha", workspace: "/" })]), [lanesPage]);
 		keys(none, "L");
+		await answer(none, "Open Alpha where?", DOWN, ENTER);
 		await none.idle();
 		expect(screen(none)).toContain("pi is not on PATH");
+	});
+});
+
+describe("Enter opens an agent", () => {
+	const alpha = (folder: string, data = "/d") => parseConfig(`data_dir = ${JSON.stringify(data)}\n[lanes.Alpha]\nworkspace = ${JSON.stringify(folder)}\ncompactor_model = "openai/gpt-6.1-sol"\n`, data);
+	const scratch = (prefix: string) => {
+		const dir = tempDir(prefix);
+		dirs.push(dir);
+		return dir;
+	};
+
+	it("asks here or its folder when Orrery runs elsewhere, and starts the tool there with ORRERY_AGENT", async () => {
+		const here = scratch("orrery-tui-here-");
+		const folder = scratch("orrery-tui-folder-");
+		const plans: LaunchPlan[] = [];
+		const deps = fakeDeps({ cwd: here, loadConfig: () => alpha(folder), tools: () => [tool("pi"), tool("claude-code"), tool("codex")], launch: async (plan) => (plans.push(plan), { code: 0, signal: null }) }, [row({ name: "Alpha", workspace: folder })]);
+		const app = makeApp(deps, [lanesPage]);
+		keys(app, ENTER);
+		await answer(app, "Open Alpha where?");
+		expect(screen(app)).toContain(`here (${here})`);
+		expect(screen(app)).toContain(`its folder (${folder})`);
+		keys(app, ENTER);
+		await app.idle();
+		expect(plans.map((plan) => [plan.cwd, plan.env.ORRERY_AGENT])).toEqual([[here, "Alpha"]]);
+		expect(plans[0]?.env.ORRERY_AGENT_TOKEN).toMatch(/^[0-9a-f]{32}$/);
+		expect(screen(app)).toContain("Back from pi (Alpha).");
+		// Its folder, the second answer; Esc opens nothing.
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await app.idle();
+		keys(app, ENTER);
+		await answer(app, "Open Alpha where?", "\x1b");
+		await app.idle();
+		expect(plans.map((plan) => plan.cwd)).toEqual([here, folder]);
+	});
+
+	it("opens in its folder without asking when Orrery runs there or below, and here for an agent with no folder", async () => {
+		const folder = scratch("orrery-tui-folder-");
+		const plans: LaunchPlan[] = [];
+		const launch = async (plan: LaunchPlan) => (plans.push(plan), { code: 0, signal: null });
+		const inFolder = makeApp(fakeDeps({ cwd: folder, loadConfig: () => alpha(folder), tools: () => [tool("pi")], launch }, [row({ name: "Alpha", workspace: folder })]), [lanesPage]);
+		keys(inFolder, ENTER);
+		await inFolder.idle();
+		const below = makeApp(fakeDeps({ cwd: join(folder, "sub"), loadConfig: () => alpha(folder), tools: () => [tool("pi")], launch }, [row({ name: "Alpha", workspace: folder })]), [lanesPage]);
+		keys(below, "L");
+		await below.idle();
+		const here = scratch("orrery-tui-here-");
+		const nomad = parseConfig(`data_dir = "/d"\n[lanes.Alpha]\ncompactor_model = "openai/gpt-6.1-sol"\n`, "/d");
+		const bare = makeApp(fakeDeps({ cwd: here, loadConfig: () => nomad, tools: () => [tool("pi")], launch }, [row({ name: "Alpha", workspace: undefined })]), [lanesPage]);
+		keys(bare, ENTER);
+		await bare.idle();
+		expect(plans.map((plan) => plan.cwd)).toEqual([folder, folder, here]);
+	});
+
+	it("offers to create the folder it opens in, and the fix makes that folder", async () => {
+		const here = scratch("orrery-tui-here-");
+		const missing = join(scratch("orrery-tui-folder-"), "not-yet");
+		const fixes: [string, string | undefined][] = [];
+		const deps = fakeDeps({ cwd: here, loadConfig: () => alpha(missing), tools: () => [tool("pi")], applyFix: (fix, _config, _row, _tools, cwd) => (fixes.push([fix, cwd]), "fixed") }, [row({ name: "Alpha", workspace: missing })]);
+		const app = makeApp(deps, [lanesPage]);
+		keys(app, ENTER);
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "does not exist", "y");
+		await answer(app, "Done", ENTER);
+		await app.idle();
+		expect(fixes).toEqual([["create-folder", missing]]);
+		expect(deps.launched).toEqual(["Alpha"]);
+	});
+
+	it("refuses Claude Code here without the mod, before it asks anything more", async () => {
+		const here = scratch("orrery-tui-here-");
+		const folder = scratch("orrery-tui-folder-");
+		const data = scratch("orrery-tui-data-");
+		const deps = fakeDeps({ cwd: here, loadConfig: () => alpha(folder, data), tools: () => [tool("claude-code")] }, [row({ name: "Alpha", tool: "claude-code", workspace: folder })]);
+		const app = makeApp(deps, [lanesPage]);
+		keys(app, ENTER);
+		await answer(app, "Open Alpha where?", ENTER);
+		await app.idle();
+		expect(screen(app)).toContain("Claude Code opens Alpha outside its folder only through the Orrery mod");
+		expect(deps.launched).toEqual([]);
+	});
+
+	it("i shows the agent's page from the list; Enter there opens it", async () => {
+		const folder = scratch("orrery-tui-folder-");
+		const plans: LaunchPlan[] = [];
+		const deps = fakeDeps({ cwd: folder, loadConfig: () => alpha(folder), tools: () => [tool("pi")], launch: async (plan) => (plans.push(plan), { code: 0, signal: null }) }, [row({ name: "Alpha", workspace: folder })]);
+		const app = makeApp(deps, [lanesPage]);
+		keys(app, "i");
+		expect(screen(app)).toContain("Enter or L open · M summary model · E instructions · C settings · B browse memory · A archive · Esc back");
+		keys(app, ENTER);
+		await app.idle();
+		expect(plans.map((plan) => plan.cwd)).toEqual([folder]);
+	});
+});
+
+describe("E instructions", () => {
+	const alpha = (data: string) => parseConfig(`data_dir = ${JSON.stringify(data)}\n[lanes.Alpha]\nworkspace = "/w/alpha"\ncompactor_model = "openai/gpt-6.1-sol"\n`, data);
+
+	it("E writes the template when there are none, and opens the instructions in the editor", async () => {
+		const data = tempDir("orrery-tui-data-");
+		dirs.push(data);
+		const edited: string[] = [];
+		const deps = fakeDeps({ loadConfig: () => alpha(data), edit: async (path) => (edited.push(path), { code: 0, signal: null }) });
+		const app = makeApp(deps, [lanesPage]);
+		keys(app, "E");
+		await app.idle();
+		const path = join(data, "lanes", "Alpha", "instructions.md");
+		expect(edited).toEqual([path]);
+		expect(readFileSync(path, "utf8")).toBe(instructionsTemplate("Alpha"));
+		expect(screen(app)).toContain("Saved Alpha's instructions.");
+	});
+
+	it("keeps instructions that are there, says when an open agent reads them, and how the editor failed", async () => {
+		const data = tempDir("orrery-tui-data-");
+		dirs.push(data);
+		const path = join(data, "lanes", "Alpha", "instructions.md");
+		let exit: { code: number | null; signal: NodeJS.Signals | null } = { code: 0, signal: null };
+		const open = makeApp(fakeDeps({ loadConfig: () => alpha(data), edit: async () => exit }, [row({ name: "Alpha", state: "open", openIn: "claude-code", tool: "claude-code" })]), [lanesPage]);
+		keys(open, "e");
+		await open.idle();
+		expect(screen(open)).toContain("Saved. Alpha reads them at its next session.");
+		writeFileSync(path, "Mine.\n");
+		exit = { code: 1, signal: null };
+		keys(open, "E");
+		await open.idle();
+		expect(screen(open)).toContain("The editor exited with code 1; the file is as it left it.");
+		expect(readFileSync(path, "utf8")).toBe("Mine.\n");
 	});
 });
 
@@ -112,17 +246,17 @@ describe("M summary model", () => {
 	});
 });
 
-describe("E edit", () => {
+describe("C settings", () => {
 	it("changes summary jobs and the tool in the config, keeping the rest", async () => {
 		const deps = fakeDeps();
 		const app = makeApp(deps, [lanesPage]);
-		keys(app, "E");
+		keys(app, "C");
 		await answer(app, "change which setting", ...typed("jobs"), ENTER);
 		await answer(app, "Summary jobs", "\x15", ...typed("8"), ENTER);
 		await app.idle();
 		expect(deps.edits.at(-1)).toContain('[lanes.Alpha]\nworkspace = "/w/alpha"\ncompactor_model = "openai/gpt-6.1-sol"\ncompactor_jobs = 8\n');
 		expect(screen(app)).toContain("Saved. It applies when Alpha next opens.");
-		keys(app, "E");
+		keys(app, "C");
 		await answer(app, "change which setting", ...typed("tool"), ENTER);
 		await answer(app, "Tool:", ...typed("codex"), ENTER);
 		await app.idle();
@@ -132,14 +266,14 @@ describe("E edit", () => {
 	it("changes where Claude Code compacts, refusing under 100 thousand", async () => {
 		const deps = fakeDeps();
 		const app = makeApp(deps, [lanesPage]);
-		keys(app, "E");
+		keys(app, "C");
 		await answer(app, "change which setting", ...typed("Claude Code compacts at: 200K tokens"), ENTER);
 		await answer(app, "Compact Claude Code", "\x15", ...typed("150"), ENTER);
 		await app.idle();
 		expect(deps.edits.at(-1)).toContain("compact_at = 150000");
 		const refused = fakeDeps();
 		const second = makeApp(refused, [lanesPage]);
-		keys(second, "E");
+		keys(second, "C");
 		await answer(second, "change which setting", ...typed("Claude Code compacts at: 200K tokens"), ENTER);
 		await answer(second, "Compact Claude Code", "\x15", ...typed("50"), ENTER);
 		await second.idle();
@@ -150,16 +284,16 @@ describe("E edit", () => {
 	it("clears the folder with an empty value; a lane without one shows none, in its page and in E", async () => {
 		const deps = fakeDeps();
 		const app = makeApp(deps, [lanesPage]);
-		keys(app, "E");
+		keys(app, "C");
 		await answer(app, "change which setting", ...typed("Folder"), ENTER);
 		await answer(app, "Folder (an absolute path; empty: none", "\x15", ENTER);
 		await app.idle();
 		expect(deps.edits.at(-1)).toContain('[lanes.Alpha]\ncompactor_model = "openai/gpt-6.1-sol"\n[lanes.Cedarn]');
 		expect(screen(app)).toContain("Saved. Alpha launches with it next time.");
 		const bare = makeApp(fakeDeps({}, [row({ name: "Alpha", workspace: undefined })]), [lanesPage]);
-		keys(bare, ENTER);
+		keys(bare, "i");
 		expect(screen(bare, 120)).toContain("none (it opens wherever it is opened)");
-		keys(bare, "\x1b", "E");
+		keys(bare, "\x1b", "C");
 		await answer(bare, "change which setting", ...typed("Folder: none"), ENTER);
 		await answer(bare, "Folder (an absolute path; empty: none", ...typed("/w/new"), ENTER);
 		await bare.idle();
@@ -169,14 +303,14 @@ describe("E edit", () => {
 	it("refuses a number that is not one, and a config it cannot write", async () => {
 		const deps = fakeDeps();
 		const app = makeApp(deps, [lanesPage]);
-		keys(app, "E");
+		keys(app, "C");
 		await answer(app, "change which setting", ...typed("view"), ENTER);
 		await answer(app, "View size", "\x15", ...typed("lots"), ENTER);
 		await app.idle();
 		expect(screen(app)).toContain("Enter a whole number of KB.");
 		expect(deps.edits).toEqual([]);
 		const locked = makeApp(fakeDeps({ configWritable: () => false }), [lanesPage]);
-		keys(locked, "E");
+		keys(locked, "C");
 		expect(screen(locked)).toContain("can't be written");
 	});
 });
@@ -220,6 +354,18 @@ describe("N new lane", () => {
 	});
 });
 
+describe("N names", () => {
+	it("refuses a name orrery agent uses, writing nothing", async () => {
+		const deps = fakeDeps({ tools: () => [tool("pi")] });
+		const app = makeApp(deps, [lanesPage]);
+		keys(app, "N");
+		await answer(app, "New lane's name", ...typed("Archive"), ENTER);
+		await app.idle();
+		expect(screen(app)).toContain("Archive is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); pick another name.");
+		expect(deps.edits).toEqual([]);
+	});
+});
+
 describe("B browse", () => {
 	it("writes the memory page and says where", async () => {
 		const app = makeApp(fakeDeps(), [lanesPage]);
@@ -239,6 +385,7 @@ describe("failing wiring", () => {
 		const deps = fakeDeps({ tools: () => [tool("pi", { wiring: "missing" }), tool("claude-code"), tool("codex")], applyFix: boom }, [row({ name: "Alpha", workspace: "/" })]);
 		const app = makeApp(deps, [lanesPage]);
 		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
 		await answer(app, "extension is not installed", "y");
 		await settle();
 		expect(app.host.current?.title).toBe("Failed");
@@ -323,7 +470,7 @@ describe("A archive", () => {
 	it("archives the lane whose page is open, and closes the page", async () => {
 		const deps = following();
 		const app = makeApp(deps, [lanesPage]);
-		keys(app, "\x1b[B", ENTER, "A");
+		keys(app, "\x1b[B", "i", "A");
 		await answer(app, "Archive Cedarn?", "y");
 		await app.idle();
 		expect(deps.edits[0]).toMatch(/^# \[lanes\.Cedarn\]$/m);
@@ -404,6 +551,7 @@ describe("the cursor across refreshes", () => {
 		app.refresh();
 		expect(screen(app)).toMatch(/› B/);
 		keys(app, "L");
+		await answer(app, "Open B where?", DOWN, ENTER);
 		await app.idle();
 		expect(deps.launched).toEqual(["B"]);
 	});
@@ -419,6 +567,7 @@ describe("the cursor across refreshes", () => {
 		app.refresh();
 		expect(screen(app)).toMatch(/› A/);
 		keys(app, "L");
+		await answer(app, "Open A where?", DOWN, ENTER);
 		await app.idle();
 		expect(deps.launched).toEqual(["A"]);
 	});
@@ -436,25 +585,26 @@ describe("the cursor across refreshes", () => {
 		app.refresh();
 		expect(screen(app)).toMatch(/› B/);
 		keys(app, "L");
+		await answer(app, "Open B where?", DOWN, ENTER);
 		await app.idle();
 		expect(deps.launched).toEqual(["B"]);
 	});
 });
 
-it("E sets the launcher and sets or clears its model", async () => {
+it("C sets the launcher and sets or clears its model", async () => {
 	const deps = fakeDeps();
 	const app = makeApp(deps, [lanesPage]);
-	keys(app, "E");
+	keys(app, "C");
 	await answer(app, "change which setting?", ...typed("Launcher"), ENTER);
 	await answer(app, "Launcher:", ...typed("Ori"), ENTER);
 	await app.idle();
 	expect(deps.edits.at(-1)).toContain('launcher = "ori"');
-	keys(app, "E");
+	keys(app, "C");
 	await answer(app, "change which setting?", ...typed("Ori model"), ENTER);
 	await answer(app, "Ori model", ...typed("vendor/model"), ENTER);
 	await app.idle();
 	expect(deps.edits.at(-1)).toContain('ori_model = "vendor/model"');
-	keys(app, "E");
+	keys(app, "C");
 	await answer(app, "change which setting?", ...typed("Ori model"), ENTER);
 	await answer(app, "Ori model", ENTER);
 	await app.idle();

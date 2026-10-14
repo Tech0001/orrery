@@ -16,6 +16,9 @@ import { lanesPage } from "../../src/tui/pages/lanes.ts";
 import { tempDir } from "../lane/support.ts";
 import { answer, fakeDeps, keys, makeApp, screen, settle } from "./support.ts";
 
+/** The TUI runs outside Atlas's folder: L asks where, and these open it in its folder. */
+const inItsFolder = (app: Parameters<typeof answer>[0]) => answer(app, "Open Atlas where?", "\x1b[B", "\r");
+
 let dir: string;
 let path: string;
 let now: number;
@@ -88,7 +91,7 @@ describe("L on a remote lane", () => {
 			} finally { await session!.close(); }
 			launched = true; return { code: 0, signal: null };
 		};
-		keys(app, "L"); await settle();
+		keys(app, "L"); await inItsFolder(app);
 		expect(app.host.current?.title).toBe(question);
 		expect((await storage.list())[0].lock).toMatchObject({ held: true, lock, holder: peer });
 		expect(launched).toBe(false);
@@ -98,7 +101,7 @@ describe("L on a remote lane", () => {
 
 	it.each(["n", "\x1b"])("%j leaves the stale lock alone and does not launch", async (key) => {
 		const lock = await hold(true); const { app, deps } = setup();
-		keys(app, "L"); await answer(app, "Take over?", key); await app.idle();
+		keys(app, "L"); await inItsFolder(app); await answer(app, "Take over?", key); await app.idle();
 		expect(deps.launched).toEqual([]);
 		expect((await storage.list())[0].lock).toMatchObject({ held: true, lock, holder: peer });
 	});
@@ -110,7 +113,7 @@ describe("L on a remote lane", () => {
 		try { for (let n = 1; n <= 200; n++) store.append("user", `message ${n}`); } finally { store.close(); }
 		await RemoteSession.push({ lane: "Atlas", laneDir, storage, key, holder: peer, settings: laneSettings(config.lanes.get("Atlas")!), report: () => {} });
 		saveRemoteSecret(config, "home", { key: keyToCode(key), token: "hidden-token" });
-		await hold(true); const { app, deps } = setup(); keys(app, "L"); await settle();
+		await hold(true); const { app, deps } = setup(); keys(app, "L"); await inItsFolder(app);
 		expect(app.host.current?.title).toBe("Atlas was open on macbook, last seen 14:02, saved up to save 0. Take over?");
 		expect(screen(app)).not.toContain("turn 0");
 		await answer(app, "Take over?", "n"); await app.idle(); expect(deps.launched).toEqual([]);
@@ -118,7 +121,7 @@ describe("L on a remote lane", () => {
 
 	it("refreshes a cached stale lock that was released, then launches without asking", async () => {
 		const lock = await hold(true); const { app, deps } = setup(); await settle(); app.refresh();
-		await storage.release("Atlas", lock); keys(app, "L"); await app.idle();
+		await storage.release("Atlas", lock); keys(app, "L"); await inItsFolder(app); await app.idle();
 		expect(deps.launched).toEqual(["Atlas"]); expect(app.host.current).toBeUndefined();
 	});
 
@@ -130,7 +133,8 @@ describe("L on a remote lane", () => {
 		keys(app, "L"); await settle(); app.refresh();
 		expect(screen(app)).toContain("Checking Atlas on home"); expect(calls).toBe(1);
 		expect(deps.launched).toEqual([]); expect(app.host.current).toBeUndefined();
-		complete(await list()); await app.idle(); expect(deps.launched).toEqual(["Atlas"]);
+		// The remote answers; then the folder is asked.
+		complete(await list()); await inItsFolder(app); await app.idle(); expect(deps.launched).toEqual(["Atlas"]);
 	});
 
 	it("refuses to launch if the refresh fails, even with a cached free lane", async () => {
@@ -144,13 +148,13 @@ describe("L on a remote lane", () => {
 	it("does not ask to take over a holder on this device", async () => {
 		await hold(); const config = loadConfig(path);
 		mkdirSync(config.dataDir, { recursive: true }); writeFileSync(config.deviceIdPath, peer.device);
-		const { app, deps } = setup(); keys(app, "L"); await app.idle();
+		const { app, deps } = setup(); keys(app, "L"); await inItsFolder(app); await app.idle();
 		expect(deps.launched).toEqual(["Atlas"]); expect(app.host.current).toBeUndefined();
 	});
 
 	it("does not launch when the stale holder renews while the confirmation is open", async () => {
 		const lock = await hold(true); const { app, deps } = setup();
-		keys(app, "L"); await settle(); expect(app.host.current?.title).toBe(question);
+		keys(app, "L"); await inItsFolder(app); expect(app.host.current?.title).toBe(question);
 		await storage.renew("Atlas", lock);
 		await answer(app, "Take over?", "y"); await app.idle();
 		expect(deps.launched).toEqual([]); expect(screen(app)).toContain("its lock is not stale");
@@ -160,7 +164,7 @@ describe("L on a remote lane", () => {
 	it("does not launch when releasing the taken lock fails", async () => {
 		await hold(true); const { app, deps } = setup();
 		storage.release = async () => { throw new RemoteError("unreachable", "release failed"); };
-		keys(app, "L"); await answer(app, "Take over?", "y"); await app.idle();
+		keys(app, "L"); await inItsFolder(app); await answer(app, "Take over?", "y"); await app.idle();
 		expect(deps.launched).toEqual([]); expect(screen(app)).toContain("release failed");
 	});
 
@@ -169,6 +173,6 @@ describe("L on a remote lane", () => {
 		const { app, deps } = setup();
 		deps.refreshRemote = async () => { throw new Error("local L must not check remotes"); };
 		deps.takeoverLane = async () => { throw new Error("local L must not take over"); };
-		keys(app, "L"); await app.idle(); expect(deps.launched).toEqual(["Atlas"]);
+		keys(app, "L"); await inItsFolder(app); await app.idle(); expect(deps.launched).toEqual(["Atlas"]);
 	});
 });

@@ -45,7 +45,8 @@ describe("throwaway demo", () => {
 		const app = makeApp(deps, PAGES);
 		expect(screen(app)).toContain("Bellwick");
 		expect(screen(app)).toContain("failing:");
-		expect(screen(app)).not.toContain("instructions");
+		// No instructions note in a state cell (the hint line names E instructions).
+		expect(screen(app)).not.toMatch(/no instructions|instructions over 32 KB|new instructions/);
 		app.handleInput("3"); await settle();
 		expect(screen(app)).toMatch(/\$\d+\.\d{2}/);
 		expect(deps.usage(config, 7).flatMap((lane) => lane.rows).some((row) => row.cacheRead > 0 && row.role === "compactor")).toBe(true);

@@ -53,6 +53,7 @@ export function fakeDeps(overrides: Partial<AppDeps> = {}, rows: LaneRow[] = [ro
 			return { code: 0, signal: null };
 		},
 		applyFix: () => "fixed",
+		edit: async () => ({ code: 0, signal: null }),
 		install: () => ({ ok: true, output: "done\n" }),
 		installSteps: () => [],
 		browse: () => ({ path: "/d/lanes/Alpha/memory.html" }),
