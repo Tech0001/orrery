@@ -5,6 +5,9 @@
  */
 
 import type { RemoteAddResult, RemoteInteraction, RemoteOptions } from "../cli/remote.ts";
+import type { ChatList } from "../import/chats.ts";
+import type { NewAgentFromChat } from "../import/create-agent.ts";
+import type { DryRunInput, DryRunResult } from "../import/dry-run.ts";
 import type { AuthInteraction } from "@earendil-works/pi-ai";
 import { type Component, decodeKittyPrintable, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import type { HarnessConfig, LaneConfig, ModelChoice } from "../lane/config.ts";
@@ -66,6 +69,16 @@ export interface AppDeps {
 	/** Opens a link in the browser; the opener's name, or undefined without a display. */
 	openUrl(url: string): string | undefined;
 	browse(config: HarnessConfig, lane: string): { path: string; opened?: string };
+	/** The Claude Code and Codex chats to turn into an agent (src/import/chats.ts). */
+	chats(): ChatList;
+	/** The import's dry run (src/import/dry-run.ts): writes only into `input.out`. */
+	importPreview(input: DryRunInput): Promise<DryRunResult>;
+	/** Adds the agent and commits the reviewed preview into its memory (src/import/create-agent.ts). */
+	importCommit(request: NewAgentFromChat): { readonly laneDir: string; readonly messages: number };
+	/** Starts the agent's memory build in the background (src/lane/build.ts). */
+	startBuild(name: string, laneDir: string): void;
+	/** Writes the agent's instructions.md (src/lane/instructions.ts). */
+	writeInstructions(laneDir: string, text: string): void;
 	/** orrery's own version and folder, for the Tools page. */
 	about(): { readonly version: string; readonly root: string; /** The installed version folder running, or "checkout". */ readonly running?: string };
 	/** The version `app/current` names (what a restarted lane would run), or undefined when none is installed. */

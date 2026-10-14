@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig, parseConfig } from "../../src/lane/config.ts";
 import { configWritable, editConfigFile } from "../../src/lane/config-edit.ts";
+import { instructionsTemplate } from "../../src/lane/instructions.ts";
 import { saveKey } from "../../src/lane/logins.ts";
 import { explainFailure } from "../../src/lane/source-labels.ts";
 import { laneOverview } from "../../src/lane/overview.ts";
@@ -60,7 +61,7 @@ function dataOnly(dataDir: string) {
 
 describe("first run", () => {
 	it("asks where memory lives, a lane, a summary login and model, writes the config, and offers the wiring", async () => {
-		const { configPath, dataDir, ws, fixes, app } = world();
+		const { configPath, dataDir, ws, fixes, app, deps } = world();
 		const done = firstRun(app);
 		await answer(app, "Where should memory live", "\x15", ...typed(dataDir), ENTER);
 		await answer(app, "first lane's name", ...typed("Main"), ENTER);
@@ -82,6 +83,7 @@ describe("first run", () => {
 		expect(readFileSync(configPath, "utf8")).toContain('tool = "pi"\nmodel = "anthropic/claude-haiku-4-5"\ncompactor_model = "anthropic/claude-haiku-4-5"\n');
 		expect(await summarySources(dataOnly(dataDir)).credentials.read("anthropic")).toEqual({ type: "api_key", key: "sk-ant-setup-1" });
 		expect(fixes).toEqual(["install-pi"]);
+		expect(deps.instructions).toEqual([[join(dataDir, "lanes", "Main"), instructionsTemplate("Main")]]);
 		expect(screen(app)).toContain("Orrery is set up. Main is ready: press L to launch it.");
 	});
 

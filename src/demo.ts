@@ -131,6 +131,7 @@ export function demoDeps(demo: Demo, controls: Pick<AppDeps, "rows" | "quit" | "
 		saveKey: async () => disabled(), signIn: async () => disabled(), removeLogin: async () => disabled(),
 		testChoice: async () => disabled(), launch: async () => disabled(), applyFix: disabled,
 		installSteps: disabled, install: disabled, openUrl: () => undefined,
+		chats: disabled, importPreview: async () => disabled(), importCommit: disabled, startBuild: disabled, writeInstructions: disabled,
 		browse: (config, lane) => ({ path: browseCommand(config, lane, join(config.lanes.get(lane)!.dir, "memory.html")) }),
 		about: () => ({ version: `${versionNumber()} (demo)`, root: runningRoot() }),
 		installedVersion: () => undefined,

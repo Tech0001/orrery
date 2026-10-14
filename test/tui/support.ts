@@ -21,14 +21,14 @@ export function row(fields: Partial<LaneRow> & { name: string }): LaneRow {
 export const CONFIG_TEXT = `data_dir = "/d"\n[lanes.Alpha]\nworkspace = "/w/alpha"\ncompactor_model = "openai/gpt-6.1-sol"\n[lanes.Cedarn]\nworkspace = "/w/cedarn"\ncompactor_model = "openai/gpt-6.1-sol"\n`;
 export const CONFIG: HarnessConfig = parseConfig(CONFIG_TEXT, "/d");
 
-export type FakeDeps = AppDeps & { quits: number; edits: string[]; launched: string[] };
+export type FakeDeps = AppDeps & { quits: number; edits: string[]; launched: string[]; instructions: [string, string][] };
 
 /** Every dependency answers with a harmless default; tests override what they exercise. */
 export function fakeDeps(overrides: Partial<AppDeps> = {}, rows: LaneRow[] = [row({ name: "Alpha" }), row({ name: "Cedarn" })]): FakeDeps {
 	let text = CONFIG_TEXT;
 	let config = CONFIG;
 	const deps = {
-		quits: 0, edits: [] as string[], launched: [] as string[],
+		quits: 0, edits: [] as string[], launched: [] as string[], instructions: [] as [string, string][],
 		configPath: "/c/config.toml", cwd: "/home/someone/project", theme: PLAIN,
 		loadConfig: () => config,
 		configWritable: () => true,
@@ -57,6 +57,17 @@ export function fakeDeps(overrides: Partial<AppDeps> = {}, rows: LaneRow[] = [ro
 		install: () => ({ ok: true, output: "done\n" }),
 		installSteps: () => [],
 		browse: () => ({ path: "/d/lanes/Alpha/memory.html" }),
+		chats: () => ({ chats: [], bytesRead: 0 }),
+		importPreview: async () => {
+			throw new Error("no preview in this test");
+		},
+		importCommit: () => {
+			throw new Error("no import in this test");
+		},
+		startBuild: () => {},
+		writeInstructions: (dir: string, text: string) => {
+			deps.instructions.push([dir, text]);
+		},
 		openUrl: () => undefined,
 		about: () => ({ version: "0.1.0", root: "/opt/orrery" }),
 		installedVersion: () => undefined,

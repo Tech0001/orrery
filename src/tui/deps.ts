@@ -4,12 +4,17 @@ import { join } from "node:path";
 import type { TUI } from "@earendil-works/pi-tui";
 import { addRemoteCommand, laneRemoteCommand, pullLaneCommand } from "../cli/remote.ts";
 import { browseCommand } from "../cli/commands.ts";
+import { listChats } from "../import/chats.ts";
+import { createFromPreview } from "../import/create-agent.ts";
+import { dryRun } from "../import/dry-run.ts";
+import { startBuild } from "../lane/build.ts";
 import { laneCompactorTarget } from "../lane/compactor-target.ts";
 import { defaultConfigPath, loadConfig } from "../lane/config.ts";
 import { configWritable, editConfigFile } from "../lane/config-edit.ts";
 import { configureHttp } from "../lane/http.ts";
 import { pageOpener } from "../lane/lane-commands.ts";
 import { runEditor } from "../lane/editor.ts";
+import { writeInstructions } from "../lane/instructions.ts";
 import { applyFix, runTool } from "../lane/launch.ts";
 import { loginRows, removeLogin, saveKey, signIn } from "../lane/logins.ts";
 import { laneOverview, laneUsage, OverviewCache } from "../lane/overview.ts";
@@ -82,6 +87,11 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 			opener?.open(path);
 			return { path, ...(opener === undefined ? {} : { opened: opener.command }) };
 		},
+		chats: () => listChats(),
+		importPreview: (input) => dryRun(input),
+		importCommit: (request) => createFromPreview(options.configPath, request),
+		startBuild: (name, laneDir) => startBuild(name, laneDir, { configPath: options.configPath }),
+		writeInstructions,
 		openUrl: (url) => {
 			const opener = process.env.ORRERY_NO_OPEN === "1" ? undefined : pageOpener();
 			opener?.open(url);

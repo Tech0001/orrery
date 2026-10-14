@@ -42,6 +42,8 @@ export interface LaunchPlan {
 	readonly steps: readonly LaunchStep[];
 	/** Why it cannot launch at all. */
 	readonly blocked?: string;
+	/** Blocked only because Claude Code opens this lane here through the Orrery mod alone: claude-setup-mod opens it. */
+	readonly needsMod?: true;
 }
 
 export interface LaunchOptions {
@@ -66,19 +68,19 @@ function installQuestion(what: string, check: ToolCheck, options: { root?: strin
 
 /**
  * Why Claude Code cannot open `lane` in `cwd`, or undefined when it can. Outside its folder it gets the lane's memory only
- * from the Orrery mod. In a folder that another lane, set up the file way, holds (its own folder or an ancestor's: Claude
- * Code loads every ancestor's CLAUDE.md and CLAUDE.local.md), that file loads the other lane's memory view into the
- * session; the plugin refuses such a session too (src/claude/pick.ts).
+ * from the Orrery mod (`needsMod`). In a folder that another lane, set up the file way, holds (its own folder or an
+ * ancestor's: Claude Code loads every ancestor's CLAUDE.md and CLAUDE.local.md), that file loads the other lane's memory
+ * view into the session; the plugin refuses such a session too (src/claude/pick.ts).
  */
-function claudeCodeRefusal(config: HarnessConfig, lane: LaneConfig, cwd: string, inFolder: boolean): string | undefined {
+function claudeCodeRefusal(config: HarnessConfig, lane: LaneConfig, cwd: string, inFolder: boolean): { readonly text: string; readonly needsMod?: true } | undefined {
 	for (const host of config.lanes.values()) {
 		if (host.name === lane.name || !inWorkspace(host, cwd) || laneMode(host) !== "file") continue;
 		const file = readSetupMarker(host.dir)?.file ?? "CLAUDE.md";
 		const where = host.workspace !== undefined && resolve(host.workspace) === cwd ? "" : "inside ";
-		return `${cwd} is ${where}${host.name}'s folder, where Claude Code loads ${host.name}'s memory through ${file}; open ${lane.name} in another folder.`;
+		return { text: `${cwd} is ${where}${host.name}'s folder, where Claude Code loads ${host.name}'s memory through ${file}; open ${lane.name} in another folder.` };
 	}
 	if (!inFolder && laneMode(lane) !== "mod") {
-		return `Claude Code opens ${lane.name} outside its folder only through the Orrery mod: run orrery claude-setup ${lane.name} --mod (Claude Code 2.1.287 or newer), then open it again.`;
+		return { text: `Claude Code opens ${lane.name} outside its folder only through the Orrery mod: run orrery claude-setup ${lane.name} --mod (Claude Code 2.1.287 or newer), then open it again.`, needsMod: true };
 	}
 	return undefined;
 }
@@ -113,7 +115,7 @@ export function launchPlan(config: HarnessConfig, row: LaneRow, tools: readonly 
 	}
 	const inFolder = lane.workspace !== undefined && workArea(lane, cwd) === lane.workspace;
 	const refused = tool === "claude-code" ? claudeCodeRefusal(config, lane, cwd, inFolder) : undefined;
-	if (refused !== undefined) return { ...base, steps: [], blocked: refused };
+	if (refused !== undefined) return { ...base, steps: [], blocked: refused.text, ...(refused.needsMod === true ? { needsMod: true as const } : {}) };
 	const steps: LaunchStep[] = [];
 	if (!existsSync(cwd)) steps.push({ text: `The folder ${cwd} does not exist. Create it?`, confirm: true, fix: "create-folder" });
 	if ((row.state === "open" || row.state === "working") && row.openIn !== undefined) {

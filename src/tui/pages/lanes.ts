@@ -13,7 +13,8 @@ import { localIso } from "../../memory/index.ts";
 import type { UsageRow } from "../../memory/types.ts";
 import type { App, Page } from "../app.ts";
 import { type Column, compactCount, fit, renderTable } from "../table.ts";
-import { archiveLaneAction, browseLane, chooseSummaryModel, editInstructions, editLane, launchLane, newLane } from "./lane-actions.ts";
+import { archiveLaneAction, browseLane, chooseSummaryModel, editInstructions, editLane, launchLane } from "./lane-actions.ts";
+import { newAgent } from "./new-agent.ts";
 
 /**
  * The full row needs exactly 100 columns (with the 2-column gutter and 2-space gaps): the summary model drops below
@@ -145,8 +146,8 @@ function instructionsNote(row: LaneRow): string {
 	return "";
 }
 
-/** The state cell: the lane's state and remote, a restart marker, and a note on its instructions. */
-const stateText = (row: LaneRow, installed?: string) => `${remoteState(row, installed)}${instructionsNote(row)}`;
+/** The state cell: the lane's state and remote, a restart marker, a note on its instructions, and its memory build. */
+const stateText = (row: LaneRow, installed?: string) => `${remoteState(row, installed)}${instructionsNote(row)}${row.building === undefined ? "" : ` · ${row.building}`}`;
 
 function cells(row: LaneRow, now: number, withRemotes: boolean, installed?: string): string[] {
 	return [
@@ -205,6 +206,7 @@ function detailLines(app: App, row: LaneRow, width: number): string[] {
 		...field("Memory", row.hasMemory ? `${row.messages} messages, ${row.summaries} summaries, view ${kb(row.viewBytes)}/${kb(row.viewBudget)} KB` : "no memory yet"),
 		...field("Summary calls", `up to ${kb(row.summaryContextBytes)} KB of context, ${row.summaryJobs} at a time`),
 		...field("Summaries", row.unreadable !== undefined ? `unreadable: ${row.unreadable}` : summaryText(row)),
+		...(row.building === undefined ? [] : field("Memory build", row.building)),
 		...field("Summary model", `${row.summaryModel.ref} ${row.summaryModel.thinking} (${row.summaryModel.source === "chat" ? "chosen in chat" : "from the config"})`),
 		...field("Reads", reads),
 		...field("Last message", row.lastMessageAt === undefined ? "—" : `${ago(row.lastMessageAt, app.deps.now())} ago`),
@@ -270,7 +272,7 @@ export const lanesPage: Page = {
 		// Borrow six columns from summaries only when a launcher needs the wider tool cell.
 		let columns = rows.some((r) => r.launcher === "ori") ? baseColumns.map((c) => c.title === "Tool" ? { ...c, width: 12 } : c.title === "Summaries" ? { ...c, width: c.width - 6 } : c) : [...baseColumns];
 		const installed = app.installed;
-		if (rows.some((r) => r.remote !== undefined || restartText(r, installed) !== "" || instructionsNote(r) !== "")) {
+		if (rows.some((r) => r.remote !== undefined || restartText(r, installed) !== "" || instructionsNote(r) !== "" || r.building !== undefined)) {
 			const stateWidth = Math.max(9, Math.min(width < 90 ? 24 : 42, Math.max(...rows.map((r) => stateText(r, installed).length))));
 			const memoryWidth = Math.max(6, Math.min(12, Math.max(...rows.map((r) => (r.remote ?? "local").length))));
 			columns = columns.map((c) => c.title === "State" ? { ...c, width: stateWidth } : c.title === "Memory" ? { ...c, width: memoryWidth } : c.title === "Summaries" ? { ...c, drop: 4 } : c.title === "Msgs" ? { ...c, drop: 5 } : c);
@@ -282,7 +284,7 @@ export const lanesPage: Page = {
 			rowStyle: (i) => {
 				const row = rows[i];
 				if (row.unreadable !== undefined || row.summary.state === "failing" || row.summary.state === "stopped") return theme.red;
-				if (row.summary.state === "catching up") return theme.yellow;
+				if (row.summary.state === "catching up" || row.building !== undefined) return theme.yellow;
 				// "waiting" is a closed lane with messages still to summarize: dim, like any closed lane.
 				return row.state === "closed" || row.summary.state === "waiting" ? theme.dim : undefined;
 			},
@@ -308,7 +310,7 @@ export const lanesPage: Page = {
 				showDetails(app);
 				return true;
 			case "n":
-				newLane(app);
+				newAgent(app);
 				return true;
 			case "m":
 				chooseSummaryModel(app, row);

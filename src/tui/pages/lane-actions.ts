@@ -1,4 +1,7 @@
-/** The Lanes page's actions (spec §3.1). Each runs as one App action and asks through dialogs; the rules live in src/lane. */
+/**
+ * The Lanes page's actions (spec §3.1). Each runs as one App action and asks through dialogs; the rules live in src/lane.
+ * N is in new-agent.ts, which uses emptyLane, addFromRemote and wireLane from here.
+ */
 
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
@@ -6,6 +9,7 @@ import { type Picked, pickSummaryModel } from "../../lane/compactor-menu.ts";
 import { addLane, archiveLane, type EditableKey, readOnlyConfigText, setLaneKey } from "../../lane/config-edit.ts";
 import { COMPACT_AT_MIN, findLane, type HarnessConfig, LANE_TOOLS, laneNameProblem, type ModelChoice } from "../../lane/config.ts";
 import { editInstructionsFile } from "../../lane/editor.ts";
+import { instructionsTemplate, readInstructions } from "../../lane/instructions.ts";
 import { summaryLine } from "../../lane/lane-commands.ts";
 import { exitText, launchLabel, launchPlan, remoteGate, runAgent } from "../../lane/launch.ts";
 import { archiveRefusal, type LaneRow, TOOL_LABELS } from "../../lane/overview.ts";
@@ -26,7 +30,7 @@ export function expandHome(path: string): string {
 }
 
 /** The picker's result as a choice, an Error saying why there is none, or undefined (cancelled, or an extra entry). */
-function pickedChoice(picked: Picked | { readonly extra: string } | undefined): ModelChoice | Error | undefined {
+export function pickedChoice(picked: Picked | { readonly extra: string } | undefined): ModelChoice | Error | undefined {
 	if (picked === undefined || "extra" in picked) return undefined;
 	if ("none" in picked) return new Error(picked.none.startsWith("No summary logins") ? NO_LOGINS : picked.none);
 	return picked.choice;
@@ -50,18 +54,32 @@ async function runFix(app: App, fix: () => string): Promise<boolean> {
 	return true;
 }
 
-/** After a lane is added: the fixes a launch would ask for (folder, pi extension, Claude Code plugin and memory import), each after a yes. */
+/**
+ * After a lane is added: the fixes a launch would ask for (folder, pi extension, Claude Code plugin and memory import),
+ * each after a yes. A Claude Code lane with no folder opens only through the Orrery mod: when that alone stops it, the
+ * switch to the mod is offered first. Any other block is said when the lane is opened.
+ */
 export async function wireLane(app: App, name: string): Promise<void> {
 	app.refresh();
 	const row = app.lanes.find((r) => r.name === name);
-	if (row === undefined || app.config === undefined) return;
+	const config = app.config;
+	if (row === undefined || config === undefined) return;
 	const tools = app.deps.tools();
-	const plan = launchPlan(app.config, row, tools);
+	// A lane with no folder opens here, where Orrery was started, as Enter opens it.
+	const where = row.workspace === undefined ? { cwd: app.deps.cwd } : {};
+	let plan = launchPlan(config, row, tools, where);
+	if (plan.needsMod === true) {
+		const question = `Claude Code opens ${name} only through the Orrery mod (Claude Code 2.1.287 or newer). Switch ${name} to the mod now?`;
+		if (!(await app.host.open(new ConfirmModal(safeLines(hardWrap(question, 56).join("\n")))))) return;
+		if (!(await runFix(app, () => app.deps.applyFix("claude-setup-mod", config, row, tools)))) return;
+		plan = launchPlan(config, row, tools, where);
+	}
 	for (const step of plan.steps) {
 		if (step.fix === undefined) continue;
+		// The folder a lane with none opens in is the person's own: it is not made here.
+		if (step.fix === "create-folder" && row.workspace === undefined) continue;
 		if (!(await app.host.open(new ConfirmModal(safeLines(step.text))))) continue;
 		const { fix } = step;
-		const config = app.config;
 		await runFix(app, () => app.deps.applyFix(fix, config, row, tools, plan.cwd));
 	}
 }
@@ -257,7 +275,7 @@ export function editLane(app: App, row: LaneRow | undefined): void {
 }
 
 /** Imports a lane through the CLI's pull path; settings and memory come from the chosen remote. */
-async function addFromRemote(app: App): Promise<string | undefined> {
+export async function addFromRemote(app: App): Promise<string | undefined> {
 	const config = app.config!;
 	if (app.deps.remoteLanes === undefined || app.deps.pullLane === undefined) throw new Error("Remote lane import is unavailable here.");
 	const remote = await app.host.open(new SelectModal("Remote:", [...config.remotes.keys()]));
@@ -275,47 +293,42 @@ async function addFromRemote(app: App): Promise<string | undefined> {
 	return app.deps.pullLane(lanes[labels.indexOf(selected)].lane, remote, folder === "" ? undefined : expandHome(folder));
 }
 
-/** N: offers remote import, or asks for a new local lane's settings and then offers the wiring. */
-export function newLane(app: App): void {
-	const config = app.config;
-	if (config === undefined) return;
-	if (!app.deps.configWritable()) {
-		app.say(readOnlyConfigText(app.deps.configPath), "error");
-		return;
-	}
-	app.run("New lane", async () => {
-		if (config.remotes.size > 0) {
-			const kind = await app.host.open(new SelectModal("Add a lane:", ["New local lane", "Add a lane from a remote"]));
-			if (kind === undefined) return undefined;
-			if (kind === "Add a lane from a remote") return addFromRemote(app);
-		}
-		const name = await app.host.open(new InputModal("New lane's name (letters, digits, - and _):"));
-		if (!name) return undefined;
-		const problem = laneNameProblem(name);
-		if (problem !== undefined) throw new Error(problem);
-		if ([...config.lanes.keys()].some((n) => n.toLowerCase() === name.toLowerCase())) throw new Error(`A lane named ${name} already exists.`);
-		const folderText = await app.host.open(new InputModal("Its folder:", app.deps.cwd));
-		if (!folderText) return undefined;
-		if (!isAbsolute(expandHome(folderText))) throw new Error("The folder must be an absolute path.");
-		const checks = app.deps.tools();
-		const tools = checks.filter((t) => t.id !== "ori");
-		const found = tools.filter((t) => t.path !== undefined);
-		const toolLabel = await app.host.open(new SelectModal("Its tool:", (found.length > 0 ? found : tools).map((t) => t.label)));
-		const tool = LANE_TOOLS.find((t) => TOOL_LABELS[t] === toolLabel);
-		if (tool === undefined) return undefined;
-		const throughOri = checks.some((t) => t.id === "ori" && t.path !== undefined) ? await app.host.open(new SelectModal("Launch through Ori?", ["No", "Yes"])) : "No";
-		if (throughOri === undefined) return undefined;
-		const sources = await app.deps.sources(config, { launcher: throughOri === "Yes" ? "ori" : "direct" });
-		const choice = pickedChoice(await pickSummaryModel(menuUI(app.host), sources, { heading: `${name}'s summaries`, thinking: "low", askThinking: true }));
-		if (choice instanceof Error) throw choice;
-		if (choice === undefined) return undefined;
-		const test = await app.deps.testChoice(sources, choice);
-		if (!test.ok) throw new Error(`Not added: ${test.reason}.`);
-		const workspace = expandHome(folderText);
-		app.deps.editConfig((text, dir) => addLane(text, dir, { name, workspace, tool, launcher: throughOri === "Yes" ? "ori" : "direct", compactorModel: `${choice.provider}/${choice.modelId}`, compactorThinking: choice.thinking }));
-		await wireLane(app, name);
-		return `Added ${name}. Press L to launch it.`;
-	});
+/**
+ * N, Empty agent (src/tui/pages/new-agent.ts): asks its name, default folder (none: it opens wherever it is opened),
+ * tool and summary model, writes it and its instructions' template, then offers the wiring.
+ */
+export async function emptyLane(app: App, config: HarnessConfig): Promise<string | undefined> {
+	const name = await app.host.open(new InputModal("New lane's name (letters, digits, - and _):"));
+	if (!name) return undefined;
+	const problem = laneNameProblem(name);
+	if (problem !== undefined) throw new Error(problem);
+	if ([...config.lanes.keys()].some((n) => n.toLowerCase() === name.toLowerCase())) throw new Error(`A lane named ${name} already exists.`);
+	const folderText = await app.host.open(new InputModal("Its default folder (empty: none, it opens wherever you open it):", app.deps.cwd));
+	if (folderText === undefined) return undefined;
+	const workspace = folderText === "" ? undefined : expandHome(folderText);
+	if (workspace !== undefined && !isAbsolute(workspace)) throw new Error("The folder must be an absolute path.");
+	const checks = app.deps.tools();
+	const tools = checks.filter((t) => t.id !== "ori");
+	const found = tools.filter((t) => t.path !== undefined);
+	const toolLabel = await app.host.open(new SelectModal("Its tool:", (found.length > 0 ? found : tools).map((t) => t.label)));
+	const tool = LANE_TOOLS.find((t) => TOOL_LABELS[t] === toolLabel);
+	if (tool === undefined) return undefined;
+	const throughOri = checks.some((t) => t.id === "ori" && t.path !== undefined) ? await app.host.open(new SelectModal("Launch through Ori?", ["No", "Yes"])) : "No";
+	if (throughOri === undefined) return undefined;
+	const sources = await app.deps.sources(config, { launcher: throughOri === "Yes" ? "ori" : "direct" });
+	const choice = pickedChoice(await pickSummaryModel(menuUI(app.host), sources, { heading: `${name}'s summaries`, thinking: "low", askThinking: true }));
+	if (choice instanceof Error) throw choice;
+	if (choice === undefined) return undefined;
+	const test = await app.deps.testChoice(sources, choice);
+	if (!test.ok) throw new Error(`Not added: ${test.reason}.`);
+	const added = app.deps.editConfig((text, dir) =>
+		addLane(text, dir, { name, ...(workspace === undefined ? {} : { workspace }), tool, launcher: throughOri === "Yes" ? "ori" : "direct", compactorModel: `${choice.provider}/${choice.modelId}`, compactorThinking: choice.thinking }),
+	);
+	// An archived agent's folder, brought back under its name, keeps its instructions.
+	const lane = added.lanes.get(name);
+	if (lane !== undefined && readInstructions(lane.dir) === undefined) app.deps.writeInstructions(lane.dir, instructionsTemplate(name));
+	await wireLane(app, name);
+	return `Added ${name}. Press Enter to open it, E to write its instructions.`;
 }
 
 /** B: writes the lane's memory page and says where (and opens it when a display is there). */

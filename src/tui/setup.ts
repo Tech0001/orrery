@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { pickSummaryModel } from "../lane/compactor-menu.ts";
 import { LANE_TOOLS, laneNameProblem, type ModelChoice, parseConfig } from "../lane/config.ts";
 import { addLane, newConfigText } from "../lane/config-edit.ts";
+import { instructionsTemplate, readInstructions } from "../lane/instructions.ts";
 import { TOOL_LABELS } from "../lane/overview.ts";
 import { explainFailure, safeText } from "../lane/source-labels.ts";
 import { listSources, usable } from "../lane/summary-sources.ts";
@@ -128,6 +129,14 @@ export async function firstRun(app: App): Promise<boolean> {
 		} catch (error) {
 			await app.host.open(new MessageModal("Can't write the config", `${errorText(error)}\nThe login you saved stays saved. Fix that and run orrery again.`));
 			return false;
+		}
+		// The first agent starts with the instructions' template too (an archived agent's folder keeps its own). The config
+		// is written: a template that can't be is no reason to stop (the Agents page then says "no instructions").
+		try {
+			const made = app.deps.loadConfig().lanes.get(laneName);
+			if (made !== undefined && readInstructions(made.dir) === undefined) app.deps.writeInstructions(made.dir, instructionsTemplate(made.name));
+		} catch (error) {
+			await app.host.open(new MessageModal("Instructions", `${laneName}'s instructions template could not be written: ${errorText(error)}. Press E on its row to write them.`));
 		}
 		app.setup = false;
 		await wireLane(app, laneName);

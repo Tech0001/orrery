@@ -122,8 +122,8 @@ describe("N add a lane from a remote", () => {
 
 	async function startImport(app: ReturnType<typeof setup>["app"]) {
 		keys(app, "N"); await settle();
-		expect(screen(app)).toContain("Add a lane from a remote");
-		await answer(app, "Add a lane:", ...typed("from a remote"), ENTER);
+		expect(screen(app)).toContain("From a remote");
+		await answer(app, "New agent:", ...typed("from a remote"), ENTER);
 	}
 
 	it("picks remote, lane and folder and pulls real memory through the CLI's shared code", async () => {
@@ -156,10 +156,10 @@ describe("N add a lane from a remote", () => {
 		expect(screen(app)).toContain("Pulled Cedar from remote home.");
 	});
 
-	it.each(["Add a lane:", "Remote:", "Lane on home:", "Its default folder"])("cancelling %s leaves config and remote locks unchanged", async (at) => {
+	it.each(["New agent:", "Remote:", "Lane on home:", "Its default folder"])("cancelling %s leaves config and remote locks unchanged", async (at) => {
 		await seedImport(); const before = readFileSync(path, "utf8"); const locks = await storage.list();
-		const { app } = setup(); keys(app, "N"); await settle(); expect(screen(app)).toContain("Add a lane from a remote");
-		if (at !== "Add a lane:") await answer(app, "Add a lane:", ...typed("from a remote"), ENTER);
+		const { app } = setup(); keys(app, "N"); await settle(); expect(screen(app)).toContain("From a remote");
+		if (at !== "New agent:") await answer(app, "New agent:", ...typed("from a remote"), ENTER);
 		if (at === "Lane on home:" || at === "Its default folder") await answer(app, "Remote:", ENTER);
 		if (at === "Its default folder") await answer(app, "Lane on home:", ENTER);
 		await answer(app, at, "\x1b"); await app.idle();
@@ -185,10 +185,11 @@ describe("N add a lane from a remote", () => {
 		expect(screen(app)).toContain("remote home is unreachable"); expect(readFileSync(path, "utf8")).toBe(before);
 	});
 
-	it("keeps the existing new-local-lane flow available when remotes are configured", async () => {
+	it("keeps the empty-agent and from-a-chat flows available when remotes are configured", async () => {
 		const { app } = setup(); keys(app, "N"); await settle();
-		expect(screen(app)).toContain("New local lane");
-		await answer(app, "Add a lane:", ...typed("New local"), ENTER);
+		expect(screen(app)).toContain("Empty agent");
+		expect(screen(app)).toContain("From an existing chat");
+		await answer(app, "New agent:", ...typed("Empty"), ENTER);
 		await answer(app, "New lane's name", "\x1b"); await app.idle();
 	});
 });

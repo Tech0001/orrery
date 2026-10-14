@@ -337,8 +337,9 @@ describe("N new lane", () => {
 		deps.overview = (config) => [...config.lanes.values()].map((lane) => row({ name: lane.name, workspace: lane.workspace, tool: lane.tool ?? "pi" }));
 		const app = makeApp(deps, [lanesPage]);
 		keys(app, "N");
+		await answer(app, "New agent:", ENTER);
 		await answer(app, "New lane's name", ...typed("Gamma"), ENTER);
-		await answer(app, "Its folder", "\x15", ...typed("/tmp/orrery-no-such-folder-gamma"), ENTER);
+		await answer(app, "Its default folder", "\x15", ...typed("/tmp/orrery-no-such-folder-gamma"), ENTER);
 		await answer(app, "Its tool", ENTER);
 		await answer(app, "Summaries from:", ENTER);
 		await answer(app, "Anthropic model:", ...typed("haiku-4-5"), ENTER);
@@ -349,7 +350,8 @@ describe("N new lane", () => {
 		await app.idle();
 		expect(deps.edits.at(-1)).toContain('[lanes.Gamma]\nworkspace = "/tmp/orrery-no-such-folder-gamma"\ntool = "pi"\nmodel = "anthropic/claude-haiku-4-5"\ncompactor_model = "anthropic/claude-haiku-4-5"\ncompactor_thinking = "low"\n');
 		expect(fixes).toEqual(["install-pi"]);
-		expect(screen(app)).toContain("Added Gamma. Press L to launch it.");
+		expect(screen(app)).toContain("Added Gamma. Press Enter to open it, E to write its instructions.");
+		expect(deps.instructions).toEqual([["/d/lanes/Gamma", instructionsTemplate("Gamma")]]);
 	});
 
 	it("refuses a name that exists in another case, writing nothing", async () => {
@@ -357,6 +359,7 @@ describe("N new lane", () => {
 		const deps = fakeDeps({ sources: async () => sources, tools: () => [tool("pi"), tool("claude-code"), tool("codex")] });
 		const app = makeApp(deps, [lanesPage]);
 		keys(app, "N");
+		await answer(app, "New agent:", ENTER);
 		await answer(app, "New lane's name", ...typed("alpha"), ENTER);
 		await app.idle();
 		expect(screen(app)).toContain("A lane named alpha already exists.");
@@ -369,6 +372,7 @@ describe("N names", () => {
 		const deps = fakeDeps({ tools: () => [tool("pi")] });
 		const app = makeApp(deps, [lanesPage]);
 		keys(app, "N");
+		await answer(app, "New agent:", ENTER);
 		await answer(app, "New lane's name", ...typed("Archive"), ENTER);
 		await app.idle();
 		expect(screen(app)).toContain("Archive is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); pick another name.");
@@ -412,8 +416,9 @@ describe("failing wiring", () => {
 		deps.overview = (config) => [...config.lanes.values()].map((lane) => row({ name: lane.name, workspace: lane.workspace, tool: lane.tool ?? "pi" }));
 		const app = makeApp(deps, [lanesPage]);
 		keys(app, "N");
+		await answer(app, "New agent:", ENTER);
 		await answer(app, "New lane's name", ...typed("Gamma"), ENTER);
-		await answer(app, "Its folder", "\x15", ...typed("/tmp"), ENTER);
+		await answer(app, "Its default folder", "\x15", ...typed("/tmp"), ENTER);
 		await answer(app, "Its tool", ENTER);
 		await answer(app, "Summaries from:", ENTER);
 		await answer(app, "Anthropic model:", ...typed("haiku-4-5"), ENTER);
@@ -432,11 +437,64 @@ describe("N folder", () => {
 		const deps = fakeDeps({ tools: () => [tool("pi")] });
 		const app = makeApp(deps, [lanesPage]);
 		keys(app, "N");
+		await answer(app, "New agent:", ENTER);
 		await answer(app, "New lane's name", ...typed("Gamma"), ENTER);
-		await answer(app, "Its folder", "\x15", ...typed("projects/x"), ENTER);
+		await answer(app, "Its default folder", "\x15", ...typed("projects/x"), ENTER);
 		await app.idle();
 		expect(screen(app)).toContain("The folder must be an absolute path.");
 		expect(deps.edits).toEqual([]);
+	});
+});
+
+describe("N empty agent with no default folder", () => {
+	/** Fake deps whose rows follow the config (a lane with no folder has none), with an Anthropic login. */
+	async function following(tools: ToolCheck[], fixes: string[] = []) {
+		const sources = await anthropicSources();
+		const deps = fakeDeps({ sources: async () => sources, tools: () => tools, applyFix: (fix) => (fixes.push(fix), "fixed") });
+		deps.overview = (config) => [...config.lanes.values()].map((lane) => row({ name: lane.name, workspace: lane.workspace, tool: lane.tool ?? "pi", dataDir: lane.dir }));
+		return { deps, app: makeApp(deps, [lanesPage]), fixes };
+	}
+
+	async function add(app: ReturnType<typeof makeApp>, name: string, tool: string) {
+		keys(app, "N");
+		await answer(app, "New agent:", ENTER);
+		await answer(app, "New lane's name", ...typed(name), ENTER);
+		await answer(app, "Its default folder (empty: none, it opens wherever you open it):", "\x15", ENTER);
+		await answer(app, "Its tool", ...typed(tool), ENTER);
+		await answer(app, "Summaries from:", ENTER);
+		await answer(app, "Anthropic model:", ...typed("haiku-4-5"), ENTER);
+		await answer(app, "Thinking", ENTER);
+	}
+
+	it("writes the agent without a folder, and its instructions' template", async () => {
+		const { deps, app } = await following([tool("pi")]);
+		await add(app, "Nomad", "pi");
+		await app.idle();
+		const nomad = parseConfig(deps.edits.at(-1)!, "/d").lanes.get("Nomad");
+		expect(nomad?.workspace).toBeUndefined();
+		expect(deps.edits.at(-1)).toContain('[lanes.Nomad]\ntool = "pi"\n');
+		expect(deps.instructions).toEqual([["/d/lanes/Nomad", instructionsTemplate("Nomad")]]);
+		expect(screen(app)).toContain("Added Nomad. Press Enter to open it, E to write its instructions.");
+	});
+
+	it("offers a Claude Code agent the switch to the Orrery mod, which it needs to open anywhere", async () => {
+		const { app, fixes } = await following([tool("claude-code")]);
+		await add(app, "Nomad", "Claude");
+		await answer(app, "Switch Nomad to the mod");
+		expect(app.host.current?.title.replaceAll("\n", " ")).toBe("Claude Code opens Nomad only through the Orrery mod (Claude Code 2.1.287 or newer). Switch Nomad to the mod now?");
+		await answer(app, "Switch Nomad to the mod", "y");
+		await answer(app, "Done", ENTER);
+		await app.idle();
+		expect(fixes).toEqual(["claude-setup-mod"]);
+		expect(screen(app)).toContain("Added Nomad.");
+	});
+
+	it("does not offer the mod when something else stops Claude Code (not on PATH)", async () => {
+		const { app, fixes } = await following([tool("claude-code", { path: undefined })]);
+		await add(app, "Nomad", "Claude");
+		await app.idle();
+		expect(fixes).toEqual([]);
+		expect(screen(app)).toContain("Added Nomad.");
 	});
 });
 
@@ -626,8 +684,9 @@ it.each(["No", "Yes"])("N asks about Ori only when found, defaulting to No (%s)"
 	const deps = fakeDeps({ sources: async () => sources, tools: () => [tool("pi"), tool("ori")] });
 	const app = makeApp(deps, [lanesPage]);
 	keys(app, "N");
+	await answer(app, "New agent:", ENTER);
 	await answer(app, "New lane", ...typed("Atlas"), ENTER);
-	await answer(app, "Its folder", ENTER);
+	await answer(app, "Its default folder", ENTER);
 	await answer(app, "Its tool", ENTER);
 	await answer(app, "Launch through Ori?", ...(choice === "Yes" ? typed("Yes") : []), ENTER);
 	await answer(app, "Summaries from:", ENTER);
