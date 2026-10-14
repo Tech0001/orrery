@@ -2,16 +2,17 @@
  * Which lane a session belongs to (spec 2026-10-13-orrery-agents-design §4), decided at session start by pi's and OMP's
  * extension (and, later, Claude Code's hooks, MCP server and mod view), in order:
  * 1. ORRERY_AGENT, when set: the lane it names (ignoring case), or "unknown" (a notice and no memory; no fallback).
- *    A launcher may also set ORRERY_AGENT_TOKEN. The first process that starts a session with that token owns it
- *    (claims/<token> in the lane's folder), so a tool the agent starts itself, which inherits both variables, is not the
- *    agent too: it falls through to 2.
+ *    A launcher may also set ORRERY_AGENT_TOKEN, 32 lowercase hex digits; any other value is "bad-token" (a notice and no
+ *    memory; no fallback). The first process that starts a session with that token owns it (claims/<token> in the lane's
+ *    folder), so a tool the agent starts itself, which inherits both variables, is not the agent too: it falls through
+ *    to 2.
  * 2. The lane whose workspace holds the folder (laneForCwd).
  * 3. None.
  * Node built-ins and relative imports only: pi and OMP load this file.
  */
 
 import { randomBytes } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type HarnessConfig, inWorkspace, type LaneConfig, laneForCwd } from "./config.ts";
 import { processAlive } from "./process.ts";
@@ -19,14 +20,13 @@ import { safeText } from "./source-labels.ts";
 
 export const AGENT_ENV = "ORRERY_AGENT";
 export const TOKEN_ENV = "ORRERY_AGENT_TOKEN";
-const TOKEN = /^[0-9a-f]{16,64}$/;
-/** A claim file with no pid in it this long after it was made was left by a process that died while making it. */
-const UNWRITTEN_CLAIM_MS = 60_000;
+/** What newToken makes; nothing else is taken (a token names a file). */
+const TOKEN = /^[0-9a-f]{32}$/;
 
-export type Picked =
-	| { readonly kind: "lane"; readonly lane: LaneConfig; readonly by: "env" | "folder" }
-	| { readonly kind: "unknown"; readonly name: string }
-	| { readonly kind: "none" };
+/** ORRERY_AGENT was set but cannot be honoured: a notice, no memory, and no fallback to the folder's lane. */
+export type Refused = { readonly kind: "unknown"; readonly name: string } | { readonly kind: "bad-token"; readonly name: string };
+
+export type Picked = { readonly kind: "lane"; readonly lane: LaneConfig; readonly by: "env" | "folder" } | Refused | { readonly kind: "none" };
 
 export interface Where {
 	readonly env: NodeJS.ProcessEnv;
@@ -52,13 +52,14 @@ export function pickLane(config: HarnessConfig, where: Where): Picked {
 		const lane = laneNamed(config, name);
 		if (lane === undefined) return { kind: "unknown", name };
 		const token = where.env[TOKEN_ENV];
-		if (token === undefined || token === "" || claimToken(lane.dir, token, where.owner, where.alive)) return { kind: "lane", lane, by: "env" };
+		if (token !== undefined && !TOKEN.test(token)) return { kind: "bad-token", name: lane.name };
+		if (token === undefined || claimToken(lane.dir, token, where.owner, where.alive)) return { kind: "lane", lane, by: "env" };
 	}
 	const lane = laneForCwd(config, where.cwd);
 	return lane === undefined ? { kind: "none" } : { kind: "lane", lane, by: "folder" };
 }
 
-/** The pid a claim file holds, or undefined when it holds none (unreadable, or not written yet). */
+/** The pid a claim file holds, or undefined when it holds none (unreadable, empty, or not a pid). */
 function claimant(file: string): number | undefined {
 	try {
 		const pid = Number.parseInt(readFileSync(file, "utf8"), 10);
@@ -69,9 +70,18 @@ function claimant(file: string): number | undefined {
 }
 
 /**
- * Takes out claims whose process is gone: left by tools that crashed, or ended before their launcher released the
- * claim. A live owner's claim stays however old it is (an agent may run for weeks).
+ * The live process a claim file names, or undefined when the claim is dead: its process is gone, or the file names no
+ * pid. One rule for pruning and for taking a token over. A file with no pid is dead, not "still being written": the
+ * process that made it writes its pid right after the exclusive create, and the only process that can be between the
+ * two at the same moment is the owner itself (Claude Code's hooks start together); a tool the agent starts comes later.
+ * Waiting on such a file would cost the owner its agent; one left by a crash would block the token for good.
  */
+function liveClaimant(file: string, alive: (pid: number) => boolean): number | undefined {
+	const pid = claimant(file);
+	return pid !== undefined && alive(pid) ? pid : undefined;
+}
+
+/** Takes out dead claims (liveClaimant). A live owner's claim stays however old it is (an agent may run for weeks). */
 function pruneClaims(dir: string, alive: (pid: number) => boolean): void {
 	let names: string[];
 	try {
@@ -82,8 +92,7 @@ function pruneClaims(dir: string, alive: (pid: number) => boolean): void {
 	for (const name of names) {
 		const file = join(dir, name);
 		try {
-			const pid = claimant(file);
-			if (pid === undefined ? Date.now() - statSync(file).mtimeMs > UNWRITTEN_CLAIM_MS : !alive(pid)) rmSync(file, { force: true });
+			if (liveClaimant(file, alive) === undefined) rmSync(file, { force: true });
 		} catch {
 			// gone already
 		}
@@ -91,8 +100,8 @@ function pruneClaims(dir: string, alive: (pid: number) => boolean): void {
 }
 
 /**
- * Whether `owner` may take ORRERY_AGENT with `token`: it claimed it before, or is the first to claim it, or the process
- * that claimed it is gone. False for a token that is not hex (it must never name a file elsewhere).
+ * Whether `owner` may take ORRERY_AGENT with `token`: it claimed it before, or is the first to claim it, or the claim
+ * is dead (liveClaimant). False for a token that is not 32 lowercase hex digits (it must never name a file elsewhere).
  */
 export function claimToken(laneDir: string, token: string, owner: number, alive: (pid: number) => boolean = processAlive): boolean {
 	if (!TOKEN.test(token)) return false;
@@ -114,10 +123,10 @@ export function claimToken(laneDir: string, token: string, owner: number, alive:
 		// A claim that cannot be recorded never costs the session its agent.
 		if ((error as NodeJS.ErrnoException).code !== "EEXIST") return true;
 	}
-	const held = claimant(file);
+	// Made since the prune: the same rule decides.
+	const held = liveClaimant(file, alive);
 	if (held === owner) return true;
-	if (held !== undefined && alive(held)) return false;
-	// Its owner died since the prune, or it holds no pid: the claim is this owner's now.
+	if (held !== undefined) return false;
 	try {
 		writeFileSync(file, `${owner}\n`, { mode: 0o600 });
 	} catch {
@@ -140,6 +149,9 @@ export function workArea(lane: Pick<LaneConfig, "workspace">, cwd: string): stri
 	return lane.workspace !== undefined && inWorkspace(lane, cwd) ? lane.workspace : resolve(cwd);
 }
 
-export function unknownAgentNotice(name: string): string {
-	return `Orrery: ORRERY_AGENT names ${safeText(name)}, which is not a configured agent; this session runs without memory.`;
+/** What a session whose ORRERY_AGENT was refused says, once. */
+export function refusedNotice(pick: Refused): string {
+	return pick.kind === "unknown"
+		? `Orrery: ORRERY_AGENT names ${safeText(pick.name)}, which is not a configured agent; this session runs without memory.`
+		: `Orrery: ORRERY_AGENT_TOKEN is not 32 lowercase hex digits, so this session is not ${safeText(pick.name)}; it runs without memory.`;
 }

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { newToken } from "../../src/lane/pick.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { FAUX_SUMMARY } from "./harness.ts";
-import { cleanup, close, lastLane, pi, world } from "./world.ts";
+import { cleanup, close, lastLane, pi, plainPi, world } from "./world.ts";
 
 afterEach(cleanup);
 
@@ -268,6 +268,14 @@ describe("a lane named by ORRERY_AGENT", () => {
 		expect(run.notices).toEqual([{ type: "warning", message: "Orrery: ORRERY_AGENT names Nobody, which is not a configured agent; this session runs without memory." }]);
 	});
 
+	it("an ORRERY_AGENT_TOKEN that is malformed: one notice, no memory, and no fallback to the folder", async () => {
+		const { root, config } = world();
+		const run = await pi(root, join(root, "agent-Atlas"), config, undefined, { env: { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: "not-a-token" } });
+		expect(run.tool("zoom")).toBeUndefined();
+		expect(run.notices).toEqual([{ type: "warning", message: "Orrery: ORRERY_AGENT_TOKEN is not 32 lowercase hex digits, so this session is not Atlas; it runs without memory." }]);
+		expect(existsSync(join(root, "data", "lanes", "Atlas"))).toBe(false);
+	});
+
 	it("a pi the agent started (same variables, another process) gets its folder's lane, or none", async () => {
 		const { root, config } = world();
 		const env = { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: newToken() };
@@ -307,5 +315,82 @@ describe("a lane named by ORRERY_AGENT", () => {
 		await again.session.prompt("Second.");
 		await close(again);
 		expect(memoryOf(root)).toEqual(["user: First.", "talk: One.", "user: Second.", "talk: Two."]);
+	});
+});
+
+describe("who a session belongs to: a lane never copies turns another agent said in it", () => {
+	const say = async (run: Awaited<ReturnType<typeof pi>>, question: string, answer: string) => {
+		run.setResponses([fauxAssistantMessage(answer)]);
+		await run.session.prompt(question);
+	};
+
+	it("a session ORRERY_AGENT recorded in a lane's folder: that lane, resuming it by folder, records only what comes after", async () => {
+		const { root, config } = world();
+		const atlas = await pi(root, join(root, "agent-Birch"), config, "s-x", { env: { ORRERY_AGENT: "Atlas" } });
+		expect(atlas.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
+		await say(atlas, "Atlas secret question.", "Atlas secret answer.");
+		await close(atlas);
+		const birch = await pi(root, join(root, "agent-Birch"), config, "s-x");
+		expect(birch.status("orrery")).toBe("Orrery · Birch · 0 msgs");
+		await say(birch, "Birch question.", "Birch answer.");
+		await close(birch);
+		expect(memoryOf(root, "Birch")).toEqual(["user: Birch question.", "talk: Birch answer."]);
+		expect(memoryOf(root)).toEqual(["user: Atlas secret question.", "talk: Atlas secret answer."]);
+		expect(readFileSync(join(root, "data", "session-owners", "s-x"), "utf8")).toBe("Atlas\n");
+	});
+
+	it("a session first run under an ORRERY_AGENT that names no agent: the folder's lane records only what comes after", async () => {
+		const { root, config } = world();
+		const nobody = await pi(root, join(root, "agent-Birch"), config, "s-u", { env: { ORRERY_AGENT: "Nobody" } });
+		await say(nobody, "Unknown question.", "Unknown answer.");
+		await close(nobody);
+		const birch = await pi(root, join(root, "agent-Birch"), config, "s-u");
+		await say(birch, "Birch question.", "Birch answer.");
+		await close(birch);
+		expect(memoryOf(root, "Birch")).toEqual(["user: Birch question.", "talk: Birch answer."]);
+	});
+
+	it("the owner resuming its own session copies what it has not seen yet, each turn once: no tail", async () => {
+		const { root, config } = world();
+		const first = await pi(root, join(root, "agent-Birch"), config, "s-b");
+		await say(first, "One.", "First.");
+		await close(first);
+		const plain = await plainPi(root, join(root, "agent-Birch"), "s-b");
+		await say(plain, "Said without Orrery.", "Plain.");
+		await close(plain);
+		const again = await pi(root, join(root, "agent-Birch"), config, "s-b");
+		await say(again, "Two.", "Second.");
+		await close(again);
+		expect(memoryOf(root, "Birch")).toEqual(["user: One.", "talk: First.", "user: Said without Orrery.", "talk: Plain.", "user: Two.", "talk: Second."]);
+	});
+
+	it("a session from before owner records (no record) is copied as before, and gets its record", async () => {
+		const { root, config } = world();
+		const first = await pi(root, join(root, "agent-Birch"), config, "s-old");
+		await say(first, "One.", "First.");
+		await close(first);
+		rmSync(join(root, "data", "session-owners", "s-old"));
+		const plain = await plainPi(root, join(root, "agent-Birch"), "s-old");
+		await say(plain, "Said without Orrery.", "Plain.");
+		await close(plain);
+		const again = await pi(root, join(root, "agent-Birch"), config, "s-old");
+		await close(again);
+		expect(memoryOf(root, "Birch")).toEqual(["user: One.", "talk: First.", "user: Said without Orrery.", "talk: Plain."]);
+		expect(readFileSync(join(root, "data", "session-owners", "s-old"), "utf8")).toBe("Birch\n");
+	});
+
+	it("the owner resuming its session after another agent ran in it records only what comes after the visit", async () => {
+		const { root, config } = world();
+		const birch = await pi(root, join(root, "agent-Birch"), config, "s-b");
+		await say(birch, "One.", "First.");
+		await close(birch);
+		const atlas = await pi(root, join(root, "agent-Birch"), config, "s-b", { env: { ORRERY_AGENT: "Atlas" } });
+		await say(atlas, "Atlas secret question.", "Atlas secret answer.");
+		await close(atlas);
+		const again = await pi(root, join(root, "agent-Birch"), config, "s-b");
+		await say(again, "Two.", "Second.");
+		await close(again);
+		expect(memoryOf(root, "Birch")).toEqual(["user: One.", "talk: First.", "user: Two.", "talk: Second."]);
+		expect(memoryOf(root)).toEqual(["user: Atlas secret question.", "talk: Atlas secret answer."]);
 	});
 });

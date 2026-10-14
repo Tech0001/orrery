@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/lane/config.ts";
-import { claimToken, newToken, pickLane, releaseClaim, unknownAgentNotice, workArea } from "../../src/lane/pick.ts";
+import { claimToken, newToken, pickLane, refusedNotice, releaseClaim, workArea } from "../../src/lane/pick.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -39,13 +39,31 @@ describe("pickLane", () => {
 	it("an ORRERY_AGENT that names no lane is unknown, with no fallback to the folder", () => {
 		const { root, config } = world();
 		expect(pickLane(config, { env: { ORRERY_AGENT: "Nobody" }, cwd: join(root, "agent-Atlas"), owner: me })).toEqual({ kind: "unknown", name: "Nobody" });
-		expect(unknownAgentNotice("No\u001b[2Jbody")).toBe("Orrery: ORRERY_AGENT names No[2Jbody, which is not a configured agent; this session runs without memory.");
+		expect(refusedNotice({ kind: "unknown", name: "No\u001b[2Jbody" })).toBe("Orrery: ORRERY_AGENT names No[2Jbody, which is not a configured agent; this session runs without memory.");
 	});
 
-	it("an empty ORRERY_AGENT_TOKEN claims nothing: the session is the agent", () => {
+	it("an ORRERY_AGENT_TOKEN that is not 32 lowercase hex digits (empty included) is refused, with no fallback to the folder", () => {
 		const { root, config } = world();
-		expect(pickLane(config, { env: { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: "" }, cwd: join(root, "plain"), owner: me })).toMatchObject({ kind: "lane", by: "env" });
+		for (const token of ["", "abc", newToken().toUpperCase(), `${newToken()}0`, "../../../escape-0123456789abcdef"]) {
+			expect(pickLane(config, { env: { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: token }, cwd: join(root, "agent-Atlas"), owner: me })).toEqual({ kind: "bad-token", name: "Birch" });
+		}
 		expect(existsSync(join(config.dataDir, "lanes", "Birch", "claims"))).toBe(false);
+		expect(refusedNotice({ kind: "bad-token", name: "Birch" })).toBe("Orrery: ORRERY_AGENT_TOKEN is not 32 lowercase hex digits, so this session is not Birch; it runs without memory.");
+		// No token at all: the session is the agent (ORRERY_AGENT set by hand).
+		expect(pickLane(config, { env: { ORRERY_AGENT: "Birch" }, cwd: join(root, "plain"), owner: me })).toMatchObject({ kind: "lane", by: "env" });
+	});
+
+	it("a claim file with no pid in it counts as its owner's death, when pruning and when taking its token", () => {
+		const { config } = world();
+		const birch = join(config.dataDir, "lanes", "Birch");
+		const [empty, mine] = [newToken(), newToken()];
+		mkdirSync(join(birch, "claims"), { recursive: true });
+		writeFileSync(join(birch, "claims", empty), "");
+		expect(claimToken(birch, mine, me)).toBe(true);
+		expect(existsSync(join(birch, "claims", empty))).toBe(false);
+		writeFileSync(join(birch, "claims", empty), "");
+		expect(claimToken(birch, empty, 4245, () => true)).toBe(true);
+		expect(readFileSync(join(birch, "claims", empty), "utf8")).toBe("4245\n");
 	});
 
 	it("a token belongs to the first process that starts with it; a live other process falls back to its folder; a dead owner hands it over", () => {

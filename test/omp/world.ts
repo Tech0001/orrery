@@ -126,10 +126,14 @@ export function track(host: FakeOmp): FakeOmp {
 	return host;
 }
 
-/** Orrery's OMP entry (createOrrery({ host: "omp" })) in a fake OMP, started; summaries use the world's faux. */
-export async function ompOrrery(cwd: string, config: HarnessConfig, options: Omit<OrreryOptions, "config" | "host"> & { agent?: "main" | "sub" } = {}): Promise<FakeOmp> {
-	const { agent, ...rest } = options;
+/**
+ * Orrery's OMP entry (createOrrery({ host: "omp" })) in a fake OMP, started; summaries use the world's faux. `session`:
+ * the id of the session it starts in (default "s1").
+ */
+export async function ompOrrery(cwd: string, config: HarnessConfig, options: Omit<OrreryOptions, "config" | "host"> & { agent?: "main" | "sub"; session?: string } = {}): Promise<FakeOmp> {
+	const { agent, session, ...rest } = options;
 	const host = track(fakeOmp(cwd, [createOrrery({ summarySources: async (cfg) => summarySourcesFor(cfg), ...scratchHome(dirname(config.dataDir)), ...rest, config, host: "omp" })], { agent }));
+	if (session !== undefined) host.session.id = session;
 	await host.emit("session_start");
 	return host;
 }

@@ -13,7 +13,8 @@ import { holderFresh, openYielding, readHolder } from "../lane/handover.ts";
 import { compactorCommand } from "../lane/lane-commands.ts";
 import { laneModelSource } from "../lane/model-source.ts";
 import { noticeKey, noticeText, type TroubleState } from "../lane/notices.ts";
-import { pickLane, unknownAgentNotice, workArea } from "../lane/pick.ts";
+import { pickLane, refusedNotice, workArea } from "../lane/pick.ts";
+import { foreignSession, NO_AGENT, noteSession } from "../lane/session-owner.ts";
 import { takeRequest } from "../lane/settings-request.ts";
 import { safeText } from "../lane/source-labels.ts";
 import { openSummarySources, type SummarySources } from "../lane/summary-sources.ts";
@@ -96,24 +97,42 @@ export interface OrreryOptions {
 	readonly owner?: number;
 }
 
-/** What the lane guard judges a tool call against: the lane, where the session works, every credential file, and "~". */
+/** What the lane guard judges a tool call against: where the session may write, every credential file, and "~". */
 interface Guarded {
-	readonly lane: LaneConfig;
-	/** How the session found its lane: ORRERY_AGENT, or its folder. */
-	readonly by: "env" | "folder";
-	/** Where writes may go besides the lane's allowed roots (workArea). */
-	readonly workspace: string;
+	/** The session's lane; absent when its ORRERY_AGENT was refused (then the guard alone runs, with no memory). */
+	readonly lane?: LaneConfig;
+	/** How the session found its lane: ORRERY_AGENT, its folder, or neither because ORRERY_AGENT was refused. */
+	readonly by: "env" | "folder" | "refused";
+	/** Where writes may go besides allowedRoots (src/lane/pick.ts workArea). */
+	readonly workArea: string;
+	readonly allowedRoots: readonly string[];
 	readonly credentials: readonly string[];
 	readonly orreryData: string;
 	readonly home: string;
 }
 
-/** The guard for `lane` in `cwd`: orrery's credentials, pi's in a moved agent dir, and OMP's stores (in every tool). */
-function guarded(lane: LaneConfig, by: "env" | "folder", cwd: string, config: HarnessConfig, options: OrreryOptions): Guarded {
+/** What every guard keeps out: orrery's credentials, pi's in a moved agent dir, and OMP's stores (in every tool). */
+function guardBase(config: HarnessConfig, options: OrreryOptions): Pick<Guarded, "credentials" | "orreryData" | "home"> {
 	const env = options.env ?? process.env;
 	const home = options.home ?? homedir();
-	return { lane, by, workspace: workArea(lane, cwd), home, orreryData: config.dataDir, credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)] };
+	return { home, orreryData: config.dataDir, credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)] };
 }
+
+/** The guard for `lane` in `cwd`. */
+function guarded(lane: LaneConfig, by: "env" | "folder", cwd: string, config: HarnessConfig, options: OrreryOptions): Guarded {
+	return { lane, by, workArea: workArea(lane, cwd), allowedRoots: lane.allowedRoots, ...guardBase(config, options) };
+}
+
+/**
+ * The guard for a session whose ORRERY_AGENT was refused: no lane and no memory, but the same rules as the lane whose
+ * folder it runs in, or, outside lanes, an agent's with no default folder (the session's folder, no allowed roots).
+ */
+function refusedGuard(cwd: string, config: HarnessConfig, options: OrreryOptions): Guarded {
+	const rules = laneForCwd(config, cwd);
+	return { by: "refused", workArea: workArea(rules ?? {}, cwd), allowedRoots: rules?.allowedRoots ?? [], ...guardBase(config, options) };
+}
+
+const subagent = (ctx: ExtensionContext) => (ctx as { agent?: { kind?: string } }).agent?.kind === "sub";
 
 /** Which lane a session in `cwd` belongs to (src/lane/pick.ts). */
 const pickFor = (config: HarnessConfig, options: OrreryOptions, cwd: string) => pickLane(config, { env: options.env ?? process.env, cwd, owner: options.owner ?? process.pid });
@@ -169,19 +188,26 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			if (config === undefined) return;
 			state.config = config;
 			const pick = pickFor(config, options, ctx.cwd);
-			if (pick.kind === "unknown") {
+			if (pick.kind === "none") return;
+			if (pick.kind === "unknown" || pick.kind === "bad-token") {
+				// No memory and no lane, but the guard runs, and the session is no lane's to copy later.
+				state.guarded = refusedGuard(ctx.cwd, config, options);
+				guard(pi, state, host);
 				// OMP starts each subagent with this extension too: only the main session says so.
-				if ((ctx as { agent?: { kind?: string } }).agent?.kind !== "sub") warn(ctx, unknownAgentNotice(pick.name));
+				if (subagent(ctx)) return;
+				noteSession(config.dataDir, ctx.sessionManager.getSessionId(), NO_AGENT);
+				warn(ctx, refusedNotice(pick));
 				return;
 			}
-			if (pick.kind === "none") return;
 			const { lane } = pick;
 			lostLane = undefined;
 			state.guarded = guarded(lane, pick.by, ctx.cwd, config, options);
-			const area = state.guarded.workspace;
+			const area = state.guarded.workArea;
 			guard(pi, state, host);
 			// OMP loads the extension again in each subagent (its task tool): a subagent gets the guard, never the memory.
-			if (omp && (ctx as { agent?: { kind?: string } }).agent?.kind === "sub") return;
+			if (omp && subagent(ctx)) return;
+			// The session is this lane's, whether or not its memory opens (src/lane/session-owner.ts).
+			noteSession(config.dataDir, ctx.sessionManager.getSessionId(), lane.name);
 			const { signal } = controller;
 			const deadline = omp && lane.remote !== undefined ? setTimeout(() => controller.abort(new Error("Remote checkout took longer than 25 seconds")), 25_000) : undefined;
 			try {
@@ -241,9 +267,11 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			// A fork is a new session id over entries its parent already copied (same entry ids): start it at its tail.
 			// That is /fork (reason "fork") and `pi --fork <file>` (reason "startup", the header names the parent). A session
 			// moved in from another folder starts at its tail too, always: its earlier turns belong to that folder (lane
-			// privacy). So does a session a lane opened by ORRERY_AGENT finds with turns in it (`pi --session`, /resume): they
-			// were not said in this run, and may be another lane's.
-			if (arrived || (pick.by === "env" && ctx.sessionManager.getBranch().length > 0)) startAtTail(state.lane.store, ctx.sessionManager);
+			// privacy). So does a session another agent owns or ran in since (src/lane/session-owner.ts), and one a lane opened
+			// by ORRERY_AGENT finds with turns in it (`pi --session`, /resume): they were not said in this run, and may be
+			// another lane's.
+			const foreign = foreignSession(config.dataDir, ctx.sessionManager.getSessionId(), lane.name);
+			if (arrived || foreign || (pick.by === "env" && ctx.sessionManager.getBranch().length > 0)) startAtTail(state.lane.store, ctx.sessionManager);
 			else if (event.reason === "fork" || ctx.sessionManager.getHeader()?.parentSession !== undefined) markSessionCopied(state.lane.store, ctx.sessionManager);
 			copySession(state.lane.view, ctx.sessionManager, lane.memory.toolCap);
 			state.runStart = Date.now(); // a first model call that is not a prompt (resumed session) is trimmed too
@@ -353,14 +381,14 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 		 * (its /resume of another folder's session, /move); pi starts a new session.
 		 */
 		const moved = (ctx: ExtensionContext): boolean =>
-			omp && state.config !== undefined && state.guarded?.by !== "env" && laneForCwd(state.config, ctx.cwd)?.name !== state.guarded?.lane.name;
+			omp && state.config !== undefined && state.guarded?.by !== "env" && state.guarded?.by !== "refused" && laneForCwd(state.config, ctx.cwd)?.name !== state.guarded?.lane?.name;
 
 		// A session moved elsewhere by /move and ended before another message is no longer the lane's to save.
 		pi.on("session_shutdown", (_event, ctx) => closeLane(ctx, !moved(ctx)));
 
 		/** Leaves the lane the session had, as its end would but without saving: its guard and OMP settings go, the footer clears. */
 		const leave = async (ctx: ExtensionContext): Promise<void> => {
-			const name = state.guarded?.lane.name;
+			const name = state.guarded?.lane?.name;
 			try {
 				await closeLane(ctx, false);
 			} catch (error) {
@@ -392,13 +420,18 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 		 */
 		const follow = async (event: { reason?: string }, ctx: ExtensionContext): Promise<boolean> => {
 			// A lane opened by ORRERY_AGENT stays; its guard covers the folder the session moved to.
-			if (state.guarded?.by === "env") {
-				const workspace = workArea(state.guarded.lane, ctx.cwd);
-				if (workspace !== state.guarded.workspace) state.guarded = { ...state.guarded, workspace };
+			if (state.guarded?.by === "env" && state.guarded.lane !== undefined) {
+				const area = workArea(state.guarded.lane, ctx.cwd);
+				if (area !== state.guarded.workArea) state.guarded = { ...state.guarded, workArea: area };
+				return false;
+			}
+			// A refused ORRERY_AGENT opens no lane anywhere; its guard takes the rules of the folder it moved to.
+			if (state.guarded?.by === "refused" && state.config !== undefined) {
+				state.guarded = refusedGuard(ctx.cwd, state.config, options);
 				return false;
 			}
 			if (!moved(ctx)) return false;
-			const before = state.guarded?.lane.name;
+			const before = state.guarded?.lane?.name;
 			const closed = state.lane !== undefined;
 			await leave(ctx);
 			await open(event, ctx, state.config, true);
@@ -493,11 +526,18 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 				// A /resume of another folder's session (or a /move before this) took the session there: that folder's lane, or
 				// none, takes it from here.
 				if (await follow(event, ctx)) return;
+				const id = ctx.sessionManager.getSessionId();
+				// The session now open is this lane's (or no lane's, under a refused ORRERY_AGENT), as at session_start.
+				if (state.config !== undefined && state.guarded !== undefined && !subagent(ctx)) noteSession(state.config.dataDir, id, state.guarded.lane?.name ?? NO_AGENT);
 				const lane = recordingLane(ctx);
-				if (lane === undefined) return;
+				if (lane === undefined || state.config === undefined) return;
 				try {
-					// A resumed session was not said in this run: a lane opened by ORRERY_AGENT records it from here on, as openNow does.
-					if (state.guarded?.by === "env" && event.type === "session_switch" && event.reason === "resume") startAtTail(lane.store, ctx.sessionManager);
+					// From its tail: a session another agent owns or ran in since; and, for a lane opened by ORRERY_AGENT, any
+					// switch into a session with turns in it (a resume, a fork, a reason OMP adds later): they were not said in
+					// this run. A branch (a rewind, /btw) is this run's own session.
+					const foreign = foreignSession(state.config.dataDir, id, lane.config.name);
+					const byEnv = state.guarded?.by === "env" && event.type === "session_switch" && ctx.sessionManager.getBranch().length > 0;
+					if (foreign || byEnv) startAtTail(lane.store, ctx.sessionManager);
 					else if (event.type === "session_branch" || event.reason === "fork" || ctx.sessionManager.getHeader()?.parentSession !== undefined) markSessionCopied(lane.store, ctx.sessionManager, leaf);
 					copySession(lane.view, ctx.sessionManager, lane.config.memory.toolCap);
 				} catch (error) {
@@ -657,12 +697,12 @@ function mismatched(pi: ExtensionAPI, options: OrreryOptions, omp: boolean): voi
 		const config = orreryConfig(options, ctx);
 		if (config === undefined) return;
 		const pick = pickFor(config, options, ctx.cwd);
-		if (pick.kind !== "lane") return;
-		state.guarded = guarded(pick.lane, pick.by, ctx.cwd, config, options);
+		if (pick.kind === "none") return;
+		state.guarded = pick.kind === "lane" ? guarded(pick.lane, pick.by, ctx.cwd, config, options) : refusedGuard(ctx.cwd, config, options);
 		// Judged by the tool this runs in, not the entry's: OMP's tool shapes when pi's entry is loaded in OMP.
 		guard(pi, state, insideOmp(pi) ? "omp" : "pi");
 		// One notice per session: OMP starts each subagent too (its task tool), and a subagent says nothing.
-		if ((ctx as { agent?: { kind?: string } }).agent?.kind !== "sub") warn(ctx, notice);
+		if (!subagent(ctx)) warn(ctx, notice);
 	});
 }
 
@@ -674,8 +714,8 @@ function guard(pi: ExtensionAPI, state: OrreryState, host: "pi" | "omp"): void {
 	const judge = host === "omp" ? guardOmpToolCall : guardToolCall;
 	pi.on("tool_call", (event, ctx) => {
 		if (state.guarded === undefined) return;
-		const { lane, workspace, credentials, orreryData, home } = state.guarded;
-		const reason = judge(event.toolName, event.input as Record<string, unknown>, { workspace, allowedRoots: lane.allowedRoots, cwd: ctx.cwd, credentials, orreryData, home });
+		const { workArea: area, allowedRoots, credentials, orreryData, home } = state.guarded;
+		const reason = judge(event.toolName, event.input as Record<string, unknown>, { workspace: area, allowedRoots, cwd: ctx.cwd, credentials, orreryData, home });
 		return reason === undefined ? undefined : { block: true, reason };
 	});
 }
