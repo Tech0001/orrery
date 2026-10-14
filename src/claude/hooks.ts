@@ -1,14 +1,14 @@
 /**
  * Claude Code's hooks (spec §4 "Hooks"), run as `orrery claude-hook <event>` with the hook's JSON on stdin.
- * - They find the session's lane at every event (src/claude/pick.ts): the one ORRERY_AGENT names, in any folder, else
- *   the one whose workspace holds the project folder (CLAUDE_PROJECT_DIR, else the hook's cwd). Claude Code's own
- *   process (CLAUDE_PID, which Claude Code sets for its hooks) is the one an ORRERY_AGENT_TOKEN claim is made for. Only
- *   SessionStart may make a claim or take a dead one over; later events keep what it decided.
+ * - They find the session's lane (src/claude/pick.ts): the one ORRERY_AGENT names, in any folder, else the one whose
+ *   workspace holds the project folder (CLAUDE_PROJECT_DIR, else the hook's cwd). Under ORRERY_AGENT that is decided
+ *   once for Claude Code's process (CLAUDE_PID, which Claude Code sets for its hooks): by the MCP server or the first
+ *   SessionStart, and read by every later event.
  * - They never write the store, and they return quickly: SessionEnd gets about 1.5 s.
  * - Subagent events (agent_id) are not memory.
  * - Outside a lane they print and write nothing. An ORRERY_AGENT that is refused (it names no lane, its token is
- *   malformed, or the folder is another lane's set up the file way) gets a notice at SessionStart, records nothing, and
- *   keeps the guard.
+ *   malformed, the folder is another lane's set up the file way, or the process's decision could not be recorded or is
+ *   missing) gets a notice at SessionStart, records nothing, and keeps the guard.
  * - They record only where `orrery claude-setup` ran: in mod mode in any folder, in file mode for the lane's
  *   workspace. In any other lane they start no holder and spool nothing, SessionStart says the session is not recorded,
  *   and the guard still applies.
@@ -31,7 +31,7 @@ import { holderFresh, readHolder } from "../lane/handover.ts";
 import { claudeGuard, claudeStateRoots, movedConfigDirCredentials } from "./guard.ts";
 import { summaryNotice } from "./notices.ts";
 import { holderLog, samePath, validSession } from "./paths.ts";
-import { type ClaudePicked, claudePick, claudeRefusedNotice } from "./pick.ts";
+import { type ClaudePicked, claudeRefusedNotice, claudeSession, forgetProcess } from "./pick.ts";
 import { readMode, type SessionMode, spoolEvent } from "./spool.ts";
 import { markedHere, refreshViewFile, type ViewGate, viewGate } from "./view-file.ts";
 
@@ -116,13 +116,13 @@ interface Here {
 }
 
 /**
- * Which lane the session belongs to (src/claude/pick.ts), for the project folder and Claude Code's own process.
- * `start`: SessionStart, the one event that may claim ORRERY_AGENT_TOKEN or take a dead claim over; every other event
- * finds what it decided, so a session never changes lanes midway (a Claude Code an agent started, picked by its folder,
- * does not become the agent when the agent exits).
+ * Which lane the session belongs to (src/claude/pick.ts), for the project folder and Claude Code's own process: under
+ * ORRERY_AGENT, the process's one recorded decision. `start`: SessionStart, which makes that decision when nothing (the
+ * MCP server) made it before; every other event, and every later SessionStart, reads it, so a session never changes
+ * lanes midway (a Claude Code an agent started, picked by its folder, does not become the agent when the agent exits).
  */
 function pickFor(ctx: HookContext, projectDir: string, start = false): ClaudePicked {
-	return claudePick(ctx.config, { env: ctx.env, cwd: projectDir, owner: ctx.claudePid, takeover: start });
+	return claudeSession(ctx.config, { env: ctx.env, cwd: projectDir, pid: ctx.claudePid, decide: start });
 }
 
 function pickHere(input: HookInput, ctx: HookContext, start = false): { readonly pick: ClaudePicked; readonly projectDir: string } | undefined {
@@ -192,11 +192,16 @@ export function stop(input: HookInput, ctx: HookContext): object | undefined {
 	return notice(input, ctx);
 }
 
-/** SessionEnd: only drops an "end" in the spool, since Claude Code cancels a slow SessionEnd hook. */
+/**
+ * SessionEnd: only drops an "end" in the spool, since Claude Code cancels a slow SessionEnd hook, and at the process's
+ * end removes its decision (src/claude/pick.ts). Not at /clear or an in-process /resume, which end one session of the
+ * process and start another, nor at /logout or a reason not known here, which may leave it running: a later decision's
+ * prune takes the record once the process is gone.
+ */
 export function sessionEnd(input: HookInput, ctx: HookContext): void {
 	const at = recordable(input, ctx);
-	if (at === undefined) return;
-	spoolEvent(at.lane.dir, at.session, { kind: "end", at: Date.now(), claudePid: ctx.claudePid, ...(typeof input.reason === "string" ? { reason: input.reason } : {}) });
+	if (at !== undefined) spoolEvent(at.lane.dir, at.session, { kind: "end", at: Date.now(), claudePid: ctx.claudePid, ...(typeof input.reason === "string" ? { reason: input.reason } : {}) });
+	if (input.agent_id === undefined && (input.reason === "prompt_input_exit" || input.reason === "other")) forgetProcess(ctx.config, ctx.claudePid);
 }
 
 async function waitForMode(laneDir: string, session: string, nonce: string, ms: number): Promise<SessionMode | undefined> {
@@ -220,7 +225,7 @@ const MOD_CHECK = "If your system prompt has no Orrery memory section (its text 
  */
 export async function sessionStart(input: HookInput, ctx: HookContext): Promise<object | undefined> {
 	if (!validSession(input.session_id)) return undefined;
-	// The session's start: the one pick that may claim the token (pickFor).
+	// The session's start: it makes the process's decision when nothing made it before (pickFor).
 	const picked = pickHere(input, ctx, true);
 	if (picked === undefined) return undefined;
 	const { pick, projectDir } = picked;

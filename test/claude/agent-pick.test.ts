@@ -1,14 +1,14 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Holder } from "../../src/claude/holder.ts";
 import { type HookContext, runHook } from "../../src/claude/hooks.ts";
 import { modView } from "../../src/claude/mod-view.ts";
+import { viewFile } from "../../src/claude/paths.ts";
 import { claudeSetup, claudeSetupMod, modSetupReport } from "../../src/claude/setup.ts";
 import { pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
-import { viewFile } from "../../src/claude/paths.ts";
 import { laneMode, viewGate, writeSetupMarker } from "../../src/claude/view-file.ts";
 import { type HarnessConfig, type LaneConfig, parseConfig } from "../../src/lane/config.ts";
 import { laneModelSource } from "../../src/lane/model-source.ts";
@@ -18,11 +18,27 @@ import { cleanupDirs, messages, seed, type TestLane, testLane } from "./support.
 
 const dirs: string[] = [];
 const holders: Holder[] = [];
+const sleepers: ChildProcess[] = [];
 afterEach(async () => {
 	for (const holder of holders.splice(0)) await holder.stop("test over");
+	for (const sleeper of sleepers.splice(0)) sleeper.kill();
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 	cleanupDirs();
 });
+
+/**
+ * A live process standing for a Claude Code (or an agent's): a process's decision is kept while its pid lives
+ * (src/claude/pick.ts prunes the records of dead ones), so tests that have several give each a live pid.
+ */
+function live(): ChildProcess & { pid: number } {
+	const sleeper = spawn("sleep", ["120"], { stdio: "ignore" });
+	sleepers.push(sleeper);
+	return sleeper as ChildProcess & { pid: number };
+}
+async function kill(process: ChildProcess): Promise<void> {
+	process.kill();
+	if (process.exitCode === null && process.signalCode === null) await once(process, "exit");
+}
 
 /** A hook's context in `dir` (CLAUDE_PROJECT_DIR), with `env` added and Claude Code's pid 4242. */
 const ctx = (config: HarnessConfig, home: string, dir: string, env: NodeJS.ProcessEnv, extra: Partial<HookContext> = {}): HookContext => ({
@@ -53,6 +69,15 @@ const spooled = (lane: LaneConfig, session: string) =>
 		const event = readEvent(pending.path);
 		return event !== undefined && "text" in event ? `${event.kind}: ${event.text}` : event?.kind;
 	});
+const statMode = (path: string) => statSync(path).mode & 0o777;
+/** The Claude Code processes with a recorded decision (src/claude/pick.ts), by pid. */
+const decided = (config: HarnessConfig) => {
+	try {
+		return readdirSync(join(config.dataDir, "claude-processes")).sort();
+	} catch {
+		return [];
+	}
+};
 
 describe("Claude Code outside the lane's folder, by ORRERY_AGENT", () => {
 	it("in mod mode: starts the lane's holder, memory comes from the mod, and the turns go to the lane", async () => {
@@ -84,13 +109,14 @@ describe("Claude Code outside the lane's folder, by ORRERY_AGENT", () => {
 	it("an ORRERY_AGENT that names no lane, or a malformed token: a notice for the person (not in a subagent), and nothing recorded", async () => {
 		const t = testLane({ setup: true });
 		const started: string[] = [];
-		const c = (env: NodeJS.ProcessEnv) => at(t, t.workspace, env, { startHolder: recording(started) });
-		const out = JSON.parse(await runHook("session-start", hookInput("s1", t.workspace), c({ ORRERY_AGENT: "Nobody" })));
+		const c = (claudePid: number, env: NodeJS.ProcessEnv) => at(t, t.workspace, env, { claudePid, startHolder: recording(started) });
+		const [one, two] = [live().pid, live().pid];
+		const out = JSON.parse(await runHook("session-start", hookInput("s1", t.workspace), c(one, { ORRERY_AGENT: "Nobody" })));
 		expect(out).toEqual({ systemMessage: "Orrery: ORRERY_AGENT names Nobody, which is not a configured agent; this session runs without memory." });
-		const bad = JSON.parse(await runHook("session-start", hookInput("s1", t.workspace), c({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: "not-a-token" })));
+		expect(await runHook("session-start", hookInput("s1", t.workspace, { agent_id: "a1" }), c(one, { ORRERY_AGENT: "Nobody" }))).toBe("");
+		await runHook("user-prompt-submit", hookInput("s1", t.workspace, { prompt: "Not for any lane." }), c(one, { ORRERY_AGENT: "Nobody" }));
+		const bad = JSON.parse(await runHook("session-start", hookInput("s2", t.workspace), c(two, { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: "not-a-token" })));
 		expect(bad).toEqual({ systemMessage: "Orrery: ORRERY_AGENT_TOKEN is not 32 lowercase hex digits, so this session is not Test; it runs without memory." });
-		expect(await runHook("session-start", hookInput("s1", t.workspace, { agent_id: "a1" }), c({ ORRERY_AGENT: "Nobody" }))).toBe("");
-		await runHook("user-prompt-submit", hookInput("s1", t.workspace, { prompt: "Not for any lane." }), c({ ORRERY_AGENT: "Nobody" }));
 		expect(started).toEqual([]);
 		expect(pendingEvents(t.lane.dir, "s1")).toEqual([]);
 	});
@@ -98,9 +124,11 @@ describe("Claude Code outside the lane's folder, by ORRERY_AGENT", () => {
 	it("a refused ORRERY_AGENT keeps the guard: the folder's lane's rules in its folder, the session's folder elsewhere", async () => {
 		const t = testLane();
 		const dir = elsewhere();
-		const write = (where: string, path: string) =>
-			runHook("pre-tool-use", hookInput("s1", where, { tool_name: "Write", tool_input: { file_path: path, content: "x" } }), at(t, where, { ORRERY_AGENT: "Nobody" }));
-		const read = (where: string) => runHook("pre-tool-use", hookInput("s1", where, { tool_name: "Read", tool_input: { file_path: t.config.credentialsPath } }), at(t, where, { ORRERY_AGENT: "Nobody" }));
+		const [inLane, outside] = [live().pid, live().pid];
+		const c = (where: string) => at(t, where, { ORRERY_AGENT: "Nobody" }, { claudePid: where === dir ? outside : inLane });
+		const write = (where: string, path: string) => runHook("pre-tool-use", hookInput("s1", where, { tool_name: "Write", tool_input: { file_path: path, content: "x" } }), c(where));
+		const read = (where: string) => runHook("pre-tool-use", hookInput("s1", where, { tool_name: "Read", tool_input: { file_path: t.config.credentialsPath } }), c(where));
+		for (const where of [t.workspace, dir]) await runHook("session-start", hookInput("s1", where), c(where));
 		expect(await write(t.workspace, join(t.workspace, "notes.md"))).toBe("");
 		expect(await write(t.workspace, join(dir, "notes.md"))).toContain("Orrery guard");
 		expect(await read(t.workspace)).toContain("Orrery guard");
@@ -108,7 +136,7 @@ describe("Claude Code outside the lane's folder, by ORRERY_AGENT", () => {
 		expect(await write(dir, join(t.workspace, "notes.md"))).toContain("Orrery guard");
 		expect(await read(dir)).toContain("Orrery guard");
 		// A PreToolUse input too long to read is refused unread there too.
-		expect(await runHook("pre-tool-use", undefined, at(t, dir, { ORRERY_AGENT: "Nobody" }))).toContain("Orrery guard");
+		expect(await runHook("pre-tool-use", undefined, c(dir))).toContain("Orrery guard");
 		expect(await runHook("pre-tool-use", undefined, at(t, dir, {}))).toBe("");
 	});
 
@@ -118,49 +146,52 @@ describe("Claude Code outside the lane's folder, by ORRERY_AGENT", () => {
 		const token = newToken();
 		const env = { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token };
 		const started: string[] = [];
-		// The agent's own Claude Code (a live process) claims the token at its first hook...
-		const own = JSON.parse(await runHook("session-start", hookInput("s1", dir), at(t, dir, env, { claudePid: process.pid, startHolder: recording(started) })));
+		const [agent, child, other] = [live().pid, live().pid, live().pid];
+		// The agent's own Claude Code claims the token at its start...
+		const own = JSON.parse(await runHook("session-start", hookInput("s1", dir), at(t, dir, env, { claudePid: agent, startHolder: recording(started) })));
 		expect(own.hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · /);
 		expect(started).toEqual(["Test"]);
-		expect(claimToken(t.lane.dir, token, process.pid)).toBe(true);
+		expect(claimToken(t.lane.dir, token, agent)).toBe(true);
 		// ...so another Claude Code with the same variables is not the agent (a guard: outside lanes it was never one).
-		const out = await runHook("session-start", hookInput("s2", dir), at(t, dir, env, { startHolder: recording(started) }));
+		const out = await runHook("session-start", hookInput("s2", dir), at(t, dir, env, { claudePid: child, startHolder: recording(started) }));
 		expect(out).toBe("");
 		expect(started).toEqual(["Test"]);
 		// In the lane's own folder, it is that folder's lane.
-		const inFolder = JSON.parse(await runHook("session-start", hookInput("s3", t.workspace), at(t, t.workspace, env, { startHolder: recording(started) })));
+		const inFolder = JSON.parse(await runHook("session-start", hookInput("s3", t.workspace), at(t, t.workspace, env, { claudePid: other, startHolder: recording(started) })));
 		expect(inFolder.hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · /);
 	});
 
 	it("PreToolUse lets the lane write in the folder it was opened in, and refuses outside it", async () => {
 		const t = testLane();
 		const dir = elsewhere();
-		const env = { ORRERY_AGENT: "Test" };
-		const write = (path: string) => runHook("pre-tool-use", hookInput("s1", dir, { tool_name: "Write", tool_input: { file_path: path, content: "x" } }), at(t, dir, env));
+		const c = at(t, dir, { ORRERY_AGENT: "Test" });
+		await runHook("session-start", hookInput("s1", dir), c);
+		const write = (path: string) => runHook("pre-tool-use", hookInput("s1", dir, { tool_name: "Write", tool_input: { file_path: path, content: "x" } }), c);
 		expect(await write(join(dir, "notes.md"))).toBe("");
 		expect(await write(`${t.dir}-escape.txt`)).toContain("Orrery guard");
 		expect(await write(join(t.workspace, "notes.md"))).toBe("");
 	});
 });
 
-/** Two lanes, Atlas and Birch, each in mod mode in a folder of its own. */
-function twoLanes(): { root: string; config: HarnessConfig; atlas: LaneConfig; birch: LaneConfig } {
-	const root = tempDir("orrery-two-");
+/** Lanes, each in mod mode in a folder of its own: Atlas and Birch, and any `more` (name and folder under the root). */
+function lanes(more: Record<string, string> = {}): { root: string; config: HarnessConfig; lane: (name: string) => LaneConfig } {
+	const root = tempDir("orrery-lanes-");
 	dirs.push(root);
-	const lane = (name: string) => {
-		mkdirSync(join(root, `agent-${name}`));
-		return `[lanes.${name}]\nworkspace = ${JSON.stringify(join(root, `agent-${name}`))}\nmodel = "faux-agent/faux-1"\ncompactor_model = "faux-compactor/faux-1"\ncompactor_thinking = "off"\n`;
-	};
-	const config = parseConfig(`data_dir = ${JSON.stringify(join(root, "data"))}\n${lane("Atlas")}${lane("Birch")}`, root);
-	const atlas = config.lanes.get("Atlas") as LaneConfig;
-	const birch = config.lanes.get("Birch") as LaneConfig;
-	for (const l of [atlas, birch]) claudeSetupMod(l);
-	return { root, config, atlas, birch };
+	const folders: Record<string, string> = { Atlas: "agent-Atlas", Birch: "agent-Birch", ...more };
+	let toml = `data_dir = ${JSON.stringify(join(root, "data"))}\n`;
+	for (const [name, folder] of Object.entries(folders)) {
+		mkdirSync(join(root, folder), { recursive: true });
+		toml += `[lanes.${name}]\nworkspace = ${JSON.stringify(join(root, folder))}\nmodel = "faux-agent/faux-1"\ncompactor_model = "faux-compactor/faux-1"\ncompactor_thinking = "off"\n`;
+	}
+	const config = parseConfig(toml, root);
+	for (const lane of config.lanes.values()) claudeSetupMod(lane);
+	return { root, config, lane: (name) => config.lanes.get(name) as LaneConfig };
 }
 
 describe("a Claude Code session another agent recorded, resumed by ORRERY_AGENT", () => {
 	it("records only the turns said after the resume: Claude Code records through its hooks, never from the transcript", async () => {
-		const { root, config, atlas, birch } = twoLanes();
+		const { root, config, lane } = lanes();
+		const [atlas, birch] = [lane("Atlas"), lane("Birch")];
 		const folder = birch.workspace as string;
 		const home = join(root, "home");
 		// Birch's own session in its folder: spooled into Birch's lane.
@@ -191,11 +222,13 @@ describe("a Claude Code session another agent recorded, resumed by ORRERY_AGENT"
 
 describe("Claude Code by ORRERY_AGENT in another lane's folder", () => {
 	it("set up the file way there: refused (that lane's view would be in the session), nothing recorded, no view; the guard keeps that folder's rules", async () => {
-		const { root, config, atlas, birch } = twoLanes();
+		const { root, config, lane } = lanes();
+		const [atlas, birch] = [lane("Atlas"), lane("Birch")];
 		const folder = birch.workspace as string;
 		claudeSetup(birch);
 		const started: string[] = [];
-		const c = ctx(config, join(root, "home"), folder, { ORRERY_AGENT: "Atlas" }, { startHolder: recording(started) });
+		const [first, second] = [live().pid, live().pid];
+		const c = ctx(config, join(root, "home"), folder, { ORRERY_AGENT: "Atlas" }, { claudePid: first, startHolder: recording(started) });
 		expect(JSON.parse(await runHook("session-start", hookInput("s1", folder), c))).toEqual({
 			systemMessage:
 				"Orrery: this folder is Birch's, set up to load Birch's memory view into Claude Code, so Atlas does not open here (Birch's memory would be in its session); this session runs without memory. Open Atlas in another folder, or switch Birch to the mod (`orrery claude-setup Birch --mod`).",
@@ -203,102 +236,149 @@ describe("Claude Code by ORRERY_AGENT in another lane's folder", () => {
 		expect(started).toEqual([]);
 		expect(await runHook("user-prompt-submit", hookInput("s1", folder, { prompt: "Not for any lane." }), c)).toBe("");
 		expect(await runHook("stop", hookInput("s1", folder, { last_assistant_message: "Nor this." }), c)).toBe("");
-		expect(await runHook("session-end", hookInput("s1", folder, { reason: "other" }), c)).toBe("");
 		expect(spooled(atlas, "s1")).toEqual([]);
 		expect(spooled(birch, "s1")).toEqual([]);
-		expect(await modView(config, { cwd: folder, agent: "Atlas", env: {}, owner: 1 })).toEqual({ lane: null });
-		expect(await modView(config, { cwd: folder, env: { ORRERY_AGENT: "Atlas" }, owner: 1 })).toEqual({ lane: null });
+		expect(await modView(config, { cwd: folder, agent: "Atlas", env: {}, owner: first })).toEqual({ lane: null });
 		const tool = (name: string, input: object) => runHook("pre-tool-use", hookInput("s1", folder, { tool_name: name, tool_input: input }), c);
 		expect(await tool("Write", { file_path: join(folder, "notes.md"), content: "x" })).toBe("");
 		expect(await tool("Write", { file_path: `${root}-escape.txt`, content: "x" })).toContain("Orrery guard");
 		expect(await tool("Read", { file_path: config.credentialsPath })).toContain("Orrery guard");
-		// With Birch in mod mode there, nothing of Birch's is loaded: Atlas opens.
+		// With Birch in mod mode there, nothing of Birch's is loaded: a new Claude Code opens Atlas.
 		claudeSetupMod(birch);
-		expect(JSON.parse(await runHook("session-start", hookInput("s2", folder), c)).hookSpecificOutput.additionalContext).toMatch(/^Orrery · Atlas · /);
+		const opened = JSON.parse(await runHook("session-start", hookInput("s2", folder), { ...c, claudePid: second }));
+		expect(opened.hookSpecificOutput.additionalContext).toMatch(/^Orrery · Atlas · /);
 		expect(started).toEqual(["Atlas"]);
+	});
+
+	it("in a lane's folder inside another lane's folder set up the file way: refused, since Claude Code loads every ancestor's CLAUDE.md", async () => {
+		const { root, config, lane } = lanes({ Outer: "outer", Inner: "outer/inner" });
+		claudeSetup(lane("Outer"));
+		const inner = lane("Inner").workspace as string;
+		expect(laneMode(lane("Inner"))).toBe("mod");
+		const started: string[] = [];
+		const start = (env: NodeJS.ProcessEnv) => runHook("session-start", hookInput("s1", inner), ctx(config, join(root, "home"), inner, env, { claudePid: live().pid, startHolder: recording(started) }));
+		expect(JSON.parse(await start({ ORRERY_AGENT: "Atlas" })).systemMessage).toContain("this folder is Outer's, set up to load Outer's memory view into Claude Code, so Atlas does not open here");
+		expect(JSON.parse(await start({ ORRERY_AGENT: "Inner" })).systemMessage).toContain("so Inner does not open here");
+		// Outer itself, whose own view that is, opens there.
+		expect(JSON.parse(await start({ ORRERY_AGENT: "Outer" })).hookSpecificOutput.additionalContext).toMatch(/^Orrery · Outer · /);
+		expect(started).toEqual(["Outer"]);
 	});
 });
 
-describe("a session keeps the lane its SessionStart picked", () => {
-	it("a dead agent's claim is taken over only at a session's start: a Claude Code it started keeps its folder's pick until then", async () => {
+describe("one decision per Claude Code process (src/claude/pick.ts)", () => {
+	it("a later SessionStart (compact, clear, resume) of the same process keeps its first pick after the agent died; a new process may take the dead claim over", async () => {
 		const t = testLane();
 		claudeSetupMod(t.lane);
 		const dir = elsewhere();
 		const token = newToken();
-		// The agent's Claude Code: alive, and the token's claimant.
-		const agent = spawn("sleep", ["60"], { stdio: "ignore" });
-		try {
-			expect(claimToken(t.lane.dir, token, agent.pid as number)).toBe(true);
-			// A Claude Code the agent started (pid 4242), with the same variables: not the agent.
-			const started: string[] = [];
-			const c = at(t, dir, { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token }, { startHolder: recording(started) });
-			expect(await runHook("session-start", hookInput("s-child", dir), c)).toBe("");
-			// The agent exits; the child's later events keep its start's pick.
-			agent.kill();
-			await once(agent, "exit");
-			expect(await runHook("user-prompt-submit", hookInput("s-child", dir, { prompt: "The child's words." }), c)).toBe("");
-			expect(await runHook("stop", hookInput("s-child", dir, { last_assistant_message: "The child's reply." }), c)).toBe("");
-			expect(spooled(t.lane, "s-child")).toEqual([]);
-			expect(readFileSync(join(t.lane.dir, "claims", token), "utf8")).toBe(`${agent.pid}\n`);
-			// Its next SessionStart (a resume, a restart) may take the dead claim over.
-			const resumed = JSON.parse(await runHook("session-start", hookInput("s-child", dir, { source: "resume" }), c));
-			expect(resumed.hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · /);
-			expect(started).toEqual(["Test"]);
-			await runHook("user-prompt-submit", hookInput("s-child", dir, { prompt: "Now as the agent." }), c);
-			expect(spooled(t.lane, "s-child")).toEqual(["prompt: Now as the agent."]);
-		} finally {
-			agent.kill();
-		}
+		const agent = live();
+		expect(claimToken(t.lane.dir, token, agent.pid)).toBe(true);
+		// A Claude Code the agent started, with the same variables: not the agent.
+		const started: string[] = [];
+		const env = { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token };
+		const child = at(t, dir, env, { claudePid: live().pid, startHolder: recording(started) });
+		expect(await runHook("session-start", hookInput("s1", dir, { source: "startup" }), child)).toBe("");
+		await kill(agent);
+		expect(await runHook("session-start", hookInput("s1", dir, { source: "compact" }), child)).toBe("");
+		expect(await runHook("session-end", hookInput("s1", dir, { reason: "clear" }), child)).toBe("");
+		expect(await runHook("session-start", hookInput("s2", dir, { source: "clear" }), child)).toBe("");
+		expect(await runHook("session-end", hookInput("s2", dir, { reason: "resume" }), child)).toBe("");
+		expect(await runHook("session-start", hookInput("s1", dir, { source: "resume" }), child)).toBe("");
+		expect(await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "The child's words." }), child)).toBe("");
+		expect(spooled(t.lane, "s1")).toEqual([]);
+		expect(started).toEqual([]);
+		expect(readFileSync(join(t.lane.dir, "claims", token), "utf8")).toBe(`${agent.pid}\n`);
+		// `claude --resume` starts a new process: its first decision may take the dead claim over.
+		const resumed = at(t, dir, env, { claudePid: live().pid, startHolder: recording(started) });
+		expect(JSON.parse(await runHook("session-start", hookInput("s1", dir, { source: "resume" }), resumed)).hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · /);
+		expect(started).toEqual(["Test"]);
+	});
+
+	it("a decision that cannot be recorded refuses the session: nothing recorded, and the guard on", async () => {
+		const t = testLane();
+		claudeSetupMod(t.lane);
+		const dir = elsewhere();
+		// The records' folder cannot be made: a file stands where it would go.
+		mkdirSync(t.config.dataDir, { recursive: true });
+		writeFileSync(join(t.config.dataDir, "claude-processes"), "");
+		const started: string[] = [];
+		const c = at(t, dir, { ORRERY_AGENT: "Test" }, { claudePid: live().pid, startHolder: recording(started) });
+		const out = JSON.parse(await runHook("session-start", hookInput("s1", dir), c)) as { systemMessage: string };
+		expect(out.systemMessage).toMatch(/^Orrery: ORRERY_AGENT is set, but which agent this Claude Code is could not be recorded \(.+\); this session runs without memory\.$/);
+		expect(started).toEqual([]);
+		await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "Not for any lane." }), c);
+		expect(spooled(t.lane, "s1")).toEqual([]);
+		expect(await runHook("pre-tool-use", hookInput("s1", dir, { tool_name: "Read", tool_input: { file_path: t.config.credentialsPath } }), c)).toContain("Orrery guard");
+		expect(await modView(t.config, { cwd: dir, agent: "Test", env: {}, owner: c.claudePid })).toEqual({ lane: null });
+	});
+
+	it("a token claim that cannot be recorded: the recorded decision still holds for every later event (the guard stays on)", async () => {
+		const t = testLane();
+		claudeSetupMod(t.lane);
+		const dir = elsewhere();
+		// The claims folder cannot be made: a file stands where it would go.
+		mkdirSync(t.lane.dir, { recursive: true });
+		writeFileSync(join(t.lane.dir, "claims"), "");
+		const started: string[] = [];
+		const c = at(t, dir, { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: newToken() }, { claudePid: live().pid, startHolder: recording(started) });
+		expect(JSON.parse(await runHook("session-start", hookInput("s1", dir), c)).hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · /);
+		expect(await runHook("pre-tool-use", hookInput("s1", dir, { tool_name: "Read", tool_input: { file_path: t.config.credentialsPath } }), c)).toContain("Orrery guard");
+		await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "Kept by the agent." }), c);
+		expect(spooled(t.lane, "s1")).toEqual(["prompt: Kept by the agent."]);
+	});
+
+	it("SessionEnd at the process's end removes its decision (not at /clear); a new decision prunes a dead process's", async () => {
+		const t = testLane();
+		const dir = elsewhere();
+		const [first, second] = [live(), live()];
+		const c = (claudePid: number) => at(t, dir, { ORRERY_AGENT: "Test" }, { claudePid });
+		await runHook("session-start", hookInput("s1", dir), c(first.pid));
+		expect(decided(t.config)).toEqual([`${first.pid}.json`]);
+		await runHook("session-end", hookInput("s1", dir, { reason: "clear" }), c(first.pid));
+		expect(decided(t.config)).toEqual([`${first.pid}.json`]);
+		await runHook("session-end", hookInput("s1", dir, { reason: "prompt_input_exit" }), c(first.pid));
+		expect(decided(t.config)).toEqual([]);
+		// A process that died without SessionEnd: its record goes at the next decision.
+		await runHook("session-start", hookInput("s2", dir), c(first.pid));
+		await kill(first);
+		await runHook("session-start", hookInput("s3", dir), c(second.pid));
+		expect(decided(t.config)).toEqual([`${second.pid}.json`]);
+		// Files 0600 in a 0700 folder.
+		expect(statMode(join(t.config.dataDir, "claude-processes"))).toBe(0o700);
+		expect(statMode(join(t.config.dataDir, "claude-processes", `${second.pid}.json`))).toBe(0o600);
 	});
 });
 
 describe("claude-mod view and setup without the folder", () => {
-	it("answers for the lane --agent names, from any folder; without it, the folder decides", async () => {
+	it("answers for the lane the process decided on, from any folder; without ORRERY_AGENT, the folder decides", async () => {
 		const t = testLane();
 		seed(t.lane, ["Use pnpm here.", "Switched to pnpm."]);
 		claudeSetupMod(t.lane);
 		const dir = elsewhere();
-		expect(await modView(t.config, { cwd: dir, agent: "Test", env: {}, owner: 1 })).toMatchObject({ lane: "Test", mode: "mod", messages: 2, section: expect.stringMatching(/^# Memory\n\nEarlier conversation reaches you only through the view below\./) });
-		expect(await modView(t.config, { cwd: dir, env: {}, owner: 1 })).toEqual({ lane: null });
-		// ORRERY_AGENT in the view's own environment does as well.
-		expect(await modView(t.config, { cwd: dir, env: { ORRERY_AGENT: "Test" }, owner: 1 })).toMatchObject({ lane: "Test", mode: "mod" });
-		expect(await modView(t.config, { cwd: dir, agent: "Nobody", env: {}, owner: 1 })).toEqual({ lane: null });
-		// A malformed token, an empty one too, is refused here as in the hooks.
-		expect(await modView(t.config, { cwd: dir, agent: "Test", agentToken: "", env: {}, owner: 1 })).toEqual({ lane: null });
+		const [agent, nobody] = [live().pid, live().pid];
+		// The process's SessionStart (or the MCP server) decided first.
+		await runHook("session-start", hookInput("s1", dir), at(t, dir, { ORRERY_AGENT: "Test" }, { claudePid: agent, startHolder: recording([]) }));
+		await runHook("session-start", hookInput("s2", dir), at(t, dir, { ORRERY_AGENT: "Nobody" }, { claudePid: nobody }));
+		expect(await modView(t.config, { cwd: dir, agent: "Test", env: {}, owner: agent })).toMatchObject({ lane: "Test", mode: "mod", messages: 2, section: expect.stringMatching(/^# Memory\n\nEarlier conversation reaches you only through the view below\./) });
+		expect(await modView(t.config, { cwd: dir, env: { ORRERY_AGENT: "Test" }, owner: agent })).toMatchObject({ lane: "Test", mode: "mod" });
+		expect(await modView(t.config, { cwd: dir, agent: "Test", env: {}, owner: nobody })).toEqual({ lane: null });
+		expect(await modView(t.config, { cwd: dir, env: {}, owner: agent })).toEqual({ lane: null });
+		expect(await modView(t.config, { cwd: t.workspace, env: {}, owner: nobody })).toMatchObject({ lane: "Test" });
+		// The view never decides: a process with no decision gets no lane.
+		expect(await modView(t.config, { cwd: dir, agent: "Test", env: {}, owner: live().pid })).toEqual({ lane: null });
 	});
 
 	it("the view's Claude Code is its parent, whatever CLAUDE_PID it inherited (a claude started from an agent's Bash has the agent's)", async () => {
 		const t = testLane();
 		claudeSetupMod(t.lane);
 		const dir = elsewhere();
-		const [agents, parents] = [newToken(), newToken()];
-		// CLAUDE_PID names the claimant (this test), but the view's parent is another process: not the agent.
-		expect(claimToken(t.lane.dir, agents, process.pid)).toBe(true);
-		expect(await modView(t.config, { cwd: dir, agent: "Test", agentToken: agents, env: { CLAUDE_PID: String(process.pid) } })).toEqual({ lane: null });
-		// The parent's own claim: the agent, whatever CLAUDE_PID says.
-		expect(claimToken(t.lane.dir, parents, process.ppid)).toBe(true);
-		expect(await modView(t.config, { cwd: dir, agent: "Test", agentToken: parents, env: { CLAUDE_PID: String(process.pid) } })).toMatchObject({ lane: "Test" });
-	});
-
-	it("--agent without --agent-token: the token in the view's own environment still counts", async () => {
-		const t = testLane();
-		claudeSetupMod(t.lane);
-		const dir = elsewhere();
-		const token = newToken();
-		expect(claimToken(t.lane.dir, token, process.pid)).toBe(true);
-		expect(await modView(t.config, { cwd: dir, agent: "Test", env: { ORRERY_AGENT_TOKEN: token }, owner: 4242 })).toEqual({ lane: null });
-		expect(await modView(t.config, { cwd: dir, agent: "Test", env: { ORRERY_AGENT_TOKEN: token }, owner: process.pid })).toMatchObject({ lane: "Test" });
-	});
-
-	it("--agent with a token another live process claimed: not the agent, so the folder decides", async () => {
-		const t = testLane();
-		claudeSetupMod(t.lane);
-		const dir = elsewhere();
-		const token = newToken();
-		expect(claimToken(t.lane.dir, token, process.pid)).toBe(true);
-		expect(await modView(t.config, { cwd: dir, agent: "Test", agentToken: token, env: {}, owner: process.pid })).toMatchObject({ lane: "Test" });
-		expect(await modView(t.config, { cwd: dir, agent: "Test", agentToken: token, env: {}, owner: 4242 })).toEqual({ lane: null });
-		expect(await modView(t.config, { cwd: t.workspace, agent: "Test", agentToken: token, env: {}, owner: 4242 })).toMatchObject({ lane: "Test" });
+		const decide = (claudePid: number) => runHook("session-start", hookInput("s1", dir), at(t, dir, { ORRERY_AGENT: "Test" }, { claudePid, startHolder: recording([]) }));
+		// CLAUDE_PID's process decided on the agent; the view's parent (here this test's parent) decided nothing.
+		await decide(process.pid);
+		expect(await modView(t.config, { cwd: dir, agent: "Test", env: { CLAUDE_PID: String(process.pid) } })).toEqual({ lane: null });
+		// The parent's own decision counts, whatever CLAUDE_PID says.
+		await decide(process.ppid);
+		expect(await modView(t.config, { cwd: dir, agent: "Test", env: { CLAUDE_PID: String(process.pid) } })).toMatchObject({ lane: "Test" });
 	});
 
 	it("switches a lane with no workspace to the mod; the file setup refuses it", () => {

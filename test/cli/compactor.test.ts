@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it } from "vitest";
 import { Holder } from "../../src/claude/holder.ts";
+import { runHook } from "../../src/claude/hooks.ts";
 import { compactorCliCommand } from "../../src/cli/commands.ts";
 import { type HarnessConfig, parseModelChoice } from "../../src/lane/config.ts";
 import { FileCredentialStore } from "../../src/lane/credentials.ts";
@@ -12,7 +13,7 @@ import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { writeHolder } from "../../src/lane/handover.ts";
 import { takeRequest } from "../../src/lane/settings-request.ts";
 import { laneModelSource } from "../../src/lane/model-source.ts";
-import { claimToken, newToken } from "../../src/lane/pick.ts";
+import { newToken } from "../../src/lane/pick.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { cleanEnv, cleanupDirs, cliCommand, testLane } from "../claude/support.ts";
 import { fauxModels, tempDir } from "../lane/support.ts";
@@ -138,7 +139,7 @@ describe("orrery compactor", () => {
 });
 
 describe("`.`, this session's lane (Claude Code's commands)", () => {
-	it("is the lane ORRERY_AGENT names, in any folder; with a token, only for the Claude Code that claimed it; else the folder's", () => {
+	it("is the lane ORRERY_AGENT names, in any folder: in Claude Code the one its process decided on; else the folder's", async () => {
 		const t = testLane();
 		const elsewhere = join(t.dir, "elsewhere");
 		mkdirSync(elsewhere);
@@ -149,19 +150,37 @@ describe("`.`, this session's lane (Claude Code's commands)", () => {
 		expect([nowhere.status, nowhere.stderr]).toEqual([1, `${elsewhere} is in no lane's workspace.\n`]);
 		const unknown = status({ ORRERY_AGENT: "Nobody" });
 		expect([unknown.status, unknown.stderr]).toEqual([1, "Orrery: ORRERY_AGENT names Nobody, which is not a configured agent; this session runs without memory.\n"]);
+		// A skill's command runs with Claude Code's CLAUDE_PID: "." is what that process decided (here this test's
+		// SessionStart), whatever the command is told; a command never decides.
 		const token = newToken();
-		expect(claimToken(t.lane.dir, token, process.pid)).toBe(true);
-		// A skill's command runs with Claude Code's CLAUDE_PID; without one, its parent (here this test, the claimant) stands in.
-		expect(status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: String(process.pid) }).stdout).toMatch(/^Test\s/);
-		expect(status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token }).stdout).toMatch(/^Test\s/);
-		const child = status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: String(process.ppid) });
-		expect([child.status, child.stderr]).toEqual([1, `${elsewhere} is in no lane's workspace.\n`]);
-		expect(orrery(["status", "."], { ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: t.workspace, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: String(process.ppid) }).stdout).toMatch(/^Test\s/);
-		// A command runs within a session: a dead agent's claim is not taken over here (only at a session's start).
-		const dead = newToken();
-		writeFileSync(join(t.lane.dir, "claims", dead), `${spawnSync("true").pid}\n`);
-		const late = status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: dead, CLAUDE_PID: String(process.pid) });
-		expect([late.status, late.stderr]).toEqual([1, `${elsewhere} is in no lane's workspace.\n`]);
+		const record = join(t.config.dataDir, "claude-processes", `${process.pid}.json`);
+		try {
+			await runHook("session-start", JSON.stringify({ session_id: "s1", cwd: elsewhere }), {
+				config: t.config,
+				env: { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PROJECT_DIR: elsewhere },
+				claudePid: process.pid,
+				startHolder: () => {},
+				modeWaitMs: 100,
+				home: join(t.dir, "home"),
+			});
+			expect(status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: String(process.pid) }).stdout).toMatch(/^Test\s/);
+			expect(status({ ORRERY_AGENT: "Nobody", CLAUDE_PID: String(process.pid) }).stdout).toMatch(/^Test\s/);
+			// A Claude Code process that decided nothing: refused, never its folder's.
+			const undecided = status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: String(process.ppid) });
+			expect([undecided.status, undecided.stderr]).toEqual([
+				1,
+				"Orrery: ORRERY_AGENT is set, but no choice of agent is recorded for this Claude Code (its session start made none); this session runs without memory.\n",
+			]);
+			// Outside Claude Code "." is picked there, and its parent (this test, which claimed the token) is the claimant.
+			expect(status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token }).stdout).toMatch(/^Test\s/);
+			// It never takes a dead agent's claim over (only a Claude Code process's first decision may).
+			const dead = newToken();
+			writeFileSync(join(t.lane.dir, "claims", dead), `${spawnSync("true").pid}\n`);
+			const late = status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: dead });
+			expect([late.status, late.stderr]).toEqual([1, `${elsewhere} is in no lane's workspace.\n`]);
+		} finally {
+			rmSync(record, { force: true });
+		}
 		// In another lane's folder set up the file way, the agent is refused, as in the hooks.
 		const other = join(t.dir, "other");
 		mkdirSync(other);

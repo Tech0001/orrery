@@ -2,11 +2,12 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { runHook } from "../../src/claude/hooks.ts";
 import { modView } from "../../src/claude/mod-view.ts";
 import { pendingEvents, writeMode } from "../../src/claude/spool.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { holderFile } from "../../src/lane/handover.ts";
-import { claimToken, newToken } from "../../src/lane/pick.ts";
+import { newToken } from "../../src/lane/pick.ts";
 import { MemoryStore, MemoryView, Part } from "../../src/memory/index.ts";
 import { cleanEnv, cleanupDirs, cliCommand, seed, spool, type TestLane, testLane } from "./support.ts";
 
@@ -320,7 +321,7 @@ describe("the CLI", () => {
 		expect(bad.stderr).toBe("");
 	});
 
-	it("answers for the lane --agent (or ORRERY_AGENT) names, in any folder; with a token, only for the Claude Code that claimed it", () => {
+	it("under ORRERY_AGENT (--agent, or its own environment) answers what its Claude Code process decided, in any folder, and never decides", async () => {
 		const t = modLane();
 		const elsewhere = join(t.dir, "elsewhere");
 		mkdirSync(elsewhere);
@@ -332,17 +333,33 @@ describe("the CLI", () => {
 			expect([run.status, run.stderr]).toEqual([0, ""]);
 			return JSON.parse(run.stdout);
 		};
-		expect(view(["--agent", "Test"])).toMatchObject({ lane: "Test", mode: "mod", messages: 2, section: expect.stringContaining("one") });
-		expect(view([])).toEqual({ lane: null });
-		expect(view([], { ORRERY_AGENT: "Test" })).toMatchObject({ lane: "Test", mode: "mod" });
-		expect(view(["--agent", "Nobody"], { ORRERY_AGENT: "Test" })).toEqual({ lane: null });
+		// Its Claude Code (its parent: here this test) decided nothing yet: no lane, rather than a pick of its own.
+		expect(view(["--agent", "Test"])).toEqual({ lane: null });
+		// That process's SessionStart decides.
 		const token = newToken();
-		expect(claimToken(t.lane.dir, token, process.pid)).toBe(true);
-		// The view's Claude Code is its parent (here this test, which claimed the token), never CLAUDE_PID: a claude started
-		// from an agent's Bash inherits the agent's.
-		expect(view(["--agent", "Test", "--agent-token", token])).toMatchObject({ lane: "Test" });
-		expect(view(["--agent", "Test", "--agent-token", token], { CLAUDE_PID: String(process.ppid) })).toMatchObject({ lane: "Test" });
-		expect(view(["--agent", "Test", "--agent-token", token], { CLAUDE_PID: String(process.pid) }, true)).toEqual({ lane: null });
+		const env = { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token };
+		const record = join(t.config.dataDir, "claude-processes", `${process.pid}.json`);
+		try {
+			await runHook("session-start", JSON.stringify({ session_id: OTHER, cwd: elsewhere }), {
+				config: t.config,
+				env: { ...env, CLAUDE_PROJECT_DIR: elsewhere },
+				claudePid: process.pid,
+				startHolder: () => {},
+				modeWaitMs: 100,
+				home: join(t.dir, "home"),
+			});
+			expect(view(["--agent", "Test", "--agent-token", token])).toMatchObject({ lane: "Test", mode: "mod", messages: 2, section: expect.stringContaining("one") });
+			expect(view([], env)).toMatchObject({ lane: "Test", mode: "mod" });
+			// It reads the decision, whatever it is told.
+			expect(view(["--agent", "Nobody"])).toMatchObject({ lane: "Test" });
+			// Without ORRERY_AGENT the folder decides.
+			expect(view([])).toEqual({ lane: null });
+			// The view's Claude Code is its parent, never CLAUDE_PID: a claude started from an agent's Bash inherits the agent's.
+			expect(view(["--agent", "Test", "--agent-token", token], { CLAUDE_PID: String(process.ppid) })).toMatchObject({ lane: "Test" });
+			expect(view(["--agent", "Test", "--agent-token", token], { CLAUDE_PID: String(process.pid) }, true)).toEqual({ lane: null });
+		} finally {
+			rmSync(record, { force: true });
+		}
 	});
 
 	it("takes --spool-only with --wait-ms", () => {

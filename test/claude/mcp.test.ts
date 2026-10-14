@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { once } from "node:events";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,6 +8,7 @@ import { handleMessage, laneTools, MAX_LINE_CHARS, runMcp } from "../../src/clau
 import { MemoryStore } from "../../src/memory/index.ts";
 import type { LaneTool } from "../../src/lane/memory-tools.ts";
 import { claimToken, newToken } from "../../src/lane/pick.ts";
+import { runHook } from "../../src/claude/hooks.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { seedAtlas } from "../lane/support.ts";
 import { cleanup, pi, world } from "../pi/world.ts";
@@ -131,7 +133,7 @@ describe("Orrery's MCP server", () => {
 	});
 
 	it("runs over stdio as `orrery mcp`, finds the lane by ORRERY_AGENT or from CLAUDE_PROJECT_DIR, and serves no tools outside a lane", { timeout: 60_000 }, async () => {
-		const { root, configPath } = world();
+		const { root, config, configPath } = world();
 		seedAtlas(root);
 		/** `orrery mcp`, started by this test, or (`viaShell`) by a shell this test starts, which is then its parent. */
 		const session = async (projectDir: string, env: Record<string, string> = { ORRERY_CONFIG: configPath }, viaShell = false) => {
@@ -159,23 +161,82 @@ describe("Orrery's MCP server", () => {
 		expect(outside.replies.get(2).result.tools).toEqual([]);
 		expect(outside.replies.get(3).result.isError).toBe(true);
 		expect(outside.err).toBe("");
+		// Under ORRERY_AGENT the server's parent (this test) records the process's decision; each case below is a new
+		// Claude Code process, so the last one's decision goes first, as its SessionEnd would take it.
+		const ended = () => rmSync(join(config.dataDir, "claude-processes", `${process.pid}.json`), { force: true });
 		// ORRERY_AGENT names the lane wherever Claude Code runs; one that names no lane serves none, in a lane folder too.
 		const named = await session(join(root, "plain"), { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas" });
 		expect(named.replies.get(2).result.tools.map((tool: { name: string }) => tool.name)).toEqual(["zoom", "date", "search"]);
 		expect(named.replies.get(3).result.content[0].text).toContain("#0 2026-02-10 user");
+		ended();
 		expect((await session(join(root, "agent-Atlas"), { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Nobody" })).replies.get(2).result.tools).toEqual([]);
+		ended();
 		// With a token, only the Claude Code that claimed it is the agent: the server's parent (Claude Code starts it), not
 		// CLAUDE_PID, which a claude started from an agent's Bash inherits from the agent.
 		const token = newToken();
 		expect(claimToken(join(root, "data", "lanes", "Atlas"), token, process.pid)).toBe(true);
 		const asAgent = { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token };
 		expect((await session(join(root, "plain"), { ...asAgent, CLAUDE_PID: String(process.ppid) })).replies.get(2).result.tools).toHaveLength(3);
+		ended();
 		expect((await session(join(root, "plain"), { ...asAgent, CLAUDE_PID: String(process.pid) }, true)).replies.get(2).result.tools).toEqual([]);
 		// In another lane's folder set up the file way (its CLAUDE.md loads that lane's view), the agent is refused.
 		writeSetupMarker(join(root, "data", "lanes", "Birch"), join(root, "agent-Birch"), "CLAUDE.md");
 		expect((await session(join(root, "agent-Birch"), { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas" })).replies.get(2).result.tools).toEqual([]);
+		ended();
 		expect((await session(join(root, "agent-Birch"))).replies.get(2).result.tools.map((tool: { name: string }) => tool.name)).toEqual(expect.arrayContaining(["zoom", "date", "search"]));
 		// No config anywhere: quiet, no tools.
 		if (!existsSync("/etc/orrery/config.toml")) expect((await session(join(root, "agent-Atlas"), {})).replies.get(2).result.tools).toEqual([]);
+	});
+
+	it("shares one decision per Claude Code process with the hooks: a restarted server, and a SessionStart before or after it, keep the first pick after the agent died", { timeout: 60_000 }, async () => {
+		const { root, config, configPath } = world();
+		seedAtlas(root);
+		const plain = join(root, "plain");
+		/** `orrery mcp` started by this test (its parent: the Claude Code process), and the tools it serves. */
+		const served = async (env: Record<string, string>) => {
+			const c = cliCommand(["mcp"]);
+			const child = spawn(c.cmd, c.args, { env: cleanEnv({ ...env, CLAUDE_PROJECT_DIR: plain, HOME: root }), cwd: root });
+			let out = "";
+			child.stdout.setEncoding("utf8").on("data", (chunk: string) => (out += chunk));
+			const exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
+			child.stdin.end(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" })}\n`);
+			expect(await exited).toBe(0);
+			return (JSON.parse(out.trim()).result.tools as { name: string }[]).map((tool) => tool.name);
+		};
+		/** This process's SessionStart hook, in-process, as Claude Code (CLAUDE_PID: this test) runs it. */
+		const sessionStart = (env: Record<string, string>) =>
+			runHook("session-start", JSON.stringify({ session_id: "s1", cwd: plain, source: "startup" }), {
+				config,
+				env: { ...env, CLAUDE_PROJECT_DIR: plain },
+				claudePid: process.pid,
+				startHolder: () => {},
+				modeWaitMs: 200,
+				home: join(root, "home"),
+			});
+		/** The agent's Claude Code: a live process holding a new token's claim. */
+		const agent = () => {
+			const sleeper = spawn("sleep", ["120"], { stdio: "ignore" });
+			const token = newToken();
+			expect(claimToken(join(root, "data", "lanes", "Atlas"), token, sleeper.pid as number)).toBe(true);
+			const gone = async () => {
+				sleeper.kill();
+				await once(sleeper, "exit");
+			};
+			return { env: { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token }, gone };
+		};
+		// The server first: the agent lives, so this Claude Code is not it. After the agent's exit, a restarted server
+		// and a SessionStart of the same process read that decision; neither takes the dead claim over.
+		const first = agent();
+		expect(await served(first.env)).toEqual([]);
+		await first.gone();
+		expect(await served(first.env)).toEqual([]);
+		expect(await sessionStart(first.env)).toBe("");
+		rmSync(join(config.dataDir, "claude-processes", `${process.pid}.json`), { force: true });
+		// SessionStart first: the server started after the agent's exit reads its decision.
+		const second = agent();
+		expect(await sessionStart(second.env)).toBe("");
+		await second.gone();
+		expect(await served(second.env)).toEqual([]);
+		rmSync(join(config.dataDir, "claude-processes", `${process.pid}.json`), { force: true });
 	});
 });
