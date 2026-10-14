@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HarnessConfig } from "../../src/agent/config.ts";
-import { writeInstructions } from "../../src/agent/instructions.ts";
+import { instructionsPath, writeInstructions } from "../../src/agent/instructions.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { createOrrery, type AgentSettingsResult, summaryWaitMs } from "../../src/pi/index.ts";
 import { ageVisitMarks, cleanup, scratchHome, summarySourcesFor, world } from "../pi/world.ts";
@@ -115,6 +115,36 @@ describe("Orrery inside OMP (an OMP-shaped host)", () => {
 		expect(result.systemPrompt[0]).toBe("base");
 		expect(result.systemPrompt[1]).toBe("# Agent: Atlas\n\nYou are Atlas.");
 		expect(result.systemPrompt[2]).toMatch(/^# Memory/);
+	});
+
+	it("reads the instructions again at /new, /resume and a rewind (pi's new session): an edit reaches the next message, and status.json notes it", async () => {
+		const { root, config } = world();
+		const dir = join(root, "data", "agents", "Atlas");
+		const status = () => JSON.parse(readFileSync(join(dir, "status.json"), "utf8")) as { instructionsAt?: number };
+		const omp = await ompOrrery(join(root, "agent-Atlas"), config);
+		expect((await turn(omp, "One.", "First.", ["base"]))?.systemPrompt[1]).toMatch(/^# Memory/);
+		expect(status().instructionsAt).toBe(0);
+		// Each edit is written after the session read the last one, with a later time: the Agents page marks it newer.
+		const switches: [string, () => Promise<unknown>][] = [
+			["/new", () => omp.emit("session_switch", { reason: "new", previousSessionFile: "/sessions/s1.jsonl" })],
+			["/resume", () => omp.emit("session_switch", { reason: "resume", previousSessionFile: "/sessions/s2.jsonl" })],
+			["a rewind", () => omp.emit("session_branch", { reason: "branch", previousSessionFile: "/sessions/s3.jsonl" })],
+		];
+		for (const [i, [what, emit]] of switches.entries()) {
+			writeInstructions(dir, `You are Atlas, edit ${i}.\n`);
+			const at = new Date(Date.now() + (i + 1) * 10_000);
+			utimesSync(instructionsPath(dir), at, at);
+			omp.session = { id: `s${i + 2}`, entries: [] };
+			await emit();
+			expect(status().instructionsAt, what).toBe(statSync(instructionsPath(dir)).mtimeMs);
+			expect((await turn(omp, `Ask ${i}.`, `Answer ${i}.`, ["base"]))?.systemPrompt[1], what).toBe(`# Agent: Atlas\n\nYou are Atlas, edit ${i}.`);
+		}
+		// Removed: the next session has none, and status.json says so (0).
+		rmSync(instructionsPath(dir));
+		omp.session = { id: "s9", entries: [] };
+		await omp.emit("session_switch", { reason: "new", previousSessionFile: "/sessions/s5.jsonl" });
+		expect(status().instructionsAt).toBe(0);
+		expect((await turn(omp, "Last.", "Done.", ["base"]))?.systemPrompt[1]).toMatch(/^# Memory/);
 	});
 
 	// A guard: it passes before instructions exist too (a subagent gets the guard, never memory or instructions).

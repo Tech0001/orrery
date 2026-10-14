@@ -245,6 +245,18 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 		};
 
 		/**
+		 * Reads the agent's instructions for the session now open: at its open, and again at each OMP session switch, which
+		 * pi makes a new session, so an edit since reaches the next message. The open memory notes when (status.json), and
+		 * the Agents page's "newer" mark clears.
+		 */
+		const loadInstructions = (agent: AgentConfig, ctx: ExtensionContext) => {
+			const found = readInstructions(agent.dir);
+			state.instructions = found === undefined ? undefined : instructionsSection(agent.name, found);
+			if (state.agent?.config.name === agent.name) state.agent.instructionsAt = found?.at;
+			if (found?.cut === true) warn(ctx, cutNotice(agent.name));
+		};
+
+		/**
 		 * Opens the session's agent (ORRERY_AGENT's, else the folder's), as a new session does: its guard, then (main session
 		 * only) its memory, OMP's settings, the tools, the session's copy and the status tick. `loaded`: the config already
 		 * read. `arrived`: the session moved here from another folder (OMP), so it records only what comes after the move.
@@ -284,13 +296,8 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			if (omp && subagent(ctx)) return;
 			// The session is this agent's, whether or not its memory opens.
 			noteRun(state, ctx);
-			// Read once the memory is open (a remote check-out may bring a newer file) or has failed to open: a session
-			// without its memory keeps the agent's identity.
-			const loadInstructions = () => {
-				const found = readInstructions(agent.dir);
-				state.instructions = found === undefined ? undefined : instructionsSection(agent.name, found);
-				if (found?.cut === true) warn(ctx, cutNotice(agent.name));
-			};
+			// The instructions are read once the memory is open (a remote check-out may bring a newer file) or has failed to
+			// open: a session without its memory keeps the agent's identity.
 			const { signal } = controller;
 			const deadline = omp && agent.remote !== undefined ? setTimeout(() => controller.abort(new Error("Remote checkout took longer than 25 seconds")), 25_000) : undefined;
 			try {
@@ -316,10 +323,10 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			} catch (error) {
 				if (error === OPEN_CANCELLED) return;
 				ctx.ui.notify(notOpened(agent, error, label), "warning");
-				loadInstructions();
+				loadInstructions(agent, ctx);
 				return;
 			} finally { clearTimeout(deadline); }
-			loadInstructions();
+			loadInstructions(agent, ctx);
 			const left = () => signal.aborted || moved(ctx);
 			const discard = async () => {
 				const memory = state.agent;
@@ -634,6 +641,8 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 				// A /resume of another folder's session (or a /move before this) took the session there: that folder's agent, or
 				// none, takes it from here.
 				if (await follow(event, ctx)) return;
+				// pi starts a new session here, which reads the agent's instructions again: so does this switch (not a subagent's).
+				if (state.guarded?.agent !== undefined && !subagent(ctx)) loadInstructions(state.guarded.agent, ctx);
 				const id = ctx.sessionManager.getSessionId();
 				// The session now open is this agent's (or no agent's, under a refused ORRERY_AGENT), as at session_start.
 				noteRun(state, ctx);

@@ -67,8 +67,11 @@ export class MemoryAgent {
 	compactorSource: "config" | "chat";
 	/** Why the compactor never started (its summary model is unknown here); cleared when /compactor starts it. */
 	summariesOff: string | undefined;
-	/** instructions.md's modification time when this agent opened (undefined: it had none); status.json carries it. */
-	readonly instructionsAt: number | undefined;
+	/**
+	 * instructions.md's modification time when the session last read it (undefined: it had none): when this agent opened,
+	 * and again at an OMP session switch (src/pi/index.ts). status.json carries it.
+	 */
+	instructionsAt: number | undefined;
 
 	private constructor(parts: {
 		config: AgentConfig;
