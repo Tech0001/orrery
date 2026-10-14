@@ -80,7 +80,7 @@ describe("two deciders of one Claude Code process", () => {
 	it("race over a stale record: the loser answers with the winner's decision, which is the record that stands", () => {
 		const { root, config, records } = world();
 		mkdirSync(records, { recursive: true, mode: 0o700 });
-		writeFileSync(join(records, `${process.pid}.json`), JSON.stringify({ agent: "Birch", token: "", kind: "lane", lane: "Test", by: "env" }));
+		writeFileSync(join(records, `${process.pid}.json`), JSON.stringify({ agent: "Birch", token: "", kind: "lane", name: "Test", by: "env" }));
 		let winner: ClaudePicked | undefined;
 		hook.beforeRename = () => {
 			winner = claudeSession(config, { env, cwd: join(root, "agent-Other"), pid: process.pid, decide: true });
@@ -102,7 +102,7 @@ describe("two deciders of one Claude Code process", () => {
 		utimesSync(file, longAgo, longAgo);
 		hook.afterRename = (_source, target) => rmSync(target);
 		expect(claudeSession(config, { env, cwd: join(root, "elsewhere"), pid: process.pid, decide: true })).toMatchObject({ kind: "lane", by: "env", lane: { name: "Test" } });
-		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ agent: "Test", token: "", kind: "lane", lane: "Test", by: "env" });
+		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ agent: "Test", token: "", kind: "lane", name: "Test", by: "env" });
 		expect(readdirSync(records)).toEqual([`${process.pid}.json`]);
 	});
 });

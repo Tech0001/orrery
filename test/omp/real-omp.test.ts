@@ -138,11 +138,11 @@ describe.skipIf(omp === null)("an agent opened outside its folder, inside a real
 	}, 90_000);
 });
 
-/** OMP's models (the test's own server as its only provider, `local/m` its default), in `agentDir`, made when needed. */
-function writeOmpModels(agentDir: string, baseUrl: string): void {
-	mkdirSync(agentDir, { recursive: true });
+/** OMP's models (the test's own server as its only provider, `local/m` its default), in `ompAgentDir`, made when needed. */
+function writeOmpModels(ompAgentDir: string, baseUrl: string): void {
+	mkdirSync(ompAgentDir, { recursive: true });
 	writeFileSync(
-		join(agentDir, "models.yml"),
+		join(ompAgentDir, "models.yml"),
 		[
 			"providers:",
 			"  local:",
@@ -164,7 +164,7 @@ function writeOmpModels(agentDir: string, baseUrl: string): void {
 			"",
 		].join("\n"),
 	);
-	writeFileSync(join(agentDir, "config.yml"), "modelRoles:\n  default: local/m\nsetupVersion: 2\n");
+	writeFileSync(join(ompAgentDir, "config.yml"), "modelRoles:\n  default: local/m\nsetupVersion: 2\n");
 }
 
 /**
@@ -182,10 +182,10 @@ async function loadCheck(base: string, root: string, version: string, writeExten
 	writeFileSync(join(lane, "CLAUDE.md"), "Lane rules.\n\n@.orrery/view.md\n");
 	writeFileSync(join(lane, ".orrery", "view.md"), "STALE-VIEW-MARKER-77\n");
 	const env = isolated(home, { ORRERY_CONFIG: join(base, "config.toml") });
-	const agentDir = join(home, ".omp", "agent");
-	writeOmpModels(agentDir, model.baseUrl);
+	const ompAgentDir = join(home, ".omp", "agent");
+	writeOmpModels(ompAgentDir, model.baseUrl);
 	const file = ompExtensionFile(env);
-	expect(file).toBe(join(agentDir, "extensions", "orrery.ts"));
+	expect(file).toBe(join(ompAgentDir, "extensions", "orrery.ts"));
 	if (writeExtension !== undefined) {
 		mkdirSync(dirname(file), { recursive: true });
 		writeExtension(file);

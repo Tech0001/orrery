@@ -84,7 +84,7 @@ describe("without hard links", () => {
 		expect(claudeSession(t.config, { env, cwd: dir, pid: process.pid, decide: true })).toMatchObject({ kind: "lane", by: "env", lane: { name: "Test" } });
 		const records = join(t.config.dataDir, "claude-processes");
 		expect(readdirSync(records)).toEqual([`${process.pid}.json`]);
-		expect(JSON.parse(readFileSync(join(records, `${process.pid}.json`), "utf8"))).toMatchObject({ kind: "lane", lane: "Test", by: "env" });
+		expect(JSON.parse(readFileSync(join(records, `${process.pid}.json`), "utf8"))).toMatchObject({ kind: "lane", name: "Test", by: "env" });
 		expect(claudeSession(t.config, { env, cwd: t.workspace, pid: process.pid, decide: false })).toMatchObject({ kind: "lane", lane: { name: "Test" } });
 		// A stale record (another identity's) is still replaced.
 		mkdirSync(records, { recursive: true });

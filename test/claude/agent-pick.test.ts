@@ -304,12 +304,12 @@ describe("one decision per Claude Code process (src/claude/pick.ts)", () => {
 		const started: string[] = [];
 		const c = ctx(config, join(root, "home"), dir, { ORRERY_AGENT: "Atlas" }, { claudePid: pid, startHolder: recording(started) });
 		// Birch's decision, from a process that died without SessionEnd and whose pid this Claude Code now has.
-		writeFileSync(record, JSON.stringify({ agent: "Birch", token: "", kind: "lane", lane: "Birch", by: "env" }));
+		writeFileSync(record, JSON.stringify({ agent: "Birch", token: "", kind: "lane", name: "Birch", by: "env" }));
 		await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "Atlas's words." }), c);
 		expect(spooled(birch, "s1")).toEqual([]);
 		expect(spooled(atlas, "s1")).toEqual([]);
 		// One from before records named their agent: Birch's, read as Birch's under the old format.
-		writeFileSync(record, JSON.stringify({ kind: "lane", lane: "Birch", by: "env" }));
+		writeFileSync(record, JSON.stringify({ kind: "lane", name: "Birch", by: "env" }));
 		await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "Atlas's words." }), c);
 		expect(spooled(birch, "s1")).toEqual([]);
 		// A stale "none" would turn the guard off outside lanes.
@@ -318,7 +318,7 @@ describe("one decision per Claude Code process (src/claude/pick.ts)", () => {
 		// This process's SessionStart replaces the stale record with its own decision.
 		expect(JSON.parse(await runHook("session-start", hookInput("s1", dir), c)).hookSpecificOutput.additionalContext).toMatch(/^Orrery · Atlas · /);
 		expect(started).toEqual(["Atlas"]);
-		expect(JSON.parse(readFileSync(record, "utf8"))).toEqual({ agent: "Atlas", token: "", kind: "lane", lane: "Atlas", by: "env" });
+		expect(JSON.parse(readFileSync(record, "utf8"))).toEqual({ agent: "Atlas", token: "", kind: "lane", name: "Atlas", by: "env" });
 	});
 
 	it("a decision that cannot be recorded refuses the session: nothing recorded, and the guard on", async () => {

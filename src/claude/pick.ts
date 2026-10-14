@@ -98,7 +98,7 @@ export interface ClaudeProcess {
 
 /** A decision, as recorded: names only. */
 type Decision =
-	| { readonly kind: "lane"; readonly lane: string; readonly by: "env" | "folder" }
+	| { readonly kind: "lane"; readonly name: string; readonly by: "env" | "folder" }
 	| { readonly kind: "none" }
 	| { readonly kind: "refused"; readonly why: "unknown" | "bad-token" | "in-view-folder"; readonly name: string; readonly host?: string };
 
@@ -124,7 +124,7 @@ const recordFile = (config: HarnessConfig, pid: number) => join(processesDir(con
 function toDecision(pick: ClaudePicked): Decision {
 	switch (pick.kind) {
 		case "lane":
-			return { kind: "lane", lane: pick.lane.name, by: pick.by };
+			return { kind: "lane", name: pick.lane.name, by: pick.by };
 		case "unknown":
 		case "bad-token":
 			return { kind: "refused", why: pick.kind, name: pick.name };
@@ -138,9 +138,9 @@ function toDecision(pick: ClaudePicked): Decision {
 function fromDecision(config: HarnessConfig, decision: Decision): ClaudePicked {
 	switch (decision.kind) {
 		case "lane": {
-			const lane = config.lanes.get(decision.lane);
+			const lane = config.lanes.get(decision.name);
 			// A lane gone from the config since: as ORRERY_AGENT naming no lane.
-			return lane === undefined ? { kind: "unknown", name: decision.lane } : { kind: "lane", lane, by: decision.by };
+			return lane === undefined ? { kind: "unknown", name: decision.name } : { kind: "lane", lane, by: decision.by };
 		}
 		case "none":
 			return { kind: "none" };
@@ -175,7 +175,7 @@ function readRecordFile(file: string): Recorded | "unreadable" | undefined {
 	const identity = typeof value.agent === "string" && typeof value.token === "string" ? { agent: value.agent, token: value.token } : undefined;
 	const recorded = (decision: Decision): Recorded => ({ ...(identity === undefined ? {} : { identity }), decision });
 	if (value.kind === "none") return recorded({ kind: "none" });
-	if (value.kind === "lane" && typeof value.lane === "string" && (value.by === "env" || value.by === "folder")) return recorded({ kind: "lane", lane: value.lane, by: value.by });
+	if (value.kind === "lane" && typeof value.name === "string" && (value.by === "env" || value.by === "folder")) return recorded({ kind: "lane", name: value.name, by: value.by });
 	if (value.kind === "refused" && typeof value.name === "string" && (value.why === "unknown" || value.why === "bad-token" || value.why === "in-view-folder")) {
 		return recorded({ kind: "refused", why: value.why, name: value.name, ...(typeof value.host === "string" ? { host: value.host } : {}) });
 	}

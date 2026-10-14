@@ -31,9 +31,9 @@ function fixture() {
 describe("Lane", () => {
 	it("answers, logs memory, writes status, and starts the next run from memory after a restart", async () => {
 		const { config } = fixture();
-		const { agent, models } = fauxModels();
+		const { chat, models } = fauxModels();
 		const seen: string[][] = [];
-		agent.setResponses([
+		chat.setResponses([
 			(context) => {
 				seen.push(contextLines(context));
 				return fauxAssistantMessage("Noted: the codename is Cedar.");
@@ -110,8 +110,8 @@ describe("Lane", () => {
 
 	it("builds new summaries with the compactor chosen in chat", async () => {
 		const { config } = fixture();
-		const { agent, models } = fauxModels();
-		agent.setResponses(Array.from({ length: 20 }, () => fauxAssistantMessage("user: summarized by the new compactor")));
+		const { chat, models } = fauxModels();
+		chat.setResponses(Array.from({ length: 20 }, () => fauxAssistantMessage("user: summarized by the new compactor")));
 		const lane = await Lane.open({ config, lane: "Test", models, context: ctx });
 		await lane.setCompactorModel(parseModelChoice("faux-agent/faux-1", "off"));
 		lane.view.append("user", `A long message. ${"detail ".repeat(200)}`);
@@ -124,8 +124,8 @@ describe("Lane", () => {
 
 	it("calls onFatal when the memory store starts refusing writes", async () => {
 		const { config } = fixture();
-		const { agent, models } = fauxModels();
-		agent.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+		const { chat, models } = fauxModels();
+		chat.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
 		const reasons: string[] = [];
 		const lane = await Lane.open({ config, lane: "Test", models, context: ctx, onFatal: (r) => reasons.push(r) });
 		lane.report = () => {};
@@ -153,9 +153,9 @@ describe("Lane", () => {
 		const { dir, workspace } = fixture();
 		const config = parseConfig(laneConfigToml({ dataDir: join(dir, "data"), workspace }).replace(/^workspace = .*\n/m, ""), dir);
 		expect(config.lanes.get("Test")?.workspace).toBeUndefined();
-		const { agent, models } = fauxModels();
+		const { chat, models } = fauxModels();
 		const seen: string[][] = [];
-		agent.setResponses([(context) => (seen.push(contextLines(context)), fauxAssistantMessage("Here."))]);
+		chat.setResponses([(context) => (seen.push(contextLines(context)), fauxAssistantMessage("Here."))]);
 		vi.spyOn(process, "cwd").mockReturnValue(workspace);
 		try {
 			const lane = await Lane.open({ config, lane: "Test", models, context: ctx });
@@ -172,9 +172,9 @@ describe("Lane", () => {
 	it("a blank instructions.md is none; over 32 KB the first 32 KB go out, with a notice", async () => {
 		const { config } = fixture();
 		const dir = config.lanes.get("Test")!.dir;
-		const { agent, models } = fauxModels();
+		const { chat, models } = fauxModels();
 		const seen: string[][] = [];
-		agent.setResponses([(context) => (seen.push(contextLines(context)), fauxAssistantMessage("One.")), (context) => (seen.push(contextLines(context)), fauxAssistantMessage("Two."))]);
+		chat.setResponses([(context) => (seen.push(contextLines(context)), fauxAssistantMessage("One.")), (context) => (seen.push(contextLines(context)), fauxAssistantMessage("Two."))]);
 		writeInstructions(dir, " \n\t\n");
 		const blank = await Lane.open({ config, lane: "Test", models, context: ctx });
 		expect(blank.store.getMeta("instructions")).toBeUndefined();

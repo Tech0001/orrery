@@ -233,10 +233,10 @@ describe.skipIf(pi === null)("ORRERY_AGENT inside a real pi", () => {
 		try {
 			const home = join(root, "home");
 			const plain = join(root, "plain");
-			const agentDir = join(home, ".pi", "agent");
+			const piAgentDir = join(home, ".pi", "agent");
 			const orreryHome = join(home, ".orrery");
-			for (const dir of [agentDir, plain, orreryHome]) mkdirSync(dir, { recursive: true });
-			writeModels(agentDir, "pi", model.baseUrl);
+			for (const dir of [piAgentDir, plain, orreryHome]) mkdirSync(dir, { recursive: true });
+			writeModels(piAgentDir, "pi", model.baseUrl);
 			const data = join(root, "data");
 			writeFileSync(
 				join(orreryHome, "config.toml"),
@@ -261,7 +261,7 @@ describe.skipIf(pi === null)("ORRERY_AGENT inside a real pi", () => {
 				{ mode: 0o600 },
 			);
 			const token = newToken();
-			const env = { ...isolated(home), ORRERY_HOME: orreryHome, PI_CODING_AGENT_DIR: agentDir, ORRERY_AGENT: "Probe", ORRERY_AGENT_TOKEN: token };
+			const env = { ...isolated(home), ORRERY_HOME: orreryHome, PI_CODING_AGENT_DIR: piAgentDir, ORRERY_AGENT: "Probe", ORRERY_AGENT_TOKEN: token };
 			const laneDir = join(data, "lanes", "Probe");
 			const rows = () => {
 				if (!existsSync(join(laneDir, "memory.sqlite"))) return [];
@@ -327,12 +327,12 @@ describe.skipIf(pi === null)("an agent opened outside its folder, inside a real 
 		store.close();
 		const model = await fakeModel("pong");
 		try {
-			const agentDir = join(home, ".pi", "agent");
-			mkdirSync(join(agentDir, "extensions"), { recursive: true });
-			writeFileSync(join(agentDir, "extensions", "orrery.ts"), `export { default } from ${JSON.stringify(join(PI_DIR, "index.ts"))};\n`);
-			writeModels(agentDir, "pi", model.baseUrl);
+			const piAgentDir = join(home, ".pi", "agent");
+			mkdirSync(join(piAgentDir, "extensions"), { recursive: true });
+			writeFileSync(join(piAgentDir, "extensions", "orrery.ts"), `export { default } from ${JSON.stringify(join(PI_DIR, "index.ts"))};\n`);
+			writeModels(piAgentDir, "pi", model.baseUrl);
 			writeFileSync(join(root, "config.toml"), [`data_dir = ${JSON.stringify(join(root, "data"))}`, "[[providers]]", 'id = "local"', `base_url = ${JSON.stringify(model.baseUrl)}`, "[[providers.models]]", 'id = "m"', 'name = "m"', "context_window = 128000", "max_tokens = 4096", "reasoning = false", "[lanes.Probe]", `workspace = ${JSON.stringify(join(root, "agent-Probe"))}`, 'tool = "pi"', 'compactor_model = "local/m"', 'compactor_thinking = "off"', ""].join("\n"));
-			const env = { ...isolated(home), ORRERY_CONFIG: join(root, "config.toml"), PI_CODING_AGENT_DIR: agentDir, ORRERY_AGENT: "Probe" };
+			const env = { ...isolated(home), ORRERY_CONFIG: join(root, "config.toml"), PI_CODING_AGENT_DIR: piAgentDir, ORRERY_AGENT: "Probe" };
 			const child = spawn(pi as string, ["--mode", "rpc", "--provider", "local", "--model", "m", "--thinking", "off"], { cwd: join(root, "elsewhere"), env });
 			const exited = new Promise<void>((done) => child.on("close", () => done()));
 			const { send, waitFor } = rpc(child);
@@ -527,10 +527,10 @@ async function releaseCheck(binary: string): Promise<void> {
 	const installed = installRelease(await builtRelease(), home);
 	const model = await fakeModel("pong");
 	try {
-		const agentDir = join(home, ".pi", "agent");
-		mkdirSync(join(agentDir, "extensions"), { recursive: true });
-		writeFileSync(join(agentDir, "extensions", "orrery.ts"), `export { default } from ${JSON.stringify(join(installed.current, "extensions", "pi.js"))};\n`);
-		writeModels(agentDir, "pi", model.baseUrl);
+		const piAgentDir = join(home, ".pi", "agent");
+		mkdirSync(join(piAgentDir, "extensions"), { recursive: true });
+		writeFileSync(join(piAgentDir, "extensions", "orrery.ts"), `export { default } from ${JSON.stringify(join(installed.current, "extensions", "pi.js"))};\n`);
+		writeModels(piAgentDir, "pi", model.baseUrl);
 		writeFileSync(
 			join(home, ".orrery", "config.toml"),
 			[
@@ -553,7 +553,7 @@ async function releaseCheck(binary: string): Promise<void> {
 			].join("\n"),
 			{ mode: 0o600 },
 		);
-		const env = { ...isolated(home), ORRERY_HOME: join(home, ".orrery"), PI_CODING_AGENT_DIR: agentDir };
+		const env = { ...isolated(home), ORRERY_HOME: join(home, ".orrery"), PI_CODING_AGENT_DIR: piAgentDir };
 		const child = spawn(binary, ["--mode", "rpc", "--provider", "local", "--model", "m", "--thinking", "off"], { cwd: workspace, env });
 		const exited = new Promise<void>((done) => child.on("close", () => done()));
 		const { frames, send, waitFor, stderr } = rpc(child);

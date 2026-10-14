@@ -152,10 +152,10 @@ function deleteUntrackedView(workspace: string): boolean {
  */
 export function deleteViewFile(workspace: string): boolean {
 	const deleted = deleteUntrackedView(workspace);
-	const folder = dirname(viewFile(workspace));
-	if (ownFolder(folder) === true) {
+	const orreryDir = dirname(viewFile(workspace));
+	if (ownFolder(orreryDir) === true) {
 		try {
-			rmdirSync(folder);
+			rmdirSync(orreryDir);
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code !== "ENOTEMPTY" && code !== "ENOENT" && code !== "EEXIST") throw error;

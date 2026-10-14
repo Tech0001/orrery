@@ -131,12 +131,12 @@ export class Holder {
 		let takeover: LockState | undefined;
 		try {
 			const open = (sync: () => MemoryLane) => openYielding(sync, lane.dir, { claudePid: options.claudePid, waitMs: options.yieldWaitMs ?? 5000 });
-			if (lane.remote === undefined) memory = await open(() => MemoryLane.open({ lane, models: options.models, report: log, agent: "claude-code" }));
+			if (lane.remote === undefined) memory = await open(() => MemoryLane.open({ lane, models: options.models, report: log, host: "claude-code" }));
 			else {
 				if (options.config === undefined) throw new Error("A remote recorder needs its harness config");
 				const checked = () => {
 					takeover = undefined;
-					return MemoryLane.openChecked({ config: options.config!, lane, models: options.models, report, agent: "claude-code", open,
+					return MemoryLane.openChecked({ config: options.config!, lane, models: options.models, report, host: "claude-code", open,
 						confirmTakeover: async (held) => { takeover = held; return false; },
 					});
 				};

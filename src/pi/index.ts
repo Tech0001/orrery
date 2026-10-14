@@ -299,7 +299,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 				signal.throwIfAborted();
 				state.sources = sources;
 				const models = laneModelSource(sources.models);
-				const memory = { lane, models, agent: host, report: (message: string) => {
+				const memory = { lane, models, host, report: (message: string) => {
 					ctx.ui.notify(message, "warning");
 					// RemoteSession reports loss before its writer callback: retire this session's memory immediately.
 					if (state.lane?.remote?.lost) recordingLane(ctx);

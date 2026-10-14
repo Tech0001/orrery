@@ -28,8 +28,8 @@ describe("runLane", () => {
 		const workspace = join(dir, "ws");
 		mkdirSync(workspace);
 		const config = parseConfig(laneConfigToml({ dataDir: join(dir, "data"), workspace }), dir);
-		const { agent, models } = fauxModels();
-		agent.setResponses([fauxAssistantMessage("first answer"), fauxAssistantMessage("second answer")]);
+		const { chat, models } = fauxModels();
+		chat.setResponses([fauxAssistantMessage("first answer"), fauxAssistantMessage("second answer")]);
 		const lane = await Lane.open({ config, lane: "Test", models, context: ctx });
 		const input = new PassThrough();
 		const output = new PassThrough();
@@ -90,8 +90,8 @@ describe("runLane", () => {
 		const workspace = join(dir, "ws");
 		mkdirSync(workspace);
 		const config = parseConfig(laneConfigToml({ dataDir: join(dir, "data"), workspace }), dir);
-		const { agent, models } = fauxModels();
-		agent.setResponses([
+		const { chat, models } = fauxModels();
+		chat.setResponses([
 			() => new Promise((resolve) => setTimeout(() => resolve(fauxAssistantMessage("slow piped answer")), 300)),
 		]);
 		const lane = await Lane.open({ config, lane: "Test", models, context: ctx });

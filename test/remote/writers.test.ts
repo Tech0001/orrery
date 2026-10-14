@@ -112,8 +112,8 @@ it("import --commit and restore refuse remote lanes before reading inputs or cha
 
 describe("orrery run", () => {
 	it("checks out before starting, sends the completed turn and releases on stop", async () => {
-		const { agent, models } = fauxModels();
-		agent.setResponses([fauxAssistantMessage("remote run reply")]);
+		const { chat, models } = fauxModels();
+		chat.setResponses([fauxAssistantMessage("remote run reply")]);
 		lane = await Lane.open({ config: f.config, lane: "Test", models, context: ctx });
 		expect(lane.store.root[0].text).toBe("from the remote");
 		const result = await lane.submit("hello", "remote-run");
@@ -135,8 +135,8 @@ describe("orrery run", () => {
 		expect(existsSync(join(f.lane.dir, "session.sqlite"))).toBe(false);
 	});
 	it("continues running without recording after another machine takes over", async () => {
-		const { agent, models } = fauxModels();
-		agent.setResponses([fauxAssistantMessage("after takeover")]);
+		const { chat, models } = fauxModels();
+		chat.setResponses([fauxAssistantMessage("after takeover")]);
 		const fatal = vi.fn();
 		lane = await Lane.open({ config: f.config, lane: "Test", models, context: ctx, onFatal: fatal });
 		f.clock.value += STALE_MS + 1;
@@ -165,15 +165,15 @@ describe("orrery run", () => {
 	});
 
 	it.each([false, true])("does not replay local history after a snapshot (split history: %s)", async (split) => {
-		const { agent, models } = fauxModels();
-		agent.setResponses([fauxAssistantMessage("one reply")]);
+		const { chat, models } = fauxModels();
+		chat.setResponses([fauxAssistantMessage("one reply")]);
 		lane = await Lane.open({ config: f.config, lane: "Test", models, context: ctx });
 		const result = await lane.submit("one prompt", "one");
 		await result?.submission.wait(ctx);
 		await lane.projector.drain();
 		await lane.close(); lane = undefined;
 		if (split) {
-			agent.setResponses([fauxAssistantMessage("discarded reply")]);
+			chat.setResponses([fauxAssistantMessage("discarded reply")]);
 			lane = await Lane.open({ config: f.config, lane: "Test", models, context: ctx });
 			const offline = vi.spyOn(f.storage, "save").mockRejectedValue(new RemoteError("unreachable", "offline"));
 			const unsaved = await lane.submit("discarded prompt", "unsaved");
@@ -195,8 +195,8 @@ describe("orrery run", () => {
 		expect(lane.store.root.map((m) => m.text)).toEqual(["from the remote", "one prompt", "one reply", "other machine"]);
 	});
 	it("unblocks a pending submit without memory when loss interrupts summary settling", async () => {
-		const { agent, models } = fauxModels();
-		agent.setResponses([fauxAssistantMessage("continued")]);
+		const { chat, models } = fauxModels();
+		chat.setResponses([fauxAssistantMessage("continued")]);
 		lane = await Lane.open({ config: f.config, lane: "Test", models, context: ctx });
 		lane.compactor.summarizer = { summarize: () => new Promise(() => {}) };
 		lane.view.append("talk", "long waiting answer ".repeat(5000));
@@ -214,8 +214,8 @@ describe("orrery run", () => {
 	});
 
 	it("unblocks a pending submit when loss interrupts projector catch-up", async () => {
-		const { agent, models } = fauxModels();
-		agent.setResponses([fauxAssistantMessage("continued")]);
+		const { chat, models } = fauxModels();
+		chat.setResponses([fauxAssistantMessage("continued")]);
 		lane = await Lane.open({ config: f.config, lane: "Test", models, context: ctx });
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		let release!: () => void;

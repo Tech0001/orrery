@@ -42,8 +42,8 @@ export function streamReply(res: ServerResponse, text: string): void {
 }
 
 /** The host's only provider: the test's own server. */
-export function writeModels(agent: string, host: "pi" | "omp", baseUrl: string): void {
-	writeFileSync(join(agent, host === "pi" ? "models.json" : "models.yml"), JSON.stringify({ providers: { local: {
+export function writeModels(dir: string, host: "pi" | "omp", baseUrl: string): void {
+	writeFileSync(join(dir, host === "pi" ? "models.json" : "models.yml"), JSON.stringify({ providers: { local: {
 		baseUrl, apiKey: "none", api: "openai-completions", models: [{ id: "m", name: "m", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 4096,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, compat: { supportsStore: false, supportsDeveloperRole: false, maxTokensField: "max_tokens" } }],
 	} } }));
@@ -65,8 +65,8 @@ export async function realRemoteTurn(binary: string, host: "pi" | "omp", delayed
 	const root = mkdtempSync(join(tmpdir(), `orrery-remote-${host}-`));
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
-	const agent = join(home, host === "pi" ? ".pi" : ".omp", "agent");
-	mkdirSync(agent, { recursive: true });
+	const hostAgentDir = join(home, host === "pi" ? ".pi" : ".omp", "agent");
+	mkdirSync(hostAgentDir, { recursive: true });
 	mkdirSync(workspace);
 	const calls: string[] = [];
 	const clock = { now: Date.now() };
@@ -91,8 +91,8 @@ export async function realRemoteTurn(binary: string, host: "pi" | "omp", delayed
 	});
 	await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
 	const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
-	writeModels(agent, host, baseUrl);
-	if (host === "omp") writeFileSync(join(agent, "config.yml"), "setupVersion: 2\nmodelRoles:\n  default: local/m\n");
+	writeModels(hostAgentDir, host, baseUrl);
+	if (host === "omp") writeFileSync(join(hostAgentDir, "config.yml"), "setupVersion: 2\nmodelRoles:\n  default: local/m\n");
 	const src = fileURLToPath(new URL("../../src/", import.meta.url));
 	// OMP's loader follows and rewrites relative imports, as its installed Orrery entry does.
 	const module = (file: string) => JSON.stringify(relative(root, join(src, file)));
@@ -214,8 +214,8 @@ export async function realRemoteRebuild(binary: string): Promise<void> {
 	const root = mkdtempSync(join(tmpdir(), "orrery-rebuild-pi-"));
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
-	const agent = join(home, ".pi", "agent");
-	mkdirSync(agent, { recursive: true });
+	const piAgentDir = join(home, ".pi", "agent");
+	mkdirSync(piAgentDir, { recursive: true });
 	mkdirSync(workspace);
 	const backend = new FakeStorage({ name: "home" });
 	const server = createServer((req, res) => {
@@ -229,7 +229,7 @@ export async function realRemoteRebuild(binary: string): Promise<void> {
 	});
 	await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
 	const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
-	writeModels(agent, "pi", baseUrl);
+	writeModels(piAgentDir, "pi", baseUrl);
 	const toml = `data_dir = ${JSON.stringify(join(root, "data"))}\n[remotes.home]\nkind = "cloudflare"\nurl = "https://example.invalid"\n[lanes.Probe]\nworkspace = ${JSON.stringify(workspace)}\nremote = "home"\ncompactor_model = "missing/summary"\n`;
 	const config = parseConfig(toml, root);
 	const lane = config.lanes.get("Probe")!;

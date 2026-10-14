@@ -52,7 +52,7 @@ describe("claudeSession: one decision per Claude Code process", () => {
 		expect(claudeSession(t.config, { env: {}, cwd: t.workspace, pid: livePid(), decide: true })).toMatchObject({ kind: "lane", by: "folder" });
 		expect(readdirSync(records)).toEqual([`${pid}.json`]);
 		// Names only, and whose decision it is: ORRERY_AGENT and its token's digest ("" with none).
-		expect(JSON.parse(recorded)).toEqual({ agent: "Test", token: "", kind: "lane", lane: "Test", by: "env" });
+		expect(JSON.parse(recorded)).toEqual({ agent: "Test", token: "", kind: "lane", name: "Test", by: "env" });
 		forgetProcess(t.config, pid);
 		expect(readdirSync(records)).toEqual([]);
 		const token = newToken();
@@ -71,10 +71,10 @@ describe("claudeSession: one decision per Claude Code process", () => {
 		const pid = livePid();
 		const file = join(records, `${pid}.json`);
 		// Another agent's decision, left by a process whose pid this one reuses.
-		writeFileSync(file, JSON.stringify({ agent: "Birch", token: "", kind: "lane", lane: "Test", by: "env" }));
+		writeFileSync(file, JSON.stringify({ agent: "Birch", token: "", kind: "lane", name: "Test", by: "env" }));
 		expect(claudeSession(t.config, { env: { ORRERY_AGENT: "Atlas" }, cwd: dir, pid, decide: false })).toEqual({ kind: "undecided" });
 		// The same name with another token, or none, is another identity too.
-		writeFileSync(file, JSON.stringify({ agent: "Test", token: digest(newToken()), kind: "lane", lane: "Test", by: "env" }));
+		writeFileSync(file, JSON.stringify({ agent: "Test", token: digest(newToken()), kind: "lane", name: "Test", by: "env" }));
 		expect(claudeSession(t.config, { env: { ORRERY_AGENT: "Test" }, cwd: dir, pid, decide: false })).toEqual({ kind: "undecided" });
 		expect(claudeSession(t.config, { env: { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: newToken() }, cwd: dir, pid, decide: false })).toEqual({ kind: "undecided" });
 		// A record from before identities (it names none) is stale too: a stale "none" never turns the guard off.

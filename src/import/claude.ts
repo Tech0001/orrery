@@ -24,7 +24,7 @@ const NOISE = [
 	"<bash-stderr",
 	"<user-memory-input",
 ];
-const AGENT_TOOLS = new Set(["Task", "Agent"]);
+const SUBAGENT_TOOLS = new Set(["Task", "Agent"]);
 
 interface Block {
 	readonly type?: string;
@@ -179,7 +179,7 @@ export function extractClaudeFiles(files: readonly string[]): Extracted {
 			}
 			if (turn === undefined || !Array.isArray(content)) continue;
 			for (const block of content as Block[]) {
-				if (block?.type === "tool_use" && typeof block.id === "string" && AGENT_TOOLS.has(block.name ?? "")) agentCalls.add(block.id);
+				if (block?.type === "tool_use" && typeof block.id === "string" && SUBAGENT_TOOLS.has(block.name ?? "")) agentCalls.add(block.id);
 				if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
 					const id = record.message?.id;
 					if (turn.final !== undefined && id !== undefined && turn.final.id === id) {

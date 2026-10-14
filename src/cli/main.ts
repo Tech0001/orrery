@@ -326,7 +326,7 @@ async function laneCommand(args: string[], values: Record<string, string | boole
 		process.stdout.write(await laneRemoteCommand(path, args, { to: values.to as string | undefined, from: values.from as string | undefined, folder: values.folder as string | undefined, yes: values.yes === true, "delete-remote": values["delete-remote"] === true }, { confirm: askYes }));
 		return 0;
 	}
-	const folder = (value: string) => resolvePath(value === "~" || value.startsWith("~/") ? `${homedir()}${value.slice(1)}` : value);
+	const fullPath = (value: string) => resolvePath(value === "~" || value.startsWith("~/") ? `${homedir()}${value.slice(1)}` : value);
 	const kb = (flag: string) => {
 		const n = Number(values[flag]);
 		if (!Number.isInteger(n) || n < 1) throw new Error(`--${flag} must be a whole number of KB`);
@@ -337,7 +337,7 @@ async function laneCommand(args: string[], values: Record<string, string | boole
 		const summary = required(values.summary as string | undefined, "--summary provider/id");
 		const thinking = (values.thinking as string | undefined) ?? "low";
 		const tool = required(values.tool as string | undefined, "--tool pi|omp|claude-code|codex");
-		const workspace = folder(required(values.folder as string | undefined, "--folder DIR"));
+		const workspace = fullPath(required(values.folder as string | undefined, "--folder DIR"));
 		editConfigFile(path, (text, dir) => addLane(text, dir, { name: lane, workspace, tool: tool as never, compactorModel: summary, compactorThinking: thinking as never }));
 		process.stdout.write(`Added lane ${lane}: ${workspace}, ${(TOOL_LABELS as Record<string, string>)[tool] ?? tool}, summaries ${summary} (${thinking}).\n`);
 		return 0;
@@ -354,7 +354,7 @@ async function laneCommand(args: string[], values: Record<string, string | boole
 		if (values.launcher !== undefined) changes.push(["launcher", values.launcher as string]);
 		if (values["ori-model"] !== undefined) changes.push(["ori_model", values["ori-model"] as string]);
 		if (values.tool !== undefined) changes.push(["tool", values.tool as string]);
-		if (values.folder !== undefined) changes.push(["workspace", folder(values.folder as string)]);
+		if (values.folder !== undefined) changes.push(["workspace", fullPath(values.folder as string)]);
 		if (values["view-kb"] !== undefined) changes.push(["view_bytes", kb("view-kb")]);
 		if (values["summary-kb"] !== undefined) changes.push(["compactor_context_bytes", kb("summary-kb")]);
 		if (values.jobs !== undefined) changes.push(["compactor_jobs", Number(values.jobs)]);

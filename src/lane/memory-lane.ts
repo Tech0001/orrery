@@ -1,4 +1,4 @@
-/** A lane's open memory, in whichever agent holds it (pi, or Claude Code's holder): its store (the single writer), view, compactor and status file. */
+/** A lane's open memory, in whichever tool holds it (pi, OMP, or Claude Code's holder): its store (the single writer), view, compactor and status file. */
 
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -9,7 +9,7 @@ import { type ModelSource, sourceCompactorModel } from "./model-source.ts";
 import { instructionsFacts } from "./instructions.ts";
 import { explainFailure, safeText } from "./source-labels.ts";
 import { laneSummarizer } from "./summarizer.ts";
-import type { Agent } from "./view-text.ts";
+import type { Host } from "./view-text.ts";
 import { attachRemoteStore, checkOutLane, remoteFooter } from "../remote/checkout.ts";
 import type { RemoteSession } from "../remote/session.ts";
 import type { LockState, Storage } from "../remote/types.ts";
@@ -17,13 +17,13 @@ import { holdWriterLock, type WriterLock } from "../memory/store.ts";
 import { openYielding } from "./handover.ts";
 import { statusVersion } from "./status-file.ts";
 
-type MemoryLaneOptions = { lane: LaneConfig; models: ModelSource; report(message: string): void; agent?: Agent; writer?: WriterLock };
+type MemoryLaneOptions = { lane: LaneConfig; models: ModelSource; report(message: string): void; host?: Host; writer?: WriterLock };
 
 /** Another writer already holds the lane's store. */
 export class LaneHeld extends Error {
-	constructor(lane: string, agent: Agent = "pi") {
+	constructor(lane: string, host: Host = "pi") {
 		// In OMP the holder may be pi, OMP or Claude Code; pi keeps its words.
-		super(agent === "omp" ? `${lane} is already open in another session; this OMP runs without memory.` : `${lane} is already open in another pi; this one runs without memory.`);
+		super(host === "omp" ? `${lane} is already open in another session; this OMP runs without memory.` : `${lane} is already open in another pi; this one runs without memory.`);
 		this.name = "LaneHeld";
 	}
 }
@@ -52,7 +52,7 @@ export function compactorReport(report: (message: string) => void): (message: st
 	};
 }
 
-/** An open lane: store, view, compactor and status file for `agent`. */
+/** An open lane: store, view, compactor and status file for `host`. */
 export class MemoryLane {
 	readonly config: LaneConfig;
 	#remote?: RemoteSession;
@@ -62,7 +62,7 @@ export class MemoryLane {
 	readonly view: MemoryView;
 	readonly compactor: Compactor;
 	readonly #models: ModelSource;
-	readonly agent: Agent;
+	readonly host: Host;
 	compactorModel: ModelChoice;
 	compactorSource: "config" | "chat";
 	/** Why the compactor never started (its summary model is unknown here); cleared when /compactor starts it. */
@@ -79,7 +79,7 @@ export class MemoryLane {
 		choice: ModelChoice;
 		source: "config" | "chat";
 		off: string | undefined;
-		agent: Agent;
+		host: Host;
 		instructionsAt: number | undefined;
 	}) {
 		this.config = parts.config;
@@ -90,7 +90,7 @@ export class MemoryLane {
 		this.compactorModel = parts.choice;
 		this.compactorSource = parts.source;
 		this.summariesOff = parts.off;
-		this.agent = parts.agent;
+		this.host = parts.host;
 		this.instructionsAt = parts.instructionsAt;
 	}
 
@@ -108,7 +108,7 @@ export class MemoryLane {
 			let writer: WriterLock;
 			try { writer = holdWriterLock(join(options.lane.dir, "memory.sqlite")); }
 			catch (error) {
-				if (/already open/i.test(String(error))) throw new LaneHeld(options.lane.name, options.agent);
+				if (/already open/i.test(String(error))) throw new LaneHeld(options.lane.name, options.host);
 				throw error;
 			}
 			return (async () => {
@@ -145,7 +145,7 @@ export class MemoryLane {
 		try {
 			store = MemoryStore.open(join(lane.dir, "memory.sqlite"), options.writer);
 		} catch (error) {
-			if (/already open/i.test(error instanceof Error ? error.message : String(error))) throw new LaneHeld(lane.name, options.agent);
+			if (/already open/i.test(error instanceof Error ? error.message : String(error))) throw new LaneHeld(lane.name, options.host);
 			throw error;
 		}
 		try {
@@ -171,7 +171,7 @@ export class MemoryLane {
 			else options.report(`Orrery: ${lane.name}: summaries are off: ${off}. Choose a summary model with /compactor provider/id.`);
 			// After a remote check-out (openChecked), which may bring newer instructions with the memory.
 			const { at: instructionsAt } = instructionsFacts(lane.dir);
-			return new MemoryLane({ config: lane, store, view, compactor, models, choice, source: stored.choice ? "chat" : "config", off, agent: options.agent ?? "pi", instructionsAt });
+			return new MemoryLane({ config: lane, store, view, compactor, models, choice, source: stored.choice ? "chat" : "config", off, host: options.host ?? "pi", instructionsAt });
 		} catch (error) {
 			store.close();
 			throw error;
@@ -237,8 +237,8 @@ export class MemoryLane {
 			pid: process.pid,
 			open: this.remote?.lost ? false : open,
 			busy: this.remote?.lost ? false : busy,
-			model: this.agent,
-			thinking: this.agent,
+			model: this.host,
+			thinking: this.host,
 			memory: this.view.stats(),
 			compactor: {
 				stopped: this.compactor.stopped || this.summariesOff !== undefined,

@@ -27,7 +27,7 @@ async function setup(settings: Record<string, unknown> = {}) {
 	dirs.push(dir);
 	const store = MemoryStore.open(join(dir, "memory.sqlite"));
 	const view = new MemoryView(store);
-	const { agent, models } = fauxModels();
+	const { chat, models } = fauxModels();
 	const gate = deferred();
 	const running = deferred();
 	const registry = createRegistry();
@@ -53,12 +53,12 @@ async function setup(settings: Record<string, unknown> = {}) {
 	const conversation = await harness.root(ctx, { agent: { model: { provider: "faux-agent", modelId: "faux-1" } } });
 	let views = 0;
 	const deps: SubmitDeps = { harness, conversation, context: ctx, renderView: async () => `<chat>\nVIEW@${++views}\n</chat>` };
-	return { agent, harness, conversation, deps, gate, running, store };
+	return { chat, harness, conversation, deps, gate, running, store };
 }
 
 describe("laneSubmit", () => {
 	it("starts each idle run fresh from the view and steers input into a busy run", async () => {
-		const { agent, harness, deps, gate, running, store } = await setup();
+		const { chat, harness, deps, gate, running, store } = await setup();
 		const seen: string[][] = [];
 		const record =
 			(reply: AssistantMessage): FauxResponseFactory =>
@@ -66,7 +66,7 @@ describe("laneSubmit", () => {
 				seen.push(contextLines(context));
 				return reply;
 			};
-		agent.setResponses([
+		chat.setResponses([
 			record(fauxAssistantMessage(fauxToolCall("hold", {}, { id: "h1" }), { stopReason: "toolUse" })),
 			record(fauxAssistantMessage("answer one")),
 			record(fauxAssistantMessage("answer two")),
@@ -103,8 +103,8 @@ describe("laneSubmit", () => {
 	});
 
 	it("never submits the same requestId twice", async () => {
-		const { agent, harness, deps, store } = await setup();
-		agent.setResponses([fauxAssistantMessage("once")]);
+		const { chat, harness, deps, store } = await setup();
+		chat.setResponses([fauxAssistantMessage("once")]);
 		const first = await laneSubmit(deps, "hello", "same");
 		await first?.submission.wait(ctx);
 		const second = await laneSubmit(deps, "hello", "same");
@@ -115,10 +115,10 @@ describe("laneSubmit", () => {
 	});
 
 	it("recovers when a failed run left a queued steer in the inbox", async () => {
-		const { agent, harness, deps, store } = await setup({ retry: { enabled: false } });
+		const { chat, harness, deps, store } = await setup({ retry: { enabled: false } });
 		const release = deferred();
 		const generating = deferred();
-		agent.setResponses([
+		chat.setResponses([
 			async () => {
 				generating.resolve();
 				await release.promise;

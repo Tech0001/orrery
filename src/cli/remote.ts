@@ -324,7 +324,7 @@ function sessionOptions(config: HarnessConfig, lane: LaneConfig, storage: Storag
  * Pull shared by the CLI and N: copy portable settings once, then check out and close to fetch the working copy and its
  * instructions.md. Without a folder the lane has no default folder: it opens wherever it is opened.
  */
-export async function pullLaneCommand(configPath: string | undefined, name: string, remote: string, folder?: string): Promise<string> {
+export async function pullLaneCommand(configPath: string | undefined, name: string, remote: string, folderArg?: string): Promise<string> {
 	const path = configPath ?? defaultConfigPath();
 	writable(path);
 	const config = loadConfig(path);
@@ -332,8 +332,8 @@ export async function pullLaneCommand(configPath: string | undefined, name: stri
 	const problem = laneNameProblem(name);
 	if (problem !== undefined) throw new ConfigError(problem);
 	let workspace: string | undefined;
-	if (folder !== undefined) {
-		workspace = folder === "~" || folder.startsWith("~/") ? `${homedir()}${folder.slice(1)}` : folder;
+	if (folderArg !== undefined) {
+		workspace = folderArg === "~" || folderArg.startsWith("~/") ? `${homedir()}${folderArg.slice(1)}` : folderArg;
 		if (!isAbsolute(workspace)) throw new Error("The folder must be an absolute path (or start with ~/).");
 		let directory = false;
 		try { directory = statSync(workspace).isDirectory(); } catch { /* report a missing folder below */ }

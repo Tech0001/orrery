@@ -34,9 +34,9 @@ describe("memoryExtension", () => {
 		const store = MemoryStore.open(join(dir, "memory.sqlite"));
 		const view = new MemoryView(store);
 		view.append("user", "remember Cedar");
-		const { agent, models } = fauxModels();
+		const { chat, models } = fauxModels();
 		const requests: string[][] = [];
-		agent.setResponses([
+		chat.setResponses([
 			(context) => {
 				requests.push(contextLines(context));
 				return fauxAssistantMessage(fauxToolCall("zoom", { id: 0, n: 1 }, { id: "z" }), { stopReason: "toolUse" });

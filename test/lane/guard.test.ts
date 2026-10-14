@@ -87,8 +87,8 @@ describe("checkResolvedPath (pi's own path resolution, symlinks followed)", () =
 	});
 
 	it("is applied by the guard extension to pi's write tool", async () => {
-		const { agent, models } = fauxModels();
-		agent.setResponses([
+		const { chat, models } = fauxModels();
+		chat.setResponses([
 			fauxAssistantMessage(fauxToolCall("write", { path: "~/pwned.txt", content: "x" }, { id: "w" }), { stopReason: "toolUse" }),
 			fauxAssistantMessage("done"),
 		]);

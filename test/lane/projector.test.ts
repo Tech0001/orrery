@@ -64,7 +64,7 @@ describe("Projector", () => {
 	it("logs a run exactly once, in order, and resumes from its cursor", async () => {
 		const dir = tempDir("orrery-projector-");
 		dirs.push(dir);
-		const { agent, models } = fauxModels();
+		const { chat, models } = fauxModels();
 		const registry = createRegistry();
 		registry.install(
 			defineExtension({
@@ -72,7 +72,7 @@ describe("Projector", () => {
 				tools: [defineTool({ name: "probe", description: "probe", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: "probe ok" }] }) })],
 			}),
 		);
-		agent.setResponses([fauxAssistantMessage(fauxToolCall("probe", {}, { id: "p1" }), { stopReason: "toolUse" }), fauxAssistantMessage("all done")]);
+		chat.setResponses([fauxAssistantMessage(fauxToolCall("probe", {}, { id: "p1" }), { stopReason: "toolUse" }), fauxAssistantMessage("all done")]);
 		const harness = await Harness.open(new MemoryStorage(), { models, registry }, ctx);
 		const root = await harness.root(ctx, { agent: { model: { provider: "faux-agent", modelId: "faux-1" } } });
 		const store = MemoryStore.open(join(dir, "memory.sqlite"));

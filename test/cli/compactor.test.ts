@@ -28,7 +28,7 @@ afterEach(async () => {
 
 function fauxSources(config: HarnessConfig) {
 	const faux = fauxModels();
-	faux.agent.setResponses(Array.from({ length: 20 }, () => fauxAssistantMessage("OK")));
+	faux.chat.setResponses(Array.from({ length: 20 }, () => fauxAssistantMessage("OK")));
 	return { sources: { config, credentials: new FileCredentialStore(join(config.dataDir, "c.json")), models: faux.models }, faux };
 }
 

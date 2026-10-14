@@ -12,15 +12,15 @@ export function tempDir(prefix: string): string {
 	return mkdtempSync(join(tmpdir(), prefix));
 }
 
-/** Two independent scripted providers: one for the agent, one for the compactor (which answers forever). */
+/** Two independent scripted providers: one for the chat model, one for the compactor (which answers forever). */
 export function fauxModels() {
-	const agent = fauxProvider({ provider: "faux-agent" });
+	const chat = fauxProvider({ provider: "faux-agent" });
 	const compactor = fauxProvider({ provider: "faux-compactor" });
 	compactor.setResponses(Array.from({ length: 1000 }, () => fauxAssistantMessage("user: summarized")));
 	const models = createModels();
-	models.setProvider(agent.provider);
+	models.setProvider(chat.provider);
 	models.setProvider(compactor.provider);
-	return { agent, compactor, models };
+	return { chat, compactor, models };
 }
 
 export function messageText(message: Message): string {

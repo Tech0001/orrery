@@ -10,8 +10,8 @@
 
 import { type MemoryView, VIEW_DOC } from "../memory/index.ts";
 
-/** The agent holding a lane. */
-export type Agent = "pi" | "omp" | "claude-code" | "claude-mod";
+/** The tool that reads a memory section: pi, OMP, Claude Code's view file, or the Orrery mod. */
+export type Host = "pi" | "omp" | "claude-code" | "claude-mod";
 
 const PI_INTRO = `You keep no memory between turns. Each turn starts with the view below, followed by the user's new
 message. Tool calls and their results are not kept in memory, only your replies, so say in your reply what you did and
@@ -45,11 +45,11 @@ messages disagree, the newer wins. For anything about current state, check the s
 before relying on memory; when memory and the source disagree, the source wins: say so in your reply, so the correction
 becomes the newest word in memory.`;
 
-/** The memory section for `agent`: how memory works, then the view (fenced for the Claude Code file, plain for the rest). */
-export function memorySection(view: MemoryView, agent: Agent = "pi"): string {
-	if (agent === "pi") return `# Memory\n\n${PI_INTRO}\n\n${RULES}\n\n${view.render()}`;
-	if (agent === "omp") return `# Memory\n\n${OMP_INTRO}\n\n${RULES}\n\n${view.render()}`;
-	if (agent === "claude-mod") return `# Memory\n\n${CLAUDE_MOD_INTRO}\n\n${RULES}\n\n${view.render()}`;
+/** The memory section for `host`: how memory works, then the view (fenced for the Claude Code file, plain for the rest). */
+export function memorySection(view: MemoryView, host: Host = "pi"): string {
+	if (host === "pi") return `# Memory\n\n${PI_INTRO}\n\n${RULES}\n\n${view.render()}`;
+	if (host === "omp") return `# Memory\n\n${OMP_INTRO}\n\n${RULES}\n\n${view.render()}`;
+	if (host === "claude-mod") return `# Memory\n\n${CLAUDE_MOD_INTRO}\n\n${RULES}\n\n${view.render()}`;
 	return `# Memory\n\n${CLAUDE_INTRO}\n\n${RULES}\n\n${fenced(view.render())}`;
 }
 

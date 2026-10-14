@@ -21,7 +21,7 @@ describe("MemoryLane", () => {
 		const lane = parseConfig(laneConfigToml({ dataDir: join(dir, "data"), workspace: join(dir, "ws") }), dir).lanes.get("Test")!;
 		const models = laneModelSource(fauxModels().models);
 		const reports: string[] = [];
-		const open = MemoryLane.open({ lane, models, report: (message) => reports.push(message), agent: "claude-code" });
+		const open = MemoryLane.open({ lane, models, report: (message) => reports.push(message), host: "claude-code" });
 		try {
 			open.view.append("user", `A long message ${"detail ".repeat(200)}`);
 			expect(await open.view.settle(AbortSignal.timeout(10_000))).toBe(true);
