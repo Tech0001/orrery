@@ -21,6 +21,9 @@ export function assertBunWhenRequired(env: NodeJS.ProcessEnv, ready: boolean, pi
 }
 assertBunWhenRequired(process.env, bunReady, PINNED_BUN);
 
+/** A release folder is at hand: ORRERY_TEST_RELEASE names one (nothing is built, so no Bun is needed), or Bun builds one. */
+export const releaseReady: boolean = Boolean(process.env.ORRERY_TEST_RELEASE) || bunReady;
+
 /** With ORRERY_REQUIRE_PI=1 (the release workflow's real-pi step), a missing npm pi is an error: the step must not pass with no test run. */
 export function assertPiWhenRequired(env: NodeJS.ProcessEnv, npmPi: string | null): void {
 	if (env.ORRERY_REQUIRE_PI === "1" && npmPi === null) {

@@ -10,7 +10,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { installFrom, listVersions, removeVersion } from "../../src/install/install.ts";
 import { readStatus } from "../../src/lane/status-file.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
-import { assertPiWhenRequired, builtRelease, bunReady, changedSince, installRelease, REPO, removeBuiltRelease } from "../release/support.ts";
+import { assertPiWhenRequired, builtRelease, changedSince, installRelease, REPO, releaseReady, removeBuiltRelease } from "../release/support.ts";
 import { fakeModel, rpc } from "./host-rpc.ts";
 import { realRemoteRebuild, realRemoteTurn, streamReply, writeModels } from "./remote-real-support.ts";
 
@@ -225,8 +225,8 @@ export default function (pi) {
  * The installed layout end to end: pi loads Orrery through app/current, a second install switches current while pi
  * runs, and the running pi keeps the version it started with (its status says so) while a new pi runs the new one.
  */
-// Needs pi's compiled binary (a dev build such as node_modules/.bin/pi does not count: CI has none) and Bun to build the release.
-describe.skipIf(compiledPi === null || !bunReady)("Orrery installed in app/current, inside a real pi", () => {
+// Needs pi's compiled binary (a dev build such as node_modules/.bin/pi does not count: CI has none) and a release.
+describe.skipIf(compiledPi === null || !releaseReady)("Orrery installed in app/current, inside a real pi", () => {
 	it("a running pi keeps its version across an install", async () => {
 		const root = mkdtempSync(join(tmpdir(), "orrery-installed-pi-"));
 		dirs.push(root);
@@ -373,7 +373,7 @@ describe.skipIf(compiledPi === null || !bunReady)("Orrery installed in app/curre
  * re-exporting extensions/pi.js by absolute path. pi of both kinds must supply what pi.js leaves out: the compiled one
  * through its virtual modules (Bun), the npm one through its aliases (Node).
  */
-describe.skipIf(!bunReady)("Orrery from a read-only installed release, inside a real pi", () => {
+describe.skipIf(!releaseReady)("Orrery from a read-only installed release, inside a real pi", () => {
 	for (const [kind, binary] of [["compiled", compiledPi], ["npm", npmPi]] as const) {
 		it.skipIf(binary === null)(`the ${kind} pi loads extensions/pi.js, summarizes through Orrery's registry, records a turn, and writes nothing into the release`, async () => {
 			await releaseCheck(binary as string);
