@@ -3,18 +3,18 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { ProcessTerminal, type TUI, TuiAltScreen } from "@earendil-works/pi-tui";
-import { defaultConfigPath } from "../lane/config.ts";
-import { userConfigPath } from "../lane/config-edit.ts";
+import { defaultConfigPath } from "../agent/config.ts";
+import { userConfigPath } from "../agent/config-edit.ts";
 import { App, type Page } from "./app.ts";
 import { realDeps } from "./deps.ts";
-import { lanesPage } from "./pages/lanes.ts";
+import { agentsPage } from "./pages/agents.ts";
 import { loginsPage } from "./pages/logins.ts";
 import { toolsPage } from "./pages/tools.ts";
 import { usagePage } from "./pages/usage.ts";
 import { firstRun } from "./setup.ts";
 
 /** The pages, in order. */
-export const PAGES: Page[] = [lanesPage, loginsPage, usagePage, toolsPage];
+export const PAGES: Page[] = [agentsPage, loginsPage, usagePage, toolsPage];
 
 /** The config the TUI reads and edits: --config (absolute), else the usual places, else where a new one goes. */
 export function tuiConfigPath(option: string | undefined): string {

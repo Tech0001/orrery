@@ -1,11 +1,11 @@
-/** Plain streaming output for a lane: text and tool activity as normal lines (tmux scrollback keeps everything). */
+/** Plain streaming output for an agent: text and tool activity as normal lines (tmux scrollback keeps everything). */
 
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import type { AgentEvent, EntryRecord, UsageState } from "@earendil-works/pi-durable";
 
 const TOOL_OUTPUT_LIMIT = 2_000;
 
-// Model and tool text is untrusted: a file a lane cats could carry escape sequences that write the clipboard
+// Model and tool text is untrusted: a file an agent cats could carry escape sequences that write the clipboard
 // (OSC 52), retitle or clear the screen. Strip ESC/CSI/OSC/DCS sequences, C1 controls and C0 controls except
 // newline and tab before anything reaches the terminal.
 const ESCAPE_SEQUENCES = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[PX^_][^\x1b]*(?:\x1b\\)?|[@-Z\\-_])/g;
@@ -16,7 +16,7 @@ export function clean(text: string): string {
 }
 
 export interface PrinterState {
-	lane: string;
+	agent: string;
 	model: string;
 	busy: boolean;
 	streaming: boolean;
@@ -26,8 +26,8 @@ export interface PrinterState {
 	toolOutput: Map<string, number>;
 }
 
-export function createPrinterState(lane: string, model: string): PrinterState {
-	return { lane, model, busy: false, streaming: false, streamed: "", cost: 0, toolOutput: new Map() };
+export function createPrinterState(agent: string, model: string): PrinterState {
+	return { agent, model, busy: false, streaming: false, streamed: "", cost: 0, toolOutput: new Map() };
 }
 
 function oneLine(text: string, max = 200): string {
@@ -55,7 +55,7 @@ function totalCost(usage: UsageState): number {
 }
 
 export function title(state: PrinterState): string {
-	return clean(`${state.lane} · ${state.busy ? "busy" : "idle"} · ${state.model} · $${state.cost.toFixed(2)}`);
+	return clean(`${state.agent} · ${state.busy ? "busy" : "idle"} · ${state.model} · $${state.cost.toFixed(2)}`);
 }
 
 /** One finished entry, for the backlog shown on attach. */

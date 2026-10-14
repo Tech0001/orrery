@@ -1,16 +1,16 @@
 /**
  * Claude Code's hooks (spec §4 "Hooks"), run as `orrery claude-hook <event>` with the hook's JSON on stdin.
- * - They find the session's lane (src/claude/pick.ts): the one ORRERY_AGENT names, in any folder, else the one whose
- *   workspace holds the project folder (CLAUDE_PROJECT_DIR, else the hook's cwd). Under ORRERY_AGENT that is decided
+ * - They find the session's agent (src/claude/pick.ts): the one ORRERY_AGENT names, in any folder, else the one whose
+ *   folder holds the project folder (CLAUDE_PROJECT_DIR, else the hook's cwd). Under ORRERY_AGENT that is decided
  *   once for Claude Code's process (CLAUDE_PID, which Claude Code sets for its hooks): by the MCP server or the first
  *   SessionStart, and read by every later event.
  * - They never write the store, and they return quickly: SessionEnd gets about 1.5 s.
  * - Subagent events (agent_id) are not memory.
- * - Outside a lane they print and write nothing. An ORRERY_AGENT that is refused (it names no lane, its token is
- *   malformed, the folder is another lane's set up the file way, or the process's decision could not be recorded or is
+ * - Outside an agent they print and write nothing. An ORRERY_AGENT that is refused (it names no agent, its token is
+ *   malformed, the folder is another agent's set up the file way, or the process's decision could not be recorded or is
  *   missing) gets a notice at SessionStart, records nothing, and keeps the guard.
- * - They record only where `orrery claude-setup` ran: in mod mode in any folder, in file mode for the lane's
- *   workspace. In any other lane they start no holder and spool nothing, SessionStart says the session is not recorded,
+ * - They record only where `orrery claude-setup` ran: in mod mode in any folder, in file mode for the agent's
+ *   folder. In any other agent they start no holder and spool nothing, SessionStart says the session is not recorded,
  *   and the guard still applies.
  * - Their stdout is only their JSON answer, and they never put message contents on stderr.
  */
@@ -21,14 +21,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
-import { type HarnessConfig, type LaneConfig, laneForCwd } from "../lane/config.ts";
-import { laneViews, movedAgentDirCredentials, ompCredentials } from "../lane/guard-paths.ts";
-import { cutNotice, readInstructions } from "../lane/instructions.ts";
-import { workArea } from "../lane/pick.ts";
-import { writePrivate } from "../lane/private-file.ts";
-import { selfCommand } from "../lane/running.ts";
-import { safeText } from "../lane/source-labels.ts";
-import { holderFresh, readHolder } from "../lane/handover.ts";
+import { type HarnessConfig, type AgentConfig, agentForCwd } from "../agent/config.ts";
+import { agentViews, movedAgentDirCredentials, ompCredentials } from "../agent/guard-paths.ts";
+import { cutNotice, readInstructions } from "../agent/instructions.ts";
+import { workArea } from "../agent/pick.ts";
+import { writePrivate } from "../agent/private-file.ts";
+import { selfCommand } from "../agent/running.ts";
+import { safeText } from "../agent/source-labels.ts";
+import { holderFresh, readHolder } from "../agent/handover.ts";
 import { claudeGuard, claudeStateRoots, movedConfigDirCredentials } from "./guard.ts";
 import { summaryNotice } from "./notices.ts";
 import { holderLog, samePath, validSession } from "./paths.ts";
@@ -41,9 +41,9 @@ import { markedHere, refreshViewFile, type ViewGate, viewGate } from "./view-fil
  * SessionStart again). Records it when not. Keyed by the recorder start's nonce; a file that can't be read or written
  * just means the notice is shown again.
  */
-function noticeShownBefore(laneDir: string, session: string, nonce: string | undefined): boolean {
+function noticeShownBefore(agentDir: string, session: string, nonce: string | undefined): boolean {
 	if (nonce === undefined) return false;
-	const path = join(laneDir, "notices-shown.json");
+	const path = join(agentDir, "notices-shown.json");
 	let shown: Record<string, string> = {};
 	try {
 		const data: unknown = JSON.parse(readFileSync(path, "utf8"));
@@ -102,7 +102,7 @@ export interface HookContext {
 	 * Starts the session's holder (spawnHolder), with SessionStart's time as its read-only cut-off; tests start one
 	 * in-process or answer for it.
 	 */
-	readonly startHolder: (lane: LaneConfig, session: string, nonce: string, since: number) => void;
+	readonly startHolder: (agent: AgentConfig, session: string, nonce: string, since: number) => void;
 	/** How long SessionStart waits for the holder to choose recording or read-only (default 8 s). */
 	readonly modeWaitMs?: number;
 	/** The home folder "~" means (default: the OS's); tests set it. */
@@ -114,15 +114,15 @@ export interface HookContext {
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 interface Here {
-	readonly lane: LaneConfig;
+	readonly agent: AgentConfig;
 	readonly projectDir: string;
 }
 
 /**
- * Which lane the session belongs to (src/claude/pick.ts), for the project folder and Claude Code's own process: under
+ * Which agent the session belongs to (src/claude/pick.ts), for the project folder and Claude Code's own process: under
  * ORRERY_AGENT, the process's one recorded decision. `start`: SessionStart, which makes that decision when nothing (the
  * MCP server) made it before; every other event, and every later SessionStart, reads it, so a session never changes
- * lanes midway (a Claude Code an agent started, picked by its folder, does not become the agent when the agent exits).
+ * agents midway (a Claude Code an agent started, picked by its folder, does not become the agent when the agent exits).
  */
 function pickFor(ctx: HookContext, projectDir: string, start = false): ClaudePicked {
 	return claudeSession(ctx.config, { env: ctx.env, cwd: projectDir, pid: ctx.claudePid, decide: start });
@@ -136,7 +136,7 @@ function pickHere(input: HookInput, ctx: HookContext, start = false): { readonly
 
 function here(input: HookInput, ctx: HookContext): Here | undefined {
 	const found = pickHere(input, ctx);
-	return found?.pick.kind === "lane" ? { lane: found.pick.lane, projectDir: found.projectDir } : undefined;
+	return found?.pick.kind === "agent" ? { agent: found.pick.agent, projectDir: found.projectDir } : undefined;
 }
 
 /** A prompt that is a slash command (`/compact`, `/orrery:memory`), not words for memory. `/tmp is full` is words. */
@@ -147,14 +147,14 @@ export function slashCommand(input: HookInput): boolean {
 }
 
 /**
- * The session's own memory events: main-thread events of a real session id, in a lane where claude-setup ran
- * (markedHere), unless it runs read-only. In a lane never set up nothing is spooled, so no later holder adopts it.
+ * The session's own memory events: main-thread events of a real session id, in an agent where claude-setup ran
+ * (markedHere), unless it runs read-only. In an agent never set up nothing is spooled, so no later holder adopts it.
  */
 function recordable(input: HookInput, ctx: HookContext): (Here & { session: string }) | undefined {
 	if (input.agent_id !== undefined) return undefined;
 	const found = here(input, ctx);
-	if (found === undefined || !validSession(input.session_id) || !markedHere(found.lane)) return undefined;
-	if (readMode(found.lane.dir, input.session_id)?.mode === "read-only") return undefined;
+	if (found === undefined || !validSession(input.session_id) || !markedHere(found.agent)) return undefined;
+	if (readMode(found.agent.dir, input.session_id)?.mode === "read-only") return undefined;
 	return { ...found, session: input.session_id };
 }
 
@@ -167,7 +167,7 @@ function notice(input: HookInput, ctx: HookContext): object | undefined {
 	const found = here(input, ctx);
 	if (found === undefined) return undefined;
 	try {
-		const message = summaryNotice(found.lane, input.session_id);
+		const message = summaryNotice(found.agent, input.session_id);
 		return message === undefined ? undefined : { systemMessage: message };
 	} catch {
 		return undefined;
@@ -181,8 +181,8 @@ function notice(input: HookInput, ctx: HookContext): object | undefined {
 export function userPromptSubmit(input: HookInput, ctx: HookContext): object | undefined {
 	const at = recordable(input, ctx);
 	if (at !== undefined && typeof input.prompt === "string" && input.prompt.trim()) {
-		if (!slashCommand(input)) spoolEvent(at.lane.dir, at.session, { kind: "prompt", at: Date.now(), claudePid: ctx.claudePid, text: input.prompt });
-		else if (ORRERY_COMMAND.test(input.prompt)) spoolEvent(at.lane.dir, at.session, { kind: "command", at: Date.now(), claudePid: ctx.claudePid });
+		if (!slashCommand(input)) spoolEvent(at.agent.dir, at.session, { kind: "prompt", at: Date.now(), claudePid: ctx.claudePid, text: input.prompt });
+		else if (ORRERY_COMMAND.test(input.prompt)) spoolEvent(at.agent.dir, at.session, { kind: "command", at: Date.now(), claudePid: ctx.claudePid });
 	}
 	return notice(input, ctx);
 }
@@ -191,7 +191,7 @@ export function userPromptSubmit(input: HookInput, ctx: HookContext): object | u
 export function stop(input: HookInput, ctx: HookContext): object | undefined {
 	const at = recordable(input, ctx);
 	const text = input.last_assistant_message;
-	if (at !== undefined && typeof text === "string" && text.trim()) spoolEvent(at.lane.dir, at.session, { kind: "reply", at: Date.now(), claudePid: ctx.claudePid, text });
+	if (at !== undefined && typeof text === "string" && text.trim()) spoolEvent(at.agent.dir, at.session, { kind: "reply", at: Date.now(), claudePid: ctx.claudePid, text });
 	return notice(input, ctx);
 }
 
@@ -203,14 +203,14 @@ export function stop(input: HookInput, ctx: HookContext): object | undefined {
  */
 export function sessionEnd(input: HookInput, ctx: HookContext): void {
 	const at = recordable(input, ctx);
-	if (at !== undefined) spoolEvent(at.lane.dir, at.session, { kind: "end", at: Date.now(), claudePid: ctx.claudePid, ...(typeof input.reason === "string" ? { reason: input.reason } : {}) });
+	if (at !== undefined) spoolEvent(at.agent.dir, at.session, { kind: "end", at: Date.now(), claudePid: ctx.claudePid, ...(typeof input.reason === "string" ? { reason: input.reason } : {}) });
 	if (input.agent_id === undefined && (input.reason === "prompt_input_exit" || input.reason === "other")) forgetProcess(ctx.config, ctx.claudePid);
 }
 
-async function waitForMode(laneDir: string, session: string, nonce: string, ms: number): Promise<SessionMode | undefined> {
+async function waitForMode(agentDir: string, session: string, nonce: string, ms: number): Promise<SessionMode | undefined> {
 	const deadline = Date.now() + ms;
 	for (;;) {
-		const mode = readMode(laneDir, session);
+		const mode = readMode(agentDir, session);
 		if (mode?.nonce === nonce) return mode;
 		if (Date.now() >= deadline) return undefined;
 		await sleep(50);
@@ -226,8 +226,8 @@ const MOD_CHECK = "If your system prompt has no Orrery memory section (its text 
 
 /**
  * Brings the view file up to date (in mod mode it writes none, and deletes a stale one) and starts this session's holder, unless one already records it (/compact). It
- * then tells the model the lane, its size and whether this session records. What the user should fix is also
- * shown to them. In a lane where claude-setup never ran (or its gate just took the setup back), it starts no holder:
+ * then tells the model the agent, its size and whether this session records. What the user should fix is also
+ * shown to them. In an agent where claude-setup never ran (or its gate just took the setup back), it starts no holder:
  * the session is not recorded, and the status says so to both. Under a refused ORRERY_AGENT it only tells the person.
  */
 export async function sessionStart(input: HookInput, ctx: HookContext): Promise<object | undefined> {
@@ -238,83 +238,83 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	const { pick, projectDir } = picked;
 	if (pick.kind === "none") return undefined;
 	// A refused ORRERY_AGENT: said once, to the person, in the main session; nothing is recorded.
-	if (pick.kind !== "lane") return input.agent_id === undefined ? { systemMessage: claudeRefusedNotice(pick) } : undefined;
-	const { lane } = pick;
+	if (pick.kind !== "agent") return input.agent_id === undefined ? { systemMessage: claudeRefusedNotice(pick) } : undefined;
+	const { agent } = pick;
 	// The holder's cut-off: this session's events from now on belong to this run.
 	const since = Date.now();
-	// Outside the lane's folder only the mod puts memory into the prompt: no CLAUDE.md there loads a view of this lane.
-	const outside = lane.workspace === undefined || workArea(lane, projectDir) !== lane.workspace;
+	// Outside the agent's folder only the mod puts memory into the prompt: no CLAUDE.md there loads a view of this agent.
+	const outside = agent.folder === undefined || workArea(agent, projectDir) !== agent.folder;
 	const session = input.session_id;
 	const warnings: string[] = [];
-	const cut = readInstructions(lane.dir)?.cut === true;
+	const cut = readInstructions(agent.dir)?.cut === true;
 	let messages: number | undefined;
 	// The view's own gate, which every write goes through, says why the view is not written. Where git would see it,
 	// the gate has taken the view back.
 	let gate: ViewGate | undefined;
 	try {
-		messages = refreshViewFile(lane, (seen) => {
+		messages = refreshViewFile(agent, (seen) => {
 			gate = seen;
 		});
 	} catch (error) {
-		warnings.push(`Orrery: ${lane.name}'s memory view could not be written: ${errorText(error)}`);
+		warnings.push(`Orrery: ${agent.name}'s memory view could not be written: ${errorText(error)}`);
 	}
 	// No memory yet, so no write and no gate: ask it anyway, for the warnings.
-	gate ??= viewGate(lane);
+	gate ??= viewGate(agent);
 	// After the gate, which takes the setup back where git would see the view.
-	const setUp = markedHere(lane);
+	const setUp = markedHere(agent);
 	let state = "recording";
-	if (!setUp) state = `not set up for Claude Code here, so this session is not recorded; run \`orrery claude-setup ${lane.name}\` to record it`;
+	if (!setUp) state = `not set up for Claude Code here, so this session is not recorded; run \`orrery claude-setup ${agent.name}\` to record it`;
 	else {
-		const holder = readHolder(lane.dir);
+		const holder = readHolder(agent.dir);
 		let mode: SessionMode | undefined;
-		if (holderFresh(holder) && holder.session === session && holder.state === "recording") mode = readMode(lane.dir, session);
+		if (holderFresh(holder) && holder.session === session && holder.state === "recording") mode = readMode(agent.dir, session);
 		else {
 			const nonce = randomUUID();
-			ctx.startHolder(lane, session, nonce, since);
-			mode = await waitForMode(lane.dir, session, nonce, ctx.modeWaitMs ?? 8000);
+			ctx.startHolder(agent, session, nonce, since);
+			mode = await waitForMode(agent.dir, session, nonce, ctx.modeWaitMs ?? 8000);
 		}
 		// Older mode files called the ordinary local lock "held"; it keeps the original notice.
-		const genericHeld = mode?.mode === "read-only" && (mode.reason === undefined || mode.reason === "held" || mode.reason === "the lane is open elsewhere (pi, or a session of another Claude Code)");
+		const genericHeld = mode?.mode === "read-only" && (mode.reason === undefined || mode.reason === "held" || mode.reason === "the agent is open elsewhere (pi, or a session of another Claude Code)");
 		if (mode === undefined) {
 			state = "not recording yet";
-			warnings.push(`Orrery: ${lane.name}'s recorder did not answer in time; see ${holderLog(lane.dir)}.`);
+			warnings.push(`Orrery: ${agent.name}'s recorder did not answer in time; see ${holderLog(agent.dir)}.`);
 		} else if (mode.mode === "read-only") {
 			state = "read-only: this session is not recorded";
-			if (genericHeld) warnings.push(`Orrery: ${lane.name} is open elsewhere (pi, or a session of another Claude Code); this session reads memory but is not recorded.`);
+			if (genericHeld) warnings.push(`Orrery: ${agent.name} is open elsewhere (pi, or a session of another Claude Code); this session reads memory but is not recorded.`);
 		}
 		// A recording recorder's notices (memory kept aside, unsaved turns kept) are said once per recorder start, not
 		// again at every /compact that reuses it.
-		if (!genericHeld && typeof mode?.reason === "string" && !(mode.mode === "recording" && noticeShownBefore(lane.dir, session, mode.nonce))) warnings.push(safeText(mode.reason));
+		if (!genericHeld && typeof mode?.reason === "string" && !(mode.mode === "recording" && noticeShownBefore(agent.dir, session, mode.nonce))) warnings.push(safeText(mode.reason));
 	}
 	const mod = gate.mod === true;
-	// Said to the person and the model, as this session gets them: the mod's section, and the view file in the lane's own
+	// Said to the person and the model, as this session gets them: the mod's section, and the view file in the agent's own
 	// folder, carry the first 32 KB; anywhere else none reach the model.
-	if (cut) warnings.push(mod || (gate.open && !outside) ? cutNotice(lane.name) : cutNoneNotice(lane.name));
-	const fix =`Make git ignore .orrery/ and track nothing there, then run \`orrery claude-setup ${lane.name}\`.`;
+	if (cut) warnings.push(mod || (gate.open && !outside) ? cutNotice(agent.name) : cutNoneNotice(agent.name));
+	const fix =`Make git ignore .orrery/ and track nothing there, then run \`orrery claude-setup ${agent.name}\`.`;
 	if (mod) {
 		// The mod puts the view in the prompt: no view-file warnings, but a stale view that stays is said.
-		if (gate.failed !== undefined) warnings.push(`Orrery: ${lane.name}'s old memory view file could not be removed (${gate.failed}); remove ${lane.workspace}/.orrery/view.md yourself.`);
+		if (gate.failed !== undefined) warnings.push(`Orrery: ${agent.name}'s old memory view file could not be removed (${gate.failed}); remove ${agent.folder}/.orrery/view.md yourself.`);
 	} else if (gate.exposed !== undefined && gate.failed !== undefined) {
 		warnings.push(
-			`Orrery: ${gate.exposed.reason}, so ${lane.name}'s memory view must leave ${lane.workspace}/.orrery/, but it could not be removed (${gate.failed}); Orrery tries again, or remove .orrery/view.md yourself. ${fix}`,
+			`Orrery: ${gate.exposed.reason}, so ${agent.name}'s memory view must leave ${agent.folder}/.orrery/, but it could not be removed (${gate.failed}); Orrery tries again, or remove .orrery/view.md yourself. ${fix}`,
 		);
 	} else if (gate.exposed !== undefined) {
-		warnings.push(`Orrery: ${gate.exposed.reason}, so ${lane.name}'s memory view is no longer written to ${lane.workspace}/.orrery/. ${fix}`);
+		warnings.push(`Orrery: ${gate.exposed.reason}, so ${agent.name}'s memory view is no longer written to ${agent.folder}/.orrery/. ${fix}`);
 	} else if (gate.unchecked !== undefined) {
 		warnings.push(
-			`Orrery: ${lane.name}'s memory view could not be checked against git this time (${gate.unchecked}), so it is taken out of ${lane.workspace}/.orrery/ until git answers again; nothing to set up, a later session puts it back.`,
+			`Orrery: ${agent.name}'s memory view could not be checked against git this time (${gate.unchecked}), so it is taken out of ${agent.folder}/.orrery/ until git answers again; nothing to set up, a later session puts it back.`,
 		);
 	} else if (setUp && outside) {
-		warnings.push(`Orrery: ${lane.name} is open outside its folder, where only the Orrery mod brings its memory and instructions into Claude Code; run \`orrery claude-setup ${lane.name} --mod\`, then start a new session.`);
+		warnings.push(`Orrery: ${agent.name} is open outside its folder, where only the Orrery mod brings its memory and instructions into Claude Code; run \`orrery claude-setup ${agent.name} --mod\`, then start a new session.`);
 	} else if (setUp && !gate.open) {
 		// (Where nothing is set up, the status already says what to run.)
-		warnings.push(`Orrery: CLAUDE.md does not load ${lane.name}'s memory view; run \`orrery claude-setup ${lane.name}\`, then start a new session.`);
-	} else if (setUp && lane.workspace !== undefined && !samePath(projectDir, lane.workspace)) {
-		warnings.push(`Orrery: Claude Code started in a subfolder of ${lane.workspace}; start it there, or CLAUDE.md may not load the memory view.`);
+		warnings.push(`Orrery: CLAUDE.md does not load ${agent.name}'s memory view; run \`orrery claude-setup ${agent.name}\`, then start a new session.`);
+	} else if (setUp && agent.folder !== undefined && !samePath(projectDir, agent.folder)) {
+		warnings.push(`Orrery: Claude Code started in a subfolder of ${agent.folder}; start it there, or CLAUDE.md may not load the memory view.`);
 	}
 	// For the user only (systemMessage), never the model's context; this also records the session's key.
 	const summaries = notice(input, ctx) as { systemMessage?: string } | undefined;
-	const status = `Orrery · ${lane.name} · ${messages === undefined ? "no memory yet" : `${messages} msgs`} · ${state}${mod && setUp ? " · memory from the Orrery mod" : ""}`;
+	const status = `Orrery · ${agent.name} · ${messages === undefined ? "no memory yet" : `${messages} msgs`} · ${state}${mod && setUp ? " · memory from the Orrery mod" : ""}`;
 	// A session that is not recorded because nothing was set up: the user sees that too.
 	const shown = [...(setUp ? warnings : [status, ...warnings]), ...(summaries?.systemMessage ? [summaries.systemMessage] : [])];
 	return {
@@ -328,7 +328,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: `Orrery guard: ${reason}` } });
 
 /**
- * A PreToolUse input over TOOL_INPUT_MAX, refused unread: wherever the guard runs (a lane's session, or a refused
+ * A PreToolUse input over TOOL_INPUT_MAX, refused unread: wherever the guard runs (an agent's session, or a refused
  * ORRERY_AGENT's, by CLAUDE_PROJECT_DIR), and when Claude Code does not say where the call runs, since only the unread
  * input would.
  */
@@ -337,20 +337,20 @@ function unreadToolCall(ctx: HookContext): object | undefined {
 	try {
 		if (projectDir && pickFor(ctx, projectDir).kind === "none") return undefined;
 	} catch (error) {
-		// A pick that cannot be made is no proof the folder is no lane's.
+		// A pick that cannot be made is no proof the folder is no agent's.
 		return deny(`this call could not be checked (${errorText(error)}).`);
 	}
 	return deny("this call's input is over 1 MB, too long to check; nothing was run.");
 }
 
 /**
- * The guard (spec §4 PreToolUse): every tool call of a lane's session, subagents' too, whatever the memory's mode. It
- * may write where the session works (workArea: the lane's workspace, or the folder it was opened in) and the lane's
+ * The guard (spec §4 PreToolUse): every tool call of an agent's session, subagents' too, whatever the memory's mode. It
+ * may write where the session works (workArea: the agent's folder, or the folder it was opened in) and the agent's
  * allowed roots, and Claude Code's own state (claudeStateRoots). A session whose ORRERY_AGENT was refused keeps the
- * guard with the rules of the lane whose folder it runs in, or outside lanes those of a lane with no folder (its own
- * folder, no allowed roots), as pi's refusedGuard does. No session reads another lane's memory view file (laneViews):
- * a refused one is no lane's, so every lane's view is another's. A call it cannot judge is refused, since a hook that
- * crashed would let it through: the pick too (the folder's lane, the process's decision) is made inside the check.
+ * guard with the rules of the agent whose folder it runs in, or outside agents those of an agent with no folder (its own
+ * folder, no allowed roots), as pi's refusedGuard does. No session reads another agent's memory view file (agentViews):
+ * a refused one is no agent's, so every agent's view is another's. A call it cannot judge is refused, since a hook that
+ * crashed would let it through: the pick too (the folder's agent, the process's decision) is made inside the check.
  */
 export function preToolUse(input: HookInput, ctx: HookContext): object | undefined {
 	let reason: string | undefined;
@@ -358,17 +358,17 @@ export function preToolUse(input: HookInput, ctx: HookContext): object | undefin
 		const found = pickHere(input, ctx);
 		if (found === undefined || found.pick.kind === "none" || typeof input.tool_name !== "string") return undefined;
 		const { pick, projectDir } = found;
-		const rules = pick.kind === "lane" ? pick.lane : laneForCwd(ctx.config, projectDir);
+		const rules = pick.kind === "agent" ? pick.agent : agentForCwd(ctx.config, projectDir);
 		const toolInput = typeof input.tool_input === "object" && input.tool_input !== null ? (input.tool_input as Record<string, unknown>) : {};
 		const home = ctx.home ?? homedir();
 		reason = claudeGuard(input.tool_name, toolInput, {
-			workspace: workArea(rules ?? {}, projectDir),
+			folder: workArea(rules ?? {}, projectDir),
 			allowedRoots: [...(rules?.allowedRoots ?? []), ...claudeStateRoots(projectDir, home, ctx.env)],
 			cwd: typeof input.cwd === "string" ? input.cwd : projectDir,
 			credentials: [ctx.config.credentialsPath, ...movedAgentDirCredentials(ctx.env, home), ...movedConfigDirCredentials(ctx.env), ...ompCredentials(ctx.env, home)],
 			orreryData: ctx.config.dataDir,
 			home,
-			...laneViews(ctx.config, pick.kind === "lane" ? pick.lane : undefined),
+			...agentViews(ctx.config, pick.kind === "agent" ? pick.agent : undefined),
 			...(ctx.configFile === undefined ? {} : { configFile: ctx.configFile }),
 		});
 	} catch (error) {
@@ -422,8 +422,8 @@ export async function runHook(event: string, stdin: string | undefined, ctx: Hoo
  * Starts `orrery holder` detached, so it outlives this hook and Claude Code (Phase 0, finding 4). `since` is when
  * SessionStart ran: a run that turns read-only drops this session's events from then on.
  */
-export function spawnHolder(lane: LaneConfig, session: string, nonce: string, claudePid: number, since: number, configPath?: string): void {
-	const args = ["holder", lane.name, "--session", session, "--claude-pid", String(claudePid), "--nonce", nonce, "--since", String(since)];
+export function spawnHolder(agent: AgentConfig, session: string, nonce: string, claudePid: number, since: number, configPath?: string): void {
+	const args = ["holder", agent.name, "--session", session, "--claude-pid", String(claudePid), "--nonce", nonce, "--since", String(since)];
 	if (configPath !== undefined) args.push("--config", configPath);
 	const self = selfCommand(args);
 	const child = spawn(self.cmd, self.args, { detached: true, stdio: "ignore" });

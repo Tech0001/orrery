@@ -5,10 +5,10 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { compactCommand } from "../../src/cli/commands.ts";
-import { parseConfig } from "../../src/lane/config.ts";
+import { parseConfig } from "../../src/agent/config.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { cleanEnv, cliCommand } from "../claude/support.ts";
-import { fauxModels, laneConfigToml, tempDir } from "../lane/support.ts";
+import { fauxModels, agentConfigToml, tempDir } from "../agent/support.ts";
 import { streamReply } from "../pi/remote-real-support.ts";
 
 const dirs: string[] = [];
@@ -16,24 +16,24 @@ afterEach(() => {
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-/** Three long messages in a lane's memory, enough for summaries. */
-function seedHistory(laneDir: string): void {
-	mkdirSync(laneDir, { recursive: true });
-	const store = MemoryStore.open(join(laneDir, "memory.sqlite"));
+/** Three long messages in an agent's memory, enough for summaries. */
+function seedHistory(agentDir: string): void {
+	mkdirSync(agentDir, { recursive: true });
+	const store = MemoryStore.open(join(agentDir, "memory.sqlite"));
 	store.appendBatch([0, 1, 2].map((i) => ({ kind: "user" as const, text: `${i} ${"long history ".repeat(80)}` })));
 	store.close();
 }
 
 describe("compactCommand", () => {
-	it("builds every summary with the lane's compactor and records its usage", async () => {
+	it("builds every summary with the agent's compactor and records its usage", async () => {
 		const dir = tempDir("orrery-compact-");
 		dirs.push(dir);
-		const config = parseConfig(laneConfigToml({ dataDir: join(dir, "data"), workspace: join(dir, "ws") }), dir);
-		const laneDir = config.lanes.get("Test")!.dir;
-		seedHistory(laneDir);
+		const config = parseConfig(agentConfigToml({ dataDir: join(dir, "data"), folder: join(dir, "ws") }), dir);
+		const agentDir = config.agents.get("Test")!.dir;
+		seedHistory(agentDir);
 		const { models } = fauxModels();
 		await compactCommand(config, "test", models);
-		const reopened = MemoryStore.openReadOnly(join(laneDir, "memory.sqlite"));
+		const reopened = MemoryStore.openReadOnly(join(agentDir, "memory.sqlite"));
 		expect(reopened.nodeCount).toBe(4);
 		expect(reopened.usageRows().filter((r) => r.role === "compactor").length).toBeGreaterThan(0);
 		reopened.close();
@@ -68,16 +68,16 @@ describe("compactCommand", () => {
 					'id = "m"',
 					"context_window = 128000",
 					"max_tokens = 4096",
-					"[lanes.Test]",
-					`workspace = ${JSON.stringify(join(dir, "ws"))}`,
+					"[agents.Test]",
+					`folder = ${JSON.stringify(join(dir, "ws"))}`,
 					'compactor_model = "local/m"',
 					'compactor_thinking = "off"',
 					"",
 				].join("\n"),
 			);
-			const laneDir = join(dir, "data", "lanes", "Test");
-			seedHistory(laneDir);
-			const c = cliCommand(["compact", "Test", "--config", config, "--progress", join(laneDir, "build.json")]);
+			const agentDir = join(dir, "data", "agents", "Test");
+			seedHistory(agentDir);
+			const c = cliCommand(["compact", "Test", "--config", config, "--progress", join(agentDir, "build.json")]);
 			const child = spawn(c.cmd, c.args, { env: cleanEnv({ HOME: dir }) });
 			let out = "";
 			child.stdout.setEncoding("utf8").on("data", (chunk: string) => (out += chunk));
@@ -86,8 +86,8 @@ describe("compactCommand", () => {
 			expect([code, out]).toEqual([0, expect.stringMatching(/^Done: [1-9]\d* summaries for 3 messages\.\n$/)]);
 			expect(chats).toBeGreaterThan(0);
 			// --progress: the Agents page's build.json says it is done.
-			expect(JSON.parse(readFileSync(join(laneDir, "build.json"), "utf8"))).toMatchObject({ messages: 3, done: true });
-			const store = MemoryStore.openReadOnly(join(laneDir, "memory.sqlite"));
+			expect(JSON.parse(readFileSync(join(agentDir, "build.json"), "utf8"))).toMatchObject({ messages: 3, done: true });
+			const store = MemoryStore.openReadOnly(join(agentDir, "memory.sqlite"));
 			try {
 				expect(store.nodeCount).toBeGreaterThan(0);
 				expect(store.usageRows().filter((r) => r.role === "compactor").map((r) => r.model)).toContain("local/m");

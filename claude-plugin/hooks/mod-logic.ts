@@ -21,10 +21,10 @@ export const IMAGE_KEEP_TEXT = "(an image; Orrery's compaction does not keep ima
 /** The text of a kept tool result that had no text: an image-only result, or a tool that printed nothing. */
 export const RESULT_KEEP_TEXT = "(no text; Orrery's compaction does not keep images)";
 
-/** How a lane records and compacts: "mod" (this mod compacts), "file" (CLAUDE.local.md import) or "none". */
+/** How an agent records and compacts: "mod" (this mod compacts), "file" (CLAUDE.local.md import) or "none". */
 export type Mode = "mod" | "file" | "none";
 
-/** What a session's holder chose for it: it records the lane, or another window (or pi) does and it only reads. */
+/** What a session's holder chose for it: it records the agent, or another window (or pi) does and it only reads. */
 export type SessionMode = "recording" | "read-only";
 
 /** Public remote status, matching src/remote/types.ts without importing Node into the mod runtime. */
@@ -92,7 +92,7 @@ export interface Fallback {
 
 /**
  * The mod's answer to a compaction: the rows to keep and the new section; why it cannot answer; or "pass", for a
- * session that never had a mod-mode lane and still has none (Claude Code compacts its own way, and nothing is said).
+ * session that never had a mod-mode agent and still has none (Claude Code compacts its own way, and nothing is said).
  */
 export type Answer<R extends Row> =
 	| { readonly kind: "answer"; readonly messages: readonly (R | Rebuilt<R> | BuiltRow)[]; readonly section: string; readonly line: string }
@@ -291,8 +291,8 @@ function fallback(why: string, lasting = true): Fallback {
 	return { kind: "fallback", why, line: fallbackLine(why), lasting };
 }
 
-/** Whether a reply is a mod-mode lane's. */
-function modLane(reply: ViewReply | undefined): boolean {
+/** Whether a reply is a mod-mode agent's. */
+function modAgent(reply: ViewReply | undefined): boolean {
 	return reply?.kind === "lane" && reply.mode === "mod";
 }
 
@@ -302,14 +302,14 @@ function modLane(reply: ViewReply | undefined): boolean {
  */
 export function compactAnswer<R extends Row>(messages: readonly R[], reply: ViewReply, held?: ViewReply): Answer<R> {
 	if (reply.kind === "error") return fallback(`the memory view could not be read: ${reply.text}`);
-	// The first fetch failed and the folder has no mod lane after all: nothing of Orrery's to answer, and nothing to say.
-	if (held !== undefined && !modLane(held) && !modLane(reply)) return { kind: "pass" };
-	if (held?.kind === "lane" && reply.kind === "lane" && reply.lane !== held.lane) return fallback("this session's folder now belongs to another lane");
-	if (reply.kind === "outside" || reply.mode !== "mod") return fallback("this folder's lane is no longer in mod mode");
+	// The first fetch failed and the folder has no mod agent after all: nothing of Orrery's to answer, and nothing to say.
+	if (held !== undefined && !modAgent(held) && !modAgent(reply)) return { kind: "pass" };
+	if (held?.kind === "lane" && reply.kind === "lane" && reply.lane !== held.lane) return fallback("this session's folder now belongs to another agent");
+	if (reply.kind === "outside" || reply.mode !== "mod") return fallback("this folder's agent is no longer in mod mode");
 	// A session that is not recorded (read-only, or its holder gone with events spooled): the older turns are not all in
 	// memory, so they must not be dropped.
 	if (reply.recording === false) return fallback("this session is not recorded");
-	if (reply.section === null) return fallback("the lane has no memory yet");
+	if (reply.section === null) return fallback("the agent has no memory yet");
 	const kept = lastTurn(messages);
 	const tokens = estimateTokens(kept);
 	if (tokens > reply.compactAt / 2) return fallback(`the last turn is too large to keep (about ${tokens} tokens)`, false);
@@ -326,7 +326,7 @@ export function compactAnswer<R extends Row>(messages: readonly R[], reply: View
 	};
 }
 
-/** True when the mod should start a compaction: the lane is in mod mode and the context passed compact_at. */
+/** True when the mod should start a compaction: the agent is in mod mode and the context passed compact_at. */
 export function shouldCompact(tokens: number | undefined, reply: ViewReply | undefined): boolean {
 	return tokens !== undefined && reply?.kind === "lane" && reply.mode === "mod" && tokens > reply.compactAt;
 }
@@ -357,44 +357,44 @@ export function stopLine(reason: string): string {
 }
 
 // Showing that the mod is loaded (spec sections 11 and 12): the startup band above the prompt, the footer label with
-// the lane's message count, and the compaction line where it can be seen. All three only in a mod-mode lane.
+// the agent's message count, and the compaction line where it can be seen. All three only in a mod-mode agent.
 
-/** The first word of the footer's mode label in a mod-mode lane's session. */
+/** The first word of the footer's mode label in a mod-mode agent's session. */
 export const MODE_LABEL = "Orrery";
 /** The band's words for a window whose session the holder made read-only. */
-export const READ_ONLY_STATE = "read-only (another window records this lane)";
+export const READ_ONLY_STATE = "read-only (another window records this agent)";
 /** The least room, in cells, the band needs to draw the logo beside its lines. */
 export const BAND_LOGO_COLUMNS = 60;
 export const BAND_LOGO_ROWS = 5;
 
-/** A mod-mode lane's reply, narrowed. */
-type ModLaneReply = Extract<ViewReply, { kind: "lane" }>;
+/** A mod-mode agent's reply, narrowed. */
+type ModAgentReply = Extract<ViewReply, { kind: "lane" }>;
 
-function asModLane(reply: ViewReply | undefined): ModLaneReply | undefined {
+function asModAgent(reply: ViewReply | undefined): ModAgentReply | undefined {
 	return reply?.kind === "lane" && reply.mode === "mod" ? reply : undefined;
 }
 
 /**
- * The startup band's two lines for the session's `reply`: `Orrery · <Lane>`, then the memory and the session's mode as
- * its mode file says (left out while not known). Undefined outside a mod-mode lane: no band.
+ * The startup band's two lines for the session's `reply`: `Orrery · <Agent>`, then the memory and the session's mode as
+ * its mode file says (left out while not known). Undefined outside a mod-mode agent: no band.
  */
 export function bandLines(reply: ViewReply | undefined): readonly [string, string] | undefined {
-	const shown = asModLane(reply);
+	const shown = asModAgent(reply);
 	if (shown === undefined) return undefined;
 	const memory = shown.section === null ? "no memory yet" : `memory loaded · ${shown.messages} msgs${shown.remote === undefined ? "" : ` · ${remoteFooter(shown.remote)}`}`;
 	const mode = shown.sessionMode === "recording" ? " · recording" : shown.sessionMode === "read-only" ? ` · ${READ_ONLY_STATE}` : "";
 	return [`Orrery · ${plain(shown.lane)}`, `${memory}${mode}`];
 }
 
-/** Whether the band still waits to learn the session's mode: a mod-mode lane whose session had no mode file when last asked. */
+/** Whether the band still waits to learn the session's mode: a mod-mode agent whose session had no mode file when last asked. */
 export function bandWaitsForMode(reply: ViewReply | undefined): boolean {
-	const shown = asModLane(reply);
+	const shown = asModAgent(reply);
 	return shown !== undefined && shown.sessionMode === undefined;
 }
 
 /**
  * Whether the band asks orrery again, after the answer `reply`: it has no answer yet or only an error (orrery did not
- * answer), or a mod-mode lane's session mode is not known yet.
+ * answer), or a mod-mode agent's session mode is not known yet.
  */
 export function bandAsksAgain(reply: ViewReply | undefined): boolean {
 	return reply === undefined || reply.kind === "error" || bandWaitsForMode(reply);
@@ -424,19 +424,19 @@ function remoteFooter(status: RemoteStatus): string {
 	return `${remote} ✓${status.savedAt === undefined ? "" : ` ${plain(status.savedAt)}`}`;
 }
 
-/** The footer's mode label for the session's `reply`, as pi's status reads: `Orrery · <Lane> · <N> msgs`. Undefined outside a mod-mode lane. */
+/** The footer's mode label for the session's `reply`, as pi's status reads: `Orrery · <Agent> · <N> msgs`. Undefined outside a mod-mode agent. */
 export function footerLabel(reply: ViewReply | undefined): string | undefined {
-	const shown = asModLane(reply);
+	const shown = asModAgent(reply);
 	return shown === undefined ? undefined : `${MODE_LABEL} · ${plain(shown.lane)} · ${shown.messages} msgs${shown.remote === undefined ? "" : ` · ${remoteFooter(shown.remote)}`}`;
 }
 
-/** Whether a mode label is Orrery's: its own word alone, or followed by the lane and count. */
+/** Whether a mode label is Orrery's: its own word alone, or followed by the agent and count. */
 function orreryMode(mode: string): boolean {
 	return mode === MODE_LABEL || mode.startsWith(`${MODE_LABEL} · `);
 }
 
 /**
- * The footer's mode labels with Orrery's current label, in a mod-mode lane: exactly one, any Orrery label already among
+ * The footer's mode labels with Orrery's current label, in a mod-mode agent: exactly one, any Orrery label already among
  * them replaced. Undefined to leave them as they are.
  */
 export function footerModes(modes: readonly string[], reply: ViewReply | undefined): readonly string[] | undefined {
@@ -447,11 +447,11 @@ export function footerModes(modes: readonly string[], reply: ViewReply | undefin
 
 /**
  * Whether a turn's end asks orrery for the footer's count again: a turn of the main loop (`agentId` absent), in a
- * session whose facts say mod-mode lane. A subagent's turn, a folder outside any lane, a file-mode lane, or a session
+ * session whose facts say mod-mode agent. A subagent's turn, a folder outside any agent, a file-mode agent, or a session
  * with no facts yet (or only an error) runs nothing.
  */
 export function turnRefetches(agentId: string | undefined, reply: ViewReply | undefined): boolean {
-	return agentId === undefined && asModLane(reply) !== undefined;
+	return agentId === undefined && asModAgent(reply) !== undefined;
 }
 
 /**
@@ -463,8 +463,8 @@ export function drawsSomewhere(surfaces: readonly string[]): boolean {
 }
 
 /**
- * Whether a turn's refetch answer replaces what the label shows: only a mod-mode lane's. Anything else (outside any
- * lane, as when orrery is briefly not there; a lane switched out of mod mode mid-session; an error) keeps the label and
+ * Whether a turn's refetch answer replaces what the label shows: only a mod-mode agent's. Anything else (outside any
+ * agent, as when orrery is briefly not there; an agent switched out of mod mode mid-session; an error) keeps the label and
  * its count, and the refetches after later turns.
  */
 export function turnReplyShown(reply: ViewReply): boolean {

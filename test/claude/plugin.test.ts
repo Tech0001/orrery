@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { HOOK_EVENTS } from "../../src/claude/hooks.ts";
 import { builtRelease, bunReady, installRelease, removeBuiltRelease } from "../release/support.ts";
-import { cleanEnv, cleanupDirs, MAIN, testLane } from "./support.ts";
+import { cleanEnv, cleanupDirs, MAIN, testAgent } from "./support.ts";
 
 afterEach(cleanupDirs);
 afterAll(removeBuiltRelease);
@@ -45,7 +45,7 @@ describe("the Claude Code plugin", () => {
 		expect(read("claude-plugin/.mcp.json")).toEqual({ mcpServers: { orrery: { command: "sh", args: ["${CLAUDE_PLUGIN_ROOT}/bin/orrery-run", "mcp"] } } });
 	});
 
-	it("has the three commands, each a user-only skill that runs an orrery command for this lane", () => {
+	it("has the three commands, each a user-only skill that runs an orrery command for this agent", () => {
 		const skills: Array<[string, string]> = [["memory", "status ."], ["memory", "usage ."], ["browse", "browse . --open"], ["compactor", "compactor ."]];
 		for (const [skill, command] of skills) {
 			const text = readFileSync(join(ROOT, "claude-plugin", "skills", skill, "SKILL.md"), "utf8");
@@ -80,15 +80,15 @@ describe("the Claude Code plugin", () => {
 	});
 
 	it("passes arguments through the wrapper untouched, even ones a shell would act on", () => {
-		const t = testLane();
+		const t = testAgent();
 		const wrapper = join(ROOT, "claude-plugin", "bin", "orrery-run");
 		const out = spawnSync("sh", [wrapper, "status", "$(touch pwned)"], { env: cleanEnv({ ORRERY_BIN: MAIN, ORRERY_CONFIG: t.configPath, HOME: t.dir }), encoding: "utf8", cwd: t.dir });
-		expect(out.stderr).toContain("No lane named");
+		expect(out.stderr).toContain("No agent named");
 		expect(existsSync(join(t.dir, "pwned"))).toBe(false);
 	});
 
 	it("runs ORRERY_BIN through the wrapper, and does nothing when Orrery is not installed", () => {
-		const t = testLane();
+		const t = testAgent();
 		const wrapper = join(ROOT, "claude-plugin", "bin", "orrery-run");
 		expect(statSync(wrapper).mode & 0o111).not.toBe(0);
 		expect(spawnSync("sh", [wrapper, "help"], { env: cleanEnv({ ORRERY_BIN: MAIN }), encoding: "utf8" }).stdout).toContain("Usage: orrery");

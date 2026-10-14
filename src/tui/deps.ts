@@ -2,25 +2,25 @@
 
 import { join } from "node:path";
 import type { TUI } from "@earendil-works/pi-tui";
-import { addRemoteCommand, laneRemoteCommand, pullLaneCommand } from "../cli/remote.ts";
+import { addRemoteCommand, agentRemoteCommand, pullAgentCommand } from "../cli/remote.ts";
 import { browseCommand } from "../cli/commands.ts";
 import { listChats } from "../import/chats.ts";
 import { createFromPreview } from "../import/create-agent.ts";
 import { dryRun } from "../import/dry-run.ts";
-import { startBuild } from "../lane/build.ts";
-import { laneCompactorTarget } from "../lane/compactor-target.ts";
-import { defaultConfigPath, loadConfig } from "../lane/config.ts";
-import { configWritable, editConfigFile } from "../lane/config-edit.ts";
-import { configureHttp } from "../lane/http.ts";
-import { pageOpener } from "../lane/lane-commands.ts";
-import { runEditor } from "../lane/editor.ts";
-import { writeInstructions } from "../lane/instructions.ts";
-import { applyFix, runTool } from "../lane/launch.ts";
-import { loginRows, removeLogin, saveKey, signIn } from "../lane/logins.ts";
-import { laneOverview, laneUsage, OverviewCache } from "../lane/overview.ts";
-import { versionNumber } from "../lane/running.ts";
-import { openSummarySources, testChoice } from "../lane/summary-sources.ts";
-import { checkTools, probeOri, installSteps, runningRoot, runningVersion, wiringRoot, runInstall } from "../lane/tools.ts";
+import { startBuild } from "../agent/build.ts";
+import { agentCompactorTarget } from "../agent/compactor-target.ts";
+import { defaultConfigPath, loadConfig } from "../agent/config.ts";
+import { configWritable, editConfigFile } from "../agent/config-edit.ts";
+import { configureHttp } from "../agent/http.ts";
+import { pageOpener } from "../agent/agent-commands.ts";
+import { runEditor } from "../agent/editor.ts";
+import { writeInstructions } from "../agent/instructions.ts";
+import { applyFix, runTool } from "../agent/launch.ts";
+import { loginRows, removeLogin, saveKey, signIn } from "../agent/logins.ts";
+import { agentOverview, agentUsage, OverviewCache } from "../agent/overview.ts";
+import { versionNumber } from "../agent/running.ts";
+import { openSummarySources, testChoice } from "../agent/summary-sources.ts";
+import { checkTools, probeOri, installSteps, runningRoot, runningVersion, wiringRoot, runInstall } from "../agent/tools.ts";
 import { installedVersion, updateCheck } from "../install/update.ts";
 import { openStorage } from "../remote/index.ts";
 import type { AppDeps } from "./app.ts";
@@ -38,20 +38,20 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 		loadConfig: () => loadConfig(options.configPath),
 		configWritable: () => configWritable(options.configPath),
 		editConfig: (edit) => editConfigFile(options.configPath, edit),
-		overview: (config) => laneOverview(config, { cache }),
+		overview: (config) => agentOverview(config, { cache }),
 		remotes: (config) => cache.remotes(config),
 		refreshRemote: (config, name) => cache.refreshRemote(config, name),
-		takeoverLane: (name) => laneRemoteCommand(options.configPath, ["takeover", name], { yes: true }),
+		takeoverAgent: (name) => agentRemoteCommand(options.configPath, ["takeover", name], { yes: true }),
 		addRemote: (name, request, interaction) => addRemoteCommand(options.configPath, name, request, interaction),
-		remoteLanes: (config, name) => openStorage(config, name).list(),
-		pullLane: (name, remote, folder) => pullLaneCommand(options.configPath, name, remote, folder),
-		pushLane: (name, remote) => laneRemoteCommand(options.configPath, ["push", name], { to: remote }),
-		localLane: (name) => laneRemoteCommand(options.configPath, ["local", name]),
-		usage: (config, days, only) => laneUsage(config, days, only),
+		remoteAgents: (config, name) => openStorage(config, name).list(),
+		pullAgent: (name, remote, folder) => pullAgentCommand(options.configPath, name, remote, folder),
+		pushAgent: (name, remote) => agentRemoteCommand(options.configPath, ["push", name], { to: remote }),
+		localAgent: (name) => agentRemoteCommand(options.configPath, ["local", name]),
+		usage: (config, days, only) => agentUsage(config, days, only),
 		tools: (options) => checkTools(options),
 		ori: () => probeOri(),
-		sources: (config, lane) => openSummarySources(config, lane),
-		target: (config, lane, report = () => {}) => laneCompactorTarget(config, lane, { report }),
+		sources: (config, agent) => openSummarySources(config, agent),
+		target: (config, agent, report = () => {}) => agentCompactorTarget(config, agent, { report }),
 		loginRows,
 		saveKey,
 		signIn,
@@ -80,9 +80,9 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 		},
 		installSteps: (check) => installSteps(check, wiringRoot().root),
 		install: (steps) => runInstall(steps),
-		browse: (config, lane) => {
-			const laneDir = config.lanes.get(lane)?.dir ?? "";
-			const path = browseCommand(config, lane, join(laneDir, "memory.html"));
+		browse: (config, agent) => {
+			const agentDir = config.agents.get(agent)?.dir ?? "";
+			const path = browseCommand(config, agent, join(agentDir, "memory.html"));
 			const opener = process.env.ORRERY_NO_OPEN === "1" ? undefined : pageOpener();
 			opener?.open(path);
 			return { path, ...(opener === undefined ? {} : { opened: opener.command }) };
@@ -90,7 +90,7 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 		chats: () => listChats(),
 		importPreview: (input) => dryRun(input),
 		importCommit: (request) => createFromPreview(options.configPath, request),
-		startBuild: (name, laneDir) => startBuild(name, laneDir, { configPath: options.configPath }),
+		startBuild: (name, agentDir) => startBuild(name, agentDir, { configPath: options.configPath }),
 		writeInstructions,
 		openUrl: (url) => {
 			const opener = process.env.ORRERY_NO_OPEN === "1" ? undefined : pageOpener();

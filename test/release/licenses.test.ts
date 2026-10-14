@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { thirdPartyLicenses } from "../../scripts/build-release.ts";
-import { tempDir } from "../lane/support.ts";
+import { tempDir } from "../agent/support.ts";
 import { PINNED_BUN, REPO } from "./support.ts";
 
 const TEXTS = join(REPO, "scripts", "licenses");

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { parseConfig } from "../../src/lane/config.ts";
+import { parseConfig } from "../../src/agent/config.ts";
 import { readRemoteSecret, remoteSecretsPath, removeRemoteSecret, saveRemoteSecret } from "../../src/remote/secrets.ts";
 
 let dir: string;

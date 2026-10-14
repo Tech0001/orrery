@@ -23,17 +23,17 @@ const home = () => { const dir = mkdtempSync(join(tmpdir(), "orrery-demo-test-")
 const controls = { rows: () => 40, quit: () => {}, requestRender: () => {} };
 
 describe("throwaway demo", () => {
-	it("seeds five fictional lanes, mixed tools, summary trees, live states and priced usage", async () => {
+	it("seeds five fictional agents, mixed tools, summary trees, live states and priced usage", async () => {
 		const root = home();
 		const demo = createDemo(root);
 		const deps = demoDeps(demo, controls);
 		const config = deps.loadConfig();
-		expect(config.lanes.size).toBe(5);
-		expect(new Set([...config.lanes.values()].map((lane) => lane.tool))).toEqual(new Set(["pi", "claude-code", "omp", "codex"]));
-		for (const path of [demo.configPath, config.dataDir, config.credentialsPath, config.deviceIdPath, ...[...config.lanes.values()].flatMap((lane) => [lane.dir, lane.workspace ?? "(no workspace)"])]) expect(path.startsWith(`${root}/`)).toBe(true);
+		expect(config.agents.size).toBe(5);
+		expect(new Set([...config.agents.values()].map((agent) => agent.tool))).toEqual(new Set(["pi", "claude-code", "omp", "codex"]));
+		for (const path of [demo.configPath, config.dataDir, config.credentialsPath, config.deviceIdPath, ...[...config.agents.values()].flatMap((agent) => [agent.dir, agent.folder ?? "(no folder)"])]) expect(path.startsWith(`${root}/`)).toBe(true);
 		const rows = deps.overview(config);
 		expect(new Set(rows.map((row) => row.state))).toEqual(new Set(["working", "open", "closed"]));
-		// Each fictional lane has instructions, so the page shows no "no instructions" note.
+		// Each fictional agent has instructions, so the page shows no "no instructions" note.
 		expect(rows.map((row) => row.instructions)).toEqual(["ok", "ok", "ok", "ok", "ok"]);
 		expect(rows.filter((row) => row.summary.state === "failing")).toHaveLength(1);
 		for (const row of rows.filter((row) => row.tool !== "codex")) {
@@ -49,7 +49,7 @@ describe("throwaway demo", () => {
 		expect(screen(app)).not.toMatch(/no instructions|instructions over 32 KB|new instructions/);
 		app.handleInput("3"); await settle();
 		expect(screen(app)).toMatch(/\$\d+\.\d{2}/);
-		expect(deps.usage(config, 7).flatMap((lane) => lane.rows).some((row) => row.cacheRead > 0 && row.role === "compactor")).toBe(true);
+		expect(deps.usage(config, 7).flatMap((agent) => agent.rows).some((row) => row.cacheRead > 0 && row.role === "compactor")).toBe(true);
 	});
 
 	it("renders all pages and blocks external actions without model calls, probes or saved secrets", async () => {
@@ -76,10 +76,10 @@ describe("throwaway demo", () => {
 		for (const probe of [spawn, spawnSync, execFile]) expect(probe).not.toHaveBeenCalled();
 	});
 
-	it("E writes nothing, not even the template for a lane without instructions", async () => {
+	it("E writes nothing, not even the template for an agent without instructions", async () => {
 		const demo = createDemo(home());
 		const deps = demoDeps(demo, controls);
-		const file = join(deps.loadConfig().lanes.get("Bellwick")!.dir, "instructions.md");
+		const file = join(deps.loadConfig().agents.get("Bellwick")!.dir, "instructions.md");
 		rmSync(file);
 		const app = makeApp(deps, PAGES);
 		app.handleInput("E");

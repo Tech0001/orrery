@@ -1,15 +1,15 @@
 /** Page 2, Logins (spec §3.2): saved logins and remotes. A new remote's recovery code is shown once in its setup modal. */
 
-import { readOnlyConfigText } from "../../lane/config-edit.ts";
-import type { RemoteRow } from "../../lane/overview.ts";
+import { readOnlyConfigText } from "../../agent/config-edit.ts";
+import type { RemoteRow } from "../../agent/overview.ts";
 import type { RemoteOptions } from "../../cli/remote.ts";
-import type { ModelChoice } from "../../lane/config.ts";
-import type { LoginRow } from "../../lane/logins.ts";
-import type { SummarySources } from "../../lane/summary-sources.ts";
-import { GROUP_TITLES, listModels } from "../../lane/summary-sources.ts";
+import type { ModelChoice } from "../../agent/config.ts";
+import type { LoginRow } from "../../agent/logins.ts";
+import type { SummarySources } from "../../agent/summary-sources.ts";
+import { GROUP_TITLES, listModels } from "../../agent/summary-sources.ts";
 import type { App, Page } from "../app.ts";
 import { ConfirmModal, InputModal, MessageModal, hardWrap, SecretModal, SelectModal } from "../dialogs.ts";
-import { explainFailure } from "../../lane/source-labels.ts";
+import { explainFailure } from "../../agent/source-labels.ts";
 import { signInInteraction } from "../signin.ts";
 import { type Column, fit, renderTable } from "../table.ts";
 
@@ -37,7 +37,7 @@ const state = (app: App): State => {
 
 function visible(app: App): LoginRow[] {
 	const words = app.filterText().toLowerCase().split(/\s+/).filter(Boolean);
-	return state(app).rows.filter((r) => words.every((w) => `${GROUP_TITLES[r.group]} ${r.label} ${r.lanes.join(" ")}`.toLowerCase().includes(w)));
+	return state(app).rows.filter((r) => words.every((w) => `${GROUP_TITLES[r.group]} ${r.label} ${r.agents.join(" ")}`.toLowerCase().includes(w)));
 }
 
 function note(app: App, row: LoginRow): string {
@@ -55,7 +55,7 @@ function load(app: App): void {
 	if (s.loading !== undefined || config === undefined) return;
 	s.loading = (async () => {
 		s.sources = await app.deps.sources(config);
-		s.rows = await app.deps.loginRows(s.sources, app.lanes);
+		s.rows = await app.deps.loginRows(s.sources, app.agents);
 	})()
 		.catch((error: unknown) => app.say(error instanceof Error ? error.message : String(error), "error"))
 		.finally(() => {
@@ -67,7 +67,7 @@ function load(app: App): void {
 async function sourcesFor(app: App): Promise<SummarySources> {
 	const s = state(app);
 	if (s.sources === undefined && app.config !== undefined) s.sources = await app.deps.sources(app.config);
-	if (s.sources === undefined) throw new Error("The config has a problem; see the Lanes page.");
+	if (s.sources === undefined) throw new Error("The config has a problem; see the Agents page.");
 	return s.sources;
 }
 
@@ -98,15 +98,15 @@ function add(app: App, row: LoginRow): void {
 function test(app: App, row: LoginRow): void {
 	app.run(`Testing ${row.label}`, async () => {
 		const sources = await sourcesFor(app);
-		const lane = app.lanes.find((l) => row.lanes.includes(l.name));
+		const agent = app.agents.find((l) => row.agents.includes(l.name));
 		let choice: ModelChoice | undefined;
-		if (lane !== undefined) {
-			const slash = lane.summaryModel.ref.indexOf("/");
-			const { thinking } = lane.summaryModel;
-			choice = { provider: lane.summaryModel.ref.slice(0, slash), modelId: lane.summaryModel.ref.slice(slash + 1), thinking: thinking === "?" ? "low" : thinking };
+		if (agent !== undefined) {
+			const slash = agent.summaryModel.ref.indexOf("/");
+			const { thinking } = agent.summaryModel;
+			choice = { provider: agent.summaryModel.ref.slice(0, slash), modelId: agent.summaryModel.ref.slice(slash + 1), thinking: thinking === "?" ? "low" : thinking };
 		} else {
 			const models = listModels(sources, row.provider);
-			const id = await app.host.open(new SelectModal(`No lane uses ${row.label}. Test it with which model?`, models.map((m) => m.id)));
+			const id = await app.host.open(new SelectModal(`No agent uses ${row.label}. Test it with which model?`, models.map((m) => m.id)));
 			if (id === undefined) return undefined;
 			choice = { provider: row.provider, modelId: id, thinking: "low" };
 		}
@@ -124,16 +124,16 @@ function remove(app: App, row: LoginRow): void {
 	app.run(`Removing ${row.label}`, async () => {
 		const what = row.group === "signin" ? "the ChatGPT sign-in" : `the ${row.label} key`;
 		const users =
-			row.lanes.length === 0
+			row.agents.length === 0
 				? ""
-				: `\n${hardWrap(`${row.lanes.join(", ")} summarize with it.`, 56).join("\n")}\nTheir summaries will fail until you switch them (M on the Lanes page).`;
+				: `\n${hardWrap(`${row.agents.join(", ")} summarize with it.`, 56).join("\n")}\nTheir summaries will fail until you switch them (M on the Agents page).`;
 		if (!(await app.host.open(new ConfirmModal(`Remove ${what}?${users}`)))) return undefined;
 		const sources = await sourcesFor(app);
 		return app.deps.removeLogin(sources, row.group === "signin" ? { signin: row.name } : { key: row.name });
 	});
 }
 
-/** The same background cache as the Lanes page; neither polling nor painting waits on the network. */
+/** The same background cache as the Agents page; neither polling nor painting waits on the network. */
 function remotes(app: App): readonly RemoteRow[] {
 	if (app.config === undefined) return [];
 	const rows = app.deps.remotes?.(app.config) ?? [...app.config.remotes.values()].map((r) => ({ name: r.name, kind: r.kind }));
@@ -185,7 +185,7 @@ export const loginsPage: Page = {
 		const withRemotes = (app.config?.remotes.size ?? 0) > 0;
 		const remoteHeight = withRemotes ? Math.min(remoteRows.length + 3, Math.max(3, Math.floor(height / 2))) : 1;
 		const loginHeight = Math.max(1, height - remoteHeight - 1);
-		const cells = rows.map((r) => [`${GROUP_TITLES[r.group]} · ${r.label}`, r.state, r.lanes.length === 0 ? "—" : r.lanes.join(", "), note(app, r)]);
+		const cells = rows.map((r) => [`${GROUP_TITLES[r.group]} · ${r.label}`, r.state, r.agents.length === 0 ? "—" : r.agents.join(", "), note(app, r)]);
 		const withNote = cells.some((c) => c[3] !== "");
 		const logins = state(app).rows.length === 0
 			? [fit(state(app).loading !== undefined ? "Reading logins…" : "No logins listed.", width)]

@@ -95,7 +95,7 @@ export function openDatabase(path: string, options: { readOnly?: boolean } = {})
 		const db = options.readOnly === true ? openBunReadOnly(Database, path) : withErrcode(() => new Database(path, { create: true }));
 		// bun:sqlite's close() leaves the connection open while any prepared statement is unfinalized, until garbage
 		// collection: the WAL stays beside the file and the file stays open. A rebuilt copy renamed into place then
-		// lost every save in its WAL. Statements are kept per SQL text (the store prepares some on every call, and a lane
+		// lost every save in its WAL. Statements are kept per SQL text (the store prepares some on every call, and an agent
 		// stays open for days) and all finalized at close, so close() really closes.
 		const statements = new Map<string, BunStatement>();
 		return {

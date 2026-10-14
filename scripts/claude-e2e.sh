@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end check of orrery's Claude Code plugin with the real `claude -p` (spec §9). Run it by hand.
 # - It spends Claude usage (about a dozen short sessions) and needs Claude Code logged in.
-# - It never touches real lanes: a temp lane with its own ORRERY_CONFIG, data folder and credentials path, and only
+# - It never touches real agents: a temp agent with its own ORRERY_CONFIG, data folder and credentials path, and only
 #   made-up content. That data folder has no orrery login; messages are kept short, so summaries are the messages
 #   themselves and no summary model is called.
 # - Claude Code runs on a temp HOME whose .claude links to the real one (its login), with the user's settings left out
@@ -30,10 +30,10 @@ echo "Claude Code $(claude --version)"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/orrery-e2e-XXXXXX")"
 tmp="$(cd "$tmp" && pwd -P)"
 ws="$tmp/agent-E2E"
-lane="$tmp/data/lanes/E2E"
+agent="$tmp/data/agents/E2E"
 home="$tmp/home"
 project="$config_dir/projects/$(printf '%s' "$ws" | sed 's/[^A-Za-z0-9]/-/g')"
-# A folder that is not the lane's, where the agent is opened by name at the end.
+# A folder that is not the agent's, where the agent is opened by name at the end.
 elsewhere="$tmp/elsewhere"
 project2="$config_dir/projects/$(printf '%s' "$elsewhere" | sed 's/[^A-Za-z0-9]/-/g')"
 plugin_data="$config_dir/plugins/data/orrery-inline"
@@ -67,8 +67,8 @@ cat >"$tmp/config.toml" <<EOF
 data_dir = "$tmp/data"
 credentials = "$tmp/credentials.json"
 
-[lanes.E2E]
-workspace = "$ws"
+[agents.E2E]
+folder = "$ws"
 model = "openai/gpt-6.1-sol"
 compactor_model = "openai/gpt-6.1-sol"
 EOF
@@ -148,7 +148,7 @@ stream() { node "$tmp/stream.mjs" "$@"; }
 # The orrery commands one run started, as the wrapper logged them.
 mark() { printf '== %s\n' "$1" >>"$tmp/calls.log"; }
 calls() { awk -v run="== $1" '$0 == run { on = 1; next } /^== / { on = 0 } on' "$tmp/calls.log"; }
-# ask <name> <prompt> [claude options...]: one `claude -p` session in the lane folder. The prompt comes first, since
+# ask <name> <prompt> [claude options...]: one `claude -p` session in the agent folder. The prompt comes first, since
 # options such as --allowedTools take several values; the stream goes to runs/<name>.jsonl, stderr to runs/<name>.err.
 ask() {
 	local name="$1" prompt="$2"
@@ -171,14 +171,14 @@ show() {
 	return 0
 }
 dump() { node_ts "import { MemoryStore } from '$repo/src/memory/index.ts';
-const s = MemoryStore.openReadOnly('$lane/memory.sqlite'); for (const m of s.root) console.log(m.kind + ': ' + m.text.replace(/\n/g, ' ')); s.close();"; }
+const s = MemoryStore.openReadOnly('$agent/memory.sqlite'); for (const m of s.root) console.log(m.kind + ': ' + m.text.replace(/\n/g, ' ')); s.close();"; }
 meta() { node_ts "import { MemoryStore } from '$repo/src/memory/index.ts';
-const s = MemoryStore.openReadOnly('$lane/memory.sqlite'); console.log(s.getMeta('$1') ?? ''); s.close();"; }
-holder_gone() { for _ in $(seq 1 60); do [ -e "$lane/claude/holder.json" ] || return 0; sleep 1; done; return 1; }
+const s = MemoryStore.openReadOnly('$agent/memory.sqlite'); console.log(s.getMeta('$1') ?? ''); s.close();"; }
+holder_gone() { for _ in $(seq 1 60); do [ -e "$agent/claude/holder.json" ] || return 0; sleep 1; done; return 1; }
 mode_of() { node -e 'console.log((require("node:fs").statSync(process.argv[1]).mode & 0o777).toString(8))' "$1"; }
 
 tag="TAG-$RANDOM$RANDOM"
-printf 'You are E2E, a test lane. Your lane tag is %s. Keep replies short.\n' "$tag" >"$ws/AGENTS.md"
+printf 'You are E2E, a test agent. Your agent tag is %s. Keep replies short.\n' "$tag" >"$ws/AGENTS.md"
 canary="CANARY-$RANDOM$RANDOM"
 printf '%s\n' "$canary" >"$ws/canary.md"
 ssh_canary="CANARY-$RANDOM$RANDOM"
@@ -194,14 +194,14 @@ probe="$tmp/probe-canary"
 
 # Memory that quotes @paths: were the view imported unfenced, Claude Code would load canary.md and ~/.ssh/config.
 node_ts "import { MemoryStore } from '$repo/src/memory/index.ts';
-const s = MemoryStore.open('$lane/memory.sqlite');
+const s = MemoryStore.open('$agent/memory.sqlite');
 s.appendBatch([{ kind: 'note', text: 'The file list is in @canary.md' }, { kind: 'note', text: 'Host settings are in @~/.ssh/config' }]);
 s.close();"
 "$repo/src/cli/main.ts" claude-setup E2E | sed 's/^/INFO  setup: /'
 # A control, outside the view: an unfenced import from the home folder, to learn whether this Claude Code loads one.
 printf '@~/e2e-control.md\n' >>"$ws/CLAUDE.md"
 check "setup wrote the view (0600 in a 0700 folder) and its marker" \
-	'[ "$(mode_of "$ws/.orrery/view.md")" = 600 ] && [ "$(mode_of "$ws/.orrery")" = 700 ] && [ -e "$lane/claude/setup.json" ]'
+	'[ "$(mode_of "$ws/.orrery/view.md")" = 600 ] && [ "$(mode_of "$ws/.orrery")" = 700 ] && [ -e "$agent/claude/setup.json" ]'
 
 # 1-2. Two turns of one session; the second resumes it.
 session="$(uuid)"
@@ -212,27 +212,27 @@ while IFS= read -r line; do [ -n "$line" ] && info "first hook: $line"; done <<<
 ask second "What is 2+2? Reply with the digit only." --resume "$session" --tools ""
 show first
 show second
-check "the holder finished and released the lane" holder_gone
+check "the holder finished and released the agent" holder_gone
 log="$(dump)"
 check "memory holds both prompts and both final replies" \
 	'[ "$(printf "%s\n" "$log" | grep -c "^user: ")" = 2 ] && printf "%s\n" "$log" | grep -q "^user: Remember the codeword $code" && printf "%s\n" "$log" | grep -q "^talk: OK" && printf "%s\n" "$log" | grep -q "^talk: 4"'
 check "the view file holds the new messages" 'grep -q "$code" "$ws/.orrery/view.md"'
 check "the view quotes both @paths, for the canary below" 'grep -qF "@canary.md" "$ws/.orrery/view.md" && grep -qF "@~/.ssh/config" "$ws/.orrery/view.md"'
-check "the spool is empty" '[ -z "$(find "$lane/claude/sessions" -name "*.json" ! -name mode.json 2>/dev/null)" ]'
-check "holder.log holds no message text" '! grep -qs "$code" "$lane/claude/holder.log"'
+check "the spool is empty" '[ -z "$(find "$agent/claude/sessions" -name "*.json" ! -name mode.json 2>/dev/null)" ]'
+check "holder.log holds no message text" '! grep -qs "$code" "$agent/claude/holder.log"'
 code_id="$(node_ts "import { MemoryStore } from '$repo/src/memory/index.ts';
-const s = MemoryStore.openReadOnly('$lane/memory.sqlite'); console.log(s.root.find((m) => m.kind === 'user' && m.text.includes('$code'))?.i ?? ''); s.close();")"
+const s = MemoryStore.openReadOnly('$agent/memory.sqlite'); console.log(s.root.find((m) => m.kind === 'user' && m.text.includes('$code'))?.i ?? ''); s.close();")"
 
 # 3 and 6. A new session, without tools, recalls the codeword from the view, and loads no @path the view quotes.
 sid="$(uuid)"
 sessions+=("$sid")
-ask recall "Answer in exactly four lines. Line 1: the codeword I asked you to remember in an earlier session, or NONE. Line 2: every word in your context that starts with CANARY-, or NONE. Line 3: your lane tag, or NONE. Line 4: every word in your context that starts with HOMECTL-, or NONE." \
+ask recall "Answer in exactly four lines. Line 1: the codeword I asked you to remember in an earlier session, or NONE. Line 2: every word in your context that starts with CANARY-, or NONE. Line 3: your agent tag, or NONE. Line 4: every word in your context that starts with HOMECTL-, or NONE." \
 	--session-id "$sid" --tools "" --debug-file "$tmp/runs/recall.debug"
 show recall
 answer="$(stream result "$tmp/runs/recall.jsonl")"
 check "a new session recalls the codeword from memory, without tools" \
 	'printf "%s" "$answer" | grep -q "$code" && ! stream tools "$tmp/runs/recall.jsonl" | grep -q "^ok"'
-check "control: the session sees what CLAUDE.md imports (the lane tag from AGENTS.md)" 'printf "%s" "$answer" | grep -q "$tag"'
+check "control: the session sees what CLAUDE.md imports (the agent tag from AGENTS.md)" 'printf "%s" "$answer" | grep -q "$tag"'
 check "the view loaded, and no @path it quotes was imported (@canary.md, @~/.ssh/config)" \
 	'printf "%s" "$answer" | grep -q "$code" && ! printf "%s" "$answer" | grep -qe "$canary" -e "$ssh_canary"'
 if printf '%s' "$answer" | grep -q "$control"; then
@@ -267,7 +267,7 @@ show guard
 tools="$(stream tools "$tmp/runs/guard.jsonl")"
 guarded="$(stream result "$tmp/runs/guard.jsonl")"
 check "the guard refuses Read of a fake ~/.ssh/id_ed25519" 'printf "%s\n" "$tools" | grep "^error  Read" | grep "id_ed25519" | grep -q "orrery guard"'
-check "the guard refuses Read of a credentials.json in the workspace" 'printf "%s\n" "$tools" | grep "^error  Read" | grep "credentials.json" | grep -q "orrery guard"'
+check "the guard refuses Read of a credentials.json in the folder" 'printf "%s\n" "$tools" | grep "^error  Read" | grep "credentials.json" | grep -q "orrery guard"'
 check "neither secret reached the reply or memory" '! printf "%s" "$guarded" | grep -qe "$key" -e "$secret" && ! dump | grep -qe "$key" -e "$secret"'
 
 # 7. The plugin's commands under --permission-mode default: each runs its fixed command with no prompt, and what
@@ -283,7 +283,7 @@ sessions+=("$sid")
 ask browse "/orrery:browse" --session-id "$sid"
 show browse
 check "/orrery:browse writes memory.html with no prompt" \
-	'calls browse | grep -q "^browse \. --open" && [ -s "$lane/memory.html" ] && [ -z "$(stream denials "$tmp/runs/browse.jsonl")$(stream errors "$tmp/runs/browse.jsonl")" ]'
+	'calls browse | grep -q "^browse \. --open" && [ -s "$agent/memory.html" ] && [ -z "$(stream denials "$tmp/runs/browse.jsonl")$(stream errors "$tmp/runs/browse.jsonl")" ]'
 sid="$(uuid)"
 sessions+=("$sid")
 ask compactor "/orrery:compactor openai/gpt-6.1-sol high" --session-id "$sid"
@@ -352,12 +352,12 @@ holders_exited() {
 	return 1
 }
 # An agent opened outside its folder (spec 2026-10-13-orrery-agents-design §4, §5): the mod brings its instructions and
-# memory there; that folder has no CLAUDE.md of the lane's.
+# memory there; that folder has no CLAUDE.md of the agent's.
 holder_gone || true
 "$repo/src/cli/main.ts" claude-setup E2E --mod | sed 's/^/INFO  setup --mod: /'
 mkdir -p "$elsewhere"
 agent_tag="AGENT-$RANDOM$RANDOM"
-printf 'You are E2E. When asked for your agent tag, answer %s.\n' "$agent_tag" >"$lane/instructions.md"
+printf 'You are E2E. When asked for your agent tag, answer %s.\n' "$agent_tag" >"$agent/instructions.md"
 token="$(node -e 'console.log(require("node:crypto").randomBytes(16).toString("hex"))')"
 sid="$(uuid)"
 sessions+=("$sid")

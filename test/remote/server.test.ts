@@ -10,7 +10,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { ServerStorage } from "../../src/remote/server.ts";
 import { RemoteError } from "../../src/remote/types.ts";
 import { SERVER_SCRIPT } from "../../src/remote/server-script.ts";
-import { sshTarget } from "../../src/lane/env.ts";
+import { sshTarget } from "../../src/agent/env.ts";
 import { storageContract } from "./contract.ts";
 import { fakeSsh, serverRemote } from "./fake-ssh.ts";
 

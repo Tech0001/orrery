@@ -1,19 +1,19 @@
 /**
  * orrery's MCP server for Claude Code (spec §4 "Memory tools"), run as `orrery mcp` over stdio. It speaks
  * newline-delimited JSON-RPC 2.0, as Phase 0 verified.
- * - It serves the shared memory tools (src/lane/memory-tools.ts) for the lane of the project folder
+ * - It serves the shared memory tools (src/agent/memory-tools.ts) for the agent of the project folder
  *   (CLAUDE_PROJECT_DIR, else its cwd).
  * - Each call reads a fresh read-only snapshot, so the server works while the holder or pi writes.
- * - Outside a lane it serves no tools.
+ * - Outside an agent it serves no tools.
  * - Long results declare _meta["anthropic/maxResultSizeChars"] in tools/list, so Claude Code keeps them inline
  *   instead of saving them to a file.
  */
 
 import { StringDecoder } from "node:string_decoder";
 import { Value } from "typebox/value";
-import type { HarnessConfig, LaneConfig } from "../lane/config.ts";
-import { type LaneTool, memoryTools, readerTools, withLaneView } from "../lane/memory-tools.ts";
-import { versionNumber } from "../lane/running.ts";
+import type { HarnessConfig, AgentConfig } from "../agent/config.ts";
+import { type AgentTool, memoryTools, readerTools, withAgentView } from "../agent/memory-tools.ts";
+import { versionNumber } from "../agent/running.ts";
 
 /** Claude Code saves a result over 50,000 characters to a file unless the tool raises this; its ceiling is 500,000. */
 export const LONG_RESULT_CHARS = 300_000;
@@ -23,10 +23,10 @@ export const MAX_LINE_CHARS = 1_000_000;
 
 const VERSION = versionNumber();
 
-/** The lane's own tools, plus the reader tools for a lane that reads others (Birch). */
-export function laneTools(config: HarnessConfig, lane: LaneConfig): LaneTool[] {
-	const own = memoryTools((use) => withLaneView(lane, use, config));
-	return lane.reads.length > 0 ? [...own, ...readerTools(() => lane, config)] : own;
+/** The agent's own tools, plus the reader tools for an agent that reads others (Birch). */
+export function agentTools(config: HarnessConfig, agent: AgentConfig): AgentTool[] {
+	const own = memoryTools((use) => withAgentView(agent, use, config));
+	return agent.reads.length > 0 ? [...own, ...readerTools(() => agent, config)] : own;
 }
 
 type Id = string | number | null;
@@ -35,7 +35,7 @@ const failure = (id: Id, code: number, message: string) => ({ jsonrpc: "2.0", id
 const text = (value: string, isError = false) => ({ content: [{ type: "text", text: value }], ...(isError ? { isError: true } : {}) });
 
 /** A tool as tools/list shows it. */
-function describe(tool: LaneTool): object {
+function describe(tool: AgentTool): object {
 	return {
 		name: tool.name,
 		description: tool.description,
@@ -46,7 +46,7 @@ function describe(tool: LaneTool): object {
 }
 
 /** The reply to one JSON-RPC message, or undefined for a notification (a message without an id). */
-export function handleMessage(message: unknown, tools: readonly LaneTool[]): object | undefined | Promise<object> {
+export function handleMessage(message: unknown, tools: readonly AgentTool[]): object | undefined | Promise<object> {
 	if (typeof message !== "object" || message === null || Array.isArray(message)) return failure(null, -32600, "Invalid request");
 	const { id, method, params } = message as { id?: Id; method?: unknown; params?: unknown };
 	if (id === undefined) return undefined;
@@ -92,7 +92,7 @@ async function asyncToolReply(id: Id, result: Promise<string>): Promise<object> 
 }
 
 /** The reply to one input line: a parse error for bad JSON (never quoting it), else handleMessage's. */
-async function handleLine(line: string, tools: readonly LaneTool[]): Promise<object | undefined> {
+async function handleLine(line: string, tools: readonly AgentTool[]): Promise<object | undefined> {
 	let message: unknown;
 	try {
 		message = JSON.parse(line);
@@ -112,7 +112,7 @@ async function handleLine(line: string, tools: readonly LaneTool[]): Promise<obj
  * Serves `tools` on newline-delimited JSON-RPC until `input` ends. A line over MAX_LINE_CHARS gets one error and is
  * dropped as it arrives, so an input that never ends a line cannot grow memory.
  */
-export async function runMcp(input: NodeJS.ReadableStream, output: NodeJS.WritableStream, tools: readonly LaneTool[]): Promise<void> {
+export async function runMcp(input: NodeJS.ReadableStream, output: NodeJS.WritableStream, tools: readonly AgentTool[]): Promise<void> {
 	const decoder = new StringDecoder("utf8");
 	let pending = "";
 	let skipping = false; // inside an over-long line, up to its newline

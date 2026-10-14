@@ -1,36 +1,36 @@
-/** The common check-out door for every writer of a lane's memory. */
+/** The common check-out door for every writer of an agent's memory. */
 
 import { stripVTControlCharacters } from "node:util";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { HarnessConfig, LaneConfig } from "../lane/config.ts";
-import { safeText } from "../lane/source-labels.ts";
+import type { HarnessConfig, AgentConfig } from "../agent/config.ts";
+import { safeText } from "../agent/source-labels.ts";
 import { holdWriterLock, MemoryStore, type WriterLock } from "../memory/store.ts";
 import { abortable, cancellableCheckout } from "./open-cancellation.ts";
 import { codeToKey } from "./crypto.ts";
 import { holderFor, openStorage } from "./index.ts";
-import { laneSettings, LOCAL_META_KEYS } from "./save-format.ts";
+import { agentSettings, LOCAL_META_KEYS } from "./save-format.ts";
 import { readRemoteSecret } from "./secrets.ts";
 import { RemoteSession } from "./session.ts";
 import { type LockState, RemoteError, type RemoteStatus, type Storage } from "./types.ts";
 
-// checkOutLane has no writer yet. Register its loss handler when the writer attaches, after the restore.
+// checkOutAgent has no writer yet. Register its loss handler when the writer attaches, after the restore.
 const plain = (text: string) => safeText(stripVTControlCharacters(text));
 const writers = new WeakMap<RemoteSession, { store: MemoryStore; onLost?: () => void }>();
 const checkouts = new WeakMap<RemoteSession, () => void>();
 
-export async function checkOutLane(
+export async function checkOutAgent(
 	config: HarnessConfig,
-	lane: LaneConfig,
+	agent: AgentConfig,
 	options: { confirmTakeover?: (held: LockState) => Promise<boolean>; report(message: string): void; storage?: Storage; writer?: WriterLock; signal?: AbortSignal },
 ): Promise<RemoteSession | undefined> {
-	if (lane.remote === undefined) return undefined;
+	if (agent.remote === undefined) return undefined;
 	options.signal?.throwIfAborted();
-	const secret = readRemoteSecret(config, lane.remote);
-	if (secret === undefined) throw new RemoteError("key-missing", `No key for remote ${lane.remote} on this machine: run orrery remote add ${lane.remote}`);
+	const secret = readRemoteSecret(config, agent.remote);
+	if (secret === undefined) throw new RemoteError("key-missing", `No key for remote ${agent.remote} on this machine: run orrery remote add ${agent.remote}`);
 	// These keys refer to this machine's session.sqlite, which survives a remote snapshot replacement. Preserve
 	// the boundary even on a split: already projected local turns must stay in the unsaved archive, not replay.
-	const dbPath = join(lane.dir, "memory.sqlite");
+	const dbPath = join(agent.dir, "memory.sqlite");
 	const localMeta: Record<string, string> = {};
 	if (existsSync(dbPath)) {
 		const local = MemoryStore.openReadOnly(dbPath);
@@ -42,15 +42,15 @@ export async function checkOutLane(
 			}
 		} finally { local.close(); }
 	}
-	const transport = cancellableCheckout(options.storage ?? openStorage(config, lane.remote), options.signal);
+	const transport = cancellableCheckout(options.storage ?? openStorage(config, agent.remote), options.signal);
 	const remote = await RemoteSession.checkOut({
-		lane: lane.name,
-		laneDir: lane.dir,
+		agent: agent.name,
+		agentDir: agent.dir,
 		storage: transport.storage,
 		writer: options.writer,
 		key: codeToKey(secret.key),
 		holder: holderFor(config),
-		settings: laneSettings(lane),
+		settings: agentSettings(agent),
 		confirmTakeover: options.confirmTakeover === undefined ? undefined : (held) => abortable(options.signal, () => options.confirmTakeover!(held)),
 		report: (message) => options.report(plain(message)),
 		onLost: () => {
@@ -85,10 +85,10 @@ export function attachRemoteStore(remote: RemoteSession, store: MemoryStore, onL
 }
 
 /** Plain words at open; remote/provider text must never pass control sequences to an agent or terminal. */
-export function remoteOpenNotice(lane: LaneConfig, error: unknown): string {
+export function remoteOpenNotice(agent: AgentConfig, error: unknown): string {
 	const text = plain(error instanceof Error ? error.message : String(error));
-	const named = text.toLowerCase().includes(`remote ${lane.remote}`.toLowerCase());
-	return error instanceof RemoteError && error.kind === "unreachable" && !named ? plain(`remote ${lane.remote} is unreachable: ${text}`) : text;
+	const named = text.toLowerCase().includes(`remote ${agent.remote}`.toLowerCase());
+	return error instanceof RemoteError && error.kind === "unreachable" && !named ? plain(`remote ${agent.remote} is unreachable: ${text}`) : text;
 }
 
 export function remoteFooter(status: RemoteStatus): string {
@@ -107,18 +107,18 @@ export function remoteFooter(status: RemoteStatus): string {
  */
 export async function withBriefCheckOut<T>(
 	config: HarnessConfig,
-	lane: LaneConfig,
+	agent: AgentConfig,
 	write: (remote?: RemoteSession, writer?: WriterLock) => T | Promise<T>,
 	report: (message: string) => void,
 ): Promise<T> {
-	if (lane.remote === undefined) return write();
-	const writer = holdWriterLock(join(lane.dir, "memory.sqlite"));
+	if (agent.remote === undefined) return write();
+	const writer = holdWriterLock(join(agent.dir, "memory.sqlite"));
 	try {
 		let remote: RemoteSession | undefined;
 		try {
-			remote = await checkOutLane(config, lane, { report, writer });
+			remote = await checkOutAgent(config, agent, { report, writer });
 		} catch (error) {
-			throw new Error(remoteOpenNotice(lane, error), { cause: error });
+			throw new Error(remoteOpenNotice(agent, error), { cause: error });
 		}
 		if (remote === undefined) return write(undefined, writer);
 		let result: T;
@@ -127,7 +127,7 @@ export async function withBriefCheckOut<T>(
 		} finally {
 			try {
 				try {
-					if (!remote.lost && !writers.has(remote)) attachRemoteStore(remote, MemoryStore.open(join(lane.dir, "memory.sqlite"), writer));
+					if (!remote.lost && !writers.has(remote)) attachRemoteStore(remote, MemoryStore.open(join(agent.dir, "memory.sqlite"), writer));
 				} finally {
 					await remote.close();
 				}
@@ -135,7 +135,7 @@ export async function withBriefCheckOut<T>(
 				writers.get(remote)?.store.close();
 			}
 		}
-		if (remote.lost) throw new RemoteError("lock-lost", plain(`${lane.name} moved to ${remote.status().movedTo ?? "another machine"}; this session runs without memory now.`));
+		if (remote.lost) throw new RemoteError("lock-lost", plain(`${agent.name} moved to ${remote.status().movedTo ?? "another machine"}; this session runs without memory now.`));
 		return result;
 	} finally { writer(); }
 }

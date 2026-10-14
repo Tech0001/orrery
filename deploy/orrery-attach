@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Attach to a lane's terminal from anywhere: ssh -t orrery@<server> orrery-attach <Lane>
-# Detach with Ctrl-b d; the lane keeps running.
+# Attach to an agent's terminal from anywhere: ssh -t orrery@<server> orrery-attach <Agent>
+# Detach with Ctrl-b d; the agent keeps running.
 set -eu
-lane="${1:?usage: orrery-attach <Lane>}"
+agent="${1:?usage: orrery-attach <Agent>}"
 export TMUX_TMPDIR="${TMUX_TMPDIR:-/var/lib/orrery/run}"
-exec tmux -L "orrery-$lane" attach -t "$lane"
+exec tmux -L "orrery-$agent" attach -t "$agent"

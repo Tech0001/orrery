@@ -3,14 +3,14 @@
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import type { AuthInteraction } from "@earendil-works/pi-ai";
-import type { HarnessConfig } from "../lane/config.ts";
-import type { OpenRouterSignInOptions } from "../lane/openrouter-signin.ts";
-import { pageOpener } from "../lane/lane-commands.ts";
-import { loginRows, readPiKey, removeLogin, saveKey, signIn } from "../lane/logins.ts";
-import { KEY_NOT_NAME, listSources, looksLikeKey, openSummarySources, providerFor, providerLabel } from "../lane/summary-sources.ts";
-import { formatSources } from "../lane/summary-text.ts";
+import type { HarnessConfig } from "../agent/config.ts";
+import type { OpenRouterSignInOptions } from "../agent/openrouter-signin.ts";
+import { pageOpener } from "../agent/agent-commands.ts";
+import { loginRows, readPiKey, removeLogin, saveKey, signIn } from "../agent/logins.ts";
+import { KEY_NOT_NAME, listSources, looksLikeKey, openSummarySources, providerFor, providerLabel } from "../agent/summary-sources.ts";
+import { formatSources } from "../agent/summary-text.ts";
 
-export { readPiKey } from "../lane/logins.ts";
+export { readPiKey } from "../agent/logins.ts";
 
 export interface SecretIo {
 	readonly input: NodeJS.ReadableStream;
@@ -106,8 +106,8 @@ export async function loginCommand(config: HarnessConfig, request: LoginRequest,
 export async function loginsCommand(config: HarnessConfig, options: { json?: boolean } = {}): Promise<string> {
 	const sources = await openSummarySources(config);
 	if (options.json === true) {
-		const { laneOverview } = await import("../lane/overview.ts");
-		return `${JSON.stringify({ logins: await loginRows(sources, laneOverview(config)) }, null, 2)}\n`;
+		const { agentOverview } = await import("../agent/overview.ts");
+		return `${JSON.stringify({ logins: await loginRows(sources, agentOverview(config)) }, null, 2)}\n`;
 	}
 	return `${formatSources(await listSources(sources))}\nAdd: orrery login openai|openrouter · orrery login --key <openai|anthropic|openrouter> [--from-pi]\n`;
 }

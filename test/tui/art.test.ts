@@ -4,7 +4,7 @@ import { resetCapabilitiesCache, setCapabilities, visibleWidth } from "@earendil
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LOGO, LOGO_HEIGHT, LOGO_WIDTH, orreryLogo } from "../../src/tui/art.ts";
 import { InputModal } from "../../src/tui/dialogs.ts";
-import { lanesPage } from "../../src/tui/pages/lanes.ts";
+import { agentsPage } from "../../src/tui/pages/agents.ts";
 import { makeTheme, PLAIN } from "../../src/tui/theme.ts";
 import { fakeDeps, keys, makeApp, screen } from "./support.ts";
 
@@ -15,15 +15,15 @@ const ESC = /\x1b/;
 const PLAIN_LOGO = orreryLogo(PLAIN);
 const ROOT = resolve(import.meta.dirname, "..", "..");
 
-/** An App with no lanes, so the Lanes page shows its empty screen. */
-const emptyApp = (rows = 30, theme = PLAIN) => makeApp(fakeDeps({ rows: () => rows, theme }, []), [lanesPage]);
-/** An App with two lanes and all four pages' tabs. */
+/** An App with no agents, so the Agents page shows its empty screen. */
+const emptyApp = (rows = 30, theme = PLAIN) => makeApp(fakeDeps({ rows: () => rows, theme }, []), [agentsPage]);
+/** An App with two agents and all four pages' tabs. */
 const fourPages = (rows: number, theme = PLAIN, about?: () => { version: string; root: string }) =>
 	makeApp(fakeDeps({ rows: () => rows, theme, ...(about === undefined ? {} : { about }) }), [
-		lanesPage,
-		{ ...lanesPage, id: "logins", title: "Logins" },
-		{ ...lanesPage, id: "usage", title: "Usage" },
-		{ ...lanesPage, id: "tools", title: "Tools" },
+		agentsPage,
+		{ ...agentsPage, id: "logins", title: "Logins" },
+		{ ...agentsPage, id: "usage", title: "Usage" },
+		{ ...agentsPage, id: "tools", title: "Tools" },
 	]);
 const hex = (color: string) => `\x1b[38;2;${[1, 3, 5].map((k) => Number.parseInt(color.slice(k, k + 2), 16)).join(";")}m`;
 const colorsOf = (lines: typeof LOGO) => new Set(lines.flatMap((line) => line.map((s) => s.color)).filter((c) => c !== undefined));
@@ -93,7 +93,7 @@ describe("no big drawing on any screen", () => {
 	/** Every line below the header (the logo's rows and the blank line after them): no braille there. */
 	const body = (lines: string[]) => (lines[0].startsWith(` ${PLAIN_LOGO[0]}`) ? lines.slice(LOGO_HEIGHT + 1) : lines.slice(1));
 
-	/** The screens that once had the drawing: the empty Lanes page, help, the first-run welcome and a setup step. */
+	/** The screens that once had the drawing: the empty Agents page, help, the first-run welcome and a setup step. */
 	const screens = (rows: number) => {
 		const empty = emptyApp(rows);
 		const help = emptyApp(rows);
@@ -107,7 +107,7 @@ describe("no big drawing on any screen", () => {
 	};
 
 	it("shows each screen's text and no braille under the header, with the header's logo when the window is tall enough", () => {
-		const text = { empty: "No lanes yet. Press N to add one.", help: "1-4 or ← →", welcome: "Welcome to Orrery.", step: "Where should memory live?" };
+		const text = { empty: "No agents yet. Press N to add one.", help: "1-4 or ← →", welcome: "Welcome to Orrery.", step: "Where should memory live?" };
 		for (const [width, rows] of [
 			[120, 40],
 			[120, 30],
@@ -130,15 +130,15 @@ describe("no big drawing on any screen", () => {
 		}
 	});
 
-	it("puts the empty Lanes line, help's keys and the welcome at the top of the body", () => {
+	it("puts the empty Agents line, help's keys and the welcome at the top of the body", () => {
 		const { empty, help, welcome } = screens(30);
-		expect(empty.render(120)[LOGO_HEIGHT + 1].trim()).toBe("No lanes yet. Press N to add one.");
+		expect(empty.render(120)[LOGO_HEIGHT + 1].trim()).toBe("No agents yet. Press N to add one.");
 		expect(help.render(120)[LOGO_HEIGHT + 1].trim()).toBe("Keys");
 		expect(welcome.render(120)[LOGO_HEIGHT + 1].trim()).toBe("Welcome to Orrery.");
 	});
 
-	it("not on the Lanes page when there are lanes (only the header's logo)", () => {
-		const lines = makeApp(fakeDeps({ rows: () => 30 }), [lanesPage]).render(120);
+	it("not on the Agents page when there are agents (only the header's logo)", () => {
+		const lines = makeApp(fakeDeps({ rows: () => 30 }), [agentsPage]).render(120);
 		expect(lines.slice(LOGO_HEIGHT).join("\n")).not.toMatch(BRAILLE);
 	});
 });
@@ -150,12 +150,12 @@ describe("the header", () => {
 		for (let i = 0; i < LOGO_HEIGHT; i++) expect(lines[i].startsWith(` ${PLAIN_LOGO[i]}  `)).toBe(true);
 		const at = 1 + LOGO_WIDTH + 2;
 		expect(lines[0].slice(at)).toMatch(/^ Orrery v0\.1\.0 *$/);
-		expect(lines[1].slice(at)).toMatch(/^ 1 Lanes {3}2 Logins {3}3 Usage {3}4 Tools *$/);
+		expect(lines[1].slice(at)).toMatch(/^ 1 Agents {3}2 Logins {3}3 Usage {3}4 Tools *$/);
 		// The name sits over the first tab's number.
-		expect(lines[0].indexOf("Orrery")).toBe(lines[1].indexOf("1 Lanes"));
+		expect(lines[0].indexOf("Orrery")).toBe(lines[1].indexOf("1 Agents"));
 		for (let i = 2; i < LOGO_HEIGHT; i++) expect(lines[i].slice(at).trim()).toBe("");
 		expect(lines[LOGO_HEIGHT].trim()).toBe("");
-		expect(lines[LOGO_HEIGHT + 1]).toMatch(/^ {2}Lane\s+Tool/);
+		expect(lines[LOGO_HEIGHT + 1]).toMatch(/^ {2}Agent\s+Tool/);
 		expect(lines.slice(LOGO_HEIGHT + 1).join("\n")).not.toMatch(BRAILLE);
 	});
 
@@ -166,7 +166,7 @@ describe("the header", () => {
 		expect(head).toContain(hex("#b08d52"));
 		expect(lines[0]).toContain("\x1b[1mOrrery\x1b[22m");
 		expect(lines[0]).toContain("\x1b[2mv0.1.0\x1b[22m");
-		expect(lines[1]).toContain("\x1b[7m 1 Lanes \x1b[27m");
+		expect(lines[1]).toContain("\x1b[7m 1 Agents \x1b[27m");
 		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(120);
 	});
 
@@ -185,10 +185,10 @@ describe("the header", () => {
 		]) {
 			const lines = fourPages(height).render(width);
 			expect(lines).toHaveLength(height);
-			expect(lines[0]).toMatch(/^ Orrery {4}1 Lanes {3}2 Logins {3}3 Usage {3}4 Tools/);
+			expect(lines[0]).toMatch(/^ Orrery {4}1 Agents {3}2 Logins {3}3 Usage {3}4 Tools/);
 			expect(lines[0]).not.toContain("v0.1.0");
 			expect(lines.join("\n")).not.toMatch(BRAILLE);
-			expect(lines[1]).toMatch(/^ {2}Lane\s+Tool/);
+			expect(lines[1]).toMatch(/^ {2}Agent\s+Tool/);
 		}
 		const color = fourPages(16, makeTheme(true)).render(120);
 		expect(color[0]).toContain("\x1b[1m Orrery \x1b[22m");
@@ -207,10 +207,10 @@ describe("the header", () => {
 			}
 		}
 		// The logo and the tabs need 61 columns: at 60 the header is one line, at 80 it has the logo from 18 rows.
-		expect(fourPages(40).render(60)[0]).toMatch(/^ Orrery {4}1 Lanes/);
+		expect(fourPages(40).render(60)[0]).toMatch(/^ Orrery {4}1 Agents/);
 		expect(fourPages(40).render(80)[0].startsWith(` ${PLAIN_LOGO[0]}`)).toBe(true);
 		expect(fourPages(18).render(80)[0].startsWith(` ${PLAIN_LOGO[0]}`)).toBe(true);
-		expect(fourPages(17).render(80)[0]).toMatch(/^ Orrery {4}1 Lanes/);
+		expect(fourPages(17).render(80)[0]).toMatch(/^ Orrery {4}1 Agents/);
 	});
 
 	it("has no escape codes under PLAIN, on any page or screen", () => {

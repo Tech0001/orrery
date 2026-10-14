@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { installFrom, removeVersion } from "../../src/install/install.ts";
-import { checkTools, installSteps, ompExtensionFile, ompExtensionText, orreryRoot, runInstall, type ToolCheck } from "../../src/lane/tools.ts";
+import { checkTools, installSteps, ompExtensionFile, ompExtensionText, orreryRoot, runInstall, type ToolCheck } from "../../src/agent/tools.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { fakeModel, rpc } from "../pi/host-rpc.ts";
 import { realRemoteTurn } from "../pi/remote-real-support.ts";
@@ -48,7 +48,7 @@ function findOmp(): string | null {
 const omp = findOmp();
 
 describe.skipIf(omp === null)("Orrery inside a real OMP (isolated OMP home)", () => {
-	it("checks out a remote lane, records a real turn, saves and closes", async () => {
+	it("checks out a remote agent, records a real turn, saves and closes", async () => {
 		await realRemoteTurn(omp as string, "omp");
 	}, 90_000);
 
@@ -99,10 +99,10 @@ describe.skipIf(omp === null)("an agent opened outside its folder, inside a real
 	it("puts its instructions, then its memory, in the system prompt", async () => {
 		const root = mkdtempSync(join(scratch, "agent-"));
 		const home = join(root, "home");
-		const laneDir = join(root, "data", "lanes", "Probe");
-		for (const dir of [join(root, "agent-Probe"), join(root, "elsewhere"), laneDir]) mkdirSync(dir, { recursive: true });
-		writeFileSync(join(laneDir, "instructions.md"), "You are Probe. Your tag is TAG-4712.\n");
-		const store = MemoryStore.open(join(laneDir, "memory.sqlite"));
+		const agentDir = join(root, "data", "agents", "Probe");
+		for (const dir of [join(root, "agent-Probe"), join(root, "elsewhere"), agentDir]) mkdirSync(dir, { recursive: true });
+		writeFileSync(join(agentDir, "instructions.md"), "You are Probe. Your tag is TAG-4712.\n");
+		const store = MemoryStore.open(join(agentDir, "memory.sqlite"));
 		store.appendBatch([{ kind: "user", text: "The codename is Cedar.", date: "2026-10-01T10:00:00.000Z" }, { kind: "talk", text: "Noted.", date: "2026-10-01T10:00:05.000Z" }]);
 		store.close();
 		const model = await fakeModel("pong");
@@ -112,7 +112,7 @@ describe.skipIf(omp === null)("an agent opened outside its folder, inside a real
 			const file = ompExtensionFile(env);
 			mkdirSync(dirname(file), { recursive: true });
 			writeFileSync(file, ompExtensionText(orreryRoot(), file));
-			writeFileSync(join(root, "config.toml"), [`data_dir = ${JSON.stringify(join(root, "data"))}`, "[[providers]]", 'id = "local"', `base_url = ${JSON.stringify(model.baseUrl)}`, "[[providers.models]]", 'id = "m"', 'name = "m"', "context_window = 128000", "max_tokens = 4096", "reasoning = false", "[lanes.Probe]", `workspace = ${JSON.stringify(join(root, "agent-Probe"))}`, 'tool = "omp"', 'compactor_model = "local/m"', 'compactor_thinking = "off"', ""].join("\n"));
+			writeFileSync(join(root, "config.toml"), [`data_dir = ${JSON.stringify(join(root, "data"))}`, "[[providers]]", 'id = "local"', `base_url = ${JSON.stringify(model.baseUrl)}`, "[[providers.models]]", 'id = "m"', 'name = "m"', "context_window = 128000", "max_tokens = 4096", "reasoning = false", "[agents.Probe]", `folder = ${JSON.stringify(join(root, "agent-Probe"))}`, 'tool = "omp"', 'compactor_model = "local/m"', 'compactor_thinking = "off"', ""].join("\n"));
 			const child = spawn(omp as string, ["--mode", "rpc"], { cwd: join(root, "elsewhere"), env });
 			const exited = new Promise<void>((done) => child.on("exit", () => done()));
 			const { send, waitFor } = rpc(child);
@@ -169,18 +169,18 @@ function writeOmpModels(ompAgentDir: string, baseUrl: string): void {
 
 /**
  * The load check, in `base`: Orrery installed into a scratch OMP home the way the Tools page installs it, against
- * `root` (a checkout, or an install's app/current), or by `writeExtension` when given, then a real OMP run in a lane.
+ * `root` (a checkout, or an install's app/current), or by `writeExtension` when given, then a real OMP run in an agent.
  * Its status records `version`.
  */
 async function loadCheck(base: string, root: string, version: string, writeExtension?: (file: string) => void): Promise<void> {
 	const model = await fakeModel("pong");
 	const home = join(base, "home");
-	const lane = join(base, "lane");
-	const data = join(base, "data", "lanes", "Probe");
-	// A Claude Code lane's import line: OMP would put the stale view in its prompt unless Orrery disables CLAUDE.md.
-	mkdirSync(join(lane, ".orrery"), { recursive: true });
-	writeFileSync(join(lane, "CLAUDE.md"), "Lane rules.\n\n@.orrery/view.md\n");
-	writeFileSync(join(lane, ".orrery", "view.md"), "STALE-VIEW-MARKER-77\n");
+	const agent = join(base, "agent");
+	const data = join(base, "data", "agents", "Probe");
+	// A Claude Code agent's import line: OMP would put the stale view in its prompt unless Orrery disables CLAUDE.md.
+	mkdirSync(join(agent, ".orrery"), { recursive: true });
+	writeFileSync(join(agent, "CLAUDE.md"), "Agent rules.\n\n@.orrery/view.md\n");
+	writeFileSync(join(agent, ".orrery", "view.md"), "STALE-VIEW-MARKER-77\n");
 	const env = isolated(home, { ORRERY_CONFIG: join(base, "config.toml") });
 	const ompAgentDir = join(home, ".omp", "agent");
 	writeOmpModels(ompAgentDir, model.baseUrl);
@@ -190,7 +190,7 @@ async function loadCheck(base: string, root: string, version: string, writeExten
 		mkdirSync(dirname(file), { recursive: true });
 		writeExtension(file);
 	} else {
-		// Installed the way the Tools page installs (src/lane/tools.ts), into the scratch agent folder: env's HOME is
+		// Installed the way the Tools page installs (src/agent/tools.ts), into the scratch agent folder: env's HOME is
 		// scratch. Runner: no tool's --version or `claude plugin list` runs here; only OMP's wiring matters.
 		const quiet = () => ({ status: 1, stdout: "", stderr: "" });
 		const ompCheck = (): ToolCheck => checkTools({ root, env, run: quiet }).find((check) => check.id === "omp") as ToolCheck;
@@ -215,15 +215,15 @@ async function loadCheck(base: string, root: string, version: string, writeExten
 			"context_window = 128000",
 			"max_tokens = 4096",
 			"reasoning = false",
-			"[lanes.Probe]",
-			`workspace = ${JSON.stringify(lane)}`,
+			"[agents.Probe]",
+			`folder = ${JSON.stringify(agent)}`,
 			'tool = "omp"',
 			'compactor_model = "local/m"',
 			'compactor_thinking = "off"',
 			"",
 		].join("\n"),
 	);
-	const child = spawn(omp as string, ["--mode", "rpc"], { cwd: lane, env });
+	const child = spawn(omp as string, ["--mode", "rpc"], { cwd: agent, env });
 	const exited = new Promise<void>((done) => child.on("exit", () => done()));
 	const { frames, send, waitFor } = rpc(child);
 	try {
@@ -246,7 +246,7 @@ async function loadCheck(base: string, root: string, version: string, writeExten
 		expect(turn2?.system).toContain("The codename is Cedar.");
 		expect(turn2?.system).toContain("zoom, date and memory_search are the Orrery memory tools");
 		expect(turn2?.users).toHaveLength(1);
-		expect(JSON.parse(readFileSync(join(data, "status.json"), "utf8"))).toMatchObject({ lane: "Probe", model: "omp", open: true, version });
+		expect(JSON.parse(readFileSync(join(data, "status.json"), "utf8"))).toMatchObject({ agent: "Probe", model: "omp", open: true, version });
 		expect(frames.filter((f) => f.method === "notify" && String(f.message).includes("OMP settings not applied"))).toEqual([]);
 	} finally {
 		child.stdin.end();

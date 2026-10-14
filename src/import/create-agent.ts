@@ -7,15 +7,15 @@
 
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { addLane, editConfigFile } from "../lane/config-edit.ts";
-import { ConfigError, type HarnessConfig, laneNameProblem, type LaneTool, loadConfig, type ModelChoice } from "../lane/config.ts";
-import { instructionsTemplate, readInstructions, writeInstructions } from "../lane/instructions.ts";
+import { addAgent, editConfigFile } from "../agent/config-edit.ts";
+import { ConfigError, type HarnessConfig, agentNameProblem, type AgentTool, loadConfig, type ModelChoice } from "../agent/config.ts";
+import { instructionsTemplate, readInstructions, writeInstructions } from "../agent/instructions.ts";
 import { MemoryStore } from "../memory/index.ts";
 import { commitPreview, type PreviewLine, readPreview } from "./preview.ts";
 
 export interface NewAgentFromChat {
 	readonly name: string;
-	readonly tool: LaneTool;
+	readonly tool: AgentTool;
 	/** Its default folder; absent, it opens wherever it is opened. */
 	readonly folder?: string;
 	readonly summary: ModelChoice;
@@ -26,7 +26,7 @@ export interface NewAgentFromChat {
 
 /** The steps that write; tests put in failing ones. */
 export interface CreateSteps {
-	readonly writeInstructions: (laneDir: string, text: string) => void;
+	readonly writeInstructions: (agentDir: string, text: string) => void;
 	readonly commit: (store: MemoryStore, lines: readonly PreviewLine[]) => number;
 	readonly editConfig: (path: string, edit: (text: string, configDir: string) => string) => HarnessConfig;
 }
@@ -53,9 +53,9 @@ function textOf(path: string): string | undefined {
  * or an import that was cut short), which an import never writes into or takes away. Undefined when it can.
  */
 export function storeRefusal(dataDir: string, name: string): string | undefined {
-	const laneDir = join(dataDir, "lanes", name);
-	if (!present(join(laneDir, "memory.sqlite"))) return undefined;
-	return `${laneDir} already has a memory store (an archived agent's, or an import that was cut short); nothing was written. Pick another name, or move that folder aside and try again.`;
+	const agentDir = join(dataDir, "agents", name);
+	if (!present(join(agentDir, "memory.sqlite"))) return undefined;
+	return `${agentDir} already has a memory store (an archived agent's, or an import that was cut short); nothing was written. Pick another name, or move that folder aside and try again.`;
 }
 
 /** What the config edit did, for putting it back: the text it started from, what it wrote, and the .bak it found. */
@@ -72,17 +72,17 @@ interface ConfigEdit {
  * failure the folders and files this call made are removed, and the config and its .bak put back only while they hold
  * what this call wrote there; nothing that was there before, or that another process made meanwhile, is removed.
  */
-export function createFromPreview(configPath: string, request: NewAgentFromChat, steps: Partial<CreateSteps> = {}): { readonly laneDir: string; readonly messages: number } {
+export function createFromPreview(configPath: string, request: NewAgentFromChat, steps: Partial<CreateSteps> = {}): { readonly agentDir: string; readonly messages: number } {
 	const step = { ...STEPS, ...steps };
-	const problem = laneNameProblem(request.name);
+	const problem = agentNameProblem(request.name);
 	if (problem !== undefined) throw new ConfigError(problem);
 	const lines = readPreview(request.previewPath);
 	const config = loadConfig(configPath);
-	const laneDir = join(config.dataDir, "lanes", request.name);
+	const agentDir = join(config.dataDir, "agents", request.name);
 	const block = (text: string, dir: string) =>
-		addLane(text, dir, {
+		addAgent(text, dir, {
 			name: request.name,
-			...(request.folder === undefined ? {} : { workspace: request.folder }),
+			...(request.folder === undefined ? {} : { folder: request.folder }),
 			tool: request.tool,
 			compactorModel: `${request.summary.provider}/${request.summary.modelId}`,
 			compactorThinking: request.summary.thinking,
@@ -92,13 +92,13 @@ export function createFromPreview(configPath: string, request: NewAgentFromChat,
 	block(textOf(configTarget) ?? "", dirname(configTarget));
 	const refusal = storeRefusal(config.dataDir, request.name);
 	if (refusal !== undefined) throw new Error(refusal);
-	// The first folder mkdir made (undefined: the agent folder was there): what a failure takes away, and no more.
-	const made = mkdirSync(laneDir, { recursive: true, mode: 0o700 });
-	const before = made === undefined ? new Set(readdirSync(laneDir)) : undefined;
+	// The first folder mkdir made (undefined: the agent's data folder was there): what a failure takes away, and no more.
+	const made = mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+	const before = made === undefined ? new Set(readdirSync(agentDir)) : undefined;
 	let edit: ConfigEdit | undefined;
 	try {
-		if (readInstructions(laneDir) === undefined) step.writeInstructions(laneDir, instructionsTemplate(request.name, `Continues the chat "${request.title}".`));
-		const store = MemoryStore.open(join(laneDir, "memory.sqlite"));
+		if (readInstructions(agentDir) === undefined) step.writeInstructions(agentDir, instructionsTemplate(request.name, `Continues the chat "${request.title}".`));
+		const store = MemoryStore.open(join(agentDir, "memory.sqlite"));
 		let messages: number;
 		try {
 			messages = step.commit(store, lines);
@@ -111,26 +111,26 @@ export function createFromPreview(configPath: string, request: NewAgentFromChat,
 			edit = { target: configTarget, from: text, wrote, bak: textOf(`${configTarget}.bak`) };
 			return wrote;
 		});
-		return { laneDir, messages };
+		return { agentDir, messages };
 	} catch (error) {
-		undo(laneDir, made, before);
+		undo(agentDir, made, before);
 		if (edit !== undefined) restoreConfig(edit);
 		throw error;
 	}
 }
 
 /**
- * Takes away what createFromPreview made. The agent folder whole when it made it, then each folder above it that it
- * made, while empty (another process may have put something there since); else only the agent folder's new entries.
+ * Takes away what createFromPreview made. The agent's data folder whole when it made it, then each folder above it that it
+ * made, while empty (another process may have put something there since); else only the data folder's new entries.
  */
-function undo(laneDir: string, made: string | undefined, before: ReadonlySet<string> | undefined): void {
+function undo(agentDir: string, made: string | undefined, before: ReadonlySet<string> | undefined): void {
 	try {
 		if (made === undefined) {
-			for (const entry of readdirSync(laneDir)) if (!before?.has(entry)) rmSync(join(laneDir, entry), { recursive: true, force: true });
+			for (const entry of readdirSync(agentDir)) if (!before?.has(entry)) rmSync(join(agentDir, entry), { recursive: true, force: true });
 			return;
 		}
-		rmSync(laneDir, { recursive: true, force: true });
-		for (let dir = dirname(laneDir); laneDir !== made && dir.startsWith(made); dir = dirname(dir)) {
+		rmSync(agentDir, { recursive: true, force: true });
+		for (let dir = dirname(agentDir); agentDir !== made && dir.startsWith(made); dir = dirname(dir)) {
 			rmdirSync(dir);
 			if (dir === made) break;
 		}

@@ -6,11 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { createKey, unseal } from "../../src/remote/crypto.ts";
 import { FakeStorage } from "../../src/remote/fake.ts";
-import { decodeSnapshot, type LaneSettings } from "../../src/remote/save-format.ts";
+import { decodeSnapshot, type AgentSettings } from "../../src/remote/save-format.ts";
 import { RemoteSession, type RemoteSessionOptions } from "../../src/remote/session.ts";
 import { type Holder, RemoteError, STALE_MS, type Storage } from "../../src/remote/types.ts";
 
-const settings: LaneSettings = { compactorModel: "openai/gpt-5.1-mini", compactorThinking: "low", tool: "pi" };
+const settings: AgentSettings = { compactorModel: "openai/gpt-5.1-mini", compactorThinking: "low", tool: "pi" };
 const pc: Holder = { machine: "pc", device: "device-pc", pid: process.pid };
 const mac: Holder = { machine: "macbook", device: "device-mac", pid: process.pid };
 
@@ -29,13 +29,13 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-/** One machine's view of the lane: its own lane folder. */
+/** One machine's view of the agent: its own agent folder. */
 function machine(name: string, holder: Holder, over: Partial<RemoteSessionOptions> = {}): RemoteSessionOptions {
-	return { lane: "Atlas", laneDir: join(root, name, "lanes", "Atlas"), storage, key, holder, report: (m) => reports.push(m), now: () => time, renewMs: 0, settings, ...over };
+	return { agent: "Atlas", agentDir: join(root, name, "agents", "Atlas"), storage, key, holder, report: (m) => reports.push(m), now: () => time, renewMs: 0, settings, ...over };
 }
 
 function dbPath(o: RemoteSessionOptions): string {
-	return join(o.laneDir, "memory.sqlite");
+	return join(o.agentDir, "memory.sqlite");
 }
 
 function write(o: RemoteSessionOptions, count: number, from = 0): void {
@@ -56,7 +56,7 @@ function texts(o: RemoteSessionOptions): string[] {
 	}
 }
 
-/** Opens a checked-out lane like an agent would: attach, run `work`, close. */
+/** Opens a checked-out agent like an agent would: attach, run `work`, close. */
 async function session(o: RemoteSessionOptions, work: (store: MemoryStore, s: RemoteSession) => Promise<void> | void = () => {}): Promise<RemoteSession> {
 	const s = await RemoteSession.checkOut(o);
 	const store = MemoryStore.open(dbPath(o));
@@ -141,7 +141,7 @@ describe("RemoteSession", () => {
 		});
 		const fresh = await storage.fetch("Atlas", 0);
 		expect(fresh.snapshot?.n).toBe(200);
-		const state = JSON.parse(readFileSync(join(a.laneDir, "remote-state.json"), "utf8"));
+		const state = JSON.parse(readFileSync(join(a.agentDir, "remote-state.json"), "utf8"));
 		expect(state.snapshotAt).toBe(200);
 		expect(state.bytesSinceSnapshot).toBe(0);
 	});
@@ -214,7 +214,7 @@ describe("RemoteSession", () => {
 		await expect(RemoteSession.checkOut(a)).rejects.toMatchObject({ kind: "held" });
 	});
 
-	it("8: a lock lost mid-session stops all writing and says where the lane went", async () => {
+	it("8: a lock lost mid-session stops all writing and says where the agent went", async () => {
 		const a = machine("a", pc);
 		await RemoteSession.push(a);
 		let lostCalls = 0;
@@ -297,9 +297,9 @@ describe("RemoteSession", () => {
 		await session(b, (st) => void st.append("user", "mac's turn"));
 		await session(machine("a", pc));
 		expect(texts(a)).toEqual(["mac's turn"]);
-		const aside = readdirSync(a.laneDir).filter((f) => f.startsWith("unsaved-"));
+		const aside = readdirSync(a.agentDir).filter((f) => f.startsWith("unsaved-"));
 		expect(aside).toHaveLength(1);
-		expect(readFileSync(join(a.laneDir, aside[0]), "utf8")).toContain("pc's unsaved turn");
+		expect(readFileSync(join(a.agentDir, aside[0]), "utf8")).toContain("pc's unsaved turn");
 		expect(reports.some((r) => r.includes(aside[0]))).toBe(true);
 	});
 
@@ -354,7 +354,7 @@ describe("RemoteSession", () => {
 		const a = machine("a", pc);
 		await RemoteSession.push(a);
 		await session(a, (store) => void store.append("user", "pc saved this"));
-		// The lane is dropped and pushed again from another machine's different memory.
+		// The agent is dropped and pushed again from another machine's different memory.
 		const t = await storage.take("Atlas", mac);
 		if (!t.ok) throw new Error("take");
 		await storage.drop("Atlas", t.lock);
@@ -365,16 +365,16 @@ describe("RemoteSession", () => {
 		const s = await RemoteSession.checkOut(a);
 		await s.close();
 		expect(texts(a)).toEqual(["turn 100", "turn 101", "turn 102", "mac saved this"]);
-		expect(readdirSync(a.laneDir).filter((name) => name.startsWith("memory-before-remote-"))).toHaveLength(1);
+		expect(readdirSync(a.agentDir).filter((name) => name.startsWith("memory-before-remote-"))).toHaveLength(1);
 	});
 
-	it("15: push refuses a lane already on the remote", async () => {
+	it("15: push refuses an agent already on the remote", async () => {
 		const a = machine("a", pc);
 		await RemoteSession.push(a);
-		await expect(RemoteSession.push(machine("b", mac))).rejects.toMatchObject({ kind: "refused", message: "Atlas is already on remote home; use orrery lane pull" });
+		await expect(RemoteSession.push(machine("b", mac))).rejects.toMatchObject({ kind: "refused", message: "Atlas is already on remote home; use orrery agent pull" });
 	});
 
-	it("16: every snapshot carries the lane's settings", async () => {
+	it("16: every snapshot carries the agent's settings", async () => {
 		const a = machine("a", pc);
 		await RemoteSession.push(a);
 		const fetched = await storage.fetch("Atlas", -1);
@@ -393,11 +393,11 @@ describe("RemoteSession", () => {
 		write(b, 1, 50); // memory already on the MacBook, never synced
 		await session(b);
 		expect(texts(b)).toEqual(["turn 0", "turn 1"]);
-		expect(readdirSync(b.laneDir).some((f) => f.startsWith("memory-before-remote-"))).toBe(true);
+		expect(readdirSync(b.agentDir).some((f) => f.startsWith("memory-before-remote-"))).toBe(true);
 	});
 
-	it("says a never-pushed lane is not on the remote", async () => {
-		await expect(RemoteSession.checkOut(machine("a", pc))).rejects.toMatchObject({ kind: "not-found", message: expect.stringContaining("orrery lane push Atlas --to home") });
+	it("says a never-pushed agent is not on the remote", async () => {
+		await expect(RemoteSession.checkOut(machine("a", pc))).rejects.toMatchObject({ kind: "not-found", message: expect.stringContaining("orrery agent push Atlas --to home") });
 		expect(await storage.list()).toEqual([]);
 	});
 });
@@ -441,14 +441,14 @@ describe("RemoteSession review fixes", () => {
 		store.close();
 		time += STALE_MS + 1000;
 		await session(machine("a", pc));
-		expect(readdirSync(a.laneDir).filter((f) => f.startsWith("unsaved-"))).toEqual([]);
+		expect(readdirSync(a.agentDir).filter((f) => f.startsWith("unsaved-"))).toEqual([]);
 		expect(texts(a)).toEqual(["turn A", "turn B"]);
 		const b = machine("b", mac);
 		await session(b);
 		expect(texts(b)).toEqual(["turn A", "turn B"]);
 	});
 
-	it("takes a lane off the remote again when its first snapshot fails, so the next push works", async () => {
+	it("takes an agent off the remote again when its first snapshot fails, so the next push works", async () => {
 		const a = machine("a", pc);
 		write(a, 1);
 		const failing = hooked({ snapshot: async () => Promise.reject(new RemoteError("unreachable", "timeout")) });
@@ -459,7 +459,7 @@ describe("RemoteSession review fixes", () => {
 		expect(texts(machine("b", mac))).toEqual(["turn 0"]);
 	});
 
-	it("lets a push take over a lane a failed push left with no snapshot", async () => {
+	it("lets a push take over an agent a failed push left with no snapshot", async () => {
 		const a = machine("a", pc);
 		write(a, 1);
 		const failing = hooked({ snapshot: async () => Promise.reject(new RemoteError("unreachable", "timeout")), drop: async () => Promise.reject(new RemoteError("unreachable", "timeout")) });
@@ -653,7 +653,7 @@ describe("RemoteSession review fixes", () => {
 		expect((await storage.fetch("Atlas", 199)).snapshot?.n).toBe(200);
 		time += STALE_MS + 1000;
 		await session(machine("a", pc));
-		expect(readdirSync(a.laneDir).filter((f) => f.startsWith("unsaved-"))).toEqual([]);
+		expect(readdirSync(a.agentDir).filter((f) => f.startsWith("unsaved-"))).toEqual([]);
 		expect(texts(a).at(-1)).toBe("after the lost snapshot reply");
 		expect((await storage.fetch("Atlas", 0)).newestSave).toBe(201);
 	});

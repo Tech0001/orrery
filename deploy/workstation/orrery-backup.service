@@ -1,5 +1,5 @@
 [Unit]
-Description=orrery backup: snapshot every lane's memory and copy it to a backup host
+Description=orrery backup: snapshot every agent's memory and copy it to a backup host
 
 [Service]
 Type=oneshot

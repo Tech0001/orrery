@@ -5,16 +5,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listChats } from "../../src/import/chats.ts";
 import { createFromPreview } from "../../src/import/create-agent.ts";
 import { dryRun, type DryRunInput } from "../../src/import/dry-run.ts";
-import { editConfigFile } from "../../src/lane/config-edit.ts";
-import { loadConfig } from "../../src/lane/config.ts";
-import { saveKey } from "../../src/lane/logins.ts";
-import { instructionsTemplate } from "../../src/lane/instructions.ts";
-import { laneOverview } from "../../src/lane/overview.ts";
-import { summarySources } from "../../src/lane/summary-sources.ts";
+import { editConfigFile } from "../../src/agent/config-edit.ts";
+import { loadConfig } from "../../src/agent/config.ts";
+import { saveKey } from "../../src/agent/logins.ts";
+import { instructionsTemplate } from "../../src/agent/instructions.ts";
+import { agentOverview } from "../../src/agent/overview.ts";
+import { summarySources } from "../../src/agent/summary-sources.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import type { AppDeps } from "../../src/tui/app.ts";
-import { lanesPage } from "../../src/tui/pages/lanes.ts";
-import { fauxModels, tempDir } from "../lane/support.ts";
+import { agentsPage } from "../../src/tui/pages/agents.ts";
+import { fauxModels, tempDir } from "../agent/support.ts";
 import { answer, fakeDeps, keys, makeApp, row, screen, settle, typed } from "./support.ts";
 
 const ENTER = "\r";
@@ -63,7 +63,7 @@ async function tui(s: ReturnType<typeof scene>, overrides: Partial<AppDeps> = {}
 		configPath: s.configPath,
 		loadConfig: () => loadConfig(s.configPath),
 		editConfig: (edit) => editConfigFile(s.configPath, edit),
-		overview: (config) => laneOverview(config),
+		overview: (config) => agentOverview(config),
 		sources: async () => sources,
 		chats: () => listChats({ env: {}, home: s.home, now: Date.now() }),
 		importPreview: async (input: DryRunInput) => {
@@ -79,7 +79,7 @@ async function tui(s: ReturnType<typeof scene>, overrides: Partial<AppDeps> = {}
 		writeInstructions: () => {},
 		...overrides,
 	}, []);
-	return { app: makeApp(deps, [lanesPage]), deps, builds, outs, inputs, modes };
+	return { app: makeApp(deps, [agentsPage]), deps, builds, outs, inputs, modes };
 }
 
 /** N, From an existing chat, the chat, yes to "in use", the suggested name, pi, a summary model, no folder. */
@@ -108,11 +108,11 @@ describe("N: an agent from an existing chat", () => {
 		await answer(app, "Full report", ENTER);
 		await answer(app, "Import preview for Install-RPCS3-AppImage", ENTER);
 		await app.idle();
-		const lane = loadConfig(s.configPath).lanes.get("Install-RPCS3-AppImage");
-		expect(lane).toMatchObject({ tool: "pi", compactor: { model: { provider: "anthropic", modelId: "claude-haiku-4-5" } } });
-		expect(lane?.workspace).toBeUndefined();
-		expect(readFileSync(join(lane!.dir, "instructions.md"), "utf8")).toBe(instructionsTemplate("Install-RPCS3-AppImage", 'Continues the chat "Install RPCS3 AppImage".'));
-		const store = MemoryStore.openReadOnly(join(lane!.dir, "memory.sqlite"));
+		const agent = loadConfig(s.configPath).agents.get("Install-RPCS3-AppImage");
+		expect(agent).toMatchObject({ tool: "pi", compactor: { model: { provider: "anthropic", modelId: "claude-haiku-4-5" } } });
+		expect(agent?.folder).toBeUndefined();
+		expect(readFileSync(join(agent!.dir, "instructions.md"), "utf8")).toBe(instructionsTemplate("Install-RPCS3-AppImage", 'Continues the chat "Install RPCS3 AppImage".'));
+		const store = MemoryStore.openReadOnly(join(agent!.dir, "memory.sqlite"));
 		try {
 			expect(store.root.map((m) => `${m.kind}: ${m.text}`)).toEqual(["user: Install RPCS3 AppImage for me.", "talk: Done: it is in ~/Applications."]);
 		} finally {
@@ -136,8 +136,8 @@ describe("N: an agent from an existing chat", () => {
 		expect(screen(app)).toContain("Unreadable lines skipped: 1");
 		keys(app, ESC);
 		await app.idle();
-		expect(loadConfig(s.configPath).lanes.size).toBe(0);
-		expect(existsSync(join(s.root, "data", "lanes", "Install-RPCS3-AppImage"))).toBe(false);
+		expect(loadConfig(s.configPath).agents.size).toBe(0);
+		expect(existsSync(join(s.root, "data", "agents", "Install-RPCS3-AppImage"))).toBe(false);
 		expect(outs).toHaveLength(1);
 		expect(outs.every((out) => !existsSync(out))).toBe(true);
 		expect(builds).toEqual([]);
@@ -156,7 +156,7 @@ describe("N: an agent from an existing chat", () => {
 		await answer(app, "Preparing Install-RPCS3-AppImage's memory", ESC);
 		await app.idle();
 		expect(screen(app)).toContain("Not imported; nothing was written.");
-		expect(loadConfig(s.configPath).lanes.size).toBe(0);
+		expect(loadConfig(s.configPath).agents.size).toBe(0);
 		expect(outs.every((out) => !existsSync(out))).toBe(true);
 		expect(builds).toEqual([]);
 	});
@@ -172,7 +172,7 @@ describe("N: an agent from an existing chat", () => {
 		await throughToPreview(app);
 		await app.idle();
 		expect(screen(app)).toContain("The split model failed 3 times in a row");
-		expect(loadConfig(s.configPath).lanes.size).toBe(0);
+		expect(loadConfig(s.configPath).agents.size).toBe(0);
 		expect(outs.every((out) => !existsSync(out))).toBe(true);
 	});
 
@@ -215,7 +215,7 @@ describe("N: an agent from an existing chat", () => {
 		await answer(app, "Import preview for Install-RPCS3-AppImage", ENTER);
 		await app.idle();
 		expect(builds).toEqual(["Install-RPCS3-AppImage"]);
-		expect(loadConfig(s.configPath).lanes.has("Install-RPCS3-AppImage")).toBe(true);
+		expect(loadConfig(s.configPath).agents.has("Install-RPCS3-AppImage")).toBe(true);
 		expect(screen(app, 160)).toContain("Imported 2 messages into Install-RPCS3-AppImage; its memory is being built, but its setup stopped: the tool check broke.");
 	});
 
@@ -259,7 +259,7 @@ describe("N: an agent from an existing chat", () => {
 		await answer(app, "In use", "n");
 		await app.idle();
 		expect(outs).toEqual([]);
-		writeFileSync(s.configPath, `${readFileSync(s.configPath, "utf8")}[lanes.install-rpcs3-appimage]\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+		writeFileSync(s.configPath, `${readFileSync(s.configPath, "utf8")}[agents.install-rpcs3-appimage]\ncompactor_model = "openai/gpt-6.1-sol"\n`);
 		app.refresh();
 		keys(app, "N");
 		await answer(app, "New agent:", DOWN, ENTER);
@@ -267,8 +267,8 @@ describe("N: an agent from an existing chat", () => {
 		await answer(app, "In use", "y");
 		await answer(app, "Agent name", "\x15", ...typed("Install-RPCS3-APPIMAGE"), ENTER);
 		await app.idle();
-		expect(screen(app)).toContain("A lane named Install-RPCS3-APPIMAGE already exists.");
-		const empty = makeApp(fakeDeps({ chats: () => ({ chats: [], bytesRead: 0 }) }), [lanesPage]);
+		expect(screen(app)).toContain("An agent named Install-RPCS3-APPIMAGE already exists.");
+		const empty = makeApp(fakeDeps({ chats: () => ({ chats: [], bytesRead: 0 }) }), [agentsPage]);
 		keys(empty, "N");
 		await answer(empty, "New agent:", DOWN, ENTER);
 		await empty.idle();
@@ -278,7 +278,7 @@ describe("N: an agent from an existing chat", () => {
 
 	it("a name whose folder already has a memory store is passed over in the suggestion and refused at the prompt, before any preview", async () => {
 		const s = scene();
-		const left = MemoryStore.open(join(s.root, "data", "lanes", "Install-RPCS3-AppImage", "memory.sqlite"));
+		const left = MemoryStore.open(join(s.root, "data", "agents", "Install-RPCS3-AppImage", "memory.sqlite"));
 		left.close();
 		const { app, outs } = await tui(s);
 		keys(app, "N");
@@ -289,14 +289,14 @@ describe("N: an agent from an existing chat", () => {
 		expect(screen(app)).toContain("Install-RPCS3-AppImage-2");
 		await answer(app, "Agent name", "\x15", ...typed("Install-RPCS3-AppImage"), ENTER);
 		await app.idle();
-		expect(screen(app, 320)).toContain(`${join(s.root, "data", "lanes", "Install-RPCS3-AppImage")} already has a memory store (an archived agent's, or an import that was cut short); nothing was written. Pick another name, or move that folder aside and try again.`);
+		expect(screen(app, 320)).toContain(`${join(s.root, "data", "agents", "Install-RPCS3-AppImage")} already has a memory store (an archived agent's, or an import that was cut short); nothing was written. Pick another name, or move that folder aside and try again.`);
 		expect(outs).toEqual([]);
-		expect(loadConfig(s.configPath).lanes.size).toBe(0);
+		expect(loadConfig(s.configPath).agents.size).toBe(0);
 	});
 
 	it("suggests a free name when the title's is taken", async () => {
 		const s = scene();
-		writeFileSync(s.configPath, `${readFileSync(s.configPath, "utf8")}[lanes.Install-RPCS3-AppImage]\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+		writeFileSync(s.configPath, `${readFileSync(s.configPath, "utf8")}[agents.Install-RPCS3-AppImage]\ncompactor_model = "openai/gpt-6.1-sol"\n`);
 		const { app } = await tui(s);
 		keys(app, "N");
 		await answer(app, "New agent:", DOWN, ENTER);
@@ -312,7 +312,7 @@ describe("N: an agent from an existing chat", () => {
 describe("the memory build on the Agents page", () => {
 	it("shows in the row's state cell and, whole, on the agent's page", () => {
 		const building = "building memory: 3 summaries for 800 messages · $0.02 so far";
-		const app = makeApp(fakeDeps({}, [row({ name: "Atlas", hasMemory: true, messages: 800, building }), row({ name: "Birch" })]), [lanesPage]);
+		const app = makeApp(fakeDeps({}, [row({ name: "Atlas", hasMemory: true, messages: 800, building }), row({ name: "Birch" })]), [agentsPage]);
 		expect(screen(app)).toContain("closed · building memory: 3 summaries");
 		for (const width of [60, 80, 100, 120]) expect(app.render(width).every((line) => visibleWidth(line) <= width)).toBe(true);
 		keys(app, "i");

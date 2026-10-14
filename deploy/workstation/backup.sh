@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nightly: snapshot every lane's memory, then mirror the backups to a configured host.
+# Nightly: snapshot every agent's memory, then mirror the backups to a configured host.
 # A systemd user service may not have ~/.local/bin on its PATH.
 export PATH="$HOME/.local/bin:$PATH"
 set -euo pipefail

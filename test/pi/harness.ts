@@ -16,7 +16,7 @@ import {
 	SessionManager,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { FileCredentialStore } from "../../src/lane/credentials.ts";
+import { FileCredentialStore } from "../../src/agent/credentials.ts";
 
 /** The agent's model. */
 export const FAUX = { provider: "orrery-faux", model: "faux-1" } as const;

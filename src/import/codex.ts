@@ -42,7 +42,7 @@ function firstLine(file: string): string | undefined {
 	return undefined;
 }
 
-export function findCodexSessions(root: string, workspace: string): string[] {
+export function findCodexSessions(root: string, folder: string): string[] {
 	let entries: string[];
 	try {
 		entries = readdirSync(root, { recursive: true }) as string[];
@@ -55,7 +55,7 @@ export function findCodexSessions(root: string, workspace: string): string[] {
 		try {
 			const meta = JSON.parse(firstLine(file) ?? "") as CodexRecord;
 			const cwd = meta.type === "session_meta" ? meta.payload?.cwd : undefined;
-			if (cwd === workspace || cwd?.startsWith(`${workspace}/`)) found.push(file);
+			if (cwd === folder || cwd?.startsWith(`${folder}/`)) found.push(file);
 		} catch {
 			// Not a readable session; skip it.
 		}

@@ -21,8 +21,8 @@ export function abortable<T>(signal: AbortSignal | undefined, start: () => Promi
 /** After finish(), the attached session uses the original transport with no checkout deadline. */
 export function cancellableCheckout(storage: Storage, signal?: AbortSignal): { storage: Storage; finish(): void } {
 	let pending = signal;
-	const release = (lane: string, lock: number) => {
-		const sending = storage.release(lane, lock);
+	const release = (agent: string, lock: number) => {
+		const sending = storage.release(agent, lock);
 		// Release is fenced and safe even if a newer session took over. An offline release must not hold up cancellation.
 		if (pending?.aborted) { void sending.catch(() => {}); return Promise.resolve(); }
 		return abortable(pending, () => sending).catch((error: unknown) => { if (!pending?.aborted) throw error; });
@@ -31,15 +31,15 @@ export function cancellableCheckout(storage: Storage, signal?: AbortSignal): { s
 		finish() { pending = undefined; },
 		storage: {
 			name: storage.name,
-			take: (lane, holder, options) => abortable(pending, () => storage.take(lane, holder, options), (result) => {
-				if (result.ok) void storage.release(lane, result.lock).catch(() => {});
+			take: (agent, holder, options) => abortable(pending, () => storage.take(agent, holder, options), (result) => {
+				if (result.ok) void storage.release(agent, result.lock).catch(() => {});
 			}),
-			fetch: (lane, after) => abortable(pending, () => storage.fetch(lane, after)),
+			fetch: (agent, after) => abortable(pending, () => storage.fetch(agent, after)),
 			save: (...args) => abortable(pending, () => storage.save(...args)),
 			snapshot: (...args) => abortable(pending, () => storage.snapshot(...args)),
 			renew: (...args) => abortable(pending, () => storage.renew(...args)),
 			list: () => abortable(pending, () => storage.list()),
-			log: (lane) => abortable(pending, () => storage.log(lane)),
+			log: (agent) => abortable(pending, () => storage.log(agent)),
 			getCheck: () => abortable(pending, () => storage.getCheck()),
 			putCheck: (file) => abortable(pending, () => storage.putCheck(file)),
 			drop: (...args) => abortable(pending, () => storage.drop(...args)),

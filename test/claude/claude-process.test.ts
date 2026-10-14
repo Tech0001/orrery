@@ -4,9 +4,9 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { claudeSession, forgetProcess } from "../../src/claude/pick.ts";
-import { newToken } from "../../src/lane/pick.ts";
-import { tempDir } from "../lane/support.ts";
-import { cleanupDirs, testLane } from "./support.ts";
+import { newToken } from "../../src/agent/pick.ts";
+import { tempDir } from "../agent/support.ts";
+import { cleanupDirs, testAgent } from "./support.ts";
 
 const dirs: string[] = [];
 const sleepers: ChildProcess[] = [];
@@ -35,24 +35,24 @@ const digest = (text: string) => createHash("sha256").update(text).digest("hex")
 
 describe("claudeSession: one decision per Claude Code process", () => {
 	it("the first decision is the one every later consumer under the same ORRERY_AGENT and token reads; a process with none is refused, never none", () => {
-		const t = testLane();
+		const t = testAgent();
 		const dir = tempDir("orrery-elsewhere-");
 		dirs.push(dir);
 		const pid = livePid();
 		const env = { ORRERY_AGENT: "Test" };
-		expect(claudeSession(t.config, { env, cwd: dir, pid, decide: true })).toMatchObject({ kind: "lane", by: "env", lane: { name: "Test" } });
+		expect(claudeSession(t.config, { env, cwd: dir, pid, decide: true })).toMatchObject({ kind: "agent", by: "env", agent: { name: "Test" } });
 		const records = join(t.config.dataDir, "claude-processes");
 		const recorded = readFileSync(join(records, `${pid}.json`), "utf8");
 		// A second deciding consumer of the process reads the first's decision, and records nothing.
-		expect(claudeSession(t.config, { env, cwd: t.workspace, pid, decide: true })).toMatchObject({ kind: "lane", by: "env", lane: { name: "Test" } });
+		expect(claudeSession(t.config, { env, cwd: t.folder, pid, decide: true })).toMatchObject({ kind: "agent", by: "env", agent: { name: "Test" } });
 		expect(readFileSync(join(records, `${pid}.json`), "utf8")).toBe(recorded);
-		expect(claudeSession(t.config, { env, cwd: dir, pid, decide: false })).toMatchObject({ kind: "lane", lane: { name: "Test" } });
+		expect(claudeSession(t.config, { env, cwd: dir, pid, decide: false })).toMatchObject({ kind: "agent", agent: { name: "Test" } });
 		expect(claudeSession(t.config, { env, cwd: dir, pid: livePid(), decide: false })).toEqual({ kind: "undecided" });
 		// Without ORRERY_AGENT nothing is recorded: the folder decides.
-		expect(claudeSession(t.config, { env: {}, cwd: t.workspace, pid: livePid(), decide: true })).toMatchObject({ kind: "lane", by: "folder" });
+		expect(claudeSession(t.config, { env: {}, cwd: t.folder, pid: livePid(), decide: true })).toMatchObject({ kind: "agent", by: "folder" });
 		expect(readdirSync(records)).toEqual([`${pid}.json`]);
 		// Names only, and whose decision it is: ORRERY_AGENT and its token's digest ("" with none).
-		expect(JSON.parse(recorded)).toEqual({ agent: "Test", token: "", kind: "lane", name: "Test", by: "env" });
+		expect(JSON.parse(recorded)).toEqual({ agent: "Test", token: "", kind: "agent", name: "Test", by: "env" });
 		forgetProcess(t.config, pid);
 		expect(readdirSync(records)).toEqual([]);
 		const token = newToken();
@@ -63,7 +63,7 @@ describe("claudeSession: one decision per Claude Code process", () => {
 	});
 
 	it("a stale record (another identity's: a reused pid, an ancestor's): readers are refused, a decider replaces it whole", () => {
-		const t = testLane();
+		const t = testAgent();
 		const dir = tempDir("orrery-elsewhere-");
 		dirs.push(dir);
 		const records = join(t.config.dataDir, "claude-processes");
@@ -71,10 +71,10 @@ describe("claudeSession: one decision per Claude Code process", () => {
 		const pid = livePid();
 		const file = join(records, `${pid}.json`);
 		// Another agent's decision, left by a process whose pid this one reuses.
-		writeFileSync(file, JSON.stringify({ agent: "Birch", token: "", kind: "lane", name: "Test", by: "env" }));
+		writeFileSync(file, JSON.stringify({ agent: "Birch", token: "", kind: "agent", name: "Test", by: "env" }));
 		expect(claudeSession(t.config, { env: { ORRERY_AGENT: "Atlas" }, cwd: dir, pid, decide: false })).toEqual({ kind: "undecided" });
 		// The same name with another token, or none, is another identity too.
-		writeFileSync(file, JSON.stringify({ agent: "Test", token: digest(newToken()), kind: "lane", name: "Test", by: "env" }));
+		writeFileSync(file, JSON.stringify({ agent: "Test", token: digest(newToken()), kind: "agent", name: "Test", by: "env" }));
 		expect(claudeSession(t.config, { env: { ORRERY_AGENT: "Test" }, cwd: dir, pid, decide: false })).toEqual({ kind: "undecided" });
 		expect(claudeSession(t.config, { env: { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: newToken() }, cwd: dir, pid, decide: false })).toEqual({ kind: "undecided" });
 		// A record from before identities (it names none) is stale too: a stale "none" never turns the guard off.
@@ -87,7 +87,7 @@ describe("claudeSession: one decision per Claude Code process", () => {
 	});
 
 	it("prunes a dead process's record, but not an empty one younger than 60 s (being made), nor young temporary or graveyard files", async () => {
-		const t = testLane();
+		const t = testAgent();
 		const dir = tempDir("orrery-elsewhere-");
 		dirs.push(dir);
 		const records = join(t.config.dataDir, "claude-processes");
@@ -100,21 +100,21 @@ describe("claudeSession: one decision per Claude Code process", () => {
 		writeFileSync(join(records, grave), stale);
 		const decide = () => claudeSession(t.config, { env: { ORRERY_AGENT: "Test" }, cwd: dir, pid: livePid(), decide: true });
 		const left = () => readdirSync(records).filter((name) => name.startsWith(`${dead}.`)).sort();
-		expect(decide()).toMatchObject({ kind: "lane" });
+		expect(decide()).toMatchObject({ kind: "agent" });
 		expect(left()).toEqual([making, temporary, grave].sort());
 		// Old, the empty record is a crash's leftover, and the other two are strays.
 		const longAgo = new Date(Date.now() - 120_000);
 		for (const name of [making, temporary, grave]) utimesSync(join(records, name), longAgo, longAgo);
-		expect(decide()).toMatchObject({ kind: "lane" });
+		expect(decide()).toMatchObject({ kind: "agent" });
 		expect(left()).toEqual([]);
 		// A dead process's written record goes at once, however young.
 		writeFileSync(join(records, making), stale);
-		expect(decide()).toMatchObject({ kind: "lane" });
+		expect(decide()).toMatchObject({ kind: "agent" });
 		expect(left()).toEqual([]);
 	});
 
 	it("records refusals and none as they were decided, and refuses a record it cannot read", () => {
-		const t = testLane();
+		const t = testAgent();
 		const dir = tempDir("orrery-elsewhere-");
 		dirs.push(dir);
 		const [unknown, malformed] = [livePid(), livePid()];

@@ -3,11 +3,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createFromPreview, type NewAgentFromChat, storeRefusal } from "../../src/import/create-agent.ts";
 import { commitPreview, writePreview } from "../../src/import/preview.ts";
-import { addLane, editConfigFile } from "../../src/lane/config-edit.ts";
-import { loadConfig } from "../../src/lane/config.ts";
-import { instructionsTemplate, writeInstructions } from "../../src/lane/instructions.ts";
+import { addAgent, editConfigFile } from "../../src/agent/config-edit.ts";
+import { loadConfig } from "../../src/agent/config.ts";
+import { instructionsTemplate, writeInstructions } from "../../src/agent/instructions.ts";
 import { holdWriterLock, MemoryStore } from "../../src/memory/index.ts";
-import { tempDir } from "../lane/support.ts";
+import { tempDir } from "../agent/support.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -27,11 +27,11 @@ function scene() {
 		{ kind: "talk", text: "Done.", date: T, source: "claude:s-1.jsonl" },
 	], "# Import preview\n");
 	const request: NewAgentFromChat = { name: "Rpcs3", tool: "pi", summary: { provider: "anthropic", modelId: "claude-haiku-4-5", thinking: "low" }, previewPath, title: "Install RPCS3 AppImage" };
-	return { dir, configPath, request, laneDir: join(dir, "data", "lanes", "Rpcs3") };
+	return { dir, configPath, request, agentDir: join(dir, "data", "agents", "Rpcs3") };
 }
 
-const texts = (laneDir: string) => {
-	const store = MemoryStore.openReadOnly(join(laneDir, "memory.sqlite"));
+const texts = (agentDir: string) => {
+	const store = MemoryStore.openReadOnly(join(agentDir, "memory.sqlite"));
 	try {
 		return store.root.map((m) => m.text);
 	} finally {
@@ -42,43 +42,43 @@ const texts = (laneDir: string) => {
 describe("createFromPreview", () => {
 	it("adds the agent, writes its instructions from the template, and commits the preview into its memory", () => {
 		const s = scene();
-		expect(createFromPreview(s.configPath, { ...s.request, folder: s.dir })).toEqual({ laneDir: s.laneDir, messages: 2 });
-		expect(loadConfig(s.configPath).lanes.get("Rpcs3")).toMatchObject({ workspace: s.dir, tool: "pi", compactor: { model: { provider: "anthropic", modelId: "claude-haiku-4-5", thinking: "low" } } });
-		expect(readFileSync(join(s.laneDir, "instructions.md"), "utf8")).toBe(instructionsTemplate("Rpcs3", 'Continues the chat "Install RPCS3 AppImage".'));
-		expect(texts(s.laneDir)).toEqual(["Install RPCS3 AppImage for me.", "Done."]);
+		expect(createFromPreview(s.configPath, { ...s.request, folder: s.dir })).toEqual({ agentDir: s.agentDir, messages: 2 });
+		expect(loadConfig(s.configPath).agents.get("Rpcs3")).toMatchObject({ folder: s.dir, tool: "pi", compactor: { model: { provider: "anthropic", modelId: "claude-haiku-4-5", thinking: "low" } } });
+		expect(readFileSync(join(s.agentDir, "instructions.md"), "utf8")).toBe(instructionsTemplate("Rpcs3", 'Continues the chat "Install RPCS3 AppImage".'));
+		expect(texts(s.agentDir)).toEqual(["Install RPCS3 AppImage for me.", "Done."]);
 	});
 
 	it("never imports into a folder that already has a memory store (an archived agent's, even an empty one), and writes nothing then", () => {
 		for (const archived of [["an archived agent's memory"], []]) {
 			const s = scene();
-			mkdirSync(s.laneDir, { recursive: true });
-			const store = MemoryStore.open(join(s.laneDir, "memory.sqlite"));
+			mkdirSync(s.agentDir, { recursive: true });
+			const store = MemoryStore.open(join(s.agentDir, "memory.sqlite"));
 			for (const text of archived) store.append("user", text);
 			store.close();
 			const before = readFileSync(s.configPath, "utf8");
-			const files = readdirSync(s.laneDir).sort();
-			expect(() => createFromPreview(s.configPath, s.request)).toThrow(`${s.laneDir} already has a memory store (an archived agent's, or an import that was cut short); nothing was written. Pick another name, or move that folder aside and try again.`);
+			const files = readdirSync(s.agentDir).sort();
+			expect(() => createFromPreview(s.configPath, s.request)).toThrow(`${s.agentDir} already has a memory store (an archived agent's, or an import that was cut short); nothing was written. Pick another name, or move that folder aside and try again.`);
 			expect(storeRefusal(join(s.dir, "data"), "Rpcs3")).toMatch(/already has a memory store/);
 			expect(storeRefusal(join(s.dir, "data"), "Other")).toBeUndefined();
 			expect(readFileSync(s.configPath, "utf8")).toBe(before);
-			expect(readdirSync(s.laneDir).sort()).toEqual(files);
-			expect(texts(s.laneDir)).toEqual(archived);
+			expect(readdirSync(s.agentDir).sort()).toEqual(files);
+			expect(texts(s.agentDir)).toEqual(archived);
 		}
 	});
 
 	it("keeps instructions already in the folder", () => {
 		const s = scene();
-		mkdirSync(s.laneDir, { recursive: true });
-		writeFileSync(join(s.laneDir, "instructions.md"), "You are Rpcs3.\n");
+		mkdirSync(s.agentDir, { recursive: true });
+		writeFileSync(join(s.agentDir, "instructions.md"), "You are Rpcs3.\n");
 		createFromPreview(s.configPath, s.request);
-		expect(readFileSync(join(s.laneDir, "instructions.md"), "utf8")).toBe("You are Rpcs3.\n");
+		expect(readFileSync(join(s.agentDir, "instructions.md"), "utf8")).toBe("You are Rpcs3.\n");
 	});
 
 	// Guard: passed before the write order changed; now the taken name must be refused before memory is written.
 	it("refuses a bad name, a taken one, or a broken preview before writing anything", () => {
 		const s = scene();
-		writeFileSync(s.configPath, `${readFileSync(s.configPath, "utf8")}[lanes.rpcs3]\ncompactor_model = "openai/gpt-6.1-sol"\n`);
-		expect(() => createFromPreview(s.configPath, s.request)).toThrow(/A lane named Rpcs3 already exists/);
+		writeFileSync(s.configPath, `${readFileSync(s.configPath, "utf8")}[agents.rpcs3]\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+		expect(() => createFromPreview(s.configPath, s.request)).toThrow(/An agent named Rpcs3 already exists/);
 		expect(existsSync(join(s.dir, "data"))).toBe(false);
 		writeFileSync(s.configPath, `data_dir = ${JSON.stringify(join(s.dir, "data"))}\n`);
 		const before = readFileSync(s.configPath, "utf8");
@@ -86,7 +86,7 @@ describe("createFromPreview", () => {
 		writeFileSync(s.request.previewPath, `${JSON.stringify({ kind: "thought", text: "x", date: T, source: "a" })}\n`);
 		expect(() => createFromPreview(s.configPath, s.request)).toThrow(/Invalid preview/);
 		expect(readFileSync(s.configPath, "utf8")).toBe(before);
-		expect(existsSync(s.laneDir)).toBe(false);
+		expect(existsSync(s.agentDir)).toBe(false);
 	});
 });
 
@@ -97,24 +97,24 @@ describe("createFromPreview when a step fails", () => {
 	/** After a failure: the config as it was, no file it made, and a retry under the same name works. */
 	function undone(s: ReturnType<typeof scene>, config: string, files: string[], retry = () => createFromPreview(s.configPath, s.request)) {
 		expect(readFileSync(s.configPath, "utf8")).toBe(config);
-		expect(loadConfig(s.configPath).lanes.has("Rpcs3")).toBe(false);
+		expect(loadConfig(s.configPath).agents.has("Rpcs3")).toBe(false);
 		expect(tree(s.dir)).toEqual(files);
-		expect(retry()).toEqual({ laneDir: s.laneDir, messages: 2 });
-		expect(texts(s.laneDir)).toEqual(["Install RPCS3 AppImage for me.", "Done."]);
+		expect(retry()).toEqual({ agentDir: s.agentDir, messages: 2 });
+		expect(texts(s.agentDir)).toEqual(["Install RPCS3 AppImage for me.", "Done."]);
 	}
 
-	it("instructions: a lane folder that is a symlink is refused, and the link and its target stay as they were", () => {
+	it("instructions: an agent folder that is a symlink is refused, and the link and its target stay as they were", () => {
 		const s = scene();
 		const elsewhere = tempDir("orrery-create-agent-elsewhere-");
 		dirs.push(elsewhere);
-		mkdirSync(join(s.dir, "data", "lanes"), { recursive: true });
-		symlinkSync(elsewhere, s.laneDir);
+		mkdirSync(join(s.dir, "data", "agents"), { recursive: true });
+		symlinkSync(elsewhere, s.agentDir);
 		const config = readFileSync(s.configPath, "utf8");
 		const files = tree(s.dir);
 		expect(() => createFromPreview(s.configPath, s.request)).toThrow(/not a real folder/);
 		expect(readdirSync(elsewhere)).toEqual([]);
 		undone(s, config, files, () => {
-			rmSync(s.laneDir);
+			rmSync(s.agentDir);
 			return createFromPreview(s.configPath, s.request);
 		});
 	});
@@ -134,7 +134,7 @@ describe("createFromPreview when a step fails", () => {
 
 	it("memory: a store another writer holds is refused; what was there before stays", () => {
 		const s = scene();
-		const release = holdWriterLock(join(s.laneDir, "memory.sqlite"));
+		const release = holdWriterLock(join(s.agentDir, "memory.sqlite"));
 		const config = readFileSync(s.configPath, "utf8");
 		const files = tree(s.dir);
 		try {
@@ -194,13 +194,13 @@ describe("createFromPreview when a step fails", () => {
 		const failing = (store: MemoryStore, lines: Parameters<typeof commitPreview>[1]) => {
 			commitPreview(store, lines);
 			// Another Orrery process adds an agent meanwhile; this call never touches the config before it fails.
-			editConfigFile(s.configPath, (text, dir) => addLane(text, dir, { name: "Other", compactorModel: "openai/gpt-6.1-sol", compactorThinking: "low" }));
+			editConfigFile(s.configPath, (text, dir) => addAgent(text, dir, { name: "Other", compactorModel: "openai/gpt-6.1-sol", compactorThinking: "low" }));
 			theirs = readFileSync(s.configPath, "utf8");
 			throw new Error("disk I/O error");
 		};
 		expect(() => createFromPreview(s.configPath, s.request, { commit: failing })).toThrow(/disk I\/O error/);
 		expect(readFileSync(s.configPath, "utf8")).toBe(theirs);
-		expect(loadConfig(s.configPath).lanes.has("Other")).toBe(true);
+		expect(loadConfig(s.configPath).agents.has("Other")).toBe(true);
 		expect(tree(s.dir)).toEqual([...files, "config.toml.bak"].sort());
 	});
 
@@ -223,16 +223,16 @@ describe("createFromPreview when a step fails", () => {
 	it("takes away only the folders it made: one another process made meanwhile stays", () => {
 		const s = scene();
 		const config = readFileSync(s.configPath, "utf8");
-		const lanes = join(s.dir, "data", "lanes");
+		const agents = join(s.dir, "data", "agents");
 		const failing = (store: MemoryStore, lines: Parameters<typeof commitPreview>[1]) => {
 			commitPreview(store, lines);
 			// Another process makes a folder of its own beside this agent's.
-			mkdirSync(join(lanes, "Theirs"));
+			mkdirSync(join(agents, "Theirs"));
 			throw new Error("disk I/O error");
 		};
 		expect(() => createFromPreview(s.configPath, s.request, { commit: failing })).toThrow(/disk I\/O error/);
 		expect(readFileSync(s.configPath, "utf8")).toBe(config);
-		expect(existsSync(join(lanes, "Theirs"))).toBe(true);
-		expect(existsSync(s.laneDir)).toBe(false);
+		expect(existsSync(join(agents, "Theirs"))).toBe(true);
+		expect(existsSync(s.agentDir)).toBe(false);
 	});
 });

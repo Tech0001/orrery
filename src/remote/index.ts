@@ -1,7 +1,7 @@
-/** Remote lanes (spec 2026-10-12-remote-lanes-design): the Storage for a configured remote, and who this machine is. */
+/** Remote agents (spec 2026-10-12-remote-agents-design): the Storage for a configured remote, and who this machine is. */
 
-import { ConfigError, type HarnessConfig } from "../lane/config.ts";
-import { ensureDeviceId } from "../lane/models.ts";
+import { ConfigError, type HarnessConfig } from "../agent/config.ts";
+import { ensureDeviceId } from "../agent/models.ts";
 import { CloudflareStorage } from "./cloudflare.ts";
 import { readRemoteSecret } from "./secrets.ts";
 import { ServerStorage } from "./server.ts";

@@ -1,4 +1,4 @@
-/** Exercise RemoteSession through both real storage transports, with separate lane folders per machine. */
+/** Exercise RemoteSession through both real storage transports, with separate agent folders per machine. */
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,14 +7,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { CloudflareStorage } from "../../src/remote/cloudflare.ts";
 import { createKey } from "../../src/remote/crypto.ts";
-import type { LaneSettings } from "../../src/remote/save-format.ts";
+import type { AgentSettings } from "../../src/remote/save-format.ts";
 import { ServerStorage } from "../../src/remote/server.ts";
 import { RemoteSession, type RemoteSessionOptions } from "../../src/remote/session.ts";
 import { type Holder, RemoteError, type Storage } from "../../src/remote/types.ts";
 import { hasWorkerTools, startLocalWorker } from "./cloudflare-worker-support.ts";
 import { fakeSsh, serverRemote } from "./fake-ssh.ts";
 
-const settings: LaneSettings = { compactorModel: "openai/gpt-5.1-mini", compactorThinking: "low", tool: "pi" };
+const settings: AgentSettings = { compactorModel: "openai/gpt-5.1-mini", compactorThinking: "low", tool: "pi" };
 const pc: Holder = { machine: "pc", device: "device-pc", pid: process.pid };
 const mac: Holder = { machine: "macbook", device: "device-mac", pid: process.pid };
 type Backend = { storage: Storage; stop(): Promise<void> };
@@ -48,10 +48,10 @@ function scenarios(setup: (root: string) => Promise<Backend>): void {
 	});
 
 	function machine(holder: Holder, over: Partial<RemoteSessionOptions> = {}): RemoteSessionOptions {
-		return { lane: "Atlas", laneDir: join(root, holder.device, "lanes", "Atlas"), storage, key, holder,
+		return { agent: "Atlas", agentDir: join(root, holder.device, "agents", "Atlas"), storage, key, holder,
 			report: (message) => reports.push(message), renewMs: 0, settings, ...over };
 	}
-	function dbPath(o: RemoteSessionOptions): string { return join(o.laneDir, "memory.sqlite"); }
+	function dbPath(o: RemoteSessionOptions): string { return join(o.agentDir, "memory.sqlite"); }
 	function write(o: RemoteSessionOptions, ...rows: string[]): void {
 		const store = MemoryStore.open(dbPath(o));
 		try { for (const text of rows) store.append("user", text); }
@@ -96,7 +96,7 @@ function scenarios(setup: (root: string) => Promise<Backend>): void {
 		const a = machine(pc), b = machine(mac);
 		write(a, "initial user turn", "initial answer");
 		await RemoteSession.push(a);
-		expect(existsSync(b.laneDir)).toBe(false);
+		expect(existsSync(b.agentDir)).toBe(false);
 		await run(b);
 		expect(texts(b)).toEqual(["initial user turn", "initial answer"]);
 		expect(texts(a)).toEqual(texts(b));
@@ -208,7 +208,7 @@ function scenarios(setup: (root: string) => Promise<Backend>): void {
 			}
 		});
 		expect((await storage.fetch("Atlas", 0)).snapshot?.n).toBe(200);
-		const state = JSON.parse(readFileSync(join(a.laneDir, "remote-state.json"), "utf8"));
+		const state = JSON.parse(readFileSync(join(a.agentDir, "remote-state.json"), "utf8"));
 		expect(state).toMatchObject({ snapshotAt: 200, bytesSinceSnapshot: 0 });
 		await run(b);
 		expect(texts(b)).toEqual(Array.from({ length: 200 }, (_, i) => `m${i}`));
@@ -226,16 +226,16 @@ function scenarios(setup: (root: string) => Promise<Backend>): void {
 		await run(a);
 		expect(texts(a)).toEqual(["mac's turn"]);
 		expect(texts(b)).toEqual(texts(a));
-		const aside = readdirSync(a.laneDir).filter((file) => /^unsaved-.*\.json$/.test(file));
+		const aside = readdirSync(a.agentDir).filter((file) => /^unsaved-.*\.json$/.test(file));
 		expect(aside).toHaveLength(1);
-		expect(readFileSync(join(a.laneDir, aside[0]), "utf8")).toContain("pc's unsaved turn");
+		expect(readFileSync(join(a.agentDir, aside[0]), "utf8")).toContain("pc's unsaved turn");
 		expect(reports.some((message) => message.includes(aside[0]))).toBe(true);
 	});
 }
 
 describe("RemoteSession with server (fake SSH)", () => scenarios(async (root) => {
 	const ssh = fakeSsh(join(root, "server"), undefined, { ORRERY_TEST_STALE_SECONDS: "1" });
-	return { storage: new ServerStorage(serverRemote("lanes"), join(root, "ssh"), { ssh: ssh.path }), stop: async () => {} };
+	return { storage: new ServerStorage(serverRemote("agents"), join(root, "ssh"), { ssh: ssh.path }), stop: async () => {} };
 }));
 
 const cloudflareName = hasWorkerTools ? "RemoteSession with cloudflare (local Worker)"

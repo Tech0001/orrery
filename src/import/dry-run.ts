@@ -7,10 +7,10 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Models } from "@earendil-works/pi-ai";
-import type { HarnessConfig, ModelChoice } from "../lane/config.ts";
-import { FileCredentialStore } from "../lane/credentials.ts";
-import { compactorModel, createLaneModels } from "../lane/models.ts";
-import { ownFolder } from "../lane/private-file.ts";
+import type { HarnessConfig, ModelChoice } from "../agent/config.ts";
+import { FileCredentialStore } from "../agent/credentials.ts";
+import { compactorModel, createAgentModels } from "../agent/models.ts";
+import { ownFolder } from "../agent/private-file.ts";
 import type { CompactorModel } from "../memory/index.ts";
 import { extractClaudeFiles } from "./claude.ts";
 import { extractCodex } from "./codex.ts";
@@ -21,12 +21,12 @@ import type { ExtractStats } from "./turns.ts";
 
 export interface DryRunInput {
 	readonly config: HarnessConfig;
-	/** The lane the history is for: a paste "from" it is addressed to it. */
+	/** The agent the history is for: a paste "from" it is addressed to it. */
 	readonly name: string;
-	/** The lanes a paste's source is matched against. */
+	/** The agents a paste's source is matched against. */
 	readonly names: readonly string[];
 	readonly summaryModel: ModelChoice;
-	/** Summaries only through Orrery's saved logins (src/lane/models.ts savedSummaryLoginsOnly). */
+	/** Summaries only through Orrery's saved logins (src/agent/models.ts savedSummaryLoginsOnly). */
 	readonly savedLoginsOnly: boolean;
 	readonly claudeFiles: readonly string[];
 	readonly codexFiles: readonly string[];
@@ -108,7 +108,7 @@ export async function dryRun(input: DryRunInput): Promise<DryRunResult> {
 	// Resolve the split model up front, so a misconfigured model fails now rather than once per long message.
 	const model: CompactorModel | undefined = input.split
 		? compactorModel(
-				input.models ?? createLaneModels({ credentials: new FileCredentialStore(input.config.credentialsPath), providers: input.config.providers, savedLoginsOnly: input.savedLoginsOnly }),
+				input.models ?? createAgentModels({ credentials: new FileCredentialStore(input.config.credentialsPath), providers: input.config.providers, savedLoginsOnly: input.savedLoginsOnly }),
 				input.summaryModel,
 				`import:${input.name}`,
 			)
@@ -130,7 +130,7 @@ export async function dryRun(input: DryRunInput): Promise<DryRunResult> {
 	const split = async (text: string): Promise<SplitResult> => {
 		input.signal?.throwIfAborted();
 		const threshold = input.split ? input.pasteThreshold : Number.POSITIVE_INFINITY;
-		const result = await splitMessage(text, splitModel, { threshold, lanes: [...input.names], lane: input.name, cache });
+		const result = await splitMessage(text, splitModel, { threshold, agents: [...input.names], agent: input.name, cache });
 		// A call cut short by the signal is no model failure: stop here.
 		input.signal?.throwIfAborted();
 		if (input.split) writeFileSync(cachePath, JSON.stringify(Object.fromEntries(cache)), { mode: 0o600 });

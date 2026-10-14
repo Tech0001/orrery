@@ -2,7 +2,7 @@
   "name": "orrery",
   "version": "0.6.0",
   "private": true,
-  "description": "Persistent lane memory for coding agents across sessions and models",
+  "description": "Persistent memory for coding agents across sessions and models",
   "license": "MIT",
   "repository": {
     "type": "git",

@@ -1,8 +1,8 @@
 /** A name for an agent made from a chat (spec 2026-10-13-orrery-agents-design §6, step 2). */
 
-import { RESERVED_NAMES } from "../lane/config.ts";
+import { RESERVED_NAMES } from "../agent/config.ts";
 
-/** Agent names are at most this long (src/lane/config.ts). */
+/** Agent names are at most this long (src/agent/config.ts). */
 const MAX = 32;
 
 /**

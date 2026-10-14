@@ -1,5 +1,5 @@
 /**
- * Separates the user's own words from pasted reports (spec §7), so the compactor does not take a pasted lane
+ * Separates the user's own words from pasted reports (spec §7), so the compactor does not take a pasted agent
  * report for a ruling. Claude Code's <pasted_content> tags give exact boundaries. Otherwise a model names where
  * segments start (verbatim snippets) and the text is cut from the original, so nothing is ever rewritten. If the
  * snippets cannot be found, the message is kept whole and flagged; failures are not cached.
@@ -113,18 +113,18 @@ export function locateSegments(text: string, answer: string): Segment[] | undefi
 
 export interface SplitOptions {
 	readonly threshold: number;
-	readonly lanes: readonly string[];
-	/** The lane whose history this is: a paste "from" it is really addressed to it. */
-	readonly lane?: string;
+	readonly agents: readonly string[];
+	/** The agent whose history this is: a paste "from" it is really addressed to it. */
+	readonly agent?: string;
 	readonly cache: Map<string, SplitResult>;
 }
 
-/** Sources name configured lanes in their configured casing; this lane itself is never a source. */
+/** Sources name configured agents in their configured casing; this agent itself is never a source. */
 function normalize(result: SplitResult, options: SplitOptions): SplitResult {
 	const canonical = (source: string | null): string | null => {
 		if (source === null) return null;
-		if (options.lane !== undefined && source.toLowerCase() === options.lane.toLowerCase()) return null;
-		return options.lanes.find((lane) => lane.toLowerCase() === source.toLowerCase()) ?? source;
+		if (options.agent !== undefined && source.toLowerCase() === options.agent.toLowerCase()) return null;
+		return options.agents.find((agent) => agent.toLowerCase() === source.toLowerCase()) ?? source;
 	};
 	return { ...result, segments: result.segments.map((segment) => ({ ...segment, source: canonical(segment.source) })) };
 }
@@ -139,13 +139,14 @@ export async function splitMessage(text: string, model: SplitModel, options: Spl
 	if (cached !== undefined) return normalize(cached, options);
 	let answer: string;
 	try {
-		const lanes = options.lanes.length > 0 ? `\n\nKnown lanes: ${options.lanes.join(", ")}.` : "";
+		// The prompt keeps its words byte for byte ("Known lanes", …): changing a model prompt is a decision of its own.
+		const known = options.agents.length > 0 ? `\n\nKnown lanes: ${options.agents.join(", ")}.` : "";
 		const own =
-			options.lane === undefined
+			options.agent === undefined
 				? ""
-				: `\n\nThis is ${options.lane}'s conversation: the Director talks to ${options.lane}. A block that starts "${options.lane}:" ` +
-					`is addressed to ${options.lane}, so ${options.lane} is never its source.`;
-		answer = await model.complete(`${SPLIT_SYSTEM}${lanes}${own}`, text);
+				: `\n\nThis is ${options.agent}'s conversation: the Director talks to ${options.agent}. A block that starts "${options.agent}:" ` +
+					`is addressed to ${options.agent}, so ${options.agent} is never its source.`;
+		answer = await model.complete(`${SPLIT_SYSTEM}${known}${own}`, text);
 	} catch (error) {
 		return { status: "unsplit", segments: whole, note: `split failed: ${error instanceof Error ? error.message : String(error)}` };
 	}

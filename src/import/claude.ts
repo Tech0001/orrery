@@ -46,8 +46,8 @@ interface ClaudeRecord {
 	readonly message?: { readonly id?: string; readonly content?: unknown };
 }
 
-export function claudeProjectDir(workspace: string, home: string = homedir()): string {
-	return join(home, ".claude", "projects", workspace.replace(/[^A-Za-z0-9]/g, "-"));
+export function claudeProjectDir(folder: string, home: string = homedir()): string {
+	return join(home, ".claude", "projects", folder.replace(/[^A-Za-z0-9]/g, "-"));
 }
 
 function blockText(content: unknown): string {

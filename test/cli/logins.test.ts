@@ -4,9 +4,9 @@ import { PassThrough } from "node:stream";
 import { createServer } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loginCommand, loginsCommand, logoutCommand, readPiKey, readSecret } from "../../src/cli/logins.ts";
-import { parseConfig } from "../../src/lane/config.ts";
-import { KEY_NOT_NAME } from "../../src/lane/summary-sources.ts";
-import { tempDir } from "../lane/support.ts";
+import { parseConfig } from "../../src/agent/config.ts";
+import { KEY_NOT_NAME } from "../../src/agent/summary-sources.ts";
+import { tempDir } from "../agent/support.ts";
 
 const dirs: string[] = [];
 beforeEach(() => {
@@ -62,7 +62,7 @@ it.each(["openai", "openrouter"])("times out %s browser login at 180 seconds aft
 function setup() {
 	const dir = tempDir("orrery-logins-");
 	dirs.push(dir);
-	const toml = `data_dir = ${JSON.stringify(dir)}\n[lanes.Test]\nworkspace = ${JSON.stringify(dir)}\nmodel = "openai/gpt-6.1-sol"\ncompactor_model = "openai/gpt-6.1-sol"\n`;
+	const toml = `data_dir = ${JSON.stringify(dir)}\n[agents.Test]\nfolder = ${JSON.stringify(dir)}\nmodel = "openai/gpt-6.1-sol"\ncompactor_model = "openai/gpt-6.1-sol"\n`;
 	return { dir, config: parseConfig(toml, dir) };
 }
 

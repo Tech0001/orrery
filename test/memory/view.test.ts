@@ -192,7 +192,7 @@ describe("saved view", () => {
 		expect(keys()).toEqual(["0:0", "0:1"]);
 	});
 
-	it("builds a lane's first view once, merged down to the floor, and saves it", () => {
+	it("builds an agent's first view once, merged down to the floor, and saves it", () => {
 		const first = MemoryStore.open(join(dir, "first.sqlite"));
 		try {
 			for (let i = 0; i < 8; i++) first.append("user", `m${i}`);

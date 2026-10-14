@@ -4,46 +4,46 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { INSTRUCTIONS_MAX_BYTES, writeInstructions } from "../../src/lane/instructions.ts";
-import { newToken } from "../../src/lane/pick.ts";
+import { INSTRUCTIONS_MAX_BYTES, writeInstructions } from "../../src/agent/instructions.ts";
+import { newToken } from "../../src/agent/pick.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { FAUX_SUMMARY } from "./harness.ts";
-import { ageVisitMarks, cleanup, close, isolatedHome, lastLane, pi, plainPi, summarySourcesFor, world } from "./world.ts";
+import { ageVisitMarks, cleanup, close, isolatedHome, lastAgent, pi, plainPi, summarySourcesFor, world } from "./world.ts";
 
 afterEach(cleanup);
 isolatedHome();
 
-const memoryOf = (root: string, lane = "Atlas") => {
-	const store = MemoryStore.openReadOnly(join(root, "data", "lanes", lane, "memory.sqlite"));
+const memoryOf = (root: string, agent = "Atlas") => {
+	const store = MemoryStore.openReadOnly(join(root, "data", "agents", agent, "memory.sqlite"));
 	const rows = store.root.map((m) => `${m.kind}: ${m.text}`);
 	store.close();
 	return rows;
 };
-/** A session's owner record (src/lane/session-owner.ts): named by the id's sha256. */
+/** A session's owner record (src/agent/session-owner.ts): named by the id's sha256. */
 const ownerRecord = (root: string, id: string) => join(root, "data", "session-owners", createHash("sha256").update(id).digest("hex"));
 const lastReply = (messages: readonly { role: string; content?: unknown }[]) =>
 	JSON.stringify(messages.filter((m) => m.role === "assistant").at(-1)?.content);
 
 describe("orrery inside pi", () => {
-	it("opens the lane's memory in a lane folder, writes status, and registers the memory tools", async () => {
+	it("opens the agent's memory in an agent folder, writes status, and registers the memory tools", async () => {
 		const { root, config } = world();
 		const run = await pi(root, join(root, "agent-Atlas"), config);
-		expect(existsSync(join(root, "data", "lanes", "Atlas", "memory.sqlite"))).toBe(true);
-		const status = JSON.parse(readFileSync(join(root, "data", "lanes", "Atlas", "status.json"), "utf8"));
-		expect(status).toMatchObject({ lane: "Atlas", busy: false, compactor: { stopped: false } });
+		expect(existsSync(join(root, "data", "agents", "Atlas", "memory.sqlite"))).toBe(true);
+		const status = JSON.parse(readFileSync(join(root, "data", "agents", "Atlas", "status.json"), "utf8"));
+		expect(status).toMatchObject({ agent: "Atlas", busy: false, compactor: { stopped: false } });
 		expect(run.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
 		expect(run.tool("zoom")).toBeDefined();
 	});
 
-	it("does nothing outside a lane folder", async () => {
+	it("does nothing outside an agent folder", async () => {
 		const { root, config } = world();
 		const run = await pi(root, join(root, "plain"), config);
-		expect(existsSync(join(root, "data", "lanes"))).toBe(false);
+		expect(existsSync(join(root, "data", "agents"))).toBe(false);
 		expect(run.tool("zoom")).toBeUndefined();
 		expect(run.notices).toEqual([]);
 	});
 
-	it("gives a second pi on the same lane no memory and no tools", async () => {
+	it("gives a second pi on the same agent no memory and no tools", async () => {
 		const { root, config } = world();
 		await pi(root, join(root, "agent-Atlas"), config);
 		const second = await pi(root, join(root, "agent-Atlas"), config);
@@ -51,9 +51,9 @@ describe("orrery inside pi", () => {
 		expect(second.notices).toContainEqual({ message: "Atlas is already open in another pi; this one runs without memory.", type: "warning" });
 	});
 
-	it("keeps the guard for a pi that runs without memory (lane held, or its memory unreadable)", async () => {
+	it("keeps the guard for a pi that runs without memory (agent held, or its memory unreadable)", async () => {
 		const { root, config } = world();
-		const escape = `${root}-escape.txt`; // outside the lane's allowed roots (the workspace's parent folder)
+		const escape = `${root}-escape.txt`; // outside the agent's allowed roots (the folder's parent folder)
 		const tryWrite = async (run: Awaited<ReturnType<typeof pi>>) => {
 			run.setResponses([fauxAssistantMessage([fauxToolCall("write", { path: escape, content: "x" })]), fauxAssistantMessage("done")]);
 			await run.session.prompt("write it");
@@ -64,22 +64,22 @@ describe("orrery inside pi", () => {
 			const first = await pi(root, join(root, "agent-Atlas"), config);
 			const second = await pi(root, join(root, "agent-Atlas"), config);
 			expect(second.notices).toContainEqual({ message: "Atlas is already open in another pi; this one runs without memory.", type: "warning" });
-			expect(await tryWrite(second)).toMatch(/outside this lane's workspace/);
+			expect(await tryWrite(second)).toMatch(/outside this agent's folder/);
 			expect(existsSync(escape)).toBe(false);
 			await close(second);
 			await close(first);
-			writeFileSync(join(root, "data", "lanes", "Atlas", "memory.sqlite"), "not a database, and long enough to be read as one");
+			writeFileSync(join(root, "data", "agents", "Atlas", "memory.sqlite"), "not a database, and long enough to be read as one");
 			const broken = await pi(root, join(root, "agent-Atlas"), config);
 			expect(broken.tool("zoom")).toBeUndefined();
 			expect(broken.notices).toContainEqual({ message: expect.stringMatching(/^Orrery: Atlas: .*; this pi runs without memory\.$/), type: "warning" });
-			expect(await tryWrite(broken)).toMatch(/outside this lane's workspace/);
+			expect(await tryWrite(broken)).toMatch(/outside this agent's folder/);
 			expect(existsSync(escape)).toBe(false);
 		} finally {
 			rmSync(escape, { force: true });
 		}
 	});
 
-	it("opens a lane whose summary model is unknown with memory and logging, says why summaries are off, and /compactor starts them", async () => {
+	it("opens an agent whose summary model is unknown with memory and logging, says why summaries are off, and /compactor starts them", async () => {
 		const { root, config } = world({ compactorModel: "nobody/nothing" });
 		const run = await pi(root, join(root, "agent-Atlas"), config, undefined, { memoryWaitMs: 10_000 });
 		expect(run.tool("zoom")).toBeDefined();
@@ -90,7 +90,7 @@ describe("orrery inside pi", () => {
 		const started = Date.now();
 		await run.session.prompt("Are you there?");
 		expect(Date.now() - started).toBeLessThan(2000);
-		expect(lastLane().store.root.map((m) => m.kind)).toEqual(["user", "talk", "user", "talk"]);
+		expect(lastAgent().store.root.map((m) => m.kind)).toEqual(["user", "talk", "user", "talk"]);
 		expect(run.status("orrery")).toBe("Orrery · Atlas · 4 msgs · SUMMARIES STOPPED: unknown model nobody/nothing");
 		await run.session.prompt("/memory");
 		expect(run.notices.at(-1)?.message).toContain("STOPPED: unknown model nobody/nothing");
@@ -98,9 +98,9 @@ describe("orrery inside pi", () => {
 		run.setSummaryResponses([fauxAssistantMessage("OK"), fauxAssistantMessage("A long first message, summarized.")]);
 		await run.session.prompt(`/compactor ${FAUX_SUMMARY.provider}/${FAUX_SUMMARY.model}`);
 		expect(run.notices.at(-1)).toEqual({ message: `summaries: ${FAUX_SUMMARY.provider}/${FAUX_SUMMARY.model} (off) · set in chat`, type: "info" });
-		await vi.waitFor(() => expect(lastLane().view.settled).toBe(true));
-		expect(lastLane().view.render()).toContain("A long first message, summarized.");
-		expect(lastLane().statusLine()).toBe("Orrery · Atlas · 4 msgs");
+		await vi.waitFor(() => expect(lastAgent().view.settled).toBe(true));
+		expect(lastAgent().view.render()).toContain("A long first message, summarized.");
+		expect(lastAgent().statusLine()).toBe("Orrery · Atlas · 4 msgs");
 	}, 20_000);
 
 	it("warns when the orrery config cannot be read, and runs without memory", async () => {
@@ -108,7 +108,7 @@ describe("orrery inside pi", () => {
 		const saved = process.env.ORRERY_CONFIG;
 		try {
 			const broken = join(root, "broken.toml");
-			writeFileSync(broken, "lanes = [");
+			writeFileSync(broken, "agents = [");
 			process.env.ORRERY_CONFIG = broken;
 			const run = await pi(root, join(root, "agent-Atlas"), undefined);
 			expect(run.tool("zoom")).toBeUndefined();
@@ -124,11 +124,11 @@ describe("orrery inside pi", () => {
 		}
 	});
 
-	it("keeps running when the status file cannot be written, warns once, and still releases the lane", async () => {
+	it("keeps running when the status file cannot be written, warns once, and still releases the agent", async () => {
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 		try {
 			const { root, config } = world();
-			const status = join(root, "data", "lanes", "Atlas", "status.json");
+			const status = join(root, "data", "agents", "Atlas", "status.json");
 			const run = await pi(root, join(root, "agent-Atlas"), config);
 			rmSync(status);
 			mkdirSync(status); // Renaming the new status over a directory fails.
@@ -155,7 +155,7 @@ describe("orrery inside pi", () => {
 			},
 		]);
 		await run.session.prompt("The codename is Cedar.");
-		lastLane().view.appendBatch = () => {
+		lastAgent().view.appendBatch = () => {
 			throw new Error("disk full");
 		};
 		await run.session.executeBash("echo new-entry"); // something for before_agent_start to copy
@@ -165,23 +165,23 @@ describe("orrery inside pi", () => {
 		expect(run.notices).toContainEqual({ type: "warning", message: "Orrery: logging this session into memory failed: disk full" });
 	});
 
-	it("marks the lane closed in its status even when the copy at shutdown fails", async () => {
+	it("marks the agent closed in its status even when the copy at shutdown fails", async () => {
 		const { root, config } = world();
 		const run = await pi(root, join(root, "agent-Atlas"), config);
-		lastLane().view.appendBatch = () => {
+		lastAgent().view.appendBatch = () => {
 			throw new Error("disk full");
 		};
 		await run.session.executeBash("echo new-entry");
 		await close(run);
-		const status = JSON.parse(readFileSync(join(root, "data", "lanes", "Atlas", "status.json"), "utf8"));
+		const status = JSON.parse(readFileSync(join(root, "data", "agents", "Atlas", "status.json"), "utf8"));
 		expect(status.open).toBe(false);
 		expect(run.notices.some((n) => n.message.includes("at shutdown failed: disk full"))).toBe(true);
 	});
 
-	it("releases the lane even when its compactor fails to close", async () => {
+	it("releases the agent even when its compactor fails to close", async () => {
 		const { root, config } = world();
 		const run = await pi(root, join(root, "agent-Atlas"), config);
-		const compactor = lastLane().compactor;
+		const compactor = lastAgent().compactor;
 		const closeCompactor = compactor.close.bind(compactor);
 		compactor.close = async () => {
 			await closeCompactor();
@@ -200,7 +200,7 @@ describe("orrery inside pi", () => {
 		const parent = run.session.sessionId;
 		await run.runtime.fork(run.session.sessionManager.getLeafId() as string, { position: "at" });
 		expect(run.session.sessionId).not.toBe(parent);
-		expect(lastLane().store.root.map((m) => `${m.kind}: ${m.text}`)).toEqual(["user: The codename is Cedar.", "talk: Noted."]);
+		expect(lastAgent().store.root.map((m) => `${m.kind}: ${m.text}`)).toEqual(["user: The codename is Cedar.", "talk: Noted."]);
 		await run.session.prompt("And the color?");
 		await close(run);
 		expect(memoryOf(root)).toEqual(["user: The codename is Cedar.", "talk: Noted.", "user: And the color?", "talk: Teal."]);
@@ -215,7 +215,7 @@ describe("orrery inside pi", () => {
 		await close(run);
 		const forked = await pi(root, join(root, "agent-Atlas"), config, { forkFrom: source });
 		expect(forked.session.sessionManager.getHeader()?.parentSession).toBe(source);
-		expect(lastLane().store.root.map((m) => `${m.kind}: ${m.text}`)).toEqual(["user: The codename is Cedar.", "talk: Noted."]);
+		expect(lastAgent().store.root.map((m) => `${m.kind}: ${m.text}`)).toEqual(["user: The codename is Cedar.", "talk: Noted."]);
 	});
 
 	it("summarizes with its own faux model, so summaries never take the agent's replies", async () => {
@@ -227,20 +227,20 @@ describe("orrery inside pi", () => {
 		await run.session.prompt(`The codename is Cedar. ${"Padding. ".repeat(100)}`);
 		// The fork copies the long message into memory, and the compactor summarizes it.
 		await run.runtime.fork(run.session.sessionManager.getLeafId() as string, { position: "at" });
-		await vi.waitFor(() => expect(lastLane().view.settled).toBe(true));
-		expect(lastLane().view.render()).toContain("Codename Cedar, padded.");
+		await vi.waitFor(() => expect(lastAgent().view.settled).toBe(true));
+		expect(lastAgent().view.render()).toContain("Codename Cedar, padded.");
 		await run.session.prompt("What is the codename?");
 		expect(lastReply(run.session.messages)).toContain("Cedar.");
 	});
 });
 
-describe("a lane named by ORRERY_AGENT", () => {
+describe("an agent named by ORRERY_AGENT", () => {
 	const writeTo = async (run: Awaited<ReturnType<typeof pi>>, path: string) => {
 		run.setResponses([fauxAssistantMessage([fauxToolCall("write", { path, content: "x" })]), fauxAssistantMessage("done")]);
 		await run.session.prompt(`write ${path}`);
 	};
 
-	it("opens in a folder outside its workspace, writes there, and nowhere outside it and its allowed roots", async () => {
+	it("opens in a folder outside its folder, writes there, and nowhere outside it and its allowed roots", async () => {
 		const { root, config } = world();
 		const outside = mkdtempSync(join(tmpdir(), "orrery-outside-"));
 		try {
@@ -257,16 +257,16 @@ describe("a lane named by ORRERY_AGENT", () => {
 		}
 	});
 
-	it("in another lane's folder: that lane is neither opened nor held, and a session there by folder still gets it", async () => {
+	it("in another agent's folder: that agent is neither opened nor held, and a session there by folder still gets it", async () => {
 		const { root, config } = world();
 		const atlas = await pi(root, join(root, "agent-Birch"), config, undefined, { env: { ORRERY_AGENT: "Atlas" } });
 		expect(atlas.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
-		expect(existsSync(join(root, "data", "lanes", "Birch"))).toBe(false);
+		expect(existsSync(join(root, "data", "agents", "Birch"))).toBe(false);
 		const birch = await pi(root, join(root, "agent-Birch"), config);
 		expect(birch.status("orrery")).toBe("Orrery · Birch · 0 msgs");
 	});
 
-	it("an ORRERY_AGENT that names no lane: one notice, no memory, and no fallback to the folder", async () => {
+	it("an ORRERY_AGENT that names no agent: one notice, no memory, and no fallback to the folder", async () => {
 		const { root, config } = world();
 		const run = await pi(root, join(root, "agent-Atlas"), config, undefined, { env: { ORRERY_AGENT: "Nobody" } });
 		expect(run.tool("zoom")).toBeUndefined();
@@ -278,10 +278,10 @@ describe("a lane named by ORRERY_AGENT", () => {
 		const run = await pi(root, join(root, "agent-Atlas"), config, undefined, { env: { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: "not-a-token" } });
 		expect(run.tool("zoom")).toBeUndefined();
 		expect(run.notices).toEqual([{ type: "warning", message: "Orrery: ORRERY_AGENT_TOKEN is not 32 lowercase hex digits, so this session is not Atlas; it runs without memory." }]);
-		expect(existsSync(join(root, "data", "lanes", "Atlas"))).toBe(false);
+		expect(existsSync(join(root, "data", "agents", "Atlas"))).toBe(false);
 	});
 
-	it("a pi the agent started (same variables, another process) gets its folder's lane, or none", async () => {
+	it("a pi the agent started (same variables, another process) gets its folder's agent, or none", async () => {
 		const { root, config } = world();
 		const env = { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: newToken() };
 		const parent = await pi(root, join(root, "plain"), config, undefined, { env, owner: process.pid });
@@ -293,7 +293,7 @@ describe("a lane named by ORRERY_AGENT", () => {
 		expect(inPlain.notices).toEqual([]);
 	});
 
-	it("resuming a session recorded in another lane's folder copies none of its turns, only what comes after", async () => {
+	it("resuming a session recorded in another agent's folder copies none of its turns, only what comes after", async () => {
 		const { root, config } = world();
 		const birch = await pi(root, join(root, "agent-Birch"), config, "s-birch");
 		birch.setResponses([fauxAssistantMessage("Birch's answer.")]);
@@ -323,13 +323,13 @@ describe("a lane named by ORRERY_AGENT", () => {
 	});
 });
 
-describe("who a session belongs to: a lane never copies turns another agent said in it", () => {
+describe("who a session belongs to: an agent never copies turns another agent said in it", () => {
 	const say = async (run: Awaited<ReturnType<typeof pi>>, question: string, answer: string) => {
 		run.setResponses([fauxAssistantMessage(answer)]);
 		await run.session.prompt(question);
 	};
 
-	it("a session ORRERY_AGENT recorded in a lane's folder: that lane, resuming it by folder, records only what comes after", async () => {
+	it("a session ORRERY_AGENT recorded in an agent's folder: that agent, resuming it by folder, records only what comes after", async () => {
 		const { root, config } = world();
 		const atlas = await pi(root, join(root, "agent-Birch"), config, "s-x", { env: { ORRERY_AGENT: "Atlas" } });
 		expect(atlas.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
@@ -345,7 +345,7 @@ describe("who a session belongs to: a lane never copies turns another agent said
 	});
 
 	for (const [what, id] of [["with a dot in its id", "s.x"], ["with an id longer than 128 characters", `s-${"x".repeat(150)}`]] as const) {
-		it(`a session ${what} (pi takes it): another agent's turns stay out of the folder's lane`, async () => {
+		it(`a session ${what} (pi takes it): another agent's turns stay out of the folder's agent`, async () => {
 			const { root, config } = world();
 			const atlas = await pi(root, join(root, "agent-Birch"), config, id, { env: { ORRERY_AGENT: "Atlas" } });
 			await say(atlas, "Atlas secret question.", "Atlas secret answer.");
@@ -401,7 +401,7 @@ describe("who a session belongs to: a lane never copies turns another agent said
 		expect(memoryOf(root)).toEqual(["user: Atlas secret question.", "talk: Atlas secret answer."]);
 	});
 
-	it("a session first run under an ORRERY_AGENT that names no agent: the folder's lane records only what comes after", async () => {
+	it("a session first run under an ORRERY_AGENT that names no agent: the folder's agent records only what comes after", async () => {
 		const { root, config } = world();
 		const nobody = await pi(root, join(root, "agent-Birch"), config, "s-u", { env: { ORRERY_AGENT: "Nobody" } });
 		await say(nobody, "Unknown question.", "Unknown answer.");
@@ -457,13 +457,13 @@ describe("who a session belongs to: a lane never copies turns another agent said
 	});
 });
 
-describe("a lane's instructions", () => {
+describe("an agent's instructions", () => {
 	type Ctx = { systemPrompt?: string; messages: { role: string; content: unknown }[] };
 	const systemText = (context: Ctx) => [context.systemPrompt ?? "", ...context.messages.filter((m) => m.role === "system").map((m) => JSON.stringify(m.content))].join("\n");
 
-	it("go into the system prompt under the lane's name, before the memory section", async () => {
+	it("go into the system prompt under the agent's name, before the memory section", async () => {
 		const { root, config } = world();
-		writeInstructions(join(root, "data", "lanes", "Atlas"), "You are Atlas. Keep replies short.\n");
+		writeInstructions(join(root, "data", "agents", "Atlas"), "You are Atlas. Keep replies short.\n");
 		const run = await pi(root, join(root, "agent-Atlas"), config);
 		let system = "";
 		run.setResponses([fauxAssistantMessage("Noted."), (context: Ctx) => ((system = systemText(context)), fauxAssistantMessage("Cedar."))]);
@@ -474,9 +474,9 @@ describe("a lane's instructions", () => {
 		expect(system.indexOf("# Agent: Atlas")).toBeLessThan(system.indexOf("# Memory"));
 	});
 
-	it("reach the prompt when the lane's memory is held elsewhere, without a memory section", async () => {
+	it("reach the prompt when the agent's memory is held elsewhere, without a memory section", async () => {
 		const { root, config } = world();
-		writeInstructions(join(root, "data", "lanes", "Atlas"), "You are Atlas.\n");
+		writeInstructions(join(root, "data", "agents", "Atlas"), "You are Atlas.\n");
 		await pi(root, join(root, "agent-Atlas"), config);
 		const second = await pi(root, join(root, "agent-Atlas"), config);
 		let system = "";
@@ -488,7 +488,7 @@ describe("a lane's instructions", () => {
 
 	it("over 32 KB: the first 32 KB, and one notice", async () => {
 		const { root, config } = world();
-		writeInstructions(join(root, "data", "lanes", "Atlas"), `${"a".repeat(INSTRUCTIONS_MAX_BYTES)}TAIL`);
+		writeInstructions(join(root, "data", "agents", "Atlas"), `${"a".repeat(INSTRUCTIONS_MAX_BYTES)}TAIL`);
 		const run = await pi(root, join(root, "agent-Atlas"), config);
 		let system = "";
 		run.setResponses([(context: Ctx) => ((system = systemText(context)), fauxAssistantMessage("Hi."))]);
@@ -499,7 +499,7 @@ describe("a lane's instructions", () => {
 		expect(run.notices.filter((n) => n.message.includes("over 32 KB"))).toEqual([{ type: "warning", message: "Orrery: Atlas's instructions are over 32 KB; only the first 32 KB reach the model. Shorten instructions.md." }]);
 	});
 
-	// A guard: it passes before instructions exist too (D5); it keeps a lane without them as it was.
+	// A guard: it passes before instructions exist too (D5); it keeps an agent without them as it was.
 	it("none: the prompt has no agent section", async () => {
 		const { root, config } = world();
 		const run = await pi(root, join(root, "agent-Atlas"), config);
@@ -512,7 +512,7 @@ describe("a lane's instructions", () => {
 
 	it("are read at the session's start: an edit reaches the next session, not this one", async () => {
 		const { root, config } = world();
-		const dir = join(root, "data", "lanes", "Atlas");
+		const dir = join(root, "data", "agents", "Atlas");
 		writeInstructions(dir, "You are Atlas, first.\n");
 		const run = await pi(root, join(root, "agent-Atlas"), config);
 		const systems: string[] = [];
@@ -529,9 +529,9 @@ describe("a lane's instructions", () => {
 		expect(system).toContain("You are Atlas, second.");
 	});
 
-	it("come with the lane ORRERY_AGENT opens in a folder outside its workspace; a refused name gets none", async () => {
+	it("come with the agent ORRERY_AGENT opens in a folder outside its folder; a refused name gets none", async () => {
 		const { root, config } = world();
-		writeInstructions(join(root, "data", "lanes", "Atlas"), "You are Atlas, opened by name.\n");
+		writeInstructions(join(root, "data", "agents", "Atlas"), "You are Atlas, opened by name.\n");
 		const run = await pi(root, join(root, "plain"), config, undefined, { env: { ORRERY_AGENT: "Atlas" } });
 		let system = "";
 		run.setResponses([(context: Ctx) => ((system = systemText(context)), fauxAssistantMessage("Hi."))]);

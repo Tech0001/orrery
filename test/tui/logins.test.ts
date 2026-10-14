@@ -1,6 +1,6 @@
 import type { AuthInteraction } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import type { LoginRow } from "../../src/lane/logins.ts";
+import type { LoginRow } from "../../src/agent/logins.ts";
 import { loginsPage } from "../../src/tui/pages/logins.ts";
 import { signInInteraction } from "../../src/tui/signin.ts";
 import { answer, fakeDeps, keys, makeApp, screen, settle } from "./support.ts";
@@ -9,10 +9,10 @@ const ENTER = "\r";
 const DOWN = "\x1b[B";
 
 const LOGINS: LoginRow[] = [
-	{ group: "signin", name: "openai", provider: "openai", state: "saved", label: "ChatGPT", lanes: ["Alpha"] },
-	{ group: "key", name: "openai", provider: "openai-api", state: "not saved", label: "OpenAI", lanes: [] },
-	{ group: "key", name: "anthropic", provider: "anthropic", state: "not saved", label: "Anthropic", lanes: [] },
-	{ group: "key", name: "openrouter", provider: "openrouter", state: "not saved", label: "OpenRouter", lanes: [] },
+	{ group: "signin", name: "openai", provider: "openai", state: "saved", label: "ChatGPT", agents: ["Alpha"] },
+	{ group: "key", name: "openai", provider: "openai-api", state: "not saved", label: "OpenAI", agents: [] },
+	{ group: "key", name: "anthropic", provider: "anthropic", state: "not saved", label: "Anthropic", agents: [] },
+	{ group: "key", name: "openrouter", provider: "openrouter", state: "not saved", label: "OpenRouter", agents: [] },
 ];
 
 async function loginsApp(overrides = {}) {
@@ -24,7 +24,7 @@ async function loginsApp(overrides = {}) {
 }
 
 describe("the Logins page", () => {
-	it("lists each login, whether it is saved, and the lanes that use it", async () => {
+	it("lists each login, whether it is saved, and the agents that use it", async () => {
 		const { app } = await loginsApp();
 		const text = screen(app);
 		expect(text).toMatch(/Sign in · ChatGPT\s+saved\s+Alpha/);
@@ -33,14 +33,14 @@ describe("the Logins page", () => {
 
 	it("shows the Note column only when a row has a note, and then the full Used by list", async () => {
 		const names = ["Atlas", "Birch", "Elm", "Cedar", "Maple", "Aspen", "Olive", "Larch", "Willow", "Rowan"];
-		const { app } = await loginsApp({ loginRows: async () => [{ ...LOGINS[0], lanes: names }, ...LOGINS.slice(1)] });
+		const { app } = await loginsApp({ loginRows: async () => [{ ...LOGINS[0], agents: names }, ...LOGINS.slice(1)] });
 		const text = screen(app, 120);
 		expect(text).not.toContain("Note");
 		expect(text).toContain(names.join(", "));
 	});
 
 	it("shows the Note column when a local-server row has a key note", async () => {
-		const local: LoginRow = { group: "local", name: "mac", provider: "mac", state: "saved", label: "Mac", lanes: [] };
+		const local: LoginRow = { group: "local", name: "mac", provider: "mac", state: "saved", label: "Mac", agents: [] };
 		const { app } = await loginsApp({ loginRows: async () => [...LOGINS, local] });
 		const text = screen(app, 120);
 		expect(text).toContain("Note");
@@ -82,7 +82,7 @@ describe("the Logins page", () => {
 		expect(screen(app)).toContain("Signed in to ChatGPT.");
 	});
 
-	it("T tests with the model of a lane that uses the login", async () => {
+	it("T tests with the model of an agent that uses the login", async () => {
 		const tested: unknown[] = [];
 		const { app } = await loginsApp({ testChoice: async (_s: unknown, choice: unknown) => (tested.push(choice), { ok: true as const }) });
 		keys(app, "T");
@@ -91,7 +91,7 @@ describe("the Logins page", () => {
 		expect(screen(app)).toContain("Works: openai/gpt-6.1-sol answered.");
 	});
 
-	it("D asks first, naming the lanes that use it, then removes it", async () => {
+	it("D asks first, naming the agents that use it, then removes it", async () => {
 		const removed: unknown[] = [];
 		const { app } = await loginsApp({ removeLogin: async (_s: unknown, request: unknown) => (removed.push(request), "Removed the ChatGPT sign-in.\n") });
 		keys(app, "D");
@@ -101,9 +101,9 @@ describe("the Logins page", () => {
 		expect(screen(app)).toContain("Removed the ChatGPT sign-in.");
 	});
 
-	it("D lists every lane that uses the login and warns, even with many lanes", async () => {
-		const names = Array.from({ length: 11 }, (_, i) => `Laneabcdef${i}`);
-		const rows = [{ ...LOGINS[0], lanes: names }, ...LOGINS.slice(1)];
+	it("D lists every agent that uses the login and warns, even with many agents", async () => {
+		const names = Array.from({ length: 11 }, (_, i) => `Agentabcdef${i}`);
+		const rows = [{ ...LOGINS[0], agents: names }, ...LOGINS.slice(1)];
 		const { app } = await loginsApp({ loginRows: async () => rows });
 		keys(app, "D");
 		await settle();

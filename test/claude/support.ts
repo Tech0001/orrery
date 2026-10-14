@@ -6,9 +6,9 @@ import { join } from "node:path";
 import { gitEnv } from "../../src/claude/git.ts";
 import { type SpoolEvent, spoolEvent } from "../../src/claude/spool.ts";
 import { VIEW_IMPORT, writeSetupMarker } from "../../src/claude/view-file.ts";
-import { type HarnessConfig, type LaneConfig, parseConfig } from "../../src/lane/config.ts";
+import { type HarnessConfig, type AgentConfig, parseConfig } from "../../src/agent/config.ts";
 import { type Kind, MemoryStore } from "../../src/memory/index.ts";
-import { laneConfigToml, tempDir } from "../lane/support.ts";
+import { agentConfigToml, tempDir } from "../agent/support.ts";
 
 /** The CLI entry point, run by process tests as `node MAIN …`. */
 export const MAIN = new URL("../../src/cli/main.ts", import.meta.url).pathname;
@@ -21,45 +21,45 @@ export function cliCommand(args: readonly string[]): { cmd: string; args: string
 
 const dirs: string[] = [];
 
-/** Removes every folder testLane made (afterEach). */
+/** Removes every folder testAgent made (afterEach). */
 export function cleanupDirs(): void {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 }
 
-/** A temp lane: its folder, workspace, config file and parsed config. */
-export interface TestLane {
+/** A temp agent: its folder, folder, config file and parsed config. */
+export interface TestAgent {
 	readonly dir: string;
-	readonly workspace: string;
+	readonly folder: string;
 	readonly configPath: string;
 	readonly config: HarnessConfig;
-	/** Its workspace is always set. */
-	readonly lane: LaneConfig & { readonly workspace: string };
+	/** Its folder is always set. */
+	readonly agent: AgentConfig & { readonly folder: string };
 }
 
 /**
- * Lane "Test": workspace, data folder and config file in one temp folder. Its summary model (faux-compactor) is
+ * Agent "Test": folder, data folder and config file in one temp folder. Its summary model (faux-compactor) is
  * unknown to orrery's real registry, so a holder process runs with summaries off. `setup` does what claude-setup does:
- * a CLAUDE.md that imports the view, and the marker in the lane's data folder.
+ * a CLAUDE.md that imports the view, and the marker in the agent's data folder.
  */
-export function testLane(options: { setup?: boolean } = {}): TestLane {
+export function testAgent(options: { setup?: boolean } = {}): TestAgent {
 	const dir = tempDir("orrery-claude-");
 	dirs.push(dir);
-	const workspace = join(dir, "ws");
-	mkdirSync(workspace);
+	const folder = join(dir, "ws");
+	mkdirSync(folder);
 	const configPath = join(dir, "config.toml");
-	writeFileSync(configPath, laneConfigToml({ dataDir: join(dir, "data"), workspace }));
+	writeFileSync(configPath, agentConfigToml({ dataDir: join(dir, "data"), folder }));
 	const config = parseConfig(readFileSync(configPath, "utf8"), dir);
-	const lane = config.lanes.get("Test") as LaneConfig & { readonly workspace: string };
+	const agent = config.agents.get("Test") as AgentConfig & { readonly folder: string };
 	if (options.setup === true) {
-		writeFileSync(join(workspace, "CLAUDE.md"), `${VIEW_IMPORT}\n`);
-		writeSetupMarker(lane.dir, workspace, "CLAUDE.md");
+		writeFileSync(join(folder, "CLAUDE.md"), `${VIEW_IMPORT}\n`);
+		writeSetupMarker(agent.dir, folder, "CLAUDE.md");
 	}
-	return { dir, workspace, configPath, config, lane };
+	return { dir, folder, configPath, config, agent };
 }
 
-/** Puts messages (user, talk, user, …) into a lane's memory, as an earlier session would have. */
-export function seed(lane: LaneConfig, texts: readonly string[]): void {
-	const store = MemoryStore.open(join(lane.dir, "memory.sqlite"));
+/** Puts messages (user, talk, user, …) into an agent's memory, as an earlier session would have. */
+export function seed(agent: AgentConfig, texts: readonly string[]): void {
+	const store = MemoryStore.open(join(agent.dir, "memory.sqlite"));
 	try {
 		store.appendBatch(texts.map((text, i) => ({ kind: (i % 2 === 0 ? "user" : "talk") as Kind, text, date: `2026-10-07T10:0${i}:00.000Z` })));
 	} finally {
@@ -67,9 +67,9 @@ export function seed(lane: LaneConfig, texts: readonly string[]): void {
 	}
 }
 
-/** The lane's memory as "kind: text" lines, read-only. */
-export function messages(lane: LaneConfig): string[] {
-	const store = MemoryStore.openReadOnly(join(lane.dir, "memory.sqlite"));
+/** The agent's memory as "kind: text" lines, read-only. */
+export function messages(agent: AgentConfig): string[] {
+	const store = MemoryStore.openReadOnly(join(agent.dir, "memory.sqlite"));
 	try {
 		return store.root.map((m) => `${m.kind}: ${m.text}`);
 	} finally {
@@ -84,9 +84,9 @@ let clock = 0;
  * Spools an event as a hook would, a millisecond after the previous one so events sort as spooled. An explicit `at`
  * (an event from the past or the future) leaves that clock alone.
  */
-export function spool(lane: LaneConfig, session: string, event: Spooled, claudePid: number, at?: number): string {
+export function spool(agent: AgentConfig, session: string, event: Spooled, claudePid: number, at?: number): string {
 	if (at === undefined) clock = Math.max(clock + 1, Date.now());
-	return spoolEvent(lane.dir, session, { ...event, at: at ?? clock, claudePid } as SpoolEvent);
+	return spoolEvent(agent.dir, session, { ...event, at: at ?? clock, claudePid } as SpoolEvent);
 }
 
 /** Polls `check` (a throw counts as "not yet") until it holds, or fails after `ms`. */
@@ -153,7 +153,7 @@ export function withGit<T>(bin: string, run: () => T): T {
  * A folder holding a git that fails as no real check should be trusted to: exit 128, and not "not a git repository".
  * With `only`, it fails just that subcommand (say "check-ignore", as a timeout would) and runs the real git otherwise.
  */
-export function brokenGit(t: TestLane, only?: string): string {
+export function brokenGit(t: TestAgent, only?: string): string {
 	const bin = join(t.dir, `broken-git-${only ?? "all"}`);
 	mkdirSync(bin, { recursive: true });
 	const fail = "echo 'fatal: something else went wrong' >&2; exit 128";

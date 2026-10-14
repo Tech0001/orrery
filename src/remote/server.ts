@@ -5,10 +5,10 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import type { RemoteConfig } from "../lane/config.ts";
-import { ownFolder } from "../lane/private-file.ts";
-import { sshTarget } from "../lane/ssh-target.ts";
-import { safeText } from "../lane/source-labels.ts";
+import type { RemoteConfig } from "../agent/config.ts";
+import { ownFolder } from "../agent/private-file.ts";
+import { sshTarget } from "../agent/ssh-target.ts";
+import { safeText } from "../agent/source-labels.ts";
 import { SERVER_SCRIPT } from "./server-script.ts";
 import { CALL_TIMEOUT_MS, type FetchResult, type Holder, type LaneEntry, type LockState, RemoteError, type RemoteFile, sizedTimeoutMs, type Storage, type TakeResult } from "./types.ts";
 

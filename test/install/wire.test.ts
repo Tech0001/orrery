@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { pathAdvice, terminalConfirm } from "../../src/install/ask.ts";
 import { leftWarning, wire, wireReport } from "../../src/install/wire.ts";
-import { ompExtensionFile, ompExtensionText, piExtensionFile, piExtensionText } from "../../src/lane/tools.ts";
+import { ompExtensionFile, ompExtensionText, piExtensionFile, piExtensionText } from "../../src/agent/tools.ts";
 import { addVersion, cleanupScratch, fakeRun, installedScratch, pointCurrent, tempDir, VERSION, writePiExtension } from "./support.ts";
 
 afterEach(cleanupScratch);

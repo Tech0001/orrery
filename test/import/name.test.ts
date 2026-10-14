@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { suggestName } from "../../src/import/name.ts";
-import { laneNameProblem } from "../../src/lane/config.ts";
+import { agentNameProblem } from "../../src/agent/config.ts";
 
 describe("suggestName", () => {
 	it("makes a valid, free name from a chat's title", () => {
@@ -21,7 +21,7 @@ describe("suggestName", () => {
 		for (const [title, taken, want] of cases) {
 			const name = suggestName(title, taken);
 			expect(name, title).toBe(want);
-			expect(laneNameProblem(name), title).toBeUndefined();
+			expect(agentNameProblem(name), title).toBeUndefined();
 		}
 	});
 

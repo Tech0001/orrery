@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { installFrom } from "../../src/install/install.ts";
-import { piExtensionFile } from "../../src/lane/tools.ts";
+import { piExtensionFile } from "../../src/agent/tools.ts";
 import { cliCommand } from "../claude/support.ts";
 import { bunReady } from "../release/support.ts";
 import { cleanupScratch, fixtureRelease, scratchPath, systemCommand, tempDir, writePiExtension } from "./support.ts";
@@ -139,7 +139,7 @@ describe.skipIf(!hasScript)("questions under curl | sh", () => {
 		for (const typed of ["yes\n", "\x04"]) {
 			const declined = scratchWithForeignCommand();
 			const no = inTerminal(`${shellCommand("uninstall", "--purge")} < /dev/null`, typed, declined.env);
-			expect(no.stdout).toMatch(/This deletes every lane's memory, logins and backups in .*\. Type delete to go ahead:/);
+			expect(no.stdout).toMatch(/This deletes every agent's memory, logins and backups in .*\. Type delete to go ahead:/);
 			expect(no.stdout).toContain("Not uninstalled: you did not type delete; nothing changed.");
 			expect(no.status).toBe(1);
 			expect(existsSync(join(declined.env.ORRERY_HOME as string, "app", "current"))).toBe(true);

@@ -12,13 +12,13 @@ import { afterAll, describe, expect, it } from "vitest";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { CloudflareStorage } from "../../src/remote/cloudflare.ts";
 import { createKey, unseal } from "../../src/remote/crypto.ts";
-import type { LaneSettings } from "../../src/remote/save-format.ts";
+import type { AgentSettings } from "../../src/remote/save-format.ts";
 import { RemoteSession, type RemoteSessionOptions } from "../../src/remote/session.ts";
 import type { Holder, Storage } from "../../src/remote/types.ts";
 
 const url = process.env.ORRERY_TEST_CF_URL;
 const tokenFile = process.env.ORRERY_TEST_CF_TOKEN_FILE;
-const settings: LaneSettings = { compactorModel: "openai/gpt-5.1-mini", compactorThinking: "low", tool: "pi" };
+const settings: AgentSettings = { compactorModel: "openai/gpt-5.1-mini", compactorThinking: "low", tool: "pi" };
 const pc: Holder = { machine: "pc", device: "device-pc-live", pid: process.pid };
 const mac: Holder = { machine: "macbook", device: "device-mac-live", pid: process.pid };
 
@@ -29,9 +29,9 @@ describe.skipIf(url === undefined || tokenFile === undefined)("cloudflare kind a
 	// Built only when the live settings are there: a skipped describe still runs its body.
 	const storage = (url === undefined || tokenFile === undefined ? undefined : new CloudflareStorage({ name: "live", kind: "cloudflare", url }, readFileSync(tokenFile, "utf8").trim())) as Storage;
 	const key = createKey();
-	const machine = (name: string, holder: Holder): RemoteSessionOptions => ({ lane, laneDir: join(root, name, lane), storage, key, holder, report: () => {}, renewMs: 0, settings });
+	const machine = (name: string, holder: Holder): RemoteSessionOptions => ({ agent: lane, agentDir: join(root, name, lane), storage, key, holder, report: () => {}, renewMs: 0, settings });
 	const texts = (o: RemoteSessionOptions) => {
-		const store = MemoryStore.openReadOnly(join(o.laneDir, "memory.sqlite"));
+		const store = MemoryStore.openReadOnly(join(o.agentDir, "memory.sqlite"));
 		try {
 			return store.root.map((m) => m.text);
 		} finally {
@@ -50,14 +50,14 @@ describe.skipIf(url === undefined || tokenFile === undefined)("cloudflare kind a
 
 	it("moves a lane between two machines through the real Worker, refusing a second holder", async () => {
 		const a = machine("pc", pc);
-		const seed = MemoryStore.open(join(a.laneDir, "memory.sqlite"));
+		const seed = MemoryStore.open(join(a.agentDir, "memory.sqlite"));
 		seed.append("user", "written on the pc");
 		seed.close();
 		await RemoteSession.push(a);
 
 		const b = machine("mac", mac);
 		const onMac = await RemoteSession.checkOut(b);
-		const macStore = MemoryStore.open(join(b.laneDir, "memory.sqlite"));
+		const macStore = MemoryStore.open(join(b.agentDir, "memory.sqlite"));
 		onMac.attach(macStore);
 		expect(macStore.root.map((m) => m.text)).toEqual(["written on the pc"]);
 		macStore.append("talk", "written on the macbook");

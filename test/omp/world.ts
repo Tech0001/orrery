@@ -7,7 +7,7 @@
 
 import { dirname } from "node:path";
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import type { HarnessConfig } from "../../src/lane/config.ts";
+import type { HarnessConfig } from "../../src/agent/config.ts";
 import { createOrrery, type OrreryOptions } from "../../src/pi/index.ts";
 import type { Notice } from "../pi/harness.ts";
 import { scratchHome, summarySourcesFor } from "../pi/world.ts";
@@ -120,7 +120,7 @@ export function fakeOmp(cwd: string, factories: readonly ExtensionFactory[], opt
 
 const hosts: FakeOmp[] = [];
 
-/** Ends `host`'s session at cleanup (ompCleanup), releasing its lane lock. */
+/** Ends `host`'s session at cleanup (ompCleanup), releasing its agent lock. */
 export function track(host: FakeOmp): FakeOmp {
 	hosts.push(host);
 	return host;

@@ -12,7 +12,7 @@
  * - only the remote's copy changed: the file gets it, and the person is told;
  * - only this machine's file changed: the store gets it, and the next save sends it;
  * - both changed: the remote's wins, this machine's is kept as instructions-unsaved-<time>.md beside it, and the person
- *   is told (as unsaved memory is, spec 2026-10-12-remote-lanes-design §5.9). A machine that never agreed with the
+ *   is told (as unsaved memory is, spec 2026-10-12-remote-agents-design §5.9). A machine that never agreed with the
  *   remote counts as changed when its file holds other text, and as never having had any when it holds none.
  * Instructions taken away travel when the file is emptied (blank): that is "none", and another machine keeps its copy
  * aside when the empty one arrives. A deleted file does not travel: the remote's copy comes back at the next check-out,
@@ -23,7 +23,7 @@
  * replaced, and each check-out says to shorten it. Something other than a readable file in instructions.md's place is
  * never replaced either.
  *
- * Older builds' `orrery run` kept the workspace's AGENTS.md under the store key "instructions" and wrote it at every
+ * Older builds' `orrery run` kept the folder's AGENTS.md under the store key "instructions" and wrote it at every
  * start; that key travels too, with a meaning of its own, so this copy has a key of its own, and "instructions" is
  * neither read nor written.
  */
@@ -31,8 +31,8 @@
 import { createHash } from "node:crypto";
 import { closeSync, openSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { readWholeInstructions, writeInstructions } from "../lane/instructions.ts";
-import { writePrivate } from "../lane/private-file.ts";
+import { readWholeInstructions, writeInstructions } from "../agent/instructions.ts";
+import { writePrivate } from "../agent/private-file.ts";
 import type { MemoryStore, StoreMarks } from "../memory/store.ts";
 
 export const INSTRUCTIONS_KEY = "agent.instructions";
@@ -45,13 +45,13 @@ const instructionsHash = (text: string): string => createHash("sha256").update(t
 
 const stamp = (ms: number) => new Date(ms).toISOString().replaceAll(":", "-");
 
-const tooLargeNotice = (lane: string) =>
-	`Orrery: ${lane}'s instructions.md is over 256 KB, so it stays on this machine and does not travel with its memory; shorten it to share it.`;
+const tooLargeNotice = (agent: string) =>
+	`Orrery: ${agent}'s instructions.md is over 256 KB, so it stays on this machine and does not travel with its memory; shorten it to share it.`;
 
 /** The hash this machine last agreed on with the remote, or undefined when it never did (or the record is damaged). */
-function agreed(laneDir: string): string | undefined {
+function agreed(agentDir: string): string | undefined {
 	try {
-		const text = readFileSync(join(laneDir, SYNCED_FILE), "utf8").trim();
+		const text = readFileSync(join(agentDir, SYNCED_FILE), "utf8").trim();
 		return /^[0-9a-f]{64}$/.test(text) ? text : undefined;
 	} catch {
 		return undefined;
@@ -59,24 +59,24 @@ function agreed(laneDir: string): string | undefined {
 }
 
 /** Records that this machine's file and the remote agree on the text with this hash. */
-export function agreeOn(laneDir: string, hash: string): void {
-	if (agreed(laneDir) !== hash) writePrivate(join(laneDir, SYNCED_FILE), `${hash}\n`);
+export function agreeOn(agentDir: string, hash: string): void {
+	if (agreed(agentDir) !== hash) writePrivate(join(agentDir, SYNCED_FILE), `${hash}\n`);
 }
 
 /** This machine's memory was set aside as foreign: what it agreed on belongs to another history. */
-export function forgetAgreement(laneDir: string): void {
-	rmSync(join(laneDir, SYNCED_FILE), { force: true });
+export function forgetAgreement(agentDir: string): void {
+	rmSync(join(agentDir, SYNCED_FILE), { force: true });
 }
 
 /**
  * This machine's own unsaved rows reached the remote at a check-out (sent, or a save found there whose reply was lost):
  * the instructions they changed came from this machine's file, and count as agreed before the file is settled.
  */
-export function agreeOnOwnRows(laneDir: string, before: StoreMarks, after: StoreMarks): void {
+export function agreeOnOwnRows(agentDir: string, before: StoreMarks, after: StoreMarks): void {
 	const sent = after.meta[INSTRUCTIONS_KEY];
 	if (sent === undefined || sent === before.meta[INSTRUCTIONS_KEY]) return;
 	try {
-		agreeOn(laneDir, sent);
+		agreeOn(agentDir, sent);
 	} catch {
 		// Not recorded: the settling compares the texts as before; at worst this machine's newer edit is kept aside.
 	}
@@ -89,10 +89,10 @@ function storeCopy(store: MemoryStore): string {
 }
 
 /** Keeps this machine's text in a new instructions-unsaved-<time>.md beside instructions.md; never replaces one. */
-function keepAside(laneDir: string, text: string, now: number): string {
+function keepAside(agentDir: string, text: string, now: number): string {
 	const name = `instructions-unsaved-${stamp(now)}`;
 	for (let n = 1; ; n++) {
-		const path = join(laneDir, n === 1 ? `${name}.md` : `${name}-${n}.md`);
+		const path = join(agentDir, n === 1 ? `${name}.md` : `${name}-${n}.md`);
 		try {
 			closeSync(openSync(path, "wx", 0o600));
 		} catch (error) {
@@ -121,18 +121,18 @@ export interface SettledInstructions {
  * `foreign`: this check-out set the memory on this machine aside as another history's (or a rolled-back one's). The
  * file came with that memory, so it is never sent: the remote's copy is taken, and this machine's is kept aside.
  */
-export function settleInstructions(store: MemoryStore, laneDir: string, lane: string, now: number, report: (message: string) => void, foreign = false): SettledInstructions | undefined {
-	const found = readWholeInstructions(laneDir, TRAVEL_MAX_BYTES);
+export function settleInstructions(store: MemoryStore, agentDir: string, agent: string, now: number, report: (message: string) => void, foreign = false): SettledInstructions | undefined {
+	const found = readWholeInstructions(agentDir, TRAVEL_MAX_BYTES);
 	if (found !== undefined && "tooLarge" in found) {
-		report(tooLargeNotice(lane));
+		report(tooLargeNotice(agent));
 		return undefined;
 	}
 	const local = found?.text;
 	const remote = storeCopy(store);
-	const last = agreed(laneDir);
+	const last = agreed(agentDir);
 	const take = (message?: string): SettledInstructions => {
-		writeInstructions(laneDir, remote);
-		agreeOn(laneDir, instructionsHash(remote));
+		writeInstructions(agentDir, remote);
+		agreeOn(agentDir, instructionsHash(remote));
 		if (message !== undefined) report(message);
 		return { hash: instructionsHash(remote) };
 	};
@@ -143,25 +143,25 @@ export function settleInstructions(store: MemoryStore, laneDir: string, lane: st
 
 	if (foreign) {
 		if (local === remote) {
-			agreeOn(laneDir, instructionsHash(local));
+			agreeOn(agentDir, instructionsHash(local));
 			return { hash: instructionsHash(local) };
 		}
 		if (local === undefined && remote === "") return { hash: instructionsHash("") };
 		if (local === undefined || local === "") return take();
-		const aside = keepAside(laneDir, local, now);
+		const aside = keepAside(agentDir, local, now);
 		const used = remote === "" ? "this memory has none, so the file is now empty" : "the copy that travels with this memory is used now";
-		return take(`Orrery: ${lane}'s instructions.md here came with the memory set aside; ${used}, and this machine's is kept in ${aside}.`);
+		return take(`Orrery: ${agent}'s instructions.md here came with the memory set aside; ${used}, and this machine's is kept in ${aside}.`);
 	}
 	if (local === undefined) {
 		// No file: a machine that never had one, or one deleted here. Neither travels; the remote's copy comes (back).
 		if (remote === "") {
-			if (last !== undefined) agreeOn(laneDir, instructionsHash(""));
+			if (last !== undefined) agreeOn(agentDir, instructionsHash(""));
 			return { hash: instructionsHash("") };
 		}
-		return take(last === undefined ? undefined : `Orrery: ${lane}'s instructions.md was deleted here; the copy that travels with its memory is back. To take the instructions away, empty the file instead.`);
+		return take(last === undefined ? undefined : `Orrery: ${agent}'s instructions.md was deleted here; the copy that travels with its memory is back. To take the instructions away, empty the file instead.`);
 	}
 	if (local === remote) {
-		agreeOn(laneDir, instructionsHash(local));
+		agreeOn(agentDir, instructionsHash(local));
 		return { hash: instructionsHash(local) };
 	}
 	if (last === undefined) {
@@ -170,20 +170,20 @@ export function settleInstructions(store: MemoryStore, laneDir: string, lane: st
 		if (remote === "") return send(local);
 	} else {
 		if (instructionsHash(local) === last) {
-			if (remote !== "") return take(`Orrery: ${lane}'s instructions were changed on another machine; this machine now has them.`);
+			if (remote !== "") return take(`Orrery: ${agent}'s instructions were changed on another machine; this machine now has them.`);
 			// Cleared on purpose elsewhere: this machine's copy is kept, in case that was a slip.
-			const aside = keepAside(laneDir, local, now);
-			return take(`Orrery: ${lane}'s instructions were cleared on another machine; this machine's copy is kept in ${aside}.`);
+			const aside = keepAside(agentDir, local, now);
+			return take(`Orrery: ${agent}'s instructions were cleared on another machine; this machine's copy is kept in ${aside}.`);
 		}
 		if (instructionsHash(remote) === last) return send(local);
 	}
 	// Both changed (or this machine never agreed with this history): the remote's copy wins, and this machine's is kept.
-	const aside = local === "" ? undefined : keepAside(laneDir, local, now);
+	const aside = local === "" ? undefined : keepAside(agentDir, local, now);
 	if (last === undefined && aside !== undefined) {
-		return take(`Orrery: ${lane}'s instructions.md here is not the copy that travels with its memory; that copy is used now, and this machine's is kept in ${aside}.`);
+		return take(`Orrery: ${agent}'s instructions.md here is not the copy that travels with its memory; that copy is used now, and this machine's is kept in ${aside}.`);
 	}
 	const theirs = remote === "" ? "the other machine cleared them" : "the other machine's are kept";
-	return take(`Orrery: ${lane}'s instructions were changed both here and on another machine; ${theirs}${aside === undefined ? "." : `, and this machine's are in ${aside}.`}`);
+	return take(`Orrery: ${agent}'s instructions were changed both here and on another machine; ${theirs}${aside === undefined ? "." : `, and this machine's are in ${aside}.`}`);
 }
 
 /**
@@ -193,11 +193,11 @@ export function settleInstructions(store: MemoryStore, laneDir: string, lane: st
  * TRAVEL_MAX_BYTES is not sent, and the person is told. Returns the hash put in, agreed once the save carrying it is
  * acknowledged.
  */
-export function instructionsIntoStore(store: MemoryStore, laneDir: string, settled: string, lane: string, report: (message: string) => void): string | undefined {
-	const found = readWholeInstructions(laneDir, TRAVEL_MAX_BYTES);
+export function instructionsIntoStore(store: MemoryStore, agentDir: string, settled: string, agent: string, report: (message: string) => void): string | undefined {
+	const found = readWholeInstructions(agentDir, TRAVEL_MAX_BYTES);
 	if (found === undefined) return undefined;
 	if ("tooLarge" in found) {
-		report(tooLargeNotice(lane));
+		report(tooLargeNotice(agent));
 		return undefined;
 	}
 	const local = found.text;
@@ -212,10 +212,10 @@ export function instructionsIntoStore(store: MemoryStore, laneDir: string, settl
  * push puts `text` into its snapshot, and into the store once it has landed, then agrees on `hash` (undefined when the
  * file stays this machine's alone).
  */
-export function pushInstructions(laneDir: string, lane: string, report: (message: string) => void): { readonly text: string; readonly hash?: string } {
-	const found = readWholeInstructions(laneDir, TRAVEL_MAX_BYTES);
+export function pushInstructions(agentDir: string, agent: string, report: (message: string) => void): { readonly text: string; readonly hash?: string } {
+	const found = readWholeInstructions(agentDir, TRAVEL_MAX_BYTES);
 	if (found !== undefined && "tooLarge" in found) {
-		report(tooLargeNotice(lane));
+		report(tooLargeNotice(agent));
 		return { text: "" };
 	}
 	const text = found?.text ?? "";

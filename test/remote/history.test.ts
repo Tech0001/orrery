@@ -1,6 +1,6 @@
 /**
- * A remote lane's history has an identity: a check-out whose remote holds another history under the same remote and
- * lane name (the lane removed and pushed again, or the remote replaced) keeps this machine's memory and instructions
+ * A remote agent's history has an identity: a check-out whose remote holds another history under the same remote and
+ * agent name (the agent removed and pushed again, or the remote replaced) keeps this machine's memory and instructions
  * aside instead of replacing them silently.
  */
 import { randomBytes } from "node:crypto";
@@ -47,7 +47,7 @@ type Remote = { readonly storage: FakeStorage; readonly key: Uint8Array };
 const db = (m: Machine) => join(m.dir, "memory.sqlite");
 
 async function hold(remote: Remote, m: Machine): Promise<{ session: RemoteSession; store: MemoryStore }> {
-	const session = await RemoteSession.checkOut({ lane: "Atlas", laneDir: m.dir, storage: remote.storage, key: remote.key, holder: m.holder, report: (text) => m.reports.push(text), settings, renewMs: 0, confirmTakeover: async () => true });
+	const session = await RemoteSession.checkOut({ agent: "Atlas", agentDir: m.dir, storage: remote.storage, key: remote.key, holder: m.holder, report: (text) => m.reports.push(text), settings, renewMs: 0, confirmTakeover: async () => true });
 	const store = MemoryStore.open(db(m));
 	session.attach(store);
 	return { session, store };
@@ -109,7 +109,7 @@ function identity(m: Machine): { id: string | undefined; recorded: string | unde
 async function remoteMeta(s: Scene, key: string): Promise<string | undefined> {
 	rmSync(s.probe.dir, { recursive: true, force: true });
 	mkdirSync(s.probe.dir);
-	const session = await RemoteSession.checkOut({ lane: "Atlas", laneDir: s.probe.dir, storage: s.storage, key: s.key, holder: s.probe.holder, report: () => {}, settings, renewMs: 0 });
+	const session = await RemoteSession.checkOut({ agent: "Atlas", agentDir: s.probe.dir, storage: s.storage, key: s.key, holder: s.probe.holder, report: () => {}, settings, renewMs: 0 });
 	await session.close();
 	const store = MemoryStore.openReadOnly(db(s.probe));
 	try {
@@ -124,7 +124,7 @@ async function push(remote: Remote, m: Machine, turn: string, instructions?: str
 	store.append("user", turn);
 	store.close();
 	if (instructions !== undefined) writeFileSync(join(m.dir, "instructions.md"), instructions);
-	await RemoteSession.push({ lane: "Atlas", laneDir: m.dir, storage: remote.storage, key: remote.key, holder: m.holder, report: (text) => m.reports.push(text), settings });
+	await RemoteSession.push({ agent: "Atlas", agentDir: m.dir, storage: remote.storage, key: remote.key, holder: m.holder, report: (text) => m.reports.push(text), settings });
 }
 
 /** A push by a build from before history identities: a snapshot 0 of a store with no identity. */
@@ -151,7 +151,7 @@ async function backupOf(s: Scene): Promise<Remote> {
 	return backup;
 }
 
-/** The lane is taken off the remote (orrery lane local --delete-remote on some machine). */
+/** The agent is taken off the remote (orrery agent local --delete-remote on some machine). */
 async function drop(remote: Remote, m: Machine): Promise<void> {
 	const taken = await remote.storage.take("Atlas", m.holder, { force: true });
 	if (!taken.ok) throw new Error("held");
@@ -172,7 +172,7 @@ const keptInstructions = (m: Machine) => readdirSync(m.dir).filter((name) => nam
 const instructions = (m: Machine) => readFileSync(join(m.dir, "instructions.md"), "utf8");
 
 describe("another history under the same names", () => {
-	it("the lane removed from the remote and pushed again: this machine's memory and instructions are kept aside, with true notices", async () => {
+	it("the agent removed from the remote and pushed again: this machine's memory and instructions are kept aside, with true notices", async () => {
 		const s = scene();
 		await push(s, s.pc, "a PC turn", "X the agreed text\n");
 		await open(s, s.mac, "a Mac turn");
@@ -190,7 +190,7 @@ describe("another history under the same names", () => {
 		const instructionsAside = join(s.mac.dir, keptInstructions(s.mac)[0] as string);
 		expect(readFileSync(instructionsAside, "utf8")).toBe("X the agreed text\n");
 		expect(s.mac.reports).toEqual([
-			`Orrery: Atlas: home holds another history of it now (pushed there again, or a replaced remote); the memory on this machine was kept aside as ${aside}, and the lane now uses home's copy.`,
+			`Orrery: Atlas: home holds another history of it now (pushed there again, or a replaced remote); the memory on this machine was kept aside as ${aside}, and the agent now uses home's copy.`,
 			`Orrery: Atlas's instructions.md here came with the memory set aside; the copy that travels with this memory is used now, and this machine's is kept in ${instructionsAside}.`,
 		]);
 	});
@@ -229,7 +229,7 @@ describe("another history under the same names", () => {
 		const aside = join(s.mac.dir, keptMemory(s.mac)[0] as string);
 		expect(texts(aside)).toEqual(["a PC turn", "a second PC turn"]);
 		expect([...keptTurns(s.mac), ...keptInstructions(s.mac)]).toEqual([]);
-		expect(s.mac.reports).toEqual([`Orrery: Atlas: home's copy does not continue the one on this machine; the memory on this machine was kept aside as ${aside}, and the lane now uses home's copy.`]);
+		expect(s.mac.reports).toEqual([`Orrery: Atlas: home's copy does not continue the one on this machine; the memory on this machine was kept aside as ${aside}, and the agent now uses home's copy.`]);
 		s.mac.reports.length = 0;
 		await open(s, s.pc);
 		await open(s, s.mac);
@@ -241,7 +241,7 @@ describe("another history under the same names", () => {
 describe("a copy from before history identities", () => {
 	/** The Mac's working copy as an older build left it: checked out, its state and store without an identity. */
 	async function olderCheckOut(s: Scene): Promise<void> {
-		const session = await RemoteSession.checkOut({ lane: "Atlas", laneDir: s.mac.dir, storage: s.storage, key: s.key, holder: s.mac.holder, report: () => {}, settings, renewMs: 0 });
+		const session = await RemoteSession.checkOut({ agent: "Atlas", agentDir: s.mac.dir, storage: s.storage, key: s.key, holder: s.mac.holder, report: () => {}, settings, renewMs: 0 });
 		await session.close();
 		const sqlite = new DatabaseSync(db(s.mac));
 		try {
@@ -305,7 +305,7 @@ describe("round 3: what a copy can prove, and what a push leaves behind", () => 
 		const instructionsAside = join(s.mac.dir, keptInstructions(s.mac)[0] as string);
 		expect(readFileSync(instructionsAside, "utf8")).toBe("X the old Atlas\n");
 		expect(s.mac.reports).toEqual([
-			`Orrery: Atlas: home's copy could not be shown to continue the one on this machine; the memory on this machine was kept aside as ${aside}, and the lane now uses home's copy.`,
+			`Orrery: Atlas: home's copy could not be shown to continue the one on this machine; the memory on this machine was kept aside as ${aside}, and the agent now uses home's copy.`,
 			`Orrery: Atlas's instructions.md here came with the memory set aside; the copy that travels with this memory is used now, and this machine's is kept in ${instructionsAside}.`,
 		]);
 	});
@@ -407,7 +407,7 @@ describe("round 3: what a copy can prove, and what a push leaves behind", () => 
 		const store = MemoryStore.open(db(s.other));
 		store.append("user", "an unrelated turn");
 		store.close();
-		await RemoteSession.push({ lane: "Atlas", laneDir: s.other.dir, storage: s.storage, key: s.key, holder: s.other.holder, report: (text) => s.other.reports.push(text), settings });
+		await RemoteSession.push({ agent: "Atlas", agentDir: s.other.dir, storage: s.storage, key: s.key, holder: s.other.holder, report: (text) => s.other.reports.push(text), settings });
 		s.mac.reports.length = 0;
 		await open(s, s.mac);
 		expect(instructions(s.mac)).toBe("");
@@ -435,7 +435,7 @@ describe("round 3: what a copy can prove, and what a push leaves behind", () => 
 		expect(keptMemory(s.mac)).toHaveLength(1);
 		const aside = join(s.mac.dir, keptMemory(s.mac)[0] as string);
 		expect(texts(aside)).toEqual(["a PC turn", "Mac turn 1", "Mac turn 2", "Mac turn 3"]);
-		expect(s.mac.reports[0]).toBe(`Orrery: Atlas: home's copy is older than the one on this machine (rolled back, or restored from a backup), so this machine's newer saves are not on it; the memory on this machine was kept aside as ${aside}, and the lane now uses home's copy.`);
+		expect(s.mac.reports[0]).toBe(`Orrery: Atlas: home's copy is older than the one on this machine (rolled back, or restored from a backup), so this machine's newer saves are not on it; the memory on this machine was kept aside as ${aside}, and the agent now uses home's copy.`);
 	});
 });
 
@@ -467,14 +467,14 @@ describe("round 4: a rollback another machine has saved over", () => {
 			const instructionsAside = join(s.mac.dir, keptInstructions(s.mac)[0] as string);
 			expect(readFileSync(instructionsAside, "utf8")).toBe("v2 edited on the Mac\n");
 			expect(s.mac.reports).toEqual([
-				`Orrery: Atlas: home's copy does not continue the one on this machine; the memory on this machine was kept aside as ${aside}, and the lane now uses home's copy.`,
+				`Orrery: Atlas: home's copy does not continue the one on this machine; the memory on this machine was kept aside as ${aside}, and the agent now uses home's copy.`,
 				`Orrery: Atlas's instructions.md here came with the memory set aside; the copy that travels with this memory is used now, and this machine's is kept in ${instructionsAside}.`,
 			]);
 		});
 	}
 });
 
-describe("older-pushed lanes: identities given by two machines converge (guards)", () => {
+describe("older-pushed agents: identities given by two machines converge (guards)", () => {
 	it("a first attach whose save never landed, while another machine's landed: both end on one identity, nothing set aside", async () => {
 		const s = scene();
 		await olderPush(s, s.pc, "a PC turn");
@@ -522,7 +522,7 @@ describe("older-pushed lanes: identities given by two machines converge (guards)
 		await open(s, s.mac, "a Mac turn");
 		await open(s, s.other);
 		const fresh = s.probe;
-		const session = await RemoteSession.checkOut({ lane: "Atlas", laneDir: fresh.dir, storage: s.storage, key: s.key, holder: fresh.holder, report: () => {}, settings, renewMs: 0 });
+		const session = await RemoteSession.checkOut({ agent: "Atlas", agentDir: fresh.dir, storage: s.storage, key: s.key, holder: fresh.holder, report: () => {}, settings, renewMs: 0 });
 		await session.close();
 		withoutIdentity(fresh);
 		const online = offline(s);

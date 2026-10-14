@@ -3,11 +3,11 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { statusCommand } from "../../src/cli/commands.ts";
-import { parseConfig } from "../../src/lane/config.ts";
-import { runningRoot, versionLine, versionNumber } from "../../src/lane/running.ts";
+import { parseConfig } from "../../src/agent/config.ts";
+import { runningRoot, versionLine, versionNumber } from "../../src/agent/running.ts";
 import { localIso, MemoryStore } from "../../src/memory/index.ts";
 import { cliCommand } from "../claude/support.ts";
-import { laneConfigToml, tempDir } from "../lane/support.ts";
+import { agentConfigToml, tempDir } from "../agent/support.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -27,15 +27,15 @@ function spawnCli(args: string[]): SpawnSyncReturns<string> {
 }
 
 describe("orrery", () => {
-	it("prints status and usage for configured lanes without opening pi storage", () => {
+	it("prints status and usage for configured agents without opening pi storage", () => {
 		const dir = tempDir("orrery-main-");
 		dirs.push(dir);
 		const dataDir = join(dir, "data");
 		const configPath = join(dir, "config.toml");
-		writeFileSync(configPath, laneConfigToml({ dataDir, workspace: join(dir, "ws") }));
-		const laneDir = join(dataDir, "lanes", "Test");
-		mkdirSync(laneDir, { recursive: true });
-		const store = MemoryStore.open(join(laneDir, "memory.sqlite"));
+		writeFileSync(configPath, agentConfigToml({ dataDir, folder: join(dir, "ws") }));
+		const agentDir = join(dataDir, "agents", "Test");
+		mkdirSync(agentDir, { recursive: true });
+		const store = MemoryStore.open(join(agentDir, "memory.sqlite"));
 		store.appendBatch([{ kind: "user", text: "hello" }], {}, [
 			{ at: "2026-10-05T10:00:00.000-05:00", role: "agent", model: "openai/gpt-6.1-sol", input: 100, cacheRead: 50, cacheWrite: 0, output: 20, ok: true },
 			{ at: "2026-10-05T10:01:00.000-05:00", role: "compactor", model: "omlx/Bonsai", input: 30, cacheRead: 0, cacheWrite: 0, output: 5, ok: true },
@@ -53,7 +53,7 @@ describe("orrery", () => {
 	});
 
 	// A fresh install has no config anywhere: say where Orrery looks, not a raw ENOENT for the server path.
-	it.skipIf(existsSync("/etc/orrery/config.toml"))("status without any config says where Orrery looks and exits non-zero; an empty config lists no lanes", () => {
+	it.skipIf(existsSync("/etc/orrery/config.toml"))("status without any config says where Orrery looks and exits non-zero; an empty config lists no agents", () => {
 		const home = tempDir("orrery-main-");
 		dirs.push(home);
 		const c = cliCommand(["status"]);
@@ -65,7 +65,7 @@ describe("orrery", () => {
 		mkdirSync(join(home, ".orrery"));
 		writeFileSync(join(home, ".orrery", "config.toml"), "");
 		const empty = spawnSync(c.cmd, c.args, { encoding: "utf8", env });
-		expect({ status: empty.status, stdout: empty.stdout }).toEqual({ status: 0, stdout: "No lanes configured.\n" });
+		expect({ status: empty.status, stdout: empty.stdout }).toEqual({ status: 0, stdout: "No agents configured.\n" });
 	});
 
 	it("prints its version: a release's VERSION, or a checkout's package.json version and path", () => {
@@ -87,13 +87,13 @@ describe("orrery", () => {
 	it("strips control sequences from status.json text", () => {
 		const dir = tempDir("orrery-main-");
 		dirs.push(dir);
-		const config = parseConfig(laneConfigToml({ dataDir: join(dir, "data"), workspace: join(dir, "ws") }), dir);
-		const laneDir = join(dir, "data", "lanes", "Test");
-		mkdirSync(laneDir, { recursive: true });
+		const config = parseConfig(agentConfigToml({ dataDir: join(dir, "data"), folder: join(dir, "ws") }), dir);
+		const agentDir = join(dir, "data", "agents", "Test");
+		mkdirSync(agentDir, { recursive: true });
 		writeFileSync(
-			join(laneDir, "status.json"),
+			join(agentDir, "status.json"),
 			JSON.stringify({
-				lane: "Test", pid: process.pid, open: true, busy: false, model: "pi", thinking: "off",
+				agent: "Test", pid: process.pid, open: true, busy: false, model: "pi", thinking: "off",
 				compactor: { stopped: false, failing: 1, model: "m\x1b]0;evil\x07", thinking: "off", source: "config" },
 				trouble: { state: "failing", plain: "boom\x1b]52;c;ZXZpbA==\x07" }, lastError: null, updatedAt: localIso(),
 			}),
@@ -106,21 +106,21 @@ describe("orrery", () => {
 	it("prints status as JSON with --json", () => {
 		const dir = tempDir("orrery-main-");
 		dirs.push(dir);
-		const config = parseConfig(laneConfigToml({ dataDir: join(dir, "data"), workspace: join(dir, "ws") }), dir);
+		const config = parseConfig(agentConfigToml({ dataDir: join(dir, "data"), folder: join(dir, "ws") }), dir);
 		const parsed = JSON.parse(statusCommand(config, undefined, { json: true }));
-		expect(parsed.lanes[0].name).toBe("Test");
-		expect(parsed.lanes[0].lastBackup).toBeUndefined();
+		expect(parsed.agents[0].name).toBe("Test");
+		expect(parsed.agents[0].lastBackup).toBeUndefined();
 		mkdirSync(join(dir, "data", "backups", "2026-10-07", "Test"), { recursive: true });
-		expect(JSON.parse(statusCommand(config, undefined, { json: true })).lanes[0].lastBackup).toBe("2026-10-07");
+		expect(JSON.parse(statusCommand(config, undefined, { json: true })).agents[0].lastBackup).toBe("2026-10-07");
 	});
 
-	it("backs up every lane with memory, and rejects a bad --keep", () => {
+	it("backs up every agent with memory, and rejects a bad --keep", () => {
 		const dir = tempDir("orrery-main-");
 		dirs.push(dir);
 		const dataDir = join(dir, "data");
 		const configPath = join(dir, "config.toml");
-		writeFileSync(configPath, laneConfigToml({ dataDir, workspace: join(dir, "ws") }));
-		const store = MemoryStore.open(join(dataDir, "lanes", "Test", "memory.sqlite"));
+		writeFileSync(configPath, agentConfigToml({ dataDir, folder: join(dir, "ws") }));
+		const store = MemoryStore.open(join(dataDir, "agents", "Test", "memory.sqlite"));
 		store.appendBatch([{ kind: "user", text: "hello" }]);
 		store.close();
 		const out = runCli(["backup", "--config", configPath, "--keep", "3"]);
@@ -135,33 +135,33 @@ describe("orrery", () => {
 		const dir = tempDir("orrery-main-");
 		dirs.push(dir);
 		const configPath = join(dir, "config.toml");
-		writeFileSync(configPath, laneConfigToml({ dataDir: join(dir, "data"), workspace: join(dir, "ws") }));
+		writeFileSync(configPath, agentConfigToml({ dataDir: join(dir, "data"), folder: join(dir, "ws") }));
 		for (const days of ["0", "x", "1.5"]) {
 			const bad = spawnCli(["usage", "--config", configPath, "--days", days]);
 			expect(bad.status, days).toBe(1);
 			expect(bad.stderr).toContain("--days");
 		}
 		const config = parseConfig(readFileSync(configPath, "utf8"), dir);
-		const laneDir = config.lanes.get("Test")!.dir;
-		mkdirSync(laneDir, { recursive: true });
-		writeFileSync(join(laneDir, "status.json"), JSON.stringify({ pid: "x", busy: "yes" }));
+		const agentDir = config.agents.get("Test")!.dir;
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(join(agentDir, "status.json"), JSON.stringify({ pid: "x", busy: "yes" }));
 		expect(statusCommand(config)).toMatch(/Test\s+closed/);
-		writeFileSync(join(laneDir, "status.json"), JSON.stringify({ pid: process.pid, busy: false, model: 7 }));
+		writeFileSync(join(agentDir, "status.json"), JSON.stringify({ pid: process.pid, busy: false, model: 7 }));
 		expect(statusCommand(config)).toMatch(/Test\s+closed/);
 		// A live pid and a fresh time, but no compactor model, or a trouble without its words: still no crash.
-		const live = { lane: "Test", pid: process.pid, open: true, busy: false, model: "pi", thinking: "pi", lastError: null, updatedAt: localIso() };
-		writeFileSync(join(laneDir, "status.json"), JSON.stringify({ ...live, compactor: { stopped: false, failing: 0, thinking: "low", source: "config" }, trouble: null }));
+		const live = { agent: "Test", pid: process.pid, open: true, busy: false, model: "pi", thinking: "pi", lastError: null, updatedAt: localIso() };
+		writeFileSync(join(agentDir, "status.json"), JSON.stringify({ ...live, compactor: { stopped: false, failing: 0, thinking: "low", source: "config" }, trouble: null }));
 		expect(statusCommand(config)).toMatch(/Test\s+closed/);
-		writeFileSync(join(laneDir, "status.json"), JSON.stringify({ ...live, compactor: { stopped: false, failing: 1, model: "a/b", thinking: "low", source: "config" }, trouble: { state: "failing" } }));
+		writeFileSync(join(agentDir, "status.json"), JSON.stringify({ ...live, compactor: { stopped: false, failing: 1, model: "a/b", thinking: "low", source: "config" }, trouble: { state: "failing" } }));
 		expect(statusCommand(config)).toMatch(/Test\s+closed/);
-		expect(JSON.parse(statusCommand(config, undefined, { json: true })).lanes[0].state).toBe("closed");
+		expect(JSON.parse(statusCommand(config, undefined, { json: true })).agents[0].state).toBe("closed");
 	});
 
 	it("restore needs --from and names the missing backup", () => {
 		const dir = tempDir("orrery-main-");
 		dirs.push(dir);
 		const configPath = join(dir, "config.toml");
-		writeFileSync(configPath, laneConfigToml({ dataDir: join(dir, "data"), workspace: join(dir, "ws") }));
+		writeFileSync(configPath, agentConfigToml({ dataDir: join(dir, "data"), folder: join(dir, "ws") }));
 		const run = (args: string[]) => spawnCli([...args, "--config", configPath]);
 		expect(run(["restore", "Test"]).stderr).toContain("--from");
 		const missing = run(["restore", "Test", "--from", "2026-01-01"]);

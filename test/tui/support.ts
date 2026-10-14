@@ -1,16 +1,16 @@
-/** Fakes for TUI tests: an AppDeps that records what was asked of it, and lane rows. */
+/** Fakes for TUI tests: an AppDeps that records what was asked of it, and agent rows. */
 
-import type { HarnessConfig } from "../../src/lane/config.ts";
-import { parseConfig } from "../../src/lane/config.ts";
-import type { LaneRow } from "../../src/lane/overview.ts";
+import type { HarnessConfig } from "../../src/agent/config.ts";
+import { parseConfig } from "../../src/agent/config.ts";
+import type { AgentRow } from "../../src/agent/overview.ts";
 import { type AppDeps, App, type Page } from "../../src/tui/app.ts";
 import { PLAIN } from "../../src/tui/theme.ts";
 
 export const NOW = Date.parse("2026-10-08T12:00:00.000Z");
 
-export function row(fields: Partial<LaneRow> & { name: string }): LaneRow {
+export function row(fields: Partial<AgentRow> & { name: string }): AgentRow {
 	return {
-		tool: "pi", toolSet: true, state: "closed", workspace: `/w/${fields.name.toLowerCase()}`, dataDir: `/d/${fields.name}`,
+		tool: "pi", toolSet: true, state: "closed", folder: `/w/${fields.name.toLowerCase()}`, dataDir: `/d/${fields.name}`,
 		hasMemory: true, messages: 10, summaries: 19, viewBytes: 64_000, viewBudget: 128_000, summaryContextBytes: 32_000, summaryJobs: 4, compactAt: 200_000,
 		summary: { state: "ok", waiting: 0 }, summaryModel: { ref: "openai/gpt-6.1-sol", thinking: "low", source: "config" },
 		lastMessageAt: "2026-10-08T11:55:00.000Z", reads: [], instructions: "ok",
@@ -18,13 +18,13 @@ export function row(fields: Partial<LaneRow> & { name: string }): LaneRow {
 	};
 }
 
-export const CONFIG_TEXT = `data_dir = "/d"\n[lanes.Alpha]\nworkspace = "/w/alpha"\ncompactor_model = "openai/gpt-6.1-sol"\n[lanes.Cedarn]\nworkspace = "/w/cedarn"\ncompactor_model = "openai/gpt-6.1-sol"\n`;
+export const CONFIG_TEXT = `data_dir = "/d"\n[agents.Alpha]\nfolder = "/w/alpha"\ncompactor_model = "openai/gpt-6.1-sol"\n[agents.Cedarn]\nfolder = "/w/cedarn"\ncompactor_model = "openai/gpt-6.1-sol"\n`;
 export const CONFIG: HarnessConfig = parseConfig(CONFIG_TEXT, "/d");
 
 export type FakeDeps = AppDeps & { quits: number; edits: string[]; launched: string[]; instructions: [string, string][] };
 
 /** Every dependency answers with a harmless default; tests override what they exercise. */
-export function fakeDeps(overrides: Partial<AppDeps> = {}, rows: LaneRow[] = [row({ name: "Alpha" }), row({ name: "Cedarn" })]): FakeDeps {
+export function fakeDeps(overrides: Partial<AppDeps> = {}, rows: AgentRow[] = [row({ name: "Alpha" }), row({ name: "Cedarn" })]): FakeDeps {
 	let text = CONFIG_TEXT;
 	let config = CONFIG;
 	const deps = {
@@ -48,15 +48,15 @@ export function fakeDeps(overrides: Partial<AppDeps> = {}, rows: LaneRow[] = [ro
 		signIn: async () => {},
 		removeLogin: async () => "Removed.\n",
 		testChoice: async () => ({ ok: true as const }),
-		launch: async (plan: { lane: string }) => {
-			deps.launched.push(plan.lane);
+		launch: async (plan: { agent: string }) => {
+			deps.launched.push(plan.agent);
 			return { code: 0, signal: null };
 		},
 		applyFix: () => "fixed",
 		edit: async () => ({ code: 0, signal: null }),
 		install: () => ({ ok: true, output: "done\n" }),
 		installSteps: () => [],
-		browse: () => ({ path: "/d/lanes/Alpha/memory.html" }),
+		browse: () => ({ path: "/d/agents/Alpha/memory.html" }),
 		chats: () => ({ chats: [], bytesRead: 0 }),
 		importPreview: async () => {
 			throw new Error("no preview in this test");

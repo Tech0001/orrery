@@ -1,5 +1,5 @@
 /**
- * A remote lane's check-out (spec 2026-10-12-remote-lanes-design §5): take the lane's lock on its remote, bring the
+ * A remote agent's check-out (spec 2026-10-12-remote-agents-design §5): take the agent's lock on its remote, bring the
  * working copy up to the newest save, then save the rows added after each turn, renew the lock every minute, and
  * release it at close. A lock lost to another machine stops all writing; the working copy is never the remote's truth
  * unless this session holds the lock.
@@ -19,11 +19,11 @@ import { closeSync, existsSync, openSync, readFileSync, renameSync, rmSync } fro
 import { join } from "node:path";
 import { openDatabase, vacuumInto } from "../memory/sqlite.ts";
 import { holdWriterLock, MemoryStore, type StoreMarks, type StoreRows, type WriterLock } from "../memory/store.ts";
-import { processAlive } from "../lane/process.ts";
-import { writePrivate } from "../lane/private-file.ts";
+import { processAlive } from "../agent/process.ts";
+import { writePrivate } from "../agent/private-file.ts";
 import { seal, unseal } from "./crypto.ts";
 import { agreeOn, agreeOnOwnRows, forgetAgreement, INSTRUCTIONS_KEY, instructionsIntoStore, pushInstructions, type SettledInstructions, settleInstructions, SYNCED_FILE } from "./instructions-sync.ts";
-import { assertWrittenThrough, decodeRows, decodeSnapshot, encodeRows, encodeSnapshot, type LaneSettings, LOCAL_META_KEYS, makeHeader, restoreSnapshot, type SaveHeader, snapshotBytes } from "./save-format.ts";
+import { assertWrittenThrough, decodeRows, decodeSnapshot, encodeRows, encodeSnapshot, type AgentSettings, LOCAL_META_KEYS, makeHeader, restoreSnapshot, type SaveHeader, snapshotBytes } from "./save-format.ts";
 import {
 	type FetchResult,
 	type Holder,
@@ -40,22 +40,22 @@ import {
 export interface RemoteSessionOptions {
 	/** The caller's local writer reservation, held across checkout and the eventual writer open. */
 	readonly writer?: WriterLock;
-	readonly lane: string;
+	readonly agent: string;
 	/** Holds memory.sqlite and remote-state.json. */
-	readonly laneDir: string;
+	readonly agentDir: string;
 	readonly storage: Storage;
 	readonly key: Uint8Array;
 	readonly holder: Holder;
-	/** Asked when another machine's lock is stale; false (or no function) keeps the lane closed. */
+	/** Asked when another machine's lock is stale; false (or no function) keeps the agent closed. */
 	readonly confirmTakeover?: (held: LockState) => Promise<boolean>;
 	readonly report: (message: string) => void;
-	/** Called once when another machine took the lane over: the caller stops writing to the store. */
+	/** Called once when another machine took the agent over: the caller stops writing to the store. */
 	readonly onLost?: () => void;
 	readonly now?: () => number;
 	/** Default RENEW_MS; 0 disables the timer (tests call renew() by hand). */
 	readonly renewMs?: number;
-	/** The lane's config settings, carried in every snapshot's header for `orrery lane pull` (spec §4). */
-	readonly settings: LaneSettings;
+	/** The agent's config settings, carried in every snapshot's header for `orrery agent pull` (spec §4). */
+	readonly settings: AgentSettings;
 }
 
 /** A save sent but not acknowledged when the state was written: adopted at the next check-out if the remote has it. */
@@ -97,13 +97,13 @@ interface Unacked {
 }
 
 /**
- * Lanes this process has checked out, by remote and lane. A lock that names this very process while none is open here
+ * Agents this process has checked out, by remote and agent. A lock that names this very process while none is open here
  * was left by a release that failed (pi keeps its pid across /new and /reload): retaken without asking.
  */
 const OPEN_HERE = new Set<string>();
 
-function openKey(storage: Storage, lane: string): string {
-	return `${storage.name}/${lane}`;
+function openKey(storage: Storage, agent: string): string {
+	return `${storage.name}/${agent}`;
 }
 
 const STATE_FILE = "remote-state.json";
@@ -113,17 +113,17 @@ const DB_FILE = "memory.sqlite";
  * The store key holding the remote history's identity: a random id a first push writes, so it rides in every snapshot
  * and every working copy made from them. A history pushed by an older build gets one from its first writer's attach.
  * remote-state.json records it through its marks (the hash of every travelling metadata value the remote has), so a
- * check-out can tell this lane's history from another one under the same remote and lane name: the lane removed from
+ * check-out can tell this agent's history from another one under the same remote and agent name: the agent removed from
  * the remote and pushed again, or the remote replaced.
  */
 export const HISTORY_KEY = "remote.history";
 
 const newHistoryId = () => randomBytes(16).toString("hex");
-/** A command took and released the lane; the next checkout carries its source into the first save's audit. */
+/** A command took and released the agent; the next checkout carries its source into the first save's audit. */
 export const TAKEOVER_FILE = "takeover-from.json";
 
-function pendingTakeover(laneDir: string): string | undefined {
-	const path = join(laneDir, TAKEOVER_FILE);
+function pendingTakeover(agentDir: string): string | undefined {
+	const path = join(agentDir, TAKEOVER_FILE);
 	if (!existsSync(path)) return undefined;
 	try {
 		const value: unknown = JSON.parse(readFileSync(path, "utf8"));
@@ -149,8 +149,8 @@ function isLocalKey(key: string): boolean {
 	return LOCAL_META_KEYS.some((local) => (local.endsWith(".") ? key.startsWith(local) : key === local));
 }
 
-function readState(laneDir: string, remote: string): SessionState | undefined {
-	const path = join(laneDir, STATE_FILE);
+function readState(agentDir: string, remote: string): SessionState | undefined {
+	const path = join(agentDir, STATE_FILE);
 	if (!existsSync(path)) return undefined;
 	try {
 		const state = JSON.parse(readFileSync(path, "utf8")) as SessionState;
@@ -161,8 +161,8 @@ function readState(laneDir: string, remote: string): SessionState | undefined {
 	}
 }
 
-function writeState(laneDir: string, state: SessionState): void {
-	writePrivate(join(laneDir, STATE_FILE), `${JSON.stringify(state)}\n`);
+function writeState(agentDir: string, state: SessionState): void {
+	writePrivate(join(agentDir, STATE_FILE), `${JSON.stringify(state)}\n`);
 }
 
 /** Calls a caller's callback; a callback that throws (pi after shutdown) must never take a session down. */
@@ -175,8 +175,8 @@ function guarded(call: () => void): void {
 }
 
 /** Plain words for a lock someone else holds. */
-export function heldMessage(lane: string, held: LockState): string {
-	return `${lane} is open on ${held.holder.machine} (last seen ${hhmm(held.lastSeen)})`;
+export function heldMessage(agent: string, held: LockState): string {
+	return `${agent} is open on ${held.holder.machine} (last seen ${hhmm(held.lastSeen)})`;
 }
 
 /** Plain words for a failed save or renewal, for the footer. */
@@ -201,7 +201,7 @@ export class RemoteSession {
 	#snapshotAt: number;
 	#snapshotSha: string;
 	#bytesSinceSnapshot: number;
-	/** Set after a forced take: the first save names the machine it took the lane from. */
+	/** Set after a forced take: the first save names the machine it took the agent from. */
 	#takeoverFrom: string | undefined;
 	#store: MemoryStore | undefined;
 	/** The hash of the instructions the check-out settled the file and the store on; undefined when it did not settle them. */
@@ -221,7 +221,7 @@ export class RemoteSession {
 	private constructor(o: RemoteSessionOptions, lock: number, position: Position, takeoverFrom: string | undefined) {
 		this.#o = o;
 		this.#now = o.now ?? Date.now;
-		this.#dbPath = join(o.laneDir, DB_FILE);
+		this.#dbPath = join(o.agentDir, DB_FILE);
 		this.#lock = lock;
 		this.#save = position.save;
 		this.#sha = position.sha256;
@@ -233,7 +233,7 @@ export class RemoteSession {
 		this.#status = { remote: o.storage.name, state: "saved", savedAt: hhmm(this.#now()) };
 	}
 
-	/** True once another machine took the lane over: the caller must stop writing (close without a final save). */
+	/** True once another machine took the agent over: the caller must stop writing (close without a final save). */
 	get lost(): boolean {
 		return this.#lost;
 	}
@@ -247,18 +247,18 @@ export class RemoteSession {
 	 * unsaved changes go up first when nobody saved since; otherwise they are kept aside in unsaved-<time>.json.
 	 */
 	static async checkOut(o: RemoteSessionOptions): Promise<RemoteSession> {
-		const { storage, lane } = o;
-		// A lane that was never pushed: say so instead of creating an empty lane on the remote. Asking for saves past
-		// the largest number every kind accepts returns nothing for a lane that exists.
-		await storage.fetch(lane, MAX_REMOTE_NUMBER).catch((error: unknown) => {
+		const { storage, agent } = o;
+		// An agent that was never pushed: say so instead of creating an empty agent on the remote. Asking for saves past
+		// the largest number every kind accepts returns nothing for an agent that exists.
+		await storage.fetch(agent, MAX_REMOTE_NUMBER).catch((error: unknown) => {
 			if (error instanceof RemoteError && error.kind === "not-found") {
-				throw new RemoteError("not-found", `${lane} is not on remote ${storage.name} yet: run orrery lane push ${lane} --to ${storage.name}`);
+				throw new RemoteError("not-found", `${agent} is not on remote ${storage.name} yet: run orrery agent push ${agent} --to ${storage.name}`);
 			}
 			throw error;
 		});
 		const { lock, takeoverFrom } = await take(o);
 		try {
-			const pending = pendingTakeover(o.laneDir);
+			const pending = pendingTakeover(o.agentDir);
 			const takeover = { from: takeoverFrom ?? pending };
 			const outcome = { foreign: false };
 			const position = await bringUpToDate(o, lock, takeover, outcome);
@@ -266,78 +266,78 @@ export class RemoteSession {
 			const session = new RemoteSession(o, lock, position, takeover.from);
 			session.#instructions = settled?.hash;
 			session.#instructionsSent = settled?.sent;
-			writeState(o.laneDir, session.#state());
-			if (pending !== undefined) rmSync(join(o.laneDir, TAKEOVER_FILE));
-			OPEN_HERE.add(openKey(storage, lane));
+			writeState(o.agentDir, session.#state());
+			if (pending !== undefined) rmSync(join(o.agentDir, TAKEOVER_FILE));
+			OPEN_HERE.add(openKey(storage, agent));
 			return session;
 		} catch (error) {
-			await storage.release(lane, lock).catch(() => {});
+			await storage.release(agent, lock).catch(() => {});
 			throw error;
 		}
 	}
 
 	/**
-	 * First push of a local lane: take (creates the lane), snapshot 0 of the current database, release. A lane left on
+	 * First push of a local agent: take (creates the agent), snapshot 0 of the current database, release. An agent left on
 	 * the remote by a push that failed before its snapshot (no snapshot, no saves) is taken over by the next push.
 	 */
 	static async push(o: Omit<RemoteSessionOptions, "confirmTakeover">): Promise<void> {
-		const { storage, lane } = o;
-		if ((await storage.list()).some((entry) => entry.lane === lane)) {
-			const empty = await storage.fetch(lane, -1).then((f) => f.snapshot === undefined && f.newestSave === 0, () => false);
-			if (!empty) throw new RemoteError("refused", `${lane} is already on remote ${storage.name}; use orrery lane pull`);
+		const { storage, agent } = o;
+		if ((await storage.list()).some((entry) => entry.lane === agent)) {
+			const empty = await storage.fetch(agent, -1).then((f) => f.snapshot === undefined && f.newestSave === 0, () => false);
+			if (!empty) throw new RemoteError("refused", `${agent} is already on remote ${storage.name}; use orrery agent pull`);
 		}
-		const dbPath = join(o.laneDir, DB_FILE);
+		const dbPath = join(o.agentDir, DB_FILE);
 		let store: MemoryStore;
 		try {
 			store = MemoryStore.open(dbPath, o.writer);
 		} catch (error) {
-			if (/already open/i.test(String(error))) throw new RemoteError("held", `${lane} is open on this machine; close it first`);
+			if (/already open/i.test(String(error))) throw new RemoteError("held", `${agent} is open on this machine; close it first`);
 			throw error;
 		}
 		try {
 			// A first push sends this machine's instructions.md as the agent's (none when there is no file).
 			let instructions: { readonly text: string; readonly hash?: string };
 			try {
-				instructions = pushInstructions(o.laneDir, lane, (message) => guarded(() => o.report(message)));
+				instructions = pushInstructions(o.agentDir, agent, (message) => guarded(() => o.report(message)));
 			} catch (error) {
-				throw new Error(`${lane}'s instructions.md can't be read (${error instanceof Error ? error.message : String(error)}); fix or remove it, then push again.`, { cause: error });
+				throw new Error(`${agent}'s instructions.md can't be read (${error instanceof Error ? error.message : String(error)}); fix or remove it, then push again.`, { cause: error });
 			}
 			// A push starts a new history with an identity of its own. Its values go into the snapshot only; the working copy
 			// takes them once the push has landed, so a push that fails leaves nothing behind that another remote could get.
 			const values: Record<string, string> = { [HISTORY_KEY]: newHistoryId() };
 			if ((store.getMeta(INSTRUCTIONS_KEY) ?? "") !== instructions.text) values[INSTRUCTIONS_KEY] = instructions.text;
-			const taken = await storage.take(lane, o.holder, { force: true });
-			if (!taken.ok) throw new RemoteError("held", heldMessage(lane, taken.held));
+			const taken = await storage.take(agent, o.holder, { force: true });
+			if (!taken.ok) throw new RemoteError("held", heldMessage(agent, taken.held));
 			let pushed = false;
 			try {
 				const now = (o.now ?? Date.now)();
 				const plain = encodeSnapshot({ v: 1, n: 0, lock: taken.lock, machine: o.holder.machine, at: new Date(now).toISOString(), settings: o.settings }, snapshotBytes(dbPath, values));
-				const sealed = seal(o.key, lane, "snapshot", 0, plain);
-				await storage.snapshot(lane, taken.lock, 0, sealed);
+				const sealed = seal(o.key, agent, "snapshot", 0, plain);
+				await storage.snapshot(agent, taken.lock, 0, sealed);
 				pushed = true;
 				// Landed: the working copy is the snapshot now (nothing else writes while the push holds it).
 				for (const [key, value] of Object.entries(values)) store.setMeta(key, value);
-				writeState(o.laneDir, { v: 1, remote: storage.name, lock: taken.lock, save: 0, sha256: "", marks: store.marks(), snapshotAt: 0, snapshotSha: sha256(sealed), bytesSinceSnapshot: 0 });
+				writeState(o.agentDir, { v: 1, remote: storage.name, lock: taken.lock, save: 0, sha256: "", marks: store.marks(), snapshotAt: 0, snapshotSha: sha256(sealed), bytesSinceSnapshot: 0 });
 				// Nothing this folder agreed on before holds in the new history.
 				if (instructions.hash === undefined) forget(o);
 				else {
 					try {
-						agreeOn(o.laneDir, instructions.hash);
+						agreeOn(o.agentDir, instructions.hash);
 					} catch {
 						forget(o);
 					}
 				}
 			} finally {
-				// A lane without its first snapshot can't be opened anywhere: take it off the remote again.
-				if (!pushed) await storage.drop(lane, taken.lock).catch(() => {});
-				else await storage.release(lane, taken.lock).catch(() => {});
+				// An agent without its first snapshot can't be opened anywhere: take it off the remote again.
+				if (!pushed) await storage.drop(agent, taken.lock).catch(() => {});
+				else await storage.release(agent, taken.lock).catch(() => {});
 			}
 		} finally {
 			store.close();
 		}
 	}
 
-	/** Called with the lane's open store. Renews at once (a long fetch may have used part of the stale time), then every minute. */
+	/** Called with the agent's open store. Renews at once (a long fetch may have used part of the stale time), then every minute. */
 	attach(store: MemoryStore): void {
 		this.#store = store;
 		// A history pushed by an older build has no identity yet: its first writer gives it one, with its next save.
@@ -369,7 +369,7 @@ export class RemoteSession {
 	async renew(): Promise<void> {
 		if (this.#lost || this.#closing || this.#closed) return;
 		try {
-			await this.#o.storage.renew(this.#o.lane, this.#lock);
+			await this.#o.storage.renew(this.#o.agent, this.#lock);
 		} catch (error) {
 			// A renewal still in flight when close() released the lock is not a takeover.
 			if (this.#closing || this.#closed) return;
@@ -389,16 +389,16 @@ export class RemoteSession {
 				await this.save();
 				if (!this.#lost) {
 					try {
-						await this.#o.storage.release(this.#o.lane, this.#lock);
+						await this.#o.storage.release(this.#o.agent, this.#lock);
 					} catch (error) {
-						guarded(() => this.#o.report(`Orrery: ${this.#o.lane}: releasing its lock on ${this.#o.storage.name} failed (${reasonOf(error)}); it frees itself in 3 minutes.`));
+						guarded(() => this.#o.report(`Orrery: ${this.#o.agent}: releasing its lock on ${this.#o.storage.name} failed (${reasonOf(error)}); it frees itself in 3 minutes.`));
 					}
 				}
 			}
 		} finally {
 			this.#closed = true;
 			this.#store = undefined;
-			OPEN_HERE.delete(openKey(this.#o.storage, this.#o.lane));
+			OPEN_HERE.delete(openKey(this.#o.storage, this.#o.agent));
 		}
 	}
 
@@ -408,7 +408,7 @@ export class RemoteSession {
 		const settled = this.#instructions;
 		if (store === undefined || settled === undefined) return;
 		try {
-			const sent = instructionsIntoStore(store, this.#o.laneDir, settled, this.#o.lane, (message) => guarded(() => this.#o.report(message)));
+			const sent = instructionsIntoStore(store, this.#o.agentDir, settled, this.#o.agent, (message) => guarded(() => this.#o.report(message)));
 			if (sent !== undefined) this.#instructionsSent = sent;
 		} catch {
 			// The file stays as it is; the next check-out compares it again.
@@ -421,7 +421,7 @@ export class RemoteSession {
 		if (sent === undefined || this.#marks.meta[INSTRUCTIONS_KEY] !== sent) return;
 		this.#instructionsSent = undefined;
 		try {
-			agreeOn(this.#o.laneDir, sent);
+			agreeOn(this.#o.agentDir, sent);
 		} catch {
 			// The next check-out finds the file and the remote equal, and agrees then.
 		}
@@ -448,7 +448,7 @@ export class RemoteSession {
 	async #saveNow(): Promise<void> {
 		const store = this.#store;
 		if (this.#lost || this.#closed || store === undefined) return;
-		const { storage, lane, key, holder } = this.#o;
+		const { storage, agent, key, holder } = this.#o;
 		try {
 			if (this.#unacked === undefined) {
 				const changed = unsentRows(store, this.#marks);
@@ -462,7 +462,7 @@ export class RemoteSession {
 				const at = new Date(this.#now()).toISOString();
 				const fields: Omit<SaveHeader, "v" | "sha256" | "rows"> = { n, lock: this.#lock, machine: holder.machine, device: holder.device, at, ...(this.#takeoverFrom === undefined ? {} : { takeover: { from: this.#takeoverFrom } }) };
 				const header = makeHeader(fields, changed.rows, body);
-				const file = seal(key, lane, "save", n, body);
+				const file = seal(key, agent, "save", n, body);
 				// The snapshot must hold exactly the rows of saves 1..n: read it now, with no await since rowsAfter, so a
 				// row written during the upload can't land in both this snapshot and save n+1. A snapshot still waiting to
 				// upload is retried instead of reading a new one; a snapshot that can't be read never holds the save back.
@@ -477,13 +477,13 @@ export class RemoteSession {
 						snapshot = undefined;
 					}
 				}
-				this.#unacked = { n, file, logEntry: seal(key, lane, "log", n, Buffer.from(JSON.stringify(header))), next: changed.next, sha256: header.sha256, ...(snapshot === undefined ? {} : { snapshot }) };
+				this.#unacked = { n, file, logEntry: seal(key, agent, "log", n, Buffer.from(JSON.stringify(header))), next: changed.next, sha256: header.sha256, ...(snapshot === undefined ? {} : { snapshot }) };
 			}
 			const pending = this.#unacked;
 			// Written before sending: if the reply is lost and this session ends, the next check-out can tell whether
 			// the remote has this save (adopt it) or not (send it again).
-			writeState(this.#o.laneDir, this.#state({ n: pending.n, sha256: pending.sha256, marks: pending.next }));
-			await storage.save(lane, this.#lock, pending.n, pending.file, pending.logEntry);
+			writeState(this.#o.agentDir, this.#state({ n: pending.n, sha256: pending.sha256, marks: pending.next }));
+			await storage.save(agent, this.#lock, pending.n, pending.file, pending.logEntry);
 			this.#unacked = undefined;
 			this.#takeoverFrom = undefined;
 			this.#save = pending.n;
@@ -491,10 +491,10 @@ export class RemoteSession {
 			this.#marks = pending.next;
 			this.#agreeSent();
 			this.#bytesSinceSnapshot += pending.file.length;
-			writeState(this.#o.laneDir, this.#state());
+			writeState(this.#o.agentDir, this.#state());
 			this.#status = { remote: storage.name, state: "saved", savedAt: hhmm(this.#now()) };
 			if (pending.snapshot !== undefined) {
-				const sealed = seal(key, lane, "snapshot", pending.n, pending.snapshot);
+				const sealed = seal(key, agent, "snapshot", pending.n, pending.snapshot);
 				this.#pendingSnapshot = { n: pending.n, sealed, sha256: sha256(sealed) };
 			}
 			await this.#uploadSnapshot();
@@ -506,16 +506,16 @@ export class RemoteSession {
 	async #uploadSnapshot(): Promise<void> {
 		const snapshot = this.#pendingSnapshot;
 		if (snapshot === undefined || this.#lost) return;
-		const { storage, lane } = this.#o;
+		const { storage, agent } = this.#o;
 		try {
 			// Recorded before sending: if the reply is lost, the next check-out recognises this snapshot by its checksum.
-			writeState(this.#o.laneDir, this.#state());
-			await storage.snapshot(lane, this.#lock, snapshot.n, snapshot.sealed);
+			writeState(this.#o.agentDir, this.#state());
+			await storage.snapshot(agent, this.#lock, snapshot.n, snapshot.sealed);
 			this.#pendingSnapshot = undefined;
 			this.#snapshotAt = snapshot.n;
 			this.#snapshotSha = snapshot.sha256;
 			if (snapshot.n === this.#save) this.#bytesSinceSnapshot = 0;
-			writeState(this.#o.laneDir, this.#state());
+			writeState(this.#o.agentDir, this.#state());
 		} catch (error) {
 			// A missed snapshot costs only a longer catch-up later; it is retried after the next save.
 			if (error instanceof RemoteError && error.kind === "lock-lost") await this.#failed(error);
@@ -523,7 +523,7 @@ export class RemoteSession {
 	}
 
 	async #failed(error: unknown): Promise<void> {
-		const { storage, lane } = this.#o;
+		const { storage, agent } = this.#o;
 		if (error instanceof RemoteError && (error.kind === "lock-lost" || error.kind === "out-of-order")) {
 			if (this.#lost) return;
 			this.#lost = true;
@@ -531,14 +531,14 @@ export class RemoteSession {
 			this.#timer = undefined;
 			let movedTo = "another machine";
 			try {
-				const entry = (await storage.list()).find((e) => e.lane === lane);
+				const entry = (await storage.list()).find((e) => e.lane === agent);
 				if (entry?.lock?.held === true) movedTo = entry.lock.holder.machine;
 			} catch {
 				// keep "another machine"
 			}
 			this.#status = { remote: storage.name, state: "lost", movedTo };
-			OPEN_HERE.delete(openKey(storage, lane));
-			guarded(() => this.#o.report(`Orrery: ${lane} moved to ${movedTo}; this session runs without memory now.`));
+			OPEN_HERE.delete(openKey(storage, agent));
+			guarded(() => this.#o.report(`Orrery: ${agent} moved to ${movedTo}; this session runs without memory now.`));
 			guarded(() => this.#o.onLost?.());
 			return;
 		}
@@ -552,17 +552,17 @@ export class RemoteSession {
  * machine name must match too, so a cloned device id never takes a live session silently.
  */
 async function take(o: RemoteSessionOptions): Promise<{ lock: number; takeoverFrom?: string }> {
-	const { storage, lane, holder } = o;
-	const first = await storage.take(lane, holder);
+	const { storage, agent, holder } = o;
+	const first = await storage.take(agent, holder);
 	if (first.ok) return { lock: first.lock };
 	const held = first.held;
 	const sameMachine = held.holder.device === holder.device && held.holder.machine === holder.machine;
 	let force = false;
-	if (sameMachine) force = held.stale || (held.holder.pid === process.pid ? !OPEN_HERE.has(openKey(storage, lane)) : !processAlive(held.holder.pid));
+	if (sameMachine) force = held.stale || (held.holder.pid === process.pid ? !OPEN_HERE.has(openKey(storage, agent)) : !processAlive(held.holder.pid));
 	else if (held.stale && o.confirmTakeover !== undefined) force = await o.confirmTakeover(held);
-	if (!force) throw new RemoteError("held", sameMachine ? `${lane} is open in another pi or Claude Code on this machine (last seen ${hhmm(held.lastSeen)})` : heldMessage(lane, held));
-	const second = await storage.take(lane, holder, { force: true });
-	if (!second.ok) throw new RemoteError("held", heldMessage(lane, second.held));
+	if (!force) throw new RemoteError("held", sameMachine ? `${agent} is open in another pi or Claude Code on this machine (last seen ${hhmm(held.lastSeen)})` : heldMessage(agent, held));
+	const second = await storage.take(agent, holder, { force: true });
+	if (!second.ok) throw new RemoteError("held", heldMessage(agent, second.held));
 	return sameMachine ? { lock: second.lock } : { lock: second.lock, takeoverFrom: held.holder.machine };
 }
 
@@ -576,60 +576,60 @@ function positionOf(state: SessionState): Position {
  */
 function settleAfterCheckOut(o: RemoteSessionOptions, foreign: boolean): SettledInstructions | undefined {
 	try {
-		const store = MemoryStore.open(join(o.laneDir, DB_FILE), o.writer);
+		const store = MemoryStore.open(join(o.agentDir, DB_FILE), o.writer);
 		try {
-			return settleInstructions(store, o.laneDir, o.lane, (o.now ?? Date.now)(), (message) => guarded(() => o.report(message)), foreign);
+			return settleInstructions(store, o.agentDir, o.agent, (o.now ?? Date.now)(), (message) => guarded(() => o.report(message)), foreign);
 		} finally {
 			store.close();
 		}
 	} catch (error) {
-		guarded(() => o.report(`Orrery: ${o.lane}'s instructions could not be brought up to date (${error instanceof Error ? error.message : String(error)}); its memory opens as usual.`));
+		guarded(() => o.report(`Orrery: ${o.agent}'s instructions could not be brought up to date (${error instanceof Error ? error.message : String(error)}); its memory opens as usual.`));
 		return undefined;
 	}
 }
 
 /** Fetch and apply, keeping this machine's unsaved rows: pushed when nobody saved since, else kept aside. */
 async function bringUpToDate(o: RemoteSessionOptions, lock: number, takeover: { from?: string }, outcome: { foreign: boolean }): Promise<Position> {
-	const { storage, lane, laneDir, key } = o;
+	const { storage, agent, agentDir, key } = o;
 	const now = o.now ?? Date.now;
-	const dbPath = join(laneDir, DB_FILE);
-	let state = readState(laneDir, storage.name);
+	const dbPath = join(agentDir, DB_FILE);
+	let state = readState(agentDir, storage.name);
 
 	if (state === undefined) {
 		// No state for this remote: whatever this folder agreed on before belongs to another history.
 		forget(o);
 		outcome.foreign = setAsideLocalMemory(o, dbPath, now());
-		return rebuild(o, await storage.fetch(lane, -1));
+		return rebuild(o, await storage.fetch(agent, -1));
 	}
 
 	// A save whose reply was lost: adopt it when the remote has it with the same body.
 	if (state.inflight !== undefined) {
 		const inflight = state.inflight;
-		const after = await storage.fetch(lane, state.save);
+		const after = await storage.fetch(agent, state.save);
 		const next = after.snapshot === undefined ? after.saves[0] : undefined;
 		let adopted = false;
 		if (next !== undefined && next.n === inflight.n) {
 			try {
-				adopted = sha256(unseal(key, lane, "save", next.n, next.file)) === inflight.sha256;
+				adopted = sha256(unseal(key, agent, "save", next.n, next.file)) === inflight.sha256;
 			} catch {
 				adopted = false;
 			}
 		}
 		// The save holds this machine's own rows: instructions it changed are on the remote now.
-		if (adopted) agreeOnOwnRows(laneDir, state.marks, inflight.marks);
+		if (adopted) agreeOnOwnRows(agentDir, state.marks, inflight.marks);
 		state = adopted
 			? { ...state, save: inflight.n, sha256: inflight.sha256, marks: inflight.marks, bytesSinceSnapshot: state.bytesSinceSnapshot + (next?.file.length ?? 0), inflight: undefined }
 			: { ...state, inflight: undefined };
-		writeState(laneDir, state);
+		writeState(agentDir, state);
 	}
 
 	// A snapshot whose reply was lost: if the remote has it (same sealed bytes), this working copy matches it.
 	if (state.snapshotPending !== undefined) {
 		const sent = state.snapshotPending;
-		const probe = await storage.fetch(lane, sent.n - 1);
+		const probe = await storage.fetch(agent, sent.n - 1);
 		const landed = probe.snapshot !== undefined && probe.snapshot.n === sent.n && sha256(probe.snapshot.file) === sent.sha256;
 		state = landed ? { ...state, snapshotAt: sent.n, snapshotSha: sent.sha256, bytesSinceSnapshot: sent.n === state.save ? 0 : state.bytesSinceSnapshot, snapshotPending: undefined } : { ...state, snapshotPending: undefined };
-		writeState(laneDir, state);
+		writeState(agentDir, state);
 	}
 
 	// Unsaved rows of this working copy (a session closed while offline, or one that crashed), and whether its store
@@ -647,7 +647,7 @@ async function bringUpToDate(o: RemoteSessionOptions, lock: number, takeover: { 
 		}
 	}
 
-	const fetched = await storage.fetch(lane, state.save - 1);
+	const fetched = await storage.fetch(agent, state.save - 1);
 	const lineage = lineageOf(o, state, fetched);
 	const intact = lineage !== "broken";
 	const nobodySavedSince = fetched.newestSave === state.save;
@@ -655,19 +655,19 @@ async function bringUpToDate(o: RemoteSessionOptions, lock: number, takeover: { 
 	if (intact && nobodySavedSince) {
 		const position = pending === undefined ? positionOf(state) : await pushPending(o, lock, state, dbPath, now(), takeover);
 		if (!leftover) return position;
-		return rebuild(o, await storage.fetch(lane, -1), { state: { ...state, ...position }, lineage, now: now(), outcome });
+		return rebuild(o, await storage.fetch(agent, -1), { state: { ...state, ...position }, lineage, now: now(), outcome });
 	}
 
 	if (intact && pending === undefined) {
 		// Catch up: a newer snapshot (or a leftover identity) means a rebuild; otherwise apply the saves after ours.
 		if (fetched.snapshot !== undefined && fetched.snapshot.n > state.save) return rebuild(o, fetched, { state, lineage, now: now(), outcome });
-		if (leftover) return rebuild(o, await storage.fetch(lane, -1), { state, lineage, now: now(), outcome });
+		if (leftover) return rebuild(o, await storage.fetch(agent, -1), { state, lineage, now: now(), outcome });
 		return catchUp(o, state, fetched, dbPath);
 	}
 
 	// The remote's newest replaces this working copy: its unsaved rows are kept aside, or all of its memory when the
 	// remote holds another history.
-	return rebuild(o, await storage.fetch(lane, -1), { state, lineage, pending, now: now(), outcome });
+	return rebuild(o, await storage.fetch(agent, -1), { state, lineage, pending, now: now(), outcome });
 }
 
 /** What a rebuild over an existing working copy knows of it, to keep what the remote's copy does not hold. */
@@ -692,7 +692,7 @@ interface Rebuilding {
  * only unsaved rows are kept (spec §5.9).
  */
 function keepBeforeRebuild(o: RemoteSessionOptions, known: Rebuilding, remoteMarks: StoreMarks, remoteNewest: number, dbPath: string): void {
-	const { lane, storage } = o;
+	const { agent, storage } = o;
 	const recorded = known.state.marks.meta[HISTORY_KEY];
 	const remoteId = remoteMarks.meta[HISTORY_KEY];
 	const differs = recorded !== undefined && remoteId !== recorded;
@@ -708,7 +708,7 @@ function keepBeforeRebuild(o: RemoteSessionOptions, known: Rebuilding, remoteMar
 					? `${storage.name}'s copy does not continue the one on this machine`
 					: `${storage.name}'s copy could not be shown to continue the one on this machine`;
 		known.outcome.foreign = true;
-		setAsideLocalMemory(o, dbPath, known.now, (aside) => `Orrery: ${lane}: ${why}; the memory on this machine was kept aside as ${aside}, and the lane now uses ${storage.name}'s copy.`);
+		setAsideLocalMemory(o, dbPath, known.now, (aside) => `Orrery: ${agent}: ${why}; the memory on this machine was kept aside as ${aside}, and the agent now uses ${storage.name}'s copy.`);
 		return;
 	}
 	// A history identity given at an attach whose save never landed is not worth keeping: the remote has its own.
@@ -716,23 +716,23 @@ function keepBeforeRebuild(o: RemoteSessionOptions, known: Rebuilding, remoteMar
 	const pending = known.pending === undefined ? undefined : { ...known.pending, meta };
 	if (pending === undefined || (pending.main.length === 0 && pending.tree.length === 0 && pending.usage.length === 0 && Object.keys(pending.meta).length === 0)) return;
 	// Two histories: the remote's wins; this machine's rows are kept, not merged (spec §5.9).
-	const file = join(o.laneDir, `unsaved-${stamp(known.now)}.json`);
+	const file = join(o.agentDir, `unsaved-${stamp(known.now)}.json`);
 	writePrivate(file, `${JSON.stringify(pending)}\n`);
-	guarded(() => o.report(`Orrery: ${lane} was saved from another machine since this one last saved. This machine's unsaved turns are kept in ${file}; the lane continues from ${storage.name}'s copy.`));
+	guarded(() => o.report(`Orrery: ${agent} was saved from another machine since this one last saved. This machine's unsaved turns are kept in ${file}; the agent continues from ${storage.name}'s copy.`));
 }
 
 /** Forgets the instructions agreement; a failure is said, and the check-out or push goes on. */
-function forget(o: Pick<RemoteSessionOptions, "lane" | "laneDir" | "report">): void {
+function forget(o: Pick<RemoteSessionOptions, "agent" | "agentDir" | "report">): void {
 	try {
-		forgetAgreement(o.laneDir);
+		forgetAgreement(o.agentDir);
 	} catch (error) {
-		guarded(() => o.report(`Orrery: ${o.lane}: ${SYNCED_FILE} could not be removed (${error instanceof Error ? error.message : String(error)}); remove it by hand, or its instructions may be compared with another history's.`));
+		guarded(() => o.report(`Orrery: ${o.agent}: ${SYNCED_FILE} could not be removed (${error instanceof Error ? error.message : String(error)}); remove it by hand, or its instructions may be compared with another history's.`));
 	}
 }
 
 /** Sends this machine's unsaved rows as the next save, under the new lock, before the store opens (spec §5.9). */
 async function pushPending(o: RemoteSessionOptions, lock: number, state: SessionState, dbPath: string, now: number, takeover: { from?: string }): Promise<Position> {
-	const { storage, lane, laneDir, key, holder } = o;
+	const { storage, agent, agentDir, key, holder } = o;
 	const store = MemoryStore.open(dbPath, o.writer);
 	try {
 		const changed = unsentRows(store, state.marks);
@@ -740,11 +740,11 @@ async function pushPending(o: RemoteSessionOptions, lock: number, state: Session
 		const n = state.save + 1;
 		const body = encodeRows(changed.rows);
 		const header = makeHeader({ n, lock, machine: holder.machine, device: holder.device, at: new Date(now).toISOString(), ...(takeover.from === undefined ? {} : { takeover: { from: takeover.from } }) }, changed.rows, body);
-		const file = seal(key, lane, "save", n, body);
-		writeState(laneDir, { ...state, lock, inflight: { n, sha256: header.sha256, marks: changed.next } });
-		await storage.save(lane, lock, n, file, seal(key, lane, "log", n, Buffer.from(JSON.stringify(header))));
+		const file = seal(key, agent, "save", n, body);
+		writeState(agentDir, { ...state, lock, inflight: { n, sha256: header.sha256, marks: changed.next } });
+		await storage.save(agent, lock, n, file, seal(key, agent, "log", n, Buffer.from(JSON.stringify(header))));
 		// These are this machine's own rows: instructions they changed are on the remote now, before the file is settled.
-		agreeOnOwnRows(laneDir, state.marks, changed.next);
+		agreeOnOwnRows(agentDir, state.marks, changed.next);
 		takeover.from = undefined; // This checkout's first save may be the locally pending rows sent above.
 		return { ...positionOf(state), save: n, sha256: header.sha256, marks: changed.next, bytesSinceSnapshot: state.bytesSinceSnapshot + file.length };
 	} finally {
@@ -754,15 +754,15 @@ async function pushPending(o: RemoteSessionOptions, lock: number, state: Session
 
 /** Applies the saves after this working copy's last one. Everything is decrypted and checked before anything is applied. */
 function catchUp(o: RemoteSessionOptions, state: SessionState, fetched: FetchResult, dbPath: string): Position {
-	const { lane, key } = o;
+	const { agent, key } = o;
 	const saves = fetched.saves.filter((save) => save.n > state.save);
 	const decoded = saves.map((save, i) => {
-		if (save.n !== state.save + 1 + i) throw new RemoteError("corrupt", `${lane}: save ${state.save + 1 + i} is missing on remote ${o.storage.name}`);
-		const body = unseal(key, lane, "save", save.n, save.file);
+		if (save.n !== state.save + 1 + i) throw new RemoteError("corrupt", `${agent}: save ${state.save + 1 + i} is missing on remote ${o.storage.name}`);
+		const body = unseal(key, agent, "save", save.n, save.file);
 		return { n: save.n, body, rows: decodeRows(body), bytes: save.file.length };
 	});
 	const end = decoded.at(-1)?.n ?? state.save;
-	if (end !== fetched.newestSave) throw new RemoteError("corrupt", `${lane}: remote ${o.storage.name} sent saves up to ${end} of ${fetched.newestSave}`);
+	if (end !== fetched.newestSave) throw new RemoteError("corrupt", `${agent}: remote ${o.storage.name} sent saves up to ${end} of ${fetched.newestSave}`);
 	if (decoded.length === 0) return positionOf(state);
 	const store = MemoryStore.open(dbPath, o.writer);
 	try {
@@ -799,7 +799,7 @@ function lineageOf(o: RemoteSessionOptions, state: SessionState, fetched: FetchR
 	const ours = fetched.saves[0];
 	if (ours === undefined || ours.n !== state.save) return "broken";
 	try {
-		return sha256(unseal(o.key, o.lane, "save", ours.n, ours.file)) === state.sha256 ? "proven" : "broken";
+		return sha256(unseal(o.key, o.agent, "save", ours.n, ours.file)) === state.sha256 ? "proven" : "broken";
 	} catch {
 		return "broken";
 	}
@@ -830,7 +830,7 @@ function setAsideLocalMemory(o: RemoteSessionOptions, dbPath: string, now: numbe
 	const hasRows = store.root.length > 0 || store.nodeCount > 0;
 	store.close();
 	if (!hasRows) return false;
-	const aside = join(o.laneDir, `memory-before-remote-${stamp(now)}.sqlite`);
+	const aside = join(o.agentDir, `memory-before-remote-${stamp(now)}.sqlite`);
 	o.writer?.check(dbPath);
 	const release = o.writer === undefined ? holdWriterLock(dbPath) : () => {};
 	try {
@@ -845,7 +845,7 @@ function setAsideLocalMemory(o: RemoteSessionOptions, dbPath: string, now: numbe
 	} finally {
 		release();
 	}
-	guarded(() => o.report(notice?.(aside) ?? `Orrery: ${o.lane}: the memory already on this machine was kept aside as ${aside}; the lane now uses ${o.storage.name}'s copy.`));
+	guarded(() => o.report(notice?.(aside) ?? `Orrery: ${o.agent}: the memory already on this machine was kept aside as ${aside}; the agent now uses ${o.storage.name}'s copy.`));
 	return true;
 }
 
@@ -868,23 +868,23 @@ function localMeta(dbPath: string): Record<string, string> {
  * checked first; the new copy is built in a temporary file and renamed into place, so a crash midway leaves the old one.
  */
 function rebuild(o: RemoteSessionOptions, fetched: FetchResult, known?: Rebuilding): Position {
-	const { lane, laneDir, key } = o;
-	const dbPath = join(laneDir, DB_FILE);
+	const { agent, agentDir, key } = o;
+	const dbPath = join(agentDir, DB_FILE);
 	const remote = o.storage.name;
-	if (fetched.snapshot === undefined) throw new RemoteError("corrupt", `${lane} has no snapshot on remote ${remote}`);
+	if (fetched.snapshot === undefined) throw new RemoteError("corrupt", `${agent} has no snapshot on remote ${remote}`);
 	const snapshotFile = fetched.snapshot;
-	const snapshot = decodeSnapshot(unseal(key, lane, "snapshot", snapshotFile.n, snapshotFile.file));
-	if (snapshot.header.n !== snapshotFile.n) throw new RemoteError("corrupt", `${lane}: snapshot ${snapshotFile.n} on remote ${remote} says it is ${snapshot.header.n}`);
+	const snapshot = decodeSnapshot(unseal(key, agent, "snapshot", snapshotFile.n, snapshotFile.file));
+	if (snapshot.header.n !== snapshotFile.n) throw new RemoteError("corrupt", `${agent}: snapshot ${snapshotFile.n} on remote ${remote} says it is ${snapshot.header.n}`);
 	const saves = fetched.saves.map((save, i) => {
-		if (save.n !== snapshotFile.n + 1 + i) throw new RemoteError("corrupt", `${lane}: save ${snapshotFile.n + 1 + i} is missing on remote ${remote}`);
-		const body = unseal(key, lane, "save", save.n, save.file);
+		if (save.n !== snapshotFile.n + 1 + i) throw new RemoteError("corrupt", `${agent}: save ${snapshotFile.n + 1 + i} is missing on remote ${remote}`);
+		const body = unseal(key, agent, "save", save.n, save.file);
 		return { n: save.n, body, rows: decodeRows(body), bytes: save.file.length };
 	});
 	const end = saves.at(-1)?.n ?? snapshotFile.n;
-	if (end !== fetched.newestSave) throw new RemoteError("corrupt", `${lane}: remote ${remote} sent saves up to ${end} of ${fetched.newestSave}`);
+	if (end !== fetched.newestSave) throw new RemoteError("corrupt", `${agent}: remote ${remote} sent saves up to ${end} of ${fetched.newestSave}`);
 
 	const local = localMeta(dbPath);
-	const temp = join(laneDir, `.rebuild-${process.pid}-${randomBytes(8).toString("hex")}.sqlite`);
+	const temp = join(agentDir, `.rebuild-${process.pid}-${randomBytes(8).toString("hex")}.sqlite`);
 	try {
 		restoreSnapshot(temp, snapshot.db);
 		let marks: StoreMarks;

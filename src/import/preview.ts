@@ -171,10 +171,10 @@ export function readPreview(path: string): PreviewLine[] {
 	return lines;
 }
 
-/** Appends the whole preview in one transaction; refused once the lane's memory has any message. */
+/** Appends the whole preview in one transaction; refused once the agent's memory has any message. */
 export function commitPreview(store: MemoryStore, lines: readonly PreviewLine[]): number {
 	if (store.root.length > 0) {
-		throw new StoreError(`This lane's memory already has ${store.root.length} messages; import must happen before the lane is used.`);
+		throw new StoreError(`This agent's memory already has ${store.root.length} messages; import must happen before the agent is used.`);
 	}
 	store.appendBatch(lines.map(({ kind, text, date }) => ({ kind, text, date })));
 	return lines.length;

@@ -309,7 +309,7 @@ describe("Compactor", () => {
 		expect(calls).toBe(1);
 		expect(store.writable).toBe(false);
 		expect(compactor.stopped).toBe(true);
-		expect(notices.at(-1)).toMatch(/^Compactor stopped: .*restart the lane/);
+		expect(notices.at(-1)).toMatch(/^Compactor stopped: .*restart the agent/);
 		await expect(compactor.drain()).rejects.toThrow(/stopped/);
 	});
 
@@ -340,7 +340,7 @@ describe("Compactor", () => {
 		expect(outcome).toMatch(/stopped/);
 		expect(store.hasNode(new Part(0, 11))).toBe(true);
 		expect(compactor.stopped).toBe(true);
-		expect(notices.at(-1)).toMatch(/^Compactor stopped: .*disk full; restart the lane/);
+		expect(notices.at(-1)).toMatch(/^Compactor stopped: .*disk full; restart the agent/);
 		expect(notices.filter((m) => m.includes("retrying"))).toEqual([]);
 	});
 

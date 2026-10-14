@@ -1,12 +1,12 @@
 /**
- * Copies pi's session entries into the lane's memory (spec §4): every user message and reply, once. Tool calls, tool results and the user's `!cmd` runs are not copied (they cost too much to summarize); usage rows still are.
+ * Copies pi's session entries into the agent's memory (spec §4): every user message and reply, once. Tool calls, tool results and the user's `!cmd` runs are not copied (they cost too much to summarize); usage rows still are.
  * Each pi session keeps its own cursor (the last entry id copied), so resuming an older session never copies it again;
  * a rewind moves the cursor and nothing leaves memory. Entries and cursor land in one transaction.
  */
 
 import type { Message } from "@earendil-works/pi-ai";
 import { type MemoryStore, type MemoryView, type NewMessage, type UsageRow } from "../memory/index.ts";
-import { messageItems } from "../lane/messages.ts";
+import { messageItems } from "../agent/messages.ts";
 
 export interface SessionSource {
 	getSessionId(): string;
@@ -70,8 +70,8 @@ export function markSessionCopied(store: MemoryStore, session: SessionSource, at
 }
 
 /**
- * A session that moved into the lane's folder (OMP's /resume of another folder's session, /move) holds turns from
- * elsewhere, which must not enter this lane's memory: its cursor goes to the branch tail, moved there even when the lane
+ * A session that moved into the agent's folder (OMP's /resume of another folder's session, /move) holds turns from
+ * elsewhere, which must not enter this agent's memory: its cursor goes to the branch tail, moved there even when the agent
  * recorded the session before (it may have been away since), so only what comes after the move is copied.
  */
 export function startAtTail(store: MemoryStore, session: SessionSource): void {

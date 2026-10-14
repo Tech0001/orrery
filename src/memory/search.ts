@@ -1,4 +1,4 @@
-/** Keyword or /regex/ search over a lane's raw log: finds what the summaries left out (spec §6). */
+/** Keyword or /regex/ search over an agent's raw log: finds what the summaries left out (spec §6). */
 
 import { flatten } from "./bytes.ts";
 import type { MemoryStore } from "./store.ts";

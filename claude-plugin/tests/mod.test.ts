@@ -12,9 +12,9 @@ import type { On, RenderSurface, SessionCompactResult, SessionMessage } from "cl
 import { LOGO } from "../hooks/logo.ts";
 import { describe, type Engine, expect, mock, type MockClock, type Plugin, test } from "claude-code/testing";
 
-/** The session's project root, where the lane is looked up. */
+/** The session's project root, where the agent is looked up. */
 const ROOT = "/work/agent-Test";
-/** The session's working folder, which a shell `cd` moves; never where the lane is looked up. */
+/** The session's working folder, which a shell `cd` moves; never where the agent is looked up. */
 const CWD = "/work/agent-Test/src";
 const COMPOSE = { model: "claude-sonnet-5-5", promptModel: "claude-sonnet-5-5", surfaces: ["terminal"], tools: [], outputStyle: null, traits: [] } as const;
 const BASE = [{ id: "intro", text: "You are Claude Code.", scope: "shared" }] as const;
@@ -60,7 +60,7 @@ const COMPACTED = "Compacted (ctrl+o to see full summary)";
 /** What the engine's own band and footer draw in these tests, when the mod passes them on. */
 const ENGINE_BAND = "the engine's band";
 
-function lane(
+function agent(
 	mode: "mod" | "file" | "none",
 	section: string | null,
 	extra: { compactAt?: number; messages?: number; recording?: boolean; sessionMode?: "recording" | "read-only"; name?: string; remote?: { remote: string; state: "saved" | "pending" | "failing" | "lost"; savedAt?: string; reason?: string; movedTo?: string }; instructions?: string | null } = {},
@@ -176,8 +176,8 @@ const REFUSER: Plugin = {
 };
 
 describe("the Orrery mod's memory section", () => {
-	test("a mod lane gets orrery:memory once per session id", async ($, on) => {
-		const w = world(on, "s-1", [lane("mod", "MEMORY A")]);
+	test("a mod agent gets orrery:memory once per session id", async ($, on) => {
+		const w = world(on, "s-1", [agent("mod", "MEMORY A")]);
 		const first = await $.prompt.compose(COMPOSE);
 		expect(first.sections).toEqual(MEMORY("MEMORY A"));
 		const second = await $.prompt.compose(COMPOSE);
@@ -187,33 +187,33 @@ describe("the Orrery mod's memory section", () => {
 	});
 
 	test("an agent's instructions get their own section, before memory", async ($, on) => {
-		const w = world(on, "s-instr", [lane("mod", "MEMORY A", { instructions: "# Agent: Test\n\nYou are Test." })]);
+		const w = world(on, "s-instr", [agent("mod", "MEMORY A", { instructions: "# Agent: Test\n\nYou are Test." })]);
 		const composed = await $.prompt.compose(COMPOSE);
 		expect(composed.sections).toEqual([...BASE, { id: "orrery:instructions", text: "# Agent: Test\n\nYou are Test.", scope: "session" }, { id: "orrery:memory", text: "MEMORY A", scope: "session" }]);
 		expect(viewCalls(w)).toHaveLength(1);
 	});
 
 	test("instructions without memory yet still get their section", async ($, on) => {
-		world(on, "s-instr-2", [lane("mod", null, { instructions: "# Agent: Test\n\nYou are Test." })]);
+		world(on, "s-instr-2", [agent("mod", null, { instructions: "# Agent: Test\n\nYou are Test." })]);
 		expect((await $.prompt.compose(COMPOSE)).sections).toEqual([...BASE, { id: "orrery:instructions", text: "# Agent: Test\n\nYou are Test.", scope: "session" }]);
 	});
 
 	test("a compaction refreshes memory and keeps the instructions the session started with", async ($, on) => {
-		const w = world(on, "s-instr-3", [lane("mod", "MEMORY A", { instructions: "# Agent: Test\n\nAt the start." }), lane("mod", "MEMORY B", { instructions: "# Agent: Test\n\nEdited since." })]);
+		const w = world(on, "s-instr-3", [agent("mod", "MEMORY A", { instructions: "# Agent: Test\n\nAt the start." }), agent("mod", "MEMORY B", { instructions: "# Agent: Test\n\nEdited since." })]);
 		await $.prompt.compose(COMPOSE);
 		expect(await $.session.compact({ trigger: "manual", messages: ROWS })).toEqual({ messages: BUILT_LAST_TURN });
 		expect((await $.prompt.compose(COMPOSE)).sections).toEqual([...BASE, { id: "orrery:instructions", text: "# Agent: Test\n\nAt the start.", scope: "session" }, { id: "orrery:memory", text: "MEMORY B", scope: "session" }]);
 		expect(w.runs).toHaveLength(2);
 	});
 
-	// A guard: it passes before instructions exist too (a file lane gets no section at all).
-	test("a file lane's instructions are its view file's, not a section", async ($, on) => {
-		world(on, "s-instr-4", [lane("file", null, { instructions: "# Agent: Test\n\nYou are Test." })]);
+	// A guard: it passes before instructions exist too (a file agent gets no section at all).
+	test("a file agent's instructions are its view file's, not a section", async ($, on) => {
+		world(on, "s-instr-4", [agent("file", null, { instructions: "# Agent: Test\n\nYou are Test." })]);
 		expect((await $.prompt.compose(COMPOSE)).sections).toEqual(BASE);
 	});
 
 	test("passes ORRERY_AGENT and its token from Claude Code's environment to the view call", async ($, on) => {
-		const w = world(on, "s-agent", [lane("mod", "MEMORY A")]);
+		const w = world(on, "s-agent", [agent("mod", "MEMORY A")]);
 		w.env.ORRERY_AGENT = "Test";
 		w.env.ORRERY_AGENT_TOKEN = "ab".repeat(16);
 		await $.prompt.compose(COMPOSE);
@@ -221,7 +221,7 @@ describe("the Orrery mod's memory section", () => {
 	});
 
 	test("passes ORRERY_AGENT alone when Claude Code has no token, a token as it is, and nothing for a blank name", async ($, on) => {
-		const w = world(on, "s-agent-2", [lane("mod", "MEMORY A")]);
+		const w = world(on, "s-agent-2", [agent("mod", "MEMORY A")]);
 		w.env.ORRERY_AGENT = " Test ";
 		await $.prompt.compose(COMPOSE);
 		w.session = "s-agent-3";
@@ -237,8 +237,8 @@ describe("the Orrery mod's memory section", () => {
 		]);
 	});
 
-	test("the lane is looked up from the project root, not the folder a shell cd moved to", async ($, on) => {
-		const w = world(on, "s-1r", [lane("mod", "MEMORY A"), lane("mod", "MEMORY B")]);
+	test("the agent is looked up from the project root, not the folder a shell cd moved to", async ($, on) => {
+		const w = world(on, "s-1r", [agent("mod", "MEMORY A"), agent("mod", "MEMORY B")]);
 		w.cwd = "/somewhere/else";
 		await $.prompt.compose(COMPOSE);
 		w.cwd = "/work/agent-Other";
@@ -246,8 +246,8 @@ describe("the Orrery mod's memory section", () => {
 		expect(viewCalls(w).map((argv) => argv[argv.indexOf("--cwd") + 1])).toEqual([ROOT, ROOT]);
 	});
 
-	test("the lane is looked up from the first project root, also after /cd or a worktree move, and orrery runs there", async ($, on) => {
-		const w = world(on, "s-1m", [lane("mod", "MEMORY A"), lane("mod", "MEMORY B")]);
+	test("the agent is looked up from the first project root, also after /cd or a worktree move, and orrery runs there", async ($, on) => {
+		const w = world(on, "s-1m", [agent("mod", "MEMORY A"), agent("mod", "MEMORY B")]);
 		await $.prompt.compose(COMPOSE);
 		w.root = "/work/agent-Moved";
 		await $.session.compact({ trigger: "manual", messages: ROWS });
@@ -256,7 +256,7 @@ describe("the Orrery mod's memory section", () => {
 	});
 
 	test("a new session id (as after /clear) asks orrery again", async ($, on) => {
-		const w = world(on, "s-2a", [lane("mod", "MEMORY A"), lane("mod", "MEMORY B")]);
+		const w = world(on, "s-2a", [agent("mod", "MEMORY A"), agent("mod", "MEMORY B")]);
 		await $.prompt.compose(COMPOSE);
 		w.session = "s-2b";
 		const after = await $.prompt.compose(COMPOSE);
@@ -265,7 +265,7 @@ describe("the Orrery mod's memory section", () => {
 	});
 
 	test("a late first fetch for an old session does not take the current session's place", { plugins: [TRANSCRIPT] }, async ($, on) => {
-		const w = world(on, "s-2c", [lane("mod", "MEMORY OLD"), lane("mod", "MEMORY NEW"), lane("mod", "MEMORY NEWER")]);
+		const w = world(on, "s-2c", [agent("mod", "MEMORY OLD"), agent("mod", "MEMORY NEW"), agent("mod", "MEMORY NEWER")]);
 		let reached!: () => void;
 		let release!: () => void;
 		const arrived = new Promise<void>((resolve) => (reached = resolve));
@@ -282,8 +282,8 @@ describe("the Orrery mod's memory section", () => {
 		expect(w.lines).toEqual(["Orrery compacted: kept the last turn (2 messages); memory view refreshed (10 messages)."]);
 	});
 
-	test("a file lane and a folder outside any lane get nothing, and Claude Code compacts its own way", async ($, on) => {
-		const w = world(on, "s-3a", [lane("file", null), JSON.stringify({ lane: null }), ""]);
+	test("a file agent and a folder outside any agent get nothing, and Claude Code compacts its own way", async ($, on) => {
+		const w = world(on, "s-3a", [agent("file", null), JSON.stringify({ lane: null }), ""]);
 		for (const session of ["s-3a", "s-3b", "s-3c"]) {
 			w.session = session;
 			expect((await $.prompt.compose(COMPOSE)).sections).toEqual(BASE);
@@ -296,8 +296,8 @@ describe("the Orrery mod's memory section", () => {
 });
 
 describe("the Orrery mod's compaction", () => {
-	test("a mod lane's /compact keeps the last turn and refreshes the section, with no model call", async ($, on) => {
-		const w = world(on, "s-4", [lane("mod", "MEMORY A"), lane("mod", "MEMORY B", { messages: 12 })]);
+	test("a mod agent's /compact keeps the last turn and refreshes the section, with no model call", async ($, on) => {
+		const w = world(on, "s-4", [agent("mod", "MEMORY A"), agent("mod", "MEMORY B", { messages: 12 })]);
 		await $.prompt.compose(COMPOSE);
 		const done = await $.session.compact({ trigger: "manual", messages: ROWS });
 		expect(done).toEqual({ messages: BUILT_LAST_TURN });
@@ -312,16 +312,16 @@ describe("the Orrery mod's compaction", () => {
 		expect(w.lines).toEqual(["Orrery compacted: kept the last turn (2 messages); memory view refreshed (12 messages)."]);
 	});
 
-	test("a mod lane skips Claude Code's precompute without asking orrery again", async ($, on) => {
-		const w = world(on, "s-5", [lane("mod", "MEMORY A")]);
+	test("a mod agent skips Claude Code's precompute without asking orrery again", async ($, on) => {
+		const w = world(on, "s-5", [agent("mod", "MEMORY A")]);
 		await $.prompt.compose(COMPOSE);
-		expect(await $.session.compact({ trigger: "precompute", messages: ROWS })).toEqual({ skip: "Orrery answers this lane's compactions itself" });
+		expect(await $.session.compact({ trigger: "precompute", messages: ROWS })).toEqual({ skip: "Orrery answers this agent's compactions itself" });
 		expect(w.runs).toHaveLength(1);
 		expect(w.compacts).toEqual([]);
 	});
 
 	test("a subagent's compaction passes on", async ($, on) => {
-		const w = world(on, "s-6", [lane("mod", "MEMORY A")]);
+		const w = world(on, "s-6", [agent("mod", "MEMORY A")]);
 		await $.prompt.compose(COMPOSE);
 		expect(await $.session.compact({ trigger: "auto", agentId: "agent-1", messages: ROWS })).toEqual(OWN);
 		expect(w.runs).toHaveLength(1);
@@ -329,7 +329,7 @@ describe("the Orrery mod's compaction", () => {
 	});
 
 	test("when orrery cannot be run at a /compact, Claude Code compacts its own way and one line after the command says why", async ($, on) => {
-		const w = world(on, "s-7", [lane("mod", "MEMORY A"), { deny: "no orrery here" }]);
+		const w = world(on, "s-7", [agent("mod", "MEMORY A"), { deny: "no orrery here" }]);
 		await $.prompt.compose(COMPOSE);
 		expect(await typedCompact($, w)).toMatchObject({ text: COMPACTED });
 		expect(w.compacts).toEqual(["manual"]);
@@ -340,7 +340,7 @@ describe("the Orrery mod's compaction", () => {
 	});
 
 	test("a session that is not recorded keeps its conversation: /compact is Claude Code's own, and one line after it says why", async ($, on) => {
-		const w = world(on, "s-7c", [lane("mod", "MEMORY A"), lane("mod", "MEMORY B", { recording: false })]);
+		const w = world(on, "s-7c", [agent("mod", "MEMORY A"), agent("mod", "MEMORY B", { recording: false })]);
 		await $.prompt.compose(COMPOSE);
 		expect(await typedCompact($, w)).toMatchObject({ text: COMPACTED });
 		expect(w.compacts).toEqual(["manual"]);
@@ -349,8 +349,8 @@ describe("the Orrery mod's compaction", () => {
 		expect((await $.prompt.compose(COMPOSE)).sections).toEqual(MEMORY("MEMORY A"));
 	});
 
-	test("a session whose first fetch failed, in a folder that has no mod lane now, compacts Claude Code's way and says nothing more", async ($, on) => {
-		const w = world(on, "s-7d", [JSON.stringify({ error: "the store is busy" }), JSON.stringify({ lane: null }), lane("file", null)]);
+	test("a session whose first fetch failed, in a folder that has no mod agent now, compacts Claude Code's way and says nothing more", async ($, on) => {
+		const w = world(on, "s-7d", [JSON.stringify({ error: "the store is busy" }), JSON.stringify({ lane: null }), agent("file", null)]);
 		await $.prompt.compose(COMPOSE);
 		expect(w.lines).toEqual(["Orrery: no memory in this session's prompt (the store is busy). Recording is not affected."]);
 		expect(await $.session.compact({ trigger: "manual", messages: ROWS })).toEqual(OWN);
@@ -359,17 +359,17 @@ describe("the Orrery mod's compaction", () => {
 		expect(w.lines).toHaveLength(1);
 	});
 
-	test("a session whose folder now belongs to another lane compacts Claude Code's way, and one line at the next event says why", async ($, on) => {
-		const w = world(on, "s-7e", [lane("mod", "MEMORY A"), lane("mod", "MEMORY OTHER", { name: "Other" })]);
+	test("a session whose folder now belongs to another agent compacts Claude Code's way, and one line at the next event says why", async ($, on) => {
+		const w = world(on, "s-7e", [agent("mod", "MEMORY A"), agent("mod", "MEMORY OTHER", { name: "Other" })]);
 		await $.prompt.compose(COMPOSE);
 		expect(await $.session.compact({ trigger: "auto", messages: ROWS })).toEqual(OWN);
 		expect(w.lines).toEqual([]);
 		expect((await $.prompt.compose(COMPOSE)).sections).toEqual(MEMORY("MEMORY A"));
-		expect(w.lines).toEqual(["Orrery could not compact this conversation (this session's folder now belongs to another lane); Claude Code compacts it its own way."]);
+		expect(w.lines).toEqual(["Orrery could not compact this conversation (this session's folder now belongs to another agent); Claude Code compacts it its own way."]);
 	});
 
 	test("Orrery's line about Claude Code's own compaction is kept once that compaction is done, so nothing inside it shows the line", async ($, on) => {
-		const w = world(on, "s-7f", [lane("mod", "MEMORY A"), lane("mod", "MEMORY OTHER", { name: "Other" })]);
+		const w = world(on, "s-7f", [agent("mod", "MEMORY A"), agent("mod", "MEMORY OTHER", { name: "Other" })]);
 		await $.prompt.compose(COMPOSE);
 		let inside: string[] | undefined;
 		w.duringOwn = async () => {
@@ -380,11 +380,11 @@ describe("the Orrery mod's compaction", () => {
 		expect(await $.session.compact({ trigger: "auto", messages: ROWS })).toEqual(OWN);
 		expect(inside).toEqual([]);
 		await $.prompt.compose(COMPOSE);
-		expect(w.lines).toEqual(["Orrery could not compact this conversation (this session's folder now belongs to another lane); Claude Code compacts it its own way."]);
+		expect(w.lines).toEqual(["Orrery could not compact this conversation (this session's folder now belongs to another agent); Claude Code compacts it its own way."]);
 	});
 
 	test("when Claude Code's own compaction is skipped after all (a classic PreCompact hook blocks it), Orrery says nothing of it", async ($, on) => {
-		const w = world(on, "s-7g", [lane("mod", "MEMORY A"), lane("mod", "MEMORY OTHER", { name: "Other" })]);
+		const w = world(on, "s-7g", [agent("mod", "MEMORY A"), agent("mod", "MEMORY OTHER", { name: "Other" })]);
 		w.own = { skip: "blocked by a PreCompact hook" };
 		await $.prompt.compose(COMPOSE);
 		expect(await $.session.compact({ trigger: "auto", messages: ROWS })).toEqual({ skip: "blocked by a PreCompact hook" });
@@ -394,7 +394,7 @@ describe("the Orrery mod's compaction", () => {
 	});
 
 	test("when the hook fails part way through a compaction, Claude Code compacts its own way and one line at the next event says so", async ($, on) => {
-		const w = world(on, "s-7b", [lane("mod", "MEMORY A")]);
+		const w = world(on, "s-7b", [agent("mod", "MEMORY A")]);
 		await $.prompt.compose(COMPOSE);
 		w.denyId = true;
 		expect(await $.session.compact({ trigger: "auto", messages: ROWS })).toEqual(OWN);
@@ -408,7 +408,7 @@ describe("the Orrery mod's compaction", () => {
 
 describe("the Orrery mod's compact_at", () => {
 	test("past compact_at the mod starts a compaction and answers it itself, each time; under it nothing", { plugins: [TRANSCRIPT] }, async ($, on) => {
-		const w = world(on, "s-8a", [lane("mod", "MEMORY A", { compactAt: 200_000 }), lane("mod", "MEMORY B"), lane("mod", "MEMORY C")]);
+		const w = world(on, "s-8a", [agent("mod", "MEMORY A", { compactAt: 200_000 }), agent("mod", "MEMORY B"), agent("mod", "MEMORY C")]);
 		await $.prompt.compose(COMPOSE);
 		await measured($, w, measure(150_000));
 		expect(w.runs).toHaveLength(1);
@@ -429,7 +429,7 @@ describe("the Orrery mod's compact_at", () => {
 	});
 
 	test("a measurement where the context did not move starts nothing", { plugins: [TRANSCRIPT] }, async ($, on) => {
-		const w = world(on, "s-8g", [lane("mod", "MEMORY A"), lane("mod", "MEMORY B")]);
+		const w = world(on, "s-8g", [agent("mod", "MEMORY A"), agent("mod", "MEMORY B")]);
 		await $.prompt.compose(COMPOSE);
 		await measured($, w, measure(250_000, ["cost"]));
 		await measured($, w, measure(250_000, ["rateLimits", "cost"]));
@@ -441,7 +441,7 @@ describe("the Orrery mod's compact_at", () => {
 	});
 
 	test("a compaction the mod started and cannot answer is skipped, not handed to Claude Code, and the mod starts no more", { plugins: [TRANSCRIPT] }, async ($, on) => {
-		const w = world(on, "s-8b", [lane("mod", "MEMORY A", { compactAt: 200_000 }), JSON.stringify({ error: "the store is busy" })]);
+		const w = world(on, "s-8b", [agent("mod", "MEMORY A", { compactAt: 200_000 }), JSON.stringify({ error: "the store is busy" })]);
 		await $.prompt.compose(COMPOSE);
 		await measured($, w, measure(250_000));
 		expect(w.compacts).toEqual([]);
@@ -459,7 +459,7 @@ describe("the Orrery mod's compact_at", () => {
 	});
 
 	test("a compaction the mod started in a session that is not recorded is skipped, and the mod starts no more", { plugins: [TRANSCRIPT] }, async ($, on) => {
-		const w = world(on, "s-8e", [lane("mod", "MEMORY A"), lane("mod", "MEMORY B", { recording: false })]);
+		const w = world(on, "s-8e", [agent("mod", "MEMORY A"), agent("mod", "MEMORY B", { recording: false })]);
 		await $.prompt.compose(COMPOSE);
 		await measured($, w, measure(250_000));
 		expect(w.compacts).toEqual([]);
@@ -473,7 +473,7 @@ describe("the Orrery mod's compact_at", () => {
 	test("a compaction the mod started on a last turn too large to keep is skipped for now, said once, and tried again later", { plugins: [TRANSCRIPT] }, async ($, on) => {
 		// compact_at 10: the transcript's last turn (about 6 tokens) is over half of it.
 		const small = { compactAt: 10 };
-		const w = world(on, "s-8f", [lane("mod", "MEMORY A", small), lane("mod", "MEMORY B", small), lane("mod", "MEMORY C", small), lane("mod", "MEMORY D")]);
+		const w = world(on, "s-8f", [agent("mod", "MEMORY A", small), agent("mod", "MEMORY B", small), agent("mod", "MEMORY C", small), agent("mod", "MEMORY D")]);
 		await $.prompt.compose(COMPOSE);
 		await measured($, w, measure(250_000));
 		expect(w.compacts).toEqual([]);
@@ -491,7 +491,7 @@ describe("the Orrery mod's compact_at", () => {
 
 	test("a compaction the mod started and its hook fails on is skipped too", async ($, on) => {
 		// Without the transcript plugin, the kit's empty compaction makes the mod's hook throw part way through.
-		const w = world(on, "s-8c", [lane("mod", "MEMORY A", { compactAt: 200_000 }), lane("mod", "MEMORY B")]);
+		const w = world(on, "s-8c", [agent("mod", "MEMORY A", { compactAt: 200_000 }), agent("mod", "MEMORY B")]);
 		await $.prompt.compose(COMPOSE);
 		await measured($, w, measure(250_000));
 		expect(w.compacts).toEqual([]);
@@ -502,7 +502,7 @@ describe("the Orrery mod's compact_at", () => {
 	});
 
 	test("a compaction another plugin refuses stops the mod starting more in that session", { plugins: [REFUSER] }, async ($, on) => {
-		const w = world(on, "s-8d", [lane("mod", "MEMORY A", { compactAt: 200_000 })]);
+		const w = world(on, "s-8d", [agent("mod", "MEMORY A", { compactAt: 200_000 })]);
 		await $.prompt.compose(COMPOSE);
 		await $.session.measure(measure(250_000));
 		expect(w.lines).toEqual([]);
@@ -569,11 +569,11 @@ const LOGO_ROWS = LOGO.map((line) => line.map((s) => s.text).join(""));
 describe("showing that the mod is loaded (spec section 11)", () => {
 	test("remote status refreshes after each turn and no more than once a minute while idle", async ($, on) => {
 		const w = world(on, "remote-idle", [
-			lane("mod", "MEMORY", { sessionMode: "recording", remote: { remote: "home", state: "saved", savedAt: "14:02" } }),
-			lane("mod", "MEMORY", { messages: 12, sessionMode: "recording", remote: { remote: "home", state: "pending" } }),
-			lane("mod", "MEMORY", { messages: 12, sessionMode: "recording", remote: { remote: "home", state: "failing", reason: "offline" } }),
-			lane("mod", "MEMORY", { messages: 12, sessionMode: "recording", remote: { remote: "home", state: "saved", savedAt: "14:03" } }),
-			lane("mod", "MEMORY", { messages: 12, sessionMode: "read-only", remote: { remote: "home", state: "lost", movedTo: "macbook" } }),
+			agent("mod", "MEMORY", { sessionMode: "recording", remote: { remote: "home", state: "saved", savedAt: "14:02" } }),
+			agent("mod", "MEMORY", { messages: 12, sessionMode: "recording", remote: { remote: "home", state: "pending" } }),
+			agent("mod", "MEMORY", { messages: 12, sessionMode: "recording", remote: { remote: "home", state: "failing", reason: "offline" } }),
+			agent("mod", "MEMORY", { messages: 12, sessionMode: "recording", remote: { remote: "home", state: "saved", savedAt: "14:03" } }),
+			agent("mod", "MEMORY", { messages: 12, sessionMode: "read-only", remote: { remote: "home", state: "lost", movedTo: "macbook" } }),
 		]);
 		await start($, w);
 		await turnEnd($);
@@ -595,9 +595,9 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 
 	test("remote polling runs no commands while headless and stops after switching to a local session", async ($, on) => {
 		const w = world(on, "remote-headless", [
-			lane("mod", "MEMORY", { sessionMode: "recording", remote: { remote: "home", state: "saved", savedAt: "14:02" } }),
-			lane("mod", "MEMORY", { sessionMode: "recording", remote: { remote: "home", state: "failing", reason: "offline" } }),
-			lane("mod", "LOCAL", { sessionMode: "recording" }),
+			agent("mod", "MEMORY", { sessionMode: "recording", remote: { remote: "home", state: "saved", savedAt: "14:02" } }),
+			agent("mod", "MEMORY", { sessionMode: "recording", remote: { remote: "home", state: "failing", reason: "offline" } }),
+			agent("mod", "LOCAL", { sessionMode: "recording" }),
 		]);
 		await start($, w);
 		w.surfaces = [];
@@ -615,7 +615,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 	});
 
 	test("a turn near the idle deadline resets the minute before the next background command", async ($, on) => {
-		const reply = lane("mod", "MEMORY", { sessionMode: "recording", remote: { remote: "home", state: "saved", savedAt: "14:02" } });
+		const reply = agent("mod", "MEMORY", { sessionMode: "recording", remote: { remote: "home", state: "saved", savedAt: "14:02" } });
 		const w = world(on, "remote-turn-resets", [reply, reply, reply]);
 		await start($, w);
 		await w.clock.advance(55_000);
@@ -631,9 +631,9 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 
 	test("remote footer follows saved, failing and moved state on terminal and desktop", async ($, on) => {
 		const w = world(on, "remote-footer", [
-			lane("mod", "MEMORY", { remote: { remote: "home", state: "saved", savedAt: "14:02" } }),
-			lane("mod", "MEMORY", { messages: 12, remote: { remote: "home", state: "failing", reason: "offline" } }),
-			lane("mod", "MEMORY", { messages: 12, sessionMode: "read-only", remote: { remote: "home", state: "lost", movedTo: "macbook" } }),
+			agent("mod", "MEMORY", { remote: { remote: "home", state: "saved", savedAt: "14:02" } }),
+			agent("mod", "MEMORY", { messages: 12, remote: { remote: "home", state: "failing", reason: "offline" } }),
+			agent("mod", "MEMORY", { messages: 12, sessionMode: "read-only", remote: { remote: "home", state: "lost", movedTo: "macbook" } }),
 		]);
 		await start($, w);
 		for (const label of ["10 msgs · home ✓ 14:02", "12 msgs · home ⚠ not saved: offline", "12 msgs · home: moved to macbook"]) {
@@ -646,7 +646,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 	});
 
 	test("a typed /compact Orrery answered: Claude Code's row stays, and Orrery's line follows the command, once", async ($, on) => {
-		const w = world(on, "s-9a", [lane("mod", "MEMORY A"), lane("mod", "MEMORY B", { messages: 12, recording: true })]);
+		const w = world(on, "s-9a", [agent("mod", "MEMORY A"), agent("mod", "MEMORY B", { messages: 12, recording: true })]);
 		await $.prompt.compose(COMPOSE);
 		expect(await typedCompact($, w)).toMatchObject({ text: COMPACTED });
 		expect(w.compacts).toEqual([]);
@@ -660,8 +660,8 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 		expect(w.lines).toHaveLength(1);
 	});
 
-	test("a /compact Orrery has nothing to do with (a file lane, outside any lane) shows nothing of Orrery's", async ($, on) => {
-		const w = world(on, "s-9b", [lane("file", null), JSON.stringify({ lane: null })]);
+	test("a /compact Orrery has nothing to do with (a file agent, outside any agent) shows nothing of Orrery's", async ($, on) => {
+		const w = world(on, "s-9b", [agent("file", null), JSON.stringify({ lane: null })]);
 		for (const session of ["s-9b", "s-9c"]) {
 			w.session = session;
 			await $.prompt.compose(COMPOSE);
@@ -673,7 +673,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 	});
 
 	test("Claude Code's own threshold: Orrery's line is logged at the next event, once", async ($, on) => {
-		const w = world(on, "s-9e", [lane("mod", "MEMORY A"), lane("mod", "MEMORY B", { messages: 14 })]);
+		const w = world(on, "s-9e", [agent("mod", "MEMORY A"), agent("mod", "MEMORY B", { messages: 14 })]);
 		await $.prompt.compose(COMPOSE);
 		expect(await $.session.compact({ trigger: "auto", messages: ROWS })).toEqual({ messages: BUILT_LAST_TURN });
 		expect(w.lines).toEqual([]);
@@ -685,7 +685,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 	});
 
 	test("a compaction the mod started: its line is logged on the clock's next tick after $.session.compact() resolves, not from inside it", { plugins: [OBSERVER] }, async ($, on) => {
-		const w = world(on, "s-9g", [lane("mod", "MEMORY A"), lane("mod", "MEMORY B")]);
+		const w = world(on, "s-9g", [agent("mod", "MEMORY A"), agent("mod", "MEMORY B")]);
 		await $.prompt.compose(COMPOSE);
 		await $.session.measure(measure(250_000));
 		// Not yet: Claude Code draws the compaction after the call resolves, over a line logged before.
@@ -694,8 +694,8 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 		expect(w.lines).toEqual([RESOLVED, "Orrery compacted: kept the last turn (2 messages); memory view refreshed (10 messages)."]);
 	});
 
-	test("the footer label: Orrery, the lane and its count among the modes in a mod lane from session start, on the terminal and the desktop", async ($, on) => {
-		const w = world(on, "s-9h", [lane("mod", "MEMORY A", { sessionMode: "recording" }), lane("mod", "MEMORY A", { sessionMode: "recording" })]);
+	test("the footer label: Orrery, the agent and its count among the modes in a mod agent from session start, on the terminal and the desktop", async ($, on) => {
+		const w = world(on, "s-9h", [agent("mod", "MEMORY A", { sessionMode: "recording" }), agent("mod", "MEMORY A", { sessionMode: "recording" })]);
 		await start($, w);
 		for (const surface of ["terminal", "desktop"] as const) {
 			expect(await footer($, [], surface)).toBe("Orrery · Test · 10 msgs");
@@ -710,7 +710,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 	});
 
 	test("after each turn of the main loop the count is asked again, waiting for the session's spool alone, and the label shows it", async ($, on) => {
-		const w = world(on, "s-9x", [lane("mod", "MEMORY A", { sessionMode: "recording" }), lane("mod", "MEMORY A", { sessionMode: "recording" }), lane("mod", "MEMORY B", { messages: 12, sessionMode: "recording" })]);
+		const w = world(on, "s-9x", [agent("mod", "MEMORY A", { sessionMode: "recording" }), agent("mod", "MEMORY A", { sessionMode: "recording" }), agent("mod", "MEMORY B", { messages: 12, sessionMode: "recording" })]);
 		await start($, w);
 		expect((await $.prompt.compose(COMPOSE)).sections).toEqual(MEMORY("MEMORY A"));
 		expect(await footer($, [])).toBe("Orrery · Test · 10 msgs");
@@ -730,7 +730,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 	});
 
 	test("a turn's refetch that fails keeps the count the label had", async ($, on) => {
-		const w = world(on, "s-9y", [lane("mod", "MEMORY A", { messages: 30, sessionMode: "recording" }), JSON.stringify({ error: "the store is busy" }), { deny: "no orrery here" }]);
+		const w = world(on, "s-9y", [agent("mod", "MEMORY A", { messages: 30, sessionMode: "recording" }), JSON.stringify({ error: "the store is busy" }), { deny: "no orrery here" }]);
 		await start($, w);
 		for (let turn = 0; turn < 2; turn++) {
 			await turnEnd($);
@@ -741,8 +741,8 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 		expect(w.lines).toEqual([]);
 	});
 
-	test("a turn's refetch that answers outside any lane, or a lane out of mod mode, keeps the label and the refetches after later turns", async ($, on) => {
-		const w = world(on, "s-9xa", [lane("mod", "MEMORY A", { sessionMode: "recording" }), "", lane("file", null, { sessionMode: "recording" }), lane("mod", "MEMORY A", { messages: 14, sessionMode: "recording" })]);
+	test("a turn's refetch that answers outside any agent, or an agent out of mod mode, keeps the label and the refetches after later turns", async ($, on) => {
+		const w = world(on, "s-9xa", [agent("mod", "MEMORY A", { sessionMode: "recording" }), "", agent("file", null, { sessionMode: "recording" }), agent("mod", "MEMORY A", { messages: 14, sessionMode: "recording" })]);
 		await start($, w);
 		// orrery briefly not there (empty stdout), then a plain claude-setup mid-session: the label stays as it was.
 		for (const runs of [2, 3]) {
@@ -759,7 +759,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 	});
 
 	test("a session that draws nowhere (claude -p, the SDK with no client) runs nothing at a turn's end, until a client attaches", async ($, on) => {
-		const w = world(on, "s-9xb", [lane("mod", "MEMORY A", { sessionMode: "recording" }), lane("mod", "MEMORY A", { messages: 12, sessionMode: "recording" })]);
+		const w = world(on, "s-9xb", [agent("mod", "MEMORY A", { sessionMode: "recording" }), agent("mod", "MEMORY A", { messages: 12, sessionMode: "recording" })]);
 		w.surfaces = [];
 		await $.session.start({ ...START, surface: null, isInteractive: false });
 		expect((await $.prompt.compose(COMPOSE)).sections).toEqual(MEMORY("MEMORY A"));
@@ -774,7 +774,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 	});
 
 	test("at most one turn refetch runs at a time; turns that end meanwhile get one more run after it", async ($, on) => {
-		const w = world(on, "s-9z", [lane("mod", "MEMORY A", { sessionMode: "recording" }), lane("mod", "MEMORY A", { messages: 12, sessionMode: "recording" }), lane("mod", "MEMORY A", { messages: 16, sessionMode: "recording" })]);
+		const w = world(on, "s-9z", [agent("mod", "MEMORY A", { sessionMode: "recording" }), agent("mod", "MEMORY A", { messages: 12, sessionMode: "recording" }), agent("mod", "MEMORY A", { messages: 16, sessionMode: "recording" })]);
 		await start($, w);
 		let reached!: () => void;
 		let release!: () => void;
@@ -794,8 +794,8 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 		expect(await footer($, [])).toBe("Orrery · Test · 16 msgs");
 	});
 
-	test("no footer label, no band and no run per turn in a file lane or outside any lane", async ($, on) => {
-		const w = world(on, "s-9i", [lane("file", null, { sessionMode: "recording" }), JSON.stringify({ lane: null }), ""]);
+	test("no footer label, no band and no run per turn in a file agent or outside any agent", async ($, on) => {
+		const w = world(on, "s-9i", [agent("file", null, { sessionMode: "recording" }), JSON.stringify({ lane: null }), ""]);
 		for (const session of ["s-9i", "s-9j", "s-9k"]) {
 			w.session = session;
 			await start($, w);
@@ -807,8 +807,8 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 		expect(w.runs).toHaveLength(3);
 	});
 
-	test("the band before the first prompt: the logo with the lane and its state; the session's mode joins once its mode file exists", async ($, on) => {
-		const w = world(on, "s-9l", [lane("mod", "MEMORY A"), lane("mod", "MEMORY A", { sessionMode: "recording" }), lane("mod", "MEMORY C", { sessionMode: "recording" })]);
+	test("the band before the first prompt: the logo with the agent and its state; the session's mode joins once its mode file exists", async ($, on) => {
+		const w = world(on, "s-9l", [agent("mod", "MEMORY A"), agent("mod", "MEMORY A", { sessionMode: "recording" }), agent("mod", "MEMORY C", { sessionMode: "recording" })]);
 		await start($, w);
 		// The holder had not written the session's mode file yet: the mode part is left out.
 		let texts = await band($);
@@ -829,7 +829,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 	});
 
 	test("the band's states: no memory yet, and a read-only window", async ($, on) => {
-		const w = world(on, "s-9m", [lane("mod", null, { messages: 0, sessionMode: "recording" }), lane("mod", "MEMORY A", { sessionMode: "read-only" }), lane("mod", null, { messages: 0, sessionMode: "read-only" })]);
+		const w = world(on, "s-9m", [agent("mod", null, { messages: 0, sessionMode: "recording" }), agent("mod", "MEMORY A", { sessionMode: "read-only" }), agent("mod", null, { messages: 0, sessionMode: "read-only" })]);
 		const states: string[] = [];
 		for (const session of ["s-9m", "s-9n", "s-9o"]) {
 			w.session = session;
@@ -837,11 +837,11 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 			const texts = await band($);
 			states.push(texts.find((t) => t.startsWith("memory") || t.startsWith("no memory")) ?? "");
 		}
-		expect(states).toEqual(["no memory yet · recording", "memory loaded · 10 msgs · read-only (another window records this lane)", "no memory yet · read-only (another window records this lane)"]);
+		expect(states).toEqual(["no memory yet · recording", "memory loaded · 10 msgs · read-only (another window records this agent)", "no memory yet · read-only (another window records this agent)"]);
 	});
 
 	test("without room for the logo (59 columns, 4 rows) or off the terminal, the band shows the two lines alone", async ($, on) => {
-		const w = world(on, "s-9p", [lane("mod", "MEMORY A", { sessionMode: "recording" })]);
+		const w = world(on, "s-9p", [agent("mod", "MEMORY A", { sessionMode: "recording" })]);
 		await start($, w);
 		const alone = ["Orrery · Test", "memory loaded · 10 msgs · recording"];
 		expect(await band($, { bodyColumns: 59 })).toEqual(alone);
@@ -851,7 +851,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 	});
 
 	test("session.start does not wait for the band's fetch: a stalled orrery holds nothing, and the band draws once it answers", async ($, on) => {
-		const w = world(on, "s-9t", [lane("mod", "MEMORY A", { name: "Started", sessionMode: "recording" })]);
+		const w = world(on, "s-9t", [agent("mod", "MEMORY A", { name: "Started", sessionMode: "recording" })]);
 		let reached!: () => void;
 		let release!: () => void;
 		const arrived = new Promise<void>((resolve) => (reached = resolve));
@@ -871,7 +871,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 	});
 
 	test("a band fetch that fails at session start is tried again 2 s later, within the same cap", async ($, on) => {
-		const w = world(on, "s-9u", [JSON.stringify({ error: "the store is busy" }), lane("mod", "MEMORY A", { name: "Retried", sessionMode: "recording" })]);
+		const w = world(on, "s-9u", [JSON.stringify({ error: "the store is busy" }), agent("mod", "MEMORY A", { name: "Retried", sessionMode: "recording" })]);
 		await start($, w);
 		expect(await band($)).not.toContain("Orrery · Retried");
 		await w.clock.advance(2_000);
@@ -881,7 +881,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 	});
 
 	test("while the session's mode stays unknown, the band asks again every 2 s, at most 10 times after a session start", async ($, on) => {
-		const w = world(on, "s-9v", [lane("mod", "MEMORY A")]);
+		const w = world(on, "s-9v", [agent("mod", "MEMORY A")]);
 		await start($, w);
 		expect(w.runs).toHaveLength(1);
 		await w.clock.advance(2_000);
@@ -892,7 +892,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 	});
 
 	test("a session started without a terminal (claude -p, the SDK) fetches nothing for the band", async ($, on) => {
-		const w = world(on, "s-9w", [lane("mod", "MEMORY A")]);
+		const w = world(on, "s-9w", [agent("mod", "MEMORY A")]);
 		await $.session.start({ ...START, isInteractive: false });
 		await w.clock.settle();
 		await w.clock.advance(30_000);
@@ -900,7 +900,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 	});
 
 	test("the band yields to a survey", async ($, on) => {
-		const w = world(on, "s-9q", [lane("mod", "MEMORY A", { sessionMode: "recording" })]);
+		const w = world(on, "s-9q", [agent("mod", "MEMORY A", { sessionMode: "recording" })]);
 		await start($, w);
 		expect(await band($, { hasSurvey: true })).toEqual([ENGINE_BAND]);
 		expect(await band($)).toContain("Orrery · Test");
@@ -909,7 +909,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 	// The person's first prompt ends the band for the whole process: this test runs last.
 	test("the band leaves at the person's first prompt and does not come back, and its refetch stops; a peer's prompt leaves it", async ($, on) => {
 		// The session's mode is not known yet, so a refetch waits on the clock.
-		const w = world(on, "s-9r", [lane("mod", "MEMORY A")]);
+		const w = world(on, "s-9r", [agent("mod", "MEMORY A")]);
 		on("prompt.submit", ($, e) => ({ text: e.text }));
 		await start($, w);
 		expect(await band($)).toContain("Orrery · Test");

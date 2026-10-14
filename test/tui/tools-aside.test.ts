@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, it } from "vitest";
-import { installSteps, piExtensionFile, runInstall, type ToolCheck } from "../../src/lane/tools.ts";
+import { installSteps, piExtensionFile, runInstall, type ToolCheck } from "../../src/agent/tools.ts";
 import { toolsPage } from "../../src/tui/pages/tools.ts";
 import { answer, fakeDeps, keys, makeApp, screen } from "./support.ts";
 

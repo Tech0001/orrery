@@ -81,19 +81,19 @@ describe("pi extension entry points", () => {
 		const { bad, seen } = walk(PI_ENTRY);
 		expect(bad).toEqual([]);
 		// The walk must really reach the file that caused the bug, or this test proves nothing.
-		expect([...seen].map((file) => file.slice(ROOT.length + 1))).toContain(join("src", "lane", "models.ts"));
+		expect([...seen].map((file) => file.slice(ROOT.length + 1))).toContain(join("src", "agent", "models.ts"));
 	});
 
 	it("never reaches the TUI or the Node-only modules it uses", () => {
 		const reached = [...walk(PI_ENTRY).seen].map((file) => file.slice(ROOT.length + 1));
-		const nodeOnly = ["compactor-target", "config-edit", "overview", "launch", "tools", "logins"].map((name) => join("src", "lane", `${name}.ts`));
+		const nodeOnly = ["compactor-target", "config-edit", "overview", "launch", "tools", "logins"].map((name) => join("src", "agent", `${name}.ts`));
 		expect(reached.filter((file) => file.startsWith(join("src", "tui") + sep) || nodeOnly.includes(file))).toEqual([]);
 		expect(reached.length).toBeGreaterThan(10);
 	});
 
 	it("reaches orrery's own pi-ai only through models.ts's dynamic import, OMP's fallback that pi never takes", () => {
 		// The file must exist (walk reports a relative import that resolves to no file), so an npm layout change fails here.
-		expect(walk(PI_ENTRY).into).toEqual([{ file: join("src", "lane", "models.ts"), spec: "../../node_modules/@earendil-works/pi-ai/dist/compat.js", dynamic: true }]);
+		expect(walk(PI_ENTRY).into).toEqual([{ file: join("src", "agent", "models.ts"), spec: "../../node_modules/@earendil-works/pi-ai/dist/compat.js", dynamic: true }]);
 	});
 
 	it("never reaches OMP's entry or anything in src/omp from pi's entry", () => {

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { holdInstallLock, installFrom, makeReadOnly } from "../../src/install/install.ts";
 import { uninstall } from "../../src/install/uninstall.ts";
 import { wire } from "../../src/install/wire.ts";
-import { ompExtensionFile, piExtensionFile } from "../../src/lane/tools.ts";
+import { ompExtensionFile, piExtensionFile } from "../../src/agent/tools.ts";
 import { cliCommand } from "../claude/support.ts";
 import { cleanupScratch, fakeRun, fixtureRelease, installedScratch, type Scratch, scratchPath, type Style, systemCommand, tempDir, VERSION, writePiExtension } from "./support.ts";
 
@@ -31,7 +31,7 @@ const unitDir = (t: Scratch) => join(t.home, ".config", "systemd", "user");
 
 /**
  * An install in `style`, read-only as a real one, wired by setup's own code: the command link, pi, OMP (separate
- * folders), the Claude Code plugin from app/current, and a backup service with its timer. Lanes' files beside it.
+ * folders), the Claude Code plugin from app/current, and a backup service with its timer. Agents' files beside it.
  */
 async function wiredInstall(style: Style = "binary"): Promise<Scratch> {
 	const t = installedScratch({ style, tools: { pi: 'echo "pi 1.2.0"', omp: 'echo "omp/18.8.9"', claude: CLAUDE } });
@@ -42,8 +42,8 @@ async function wiredInstall(style: Style = "binary"): Promise<Scratch> {
 	pluginList(t, join(t.current, "claude-plugin"));
 	writeFileSync(join(t.orreryHome, "config.toml"), `data_dir = ${JSON.stringify(t.orreryHome)}\n`);
 	writeFileSync(join(t.orreryHome, "credentials.json"), "{}\n", { mode: 0o600 });
-	mkdirSync(join(t.orreryHome, "lanes", "Atlas"), { recursive: true });
-	writeFileSync(join(t.orreryHome, "lanes", "Atlas", "memory.jsonl"), "{}\n");
+	mkdirSync(join(t.orreryHome, "agents", "Atlas"), { recursive: true });
+	writeFileSync(join(t.orreryHome, "agents", "Atlas", "memory.jsonl"), "{}\n");
 	makeReadOnly(join(t.orreryHome, "app", VERSION));
 	return t;
 }
@@ -61,7 +61,7 @@ const gone = (path: string) => {
 };
 
 describe("uninstall", () => {
-	it("removes app/, the command link, pi's and OMP's files, the Claude Code plugin and the backup service; keeps config, logins and lanes", async () => {
+	it("removes app/, the command link, pi's and OMP's files, the Claude Code plugin and the backup service; keeps config, logins and agents", async () => {
 		const t = await wiredInstall();
 		const link = join(t.home, ".local", "bin", "orrery");
 		expect(readlinkSync(link)).toBe(join(t.current, "bin", "orrery"));
@@ -85,12 +85,12 @@ describe("uninstall", () => {
 		]);
 		expect(readFileSync(join(t.orreryHome, "config.toml"), "utf8")).toContain("data_dir");
 		expect(existsSync(join(t.orreryHome, "credentials.json"))).toBe(true);
-		expect(existsSync(join(t.orreryHome, "lanes", "Atlas", "memory.jsonl"))).toBe(true);
+		expect(existsSync(join(t.orreryHome, "agents", "Atlas", "memory.jsonl"))).toBe(true);
 		const text = lines.join("\n");
 		expect(text).toContain(`pi: removed ${piExtensionFile(t.env)}`);
 		expect(text).toContain(`OMP: removed ${ompExtensionFile(t.env)}`);
 		expect(text).toContain(`orrery command: removed ${link}`);
-		expect(text).toMatch(/Kept .*config, logins and lanes/);
+		expect(text).toMatch(/Kept .*config, logins and agents/);
 	});
 
 	it("unwires a source-style (0.5.0) install too, and a file that names a version folder", async () => {
@@ -145,14 +145,14 @@ describe("uninstall", () => {
 		expect(changes(t, before).filter((c) => c[0] === "claude")).toEqual([]);
 	});
 
-	it("refuses while a lane is open, names it, and changes nothing", async () => {
+	it("refuses while an agent is open, names it, and changes nothing", async () => {
 		const t = await wiredInstall();
-		writeFileSync(join(t.orreryHome, "config.toml"), `data_dir = ${JSON.stringify(t.orreryHome)}\n[lanes.Atlas]\nworkspace = ${JSON.stringify(join(t.home, "ws"))}\ncompactor_model = "local/m"\n`);
-		writeFileSync(join(t.orreryHome, "lanes", "Atlas", "status.json"), JSON.stringify({ lane: "Atlas", pid: process.pid, open: true, version: VERSION }));
+		writeFileSync(join(t.orreryHome, "config.toml"), `data_dir = ${JSON.stringify(t.orreryHome)}\n[agents.Atlas]\nfolder = ${JSON.stringify(join(t.home, "ws"))}\ncompactor_model = "local/m"\n`);
+		writeFileSync(join(t.orreryHome, "agents", "Atlas", "status.json"), JSON.stringify({ agent: "Atlas", pid: process.pid, open: true, version: VERSION }));
 		const before = t.calls().length;
 		const { lines, ok } = await uninstall({ env: t.env, purge: true, confirmPurge: never, run: fakeRun });
 		expect(ok).toBe(false);
-		expect(lines).toEqual(["Close these lanes first: Atlas"]);
+		expect(lines).toEqual(["Close these agents first: Atlas"]);
 		expect(existsSync(join(t.orreryHome, "app", "current"))).toBe(true);
 		expect(existsSync(piExtensionFile(t.env))).toBe(true);
 		expect(existsSync(join(t.home, ".local", "bin", "orrery"))).toBe(true);
@@ -181,13 +181,13 @@ describe("uninstall", () => {
 		expect(existsSync(join(t.orreryHome, "app"))).toBe(false);
 	});
 
-	it("refuses when it cannot tell whether a lane is open", async () => {
+	it("refuses when it cannot tell whether an agent is open", async () => {
 		const t = await wiredInstall();
-		writeFileSync(join(t.orreryHome, "config.toml"), `data_dir = ${JSON.stringify(t.orreryHome)}\n[lanes.Atlas]\nworkspace = ${JSON.stringify(join(t.home, "ws"))}\ncompactor_model = "local/m"\n`);
-		writeFileSync(join(t.orreryHome, "lanes", "Atlas", "status.json"), "{ not json");
+		writeFileSync(join(t.orreryHome, "config.toml"), `data_dir = ${JSON.stringify(t.orreryHome)}\n[agents.Atlas]\nfolder = ${JSON.stringify(join(t.home, "ws"))}\ncompactor_model = "local/m"\n`);
+		writeFileSync(join(t.orreryHome, "agents", "Atlas", "status.json"), "{ not json");
 		const { lines, ok } = await uninstall({ env: t.env, purge: false, confirmPurge: never, run: fakeRun });
 		expect(ok).toBe(false);
-		expect(lines.join("\n")).toMatch(/^Cannot tell whether lanes are open: lane Atlas's status\.json cannot be parsed/);
+		expect(lines.join("\n")).toMatch(/^Cannot tell whether agents are open: agent Atlas's status\.json cannot be parsed/);
 		expect(existsSync(join(t.orreryHome, "app", "current"))).toBe(true);
 	});
 
@@ -238,7 +238,7 @@ describe("uninstall", () => {
 		const linked = join(t.home, "orrery-link");
 		symlinkSync(t.orreryHome, linked);
 		const cases: [string, string][] = [
-			[documents, `Not uninstalled: --purge deletes only an Orrery home, and ${documents} holds none of config.toml, lanes, credentials.json, app.`],
+			[documents, `Not uninstalled: --purge deletes only an Orrery home, and ${documents} holds none of config.toml, agents, credentials.json, app.`],
 			[linked, `Not uninstalled: ${linked} is a link to ${t.orreryHome}; --purge deletes only the folder itself (set ORRERY_HOME to it).`],
 			[join(t.home, "nowhere"), `Not uninstalled: ${join(t.home, "nowhere")} is not there, so there is nothing to purge.`],
 		];
@@ -250,6 +250,16 @@ describe("uninstall", () => {
 		expect(readFileSync(join(documents, "notes.txt"), "utf8")).toBe("mine\n");
 		expect(existsSync(join(t.orreryHome, "app", "current"))).toBe(true);
 		expect(existsSync(piExtensionFile(t.env))).toBe(true);
+	});
+
+	it("--purge takes a lanes/ folder, from before 0.6.0, as evidence of an Orrery home: it goes on to ask", async () => {
+		const t = await wiredInstall();
+		const old = join(t.home, "old-orrery");
+		mkdirSync(join(old, "lanes", "Atlas"), { recursive: true });
+		const { lines, ok } = await uninstall({ env: { ...t.env, ORRERY_HOME: old }, purge: true, confirmPurge: async () => false, run: fakeRun });
+		expect(ok).toBe(false);
+		expect(lines).toEqual(["Not uninstalled: you did not type delete; nothing changed."]);
+		expect(existsSync(join(old, "lanes", "Atlas"))).toBe(true);
 	});
 
 	it("says what failed when the backup unit files cannot be removed, without an empty 'removed' line", async () => {

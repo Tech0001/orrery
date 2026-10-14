@@ -1,19 +1,19 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { laneRemoteCommand, setStorageForTests } from "../../src/cli/remote.ts";
-import { loadConfig } from "../../src/lane/config.ts";
-import { laneOverview, OverviewCache } from "../../src/lane/overview.ts";
+import { agentRemoteCommand, setStorageForTests } from "../../src/cli/remote.ts";
+import { loadConfig } from "../../src/agent/config.ts";
+import { agentOverview, OverviewCache } from "../../src/agent/overview.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
-import { checkOutLane } from "../../src/remote/checkout.ts";
+import { checkOutAgent } from "../../src/remote/checkout.ts";
 import { createKey, keyToCode } from "../../src/remote/crypto.ts";
 import { FakeStorage } from "../../src/remote/fake.ts";
-import { laneSettings } from "../../src/remote/save-format.ts";
+import { agentSettings } from "../../src/remote/save-format.ts";
 import { saveRemoteSecret } from "../../src/remote/secrets.ts";
 import { RemoteSession } from "../../src/remote/session.ts";
 import { type LaneEntry, RemoteError } from "../../src/remote/types.ts";
-import { lanesPage } from "../../src/tui/pages/lanes.ts";
-import { tempDir } from "../lane/support.ts";
+import { agentsPage } from "../../src/tui/pages/agents.ts";
+import { tempDir } from "../agent/support.ts";
 import { answer, fakeDeps, keys, makeApp, screen, settle } from "./support.ts";
 
 /** The TUI runs outside Atlas's folder: L asks where, and these open it in its folder. */
@@ -30,15 +30,15 @@ const question = "Atlas was open on macbook, last seen 14:02, saved up to save 1
 beforeEach(async () => {
 	dir = tempDir("orrery-tui-launch-"); path = join(dir, "config.toml"); now = seen;
 	storage = new FakeStorage({ name: "home", now: () => now });
-	writeFileSync(path, `data_dir = "${dir}/data"\n[lanes.Atlas]\nworkspace = "${dir}"\ntool = "pi"\ncompactor_model = "openai/gpt-6.1-sol"\nremote = "home"\n[remotes.home]\nkind = "cloudflare"\nurl = "https://example.com"\n`);
-	const config = loadConfig(path); const lane = config.lanes.get("Atlas")!;
-	const key = createKey(); const laneDir = join(dir, "peer");
-	const store = MemoryStore.open(join(laneDir, "memory.sqlite"));
+	writeFileSync(path, `data_dir = "${dir}/data"\n[agents.Atlas]\nfolder = "${dir}"\ntool = "pi"\ncompactor_model = "openai/gpt-6.1-sol"\nremote = "home"\n[remotes.home]\nkind = "cloudflare"\nurl = "https://example.com"\n`);
+	const config = loadConfig(path); const agent = config.agents.get("Atlas")!;
+	const key = createKey(); const agentDir = join(dir, "peer");
+	const store = MemoryStore.open(join(agentDir, "memory.sqlite"));
 	store.append("user", "initial memory"); store.close();
-	const options = { lane: "Atlas", laneDir, storage, key, holder: peer, settings: laneSettings(lane), report: () => {}, now: () => now };
+	const options = { agent: "Atlas", agentDir, storage, key, holder: peer, settings: agentSettings(agent), report: () => {}, now: () => now };
 	await RemoteSession.push(options);
 	const session = await RemoteSession.checkOut(options);
-	const writer = MemoryStore.open(join(laneDir, "memory.sqlite"));
+	const writer = MemoryStore.open(join(agentDir, "memory.sqlite"));
 	session.attach(writer); writer.append("user", "saved on the peer");
 	try { await session.close(); } finally { writer.close(); }
 	saveRemoteSecret(config, "home", { key: keyToCode(key), token: "hidden-token" });
@@ -50,13 +50,13 @@ afterEach(() => { setStorageForTests(undefined); rmSync(dir, { recursive: true, 
 function setup() {
 	const cache = new OverviewCache({ storage: () => storage, now: () => now });
 	const deps = fakeDeps({ configPath: path, loadConfig: () => loadConfig(path),
-		overview: (config) => laneOverview(config, { cache, now }),
+		overview: (config) => agentOverview(config, { cache, now }),
 		remotes: (config) => cache.remotes(config),
 		refreshRemote: (config, name) => cache.refreshRemote(config, name),
-		takeoverLane: (name) => laneRemoteCommand(path, ["takeover", name], { yes: true }),
+		takeoverAgent: (name) => agentRemoteCommand(path, ["takeover", name], { yes: true }),
 		tools: () => [{ id: "pi", label: "pi", path: "/bin/pi", version: "1", wiring: "installed", detail: "" }],
 	});
-	return { cache, deps, app: makeApp(deps, [lanesPage]) };
+	return { cache, deps, app: makeApp(deps, [agentsPage]) };
 }
 
 async function hold(stale = false) {
@@ -66,8 +66,8 @@ async function hold(stale = false) {
 	return result.lock;
 }
 
-describe("L on a remote lane", () => {
-	it("refreshes a cached free lane once and refuses a fresh holder without launching", async () => {
+describe("L on a remote agent", () => {
+	it("refreshes a cached free agent once and refuses a fresh holder without launching", async () => {
 		let lists = 0; const list = storage.list.bind(storage);
 		storage.list = async () => { lists++; return list(); };
 		const { app, deps } = setup(); await settle(); app.refresh();
@@ -84,9 +84,9 @@ describe("L on a remote lane", () => {
 		deps.launch = async () => {
 			expect((await storage.list())[0].lock).toMatchObject({ held: false, lock: lock + 1 });
 			const config = loadConfig(path);
-			const session = await checkOutLane(config, config.lanes.get("Atlas")!, { storage, report: () => {} });
+			const session = await checkOutAgent(config, config.agents.get("Atlas")!, { storage, report: () => {} });
 			try {
-				const store = MemoryStore.openReadOnly(join(config.lanes.get("Atlas")!.dir, "memory.sqlite"));
+				const store = MemoryStore.openReadOnly(join(config.agents.get("Atlas")!.dir, "memory.sqlite"));
 				try { expect(store.root.map((m) => m.text)).toEqual(["initial memory", "saved on the peer"]); } finally { store.close(); }
 			} finally { await session!.close(); }
 			launched = true; return { code: 0, signal: null };
@@ -108,10 +108,10 @@ describe("L on a remote lane", () => {
 
 	it("labels an initial snapshot of substantial existing memory as save 0, not turn 0", async () => {
 		storage = new FakeStorage({ name: "home", now: () => now });
-		const config = loadConfig(path); const key = createKey(); const laneDir = join(dir, "long-history");
-		const store = MemoryStore.open(join(laneDir, "memory.sqlite"));
+		const config = loadConfig(path); const key = createKey(); const agentDir = join(dir, "long-history");
+		const store = MemoryStore.open(join(agentDir, "memory.sqlite"));
 		try { for (let n = 1; n <= 200; n++) store.append("user", `message ${n}`); } finally { store.close(); }
-		await RemoteSession.push({ lane: "Atlas", laneDir, storage, key, holder: peer, settings: laneSettings(config.lanes.get("Atlas")!), report: () => {} });
+		await RemoteSession.push({ agent: "Atlas", agentDir, storage, key, holder: peer, settings: agentSettings(config.agents.get("Atlas")!), report: () => {} });
 		saveRemoteSecret(config, "home", { key: keyToCode(key), token: "hidden-token" });
 		await hold(true); const { app, deps } = setup(); keys(app, "L"); await inItsFolder(app);
 		expect(app.host.current?.title).toBe("Atlas was open on macbook, last seen 14:02, saved up to save 0. Take over?");
@@ -128,7 +128,7 @@ describe("L on a remote lane", () => {
 	it("keeps rendering during a refresh and shares its request with background refreshes", async () => {
 		const { app, deps } = setup(); await settle();
 		const list = storage.list.bind(storage); let calls = 0;
-		let complete!: (lanes: LaneEntry[]) => void;
+		let complete!: (agents: LaneEntry[]) => void;
 		storage.list = () => { calls++; return new Promise((resolve) => { complete = resolve; }); };
 		keys(app, "L"); await settle(); app.refresh();
 		expect(screen(app)).toContain("Checking Atlas on home"); expect(calls).toBe(1);
@@ -137,7 +137,7 @@ describe("L on a remote lane", () => {
 		complete(await list()); await inItsFolder(app); await app.idle(); expect(deps.launched).toEqual(["Atlas"]);
 	});
 
-	it("refuses to launch if the refresh fails, even with a cached free lane", async () => {
+	it("refuses to launch if the refresh fails, even with a cached free agent", async () => {
 		const { app, deps } = setup(); await settle();
 		storage.list = async () => { throw new RemoteError("auth", "hidden-token"); };
 		keys(app, "L"); await app.idle();
@@ -172,7 +172,7 @@ describe("L on a remote lane", () => {
 		writeFileSync(path, readFileSync(path, "utf8").replace('remote = "home"\n', ""));
 		const { app, deps } = setup();
 		deps.refreshRemote = async () => { throw new Error("local L must not check remotes"); };
-		deps.takeoverLane = async () => { throw new Error("local L must not take over"); };
+		deps.takeoverAgent = async () => { throw new Error("local L must not take over"); };
 		keys(app, "L"); await inItsFolder(app); await app.idle(); expect(deps.launched).toEqual(["Atlas"]);
 	});
 });

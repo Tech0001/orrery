@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it } from "vitest";
 import { guardToolCall, movedAgentDirCredentials } from "../../src/pi/guard.ts";
-import type { HarnessConfig } from "../../src/lane/config.ts";
+import type { HarnessConfig } from "../../src/agent/config.ts";
 import { createOrrery } from "../../src/pi/index.ts";
 import { fakeOmp, ompCleanup, track } from "../omp/world.ts";
 import type { PiRun } from "./harness.ts";
@@ -15,12 +15,12 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 function setup() {
 	dir = realpathSync(mkdtempSync(join(tmpdir(), "orrery-guard-")));
-	const workspace = join(dir, "ws");
-	mkdirSync(join(workspace, "sub"), { recursive: true });
+	const folder = join(dir, "ws");
+	mkdirSync(join(folder, "sub"), { recursive: true });
 	mkdirSync(join(dir, "outside"));
-	symlinkSync(join(dir, "outside"), join(workspace, "link"));
+	symlinkSync(join(dir, "outside"), join(folder, "link"));
 	// A scratch home, so no case stats the real one's credential files (~/.omp's among them).
-	return { workspace, options: { workspace, allowedRoots: [], cwd: join(workspace, "sub"), home: join(dir, "home"), foreignViews: [] as string[] } };
+	return { folder, options: { folder, allowedRoots: [], cwd: join(folder, "sub"), home: join(dir, "home"), foreignViews: [] as string[] } };
 }
 const write = (path: string, options: Parameters<typeof guardToolCall>[2]) => guardToolCall("write", { path, content: "x" }, options);
 
@@ -50,15 +50,15 @@ describe("guardToolCall resolves paths the way pi's tools do", () => {
 });
 
 describe("guardToolCall keeps credentials in the user's home out", () => {
-	/** A fake home with pi's models.json, beside the workspace and another repo the lane may read. */
+	/** A fake home with pi's models.json, beside the folder and another repo the agent may read. */
 	function homeSetup() {
-		const { workspace, options } = setup();
+		const { folder, options } = setup();
 		const home = join(dir, "home");
 		mkdirSync(join(home, ".pi", "agent"), { recursive: true });
 		mkdirSync(join(home, ".ssh"));
 		mkdirSync(join(dir, "repo"));
 		writeFileSync(join(home, ".pi", "agent", "models.json"), "{}");
-		return { workspace, home, options: { ...options, home } };
+		return { folder, home, options: { ...options, home } };
 	}
 
 	it("refuses OMP's credential stores in pi too", () => {
@@ -72,7 +72,7 @@ describe("guardToolCall keeps credentials in the user's home out", () => {
 	});
 
 	it("blocks pi's models.json and /proc/*/environ through the raw, the resolved and the real path", () => {
-		const { workspace, home, options } = homeSetup();
+		const { folder, home, options } = homeSetup();
 		const read = (path: string, cwd = options.cwd) => guardToolCall("read", { path }, { ...options, cwd });
 		expect(read("~/.pi/agent/models.json")).toMatch(/sensitive/);
 		expect(read(join(home, ".pi/agent/models.json"))).toMatch(/sensitive/);
@@ -81,8 +81,8 @@ describe("guardToolCall keeps credentials in the user's home out", () => {
 		expect(read("environ", "/proc/self")).toMatch(/sensitive/);
 		expect(guardToolCall("bash", { command: "cat /proc/self/environ" }, options)).toMatch(/sensitive/);
 		expect(guardToolCall("bash", { command: "cat ~/.pi/agent/models.json" }, options)).toMatch(/sensitive/);
-		// Only the real target names the file: a link in the workspace.
-		symlinkSync(join(home, ".pi", "agent", "models.json"), join(workspace, "settings.json"));
+		// Only the real target names the file: a link in the folder.
+		symlinkSync(join(home, ".pi", "agent", "models.json"), join(folder, "settings.json"));
 		expect(read("../settings.json")).toMatch(/sensitive/);
 		// Only pi's resolution names the file: ~/.pi is itself a link (dotfiles kept elsewhere), cwd is under it.
 		const stow = join(dir, "dotfiles");
@@ -104,15 +104,15 @@ describe("guardToolCall keeps credentials in the user's home out", () => {
 	});
 
 	it("lets grep search file contents for credential names (its pattern is text, not a file name), but not glob for them", () => {
-		const { workspace, options } = homeSetup();
-		expect(guardToolCall("grep", { pattern: "auth.json", path: workspace }, options)).toBeUndefined();
-		expect(guardToolCall("grep", { pattern: "id_rsa|\\.ssh/", path: workspace }, options)).toBeUndefined();
-		expect(guardToolCall("grep", { pattern: "auth.json", path: workspace, glob: "**/auth.json" }, options)).toMatch(/sensitive/);
-		expect(guardToolCall("find", { pattern: "auth.json", path: workspace }, options)).toMatch(/sensitive/);
+		const { folder, options } = homeSetup();
+		expect(guardToolCall("grep", { pattern: "auth.json", path: folder }, options)).toBeUndefined();
+		expect(guardToolCall("grep", { pattern: "id_rsa|\\.ssh/", path: folder }, options)).toBeUndefined();
+		expect(guardToolCall("grep", { pattern: "auth.json", path: folder, glob: "**/auth.json" }, options)).toMatch(/sensitive/);
+		expect(guardToolCall("find", { pattern: "auth.json", path: folder }, options)).toMatch(/sensitive/);
 	});
 
 	it("blocks a search rooted at home or above it (it would recurse into ~/.ssh and ~/.pi), and says to narrow it", () => {
-		const { workspace, home, options } = homeSetup();
+		const { folder, home, options } = homeSetup();
 		expect(guardToolCall("grep", { pattern: "apiKey", path: "~" }, options)).toMatch(/narrower folder/);
 		expect(guardToolCall("grep", { pattern: "apiKey", path: home }, options)).toMatch(/narrower folder/);
 		expect(guardToolCall("find", { pattern: "*.json", path: dir }, options)).toMatch(/narrower folder/);
@@ -120,12 +120,12 @@ describe("guardToolCall keeps credentials in the user's home out", () => {
 		expect(guardToolCall("grep", { pattern: "apiKey" }, { ...options, cwd: home })).toMatch(/narrower folder/);
 		expect(guardToolCall("grep", { pattern: "apiKey", path: "~/.pi/agent" }, options)).toMatch(/narrower folder/);
 		// A link to home is home.
-		symlinkSync(home, join(workspace, "home-link"));
+		symlinkSync(home, join(folder, "home-link"));
 		expect(guardToolCall("grep", { pattern: "apiKey", path: "../home-link" }, options)).toMatch(/narrower folder/);
 	});
 
-	it("still allows reads and searches elsewhere: lanes read other repos", () => {
-		const { workspace, options } = homeSetup();
+	it("still allows reads and searches elsewhere: agents read other repos", () => {
+		const { folder, options } = homeSetup();
 		const repo = join(dir, "repo");
 		expect(guardToolCall("grep", { pattern: "TODO", path: repo }, options)).toBeUndefined();
 		expect(guardToolCall("find", { pattern: "*.ts", path: repo }, options)).toBeUndefined();
@@ -134,13 +134,13 @@ describe("guardToolCall keeps credentials in the user's home out", () => {
 		expect(guardToolCall("grep", { pattern: "TODO" }, options)).toBeUndefined();
 		expect(guardToolCall("read", { path: join(repo, "README.md") }, options)).toBeUndefined();
 		expect(guardToolCall("read", { path: "/etc/os-release" }, options)).toBeUndefined();
-		expect(guardToolCall("write", { path: join(workspace, "a.ts"), content: "x" }, options)).toBeUndefined();
+		expect(guardToolCall("write", { path: join(folder, "a.ts"), content: "x" }, options)).toBeUndefined();
 	});
 });
 
 describe("guardToolCall against spellings that dodge the patterns", () => {
 	function adversary() {
-		const { workspace, options } = setup();
+		const { folder, options } = setup();
 		const home = join(dir, "home");
 		const stow = join(dir, "dotfiles-ssh"); // ~/.ssh kept elsewhere, linked in (as dotfile managers do)
 		mkdirSync(stow);
@@ -150,11 +150,11 @@ describe("guardToolCall against spellings that dodge the patterns", () => {
 		const data = join(dir, "orrery-data");
 		mkdirSync(data);
 		writeFileSync(join(data, "credentials.json"), "{}");
-		return { workspace, home, data, options: { ...options, home, credentials: [join(data, "credentials.json")] } };
+		return { folder, home, data, options: { ...options, home, credentials: [join(data, "credentials.json")] } };
 	}
 
 	it("refuses a search at home or above however the path is written", () => {
-		const { workspace, home, options } = adversary();
+		const { folder, home, options } = adversary();
 		const grep = (path: string, cwd = options.cwd) => guardToolCall("grep", { pattern: "key", path }, { ...options, cwd });
 		for (const path of ["~", "~/", "~/..", "@~", `file://${home}`, `${home}/./`, `${home}/../home`, ".", ""]) {
 			expect([path, grep(path, home)]).toEqual([path, expect.stringMatching(/narrower folder/)]);
@@ -162,7 +162,7 @@ describe("guardToolCall against spellings that dodge the patterns", () => {
 		// On a case-insensitive file system (macOS) another letter case is the same folder.
 		expect(grep(home.toUpperCase())).toMatch(/narrower folder/);
 		expect(grep(join(home, ".PI"))).toMatch(/narrower folder/);
-		symlinkSync(dir, join(workspace, "up"));
+		symlinkSync(dir, join(folder, "up"));
 		expect(grep("../up")).toMatch(/narrower folder/);
 		expect(guardToolCall("find", { pattern: "*", path: "~/.." }, options)).toMatch(/narrower folder/);
 		expect(guardToolCall("ls", { path: "/proc/self/root" }, options)).toMatch(/narrower folder/);
@@ -180,10 +180,10 @@ describe("guardToolCall against spellings that dodge the patterns", () => {
 	});
 
 	it("refuses credential files reached through a linked ~/.ssh, a configured credentials file, or another letter case", () => {
-		const { workspace, home, data, options } = adversary();
-		symlinkSync(join(home, ".ssh"), join(workspace, "keys"));
+		const { folder, home, data, options } = adversary();
+		symlinkSync(join(home, ".ssh"), join(folder, "keys"));
 		expect(guardToolCall("read", { path: "../keys/config" }, options)).toMatch(/sensitive/);
-		symlinkSync(join(data, "credentials.json"), join(workspace, "c.txt"));
+		symlinkSync(join(data, "credentials.json"), join(folder, "c.txt"));
 		expect(guardToolCall("read", { path: "../c.txt" }, options)).toMatch(/sensitive/);
 		expect(guardToolCall("read", { path: "~/.SSH/id_rsa" }, options)).toMatch(/sensitive/);
 		expect(guardToolCall("read", { path: "~/.SSH/config" }, options)).toMatch(/sensitive/);
@@ -207,14 +207,14 @@ describe("movedAgentDirCredentials", () => {
 });
 
 describe("guardToolCall keeps Orrery's home out", () => {
-	it("refuses the remote keys and other lanes' memory, and allows config.toml", () => {
-		const { workspace, options } = setup();
+	it("refuses the remote keys and other agents' memory, and allows config.toml", () => {
+		const { folder, options } = setup();
 		const data = join(dir, "home", ".orrery");
-		mkdirSync(join(data, "lanes", "Birch"), { recursive: true });
+		mkdirSync(join(data, "agents", "Birch"), { recursive: true });
 		for (const file of ["remotes.json", "config.toml"]) writeFileSync(join(data, file), "");
-		const guarded = { ...options, workspace, allowedRoots: [], orreryData: data };
+		const guarded = { ...options, folder, allowedRoots: [], orreryData: data };
 		expect(guardToolCall("read", { path: join(data, "remotes.json") }, guarded)).toMatch(/sensitive/);
-		expect(guardToolCall("grep", { pattern: "x", path: join(data, "lanes") }, guarded)).toMatch(/sensitive/);
+		expect(guardToolCall("grep", { pattern: "x", path: join(data, "agents") }, guarded)).toMatch(/sensitive/);
 		expect(guardToolCall("read", { path: join(data, "config.toml") }, guarded)).toBeUndefined();
 	});
 });
@@ -227,7 +227,7 @@ describe("pi: only the agent that owns a folder's memory view reads it", () => {
 	// These sessions run pi's real bash: a command the guard lets through runs, under a scratch HOME.
 	isolatedHome();
 
-	/** The world's two lanes, Atlas and Birch, each set up the file way: a memory view in its folder. */
+	/** The world's two agents, Atlas and Birch, each set up the file way: a memory view in its folder. */
 	function viewWorld() {
 		const made = world();
 		dir = made.root;
@@ -307,7 +307,7 @@ describe("pi: only the agent that owns a folder's memory view reads it", () => {
 		mkdirSync(join(key, ".."), { recursive: true });
 		writeFileSync(key, "fake key: secret");
 		const broken = join(root, "broken.toml");
-		writeFileSync(broken, "lanes = [");
+		writeFileSync(broken, "agents = [");
 		const escape = `${root}-escape.txt`;
 		try {
 			await withConfig(broken, async () => {
@@ -315,7 +315,7 @@ describe("pi: only the agent that owns a folder's memory view reads it", () => {
 				expect(run.tool("zoom")).toBeUndefined();
 				expect(run.notices).toEqual([{ type: "warning", message: expect.stringMatching(/; running without memory$/) }]);
 				refused(await call(run, "read", { path: key }));
-				expect(await call(run, "write", { path: escape, content: "x" })).toMatch(/outside this lane's workspace/);
+				expect(await call(run, "write", { path: escape, content: "x" })).toMatch(/outside this agent's folder/);
 				expect(existsSync(escape)).toBe(false);
 				refused(await call(run, "bash", { command: `printf '[' >> ${broken}` }));
 				// The session's own folder is its work area.
@@ -334,10 +334,10 @@ describe("pi: only the agent that owns a folder's memory view reads it", () => {
 			const atlas = await pi(root, join(root, "agent-Atlas"), undefined);
 			expect(atlas.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
 			for (const command of [`printf '[' >> ${configPath}`, `sed -i s/Atlas/Birch/ ${configPath}`, `cat "${configPath}"`]) refused(await call(atlas, "bash", { command }));
-			// Its folder is in Atlas's allowed roots (the workspace's parent): only the config rule refuses these.
+			// Its folder is in Atlas's allowed roots (the folder's parent): only the config rule refuses these.
 			expect(await call(atlas, "write", { path: configPath, content: "[" })).toMatch(/Orrery's config/);
 			expect(await call(atlas, "edit", { path: configPath, edits: [{ oldText: "Atlas", newText: "Birch" }] })).toMatch(/Orrery's config/);
-			expect(await call(atlas, "read", { path: configPath })).toContain("[lanes.Atlas]");
+			expect(await call(atlas, "read", { path: configPath })).toContain("[agents.Atlas]");
 		});
 		expect(readFileSync(configPath, "utf8")).toBe(before);
 	}, 20_000);
@@ -374,7 +374,7 @@ describe("pi: only the agent that owns a folder's memory view reads it", () => {
 		for (const command of [`ln -sfn /tmp/x ${current}`, `chmod -R u+w ${orrery.app}`, `rm -rf ${current}`, `ls ${current}/src`]) {
 			refused(await call(atlas, "bash", { command }));
 		}
-		// Atlas's allowed roots (the workspace's parent) hold the scratch home: only the program rule refuses these.
+		// Atlas's allowed roots (the folder's parent) hold the scratch home: only the program rule refuses these.
 		const main = join(current, "src", "main.ts");
 		expect(await call(atlas, "write", { path: main, content: "planted" })).toMatch(/Orrery's installed program/);
 		expect(await call(atlas, "edit", { path: main, edits: [{ oldText: "program", newText: "planted" }] })).toMatch(/Orrery's installed program/);
@@ -394,7 +394,7 @@ describe("pi: only the agent that owns a folder's memory view reads it", () => {
 		expect(await call(atlas, "bash", { command: `cat ${atlasView}` })).toContain("Atlas's view: secret");
 	}, 20_000);
 
-	it("refuses every lane's view to a refused ORRERY_AGENT, the folder's own lane's too", async () => {
+	it("refuses every agent's view to a refused ORRERY_AGENT, the folder's own agent's too", async () => {
 		const { root, config, birchView } = viewWorld();
 		const run = await pi(root, join(root, "agent-Atlas"), config, undefined, { env: { ORRERY_AGENT: "Nobody" } });
 		expect(run.tool("zoom")).toBeUndefined();

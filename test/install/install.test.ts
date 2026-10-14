@@ -49,7 +49,7 @@ function twoInstalls() {
 	return { env, versions: [version, installNext(env).version] };
 }
 
-/** v1..v5, current = v5. Lane Atlas starts on v1 and keeps running through the later installs. */
+/** v1..v5, current = v5. Agent Atlas starts on v1 and keeps running through the later installs. */
 function fiveInstalls() {
 	const { env, version } = freshInstall();
 	const versions = [version];
@@ -58,18 +58,18 @@ function fiveInstalls() {
 	return { env, versions };
 }
 
-/** A lane in the home's config whose status.json says it runs `version` as `pid` (default: this process, alive). */
-function writeLiveStatus(env: NodeJS.ProcessEnv, lane: string, version: string, pid = process.pid, open = true): void {
+/** An agent in the home's config whose status.json says it runs `version` as `pid` (default: this process, alive). */
+function writeLiveStatus(env: NodeJS.ProcessEnv, agent: string, version: string, pid = process.pid, open = true): void {
 	const home = env.ORRERY_HOME as string;
 	const config = join(home, "config.toml");
 	const text = existsSync(config) ? readFileSync(config, "utf8") : `data_dir = ${JSON.stringify(join(home, "data"))}\n`;
-	if (!text.includes(`[lanes.${lane}]`)) writeFileSync(config, `${text}[lanes.${lane}]\nworkspace = ${JSON.stringify(join(home, "ws", lane))}\ncompactor_model = "local/m"\n`);
-	const dir = join(home, "data", "lanes", lane);
+	if (!text.includes(`[agents.${agent}]`)) writeFileSync(config, `${text}[agents.${agent}]\nfolder = ${JSON.stringify(join(home, "ws", agent))}\ncompactor_model = "local/m"\n`);
+	const dir = join(home, "data", "agents", agent);
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(
 		join(dir, "status.json"),
 		JSON.stringify({
-			lane, pid, open, busy: false, model: "pi", thinking: "pi",
+			agent, pid, open, busy: false, model: "pi", thinking: "pi",
 			compactor: { stopped: false, failing: 0, model: "local/m", thinking: "off", source: "config" },
 			trouble: null, lastError: null, updatedAt: new Date().toISOString(), version,
 		}),
@@ -264,7 +264,7 @@ describe("installFrom", () => {
 
 	it("keeps the version the user rolled back to, and the one a rollback would go to next, through the next install's GC", () => {
 		const { env, versions } = fiveInstalls(); // folders v1 (Atlas), v3, v4, v5; history v1..v5
-		writeFileSync(join(env.ORRERY_HOME as string, "data", "lanes", "Atlas", "status.json"), JSON.stringify({ pid: process.pid, version: versions[0], open: false }));
+		writeFileSync(join(env.ORRERY_HOME as string, "data", "agents", "Atlas", "status.json"), JSON.stringify({ pid: process.pid, version: versions[0], open: false }));
 		rollback(env);
 		rollback(env); // current = v3
 		expect(currentOf(env)).toBe(versions[2]);
@@ -306,7 +306,7 @@ describe("installFrom", () => {
 		expect(listVersions(env).map((v) => v.name)).toEqual(["0.6.2", "0.6.3", "0.6.4"]);
 	});
 
-	it("keeps a source-style version a live lane runs (0.5.0-<commit>, no VERSION file)", () => {
+	it("keeps a source-style version a live agent runs (0.5.0-<commit>, no VERSION file)", () => {
 		const env = scratchEnv();
 		const app = join(env.ORRERY_HOME as string, "app");
 		mkdirSync(join(app, "0.5.0-9d7452f", "src", "cli"), { recursive: true });
@@ -317,16 +317,16 @@ describe("installFrom", () => {
 		expect(existsSync(join(app, "0.5.0-9d7452f"))).toBe(true);
 	});
 
-	it("keeps the newest three versions, current, and any version a live lane runs", () => {
+	it("keeps the newest three versions, current, and any version a live agent runs", () => {
 		const { env, versions } = fiveInstalls(); // v1..v5, current = v5
-		writeLiveStatus(env, "Atlas", versions[0]); // a lane still running v1, its pid alive (process.pid)
+		writeLiveStatus(env, "Atlas", versions[0]); // an agent still running v1, its pid alive (process.pid)
 		const result = installNext(env); // v6
 		expect(versionFolders(env)).toEqual([versions[0], versions[3], versions[4], currentOf(env)].sort());
 		expect(result.removed).toEqual([versions[2]]);
 		expect(result.previous).toBe(versions[4]);
 	});
 
-	it("does not keep a version for a lane that closed or whose process is gone", () => {
+	it("does not keep a version for an agent that closed or whose process is gone", () => {
 		const { env, versions } = fiveInstalls();
 		writeLiveStatus(env, "Atlas", versions[0], deadPid());
 		writeLiveStatus(env, "Bea", versions[2], process.pid, false);
@@ -334,11 +334,11 @@ describe("installFrom", () => {
 		expect(versionFolders(env)).toEqual([versions[3], versions[4], version].sort());
 	});
 
-	it("keeps every version when a lane's status.json cannot be read, and when it lacks a pid or version", () => {
+	it("keeps every version when an agent's status.json cannot be read, and when it lacks a pid or version", () => {
 		for (const bad of ["{not json", JSON.stringify({ open: true, version: "x" }), JSON.stringify({ pid: process.pid, open: true }), JSON.stringify({ pid: process.pid, version: "x", open: "yes" })]) {
 			const { env } = fiveInstalls();
 			const before = versionFolders(env).length;
-			writeFileSync(join(env.ORRERY_HOME as string, "data", "lanes", "Atlas", "status.json"), bad);
+			writeFileSync(join(env.ORRERY_HOME as string, "data", "agents", "Atlas", "status.json"), bad);
 			const lines: string[] = [];
 			const result = installNext(env, { log: (l) => lines.push(l) });
 			expect(result.removed, bad).toEqual([]);
@@ -347,10 +347,10 @@ describe("installFrom", () => {
 		}
 	});
 
-	it("does not let a status without a version block GC when the lane is closed or its process is gone", () => {
+	it("does not let a status without a version block GC when the agent is closed or its process is gone", () => {
 		for (const status of [{ pid: process.pid, open: false }, { pid: deadPid() }]) {
 			const { env, versions } = fiveInstalls();
-			writeFileSync(join(env.ORRERY_HOME as string, "data", "lanes", "Atlas", "status.json"), JSON.stringify(status));
+			writeFileSync(join(env.ORRERY_HOME as string, "data", "agents", "Atlas", "status.json"), JSON.stringify(status));
 			const { removed } = installNext(env);
 			expect(removed, JSON.stringify(status)).toContain(versions[0]);
 		}
@@ -363,7 +363,7 @@ describe("installFrom", () => {
 			[JSON.stringify({ open: true, version: "x" }), /Atlas.*no pid/],
 		] as const) {
 			const { env } = fiveInstalls();
-			writeFileSync(join(env.ORRERY_HOME as string, "data", "lanes", "Atlas", "status.json"), bad);
+			writeFileSync(join(env.ORRERY_HOME as string, "data", "agents", "Atlas", "status.json"), bad);
 			const lines: string[] = [];
 			expect(installNext(env, { log: (l) => lines.push(l) }).removed, bad).toEqual([]);
 			expect(lines.join("\n"), bad).toMatch(reason);
@@ -373,7 +373,7 @@ describe("installFrom", () => {
 
 	it("reads only pid, open and version from a status: {pid, version} alone protects its version", () => {
 		const { env, versions } = fiveInstalls();
-		writeFileSync(join(env.ORRERY_HOME as string, "data", "lanes", "Atlas", "status.json"), JSON.stringify({ pid: process.pid, version: versions[0] }));
+		writeFileSync(join(env.ORRERY_HOME as string, "data", "agents", "Atlas", "status.json"), JSON.stringify({ pid: process.pid, version: versions[0] }));
 		installNext(env);
 		expect(versionFolders(env)).toContain(versions[0]);
 		expect(versionFolders(env)).not.toContain(versions[2]);
@@ -439,13 +439,13 @@ describe("installFrom", () => {
 		expect(existsSync(join(app, ".install.lock"))).toBe(false);
 	});
 
-	it("lists the versions, which one is current, and which live lanes run each", () => {
+	it("lists the versions, which one is current, and which live agents run each", () => {
 		const { env, versions } = twoInstalls();
 		writeLiveStatus(env, "Atlas", versions[0]);
 		writeLiveStatus(env, "Bea", versions[1], deadPid());
 		expect(listVersions(env)).toEqual([
-			{ name: versions[0], current: false, lanes: ["Atlas"] },
-			{ name: versions[1], current: true, lanes: [] },
+			{ name: versions[0], current: false, agents: ["Atlas"] },
+			{ name: versions[1], current: true, agents: [] },
 		]);
 		expect(listVersions(scratchEnv())).toEqual([]);
 	});
@@ -482,19 +482,19 @@ describe("orrery install", () => {
 		expect(currentOf(env)).toBe("0.6.0");
 		expect(commandLink(env)).toBe(join(env.ORRERY_HOME as string, "app", "current", "bin", "orrery"));
 		expect(out.stdout).toMatch(/~\/\.local\/bin is not on your PATH/);
-		expect(out.stdout.trim().split("\n").at(-1)).toBe("Run ~/.local/bin/orrery (or open a new terminal after adding it to PATH) to add your first lane.");
+		expect(out.stdout.trim().split("\n").at(-1)).toBe("Run ~/.local/bin/orrery (or open a new terminal after adding it to PATH) to add your first agent.");
 		const onPath = scratchEnv();
 		const plain = runCli(onPath, ["install", "--from", fixtureRelease("0.6.0")], join(onPath.HOME as string, ".local", "bin"));
 		expect(plain.status, plain.stderr).toBe(0);
-		expect(plain.stdout.trim().split("\n").at(-1)).toBe("Run orrery to add your first lane.");
+		expect(plain.stdout.trim().split("\n").at(-1)).toBe("Run orrery to add your first agent.");
 		writeFileSync(join(env.ORRERY_HOME as string, "config.toml"), "");
 		const again = cli(env, "install", "--from", fixtureRelease("0.6.0"));
 		expect(again.status, again.stderr).toBe(0);
 		expect(again.stdout).toContain("0.6.0 is already installed.");
-		expect(again.stdout).not.toContain("to add your first lane.");
+		expect(again.stdout).not.toContain("to add your first agent.");
 	});
 
-	it("says how to add the first lane even when setup left something", () => {
+	it("says how to add the first agent even when setup left something", () => {
 		const env = scratchEnv();
 		const bin = mkdtempSync(join(tmpdir(), "orrery-bin-"));
 		dirs.push(bin);
@@ -504,7 +504,7 @@ describe("orrery install", () => {
 		const out = runCli(env, ["install", "--from", fixtureRelease("0.6.0")], bin);
 		expect(out.status).toBe(1);
 		expect(out.stdout).toContain("check pi by hand");
-		expect(out.stdout.trim().split("\n").at(-1)).toMatch(/to add your first lane\.$/);
+		expect(out.stdout.trim().split("\n").at(-1)).toMatch(/to add your first agent\.$/);
 	});
 
 	it("install and rollback rewire between a source-style 0.5.0 and a binary 0.6.0, both ways", () => {

@@ -1,12 +1,12 @@
 {
 	"name": "orrery",
 	"owner": { "name": "Orrery contributors" },
-	"description": "Orrery: long-term lane memory (OptChat) for Claude Code",
+	"description": "Orrery: long-term agent memory (OptChat) for Claude Code",
 	"plugins": [
 		{
 			"name": "orrery",
 			"source": "./claude-plugin",
-			"description": "A lane's memory in Claude Code: the memory view at session start, recording, zoom/date/search, and the credential guard."
+			"description": "An agent's memory in Claude Code: the memory view at session start, recording, zoom/date/search, and the credential guard."
 		}
 	]
 }

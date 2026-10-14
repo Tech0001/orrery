@@ -1,19 +1,19 @@
-# ~/.orrery/config.toml on the workstation. Lanes run inside pi; this file maps folders to lanes.
+# ~/.orrery/config.toml on the workstation. Agents run inside pi; this file maps folders to agents.
 # data_dir is optional: with none, memory lives beside this file, in ~/.orrery.
 
 [updates]
 # check = false   # no daily check for a new release
 
-[lanes.Atlas]
-workspace = "/home/alex/code/agent-Atlas"
+[agents.Atlas]
+folder = "/home/alex/code/agent-Atlas"
 tool = "pi"                            # pi, omp, claude-code or codex: what the TUI launches
-model = "openai/gpt-6.1-sol"           # only orrery run uses it; lanes added by the TUI leave it out
+model = "openai/gpt-6.1-sol"           # only orrery run uses it; agents added by the TUI leave it out
 compactor_model = "openai/gpt-6.1-sol"  # your ChatGPT subscription, on orrery's own login: `orrery login openai` (a key: `orrery login --key …`)
 compactor_thinking = "low"
 compactor_jobs = 4
 
-[lanes.Birch]
-workspace = "/home/alex/code/agent-Birch"
+[agents.Birch]
+folder = "/home/alex/code/agent-Birch"
 model = "openai/gpt-6.1-sol"
 compactor_model = "openai/gpt-6.1-sol"
 compactor_thinking = "low"

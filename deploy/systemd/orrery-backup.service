@@ -1,5 +1,5 @@
 [Unit]
-Description=Orrery backup: snapshots and JSONL export of every lane's memory
+Description=Orrery backup: snapshots and JSONL export of every agent's memory
 
 [Service]
 Type=oneshot

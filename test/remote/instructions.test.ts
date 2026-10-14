@@ -38,7 +38,7 @@ function scene() {
 type Scene = ReturnType<typeof scene>;
 
 async function open(s: Scene, m: Machine): Promise<{ session: RemoteSession; store: MemoryStore }> {
-	const session = await RemoteSession.checkOut({ lane: "Atlas", laneDir: m.dir, storage: s.storage, key: s.key, holder: m.holder, report: (text) => m.reports.push(text), settings, renewMs: 0 });
+	const session = await RemoteSession.checkOut({ agent: "Atlas", agentDir: m.dir, storage: s.storage, key: s.key, holder: m.holder, report: (text) => m.reports.push(text), settings, renewMs: 0 });
 	const store = MemoryStore.open(join(m.dir, "memory.sqlite"));
 	session.attach(store);
 	return { session, store };
@@ -59,7 +59,7 @@ async function firstPush(s: Scene, text = "v1\n"): Promise<void> {
 	store.append("user", "hello");
 	store.close();
 	write(s.pc, text);
-	await RemoteSession.push({ lane: "Atlas", laneDir: s.pc.dir, storage: s.storage, key: s.key, holder: s.pc.holder, report: () => {}, settings });
+	await RemoteSession.push({ agent: "Atlas", agentDir: s.pc.dir, storage: s.storage, key: s.key, holder: s.pc.holder, report: () => {}, settings });
 }
 
 /** The PC pushes Atlas with "v1"; the Mac checks it out once, so both last agreed on v1. */
@@ -68,10 +68,10 @@ async function pushed(s: Scene): Promise<void> {
 	await close(await open(s, s.mac));
 }
 
-/** The store key older builds' `orrery run` wrote, at every start, with the workspace's AGENTS.md text. */
+/** The store key older builds' `orrery run` wrote, at every start, with the folder's AGENTS.md text. */
 const LEGACY_KEY = "instructions";
 
-/** An older build on machine `m`: a held session whose `orrery run` writes the workspace's AGENTS.md under LEGACY_KEY. */
+/** An older build on machine `m`: a held session whose `orrery run` writes the folder's AGENTS.md under LEGACY_KEY. */
 async function olderRun(s: Scene, m: Machine, text: string): Promise<void> {
 	const held = await open(s, m);
 	held.store.setMeta(LEGACY_KEY, text);
@@ -98,7 +98,7 @@ const conflicts = (m: Machine) => m.reports.filter((text) => text.includes("both
 async function remoteCopy(s: Scene): Promise<string | undefined> {
 	rmSync(s.probe.dir, { recursive: true, force: true });
 	mkdirSync(s.probe.dir);
-	const session = await RemoteSession.checkOut({ lane: "Atlas", laneDir: s.probe.dir, storage: s.storage, key: s.key, holder: s.probe.holder, report: () => {}, settings, renewMs: 0 });
+	const session = await RemoteSession.checkOut({ agent: "Atlas", agentDir: s.probe.dir, storage: s.storage, key: s.key, holder: s.probe.holder, report: () => {}, settings, renewMs: 0 });
 	await session.close();
 	const store = MemoryStore.openReadOnly(join(s.probe.dir, "memory.sqlite"));
 	try {
@@ -331,7 +331,7 @@ describe("cleared on purpose, or never had any", () => {
 		store.append("user", "hello");
 		store.setMeta(INSTRUCTIONS_KEY, "an older copy\n");
 		store.close();
-		await RemoteSession.push({ lane: "Atlas", laneDir: s.pc.dir, storage: s.storage, key: s.key, holder: s.pc.holder, report: () => {}, settings });
+		await RemoteSession.push({ agent: "Atlas", agentDir: s.pc.dir, storage: s.storage, key: s.key, holder: s.pc.holder, report: () => {}, settings });
 		expect(await remoteCopy(s)).toBe("");
 		await close(await open(s, s.mac));
 		expect(existsSync(join(s.mac.dir, "instructions.md"))).toBe(false);
@@ -342,7 +342,7 @@ describe("an older build's \"instructions\" value is not the agent's", () => {
 	it("written by an older build on another machine while both run: ignored, the file stays, nothing set aside", async () => {
 		const s = scene();
 		await pushed(s);
-		await olderRun(s, s.probe, "LEGACY workspace AGENTS.md\n");
+		await olderRun(s, s.probe, "LEGACY folder AGENTS.md\n");
 		await close(await open(s, s.mac));
 		expect(instructions(s.mac)).toBe("v1\n");
 		expect(asides(s.mac)).toEqual([]);
@@ -355,8 +355,8 @@ describe("an older build's \"instructions\" value is not the agent's", () => {
 		const store = MemoryStore.open(join(s.pc.dir, "memory.sqlite"));
 		store.append("user", "hello");
 		store.close();
-		await RemoteSession.push({ lane: "Atlas", laneDir: s.pc.dir, storage: s.storage, key: s.key, holder: s.pc.holder, report: () => {}, settings });
-		await olderRun(s, s.pc, "LEGACY workspace AGENTS.md\n");
+		await RemoteSession.push({ agent: "Atlas", agentDir: s.pc.dir, storage: s.storage, key: s.key, holder: s.pc.holder, report: () => {}, settings });
+		await olderRun(s, s.pc, "LEGACY folder AGENTS.md\n");
 		expect(existsSync(join(s.pc.dir, "instructions.md"))).toBe(false);
 		write(s.mac, "mine, written for the new build\n");
 		await close(await open(s, s.mac));
@@ -369,7 +369,7 @@ describe("an older build's \"instructions\" value is not the agent's", () => {
 	it("in this machine's own store, from its older build: ignored, never written to instructions.md, never sent", async () => {
 		const s = scene();
 		await pushed(s);
-		await olderRun(s, s.mac, "LEGACY workspace AGENTS.md\n");
+		await olderRun(s, s.mac, "LEGACY folder AGENTS.md\n");
 		rmSync(join(s.mac.dir, "instructions.md"));
 		await close(await open(s, s.mac));
 		expect(instructions(s.mac)).toBe("v1\n");
@@ -378,9 +378,9 @@ describe("an older build's \"instructions\" value is not the agent's", () => {
 		const fresh = scene();
 		const store = MemoryStore.open(join(fresh.pc.dir, "memory.sqlite"));
 		store.append("user", "hello");
-		store.setMeta(LEGACY_KEY, "LEGACY workspace AGENTS.md\n");
+		store.setMeta(LEGACY_KEY, "LEGACY folder AGENTS.md\n");
 		store.close();
-		await RemoteSession.push({ lane: "Atlas", laneDir: fresh.pc.dir, storage: fresh.storage, key: fresh.key, holder: fresh.pc.holder, report: () => {}, settings });
+		await RemoteSession.push({ agent: "Atlas", agentDir: fresh.pc.dir, storage: fresh.storage, key: fresh.key, holder: fresh.pc.holder, report: () => {}, settings });
 		await close(await open(fresh, fresh.mac));
 		expect(existsSync(join(fresh.mac.dir, "instructions.md"))).toBe(false);
 	});
@@ -390,7 +390,7 @@ describe("an older build's \"instructions\" value is not the agent's", () => {
 		const store = MemoryStore.open(join(s.pc.dir, "memory.sqlite"));
 		store.append("user", "hello");
 		store.close();
-		await RemoteSession.push({ lane: "Atlas", laneDir: s.pc.dir, storage: s.storage, key: s.key, holder: s.pc.holder, report: () => {}, settings });
+		await RemoteSession.push({ agent: "Atlas", agentDir: s.pc.dir, storage: s.storage, key: s.key, holder: s.pc.holder, report: () => {}, settings });
 		const held = await open(s, s.pc);
 		held.store.append("user", "a turn");
 		await close(held);
@@ -481,9 +481,9 @@ describe("instructions.md over 256 KB stays on its machine", () => {
 		await pushed(s);
 		// The remote refuses a save this large, as a Worker refuses an oversized request: one such save would block every later one.
 		const save = s.storage.save.bind(s.storage);
-		s.storage.save = async (lane, lock, n, file, log) => {
+		s.storage.save = async (agent, lock, n, file, log) => {
 			if (file.byteLength > 256 * 1024) throw new RemoteError("refused", "too large");
-			return save(lane, lock, n, file, log);
+			return save(agent, lock, n, file, log);
 		};
 		write(s.mac, over);
 		const held = await open(s, s.mac);
@@ -531,7 +531,7 @@ describe("instructions.md over 256 KB stays on its machine", () => {
 		store.append("user", "hello");
 		store.close();
 		write(s.pc, over);
-		await RemoteSession.push({ lane: "Atlas", laneDir: s.pc.dir, storage: s.storage, key: s.key, holder: s.pc.holder, report: (text) => s.pc.reports.push(text), settings });
+		await RemoteSession.push({ agent: "Atlas", agentDir: s.pc.dir, storage: s.storage, key: s.key, holder: s.pc.holder, report: (text) => s.pc.reports.push(text), settings });
 		expect(s.pc.reports).toContain(tooLarge);
 		expect(await remoteCopy(s) ?? "").toBe("");
 		expect(instructions(s.pc)).toBe(over);
@@ -546,7 +546,7 @@ describe("a first push starts a new history", () => {
 		// The PC's Atlas moves to another remote with a file over 256 KB: none travels there.
 		const home2 = { ...s, storage: new FakeStorage({ name: "home2" }) };
 		write(s.pc, `${"b".repeat(256 * 1024)}+`);
-		await RemoteSession.push({ lane: "Atlas", laneDir: s.pc.dir, storage: home2.storage, key: s.key, holder: s.pc.holder, report: () => {}, settings });
+		await RemoteSession.push({ agent: "Atlas", agentDir: s.pc.dir, storage: home2.storage, key: s.key, holder: s.pc.holder, report: () => {}, settings });
 		write(s.pc, shortened);
 		s.pc.reports.length = 0;
 		await close(await open(home2, s.pc));

@@ -2,10 +2,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { instructionsTemplate } from "../../src/lane/instructions.ts";
+import { instructionsTemplate } from "../../src/agent/instructions.ts";
 import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { systemCommand } from "../install/support.ts";
-import { tempDir } from "../lane/support.ts";
+import { tempDir } from "../agent/support.ts";
 
 const SCRIPT = systemCommand("script");
 const hasScript = process.platform === "linux" && SCRIPT !== undefined && spawnSync(SCRIPT, ["--version"]).status === 0;
@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 /**
- * Atlas (tool pi, with a workspace) in a scratch home; a fake pi that claims its token as pi's extension does and writes
+ * Atlas (tool pi, with a folder) in a scratch home; a fake pi that claims its token as pi's extension does and writes
  * what it was started with; a fake editor.
  */
 function scene() {
@@ -25,8 +25,8 @@ function scene() {
 	dirs.push(dir);
 	const bin = join(dir, "bin");
 	const out = join(dir, "out.txt");
-	const laneDir = join(dir, "data", "lanes", "Atlas");
-	const claims = join(laneDir, "claims");
+	const agentDir = join(dir, "data", "agents", "Atlas");
+	const claims = join(agentDir, "claims");
 	for (const folder of [bin, join(dir, "agent-Atlas"), join(dir, "elsewhere")]) mkdirSync(folder);
 	writeFileSync(
 		join(bin, "pi"),
@@ -35,9 +35,9 @@ function scene() {
 	);
 	writeFileSync(join(bin, "fake-editor"), `#!/bin/sh\n[ "$1" = --wait ] || exit 9\nprintf 'Edited.\\n' >> "$2"\n`, { mode: 0o755 });
 	const config = join(dir, "config.toml");
-	writeFileSync(config, `data_dir = ${JSON.stringify(join(dir, "data"))}\n[lanes.Atlas]\nworkspace = ${JSON.stringify(join(dir, "agent-Atlas"))}\ntool = "pi"\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+	writeFileSync(config, `data_dir = ${JSON.stringify(join(dir, "data"))}\n[agents.Atlas]\nfolder = ${JSON.stringify(join(dir, "agent-Atlas"))}\ntool = "pi"\ncompactor_model = "openai/gpt-6.1-sol"\n`);
 	const env = cleanEnv({ PATH: `${bin}:/usr/bin:/bin`, HOME: dir, ORRERY_HOME: join(dir, ".orrery"), ORRERY_CONFIG: config, PI_CODING_AGENT_DIR: join(dir, "pi-agent"), EDITOR: "fake-editor --wait" });
-	return { dir, out, env, config, elsewhere: join(dir, "elsewhere"), laneDir };
+	return { dir, out, env, config, elsewhere: join(dir, "elsewhere"), agentDir };
 }
 
 function orrery(env: NodeJS.ProcessEnv, cwd: string, ...args: string[]) {
@@ -67,7 +67,7 @@ describe("orrery agent", () => {
 		expect(seen.token).toMatch(/^[0-9a-f]{32}$/);
 		// The tool held its claim while it ran; it is gone once the tool exited.
 		expect(readFileSync(`${s.out}.claims`, "utf8").trim()).toBe(seen.token);
-		expect(readdirSync(join(s.laneDir, "claims"))).toEqual([]);
+		expect(readdirSync(join(s.agentDir, "claims"))).toEqual([]);
 	});
 
 	it("keeps the tool's arguments when options with values come before the command", () => {
@@ -91,7 +91,7 @@ describe("orrery agent", () => {
 		expect(extra.stderr).toContain("orrery agent takes one agent name; resume last would be dropped. The tool's arguments go after --: orrery agent Atlas -- resume last");
 		expect(orrery(s.env, s.dir, "agent", "edit", "Atlas", "now").stderr).toContain("orrery agent edit takes one agent name (got Atlas now).");
 		expect(existsSync(s.out)).toBe(false);
-		expect(existsSync(s.laneDir)).toBe(false);
+		expect(existsSync(s.agentDir)).toBe(false);
 	});
 
 	it("says how to pick another tool on the command line when the agent's is not on PATH", () => {
@@ -99,7 +99,7 @@ describe("orrery agent", () => {
 		rmSync(join(s.dir, "bin", "pi"));
 		const r = orrery(s.env, s.elsewhere, "agent", "Atlas");
 		expect(r.status).toBe(1);
-		expect(r.stderr).toContain('pi is not on PATH (looked for "pi"). Get it at https://pi.dev, or open Atlas in another tool: --tool for this session, orrery lane set Atlas --tool T for good.');
+		expect(r.stderr).toContain('pi is not on PATH (looked for "pi"). Get it at https://pi.dev, or open Atlas in another tool: --tool for this session, orrery agent set Atlas --tool T for good.');
 	});
 
 	it("takes --tool for this session, asks before what the launch needs, and opens nothing on no", () => {
@@ -119,7 +119,7 @@ describe("orrery agent", () => {
 		const s = scene();
 		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "codex").stderr).toContain("Codex has no Orrery memory yet: open Atlas in pi, OMP or Claude Code (--tool).");
 		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "claude").stderr).toContain("--tool takes pi, omp or claude-code (not claude).");
-		expect(orrery(s.env, s.elsewhere, "agent", "Nobody").stderr).toContain("No lane named Nobody. Configured lanes: Atlas");
+		expect(orrery(s.env, s.elsewhere, "agent", "Nobody").stderr).toContain("No agent named Nobody. Configured agents: Atlas");
 	});
 
 	it("refuses Claude Code outside the agent's folder without the mod, and starts nothing", () => {
@@ -136,22 +136,22 @@ describe("orrery agent", () => {
 		const r = orrery({ ...s.env, EDITOR: `cp ${join(s.dir, "elsewhere")}` }, s.dir, "agent", "edit", "Atlas");
 		expect(r.status).toBe(1);
 		expect(r.stderr).toContain("orrery agent edit needs a terminal: an agent's instructions are edited by a person, in a terminal (run orrery agent edit Atlas in yours).");
-		expect(existsSync(s.laneDir)).toBe(false);
+		expect(existsSync(s.agentDir)).toBe(false);
 	});
 
 	it.skipIf(!hasScript)("edit, in a terminal, writes the template, opens $EDITOR (with its arguments) on instructions.md, and says it saved", () => {
 		const s = scene();
 		const r = inTerminal(s.env, s.dir, "agent", "edit", "Atlas");
 		expect(r.status, r.stdout).toBe(0);
-		expect(readFileSync(join(s.laneDir, "instructions.md"), "utf8")).toBe(`${instructionsTemplate("Atlas")}Edited.\n`);
-		expect(r.stdout).toContain(`Saved ${join(s.laneDir, "instructions.md")}.`);
+		expect(readFileSync(join(s.agentDir, "instructions.md"), "utf8")).toBe(`${instructionsTemplate("Atlas")}Edited.\n`);
+		expect(r.stdout).toContain(`Saved ${join(s.agentDir, "instructions.md")}.`);
 	});
 
 	it.skipIf(!hasScript)("edit, in a terminal, says how the editor failed, and leaves the file as it left it", () => {
 		const s = scene();
 		const r = inTerminal({ ...s.env, EDITOR: "fake-editor --no-wait" }, s.dir, "agent", "edit", "atlas");
 		expect(r.status).toBe(9);
-		expect(r.stdout).toContain(`The editor exited with code 9; ${join(s.laneDir, "instructions.md")} is as it left it.`);
-		expect(readFileSync(join(s.laneDir, "instructions.md"), "utf8")).toBe(instructionsTemplate("Atlas"));
+		expect(r.stdout).toContain(`The editor exited with code 9; ${join(s.agentDir, "instructions.md")} is as it left it.`);
+		expect(readFileSync(join(s.agentDir, "instructions.md"), "utf8")).toBe(instructionsTemplate("Atlas"));
 	});
 });

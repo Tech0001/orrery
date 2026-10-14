@@ -5,7 +5,7 @@ import { buildPreview, commitPreview, readPreview, writePreview } from "../../sr
 import type { SplitResult } from "../../src/import/split.ts";
 import type { ImportTurn } from "../../src/import/turns.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
-import { tempDir } from "../lane/support.ts";
+import { tempDir } from "../agent/support.ts";
 
 const dirs: string[] = [];
 afterEach(() => {

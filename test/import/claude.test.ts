@@ -2,7 +2,7 @@ import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkClaudeFiles, claudeProjectDir, extractClaude, extractClaudeFiles } from "../../src/import/claude.ts";
-import { tempDir } from "../lane/support.ts";
+import { tempDir } from "../agent/support.ts";
 
 const dirs: string[] = [];
 afterEach(() => {

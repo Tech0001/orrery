@@ -1,5 +1,5 @@
 /**
- * N on the Lanes page (spec 2026-10-13-orrery-agents-design §6): an empty agent, one made from an existing Claude Code or
+ * N on the Agents page (spec 2026-10-13-orrery-agents-design §6): an empty agent, one made from an existing Claude Code or
  * Codex chat, or (with remotes) one from a remote. Each asks through dialogs and writes nothing before its last step.
  */
 
@@ -10,17 +10,17 @@ import type { Chat } from "../../import/chats.ts";
 import { type DryRunResult, newPreviewFolder } from "../../import/dry-run.ts";
 import { storeRefusal } from "../../import/create-agent.ts";
 import { suggestName } from "../../import/name.ts";
-import { pickSummaryModel } from "../../lane/compactor-menu.ts";
-import { readOnlyConfigText } from "../../lane/config-edit.ts";
-import { type HarnessConfig, laneNameProblem, type LaneTool } from "../../lane/config.ts";
-import { TOOL_LABELS } from "../../lane/overview.ts";
+import { pickSummaryModel } from "../../agent/compactor-menu.ts";
+import { readOnlyConfigText } from "../../agent/config-edit.ts";
+import { type HarnessConfig, agentNameProblem, type AgentTool } from "../../agent/config.ts";
+import { TOOL_LABELS } from "../../agent/overview.ts";
 import { localIso } from "../../memory/index.ts";
 import type { App } from "../app.ts";
 import { ChatListModal, ConfirmModal, hardWrap, InputModal, MessageModal, menuUI, ProgressModal, ReportModal, SelectModal } from "../dialogs.ts";
-import { addFromRemote, emptyLane, expandHome, pickedChoice, safeLines, wireLane } from "./lane-actions.ts";
+import { addFromRemote, emptyAgent, expandHome, pickedChoice, safeLines, wireAgent } from "./agent-actions.ts";
 
 /** The tools an imported chat continues in: Codex has no Orrery memory yet. */
-const CONTINUES_IN: readonly LaneTool[] = ["pi", "omp", "claude-code"];
+const CONTINUES_IN: readonly AgentTool[] = ["pi", "omp", "claude-code"];
 
 const NOT_IMPORTED = "Not imported; nothing was written.";
 
@@ -60,13 +60,13 @@ async function fromChat(app: App, config: HarnessConfig): Promise<string | undef
 		if (!(await app.host.open(new ConfirmModal(safeLines(hardWrap(question, 56).join("\n")))))) return undefined;
 	}
 	const first = picked[0] as Chat;
-	const taken = [...config.lanes.keys()];
+	const taken = [...config.agents.keys()];
 	const stored = (candidate: string) => storeRefusal(config.dataDir, candidate) !== undefined;
 	const name = await app.host.open(new InputModal("Agent name (letters, digits, - and _):", suggestName(first.title, taken, stored)));
 	if (!name) return undefined;
-	const problem = laneNameProblem(name);
+	const problem = agentNameProblem(name);
 	if (problem !== undefined) throw new Error(problem);
-	if (taken.some((other) => other.toLowerCase() === name.toLowerCase())) throw new Error(`A lane named ${name} already exists.`);
+	if (taken.some((other) => other.toLowerCase() === name.toLowerCase())) throw new Error(`An agent named ${name} already exists.`);
 	// Said now, not after the preview: the import would refuse this folder at the end.
 	const refusal = storeRefusal(config.dataDir, name);
 	if (refusal !== undefined) throw new Error(refusal);
@@ -133,12 +133,12 @@ async function fromChat(app: App, config: HarnessConfig): Promise<string | undef
 		let setup: string | undefined;
 		let build: string | undefined;
 		try {
-			await wireLane(app, name);
+			await wireAgent(app, name);
 		} catch (error) {
 			setup = errorText(error);
 		} finally {
 			try {
-				app.deps.startBuild(name, made.laneDir);
+				app.deps.startBuild(name, made.agentDir);
 			} catch (error) {
 				build = errorText(error);
 			}
@@ -165,6 +165,6 @@ export function newAgent(app: App): void {
 		if (kind === undefined) return undefined;
 		if (kind === "From a remote") return addFromRemote(app);
 		if (kind === "From an existing chat") return fromChat(app, config);
-		return emptyLane(app, config);
+		return emptyAgent(app, config);
 	});
 }

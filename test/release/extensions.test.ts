@@ -19,7 +19,7 @@ function bareImports(file: string): string[] {
 	return [...found].filter((s) => !builtin(s)).sort();
 }
 
-/** src/lane/models.ts's OMP-only fallback to this repo's own pi-ai, as the source writes it. */
+/** src/agent/models.ts's OMP-only fallback to this repo's own pi-ai, as the source writes it. */
 const FALLBACK = 'import("../../node_modules/@earendil-works/pi-ai/dist/compat.js")';
 
 describe.skipIf(!bunReady)("packed extensions", () => {

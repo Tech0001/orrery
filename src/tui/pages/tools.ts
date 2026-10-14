@@ -1,10 +1,10 @@
 /** Page 4, Tools (spec §3.4): pi, Claude Code, Codex and OMP (found, version, orrery's side), Wrangler, and Orrery itself. I installs or repairs Orrery extensions. */
 
 import { join } from "node:path";
-import { shortHome, toolVersionNumber, type ToolCheck } from "../../lane/tools.ts";
+import { shortHome, toolVersionNumber, type ToolCheck } from "../../agent/tools.ts";
 import type { App, Page } from "../app.ts";
 import { ConfirmModal, MessageModal } from "../dialogs.ts";
-import { safeLines } from "./lane-actions.ts";
+import { safeLines } from "./agent-actions.ts";
 import { type Column, renderTable } from "../table.ts";
 
 const COLUMNS: readonly Column[] = [
@@ -51,9 +51,9 @@ function check(app: App, force = false): ToolCheck[] {
 	return s.checks;
 }
 
-/** The newest backup's day across the lanes, or undefined when no lane has one. */
+/** The newest backup's day across the agents, or undefined when no agent has one. */
 function newestBackup(app: App): string | undefined {
-	return app.lanes.reduce<string | undefined>((newest, row) => (row.lastBackup !== undefined && (newest === undefined || row.lastBackup > newest) ? row.lastBackup : newest), undefined);
+	return app.agents.reduce<string | undefined>((newest, row) => (row.lastBackup !== undefined && (newest === undefined || row.lastBackup > newest) ? row.lastBackup : newest), undefined);
 }
 
 function rows(app: App): string[][] {

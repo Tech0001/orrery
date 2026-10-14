@@ -1,24 +1,24 @@
 /**
- * The lane holder (spec §4 "The lane holder"):
- * `orrery holder <Lane> --session <id> --claude-pid <pid> --nonce <n> --since <ms>`, started detached by SessionStart,
+ * The agent holder (spec §4 "The agent holder"):
+ * `orrery holder <Agent> --session <id> --claude-pid <pid> --nonce <n> --since <ms>`, started detached by SessionStart,
  * one per Claude Code session.
- * - While it holds the lane's store (the same writer lock pi takes), it ingests the hooks' spool in order, runs the
- *   compactor on orrery's own login, and keeps <workspace>/.orrery/view.md current.
- * - If pi, or a live session of another Claude Code process, holds the lane, it marks its session read-only and exits.
+ * - While it holds the agent's store (the same writer lock pi takes), it ingests the hooks' spool in order, runs the
+ *   compactor on orrery's own login, and keeps <folder>/.orrery/view.md current.
+ * - If pi, or a live session of another Claude Code process, holds the agent, it marks its session read-only and exits.
  * - It exits once its session has ended (SessionEnd, or the Claude Code process is gone) and the summaries have
  *   settled, cannot come (stopped or failing), or took longer than `finishMs`.
- * - Until then, a newcomer may ask it to yield (src/lane/handover.ts).
+ * - Until then, a newcomer may ask it to yield (src/agent/handover.ts).
  * It logs lifecycle and errors only, never message contents.
  */
 
 import { appendFileSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { findLane, type HarnessConfig, type LaneConfig } from "../lane/config.ts";
-import { clearYield, holderFresh, openYielding, readHolder, readYield, removeHolder, writeHolder } from "../lane/handover.ts";
-import { compactorCommand } from "../lane/lane-commands.ts";
-import { LaneHeld, MemoryLane } from "../lane/memory-lane.ts";
-import { laneModelSource, type ModelSource } from "../lane/model-source.ts";
-import { processAlive } from "../lane/process.ts";
+import { findAgent, type HarnessConfig, type AgentConfig } from "../agent/config.ts";
+import { clearYield, holderFresh, openYielding, readHolder, readYield, removeHolder, writeHolder } from "../agent/handover.ts";
+import { compactorCommand } from "../agent/agent-commands.ts";
+import { AgentHeld, MemoryAgent } from "../agent/memory-agent.ts";
+import { agentModelSource, type ModelSource } from "../agent/model-source.ts";
+import { processAlive } from "../agent/process.ts";
 import { localIso, type NewMessage } from "../memory/index.ts";
 import { holdWriterLock } from "../memory/store.ts";
 import { remoteFooter, remoteOpenNotice } from "../remote/checkout.ts";
@@ -29,9 +29,9 @@ import { type ViewGate, writeViewFile } from "./view-file.ts";
 
 /** What a holder records, for whom, with which models, and how patiently. */
 export interface HolderOptions {
-	/** Required for a remote lane; local callers retain their synchronous open path. */
+	/** Required for a remote agent; local callers retain their synchronous open path. */
 	readonly config?: HarnessConfig;
-	readonly lane: LaneConfig;
+	readonly agent: AgentConfig;
 	readonly session: string;
 	/** Claude Code's process: when it is gone, the session has ended. */
 	readonly claudePid: number;
@@ -50,19 +50,19 @@ export interface HolderOptions {
 	readonly tickMs?: number;
 	/** The longest it finishes summaries after its session ended (default 10 minutes). */
 	readonly finishMs?: number;
-	/** How long it waits for a finishing holder to yield the lane (default 5 s). */
+	/** How long it waits for a finishing holder to yield the agent (default 5 s). */
 	readonly yieldWaitMs?: number;
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
-const READ_ONLY = "the lane is open elsewhere (pi, or a session of another Claude Code)";
-const YIELDED = "yielded the lane";
+const READ_ONLY = "the agent is open elsewhere (pi, or a session of another Claude Code)";
+const YIELDED = "yielded the agent";
 
-/** One Claude Code session's hold on a lane: the single writer while it runs. */
+/** One Claude Code session's hold on an agent: the single writer while it runs. */
 export class Holder {
-	readonly lane: MemoryLane;
+	readonly agent: MemoryAgent;
 	readonly session: string;
-	/** Resolves once the holder has released the lane. */
+	/** Resolves once the holder has released the agent. */
 	readonly done: Promise<void>;
 	readonly #claudePid: number;
 	readonly #nonce: string;
@@ -88,8 +88,8 @@ export class Holder {
 	#timer: ReturnType<typeof setInterval> | undefined;
 	#release: () => void = () => {};
 
-	private constructor(lane: MemoryLane, options: HolderOptions, startedAt: number, since: number) {
-		this.lane = lane;
+	private constructor(agent: MemoryAgent, options: HolderOptions, startedAt: number, since: number) {
+		this.agent = agent;
 		this.session = options.session;
 		this.#claudePid = options.claudePid;
 		this.#nonce = options.nonce;
@@ -108,15 +108,15 @@ export class Holder {
 		return this.#state;
 	}
 
-	/** Opens the lane and starts recording; or, when another writer keeps it, marks the session read-only and returns undefined. */
+	/** Opens the agent and starts recording; or, when another writer keeps it, marks the session read-only and returns undefined. */
 	static async start(options: HolderOptions): Promise<Holder | undefined> {
-		const { lane, session } = options;
+		const { agent, session } = options;
 		const log = options.log ?? (() => {});
 		const startedAt = Date.now();
 		// SessionStart runs before its holder starts; a later `since` cannot be right (it would hide this run's own end).
 		const since = Math.min(options.since ?? startedAt, startedAt);
 		const mode = (recording: boolean, reason?: string) =>
-			writeMode(lane.dir, session, {
+			writeMode(agent.dir, session, {
 				mode: recording ? "recording" : "read-only",
 				pid: process.pid,
 				claudePid: options.claudePid,
@@ -127,42 +127,42 @@ export class Holder {
 		const notices: string[] = [];
 		let opening = true;
 		const report = (message: string) => { if (opening) notices.push(message); log(message); };
-		let memory: MemoryLane;
+		let memory: MemoryAgent;
 		let takeover: LockState | undefined;
 		try {
-			const open = (sync: () => MemoryLane) => openYielding(sync, lane.dir, { claudePid: options.claudePid, waitMs: options.yieldWaitMs ?? 5000 });
-			if (lane.remote === undefined) memory = await open(() => MemoryLane.open({ lane, models: options.models, report: log, host: "claude-code" }));
+			const open = (sync: () => MemoryAgent) => openYielding(sync, agent.dir, { claudePid: options.claudePid, waitMs: options.yieldWaitMs ?? 5000 });
+			if (agent.remote === undefined) memory = await open(() => MemoryAgent.open({ agent, models: options.models, report: log, host: "claude-code" }));
 			else {
 				if (options.config === undefined) throw new Error("A remote recorder needs its harness config");
 				const checked = () => {
 					takeover = undefined;
-					return MemoryLane.openChecked({ config: options.config!, lane, models: options.models, report, host: "claude-code", open,
+					return MemoryAgent.openChecked({ config: options.config!, agent, models: options.models, report, host: "claude-code", open,
 						confirmTakeover: async (held) => { takeover = held; return false; },
 					});
 				};
 				try {
 					memory = await checked();
 				} catch (error) {
-					const previous = readHolder(lane.dir);
+					const previous = readHolder(agent.dir);
 					if (!(error instanceof RemoteError) || error.kind !== "held" || !holderFresh(previous) ||
 						(previous.state !== "finishing" && previous.claudePid !== options.claudePid)) throw error;
 					// Remote checkout can reject before the normal local handover runs. Ask only an eligible local
 					// recorder to yield, probing its lock without opening memory, then retry checkout before open.
 					await openYielding(() => {
-						try { holdWriterLock(join(lane.dir, "memory.sqlite"))(); }
+						try { holdWriterLock(join(agent.dir, "memory.sqlite"))(); }
 						catch (probe) {
-							if (/already open/i.test(errorText(probe))) throw new LaneHeld(lane.name, "claude-code");
+							if (/already open/i.test(errorText(probe))) throw new AgentHeld(agent.name, "claude-code");
 							throw probe;
 						}
-					}, lane.dir, { claudePid: options.claudePid, waitMs: options.yieldWaitMs ?? 5000 });
+					}, agent.dir, { claudePid: options.claudePid, waitMs: options.yieldWaitMs ?? 5000 });
 					memory = await checked();
 				}
 			}
 		} catch (error) {
-			if (!(error instanceof LaneHeld) && !(lane.remote !== undefined && error instanceof RemoteError)) throw error;
-			const reason = error instanceof LaneHeld ? READ_ONLY : `${remoteOpenNotice(lane, error)}${takeover !== undefined ? `; run orrery lane takeover ${lane.name}` : ""}`;
-			mode(false, error instanceof LaneHeld ? undefined : reason);
-			dropEventsSince(lane.dir, session, since);
+			if (!(error instanceof AgentHeld) && !(agent.remote !== undefined && error instanceof RemoteError)) throw error;
+			const reason = error instanceof AgentHeld ? READ_ONLY : `${remoteOpenNotice(agent, error)}${takeover !== undefined ? `; run orrery agent takeover ${agent.name}` : ""}`;
+			mode(false, error instanceof AgentHeld ? undefined : reason);
+			dropEventsSince(agent.dir, session, since);
 			log(`${session}: read-only: ${reason}`);
 			return undefined;
 		} finally {
@@ -181,11 +181,11 @@ export class Holder {
 	/**
 	 * One look at the spool, the session and yield requests; the timer runs it every tickMs. Each step of work runs on
 	 * its own (#attempt): one that keeps failing must not hide the session's end, a yield request, the exit rules or
-	 * the heartbeat, or the lane would stay held.
+	 * the heartbeat, or the agent would stay held.
 	 */
 	tick(): void {
 		if (this.#closing) return;
-		if (this.lane.remote?.lost) {
+		if (this.agent.remote?.lost) {
 			void this.stop(remoteFooter(this.#remoteStatus()!));
 			return;
 		}
@@ -202,16 +202,16 @@ export class Holder {
 			this.#attempt("the heartbeat", () => this.#heartbeat());
 		}
 		this.#attempt("writing the view", () => this.#writeView(false));
-		if (!this.lane.store.writable) {
+		if (!this.agent.store.writable) {
 			void this.stop("the memory store refuses writes");
 			return;
 		}
-		const request = readYield(this.lane.config.dir, now);
+		const request = readYield(this.agent.config.dir, now);
 		if (request !== undefined && request.at >= this.#startedAt && (this.#state === "finishing" || request.claudePid === this.#claudePid)) {
 			void this.stop(YIELDED);
 			return;
 		}
-		const over = this.lane.view.settled || this.lane.summaryTrouble() !== undefined || now - this.#finishingSince >= this.#finishMs;
+		const over = this.agent.view.settled || this.agent.summaryTrouble() !== undefined || now - this.#finishingSince >= this.#finishMs;
 		if (this.#state === "finishing" && over) {
 			void this.stop("session over");
 			return;
@@ -219,25 +219,25 @@ export class Holder {
 		if (now - this.#beat >= 5000) this.#attempt("the heartbeat", () => this.#heartbeat());
 	}
 
-	/** Records what is left, writes the view, and releases the lane. */
+	/** Records what is left, writes the view, and releases the agent. */
 	async stop(why: string): Promise<void> {
 		if (this.#closing) return this.done;
 		this.#closing = true;
 		if (this.#timer !== undefined) clearInterval(this.#timer);
-		const dir = this.lane.config.dir;
-		if (this.lane.remote?.lost) {
+		const dir = this.agent.config.dir;
+		if (this.agent.remote?.lost) {
 			this.#rememberRemoteLoss();
 		} else {
 			this.#attempt("recording the spool", () => this.#ingest());
 			this.#attempt("writing the view", () => this.#writeView(true));
 		}
-		this.#attempt("writing the status", () => this.lane.writeStatus(false, false));
+		this.#attempt("writing the status", () => this.agent.writeStatus(false, false));
 		try {
-			await this.lane.close();
+			await this.agent.close();
 		} finally {
 			// The final save can be the first operation fenced out by a takeover.
 			this.#attempt("remembering the remote lock loss", () => this.#rememberRemoteLoss());
-			this.#attempt("handing the lane over", () => {
+			this.#attempt("handing the agent over", () => {
 				removeHolder(dir, process.pid, this.session);
 				if (why === YIELDED) clearYield(dir);
 			});
@@ -263,7 +263,7 @@ export class Holder {
 			if ((parsed?.kind === "prompt" || parsed?.kind === "reply") && parsed.text.trim() && !commandReply) {
 				items.push({ kind: parsed.kind === "prompt" ? "user" : "talk", text: parsed.text, date: localIso(new Date(parsed.at)) });
 			}
-			this.lane.view.appendBatch(items, { [spoolKey(event.session)]: event.name });
+			this.agent.view.appendBatch(items, { [spoolKey(event.session)]: event.name });
 			rmSync(event.path, { force: true });
 			if (parsed === undefined) this.#log(`${event.session}: skipped an unreadable event ${event.name}`);
 			else if (parsed.kind === "prompt" || parsed.kind === "command") {
@@ -274,12 +274,12 @@ export class Holder {
 			} else if (parsed.kind === "reply") {
 				this.#busy = false;
 				this.#afterCommand.delete(event.session);
-				if (this.lane.remote !== undefined) this.#savesPending += 1;
-				this.lane.afterTurn(() => {
+				if (this.agent.remote !== undefined) this.#savesPending += 1;
+				this.agent.afterTurn(() => {
 					this.#savesPending -= 1;
 					if (!this.#closing) this.#attempt("the heartbeat", () => this.#heartbeat());
 				});
-				if (this.lane.remote !== undefined) this.#attempt("the heartbeat", () => this.#heartbeat());
+				if (this.agent.remote !== undefined) this.#attempt("the heartbeat", () => this.#heartbeat());
 			} else if (parsed.kind === "end" && event.session === this.session && parsed.at >= this.#since) {
 				// An end from before SessionStart belongs to an earlier run of the same session id (a crash, then --resume).
 				this.#ended = true;
@@ -289,17 +289,17 @@ export class Holder {
 
 	/** Pending events this holder records, oldest first: its own session's, and those no other holder will come back for. */
 	#eligible(): Pending[] {
-		const dir = this.lane.config.dir;
+		const dir = this.agent.config.dir;
 		const events: Pending[] = [];
 		for (const session of listSessions(dir)) {
-			const pending = pendingEvents(dir, session, this.lane.store.getMeta(spoolKey(session)));
+			const pending = pendingEvents(dir, session, this.agent.store.getMeta(spoolKey(session)));
 			events.push(...(session === this.session ? pending : this.#adoptable(session, pending)));
 		}
 		return events.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	}
 
 	/**
-	 * The share of another session's events that is this holder's to record. This holder has the lane, so that
+	 * The share of another session's events that is this holder's to record. This holder has the agent, so that
 	 * session's holder is gone.
 	 * - A session that recorded: all of it.
 	 * - A read-only session: only what came before it turned read-only.
@@ -307,7 +307,7 @@ export class Holder {
 	 *   still be starting).
 	 */
 	#adoptable(session: string, pending: Pending[]): Pending[] {
-		const mode = readMode(this.lane.config.dir, session);
+		const mode = readMode(this.agent.config.dir, session);
 		if (mode?.mode === "recording") return pending;
 		if (mode?.mode === "read-only") return pending.filter((event) => event.at < mode.since);
 		return pending.every((event) => !this.#alive(readEvent(event.path)?.claudePid ?? 0)) ? pending : [];
@@ -318,7 +318,7 @@ export class Holder {
 	 * it checked goes (removeSession): the session may be resumed meanwhile, and its new holder and hooks write there.
 	 */
 	#sweep(): void {
-		const dir = this.lane.config.dir;
+		const dir = this.agent.config.dir;
 		for (const session of listSessions(dir)) {
 			if (session === this.session) continue;
 			const mode = readMode(dir, session);
@@ -335,20 +335,20 @@ export class Holder {
 	 * write that failed is not tried again until the view changes. Returns whether it wrote the file.
 	 */
 	#writeView(force: boolean): boolean {
-		const stats = this.lane.view.stats();
+		const stats = this.agent.view.stats();
 		const mark = `${stats.messages}/${stats.nodes}/${stats.viewParts}`;
-		if (!force && (mark === this.#written || (!stats.settled && this.lane.summaryTrouble() === undefined))) return false;
+		if (!force && (mark === this.#written || (!stats.settled && this.agent.summaryTrouble() === undefined))) return false;
 		this.#written = mark;
-		return writeViewFile(this.lane.config, this.lane.view, (gate) => this.#viewNote(gate));
+		return writeViewFile(this.agent.config, this.agent.view, (gate) => this.#viewNote(gate));
 	}
 
 	/**
 	 * Logs what the view's gate did to the view: withdrawn, a withdrawal that failed, or taken out while git cannot
-	 * answer. The lane and the kind only (a reason may name the workspace; nothing from the repo goes in the log), and
+	 * answer. The agent and the kind only (a reason may name the folder; nothing from the repo goes in the log), and
 	 * once until it changes: a failing withdrawal is retried at every view change.
 	 */
 	#viewNote(gate: ViewGate): void {
-		const view = `${this.session}: ${this.lane.config.name}'s memory view`;
+		const view = `${this.session}: ${this.agent.config.name}'s memory view`;
 		let note: string | undefined;
 		if (gate.mod === true && gate.failed !== undefined) note = `${view} (mod mode): the old view file could not be removed; trying again`;
 		else if (gate.exposed !== undefined && gate.failed !== undefined) note = `${view} could not be withdrawn: git would see it (${gate.exposed.kind}); trying again`;
@@ -373,7 +373,7 @@ export class Holder {
 
 	/** A known lost lock must never look saved while the remote looks up the new machine's name. */
 	#remoteStatus(): RemoteStatus | undefined {
-		const remote = this.lane.remote;
+		const remote = this.agent.remote;
 		if (remote === undefined) return undefined;
 		const status = remote.status();
 		if (remote.lost && status.state !== "lost") return { remote: status.remote, state: "lost" };
@@ -381,18 +381,18 @@ export class Holder {
 	}
 
 	#rememberRemoteLoss(): void {
-		if (!this.lane.remote?.lost) return;
-		const mode = readMode(this.lane.config.dir, this.session);
+		if (!this.agent.remote?.lost) return;
+		const mode = readMode(this.agent.config.dir, this.session);
 		// A new recorder can already have opened this same session after our writer lock was released.
 		if (mode?.pid !== process.pid || mode.nonce !== this.#nonce) return;
 		const remote = this.#remoteStatus()!;
-		writeMode(this.lane.config.dir, this.session, { ...mode, mode: "read-only", reason: remoteFooter(remote), remote });
+		writeMode(this.agent.config.dir, this.session, { ...mode, mode: "read-only", reason: remoteFooter(remote), remote });
 	}
 
 	#heartbeat(): void {
 		this.#beat = Date.now();
 		const remote = this.#remoteStatus();
-		writeHolder(this.lane.config.dir, {
+		writeHolder(this.agent.config.dir, {
 			pid: process.pid,
 			session: this.session,
 			claudePid: this.#claudePid,
@@ -401,21 +401,21 @@ export class Holder {
 			updatedAt: this.#beat,
 			...(remote === undefined ? {} : { remote }),
 		});
-		this.lane.writeStatus(this.#busy);
+		this.agent.writeStatus(this.#busy);
 	}
 
 	#applyCompactor(args: string): void {
 		try {
-			this.#log(`${this.session}: ${compactorCommand(this.lane, args)}`);
+			this.#log(`${this.session}: ${compactorCommand(this.agent, args)}`);
 		} catch (error) {
 			this.#log(`${this.session}: compactor ${args}: ${errorText(error)}`);
 		}
 	}
 }
 
-/** Appends a line to <lane.dir>/claude/holder.log (0600), starting over past 1 MB. Callers never pass message contents. */
-export function holderLogger(laneDir: string): (line: string) => void {
-	const path = holderLog(laneDir);
+/** Appends a line to <agent.dir>/claude/holder.log (0600), starting over past 1 MB. Callers never pass message contents. */
+export function holderLogger(agentDir: string): (line: string) => void {
+	const path = holderLog(agentDir);
 	return (line) => {
 		try {
 			mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -434,24 +434,24 @@ export function holderLogger(laneDir: string): (line: string) => void {
 	};
 }
 
-/** `orrery holder`: runs one holder until it releases the lane. Summaries use orrery's own logins. */
+/** `orrery holder`: runs one holder until it releases the agent. Summaries use orrery's own logins. */
 export async function runHolder(
 	config: HarnessConfig,
-	laneName: string,
+	agentName: string,
 	options: { session: string; claudePid: number; nonce: string; since?: number },
 ): Promise<number> {
-	const lane = findLane(config, laneName);
+	const agent = findAgent(config, agentName);
 	if (!validSession(options.session)) throw new Error("holder: --session must be a Claude Code session id");
-	const log = holderLogger(lane.dir);
+	const log = holderLogger(agent.dir);
 	try {
-		const [{ createLaneModels, savedSummaryLoginsOnly }, { FileCredentialStore }, { configureHttp }] = await Promise.all([
-			import("../lane/models.ts"),
-			import("../lane/credentials.ts"),
-			import("../lane/http.ts"),
+		const [{ createAgentModels, savedSummaryLoginsOnly }, { FileCredentialStore }, { configureHttp }] = await Promise.all([
+			import("../agent/models.ts"),
+			import("../agent/credentials.ts"),
+			import("../agent/http.ts"),
 		]);
 		configureHttp();
-		const models = laneModelSource(createLaneModels({ credentials: new FileCredentialStore(config.credentialsPath), providers: config.providers, savedLoginsOnly: savedSummaryLoginsOnly(lane) }));
-		const holder = await Holder.start({ config, lane, ...options, models, log });
+		const models = agentModelSource(createAgentModels({ credentials: new FileCredentialStore(config.credentialsPath), providers: config.providers, savedLoginsOnly: savedSummaryLoginsOnly(agent) }));
+		const holder = await Holder.start({ config, agent, ...options, models, log });
 		if (holder === undefined) return 0;
 		process.once("SIGTERM", () => void holder.stop("SIGTERM"));
 		await holder.done;

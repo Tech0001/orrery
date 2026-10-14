@@ -2,7 +2,7 @@
  * orrery uninstall [--purge] (spec 2026-10-13-orrery-releases-design §5): unwires pi, OMP and Claude Code, and removes
  * the command link, the Linux backup service and app/. Only what is provably Orrery's own is touched: an extension file
  * that is exactly Orrery's one line naming an entry under this home's app/, a command link, plugin or backup unit that
- * names this home's app/, and in app/ only what installs put there. Lanes' memory, config and logins stay. --purge
+ * names this home's app/, and in app/ only what installs put there. Agents' memory, config and logins stay. --purge
  * asks first and then also deletes the whole home, only when the person types delete and the folder is a real Orrery
  * home that does not hold their home folder.
  */
@@ -10,10 +10,10 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, rmdirSync, rmSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { realTarget } from "../lane/guard-paths.ts";
-import { orreryHome } from "../lane/home.ts";
-import { findOnPath, ompExtensionFile, orreryPlugin, piExtensionFile, type RunResult, type Runner } from "../lane/tools.ts";
-import { dropVersion, envRunner, holdInstallLock, isLeftover, laneVersions, removeVersion } from "./install.ts";
+import { realTarget } from "../agent/guard-paths.ts";
+import { orreryHome } from "../agent/home.ts";
+import { findOnPath, ompExtensionFile, orreryPlugin, piExtensionFile, type RunResult, type Runner } from "../agent/tools.ts";
+import { dropVersion, envRunner, holdInstallLock, isLeftover, agentVersions, removeVersion } from "./install.ts";
 import { ENTRY_TAILS, inApp, oneLineTarget, VERSION_NAME } from "./layout.ts";
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -291,7 +291,9 @@ function userHomes(env: NodeJS.ProcessEnv): string[] {
 }
 
 /** What Orrery keeps in a home: purge needs one of them as evidence that the folder is an Orrery home. */
-const HOME_MARKS = ["config.toml", "lanes", "credentials.json", "app"];
+const HOME_MARKS = ["config.toml", "agents", "credentials.json", "app"];
+/** What a home from before 0.6.0 keeps instead: evidence too, though no message names it. */
+const OLD_HOME_MARKS = ["lanes"];
 
 /** Why `home` may not be purged, or undefined: it must be a real folder, not hold the user's home, and look like Orrery's. */
 function purgeRefusal(home: string, env: NodeJS.ProcessEnv): string | undefined {
@@ -304,12 +306,12 @@ function purgeRefusal(home: string, env: NodeJS.ProcessEnv): string | undefined 
 		const holds = h === "/" || userHomes(env).some((user) => [resolve(user), realTarget(user)].some((u) => u === h || u.startsWith(`${h}/`)));
 		if (holds) return `--purge deletes only a folder of Orrery's own, and ${home} is your home folder or holds it.`;
 	}
-	if (!HOME_MARKS.some((mark) => existsSync(join(home, mark)))) return `--purge deletes only an Orrery home, and ${home} holds none of ${HOME_MARKS.join(", ")}.`;
+	if (![...HOME_MARKS, ...OLD_HOME_MARKS].some((mark) => existsSync(join(home, mark)))) return `--purge deletes only an Orrery home, and ${home} holds none of ${HOME_MARKS.join(", ")}.`;
 	return undefined;
 }
 
 /**
- * Unwires and removes this install; with `purge`, also deletes the home. Everything that can stop it (open lanes, a home
+ * Unwires and removes this install; with `purge`, also deletes the home. Everything that can stop it (open agents, a home
  * that is not Orrery's, the purge question, an install holding the lock) comes before the first change, so a refusal or
  * a no changes nothing. The install lock is held from before the first change until app/ is emptied, so an install
  * cannot run in between. `confirmPurge` answers "no terminal" when there was none to ask.
@@ -325,10 +327,10 @@ export async function uninstall(options: { env: NodeJS.ProcessEnv; purge: boolea
 		const why = purgeRefusal(home, env);
 		if (why !== undefined) return refused(why);
 	}
-	const { versions, unreadable } = laneVersions(env);
+	const { versions, unreadable } = agentVersions(env);
 	const open = [...versions.values()].flat();
-	if (open.length > 0) return { lines: [`Close these lanes first: ${open.join(", ")}`], ok: false };
-	if (unreadable !== undefined) return { lines: [`Cannot tell whether lanes are open: ${unreadable}. Close every lane and fix that, then run orrery uninstall again.`], ok: false };
+	if (open.length > 0) return { lines: [`Close these agents first: ${open.join(", ")}`], ok: false };
+	if (unreadable !== undefined) return { lines: [`Cannot tell whether agents are open: ${unreadable}. Close every agent and fix that, then run orrery uninstall again.`], ok: false };
 	if (options.purge) {
 		const answer = await options.confirmPurge();
 		if (answer === "no terminal") return refused("there is no terminal to ask before deleting everything; nothing changed.");
@@ -364,7 +366,7 @@ export async function uninstall(options: { env: NodeJS.ProcessEnv; purge: boolea
 		release();
 	}
 	if (!options.purge) {
-		report.lines.push(`Kept ${home}: your config, logins and lanes' memory (orrery uninstall --purge deletes them).`);
+		report.lines.push(`Kept ${home}: your config, logins and agents' memory (orrery uninstall --purge deletes them).`);
 		return report;
 	}
 	try {

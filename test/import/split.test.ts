@@ -22,7 +22,7 @@ const model = (answer: string | Error) => ({
 	},
 });
 
-const options = () => ({ threshold: 100, lanes: ["Willow", "Maple"], cache: new Map<string, SplitResult>() });
+const options = () => ({ threshold: 100, agents: ["Willow", "Maple"], cache: new Map<string, SplitResult>() });
 
 describe("locateSegments", () => {
 	it("cuts the original text at the snippets, covering every character", () => {
@@ -112,7 +112,7 @@ describe("splitMessage", () => {
 		expect(opts.cache.has(cacheKey(TEXT))).toBe(true);
 	});
 
-	it("names the author, not the addressee: a source equal to this lane becomes a plain paste, and lane names keep their casing", async () => {
+	it("names the author, not the addressee: a source equal to this agent becomes a plain paste, and agent names keep their casing", async () => {
 		const text =
 			"Atlas: ▎ Cedar's rulings on your questions: ▎ (1) garden-plants becomes a real plant group.\n\n" +
 			"BIRCH NOTE: map updated, plot 4 is next in the queue for review.\n\nGo ahead.";
@@ -127,7 +127,7 @@ describe("splitMessage", () => {
 		const result = await splitMessage(
 			text,
 			{ complete: async (s: string) => ((system = s), answer) },
-			{ threshold: 10, lanes: ["Atlas", "Birch", "Cedar"], lane: "Atlas", cache: new Map() },
+			{ threshold: 10, agents: ["Atlas", "Birch", "Cedar"], agent: "Atlas", cache: new Map() },
 		);
 		expect(result.segments.map((s) => s.source)).toEqual([null, "Birch", null]);
 		expect(system).toContain("This is Atlas's conversation");

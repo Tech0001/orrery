@@ -7,9 +7,9 @@
 
 import { Input, matchesKey, sliceByColumn, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type Chat, chatMatches, folderLabel } from "../import/chats.ts";
-import type { MenuUI } from "../lane/compactor-menu.ts";
-import { ago } from "../lane/overview.ts";
-import { safeText } from "../lane/source-labels.ts";
+import type { MenuUI } from "../agent/compactor-menu.ts";
+import { ago } from "../agent/overview.ts";
+import { safeText } from "../agent/source-labels.ts";
 import { fit } from "./table.ts";
 import type { Theme } from "./theme.ts";
 

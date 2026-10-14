@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { readCopyPath } from "../../src/remote/read-copy.ts";
 import { seal } from "../../src/remote/crypto.ts";
-import { encodeRows, encodeSnapshot, laneSettings, snapshotBytes } from "../../src/remote/save-format.ts";
+import { encodeRows, encodeSnapshot, agentSettings, snapshotBytes } from "../../src/remote/save-format.ts";
 import * as saveFormat from "../../src/remote/save-format.ts";
 import { removeRemoteSecret } from "../../src/remote/secrets.ts";
 import { RemoteError } from "../../src/remote/types.ts";
@@ -18,7 +18,7 @@ const messages = (path: string) => {
 	const store = MemoryStore.openReadOnly(path);
 	try { return store.root.map((row) => row.text); } finally { store.close(); }
 };
-const read = () => readCopyPath(f.config, f.lane, { storage: f.storage, now: f.now });
+const read = () => readCopyPath(f.config, f.agent, { storage: f.storage, now: f.now });
 
 describe("remote read copies", () => {
 	it("restores a framed snapshot plus later saves without taking the remote lock", async () => {
@@ -107,10 +107,10 @@ describe("remote read copies", () => {
 	});
 
 	it("reads a live local holder's working copy without fetching or requiring its key", async () => {
-		const local = MemoryStore.open(join(f.lane.dir, "memory.sqlite"));
+		const local = MemoryStore.open(join(f.agent.dir, "memory.sqlite"));
 		local.append("user", "unsaved on this machine");
 		try {
-			writeFileSync(join(f.lane.dir, "status.json"), JSON.stringify({ open: true, pid: process.pid }));
+			writeFileSync(join(f.agent.dir, "status.json"), JSON.stringify({ open: true, pid: process.pid }));
 			removeRemoteSecret(f.config, "home");
 			const fetch = vi.spyOn(f.storage, "fetch");
 			expect(await read()).toEqual({ path: local.path });
@@ -119,9 +119,9 @@ describe("remote read copies", () => {
 	});
 
 	it.each([{ open: false, pid: process.pid }, { open: true, pid: -1 }, { open: true, pid: 2_147_483_647 }])("ignores closed or dead local status (%#)", async (status) => {
-		mkdirSync(f.lane.dir, { recursive: true });
-		writeFileSync(join(f.lane.dir, "status.json"), JSON.stringify(status));
-		expect((await read()).path).not.toBe(join(f.lane.dir, "memory.sqlite"));
+		mkdirSync(f.agent.dir, { recursive: true });
+		writeFileSync(join(f.agent.dir, "status.json"), JSON.stringify(status));
+		expect((await read()).path).not.toBe(join(f.agent.dir, "memory.sqlite"));
 	});
 
 	it("coalesces simultaneous refreshes of the same copy", async () => {
@@ -178,8 +178,8 @@ describe("remote read copies", () => {
 		await f.save();
 		f.clock.value += 60_000;
 		const original = f.storage.fetch.bind(f.storage);
-		const fetch = vi.spyOn(f.storage, "fetch").mockImplementation(async (lane, after) => {
-			const value = await original(lane, after);
+		const fetch = vi.spyOn(f.storage, "fetch").mockImplementation(async (agent, after) => {
+			const value = await original(agent, after);
 			return { ...value, saves: value.saves.map((save) => ({ ...save, file: new Uint8Array([1, 2]) })) };
 		});
 		await expect(read()).rejects.toMatchObject({ kind: "corrupt" });
@@ -188,8 +188,8 @@ describe("remote read copies", () => {
 		expect(readFileSync(statePath, "utf8")).toBe(state);
 	});
 
-	it("rebuilds once when a dropped and repushed lane's incremental rows no longer fit", async () => {
-		await f.save("old lane history");
+	it("rebuilds once when a dropped and repushed agent's incremental rows no longer fit", async () => {
+		await f.save("old agent history");
 		const { path } = await read();
 		const oldLock = (await f.storage.list())[0].lock!;
 		await f.storage.drop("Atlas", oldLock.lock);
@@ -198,7 +198,7 @@ describe("remote read copies", () => {
 		const replacement = MemoryStore.open(join(f.root, "replacement.sqlite"));
 		try {
 			for (const text of ["new one", "new two", "new three"]) replacement.append("user", text);
-			await f.storage.snapshot("Atlas", take.lock, 0, seal(f.key, "Atlas", "snapshot", 0, encodeSnapshot({ v: 1, n: 0, lock: take.lock, machine: "new machine", at: new Date(f.now()).toISOString(), settings: laneSettings(f.lane) }, snapshotBytes(replacement.path))));
+			await f.storage.snapshot("Atlas", take.lock, 0, seal(f.key, "Atlas", "snapshot", 0, encodeSnapshot({ v: 1, n: 0, lock: take.lock, machine: "new machine", at: new Date(f.now()).toISOString(), settings: agentSettings(f.agent) }, snapshotBytes(replacement.path))));
 			let marks = replacement.marks();
 			for (let n = 1; n <= 2; n++) {
 				replacement.append("talk", `new save ${n}`);
@@ -224,9 +224,9 @@ describe("remote read copies", () => {
 		f.clock.value += 60_000;
 		const badRows = { main: [{ i: 99, kind: "user", text: "gap", size: 9, date: new Date(f.now()).toISOString() }], tree: [], usage: [], meta: {} };
 		const original = f.storage.fetch.bind(f.storage);
-		const fetch = vi.spyOn(f.storage, "fetch").mockImplementation(async (lane, after) => {
-			const result = await original(lane, after);
-			return { ...result, saves: result.saves.map((save) => ({ ...save, file: seal(f.key, lane, "save", save.n, encodeRows(badRows)) })) };
+		const fetch = vi.spyOn(f.storage, "fetch").mockImplementation(async (agent, after) => {
+			const result = await original(agent, after);
+			return { ...result, saves: result.saves.map((save) => ({ ...save, file: seal(f.key, agent, "save", save.n, encodeRows(badRows)) })) };
 		});
 		await expect(read()).rejects.toMatchObject({ kind: "corrupt" });
 		expect(fetch.mock.calls).toEqual([["Atlas", 0], ["Atlas", -1]]);
@@ -243,10 +243,10 @@ describe("remote read copies", () => {
 		await f.save("bad later save");
 		f.clock.value += 60_000;
 		const original = f.storage.fetch.bind(f.storage);
-		vi.spyOn(f.storage, "fetch").mockImplementation(async (lane, after) => {
-			const fetched = await original(lane, after);
+		vi.spyOn(f.storage, "fetch").mockImplementation(async (agent, after) => {
+			const fetched = await original(agent, after);
 			const bad = { main: [{ i: 99, kind: "user", text: "gap", size: 9, date: new Date(f.now()).toISOString() }], tree: [], usage: [], meta: {} };
-			return { ...fetched, saves: fetched.saves.map((save) => save.n === 2 ? { ...save, file: seal(f.key, lane, "save", save.n, encodeRows(bad)) } : save) };
+			return { ...fetched, saves: fetched.saves.map((save) => save.n === 2 ? { ...save, file: seal(f.key, agent, "save", save.n, encodeRows(bad)) } : save) };
 		});
 		await expect(read()).rejects.toMatchObject({ kind: "corrupt" });
 		expect(messages(path)).toEqual(["from the snapshot"]);

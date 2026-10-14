@@ -75,8 +75,8 @@ export class MemoryView {
 	readonly #saw: Sawtooth;
 
 	/**
-	 * Opens the lane's saved view. It never rebuilds a saved view from the log, because a rebuilt view differs from the
-	 * live one and every cache entry dies (Taelin §3.2). A lane without a saved view, or with a damaged one, builds it
+	 * Opens the agent's saved view. It never rebuilds a saved view from the log, because a rebuilt view differs from the
+	 * live one and every cache entry dies (Taelin §3.2). An agent without a saved view, or with a damaged one, builds it
 	 * once: every message a line, merged down to the floor. Messages appended without the view (an import) join as
 	 * lines. A writer saves what changed; a read-only reader keeps it in memory.
 	 */

@@ -3,9 +3,9 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:f
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { importDryRunCommand } from "../../src/cli/commands.ts";
-import { parseConfig } from "../../src/lane/config.ts";
+import { parseConfig } from "../../src/agent/config.ts";
 import { cleanEnv, cliCommand } from "../claude/support.ts";
-import { fauxModels, laneConfigToml, tempDir } from "../lane/support.ts";
+import { fauxModels, agentConfigToml, tempDir } from "../agent/support.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -21,9 +21,9 @@ const jsonl = (records: object[]) => records.map((r) => JSON.stringify(r)).join(
 function fixture() {
 	const dir = tempDir("orrery-import-");
 	dirs.push(dir);
-	const workspace = join(dir, "ws");
+	const folder = join(dir, "ws");
 	const config = join(dir, "config.toml");
-	writeFileSync(config, laneConfigToml({ dataDir: join(dir, "data"), workspace }));
+	writeFileSync(config, agentConfigToml({ dataDir: join(dir, "data"), folder }));
 	const claude = join(dir, "claude");
 	mkdirSync(claude);
 	writeFileSync(
@@ -38,7 +38,7 @@ function fixture() {
 	writeFileSync(
 		join(codexDay, "rollout-x.jsonl"),
 		jsonl([
-			{ timestamp: "2026-08-01T09:00:00.000Z", type: "session_meta", payload: { id: "x", cwd: workspace } },
+			{ timestamp: "2026-08-01T09:00:00.000Z", type: "session_meta", payload: { id: "x", cwd: folder } },
 			{ timestamp: "2026-08-01T09:00:01.000Z", type: "event_msg", payload: { type: "user_message", message: `Codename Cedar. ${"Background detail. ".repeat(80)}` } },
 			{ timestamp: "2026-08-01T09:00:02.000Z", type: "event_msg", payload: { type: "agent_message", message: "Noted: Cedar.", phase: "final_answer" } },
 		]),
@@ -85,11 +85,11 @@ describe("orrery import and browse", () => {
 		expect(readFileSync(join(dir, "out", "report.md"), "utf8")).toContain("needs review: 1");
 	});
 
-	it("finds no history by folder for a lane without a workspace: only the files named", async () => {
+	it("finds no history by folder for an agent without a folder: only the files named", async () => {
 		const { dir, config, claude, codex } = fixture();
-		const text = readFileSync(config, "utf8").replace(/^workspace = .*\n/m, "").replace(/^allowed_roots = .*\n/m, "");
+		const text = readFileSync(config, "utf8").replace(/^folder = .*\n/m, "").replace(/^allowed_roots = .*\n/m, "");
 		const nomad = parseConfig(text, dir);
-		expect(nomad.lanes.get("Test")?.workspace).toBeUndefined();
+		expect(nomad.agents.get("Test")?.folder).toBeUndefined();
 		const options = { codex, notes: [], pasteThreshold: 1200, split: false, out: join(dir, "out") };
 		const none = await importDryRunCommand(nomad, "Test", options, fauxModels().models);
 		expect(none).toContain("Claude: 0 turns from 0 files");

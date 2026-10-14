@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { findOnPath } from "../../src/lane/tools.ts";
+import { findOnPath } from "../../src/agent/tools.ts";
 
 const scratch = mkdtempSync(join(tmpdir(), "orrery-real-ori-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -24,9 +24,9 @@ for (const tool of ["pi", "omp"] as const) {
 	describe.skipIf(ori === undefined || binary === undefined)(`Orrery inside real ori ${tool} (isolated home, fake OpenRouter, no model call)`, () => {
 		it("loads both extensions, registers Orrery commands and keeps its summary catalog independent", async (context) => {
 			const home = join(scratch, tool);
-			const lane = join(home, "lane");
+			const agent = join(home, "agent");
 			const bin = join(home, "bin");
-			mkdirSync(lane, { recursive: true }); mkdirSync(bin);
+			mkdirSync(agent, { recursive: true }); mkdirSync(bin);
 			symlinkSync(binary!, join(bin, tool));
 			const requests: string[] = [];
 			const server = createServer((req, res) => {
@@ -37,12 +37,12 @@ for (const tool of ["pi", "omp"] as const) {
 			await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
 			const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 			const config = join(home, "config.toml");
-			writeFileSync(config, `data_dir = ${JSON.stringify(join(home, "data"))}\n[lanes.Probe]\nworkspace = ${JSON.stringify(lane)}\ntool = "${tool}"\nlauncher = "ori"\ncompactor_model = "anthropic/claude-haiku-4-5"\n`);
+			writeFileSync(config, `data_dir = ${JSON.stringify(join(home, "data"))}\n[agents.Probe]\nfolder = ${JSON.stringify(agent)}\ntool = "${tool}"\nlauncher = "ori"\ncompactor_model = "anthropic/claude-haiku-4-5"\n`);
 			const probe = join(home, "probe.ts");
 			const local = (file: string) => JSON.stringify(relative(home, resolve(file)));
-			writeFileSync(probe, `import { summarySources } from ${local("src/lane/summary-sources.ts")};
-import { parseConfig } from ${local("src/lane/config.ts")};
-import { FileCredentialStore } from ${local("src/lane/credentials.ts")};
+			writeFileSync(probe, `import { summarySources } from ${local("src/agent/summary-sources.ts")};
+import { parseConfig } from ${local("src/agent/config.ts")};
+import { FileCredentialStore } from ${local("src/agent/credentials.ts")};
 export default function(api) {
  api.on("session_start", async (_event, ctx) => {
   const own = summarySources(parseConfig('data_dir = ' + JSON.stringify(${JSON.stringify(join(home, "probe-data"))}), ${JSON.stringify(home)}), new FileCredentialStore(${JSON.stringify(join(home, "probe-credentials.json"))})).models;
@@ -50,7 +50,7 @@ export default function(api) {
  });
 }`);
 			const env = { ...isolated(home), PATH: `${bin}:${process.env.PATH ?? ""}`, ORRERY_CONFIG: config, OPENROUTER_API_KEY: "synthetic-offline-key", ORI_OPENROUTER_BASE_URL: endpoint, PI_OFFLINE: "1" };
-			const child = spawn(ori!, [tool, "--model", model, "--mode", "rpc", "--no-session", "-e", resolve(`src/${tool}/index.ts`), "-e", probe, ...(tool === "pi" ? ["--offline"] : [])], { cwd: lane, env });
+			const child = spawn(ori!, [tool, "--model", model, "--mode", "rpc", "--no-session", "-e", resolve(`src/${tool}/index.ts`), "-e", probe, ...(tool === "pi" ? ["--offline"] : [])], { cwd: agent, env });
 			const frames: Record<string, any>[] = [];
 			let output = "";
 			let buffer = "";

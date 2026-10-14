@@ -2,8 +2,8 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { HarnessConfig } from "../lane/config.ts";
-import { writePrivate } from "../lane/private-file.ts";
+import type { HarnessConfig } from "../agent/config.ts";
+import { writePrivate } from "../agent/private-file.ts";
 
 export interface RemoteSecret {
 	readonly key: string;

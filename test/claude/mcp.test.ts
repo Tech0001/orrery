@@ -4,13 +4,13 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
-import { handleMessage, laneTools, MAX_LINE_CHARS, runMcp } from "../../src/claude/mcp.ts";
+import { handleMessage, agentTools, MAX_LINE_CHARS, runMcp } from "../../src/claude/mcp.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
-import type { LaneTool } from "../../src/lane/memory-tools.ts";
-import { claimToken, newToken } from "../../src/lane/pick.ts";
+import type { AgentTool } from "../../src/agent/memory-tools.ts";
+import { claimToken, newToken } from "../../src/agent/pick.ts";
 import { runHook } from "../../src/claude/hooks.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
-import { seedAtlas } from "../lane/support.ts";
+import { seedAtlas } from "../agent/support.ts";
 import { cleanup, isolatedHome, pi, world } from "../pi/world.ts";
 import { cleanEnv, cliCommand } from "./support.ts";
 
@@ -19,10 +19,10 @@ afterEach(cleanup);
 isolatedHome();
 
 // biome-ignore lint/suspicious/noExplicitAny: JSON-RPC replies are checked field by field.
-const call = (tools: readonly LaneTool[], method: string, params: object = {}): any => JSON.parse(JSON.stringify(handleMessage({ jsonrpc: "2.0", id: 1, method, params }, tools)));
+const call = (tools: readonly AgentTool[], method: string, params: object = {}): any => JSON.parse(JSON.stringify(handleMessage({ jsonrpc: "2.0", id: 1, method, params }, tools)));
 
 /** Feeds `chunks` to runMcp on a stream and returns the lines it printed. */
-async function serve(chunks: string[], tools: readonly LaneTool[] = []): Promise<string[]> {
+async function serve(chunks: string[], tools: readonly AgentTool[] = []): Promise<string[]> {
 	const input = new PassThrough();
 	const output = new PassThrough();
 	let out = "";
@@ -43,9 +43,9 @@ describe("Orrery's MCP server", () => {
 		expect(call([], "ping").result).toEqual({});
 	});
 
-	it("lists the lane's tools as JSON Schema, long ones with Claude Code's inline-size hint, reader tools only for readers", () => {
+	it("lists the agent's tools as JSON Schema, long ones with Claude Code's inline-size hint, reader tools only for readers", () => {
 		const { config } = world();
-		const atlas = call(laneTools(config, config.lanes.get("Atlas")!), "tools/list").result.tools;
+		const atlas = call(agentTools(config, config.agents.get("Atlas")!), "tools/list").result.tools;
 		expect(atlas.map((tool: { name: string }) => tool.name)).toEqual(["zoom", "date", "search"]);
 		expect(atlas[0]).toEqual({
 			name: "zoom",
@@ -54,16 +54,16 @@ describe("Orrery's MCP server", () => {
 			_meta: { "anthropic/maxResultSizeChars": 300_000 },
 		});
 		expect(atlas[1]._meta).toBeUndefined();
-		const birch = call(laneTools(config, config.lanes.get("Birch")!), "tools/list").result.tools;
-		expect(birch.map((tool: { name: string }) => tool.name)).toEqual(["zoom", "date", "search", "lanes", "lane_memory"]);
+		const birch = call(agentTools(config, config.agents.get("Birch")!), "tools/list").result.tools;
+		expect(birch.map((tool: { name: string }) => tool.name)).toEqual(["zoom", "date", "search", "agents", "agent_memory"]);
 		expect(birch[4]._meta).toEqual({ "anthropic/maxResultSizeChars": 300_000 });
 	});
 
-	it("returns what pi's tools return, from a read-only snapshot taken while pi holds the lane", async () => {
+	it("returns what pi's tools return, from a read-only snapshot taken while pi holds the agent", async () => {
 		const { root, config } = world();
 		seedAtlas(root);
 		const run = await pi(root, join(root, "agent-Atlas"), config);
-		const tools = laneTools(config, config.lanes.get("Atlas")!);
+		const tools = agentTools(config, config.agents.get("Atlas")!);
 		const cases: Array<[string, object]> = [["zoom", { id: 0, n: 1 }], ["date", { id: 1 }], ["search", { query: "garden-plants" }]];
 		for (const [name, params] of cases) {
 			const viaPi = (await run.tool(name)!.execute("x", params)).content.map((c) => c.text ?? "").join("");
@@ -73,12 +73,12 @@ describe("Orrery's MCP server", () => {
 
 	it("reports bad arguments, unknown tools and failed reads as tool errors, not protocol errors", () => {
 		const { config } = world();
-		const tools = laneTools(config, config.lanes.get("Birch")!);
+		const tools = agentTools(config, config.agents.get("Birch")!);
 		const bad = call(tools, "tools/call", { name: "zoom", arguments: { id: "x", n: 1 } }).result;
 		expect(bad.isError).toBe(true);
 		expect(bad.content[0].text).toMatch(/^Invalid arguments for zoom: \/id must be integer/);
 		expect(call(tools, "tools/call", { name: "nope", arguments: {} }).result).toEqual({ content: [{ type: "text", text: "No tool nope" }], isError: true });
-		expect(call(tools, "tools/call", { name: "lane_memory", arguments: { lane: "Birch", action: "view" } }).result).toEqual({
+		expect(call(tools, "tools/call", { name: "agent_memory", arguments: { agent: "Birch", action: "view" } }).result).toEqual({
 			content: [{ type: "text", text: "Birch has no memory yet" }],
 			isError: true,
 		});
@@ -118,8 +118,8 @@ describe("Orrery's MCP server", () => {
 
 	it("delivers a long reply in full when stdin closes right after the request", { timeout: 60_000 }, async () => {
 		const { root, configPath } = world();
-		mkdirSync(join(root, "data", "lanes", "Atlas"), { recursive: true });
-		const store = MemoryStore.open(join(root, "data", "lanes", "Atlas", "memory.sqlite"));
+		mkdirSync(join(root, "data", "agents", "Atlas"), { recursive: true });
+		const store = MemoryStore.open(join(root, "data", "agents", "Atlas", "memory.sqlite"));
 		const big = "word ".repeat(200_000);
 		store.appendBatch([{ kind: "user", text: big, date: "2026-02-10T10:00:00.000Z" }]);
 		store.close();
@@ -134,7 +134,7 @@ describe("Orrery's MCP server", () => {
 		expect(reply.result.content[0].text.length).toBeGreaterThan(100_000);
 	});
 
-	it("runs over stdio as `orrery mcp`, finds the lane by ORRERY_AGENT or from CLAUDE_PROJECT_DIR, and serves no tools outside a lane", { timeout: 60_000 }, async () => {
+	it("runs over stdio as `orrery mcp`, finds the agent by ORRERY_AGENT or from CLAUDE_PROJECT_DIR, and serves no tools outside an agent", { timeout: 60_000 }, async () => {
 		const { root, config, configPath } = world();
 		seedAtlas(root);
 		/** `orrery mcp`, started by this test, or (`viaShell`) by a shell this test starts, which is then its parent. */
@@ -156,9 +156,9 @@ describe("Orrery's MCP server", () => {
 			expect(await exited).toBe(0);
 			return { replies: new Map(out.trim().split("\n").map((line) => JSON.parse(line)).map((reply) => [reply.id, reply])), err };
 		};
-		const inLane = (await session(join(root, "agent-Atlas"))).replies;
-		expect(inLane.get(2).result.tools.map((tool: { name: string }) => tool.name)).toEqual(["zoom", "date", "search"]);
-		expect(inLane.get(3).result.content[0].text).toContain("#0 2026-02-10 user");
+		const inAgent = (await session(join(root, "agent-Atlas"))).replies;
+		expect(inAgent.get(2).result.tools.map((tool: { name: string }) => tool.name)).toEqual(["zoom", "date", "search"]);
+		expect(inAgent.get(3).result.content[0].text).toContain("#0 2026-02-10 user");
 		const outside = await session(join(root, "plain"));
 		expect(outside.replies.get(2).result.tools).toEqual([]);
 		expect(outside.replies.get(3).result.isError).toBe(true);
@@ -166,7 +166,7 @@ describe("Orrery's MCP server", () => {
 		// Under ORRERY_AGENT the server's parent (this test) records the process's decision; each case below is a new
 		// Claude Code process, so the last one's decision goes first, as its SessionEnd would take it.
 		const ended = () => rmSync(join(config.dataDir, "claude-processes", `${process.pid}.json`), { force: true });
-		// ORRERY_AGENT names the lane wherever Claude Code runs; one that names no lane serves none, in a lane folder too.
+		// ORRERY_AGENT names the agent wherever Claude Code runs; one that names no agent serves none, in an agent folder too.
 		const named = await session(join(root, "plain"), { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas" });
 		expect(named.replies.get(2).result.tools.map((tool: { name: string }) => tool.name)).toEqual(["zoom", "date", "search"]);
 		expect(named.replies.get(3).result.content[0].text).toContain("#0 2026-02-10 user");
@@ -176,13 +176,13 @@ describe("Orrery's MCP server", () => {
 		// With a token, only the Claude Code that claimed it is the agent: the server's parent (Claude Code starts it), not
 		// CLAUDE_PID, which a claude started from an agent's Bash inherits from the agent.
 		const token = newToken();
-		expect(claimToken(join(root, "data", "lanes", "Atlas"), token, process.pid)).toBe(true);
+		expect(claimToken(join(root, "data", "agents", "Atlas"), token, process.pid)).toBe(true);
 		const asAgent = { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token };
 		expect((await session(join(root, "plain"), { ...asAgent, CLAUDE_PID: String(process.ppid) })).replies.get(2).result.tools).toHaveLength(3);
 		ended();
 		expect((await session(join(root, "plain"), { ...asAgent, CLAUDE_PID: String(process.pid) }, true)).replies.get(2).result.tools).toEqual([]);
-		// In another lane's folder set up the file way (its CLAUDE.md loads that lane's view), the agent is refused.
-		writeSetupMarker(join(root, "data", "lanes", "Birch"), join(root, "agent-Birch"), "CLAUDE.md");
+		// In another agent's folder set up the file way (its CLAUDE.md loads that agent's view), the agent is refused.
+		writeSetupMarker(join(root, "data", "agents", "Birch"), join(root, "agent-Birch"), "CLAUDE.md");
 		expect((await session(join(root, "agent-Birch"), { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas" })).replies.get(2).result.tools).toEqual([]);
 		ended();
 		expect((await session(join(root, "agent-Birch"))).replies.get(2).result.tools.map((tool: { name: string }) => tool.name)).toEqual(expect.arrayContaining(["zoom", "date", "search"]));
@@ -219,7 +219,7 @@ describe("Orrery's MCP server", () => {
 		const agent = () => {
 			const sleeper = spawn("sleep", ["120"], { stdio: "ignore" });
 			const token = newToken();
-			expect(claimToken(join(root, "data", "lanes", "Atlas"), token, sleeper.pid as number)).toBe(true);
+			expect(claimToken(join(root, "data", "agents", "Atlas"), token, sleeper.pid as number)).toBe(true);
 			const gone = async () => {
 				sleeper.kill();
 				await once(sleeper, "exit");

@@ -3,8 +3,8 @@
 #
 #   sudo bash ~/orrery-stage/deploy/install.sh ~/orrery-stage
 #
-# Idempotent. It never overwrites /etc/orrery/config.toml or the orrery SSH key, never enables a lane
-# (systemctl enable --now orrery@<Lane>) and never restarts a running one.
+# Idempotent. It never overwrites /etc/orrery/config.toml or the orrery SSH key, never enables an agent
+# (systemctl enable --now orrery@<Agent>) and never restarts a running one.
 set -euo pipefail
 
 src="${1:?usage: install.sh <staged orrery tree>}"
@@ -94,5 +94,5 @@ orrery is installed. Next steps (docs/deploy.md has the details):
 DONE
 if [ -n "$running" ]; then
 	echo
-	echo "Running lanes keep the old code until restarted: ${running//$'\n'/ }"
+	echo "Running agents keep the old code until restarted: ${running//$'\n'/ }"
 fi

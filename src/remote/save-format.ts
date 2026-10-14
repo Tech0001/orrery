@@ -1,10 +1,10 @@
-/** Versioned, compressed saves and consistent SQLite snapshots for remote lane memory. */
+/** Versioned, compressed saves and consistent SQLite snapshots for remote agent memory. */
 
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { gzipSync, gunzipSync } from "node:zlib";
-import type { LaneConfig } from "../lane/config.ts";
+import type { AgentConfig } from "../agent/config.ts";
 import { validDate } from "../memory/bytes.ts";
 import { openDatabase, type Database, vacuumInto } from "../memory/sqlite.ts";
 import { MemoryStore, type StoreRows } from "../memory/store.ts";
@@ -29,34 +29,34 @@ export interface SaveHeader {
 	readonly takeover?: { readonly from: string };
 }
 
-/** Portable settings copied once by lane pull; machine-specific workspace paths are not included. */
-export interface LaneSettings {
+/** Portable settings copied once by agent pull; machine-specific folder paths are not included. */
+export interface AgentSettings {
 	readonly tool?: string;
 	readonly compactorModel: string;
 	readonly compactorThinking: string;
 	readonly viewBytes?: number;
 	/** Summary size (node_bytes). */
 	readonly nodeBytes?: number;
-	/** The top of each summary call's view (compactor_context_bytes), when the lane sets one. */
+	/** The top of each summary call's view (compactor_context_bytes), when the agent sets one. */
 	readonly contextBytes?: number;
 	readonly compactorJobs?: number;
 	readonly compactAt?: number;
-	/** Before agents: the lane's instructions file name. Read from older snapshots; never written or used. */
+	/** Before agents: the agent's instructions file name. Read from older snapshots; never written or used. */
 	readonly instructions?: string;
 	readonly reads?: readonly string[];
 }
 
-export function laneSettings(lane: LaneConfig): LaneSettings {
+export function agentSettings(agent: AgentConfig): AgentSettings {
 	return {
-		...(lane.tool === undefined ? {} : { tool: lane.tool }),
-		compactorModel: `${lane.compactor.model.provider}/${lane.compactor.model.modelId}`,
-		compactorThinking: lane.compactor.model.thinking,
-		viewBytes: lane.memory.viewBytes,
-		nodeBytes: lane.memory.nodeBytes,
-		...(lane.compactor.contextBytes === undefined ? {} : { contextBytes: lane.compactor.contextBytes }),
-		compactorJobs: lane.compactor.jobs,
-		compactAt: lane.compactAt,
-		reads: [...lane.reads],
+		...(agent.tool === undefined ? {} : { tool: agent.tool }),
+		compactorModel: `${agent.compactor.model.provider}/${agent.compactor.model.modelId}`,
+		compactorThinking: agent.compactor.model.thinking,
+		viewBytes: agent.memory.viewBytes,
+		nodeBytes: agent.memory.nodeBytes,
+		...(agent.compactor.contextBytes === undefined ? {} : { contextBytes: agent.compactor.contextBytes }),
+		compactorJobs: agent.compactor.jobs,
+		compactAt: agent.compactAt,
+		reads: [...agent.reads],
 	};
 }
 
@@ -67,7 +67,7 @@ export interface SnapshotHeader {
 	readonly lock: number;
 	readonly machine: string;
 	readonly at: string;
-	readonly settings: LaneSettings;
+	readonly settings: AgentSettings;
 }
 
 export function encodeSnapshot(header: SnapshotHeader, db: Uint8Array): Uint8Array {
@@ -90,7 +90,7 @@ export function decodeSnapshot(plain: Uint8Array): { header: SnapshotHeader; db:
 		if (typeof settings.compactorModel !== "string" || !/^[^/]+\/.+/.test(settings.compactorModel) || typeof settings.compactorThinking !== "string") throw new Error("Invalid model settings");
 		for (const key of ["tool", "instructions"]) if (settings[key] !== undefined && typeof settings[key] !== "string") throw new Error("Invalid text setting");
 		for (const key of ["viewBytes", "nodeBytes", "contextBytes", "compactorJobs", "compactAt"]) if (settings[key] !== undefined && (!natural(settings[key]) || settings[key] === 0)) throw new Error("Invalid numeric setting");
-		if (settings.reads !== undefined && (!Array.isArray(settings.reads) || !settings.reads.every((lane) => typeof lane === "string"))) throw new Error("Invalid reader settings");
+		if (settings.reads !== undefined && (!Array.isArray(settings.reads) || !settings.reads.every((agent) => typeof agent === "string"))) throw new Error("Invalid reader settings");
 		return { header: header as unknown as SnapshotHeader, db: bytes.subarray(4 + length) };
 	} catch {
 		throw new RemoteError("corrupt", "a snapshot header from the remote could not be read");
@@ -98,10 +98,10 @@ export function decodeSnapshot(plain: Uint8Array): { header: SnapshotHeader; db:
 }
 
 /** Read the newest snapshot's settings without opening or restoring the database. */
-export async function remoteLaneSettings(storage: Storage, key: Uint8Array, lane: string): Promise<SnapshotHeader> {
-	const { snapshot } = await storage.fetch(lane, -1);
-	if (snapshot === undefined) throw new RemoteError("not-found", `${lane} has no snapshot on remote ${storage.name}`);
-	const { header } = decodeSnapshot(unseal(key, lane, "snapshot", snapshot.n, snapshot.file));
+export async function remoteAgentSettings(storage: Storage, key: Uint8Array, agent: string): Promise<SnapshotHeader> {
+	const { snapshot } = await storage.fetch(agent, -1);
+	if (snapshot === undefined) throw new RemoteError("not-found", `${agent} has no snapshot on remote ${storage.name}`);
+	const { header } = decodeSnapshot(unseal(key, agent, "snapshot", snapshot.n, snapshot.file));
 	if (header.n !== snapshot.n) throw new RemoteError("corrupt", "a snapshot header has the wrong save number");
 	return header;
 }

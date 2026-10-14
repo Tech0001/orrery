@@ -1,5 +1,5 @@
 /** The Cloudflare Storage client: authenticated HTTP for opaque encrypted files, with bounded calls. */
-import type { RemoteConfig } from "../lane/config.ts";
+import type { RemoteConfig } from "../agent/config.ts";
 import { CALL_TIMEOUT_MS, type FetchResult, type Holder, type LaneEntry, RemoteError, type RemoteErrorKind, type RemoteFile, sizedTimeoutMs, type Storage, type TakeResult } from "./types.ts";
 
 const CHUNK_BYTES = 1024 * 1024;

@@ -2,8 +2,8 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, st
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { dryRun, type DryRunInput, newPreviewFolder } from "../../src/import/dry-run.ts";
-import { parseConfig } from "../../src/lane/config.ts";
-import { fauxModels, laneConfigToml, tempDir } from "../lane/support.ts";
+import { parseConfig } from "../../src/agent/config.ts";
+import { fauxModels, agentConfigToml, tempDir } from "../agent/support.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -34,7 +34,7 @@ function fixture(): DryRunInput & { dir: string } {
 			{ timestamp: "2026-08-01T09:00:02.000Z", type: "event_msg", payload: { type: "agent_message", message: "Noted: Cedar.", phase: "final_answer" } },
 		]),
 	);
-	const config = parseConfig(laneConfigToml({ dataDir: join(dir, "data"), workspace: dir }), dir);
+	const config = parseConfig(agentConfigToml({ dataDir: join(dir, "data"), folder: dir }), dir);
 	return {
 		dir,
 		config,

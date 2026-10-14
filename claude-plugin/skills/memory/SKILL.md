@@ -1,5 +1,5 @@
 ---
-description: Show this lane's Orrery memory - messages, view size, summaries, recording state and token use.
+description: Show this agent's Orrery memory - messages, view size, summaries, recording state and token use.
 disable-model-invocation: true
 allowed-tools: Bash(sh "${CLAUDE_PLUGIN_ROOT}/bin/orrery-run" status .), Bash(sh "${CLAUDE_PLUGIN_ROOT}/bin/orrery-run" usage .)
 ---

@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sy
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { removeVersion } from "../../src/install/install.ts";
-import { piExtensionFile, type Runner } from "../../src/lane/tools.ts";
+import { piExtensionFile, type Runner } from "../../src/agent/tools.ts";
 
 const dirs: string[] = [];
 

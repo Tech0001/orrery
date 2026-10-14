@@ -55,7 +55,7 @@ try {
 	const copied = MemoryStore.openReadOnly(copiedPath);
 	try { deepStrictEqual(copied.root.map((m) => m.text), ["closed"]); } finally { copied.close(); }
 	// pi runs on Bun, and orrery's logins (with proper-lockfile) now load inside pi.
-	const { FileCredentialStore } = await import("../src/lane/credentials.ts");
+	const { FileCredentialStore } = await import("../src/agent/credentials.ts");
 	const logins = new FileCredentialStore(join(dir, "logins.json"));
 	await logins.modify("openrouter", async () => ({ type: "api_key", key: "k" }));
 	const listed = (await logins.list()).map((c) => `${c.providerId}:${c.type}`).join(",");

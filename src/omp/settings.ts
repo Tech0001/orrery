@@ -1,7 +1,7 @@
 /**
- * OMP's own features that would fight a lane's memory, switched off for this session only (spec 2026-10-10-omp-design
+ * OMP's own features that would fight an agent's memory, switched off for this session only (spec 2026-10-10-omp-design
  * §2): compaction (which also stops shake and the frame rescue, both of which rewrite the session), OMP's memory
- * backend, the project CLAUDE.md (only in a Claude Code lane, where it imports a stale .orrery/view.md), and auto-titles
+ * backend, the project CLAUDE.md (only in a Claude Code agent, where it imports a stale .orrery/view.md), and auto-titles
  * (their side calls resend the system prompt, memory view and all). Nothing is persisted and nothing is written to the
  * folder.
  *
@@ -11,34 +11,34 @@
  * omp-eval.md §13). test/omp/real-omp.test.ts checks them before OMP upgrades.
  *
  * Each result carries `restore`, which takes all of it back: OMP keeps the overrides when the session moves to another
- * folder (its /resume of another folder's session, /move), and Orrery then leaves the lane.
+ * folder (its /resume of another folder's session, /move), and Orrery then leaves the agent.
  */
 
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { LaneSettingsResult } from "../pi/index.ts";
+import type { AgentSettingsResult } from "../pi/index.ts";
 
 /** OMP's context-file id for the project CLAUDE.md. */
 export const PROJECT_CLAUDE_MD = "context-file:project:CLAUDE.md";
 
-/** The CLAUDE.md line that loads a Claude Code lane's view (src/claude/view-file.ts VIEW_IMPORT). */
+/** The CLAUDE.md line that loads a Claude Code agent's view (src/claude/view-file.ts VIEW_IMPORT). */
 export const VIEW_IMPORT = "@.orrery/view.md";
 
 /** How much of CLAUDE.md is searched for the import line (src/claude/view-file.ts READ_LIMIT). */
 const READ_LIMIT = 256 * 1024;
 
 /**
- * Whether `workspace`'s CLAUDE.md imports the Claude Code view, checked as Claude Code's own importsView checks it: a
+ * Whether `folder`'s CLAUDE.md imports the Claude Code view, checked as Claude Code's own importsView checks it: a
  * regular file opened never through a symlink, the import line among the whole lines of its first 256 KB. A copy, not
  * an import: src/claude/view-file.ts brings modules OMP's entry may not load (test/pi/pi-entry-points.test.ts), and
  * test/omp/settings.test.ts holds the two to the same answers.
  */
-export function importsClaudeView(workspace: string): boolean {
+export function importsClaudeView(folder: string): boolean {
 	let fd: number;
 	try {
 		// O_NOFOLLOW: a symlink fails to open. O_NONBLOCK: a pipe opens at once, and fstat then refuses it unread.
-		fd = openSync(join(workspace, "CLAUDE.md"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+		fd = openSync(join(folder, "CLAUDE.md"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 	} catch {
 		return false;
 	}
@@ -102,12 +102,12 @@ export async function loadInternals(): Promise<OmpInternals | string> {
 }
 
 /**
- * Switches the four off with `internals` for the session in `cwd`, in the lane whose folder is `workspace`. Titles go
+ * Switches the four off with `internals` for the session in `cwd`, in the agent whose folder is `folder`. Titles go
  * first and always: OMP reads PI_NO_TITLE live, a public switch. The rest only when OMP gives this session's live
- * settings and knows the ids. The project CLAUDE.md goes off only where it collides: the lane's CLAUDE.md imports the
+ * settings and knows the ids. The project CLAUDE.md goes off only where it collides: the agent's CLAUDE.md imports the
  * Claude Code view.
  */
-export function applyWith(internals: OmpInternals, cwd: string, workspace: string, env: NodeJS.ProcessEnv = process.env): LaneSettingsResult {
+export function applyWith(internals: OmpInternals, cwd: string, folder: string, env: NodeJS.ProcessEnv = process.env): AgentSettingsResult {
 	const title = env.PI_NO_TITLE;
 	env.PI_NO_TITLE = "1";
 	// What takes it all back: only the overrides set here (override(scope, undefined) removes one, OMP's registry.ts),
@@ -128,10 +128,10 @@ export function applyWith(internals: OmpInternals, cwd: string, workspace: strin
 	const settings = internals.create(cwd);
 	// With no live settings for this session OMP hands out a new isolated object each time: overrides there change nothing.
 	if (internals.create(cwd) !== settings) return { applied: false, why: "no live session settings", restore };
-	// Only where the lane's CLAUDE.md imports the view: OMP's extensions dashboard writes the whole effective list,
+	// Only where the agent's CLAUDE.md imports the view: OMP's extensions dashboard writes the whole effective list,
 	// this override included, back to the user's global config when any entry is toggled, and then no OMP project would
 	// load its CLAUDE.md. Elsewhere the list is left alone.
-	const claudeMd = importsClaudeView(workspace);
+	const claudeMd = importsClaudeView(folder);
 	const ids = claudeMd ? (["compaction.enabled", "memory.backend", "disabledExtensions"] as const) : (["compaction.enabled", "memory.backend"] as const);
 	const found = ids.map((id) => internals.lookup(id));
 	const [compaction, memory, disabled] = found;
@@ -164,12 +164,12 @@ export function applyWith(internals: OmpInternals, cwd: string, workspace: strin
 }
 
 /** applyWith on OMP's own internals; anything missing or thrown comes back as not applied, with why. */
-export async function applyLaneSettings(
+export async function applyAgentSettings(
 	ctx: Pick<ExtensionContext, "cwd">,
-	workspace: string,
+	folder: string,
 	env: NodeJS.ProcessEnv = process.env,
 	load: () => Promise<OmpInternals | string> = loadInternals,
-): Promise<LaneSettingsResult> {
+): Promise<AgentSettingsResult> {
 	const title = env.PI_NO_TITLE;
 	env.PI_NO_TITLE = "1";
 	let inner: (() => void) | undefined;
@@ -183,7 +183,7 @@ export async function applyLaneSettings(
 	try {
 		const internals = await load();
 		if (typeof internals === "string") return { applied: false, why: internals, restore };
-		const result = applyWith(internals, ctx.cwd, workspace, env);
+		const result = applyWith(internals, ctx.cwd, folder, env);
 		inner = result.restore;
 		return { ...result, restore };
 	} catch (error) {

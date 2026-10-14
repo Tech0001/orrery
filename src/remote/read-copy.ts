@@ -1,11 +1,11 @@
-/** Read-only remote lane caches: refresh under the copy's writer lock, never take the remote's lock. */
+/** Read-only remote agent caches: refresh under the copy's writer lock, never take the remote's lock. */
 
 import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { HarnessConfig, LaneConfig } from "../lane/config.ts";
-import { writePrivate } from "../lane/private-file.ts";
-import { processAlive } from "../lane/process.ts";
+import type { HarnessConfig, AgentConfig } from "../agent/config.ts";
+import { writePrivate } from "../agent/private-file.ts";
+import { processAlive } from "../agent/process.ts";
 import { localIso } from "../memory/bytes.ts";
 import { holdWriterLock, MemoryStore, type StoreRows, type WriterLock } from "../memory/store.ts";
 import { StoreError } from "../memory/types.ts";
@@ -28,10 +28,10 @@ interface ReadOptions { readonly storage?: Storage; readonly now?: () => number 
 const REFRESH_MS = 60_000;
 const refreshing = new Map<string, Promise<CopyPath>>();
 
-/** The same liveness rule as the local lane listing, including older status files without an open flag. */
-export function laneOpenHere(lane: LaneConfig): boolean {
+/** The same liveness rule as the local agent listing, including older status files without an open flag. */
+export function agentOpenHere(agent: AgentConfig): boolean {
 	try {
-		const status = JSON.parse(readFileSync(join(lane.dir, "status.json"), "utf8"));
+		const status = JSON.parse(readFileSync(join(agent.dir, "status.json"), "utf8"));
 		return status.open !== false && typeof status.pid === "number" && processAlive(status.pid);
 	} catch { return false; }
 }
@@ -80,16 +80,16 @@ function applySaves(store: MemoryStore, rows: StoreRows[]): void {
 }
 
 /** Authenticate before writing; append saves in place, or stage and publish a genuinely newer snapshot. */
-function updateCopy(path: string, lane: string, key: Uint8Array, fetched: FetchResult, after: number, writer: WriterLock): number {
+function updateCopy(path: string, agent: string, key: Uint8Array, fetched: FetchResult, after: number, writer: WriterLock): number {
 	let saved = fetched.snapshot?.n ?? after;
 	if (saved < 0 || !Number.isSafeInteger(fetched.newestSave) || fetched.newestSave < saved) throw new RemoteError("corrupt", "the remote read copy has no usable snapshot");
-	const snapshot = fetched.snapshot === undefined ? undefined : decodeSnapshot(unseal(key, lane, "snapshot", fetched.snapshot.n, fetched.snapshot.file));
+	const snapshot = fetched.snapshot === undefined ? undefined : decodeSnapshot(unseal(key, agent, "snapshot", fetched.snapshot.n, fetched.snapshot.file));
 	if (snapshot !== undefined && snapshot.header.n !== saved) throw new RemoteError("corrupt", "a snapshot header has the wrong save number");
 	// Authenticate the whole response before touching any local database.
 	const rows = fetched.saves.map((save) => {
 		if (save.n !== saved + 1) throw new RemoteError("corrupt", "a remote save does not continue the read copy");
 		saved = save.n;
-		return decodeRows(unseal(key, lane, "save", save.n, save.file));
+		return decodeRows(unseal(key, agent, "save", save.n, save.file));
 	});
 	if (saved !== fetched.newestSave) throw new RemoteError("corrupt", "the remote read copy is missing saves");
 	if (snapshot !== undefined) {
@@ -113,13 +113,13 @@ function updateCopy(path: string, lane: string, key: Uint8Array, fetched: FetchR
 	return saved;
 }
 
-async function refresh(config: HarnessConfig, lane: LaneConfig, path: string, options: ReadOptions): Promise<CopyPath> {
-	const remote = lane.remote!;
+async function refresh(config: HarnessConfig, agent: AgentConfig, path: string, options: ReadOptions): Promise<CopyPath> {
+	const remote = agent.remote!;
 	const secret = readRemoteSecret(config, remote);
 	if (secret === undefined) throw new RemoteError("key-missing", `the key for remote ${remote} isn't on this machine`);
 	const key = codeToKey(secret.key);
 	const now = options.now ?? Date.now;
-	const dir = join(config.dataDir, "read-copies", lane.name);
+	const dir = join(config.dataDir, "read-copies", agent.name);
 	const statePath = join(dir, "state.json");
 	const current = () => existsSync(path) ? copyState(statePath, remote, path) : undefined;
 	const fresh = (state: CopyState | undefined) => state !== undefined && now() >= state.fetchedAt && now() - state.fetchedAt < REFRESH_MS;
@@ -132,17 +132,17 @@ async function refresh(config: HarnessConfig, lane: LaneConfig, path: string, op
 		try {
 			const storage = options.storage ?? openStorage(config, remote);
 			let after = state?.save ?? -1;
-			let fetched = await storage.fetch(lane.name, after);
+			let fetched = await storage.fetch(agent.name, after);
 			if (fetched.newestSave < after) {
 				after = -1;
-				fetched = await storage.fetch(lane.name, after);
+				fetched = await storage.fetch(agent.name, after);
 			}
 			let saved: number;
-			try { saved = updateCopy(path, lane.name, key, fetched, after, lock); }
+			try { saved = updateCopy(path, agent.name, key, fetched, after, lock); }
 			catch (error) {
 				if (!(error instanceof ApplyError) || after === -1) throw error;
-				// A dropped/recreated lane can reuse save numbers for a different history. Rebuild exactly once.
-				saved = updateCopy(path, lane.name, key, await storage.fetch(lane.name, -1), -1, lock);
+				// A dropped/recreated agent can reuse save numbers for a different history. Rebuild exactly once.
+				saved = updateCopy(path, agent.name, key, await storage.fetch(agent.name, -1), -1, lock);
 			}
 			writePrivate(statePath, JSON.stringify({ v: 1, remote, save: saved, fetchedAt: now(), database: databaseStamp(path) } satisfies CopyState));
 			return { path };
@@ -155,12 +155,12 @@ async function refresh(config: HarnessConfig, lane: LaneConfig, path: string, op
 	} finally { lock(); }
 }
 
-export async function readCopyPath(config: HarnessConfig, lane: LaneConfig, options: ReadOptions = {}): Promise<CopyPath> {
-	if (lane.remote === undefined || laneOpenHere(lane)) return { path: join(lane.dir, "memory.sqlite") };
-	const path = join(config.dataDir, "read-copies", lane.name, "memory.sqlite");
+export async function readCopyPath(config: HarnessConfig, agent: AgentConfig, options: ReadOptions = {}): Promise<CopyPath> {
+	if (agent.remote === undefined || agentOpenHere(agent)) return { path: join(agent.dir, "memory.sqlite") };
+	const path = join(config.dataDir, "read-copies", agent.name, "memory.sqlite");
 	const existing = refreshing.get(path);
 	if (existing !== undefined) return existing;
-	const pending = refresh(config, lane, path, options);
+	const pending = refresh(config, agent, path, options);
 	refreshing.set(path, pending);
 	try { return await pending; }
 	finally { refreshing.delete(path); }

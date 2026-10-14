@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spoolKey } from "../../src/claude/spool.ts";
-import { CURSOR_KEY } from "../../src/lane/projector.ts";
+import { CURSOR_KEY } from "../../src/agent/projector.ts";
 import { MemoryStore, type StoreRows } from "../../src/memory/store.ts";
 import { Part, StoreError, type UsageRow } from "../../src/memory/types.ts";
 import { cursorKey } from "../../src/pi/log.ts";

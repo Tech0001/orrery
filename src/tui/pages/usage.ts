@@ -1,9 +1,9 @@
 /**
- * Page 3, Usage (spec §3.3): tokens per lane per day, agent and summaries, with the share read from cache, and what
+ * Page 3, Usage (spec §3.3): tokens per agent per day, agent and summaries, with the share read from cache, and what
  * summaries on API keys cost at the catalog's price.
  */
 
-import { dollarText, type ModelPrice, type SummaryCost, totalCost, usageCost } from "../../lane/overview.ts";
+import { dollarText, type ModelPrice, type SummaryCost, totalCost, usageCost } from "../../agent/overview.ts";
 import type { UsageRow } from "../../memory/index.ts";
 import type { App, Page } from "../app.ts";
 import { type Column, compactCount, fit, renderTable } from "../table.ts";
@@ -11,7 +11,7 @@ import { type Column, compactCount, fit, renderTable } from "../table.ts";
 export const USAGE_SPANS = [1, 7, 14, 30, 90] as const;
 
 const COLUMNS: readonly Column[] = [
-	{ title: "Lane", width: 12 },
+	{ title: "Agent", width: 12 },
 	{ title: "Day", width: 10 },
 	{ title: "Agent in", width: 8, align: "right" },
 	{ title: "cache-read", width: 10, align: "right", drop: 3 },
@@ -25,7 +25,7 @@ const COLUMNS: readonly Column[] = [
 	{ title: "Cost", width: 8, align: "right", drop: 5 },
 ];
 
-/** One lane's day: its token cells and its summaries' rows; `row` adds the Cost cell, made when the prices change. */
+/** One agent's day: its token cells and its summaries' rows; `row` adds the Cost cell, made when the prices change. */
 interface Group {
 	readonly cells: readonly string[];
 	readonly summaries: readonly UsageRow[];
@@ -110,13 +110,13 @@ function compute(app: App): void {
 	s.at = app.deps.now();
 	const days = USAGE_SPANS[s.span];
 	s.groups = [];
-	for (const lane of app.deps.usage(app.config, days)) {
+	for (const agent of app.deps.usage(app.config, days)) {
 		const byDay = new Map<string, UsageRow[]>();
-		for (const r of lane.rows) byDay.set(r.at.slice(0, 10), [...(byDay.get(r.at.slice(0, 10)) ?? []), r]);
+		for (const r of agent.rows) byDay.set(r.at.slice(0, 10), [...(byDay.get(r.at.slice(0, 10)) ?? []), r]);
 		for (const day of [...byDay.keys()].sort().reverse()) {
 			const rows = byDay.get(day) ?? [];
 			const summaries = rows.filter((r) => r.role === "compactor");
-			const cells = [lane.name, day, ...totals(rows.filter((r) => r.role === "agent")), ...totals(summaries)];
+			const cells = [agent.name, day, ...totals(rows.filter((r) => r.role === "agent")), ...totals(summaries)];
 			s.groups.push({ cells, summaries, row: cells, text: "" });
 		}
 	}
@@ -174,7 +174,7 @@ export const usagePage: Page = {
 	id: "usage",
 	title: "Usage",
 	hints: "+ more days · - fewer days",
-	// Reading usage opens every lane's database: on showing the page and on + / -, else at most every 30 s.
+	// Reading usage opens every agent's database: on showing the page and on + / -, else at most every 30 s.
 	show: compute,
 	refresh: (app) => {
 		const s = state(app);

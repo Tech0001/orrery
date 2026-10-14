@@ -1,8 +1,8 @@
 /**
  * orrery install --from DIR (spec 2026-10-13-orrery-releases-design §5): a release folder is copied to
  * <home>/app/.staging-*, its binary checked, renamed to app/<VERSION>, made read-only, and app/current is switched to
- * it in one rename. Older versions go, except the newest three and any a live lane runs, each renamed to a dot folder
- * before it is deleted. Lanes' data is never touched.
+ * it in one rename. Older versions go, except the newest three and any a live agent runs, each renamed to a dot folder
+ * before it is deleted. Agents' data is never touched.
  */
 
 import { spawnSync } from "node:child_process";
@@ -10,12 +10,12 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { defaultConfigPath, loadConfig } from "../lane/config.ts";
-import { orreryHome } from "../lane/home.ts";
-import type { Runner } from "../lane/tools.ts";
+import { defaultConfigPath, loadConfig } from "../agent/config.ts";
+import { orreryHome } from "../agent/home.ts";
+import type { Runner } from "../agent/tools.ts";
 import { ENTRY_TAILS, VERSION_NAME } from "./layout.ts";
 
-/** Versions kept by history alone; current and versions live lanes run are kept besides. */
+/** Versions kept by history alone; current and versions live agents run are kept besides. */
 const KEEP = 3;
 
 /** Runs commands with `env` (its PATH and HOME), never through a shell; npm runs no package scripts. */
@@ -162,11 +162,11 @@ function alive(pid: number): boolean {
 }
 
 /**
- * What one lane's status.json says about the version it runs. Only pid (an integer), open (a boolean, may be absent) and
- * version (a string) are read. "none": no file, or a lane that needs no version (closed, or its process is gone).
- * Otherwise, a live lane's version, or why the file cannot be trusted ("unknown": nothing may then be deleted).
+ * What one agent's status.json says about the version it runs. Only pid (an integer), open (a boolean, may be absent) and
+ * version (a string) are read. "none": no file, or an agent that needs no version (closed, or its process is gone).
+ * Otherwise, a live agent's version, or why the file cannot be trusted ("unknown": nothing may then be deleted).
  */
-function laneRun(dir: string): { version: string } | "none" | { unknown: string } {
+function agentRun(dir: string): { version: string } | "none" | { unknown: string } {
 	let text: string;
 	try {
 		text = readFileSync(join(dir, "status.json"), "utf8");
@@ -189,10 +189,10 @@ function laneRun(dir: string): { version: string } | "none" | { unknown: string 
 }
 
 /**
- * Which lanes run each version, by their status files (open, process alive). `unreadable` says why the answer cannot be
+ * Which agents run each version, by their status files (open, process alive). `unreadable` says why the answer cannot be
  * trusted (config or a status file); then nothing may be deleted.
  */
-export function laneVersions(env: NodeJS.ProcessEnv): { versions: Map<string, string[]>; unreadable?: string } {
+export function agentVersions(env: NodeJS.ProcessEnv): { versions: Map<string, string[]>; unreadable?: string } {
 	const versions = new Map<string, string[]>();
 	const path = defaultConfigPath(env);
 	if (!existsSync(path)) return { versions };
@@ -200,24 +200,24 @@ export function laneVersions(env: NodeJS.ProcessEnv): { versions: Map<string, st
 	try {
 		config = loadConfig(path);
 	} catch {
-		return { versions, unreadable: `${shown(path, env)} could not be read to see which versions lanes run` };
+		return { versions, unreadable: `${shown(path, env)} could not be read to see which versions agents run` };
 	}
 	let unreadable: string | undefined;
-	for (const lane of config.lanes.values()) {
-		const run = laneRun(lane.dir);
+	for (const agent of config.agents.values()) {
+		const run = agentRun(agent.dir);
 		if (run === "none") continue;
 		if ("unknown" in run) {
-			unreadable ??= `lane ${lane.name}'s status.json ${run.unknown}, so Orrery cannot tell which version it runs`;
+			unreadable ??= `agent ${agent.name}'s status.json ${run.unknown}, so Orrery cannot tell which version it runs`;
 			continue;
 		}
-		versions.set(run.version, [...(versions.get(run.version) ?? []), lane.name]);
+		versions.set(run.version, [...(versions.get(run.version) ?? []), agent.name]);
 	}
 	return { versions, ...(unreadable === undefined ? {} : { unreadable }) };
 }
 
-/** Removes the versions no one needs: beyond the newest three in history, not current, its rollback target, the previous current, or run by a live lane. */
+/** Removes the versions no one needs: beyond the newest three in history, not current, its rollback target, the previous current, or run by a live agent. */
 function collect(app: string, env: NodeJS.ProcessEnv, log: (line: string) => void, previous: string | undefined): string[] {
-	const { versions: live, unreadable } = laneVersions(env);
+	const { versions: live, unreadable } = agentVersions(env);
 	if (unreadable !== undefined) {
 		log(`Kept every older version: ${unreadable}.`);
 		return [];
@@ -391,21 +391,21 @@ export function rollback(env: NodeJS.ProcessEnv): { from: string; to: string } {
 	}
 }
 
-/** Every installed version, oldest install first (app/history order), with current marked and the live lanes that run it. */
-export function listVersions(env: NodeJS.ProcessEnv): { name: string; current: boolean; lanes: string[] }[] {
+/** Every installed version, oldest install first (app/history order), with current marked and the live agents that run it. */
+export function listVersions(env: NodeJS.ProcessEnv): { name: string; current: boolean; agents: string[] }[] {
 	const app = appDir(env);
 	const folders = versionFolders(app);
 	if (folders.length === 0) return [];
 	const current = currentName(app);
 	const history = readHistory(app);
-	const lanes = laneVersions(env).versions;
+	const agents = agentVersions(env).versions;
 	return folders
 		.sort((a, b) => history.lastIndexOf(a) - history.lastIndexOf(b) || a.localeCompare(b))
-		.map((name) => ({ name, current: name === current, lanes: lanes.get(name) ?? [] }));
+		.map((name) => ({ name, current: name === current, agents: agents.get(name) ?? [] }));
 }
 
 /** listVersions as lines: `* ` marks current. */
 export function versionLines(versions: ReturnType<typeof listVersions>): string[] {
 	if (versions.length === 0) return ["No version is installed yet."];
-	return versions.map((v) => `${v.current ? "*" : " "} ${v.name}${v.current ? "  (current)" : ""}${v.lanes.length === 0 ? "" : `  run by ${v.lanes.join(", ")}`}`);
+	return versions.map((v) => `${v.current ? "*" : " "} ${v.name}${v.current ? "  (current)" : ""}${v.agents.length === 0 ? "" : `  run by ${v.agents.join(", ")}`}`);
 }

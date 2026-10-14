@@ -69,7 +69,7 @@ export const PI_SUPPLIED: readonly string[] = [
  * to OMP, which has none. OMP's config registry is its own; src/omp/settings.ts loads it inside a try.
  */
 export const OMP_SUPPLIED: readonly string[] = [...BOTH(["pi-agent-core", "pi-tui", "pi-ai/compat", "pi-ai/oauth", "pi-coding-agent"]), "@oh-my-pi/pi-coding-agent/config/registry"];
-/** src/lane/models.ts's import of this repo's own pi-ai, which only OMP takes: pi.js leaves it out (omp.js packs it). */
+/** src/agent/models.ts's import of this repo's own pi-ai, which only OMP takes: pi.js leaves it out (omp.js packs it). */
 const OMP_FALLBACK = "*/node_modules/@earendil-works/pi-ai/dist/compat.js";
 
 /** extensions/<name>.js (+ .map) from one entry point, leaving `external` to the host. */

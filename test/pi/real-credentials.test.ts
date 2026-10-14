@@ -56,7 +56,7 @@ for (const [name, binary] of [["pi", findTool("pi", process.env.ORRERY_TEST_PI)]
 			}
 			const file = join(home, "credentials.json");
 			const fixture = join(home, "fixture.ts");
-			const source = relative(home, fileURLToPath(new URL("../../src/lane/credentials.ts", import.meta.url)));
+			const source = relative(home, fileURLToPath(new URL("../../src/agent/credentials.ts", import.meta.url)));
 			writeFileSync(fixture, `import { FileCredentialStore } from ${JSON.stringify(source)};
 
 const store = new FileCredentialStore(${JSON.stringify(file)});

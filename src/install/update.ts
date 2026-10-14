@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { orreryHome } from "../lane/home.ts";
+import { orreryHome } from "../agent/home.ts";
 
 const DEFAULT_BASE = "https://github.com/Tech0001/orrery/releases";
 const DAY_MS = 24 * 60 * 60 * 1000;

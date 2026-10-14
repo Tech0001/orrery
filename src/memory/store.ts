@@ -1,5 +1,5 @@
 /**
- * The lane's long-term memory in one SQLite file: the append-only message log (`main`), the summary tree
+ * The agent's long-term memory in one SQLite file: the append-only message log (`main`), the summary tree
  * (`tree`), small metadata such as the projector cursor (`meta`), and compactor usage (`usage`).
  * One writer per file, enforced by an exclusive SQLite lock on `<path>.lock` held for the store's lifetime: the kernel
  * releases it when the process dies, so it cannot go stale. Read-only readers may open the database directly.
@@ -200,7 +200,7 @@ export class MemoryStore {
 	}
 
 	/**
-	 * Runs `read` in one deferred read transaction: a reader beside a live writer (another lane's pi) sees one snapshot,
+	 * Runs `read` in one deferred read transaction: a reader beside a live writer (another agent's pi) sees one snapshot,
 	 * never messages from before an append and nodes from after it.
 	 */
 	#snapshot(read: () => void): void {
@@ -499,7 +499,7 @@ export class MemoryStore {
 			for (const row of rows.usage) insertUsage.run(row.id, row.at, row.role, row.model, row.input, row.cacheRead, row.cacheWrite, row.output, row.ok ? 1 : 0);
 			for (const [key, value] of Object.entries(rows.meta)) this.#upsertMeta.run(key, value);
 		});
-		// Avoid spreading large first saves into push(): the argument limit is much smaller than a lane can be.
+		// Avoid spreading large first saves into push(): the argument limit is much smaller than an agent can be.
 		for (const message of messages) this.#root.push(message);
 		for (const [key, node] of added) this.#nodes.set(key, node);
 	}
