@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/lane/config.ts";
@@ -38,7 +38,7 @@ describe("launchPlan and runTool", () => {
 		expect(plan.blocked).toBeUndefined();
 		expect(plan.steps).toEqual([{ text: "Codex has no Orrery memory yet: this session won't be recorded.", confirm: false }]);
 		const exit = await runTool(plan, { env });
-		expect(readFileSync(out, "utf8").trim()).toBe(ws);
+		expect(readFileSync(out, "utf8").trim()).toBe(realpathSync(ws)); // the shell reports the physical path (macOS tmp is /private/var behind /var)
 		expect(exit).toEqual({ code: 3, signal: null });
 		expect(exitText("Codex", exit)).toBe("Codex exited with code 3.");
 		expect(exitText("Codex", { code: 0, signal: null })).toBeUndefined();

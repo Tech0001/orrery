@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,5 +30,5 @@ it("reports the folder the module loaded from, though the link it was loaded thr
 		});`;
 	const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", "--preserve-symlinks", "-e", script, scratch], { encoding: "utf8", env: { PATH: process.env.PATH, HOME: scratch } });
 	expect(r.status, r.stderr).toBe(0);
-	expect(JSON.parse(r.stdout)).toEqual({ root: join(scratch, "1.0.0"), version: "1.0.0" });
+	expect(JSON.parse(r.stdout)).toEqual({ root: join(realpathSync(scratch), "1.0.0"), version: "1.0.0" });
 });

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -24,7 +24,7 @@ describe("orrery lane", () => {
 		const config = join(dir, "config.toml");
 		const add = orrery(["lane", "add", "Gamma", "--folder", "ws", "--tool", "claude-code", "--summary", "openai/gpt-6.1-sol"], { ORRERY_CONFIG: config }, dir);
 		expect(add.stderr).toBe("");
-		expect(add.stdout).toBe(`Added lane Gamma: ${join(dir, "ws")}, Claude Code, summaries openai/gpt-6.1-sol (low).\n`);
+		expect(add.stdout).toBe(`Added lane Gamma: ${join(realpathSync(dir), "ws")}, Claude Code, summaries openai/gpt-6.1-sol (low).\n`);
 		const set = orrery(["lane", "set", "Gamma", "--view-kb", "96"], { ORRERY_CONFIG: config });
 		expect(set.stdout).toBe("Set lanes.Gamma.view_bytes = 96000. It applies when Gamma next opens.\n");
 		expect(readFileSync(config, "utf8")).toContain("view_bytes = 96000");

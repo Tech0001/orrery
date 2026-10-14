@@ -26,6 +26,12 @@ function toolBin(tools: string[], uname = { s: "Linux", m: "x86_64" }): string {
 	return bin;
 }
 
+// Whichever checksum tools this machine has: sha256sum on Linux, shasum on macOS.
+const SUMS = ["sha256sum", "shasum"];
+
+// toolBin fakes uname as Linux x86_64, so these releases are the Linux x64 ones on any host.
+const linuxRelease = (version: string, script?: string, held?: string) => release(version, script, held, "linux-x64");
+
 const BASE_TOOLS = ["curl", "tar", "gzip", "awk", "mktemp", "rm", "mkdir", "grep", "ldd", "sh", "cat"];
 
 /** Async: the fake release server lives in this process and must keep answering while the script runs. */
@@ -43,8 +49,8 @@ function runInstall(env: Record<string, string>, bin: string, args: string[] = [
 
 describe("install.sh", () => {
 	it("installs the latest release and removes its temporary folder", async () => {
-		const { base, hits } = await releasesServer("0.6.1", release("0.6.1", RECORD));
-		const r = await runInstall({ ORRERY_RELEASES_URL: base }, toolBin([...BASE_TOOLS, "sha256sum", "shasum"]));
+		const { base, hits } = await releasesServer("0.6.1", linuxRelease("0.6.1", RECORD));
+		const r = await runInstall({ ORRERY_RELEASES_URL: base }, toolBin([...BASE_TOOLS, ...SUMS]));
 		expect(r.out).toContain("Downloading orrery-linux-x64.tar.gz");
 		expect(r.status).toBe(0);
 		expect(hits).toContain("/releases/latest/download/orrery-linux-x64.tar.gz");
@@ -53,8 +59,8 @@ describe("install.sh", () => {
 	});
 
 	it("passes its arguments to orrery install, and none when it has none", async () => {
-		const { base } = await releasesServer("0.6.1", release("0.6.1", RECORD));
-		const bin = toolBin([...BASE_TOOLS, "sha256sum", "shasum"]);
+		const { base } = await releasesServer("0.6.1", linuxRelease("0.6.1", RECORD));
+		const bin = toolBin([...BASE_TOOLS, ...SUMS]);
 		const folder = /^install --from (\S+)( --yes)?$/;
 		const plain = await runInstall({ ORRERY_RELEASES_URL: base }, bin);
 		expect(plain.status).toBe(0);
@@ -74,32 +80,32 @@ describe("install.sh", () => {
 	});
 
 	it("installs ORRERY_VERSION from its own download folder", async () => {
-		const { base, hits } = await releasesServer("0.6.1", { ...release("0.6.1", RECORD), ...release("0.6.0", RECORD) });
-		const r = await runInstall({ ORRERY_RELEASES_URL: base, ORRERY_VERSION: "0.6.0" }, toolBin([...BASE_TOOLS, "sha256sum"]));
+		const { base, hits } = await releasesServer("0.6.1", { ...linuxRelease("0.6.1", RECORD), ...linuxRelease("0.6.0", RECORD) });
+		const r = await runInstall({ ORRERY_RELEASES_URL: base, ORRERY_VERSION: "0.6.0" }, toolBin([...BASE_TOOLS, ...SUMS]));
 		expect(r.status).toBe(0);
 		expect(hits).toEqual(["/releases/download/v0.6.0/orrery-linux-x64.tar.gz", "/releases/download/v0.6.0/SHA256SUMS"]);
 		expect(readFileSync(join(r.home, "installed"), "utf8")).toContain("orrery-0.6.0-linux-x64");
 	});
 
 	it("refuses a version before 0.6.0 without any request", async () => {
-		const { base, hits } = await releasesServer("0.6.1", release("0.6.1", RECORD));
-		const r = await runInstall({ ORRERY_RELEASES_URL: base, ORRERY_VERSION: "0.5.0" }, toolBin([...BASE_TOOLS, "sha256sum"]));
+		const { base, hits } = await releasesServer("0.6.1", linuxRelease("0.6.1", RECORD));
+		const r = await runInstall({ ORRERY_RELEASES_URL: base, ORRERY_VERSION: "0.5.0" }, toolBin([...BASE_TOOLS, ...SUMS]));
 		expect(r.status).toBe(1);
 		expect(r.out).toContain("no release before 0.6.0 exists");
 		expect(hits).toEqual([]);
 	});
 
 	it("refuses an ORRERY_VERSION that is not a version", async () => {
-		const r = await runInstall({ ORRERY_VERSION: "../../x" }, toolBin([...BASE_TOOLS, "sha256sum"]));
+		const r = await runInstall({ ORRERY_VERSION: "../../x" }, toolBin([...BASE_TOOLS, ...SUMS]));
 		expect(r.status).toBe(1);
 		expect(r.out).toContain("must look like");
 	});
 
 	it("stops on a wrong SHA256SUMS line and never runs bin/orrery", async () => {
-		const files = release("0.6.1", RECORD);
+		const files = linuxRelease("0.6.1", RECORD);
 		files["0.6.1/SHA256SUMS"] = Buffer.from(`${"0".repeat(64)}  orrery-linux-x64.tar.gz\n`);
 		const { base } = await releasesServer("0.6.1", files);
-		const r = await runInstall({ ORRERY_RELEASES_URL: base }, toolBin([...BASE_TOOLS, "sha256sum"]));
+		const r = await runInstall({ ORRERY_RELEASES_URL: base }, toolBin([...BASE_TOOLS, ...SUMS]));
 		expect(r.status).toBe(1);
 		expect(r.out).toContain("does not match SHA256SUMS");
 		expect(existsSync(join(r.home, "installed"))).toBe(false);
@@ -107,18 +113,18 @@ describe("install.sh", () => {
 	});
 
 	it("exits with the exit code of bin/orrery and removes its temporary folder", async () => {
-		const { base } = await releasesServer("0.6.1", release("0.6.1", "#!/bin/sh\nexit 7\n"));
-		const r = await runInstall({ ORRERY_RELEASES_URL: base }, toolBin([...BASE_TOOLS, "sha256sum"]));
+		const { base } = await releasesServer("0.6.1", linuxRelease("0.6.1", "#!/bin/sh\nexit 7\n"));
+		const r = await runInstall({ ORRERY_RELEASES_URL: base }, toolBin([...BASE_TOOLS, ...SUMS]));
 		expect(r.status).toBe(7);
 		expect(readdirSync(r.tmp)).toEqual([]);
 	});
 
 	it("reads SHA256SUMS with CRLF line endings and the *name binary-mode form", async () => {
 		for (const edit of [(line: string) => line.replace("\n", "\r\n"), (line: string) => line.replace("  orrery-", " *orrery-")]) {
-			const files = release("0.6.1", RECORD);
+			const files = linuxRelease("0.6.1", RECORD);
 			files["0.6.1/SHA256SUMS"] = Buffer.from(edit(files["0.6.1/SHA256SUMS"].toString()));
 			const { base } = await releasesServer("0.6.1", files);
-			const r = await runInstall({ ORRERY_RELEASES_URL: base }, toolBin([...BASE_TOOLS, "sha256sum"]));
+			const r = await runInstall({ ORRERY_RELEASES_URL: base }, toolBin([...BASE_TOOLS, ...SUMS]));
 			expect(r.out).not.toContain("does not match");
 			expect(r.status).toBe(0);
 		}
@@ -131,17 +137,17 @@ describe("install.sh", () => {
 	});
 
 	it("needs sha256sum or shasum", async () => {
-		const { base } = await releasesServer("0.6.1", release("0.6.1", RECORD));
+		const { base } = await releasesServer("0.6.1", linuxRelease("0.6.1", RECORD));
 		const r = await runInstall({ ORRERY_RELEASES_URL: base }, toolBin(BASE_TOOLS));
 		expect(r.status).toBe(1);
 		expect(r.out).toContain("sha256sum or shasum is needed");
 	});
 
 	it("names WSL for Windows and x64 and arm64 for other processors", async () => {
-		const win = await runInstall({}, toolBin([...BASE_TOOLS, "sha256sum"], { s: "MINGW64_NT-10.0", m: "x86_64" }));
+		const win = await runInstall({}, toolBin([...BASE_TOOLS, ...SUMS], { s: "MINGW64_NT-10.0", m: "x86_64" }));
 		expect(win.status).toBe(1);
 		expect(win.out).toContain("WSL");
-		const odd = await runInstall({}, toolBin([...BASE_TOOLS, "sha256sum"], { s: "Linux", m: "riscv64" }));
+		const odd = await runInstall({}, toolBin([...BASE_TOOLS, ...SUMS], { s: "Linux", m: "riscv64" }));
 		expect(odd.status).toBe(1);
 		expect(odd.out).toMatch(/x64 and arm64/);
 	});

@@ -25,7 +25,8 @@ describe("readLines", () => {
 
 	it("closes the file when the caller stops early", () => {
 		const path = file("first\nsecond\n");
-		const openFds = () => readdirSync("/proc/self/fd").length;
+		// /dev/fd lists this process's open files on both Linux and macOS (/proc exists only on Linux).
+		const openFds = () => readdirSync("/dev/fd").length;
 		const before = openFds();
 		for (const line of readLines(path)) {
 			expect(line).toBe("first");
