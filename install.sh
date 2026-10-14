@@ -1,9 +1,10 @@
 #!/bin/sh
 # Installs Orrery from a GitHub release (https://github.com/Tech0001/orrery):
 #   curl -fsSL https://github.com/Tech0001/orrery/releases/latest/download/install.sh | sh
-# Arguments (sh -s -- --yes) go on to `orrery install --from`. ORRERY_VERSION=0.6.1 installs that release instead of the latest. The script downloads this machine's archive and
-# SHA256SUMS, checks the archive against SHA256SUMS, unpacks it in a temporary folder, and runs its
-# `orrery install --from`, which installs it into ~/.orrery and asks before connecting pi, OMP and Claude Code.
+# Arguments (sh -s -- --yes) go on to `orrery install --from`. ORRERY_VERSION=0.6.1 installs that release instead of
+# the latest. The script downloads this machine's archive and SHA256SUMS, checks the archive against SHA256SUMS, unpacks
+# it in a temporary folder, and runs its `orrery install --from`, which installs it into ~/.orrery and asks before
+# connecting pi, OMP and Claude Code.
 set -eu
 
 fail() {
@@ -11,9 +12,14 @@ fail() {
 	exit 1
 }
 
+# Downloads $1 to $2 by the protocols main allows ($proto, and $redirects for redirects).
+download() {
+	curl -fsSL --proto "$proto" --proto-redir "$redirects" -o "$2" "$1" || fail "could not download $1"
+}
+
 # Prints the one release folder among its arguments (a glob's matches), so main's own "$@" stays untouched.
 one_release() {
-	[ "$#" -eq 1 ] && [ -x "$1/bin/orrery" ] || return 1
+	[ "$#" -eq 1 ] && [ -f "$1/bin/orrery" ] || return 1
 	printf '%s\n' "$1"
 }
 
@@ -72,9 +78,13 @@ main() {
 	else
 		base="$releases/latest/download"
 	fi
-	# HTTPS only, unless ORRERY_RELEASES_URL points somewhere else on purpose (a mirror, or a test).
+	# HTTPS only, redirects included, unless ORRERY_RELEASES_URL points somewhere else on purpose (a mirror, or a test).
 	proto='=https'
-	[ -n "${ORRERY_RELEASES_URL:-}" ] && proto='=https,http,file'
+	redirects='=https'
+	if [ -n "${ORRERY_RELEASES_URL:-}" ]; then
+		proto='=https,http,file'
+		redirects='=https,http'
+	fi
 
 	asset="orrery-$os-$arch.tar.gz"
 	tmp="$(mktemp -d "${TMPDIR:-/tmp}/orrery-install.XXXXXX")"
@@ -84,8 +94,8 @@ main() {
 	trap 'exit 129' HUP
 
 	printf 'Downloading %s...\n' "$asset"
-	curl -fsSL --proto "$proto" -o "$tmp/$asset" "$base/$asset" || fail "could not download $base/$asset"
-	curl -fsSL --proto "$proto" -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || fail "could not download $base/SHA256SUMS"
+	download "$base/$asset" "$tmp/$asset"
+	download "$base/SHA256SUMS" "$tmp/SHA256SUMS"
 
 	expected="$(awk -v f="$asset" '{ sub(/\r$/, "") } $2 == f || $2 == "*" f { print $1 }' "$tmp/SHA256SUMS")"
 	[ -n "$expected" ] || fail "SHA256SUMS has no line for $asset"
@@ -95,7 +105,14 @@ main() {
 	mkdir "$tmp/unpacked"
 	tar -xzf "$tmp/$asset" -C "$tmp/unpacked"
 	folder="$(one_release "$tmp"/unpacked/orrery-*)" || fail "$asset does not hold one Orrery release"
-	"$folder/bin/orrery" install --from "$folder" "$@"
+	status=0
+	"$folder/bin/orrery" install --from "$folder" "$@" || status=$?
+	# 126: the program is there but cannot be run, which a temporary folder mounted noexec does.
+	if [ "$status" -eq 126 ]; then
+		printf 'orrery install: could not run the downloaded Orrery: %s may be mounted noexec; %s\n' "${TMPDIR:-/tmp}" \
+			"set TMPDIR to a folder that allows running programs and try again" >&2
+	fi
+	return "$status"
 }
 
 main "$@"

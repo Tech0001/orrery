@@ -119,6 +119,33 @@ describe("install.sh", () => {
 		expect(readdirSync(r.tmp)).toEqual([]);
 	});
 
+	it("says TMPDIR may be mounted noexec when the downloaded bin/orrery cannot be run", async () => {
+		// A program that cannot be run gives 126, as a noexec temp folder does.
+		const { base } = await releasesServer("0.6.1", release("0.6.1", RECORD, undefined, "linux-x64", 0o644));
+		const r = await runInstall({ ORRERY_RELEASES_URL: base }, toolBin([...BASE_TOOLS, ...SUMS]));
+		expect(r.status).toBe(126);
+		expect(r.out).toContain(`orrery install: could not run the downloaded Orrery: ${r.tmp} may be mounted noexec; set TMPDIR to a folder that allows running programs and try again`);
+		expect(existsSync(join(r.home, "installed"))).toBe(false);
+		expect(readdirSync(r.tmp)).toEqual([]);
+	});
+
+	it("allows only https, redirects included, unless ORRERY_RELEASES_URL names another server", async () => {
+		const bin = toolBin([...BASE_TOOLS.filter((t) => t !== "curl"), ...SUMS]);
+		// A curl that records its arguments and fails, so nothing is fetched.
+		writeFileSync(join(bin, "curl"), '#!/bin/sh\nprintf \'%s\\n\' "$@" >> "$HOME/curl-args"\nexit 22\n', { mode: 0o755 });
+		const pairs = (home: string) => {
+			const args = readFileSync(join(home, "curl-args"), "utf8").split("\n");
+			return ["--proto", "--proto-redir"].map((flag) => `${flag} ${args[args.indexOf(flag) + 1]}`);
+		};
+		const github = await runInstall({}, bin);
+		expect(github.status).toBe(1);
+		expect(github.out).toContain("could not download https://github.com/");
+		expect(pairs(github.home)).toEqual(["--proto =https", "--proto-redir =https"]);
+		const mirror = await runInstall({ ORRERY_RELEASES_URL: "http://127.0.0.1:1/releases" }, bin);
+		expect(mirror.status).toBe(1);
+		expect(pairs(mirror.home)).toEqual(["--proto =https,http,file", "--proto-redir =https,http"]);
+	});
+
 	it("reads SHA256SUMS with CRLF line endings and the *name binary-mode form", async () => {
 		for (const edit of [(line: string) => line.replace("\n", "\r\n"), (line: string) => line.replace("  orrery-", " *orrery-")]) {
 			const files = linuxRelease("0.6.1", RECORD);
