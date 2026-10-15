@@ -15,6 +15,9 @@ afterEach(() => {
 	for (const d of dirs.splice(0)) removeVersion(d); // version folders are read-only
 });
 
+/** The plugin version this checkout ships, which the fake claude lists as installed. */
+const PLUGIN_VERSION = (JSON.parse(readFileSync(new URL("../../claude-plugin/.claude-plugin/plugin.json", import.meta.url), "utf8")) as { version: string }).version;
+
 /**
  * Fakes on a scratch PATH, each logging its arguments: pi and OMP answer --version; claude keeps a plugin list in a
  * file beside it (marketplace add records the folder, install lists the plugin reading from it, uninstall forgets it).
@@ -29,7 +32,7 @@ function fakeTools(bin: string, log: string): void {
 		claude: [
 			'case "$1 $2 $3" in',
 			'"--version  ") echo "2.1.294 (Claude Code)" ;;',
-			`"plugin list --json") if [ -f ${here}/plugin ]; then printf '[{"id":"orrery@orrery","version":"0.6.0","enabled":true,"readFromFolder":"%s/claude-plugin"}]' "$(cat ${here}/plugin)"; else printf '[]'; fi ;;`,
+			`"plugin list --json") if [ -f ${here}/plugin ]; then printf '[{"id":"orrery@orrery","version":"${PLUGIN_VERSION}","enabled":true,"readFromFolder":"%s/claude-plugin"}]' "$(cat ${here}/plugin)"; else printf '[]'; fi ;;`,
 			`"plugin marketplace add") printf '%s' "$4" > ${here}/marketplace ;;`,
 			`"plugin install orrery@orrery") cat ${here}/marketplace > ${here}/plugin ;;`,
 			`"plugin uninstall orrery@orrery") rm -f ${here}/plugin ;;`,

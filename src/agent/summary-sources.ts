@@ -164,6 +164,7 @@ export function listModels(sources: SummarySources, provider: string, filter = "
 /** Environment variables pi-ai reads Anthropic bearer tokens from (checkAuth's `source`): Pro/Max-style, not API keys. */
 const PRO_MAX_ENV = new Set(["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"]);
 
+/** A failure's reason is a clause without its closing period: every caller ends the sentence ("Not switched: <reason>. …"). */
 export type TestResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
 /** One small call with `choice` before a switch (spec §4.4). Login checks come first, so they cost no request. */
@@ -191,6 +192,7 @@ export async function testChoice(sources: SummarySources, choice: ModelChoice, t
 		return reply.text.trim() ? { ok: true } : { ok: false, reason: `${name} answered with nothing` };
 	} catch (error) {
 		if (signal.aborted) return { ok: false, reason: `${name} did not answer within ${timeoutMs / 1000} s` };
-		return { ok: false, reason: explainFailure(choice.provider, error instanceof Error ? error.message : String(error)) };
+		// A provider's own message may end its sentence ("Connection error."); an ellipsis stays.
+		return { ok: false, reason: explainFailure(choice.provider, error instanceof Error ? error.message : String(error)).replace(/(?<!\.)\.$/, "") };
 	}
 }

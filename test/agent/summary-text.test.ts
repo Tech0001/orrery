@@ -75,12 +75,12 @@ describe("parseCompactorArgs", () => {
 });
 
 describe("runCompactorText", () => {
-	function fixture(replies: number) {
+	function fixture(replies: number, responses = Array.from({ length: replies }, () => fauxAssistantMessage("OK"))) {
 		const dir = tempDir("orrery-text-");
 		dirs.push(dir);
 		const config = parseConfig(toml(dir), dir);
 		const faux = fauxProvider({ provider: "faux-test" });
-		faux.setResponses(Array.from({ length: replies }, () => fauxAssistantMessage("OK")));
+		faux.setResponses(responses);
 		const base = summarySources(config, new FileCredentialStore(join(dir, "c.json")));
 		(base.models as unknown as { setProvider(p: unknown): void }).setProvider(faux.provider);
 		let current: ModelChoice = { provider: "openai", modelId: "gpt-6.1-sol", thinking: "low" };
@@ -122,6 +122,18 @@ describe("runCompactorText", () => {
 		const bad = fixture(0);
 		await expect(runCompactorText(bad.sources, ["faux-test/faux-1"], "/compactor", bad.target)).rejects.toThrow(/^Not switched: .+\. Still on openai\/gpt-6\.1-sol\.$/);
 		expect(bad.applied).toEqual([]);
+	});
+
+	it("ends a refused switch's reason with one period, whether or not the provider's error has its own", async () => {
+		for (const [error, reason] of [
+			["Connection error.", "Connection error"],
+			["Stream ended early", "Stream ended early"],
+		]) {
+			const bad = fixture(0, [fauxAssistantMessage("", { stopReason: "error", errorMessage: error })]);
+			const refused = await runCompactorText(bad.sources, ["faux-test/faux-1"], "/compactor", bad.target).catch((e: unknown) => e);
+			expect((refused as Error).message).toBe(`Not switched: ${reason}. Still on openai/gpt-6.1-sol.`);
+			expect(bad.applied).toEqual([]);
+		}
 	});
 
 	it("tests the config's model before a reset", async () => {

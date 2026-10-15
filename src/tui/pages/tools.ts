@@ -111,7 +111,8 @@ export const toolsPage: Page = {
 		if (data.toLowerCase() !== "i") return false;
 		const tool = state(app).checks[app.sel()];
 		if (tool === undefined) {
-			app.say("Orrery itself is updated with git in its folder.");
+			// A checkout (src/agent/running.ts runningVersion) installs its own commits, as CONTRIBUTING.md says.
+			app.say(app.deps.about().running === "checkout" ? "This Orrery runs from a checkout: commit a change, then npm run install-local." : "Orrery updates with orrery update.");
 			return true;
 		}
 		if (tool.wiring === "installed") {

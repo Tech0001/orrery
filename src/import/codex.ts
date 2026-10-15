@@ -215,6 +215,6 @@ export function extractCodex(files: readonly string[]): Extracted {
 				: `Warning: ${messages} messages replayed from parent ${parent} in Codex session ${session} were skipped; add its rollout with --codex-file (look in ~/.codex/sessions or ~/.codex/archived_sessions) to import them with their real dates.`,
 		);
 	}
-	if (subagents > 0) omitted.push(`Skipped ${subagents} Codex subagent sessions (their prompts come from another agent, not the Director).`);
+	if (subagents > 0) omitted.push(`Skipped ${subagents} Codex subagent sessions (their prompts come from another agent, not the user).`);
 	return { turns, stats, omitted };
 }
