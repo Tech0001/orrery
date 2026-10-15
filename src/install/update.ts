@@ -1,5 +1,6 @@
 /**
- * orrery update and the TUI's daily notice (spec 2026-10-13-orrery-releases-design §6). Releases come from
+ * orrery update and the daily update check (spec 2026-10-13-orrery-releases-design §6, 2026-10-15-update-notices): the
+ * TUI and the pi, OMP and Claude Code sessions share one cached answer, asked for at most once a day. Releases come from
  * ORRERY_RELEASES_URL (default GitHub's): <base>/latest redirects to <base>/tag/v<version>, and assets are at
  * <base>/download/v<version>/<asset>. A download from an https base follows only https redirects, and is checked
  * against SHA256SUMS before anything is unpacked.
@@ -7,13 +8,15 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { orreryHome } from "../agent/home.ts";
 
 const DEFAULT_BASE = "https://github.com/Tech0001/orrery/releases";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RELEASE = /^[0-9]+\.[0-9]+\.[0-9]+$/;
+/** A release or a local build of one (0.6.0, 0.6.0-<commit>); not "checkout" or "unknown". */
+const VERSION_START = /^[0-9]+\.[0-9]+\.[0-9]+/;
 
 export function releasesBase(env: NodeJS.ProcessEnv): string {
 	return (env.ORRERY_RELEASES_URL || DEFAULT_BASE).replace(/\/+$/, "");
@@ -32,6 +35,16 @@ export function newer(a: string, b: string): boolean {
 	const [x, y] = [parts(a), parts(b)];
 	for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
 	return false;
+}
+
+/**
+ * Whether something running `running` must restart to run the installed `installed`: another build than it, and not a
+ * newer release (0.6.0-aaa under an installed 0.6.0-bbb must; one left newer by a rollback need not). A checkout, an
+ * unknown version, or nothing installed never must.
+ */
+export function needsRestart(running: string | undefined, installed: string | undefined): boolean {
+	if (running === undefined || installed === undefined || !VERSION_START.test(running) || !VERSION_START.test(installed)) return false;
+	return running !== installed && !newer(running, installed);
 }
 
 async function get(url: string, timeoutMs: number, redirect: "follow" | "manual"): Promise<Response> {
@@ -187,32 +200,102 @@ interface Cache {
 	latest?: string;
 }
 
-/** The TUI notice: at most one check a day (5 s, silent on failure), cached in <home>/update-check.json. */
-export async function updateCheck(env: NodeJS.ProcessEnv, now: number, options: { enabled: boolean; running: string }): Promise<string | undefined> {
-	if (!options.enabled) return undefined;
-	const file = join(orreryHome(env), "update-check.json");
-	let cache: Cache | undefined;
+const cacheFile = (env: NodeJS.ProcessEnv) => join(orreryHome(env), "update-check.json");
+
+function readCache(env: NodeJS.ProcessEnv): Cache | undefined {
 	try {
-		cache = JSON.parse(readFileSync(file, "utf8")) as Cache;
+		const cache = JSON.parse(readFileSync(cacheFile(env), "utf8")) as Partial<Cache> | null;
+		if (typeof cache !== "object" || cache === null || typeof cache.checkedAt !== "number") return undefined;
+		return typeof cache.latest === "string" && RELEASE.test(cache.latest) ? { checkedAt: cache.checkedAt, latest: cache.latest } : { checkedAt: cache.checkedAt };
 	} catch {
-		// first check
+		return undefined;
 	}
-	if (cache === undefined || typeof cache.checkedAt !== "number" || now - cache.checkedAt >= DAY_MS || now < cache.checkedAt) {
-		let latest: string | undefined;
+}
+
+const stale = (cache: Cache | undefined, now: number) => cache === undefined || now - cache.checkedAt >= DAY_MS || now < cache.checkedAt;
+
+/**
+ * The cached answer, read at once with no request: the latest release it names, and whether it is missing or a day old
+ * (refreshUpdateCache asks again then). A session reads this; it never waits on the network.
+ */
+export function cachedUpdate(env: NodeJS.ProcessEnv, now: number): { latest?: string; stale: boolean } {
+	const cache = readCache(env);
+	return { ...(cache?.latest === undefined ? {} : { latest: cache.latest }), stale: stale(cache, now) };
+}
+
+function writeCache(env: NodeJS.ProcessEnv, cache: Cache): void {
+	const file = cacheFile(env);
+	const temp = `${file}.tmp-${process.pid}`;
+	writeFileSync(temp, JSON.stringify(cache), { mode: 0o600 });
+	renameSync(temp, file);
+}
+
+/** A lock older than this was left by a process that died while asking (a request takes at most 5 s). */
+const LOCK_STALE_MS = 60_000;
+
+/** Takes <home>/update-check.json.lock, so one process asks while the others go on with the cache; false when another holds it. */
+function takeLock(lock: string, now: number): boolean {
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			writeFileSync(lock, String(process.pid), { flag: "wx", mode: 0o600 });
+			return true;
+		} catch (error) {
+			if ((error as { code?: unknown }).code !== "EEXIST") return false;
+			try {
+				if (now - statSync(lock).mtimeMs < LOCK_STALE_MS) return false;
+				rmSync(lock, { force: true });
+			} catch {
+				// gone meanwhile: try again
+			}
+		}
+	}
+	return false;
+}
+
+/**
+ * Asks for the latest release (5 s at most) when the cache is missing or a day old, and caches the answer; at most one
+ * request a day, shared by every process through <home>/update-check.json. A failed request keeps the last answer and is
+ * not tried again that day. Never throws; the caller decides whether checks are on ([updates] check).
+ */
+export async function refreshUpdateCache(env: NodeJS.ProcessEnv, now: number): Promise<void> {
+	let lock: string;
+	try {
+		if (!stale(readCache(env), now)) return;
+		mkdirSync(orreryHome(env), { recursive: true, mode: 0o700 });
+		lock = `${cacheFile(env)}.lock`;
+		if (!takeLock(lock, now)) return;
+	} catch {
+		// a home that cannot be written: check again next time
+		return;
+	}
+	try {
+		// Another process may have asked while this one took the lock.
+		const before = readCache(env);
+		if (!stale(before, now)) return;
+		let latest = before?.latest;
 		try {
 			latest = await latestVersion(env, { timeoutMs: 5_000 });
 		} catch {
-			// offline or GitHub unreachable: no notice, and no second try today
+			// offline or GitHub unreachable: the last answer stands, and no second try today
 		}
-		cache = { checkedAt: now, ...(latest === undefined ? {} : { latest }) };
-		try {
-			mkdirSync(orreryHome(env), { recursive: true, mode: 0o700 });
-			const temp = `${file}.tmp-${process.pid}`;
-			writeFileSync(temp, JSON.stringify(cache), { mode: 0o600 });
-			renameSync(temp, file);
-		} catch {
-			// a home that cannot be written: check again next time
-		}
+		writeCache(env, { checkedAt: now, ...(latest === undefined ? {} : { latest }) });
+	} catch {
+		// a home that cannot be written: check again next time
+	} finally {
+		rmSync(lock, { force: true });
 	}
-	return typeof cache.latest === "string" && RELEASE.test(cache.latest) && newer(cache.latest, options.running) ? `Orrery ${cache.latest} is available: orrery update` : undefined;
+}
+
+/** The newest release when it is newer than what `orrery update` would replace: the installed version, else `running`. */
+export function availableRelease(env: NodeJS.ProcessEnv, latest: string | undefined, running: string | undefined): string | undefined {
+	const base = installedVersion(env) ?? running;
+	return latest !== undefined && base !== undefined && VERSION_START.test(base) && newer(latest, base) ? latest : undefined;
+}
+
+/** The TUI header's notice ("0.6.1 available · run orrery update"): the daily check, then the cached answer. */
+export async function updateCheck(env: NodeJS.ProcessEnv, now: number, options: { enabled: boolean; running: string }): Promise<string | undefined> {
+	if (!options.enabled) return undefined;
+	await refreshUpdateCache(env, now);
+	const latest = availableRelease(env, cachedUpdate(env, now).latest, options.running);
+	return latest === undefined ? undefined : `${latest} available · run orrery update`;
 }

@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { downloadRelease, latestVersion, newer, platformAsset, updateCheck } from "../../src/install/update.ts";
+import { cachedUpdate, downloadRelease, latestVersion, needsRestart, newer, platformAsset, refreshUpdateCache, updateCheck } from "../../src/install/update.ts";
 import { cliCommand } from "../claude/support.ts";
 import { cleanupFakes, PLATFORM, release, releasesServer, scratch, servers } from "../release/fake-releases.ts";
 
@@ -129,6 +129,81 @@ describe("downloadRelease", () => {
 	});
 });
 
+/** Installs `version` under `home` as app/current points to it: a folder with its VERSION. */
+function installAt(home: string, version: string): void {
+	mkdirSync(join(home, "app", version), { recursive: true });
+	writeFileSync(join(home, "app", version, "VERSION"), `${version}\n`);
+	symlinkSync(version, join(home, "app", "current"));
+}
+
+describe("needsRestart", () => {
+	it("is true when a session runs another build than the installed one, unless it runs a newer release", () => {
+		expect(needsRestart("0.6.0", "0.6.1")).toBe(true);
+		expect(needsRestart("0.6.0-219a227", "0.6.1")).toBe(true);
+		// another local build of the same release, and a local build against its release
+		expect(needsRestart("0.6.0-aaa1111", "0.6.0-bbb2222")).toBe(true);
+		expect(needsRestart("0.6.1-aaa1111", "0.6.1")).toBe(true);
+		expect(needsRestart("0.6.1", "0.6.1")).toBe(false);
+		// left newer by a rollback
+		expect(needsRestart("0.6.2", "0.6.1")).toBe(false);
+		for (const [running, installed] of [["checkout", "0.6.1"], ["unknown", "0.6.1"], [undefined, "0.6.1"], ["0.6.0", undefined]]) expect(needsRestart(running, installed)).toBe(false);
+	});
+});
+
+describe("cachedUpdate and refreshUpdateCache", () => {
+	it("reads the cached answer with no request, and refreshes a missing or day-old one", async () => {
+		const home = scratch();
+		const { base, hits } = await releasesServer("0.6.1", {});
+		const env = { ORRERY_HOME: home, ORRERY_RELEASES_URL: base };
+		const now = Date.parse("2026-10-15T12:00:00Z");
+		expect(cachedUpdate(env, now)).toEqual({ stale: true });
+		expect(hits).toEqual([]);
+		await refreshUpdateCache(env, now);
+		expect(hits).toEqual(["/releases/latest"]);
+		expect(cachedUpdate(env, now + 3600_000)).toEqual({ latest: "0.6.1", stale: false });
+		await refreshUpdateCache(env, now + 3600_000);
+		expect(hits).toHaveLength(1);
+		// a day later it is stale, and still says what it knew
+		expect(cachedUpdate(env, now + 25 * 3600_000)).toEqual({ latest: "0.6.1", stale: true });
+		await refreshUpdateCache(env, now + 25 * 3600_000);
+		expect(hits).toHaveLength(2);
+	});
+
+	it("makes one request when several processes find the cache stale at once", async () => {
+		const home = scratch();
+		const { base, hits } = await releasesServer("0.6.1", {});
+		const env = { ORRERY_HOME: home, ORRERY_RELEASES_URL: base };
+		const now = Date.now();
+		await Promise.all([refreshUpdateCache(env, now), refreshUpdateCache(env, now), refreshUpdateCache(env, now)]);
+		expect(hits).toEqual(["/releases/latest"]);
+		expect(existsSync(join(home, "update-check.json.lock"))).toBe(false);
+	});
+
+	it("takes over a lock left by a process that died while asking", async () => {
+		const home = scratch();
+		const { base, hits } = await releasesServer("0.6.1", {});
+		const env = { ORRERY_HOME: home, ORRERY_RELEASES_URL: base };
+		writeFileSync(join(home, "update-check.json.lock"), "1");
+		const old = new Date(Date.now() - 5 * 60_000);
+		utimesSync(join(home, "update-check.json.lock"), old, old);
+		await refreshUpdateCache(env, Date.now());
+		expect(hits).toEqual(["/releases/latest"]);
+		expect(cachedUpdate(env, Date.now()).latest).toBe("0.6.1");
+	});
+
+	it("keeps the last answer when the server is down, and does not ask again that day", async () => {
+		const home = scratch();
+		const now = Date.parse("2026-10-15T12:00:00Z");
+		writeFileSync(join(home, "update-check.json"), JSON.stringify({ checkedAt: now - 2 * 86_400_000, latest: "0.6.1" }));
+		const { base, server } = await releasesServer("0.6.2", {});
+		server.closeAllConnections();
+		await new Promise<void>((done) => server.close(() => done()));
+		const env = { ORRERY_HOME: home, ORRERY_RELEASES_URL: base };
+		await refreshUpdateCache(env, now);
+		expect(cachedUpdate(env, now + 1000)).toEqual({ latest: "0.6.1", stale: false });
+	});
+});
+
 describe("updateCheck", () => {
 	it("checks once a day, caches, and says nothing when already current", async () => {
 		const home = scratch();
@@ -136,16 +211,27 @@ describe("updateCheck", () => {
 		const env = { ORRERY_HOME: home, ORRERY_RELEASES_URL: base };
 		const now = Date.parse("2026-10-13T12:00:00Z");
 		const on = { enabled: true, running: "0.6.0" };
-		expect(await updateCheck(env, now, on)).toBe("Orrery 0.6.1 is available: orrery update");
+		expect(await updateCheck(env, now, on)).toBe("0.6.1 available · run orrery update");
 		expect(hits).toEqual(["/releases/latest"]);
 		expect(statSync(join(home, "update-check.json")).mode & 0o777).toBe(0o600);
-		expect(await updateCheck(env, now + 3600_000, on)).toBe("Orrery 0.6.1 is available: orrery update");
+		expect(await updateCheck(env, now + 3600_000, on)).toBe("0.6.1 available · run orrery update");
 		expect(hits).toHaveLength(1);
 		expect(await updateCheck(env, now + 3600_000, { enabled: true, running: "0.6.1" })).toBeUndefined();
 		expect(hits).toHaveLength(1);
 		// a day later it asks again
 		await updateCheck(env, now + 25 * 3600_000, on);
 		expect(hits).toHaveLength(2);
+	});
+
+	it("compares the latest release with the installed version, not the running one", async () => {
+		const { base } = await releasesServer("0.6.1", {});
+		const updated = scratch();
+		installAt(updated, "0.6.1");
+		// a TUI left running on 0.6.0 after an update to 0.6.1 has nothing to install
+		expect(await updateCheck({ ORRERY_HOME: updated, ORRERY_RELEASES_URL: base }, Date.now(), { enabled: true, running: "0.6.0" })).toBeUndefined();
+		const behind = scratch();
+		installAt(behind, "0.6.0-219a227");
+		expect(await updateCheck({ ORRERY_HOME: behind, ORRERY_RELEASES_URL: base }, Date.now(), { enabled: true, running: "0.6.1" })).toBe("0.6.1 available · run orrery update");
 	});
 
 	it("makes no request when turned off", async () => {

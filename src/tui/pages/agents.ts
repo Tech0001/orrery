@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { AgentTool } from "../../agent/config.ts";
 import { ago, type AgentRow, summaryText, TOOL_LABELS } from "../../agent/overview.ts";
-import { newer } from "../../install/update.ts";
+import { needsRestart } from "../../install/update.ts";
 import { safeText } from "../../agent/source-labels.ts";
 import { localIso } from "../../memory/index.ts";
 import type { UsageRow } from "../../memory/types.ts";
@@ -117,17 +117,14 @@ export function selectedAgent(app: App): AgentRow | undefined {
 	return visibleAgents(app)[app.sel()];
 }
 
-const VERSION_START = /^[0-9]+\.[0-9]+\.[0-9]+/;
-
 /**
  * "on 0.6.0, restart for 0.6.1" when the agent's open tool runs another Orrery than the installed current one and not a
- * newer release (0.6.0-aaa under a current 0.6.0-bbb is marked; an agent left newer by a rollback is not). A checkout or an
- * unknown version is never marked.
+ * newer release (needsRestart: 0.6.0-aaa under a current 0.6.0-bbb is marked; an agent left newer by a rollback is not).
+ * A checkout or an unknown version is never marked.
  */
 function restartText(row: AgentRow, installed: string | undefined): string {
-	const v = row.runsVersion;
-	if (v === undefined || installed === undefined || !VERSION_START.test(v) || !VERSION_START.test(installed) || v === installed || newer(v, installed)) return "";
-	return `on ${safeText(v)}, restart for ${safeText(installed)}`;
+	if (!needsRestart(row.runsVersion, installed)) return "";
+	return `on ${safeText(row.runsVersion ?? "")}, restart for ${safeText(installed ?? "")}`;
 }
 
 function remoteState(row: AgentRow, installed?: string): string {
@@ -273,7 +270,9 @@ export const agentsPage: Page = {
 		let columns = rows.some((r) => r.launcher === "ori") ? baseColumns.map((c) => c.title === "Tool" ? { ...c, width: 12 } : c.title === "Summaries" ? { ...c, width: c.width - 6 } : c) : [...baseColumns];
 		const installed = app.installed;
 		if (rows.some((r) => r.remote !== undefined || restartText(r, installed) !== "" || instructionsNote(r) !== "" || r.building !== undefined)) {
-			const stateWidth = Math.max(9, Math.min(width < 90 ? 24 : 42, Math.max(...rows.map((r) => stateText(r, installed).length))));
+			// From 90 columns the restart marker always fits whole ("working · on 0.6.0-219a227, restart for 0.6.1"); notes after it may be cut at 42.
+			const restart = Math.max(0, ...rows.map((r) => (restartText(r, installed) === "" ? 0 : remoteState(r, installed).length)));
+			const stateWidth = Math.max(9, Math.min(width < 90 ? 24 : Math.max(42, restart), Math.max(...rows.map((r) => stateText(r, installed).length))));
 			const memoryWidth = Math.max(6, Math.min(12, Math.max(...rows.map((r) => (r.remote ?? "local").length))));
 			columns = columns.map((c) => c.title === "State" ? { ...c, width: stateWidth } : c.title === "Memory" ? { ...c, width: memoryWidth } : c.title === "Summaries" ? { ...c, drop: 4 } : c.title === "Msgs" ? { ...c, drop: 5 } : c);
 		}

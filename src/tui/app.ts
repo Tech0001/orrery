@@ -83,7 +83,7 @@ export interface AppDeps {
 	about(): { readonly version: string; readonly root: string; /** The installed version folder running, or "checkout". */ readonly running?: string };
 	/** The version `app/current` names (what a restarted agent would run), or undefined when none is installed. */
 	installedVersion(): string | undefined;
-	/** The text of the daily update notice ("Orrery 0.6.1 is available: orrery update"), or undefined. Never throws on a network failure. */
+	/** The text of the daily update notice ("0.6.1 available · run orrery update"), or undefined. Never throws on a network failure. */
 	updateNotice(): Promise<string | undefined>;
 	rows(): number;
 	now(): number;
@@ -355,7 +355,7 @@ export class App implements Component {
 		const warning = attentionText(this.agents, width - left - visibleWidth(beside[0]) - 2, true);
 		if (warning !== "") beside[0] = `${beside[0]}  ${theme.red(warning)}`;
 		// The update notice follows only when the whole line still fits; it never cuts the version or the warning.
-		if (this.#update !== undefined && left + visibleWidth(beside[0]) + 2 + visibleWidth(this.#update) <= width) beside[0] = `${beside[0]}  ${theme.dim(this.#update)}`;
+		if (this.#update !== undefined && left + visibleWidth(beside[0]) + 2 + visibleWidth(this.#update) <= width) beside[0] = `${beside[0]}  ${theme.yellow(this.#update)}`;
 		const logo = orreryLogo(theme).map((line, i) => fit(`${" ".repeat(LOGO_PAD)}${line}${" ".repeat(LOGO_GAP)}${beside[i] ?? ""}`, width));
 		return [...logo, fit("", width)];
 	}
