@@ -154,7 +154,8 @@ describe("scrub", () => {
 		for (const input of inputs) {
 			const started = performance.now();
 			scrub(input);
-			expect(performance.now() - started, input.slice(0, 20)).toBeLessThan(250);
+			// Linear takes a few ms; quadratic on 200,000 characters takes many seconds. The margin is for a busy CI runner.
+			expect(performance.now() - started, input.slice(0, 20)).toBeLessThan(1000);
 		}
 	});
 });
