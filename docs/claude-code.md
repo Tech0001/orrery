@@ -37,7 +37,11 @@ in any folder after `orrery claude-setup <Name> --mod`.
 
 The plugin runs `~/.local/bin/orrery`, so it uses the installed version (`~/.orrery/app/current`) and this
 machine's Orrery. After `orrery update`, new hook processes use the new
-version at once, while a running session's own recorder keeps the old one until the session restarts. Without that
+version at once, while a running session's own recorder keeps the old one until the session restarts; the next hook
+tells you once, "Orrery was updated to 0.6.2; restart this session to use it." When a newer release is out, a hook
+says once "Orrery 0.6.2 is available. Run `orrery update`, then restart this session." Hooks never ask the network: the
+recorder makes the daily check in the background (README, Updating and uninstalling), and a later hook shows its
+answer. Both notices are messages to you, not the model. Without that
 launcher the hooks do nothing: they exit quietly and print nothing. Claude Code then lists the `orrery` MCP server as failed to connect.
 
 After a change to `claude-plugin/` itself, bump `version` in `claude-plugin/.claude-plugin/plugin.json` (a fixed
@@ -335,8 +339,9 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
 - `<folder>/.orrery/view.md`, the instructions and memory view (mode 0600; file setup only);
 - `CLAUDE.md` or `CLAUDE.local.md`, with the two import lines (file setup only);
 - `<agent data>/instructions.md`, the agent's instructions;
-- `<agent data>/claude/`: the spool, `holder.json`, `setup.json` (the marker) and `holder.log`, which holds no message
-  text;
+- `<agent data>/claude/`: the spool, `holder.json` (with the recorder's version), `setup.json` (the marker),
+  `holder.log`, which holds no message text, and `update-notices.json`, which update notices each session has heard;
+- `update-check.json` in Orrery's home: the daily update check's answer, shared by the TUI and every session;
 - `<agent data>/claims/`: which process has claimed `ORRERY_AGENT_TOKEN`. A claim is written whole and published with a
   hard link, or with an exclusive create where the filesystem has no hard links;
 - `<data>/claude-processes/`: each Claude Code process's pick, so a session keeps the agent it started with;

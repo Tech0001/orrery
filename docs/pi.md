@@ -79,6 +79,12 @@ The footer shows the agent, the message count, and "summarizing" while summaries
 summarizer gave up or its model is unknown, with the reason. A notice says so once when summaries start failing or
 stop, and once when they work again.
 
+When Orrery is updated under an open session (`orrery update` in another terminal), a warning says once "Orrery was
+updated to 0.6.2; restart this session to use it." When a newer release is out, one says "Orrery 0.6.2 is available.
+Run `orrery update`, then restart this session." The session reads the last daily check when it opens and makes the
+check itself in the background when that one is a day old, so it never waits on the network (README, Updating and
+uninstalling). Neither notice reaches the model. OMP shows the same.
+
 Summaries use Orrery's own logins, in pi and in Claude Code alike (pi's `/login` stays for the agent's model). From a
 shell: `orrery login openai` (Sign in with ChatGPT), or `orrery login --key openai|anthropic|openrouter` for an API key
 (typed hidden; `--from-pi` copies a key pi's `/login` already saved). `orrery logins` lists what is saved, never the
