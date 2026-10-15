@@ -51,6 +51,20 @@ describe("the Tools page", () => {
 		expect(screen(app)).toContain("Nothing Orrery can do for Codex: no memory yet.");
 	});
 
+	it("I on the Orrery row says how Orrery updates: orrery update for a release, commit then npm run install-local from a checkout", async () => {
+		for (const [running, said] of [
+			["0.6.1", "Orrery updates with orrery update."],
+			[undefined, "Orrery updates with orrery update."],
+			["checkout", "This Orrery runs from a checkout: commit a change, then npm run install-local."],
+		] as const) {
+			const app = makeApp(fakeDeps({ tools: () => CHECKS, about: () => ({ version: "0.6.1", root: "/opt/orrery", ...(running === undefined ? {} : { running }) }) }), [toolsPage]);
+			keys(app, "\x1b[B", "\x1b[B", "\x1b[B", "I");
+			await app.idle();
+			expect(app.host.current).toBeUndefined();
+			expect(screen(app)).toContain(said);
+		}
+	});
+
 	it("Enter on the Orrery row shows its version, folder, config file and memory folder in full", async () => {
 		const config = "/very/long/path/to/some/where/deep/in/a/home/folder/.config/orrery/config.toml";
 		const app = makeApp(fakeDeps({ tools: () => CHECKS, configPath: config }), [toolsPage]);
