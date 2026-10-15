@@ -196,6 +196,9 @@ describe("testChoice", () => {
 		expect(await testChoice(sources, { provider: "faux-test", modelId: "faux-1", thinking: "off" })).toEqual({ ok: false, reason: "Connection error" });
 		const plain = fauxSources(() => fauxAssistantMessage("", { stopReason: "error", errorMessage: "Stream ended early" }));
 		expect(await testChoice(plain, { provider: "faux-test", modelId: "faux-1", thinking: "off" })).toEqual({ ok: false, reason: "Stream ended early" });
+		// A cut-off reason keeps its three dots.
+		const cut = fauxSources(() => fauxAssistantMessage("", { stopReason: "error", errorMessage: "Upstream said..." }));
+		expect(await testChoice(cut, { provider: "faux-test", modelId: "faux-1", thinking: "off" })).toEqual({ ok: false, reason: "Upstream said..." });
 	});
 
 	it("takes no key from the environment in place of the ChatGPT sign-in, and no Pro/Max token in place of an Anthropic key", async () => {

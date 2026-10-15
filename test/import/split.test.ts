@@ -139,20 +139,23 @@ describe("splitMessage", () => {
 		expect(system).toContain("Known agents: Atlas, Birch, Cedar.");
 	});
 
-	it("reads a cache an older version wrote, whose segments of the user's own words carry another kind", async () => {
+	it("splits again, and replaces, a cached entry with a kind this version does not write (an older version's, or a damaged one)", async () => {
 		const m = model(ANSWER);
 		const opts = options();
-		// An older version names the user's words with another kind; a cache file keeps it, while pastes stay "paste".
-		const older = (status: SplitResult["status"], segments: Array<[string, string | null, string]>) =>
-			({ status, segments: segments.map(([kind, source, text]) => ({ kind, source, text })) }) as unknown as SplitResult;
-		opts.cache.set(cacheKey(TEXT), older("split", [["older", null, "my words"], ["paste", "Willow", "their report"]]));
-		const whole = `${TEXT} And one more line.`;
-		opts.cache.set(cacheKey(whole), older("whole", [["older", null, whole]]));
+		const entry = (kind: string) => ({ status: "split", segments: [{ kind, source: null, text: "my words" }, { kind: "paste", source: "Willow", text: "their report" }] }) as unknown as SplitResult;
+		opts.cache.set(cacheKey(TEXT), entry("older"));
 		const split = await splitMessage(TEXT, m, opts);
-		expect(split.segments.map((s) => s.kind)).toEqual(["user", "paste"]);
-		expect(splitToMessages(split, "2026-08-01T00:00:00.000Z").map((s) => s.text)).toEqual(["my words", "[Willow] their report"]);
-		expect(splitToMessages(await splitMessage(whole, m, opts), "2026-08-01T00:00:00.000Z").map((s) => s.text)).toEqual([whole]);
-		expect(m.calls).toBe(0);
+		expect(m.calls).toBe(1);
+		expect(split.segments.map((s) => s.kind)).toEqual(["user", "paste", "user"]);
+		expect(opts.cache.get(cacheKey(TEXT))?.segments.map((s) => s.kind)).toEqual(["user", "paste", "user"]);
+		// An entry in this version's kinds is used as it is.
+		opts.cache.set(cacheKey(TEXT), entry("user"));
+		expect(splitToMessages(await splitMessage(TEXT, m, opts), "2026-08-01T00:00:00.000Z").map((s) => s.text)).toEqual(["my words", "[Willow] their report"]);
+		expect(m.calls).toBe(1);
+		// An entry with no segments list at all is split again too, rather than stopping the import.
+		opts.cache.set(cacheKey(TEXT), { status: "split" } as unknown as SplitResult);
+		expect((await splitMessage(TEXT, m, opts)).segments.map((s) => s.kind)).toEqual(["user", "paste", "user"]);
+		expect(m.calls).toBe(2);
 	});
 
 	it("keeps the message whole, flags it, and does not cache when the model fails or invents boundaries", async () => {

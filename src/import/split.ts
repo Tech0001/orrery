@@ -136,8 +136,9 @@ export async function splitMessage(text: string, model: SplitModel, options: Spl
 	if (byteSize(text) <= options.threshold) return { status: "whole", segments: whole };
 	const key = cacheKey(text);
 	const cached = options.cache.get(key);
-	// A split-cache.json written before 0.6.1 names the user's own words with an older kind: whatever is not a paste is theirs.
-	if (cached !== undefined) return normalize({ ...cached, segments: cached.segments.map((s) => ({ ...s, kind: s.kind === "paste" ? "paste" : "user" })) }, options);
+	// Only an entry in the kinds this version writes is used: one from an older split-cache.json, or a damaged one, is split
+	// again and replaced, so no unknown kind is ever taken for the user's own words, and a damaged one never stops the import.
+	if (cached !== undefined && Array.isArray(cached.segments) && cached.segments.every((s) => s.kind === "user" || s.kind === "paste")) return normalize(cached, options);
 	let answer: string;
 	try {
 		// Changing a model prompt's words is a decision of its own: keep them byte for byte unless one is made.
