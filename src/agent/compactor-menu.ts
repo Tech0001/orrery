@@ -1,4 +1,4 @@
-/** The summary-model picker (pi's /compactor with no arguments, and the TUI): Sign in / API key / Local, then the provider, then the model (spec §3). */
+/** The summary-model picker (pi's /compactor with no arguments, and the TUI): Sign in / API key / Local, then the provider, then the model, then the thinking level (spec §3). */
 
 import { type ModelChoice, THINKING_LEVELS, type ThinkingLevel } from "./config.ts";
 import { signIn } from "./summary-signin.ts";
@@ -89,11 +89,14 @@ export async function pickSummaryModel(
 	return { choice: { provider: entry.provider, modelId: model.id, thinking } };
 }
 
-/** Walks the picker for `target`, then tests and switches (switchSummaryModel); returns the text to show. */
-export async function compactorMenu(ui: MenuUI, sources: SummarySources, target: CompactorTarget, options: { askThinking?: boolean } = {}): Promise<string> {
+/**
+ * Walks the picker for `target`, the thinking level last as in the TUI, then tests and switches (switchSummaryModel);
+ * returns the text to show.
+ */
+export async function compactorMenu(ui: MenuUI, sources: SummarySources, target: CompactorTarget): Promise<string> {
 	const { choice: now, source } = target.current();
 	const current = summaryLine(now, source);
-	const picked = await pickSummaryModel(ui, sources, { heading: current, thinking: now.thinking, ...(options.askThinking === undefined ? {} : { askThinking: options.askThinking }) });
+	const picked = await pickSummaryModel(ui, sources, { heading: current, thinking: now.thinking, askThinking: true });
 	if (picked === undefined || "extra" in picked) return current;
 	if ("none" in picked) return `${current}\n${picked.none}`;
 	try {

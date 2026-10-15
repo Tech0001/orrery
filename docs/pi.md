@@ -95,7 +95,8 @@ Commands from Orrery:
 
 - `/memory`: messages, summaries, view size, summary model, token use, and why summaries fail or stopped.
 - `/compactor`: a menu: Sign in (ChatGPT, OpenRouter) / API key (OpenAI, Anthropic, OpenRouter) / Local, then the provider, then
-  the model (with prices for keys). A long list (OpenRouter) asks for words to narrow it first. Each switch makes one
+  the model (with prices for keys), then the thinking level (the current one first, so Enter keeps it). A long list
+  (OpenRouter) asks for words to narrow it first. Each switch makes one
   test call; a failure keeps the current model and says why. `/compactor key openrouter/<model> [thinking]` switches
   directly; `/compactor reset` returns to the config. The choice survives restarts. The TUI's `M` (or `orrery compactor <Name> …` in a shell) also switches an agent that is open in pi: pi takes the change within 5 seconds and says so. Sign-in is available in the picker or through
   `orrery login`; pasted keys are entered in a terminal, never in chat.

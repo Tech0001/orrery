@@ -28,12 +28,21 @@ export interface Notice {
 	readonly type?: "info" | "warning" | "error";
 }
 
+/** ctx.ui's select and input: the answers they give, in order, and every dialog shown. */
+export interface Dialogs {
+	/** What the next dialogs answer; when none is left, undefined, as a closed dialog does. */
+	readonly answers: (string | undefined)[];
+	readonly shown: { readonly title: string; readonly options?: string[] }[];
+}
+
 export interface PiRun {
 	/** The current session; it follows the runtime across a fork, resume or new session. */
 	readonly session: AgentSessionRuntime["session"];
 	readonly runtime: AgentSessionRuntime;
 	/** Every ctx.ui.notify, in order, across session replacements. */
 	readonly notices: readonly Notice[];
+	/** The select and input dialogs: a test scripts their answers (none by default) and reads what they showed. */
+	readonly dialogs: Dialogs;
 	/** The footer status an extension set under `key` (ctx.ui.setStatus), if any. */
 	status(key: string): string | undefined;
 	/**
@@ -58,12 +67,12 @@ function sessionFor(cwd: string, sessionDir: string, id: string | undefined, for
 	return SessionManager.create(cwd, sessionDir, id === undefined ? undefined : { id });
 }
 
-/** A UI that records notify and setStatus, and does nothing else (pi's own no-op UI, plus the recording). */
-function recordingUi(notices: Notice[], statuses: Map<string, string>): ExtensionUIContext {
+/** A UI that records notify, setStatus and the dialogs, answers them from `dialogs`, and does nothing else (pi's own no-op UI, plus the recording). */
+function recordingUi(notices: Notice[], statuses: Map<string, string>, dialogs: Dialogs): ExtensionUIContext {
 	return {
-		select: async () => undefined,
+		select: async (title, options) => (dialogs.shown.push({ title, options }), dialogs.answers.shift()),
 		confirm: async () => false,
-		input: async () => undefined,
+		input: async (title) => (dialogs.shown.push({ title }), dialogs.answers.shift()),
 		notify: (message, type) => notices.push(type === undefined ? { message } : { message, type }),
 		onTerminalInput: () => () => {},
 		setStatus: (key, text) => (text === undefined ? statuses.delete(key) : statuses.set(key, text)),
@@ -163,7 +172,8 @@ export async function startPi(options: {
 	const runtime = await createAgentSessionRuntime(createRuntime, { cwd: options.cwd, agentDir: options.agentDir, sessionManager });
 	const notices: Notice[] = [];
 	const statuses = new Map<string, string>();
-	const uiContext = recordingUi(notices, statuses);
+	const dialogs: Dialogs = { answers: [], shown: [] };
+	const uiContext = recordingUi(notices, statuses, dialogs);
 	// Like pi's rpc mode: a UI is bound, and a replacement session (fork, resume, new) gets its extensions bound too.
 	runtime.setRebindSession(async (session) => session.bindExtensions({ uiContext, mode: "rpc" }));
 	await runtime.session.bindExtensions({ uiContext, mode: "rpc" });
@@ -173,6 +183,7 @@ export async function startPi(options: {
 		},
 		runtime,
 		notices,
+		dialogs,
 		status: (key) => statuses.get(key),
 		setResponses: (steps, options = {}) => faux.setResponses(options.allowHome ? steps : tripwired(steps)),
 		setSummaryResponses: (steps) => (options.setSummaryResponses === undefined ? summaryFaux.setResponses(steps) : options.setSummaryResponses(steps)),
