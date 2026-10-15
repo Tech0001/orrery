@@ -65,7 +65,7 @@ export async function buildPreview(options: PreviewOptions): Promise<{ lines: Pr
 			}
 			const result = await options.split(text);
 			if (result.status === "split") {
-				const parts = result.segments.map((s) => `  - ${s.kind === "paste" ? `paste [${s.source ?? "?"}]` : "director"}: ${excerpt(s.text)}`);
+				const parts = result.segments.map((s) => `  - ${s.kind === "paste" ? `paste [${s.source ?? "?"}]` : "user"}: ${excerpt(s.text)}`);
 				splits.push(`- ${turn.source} @ ${date}\n${parts.join("\n")}`);
 			} else if (result.status === "unsplit") {
 				unsplit.push(`- ${turn.source} @ ${date} (${result.note ?? "unsplit"}): ${excerpt(text)}`);

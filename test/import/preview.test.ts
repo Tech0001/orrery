@@ -37,11 +37,11 @@ function fakeSplit() {
 			? {
 					status: "split",
 					segments: [
-						{ kind: "director", source: null, text: "LONG: my words" },
+						{ kind: "user", source: null, text: "LONG: my words" },
 						{ kind: "paste", source: "Willow", text: "then a pasted Willow report" },
 					],
 				}
-			: { status: "whole", segments: [{ kind: "director", source: null, text }] };
+			: { status: "whole", segments: [{ kind: "user", source: null, text }] };
 	};
 	return { seen, split };
 }
@@ -64,6 +64,7 @@ describe("import preview", () => {
 		expect(seen.some((text) => text.includes("ghp_"))).toBe(false);
 		expect(report).toContain("5 messages");
 		expect(report).toContain("Split: 1");
+		expect(report).toContain("  - user: LONG: my words\n  - paste [Willow]: then a pasted Willow report");
 		expect(report).toContain("anthropic-key: 1");
 		expect(report).toContain("github-token: 1");
 		expect(report).not.toContain("sk-ant");

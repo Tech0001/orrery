@@ -159,7 +159,7 @@ describe("extractCodex", () => {
 		const { turns, stats, omitted } = extractCodex([file]);
 		expect(turns).toEqual([]);
 		expect(stats.files).toBe(1);
-		expect(omitted).toEqual(["Skipped 1 Codex subagent sessions (their prompts come from another agent, not the Director)."]);
+		expect(omitted).toEqual(["Skipped 1 Codex subagent sessions (their prompts come from another agent, not the user)."]);
 	});
 });
 

@@ -13,7 +13,7 @@ export interface SplitModel {
 }
 
 export interface Segment {
-	readonly kind: "director" | "paste";
+	readonly kind: "user" | "paste";
 	readonly source: string | null;
 	readonly text: string;
 }
@@ -24,16 +24,16 @@ export interface SplitResult {
 	readonly note?: string;
 }
 
-export const SPLIT_SYSTEM = `You separate one message the Director (the user) typed into their own words and material they pasted in:
-reports, logs or outputs from other agents (called lanes) or from tools.
+export const SPLIT_SYSTEM = `You separate one message the user typed into their own words and material they pasted in:
+reports, logs or outputs from other agents or from tools.
 
 Reply with JSON only, in this shape:
-{"segments":[{"kind":"director"|"paste","source":string|null,"first":string}]}
+{"segments":[{"kind":"user"|"paste","source":string|null,"first":string}]}
 
 Segments are in order and together cover the whole message. "first" is the first 40 to 60 characters of the segment,
-copied exactly from the message. "source" names the lane or tool that wrote a paste when the message shows it,
-never the lane it is addressed to; otherwise null. If the whole message is the Director's own words, return one
-director segment.`;
+copied exactly from the message. "source" names the agent or tool that wrote a paste when the message shows it,
+never the agent it is addressed to; otherwise null. If the whole message is the user's own words, return one
+user segment.`;
 
 const PASTED = /<pasted_content\b[^>]*>([\s\S]*?)<\/pasted_content\b[^>]*>/g;
 
@@ -48,14 +48,14 @@ export function tagSegments(text: string): Segment[] | undefined {
 	for (const match of text.matchAll(PASTED)) {
 		found = true;
 		const before = text.slice(last, match.index).trim();
-		if (before) segments.push({ kind: "director", source: null, text: before });
+		if (before) segments.push({ kind: "user", source: null, text: before });
 		const pasted = (match[1] ?? "").trim();
 		if (pasted) segments.push({ kind: "paste", source: null, text: pasted });
 		last = match.index + match[0].length;
 	}
 	if (!found) return undefined;
 	const after = text.slice(last).trim();
-	if (after) segments.push({ kind: "director", source: null, text: after });
+	if (after) segments.push({ kind: "user", source: null, text: after });
 	return segments.length > 0 ? segments : undefined;
 }
 
@@ -89,7 +89,7 @@ export function locateSegments(text: string, answer: string): Segment[] | undefi
 	const starts: Array<{ kind: Segment["kind"]; source: string | null; at: number }> = [];
 	let cursor = 0;
 	for (const [index, segment] of raw.entries()) {
-		if ((segment.kind !== "director" && segment.kind !== "paste") || typeof segment.first !== "string") return undefined;
+		if ((segment.kind !== "user" && segment.kind !== "paste") || typeof segment.first !== "string") return undefined;
 		const first = segment.first.trim();
 		// Short snippets are ambiguous, except a final remark that is exactly how the message ends ("Thanks.").
 		const tail = index === raw.length - 1 && first.length > 0 && text.trimEnd().endsWith(first);
@@ -130,21 +130,22 @@ function normalize(result: SplitResult, options: SplitOptions): SplitResult {
 }
 
 export async function splitMessage(text: string, model: SplitModel, options: SplitOptions): Promise<SplitResult> {
-	const whole: Segment[] = [{ kind: "director", source: null, text }];
+	const whole: Segment[] = [{ kind: "user", source: null, text }];
 	const tagged = tagSegments(text);
 	if (tagged !== undefined) return { status: "split", segments: tagged };
 	if (byteSize(text) <= options.threshold) return { status: "whole", segments: whole };
 	const key = cacheKey(text);
 	const cached = options.cache.get(key);
-	if (cached !== undefined) return normalize(cached, options);
+	// A split-cache.json written before 0.6.1 names the user's own words with an older kind: whatever is not a paste is theirs.
+	if (cached !== undefined) return normalize({ ...cached, segments: cached.segments.map((s) => ({ ...s, kind: s.kind === "paste" ? "paste" : "user" })) }, options);
 	let answer: string;
 	try {
-		// The prompt keeps its words byte for byte ("Known lanes", …): changing a model prompt is a decision of its own.
-		const known = options.agents.length > 0 ? `\n\nKnown lanes: ${options.agents.join(", ")}.` : "";
+		// Changing a model prompt's words is a decision of its own: keep them byte for byte unless one is made.
+		const known = options.agents.length > 0 ? `\n\nKnown agents: ${options.agents.join(", ")}.` : "";
 		const own =
 			options.agent === undefined
 				? ""
-				: `\n\nThis is ${options.agent}'s conversation: the Director talks to ${options.agent}. A block that starts "${options.agent}:" ` +
+				: `\n\nThis is ${options.agent}'s conversation: the user talks to ${options.agent}. A block that starts "${options.agent}:" ` +
 					`is addressed to ${options.agent}, so ${options.agent} is never its source.`;
 		answer = await model.complete(`${SPLIT_SYSTEM}${known}${own}`, text);
 	} catch (error) {
@@ -152,7 +153,7 @@ export async function splitMessage(text: string, model: SplitModel, options: Spl
 	}
 	const segments = locateSegments(text, answer);
 	if (segments === undefined) return { status: "unsplit", segments: whole, note: "the model's boundaries were not found in the text" };
-	const result: SplitResult = segments.every((s) => s.kind === "director") ? { status: "whole", segments: whole } : { status: "split", segments };
+	const result: SplitResult = segments.every((s) => s.kind === "user") ? { status: "whole", segments: whole } : { status: "split", segments };
 	options.cache.set(key, result);
 	return normalize(result, options);
 }
@@ -160,7 +161,7 @@ export async function splitMessage(text: string, model: SplitModel, options: Spl
 export function splitToMessages(result: SplitResult, date: string): NewMessage[] {
 	return result.segments.map((segment) => ({
 		kind: "user",
-		text: segment.kind === "director" ? segment.text : `[${segment.source ?? "paste"}] ${segment.text}`,
+		text: segment.kind === "user" ? segment.text : `[${segment.source ?? "paste"}] ${segment.text}`,
 		date,
 	}));
 }

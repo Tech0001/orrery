@@ -7,9 +7,9 @@ const TEXT =
 	"After that, plan the next relay.";
 const ANSWER = JSON.stringify({
 	segments: [
-		{ kind: "director", source: null, first: "Aspen finished; please check the result" },
+		{ kind: "user", source: null, first: "Aspen finished; please check the result" },
 		{ kind: "paste", source: "Willow", first: "Willow report: SAMPLE-REPORT-COMPLETE" },
-		{ kind: "director", source: null, first: "After that, plan the next relay." },
+		{ kind: "user", source: null, first: "After that, plan the next relay." },
 	],
 });
 
@@ -28,9 +28,9 @@ describe("locateSegments", () => {
 	it("cuts the original text at the snippets, covering every character", () => {
 		const segments = locateSegments(TEXT, `Sure:\n${ANSWER}`);
 		expect(segments?.map((s) => [s.kind, s.source])).toEqual([
-			["director", null],
+			["user", null],
 			["paste", "Willow"],
-			["director", null],
+			["user", null],
 		]);
 		expect(segments?.map((s) => s.text).join("\n\n")).toBe(TEXT);
 	});
@@ -40,15 +40,15 @@ describe("locateSegments", () => {
 		const text = `${report}\n\nThanks.`;
 		const short = locateSegments(
 			text,
-			JSON.stringify({ segments: [{ kind: "paste", source: "Cedar", first: "Cedar report: the demo startup" }, { kind: "director", source: null, first: "Thanks." }] }),
+			JSON.stringify({ segments: [{ kind: "paste", source: "Cedar", first: "Cedar report: the demo startup" }, { kind: "user", source: null, first: "Thanks." }] }),
 		);
 		expect(short?.map((s) => [s.kind, s.text])).toEqual([
 			["paste", report],
-			["director", "Thanks."],
+			["user", "Thanks."],
 		]);
 		const padded = locateSegments(
 			text,
-			JSON.stringify({ segments: [{ kind: "paste", source: "Cedar", first: "Cedar report: the demo startup" }, { kind: "director", source: null, first: "scheduled.\n\nThanks." }] }),
+			JSON.stringify({ segments: [{ kind: "paste", source: "Cedar", first: "Cedar report: the demo startup" }, { kind: "user", source: null, first: "scheduled.\n\nThanks." }] }),
 		);
 		expect(padded?.map((s) => s.text)).toEqual([report, "Thanks."]);
 	});
@@ -58,12 +58,12 @@ describe("locateSegments", () => {
 		expect(locateSegments(TEXT, invented)).toBeUndefined();
 		const reversed = JSON.stringify({
 			segments: [
-				{ kind: "director", source: null, first: "After that, plan the next relay." },
+				{ kind: "user", source: null, first: "After that, plan the next relay." },
 				{ kind: "paste", source: "Willow", first: "Willow report: SAMPLE-REPORT-COMPLETE" },
 			],
 		});
 		expect(locateSegments(TEXT, reversed)).toBeUndefined();
-		expect(locateSegments(TEXT, JSON.stringify({ segments: [{ kind: "director", source: null, first: "Asp" }] }))).toBeUndefined();
+		expect(locateSegments(TEXT, JSON.stringify({ segments: [{ kind: "user", source: null, first: "Asp" }] }))).toBeUndefined();
 		expect(locateSegments(TEXT, "not json")).toBeUndefined();
 	});
 });
@@ -71,7 +71,7 @@ describe("locateSegments", () => {
 describe("splitMessage", () => {
 	it("never calls the model for short untagged messages", async () => {
 		const m = model(ANSWER);
-		expect(await splitMessage("short", m, options())).toEqual({ status: "whole", segments: [{ kind: "director", source: null, text: "short" }] });
+		expect(await splitMessage("short", m, options())).toEqual({ status: "whole", segments: [{ kind: "user", source: null, text: "short" }] });
 		expect(m.calls).toBe(0);
 	});
 
@@ -81,9 +81,9 @@ describe("splitMessage", () => {
 		expect(await splitMessage(text, m, options())).toEqual({
 			status: "split",
 			segments: [
-				{ kind: "director", source: null, text: "Check this:" },
+				{ kind: "user", source: null, text: "Check this:" },
 				{ kind: "paste", source: null, text: "Cedar report: demo green." },
-				{ kind: "director", source: null, text: "Thoughts?" },
+				{ kind: "user", source: null, text: "Thoughts?" },
 			],
 		});
 		expect(m.calls).toBe(0);
@@ -94,9 +94,9 @@ describe("splitMessage", () => {
 		const text = 'See <pasted_content id="f876">\nreport one\n</pasted_content id="f876"> and <pasted_content id="a1">two</pasted_content id="a1">';
 		const result = await splitMessage(text, m, options());
 		expect(result.segments.map((s) => [s.kind, s.text])).toEqual([
-			["director", "See"],
+			["user", "See"],
 			["paste", "report one"],
-			["director", "and"],
+			["user", "and"],
 			["paste", "two"],
 		]);
 		expect(m.calls).toBe(0);
@@ -120,7 +120,7 @@ describe("splitMessage", () => {
 			segments: [
 				{ kind: "paste", source: "Atlas", first: "Atlas: ▎ Cedar's rulings on your questions" },
 				{ kind: "paste", source: "BIRCH", first: "BIRCH NOTE: map updated, plot 4 is next" },
-				{ kind: "director", source: null, first: "Go ahead." },
+				{ kind: "user", source: null, first: "Go ahead." },
 			],
 		});
 		let system = "";
@@ -130,8 +130,29 @@ describe("splitMessage", () => {
 			{ threshold: 10, agents: ["Atlas", "Birch", "Cedar"], agent: "Atlas", cache: new Map() },
 		);
 		expect(result.segments.map((s) => s.source)).toEqual([null, "Birch", null]);
-		expect(system).toContain("This is Atlas's conversation");
-		expect(system).toMatch(/never the lane it is addressed to/);
+		expect(system).toContain("This is Atlas's conversation: the user talks to Atlas.");
+		expect(system).toContain("You separate one message the user typed into their own words");
+		expect(system).toContain("reports, logs or outputs from other agents or from tools.");
+		expect(system).toContain('{"segments":[{"kind":"user"|"paste","source":string|null,"first":string}]}');
+		expect(system).toContain('"source" names the agent or tool that wrote a paste when the message shows it,\nnever the agent it is addressed to;');
+		expect(system).toContain("If the whole message is the user's own words, return one\nuser segment.");
+		expect(system).toContain("Known agents: Atlas, Birch, Cedar.");
+	});
+
+	it("reads a cache an older version wrote, whose segments of the user's own words carry another kind", async () => {
+		const m = model(ANSWER);
+		const opts = options();
+		// An older version names the user's words with another kind; a cache file keeps it, while pastes stay "paste".
+		const older = (status: SplitResult["status"], segments: Array<[string, string | null, string]>) =>
+			({ status, segments: segments.map(([kind, source, text]) => ({ kind, source, text })) }) as unknown as SplitResult;
+		opts.cache.set(cacheKey(TEXT), older("split", [["older", null, "my words"], ["paste", "Willow", "their report"]]));
+		const whole = `${TEXT} And one more line.`;
+		opts.cache.set(cacheKey(whole), older("whole", [["older", null, whole]]));
+		const split = await splitMessage(TEXT, m, opts);
+		expect(split.segments.map((s) => s.kind)).toEqual(["user", "paste"]);
+		expect(splitToMessages(split, "2026-08-01T00:00:00.000Z").map((s) => s.text)).toEqual(["my words", "[Willow] their report"]);
+		expect(splitToMessages(await splitMessage(whole, m, opts), "2026-08-01T00:00:00.000Z").map((s) => s.text)).toEqual([whole]);
+		expect(m.calls).toBe(0);
 	});
 
 	it("keeps the message whole, flags it, and does not cache when the model fails or invents boundaries", async () => {
@@ -139,7 +160,7 @@ describe("splitMessage", () => {
 			const opts = options();
 			const result = await splitMessage(TEXT, model(answer), opts);
 			expect(result.status).toBe("unsplit");
-			expect(result.segments).toEqual([{ kind: "director", source: null, text: TEXT }]);
+			expect(result.segments).toEqual([{ kind: "user", source: null, text: TEXT }]);
 			expect(result.note).toBeTruthy();
 			expect(opts.cache.size).toBe(0);
 		}
@@ -151,7 +172,7 @@ describe("splitToMessages", () => {
 		const result: SplitResult = {
 			status: "split",
 			segments: [
-				{ kind: "director", source: null, text: "my words" },
+				{ kind: "user", source: null, text: "my words" },
 				{ kind: "paste", source: "Willow", text: "their report" },
 				{ kind: "paste", source: null, text: "a log" },
 			],
