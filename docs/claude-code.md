@@ -7,7 +7,7 @@ pi and Tuesday in Claude Code are one memory. Claude's subscription covers Claud
 
 Or run `orrery`, open Tools (4), select Claude Code and press `I` (`orrery tools install claude-code`).
 
-1. Orrery itself, as in the README's install section: it installs the `orrery` command, wires the plugin from
+1. Orrery itself, as in the README's Quick start: it installs the `orrery` command, wires the plugin from
    `~/.orrery/app/current` once you say yes, and needs `~/.orrery/config.toml` (the first `orrery` run writes it).
 2. A login for summaries. Summaries run in the background on Orrery's own login, not Claude's. Run
    `orrery login openai` (Sign in with ChatGPT) for the agents' `compactor_model`.
