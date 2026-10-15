@@ -200,7 +200,9 @@ describe("two-machine command workflow", () => {
 		expect(await agentMemory.run({ ...readTurn, id: readTurn.id + 1 })).toContain("B's reader-visible answer");
 		expect(view).not.toContain("B's fenced-out turn");
 		expect(view).not.toContain("(as of ");
-		expect((await storage.list())[0].lock).toEqual(lockBeforeRead);
+		// Reading leaves B's lock as it was. Its "stale" flag is the server's clock against a one-second limit, which a slow
+		// machine can pass during a read, so it is left out of the comparison.
+		expect({ ...(await storage.list())[0].lock, stale: undefined }).toEqual({ ...lockBeforeRead, stale: undefined });
 		expect(lockBeforeRead).toMatchObject({ held: true, holder: { machine: "machine-b" } });
 		// Advance only the reader's client clock past its 60-second cache lifetime; server staleness stays real.
 		const later = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
@@ -210,7 +212,7 @@ describe("two-machine command workflow", () => {
 			expect(cached).toMatch(/^\(as of \d{2}:\d{2}\)\n/);
 			expect(cached.replace(/^\(as of \d{2}:\d{2}\)\n/, "")).toBe(view);
 		} finally { later.mockRestore(); setOffline(false); }
-		expect((await storage.list())[0].lock).toEqual(lockBeforeRead);
+		expect({ ...(await storage.list())[0].lock, stale: undefined }).toEqual({ ...lockBeforeRead, stale: undefined });
 		await close(reader);
 
 		// local must fetch a final save absent from both A's working copy and its cached reader copy.
