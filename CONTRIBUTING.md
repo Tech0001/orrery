@@ -28,12 +28,33 @@ npm run check
 Tests and the typecheck need Node 22.19 or newer. Building the program needs Bun at the version in `.bun-version`
 (`npm run install-local` refuses another version). The program carries Bun's runtime, so a change to `.bun-version`
 also replaces `scripts/licenses/bun-LICENSE.md` with that Bun tag's `LICENSE.md`. Keep install scripts off for every
-npm install in this repo, including `worker/`. The README's [Development](README.md#development) section covers the
-Bun store check, the Python parity oracle and the real pi, OMP and Ori tests.
+npm install in this repo, including `worker/`.
 
 - `npm run check`: typecheck and the full suite on Node.
 - `npm run test:binary`: the compiled program, built for this machine.
 - `npm run test:bun-suite`: the suite on Bun.
+- `npm run test:bun`: the alternate SQLite store check on Bun.
+- `npm run demo`: the TUI with fictional agents, in a temporary home.
+
+The tests use synthetic fixtures and scratch data only. Install `uv` to run the Python parity oracle as part of the
+suite; without it, those parity cases skip. The reference implementation lives in
+[reference/optchat-py](reference/optchat-py).
+
+Tests against the real tools run when their programs are found and skip when they are not. To test a specific
+installed program, name it, preferably the executable itself rather than an auto-updating shell wrapper:
+
+```bash
+ORRERY_TEST_PI=/path/to/pi npm test -- test/pi/real-pi.test.ts
+ORRERY_TEST_OMP=/path/to/omp npm test -- test/omp/real-omp.test.ts
+ORRERY_TEST_ORI=/path/to/ori ORRERY_TEST_PI=/path/to/pi ORRERY_TEST_OMP=/path/to/omp \
+  npm test -- test/ori/real-ori.test.ts
+```
+
+These tests isolate agent homes and use fake model services. `ORRERY_TEST_ORI_STRICT=1` turns the named upstream
+Ori/OMP compatibility skip into a failure. [Claude Code testing](docs/claude-code.md#testing) describes the separate
+opt-in live script, which makes paid calls. CI runs the suite on Node 22.19 and 24 and on macOS. There the real-pi
+tests use the npm pi from the dev dependencies and fail rather than skip (`ORRERY_REQUIRE_PI=1`); CI needs no other
+agent binaries and no credentials.
 
 To try a change on your own machine, commit it and run `npm run install-local`. It builds a release from the last
 commit and installs it as `<version>-<commit>`, then wires your tools to it. `orrery install --rollback` goes back to the
@@ -46,7 +67,7 @@ release).
   format change, a new remote storage kind, or anything that changes what is sent to a model.
 - Keep each pull request to one focused change.
 - Add a test that fails without the change. For a bug fix, start with the failing test.
-- `npm run check` must pass. CI runs it on Ubuntu with Node 22.19 and 24.
+- `npm run check` must pass. CI runs it on Ubuntu with Node 22.19 and 24, and on macOS.
 - Update the README or the guide in `docs/` when users will see the change.
 - Tests use synthetic data and scratch homes, never a real `~/.pi`, `~/.claude`, `~/.omp` or Orrery data folder.
   Write fake keys in two pieces (`"sk-" + "proj-…"`) so secret scanners don't flag them.
