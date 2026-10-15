@@ -279,12 +279,29 @@ export function removeVersion(path: string): void {
 }
 
 /**
+ * Renames a version folder, which is read-only. macOS 15 refuses to rename a folder its owner cannot write (EACCES), even
+ * inside one parent, so the folder is writable for the rename alone and gets its mode back after, or on failure.
+ */
+export function renameFolder(from: string, to: string): void {
+	const mode = lstatSync(from).mode & 0o7777;
+	const locked = (mode & 0o200) === 0;
+	if (locked) chmodSync(from, mode | 0o200);
+	try {
+		renameSync(from, to);
+	} catch (error) {
+		if (locked) chmodSync(from, mode);
+		throw error;
+	}
+	if (locked) chmodSync(to, mode);
+}
+
+/**
  * Removes app/<name>, renamed to app/.removing-<random> first: a removal cut short (Ctrl-C) leaves a dot folder, which
  * the next install removes, never a half-deleted folder under a version's name for a switch to land on.
  */
 export function dropVersion(app: string, name: string): void {
 	const doomed = join(app, `.removing-${randomUUID()}`);
-	renameSync(join(app, name), doomed);
+	renameFolder(join(app, name), doomed);
 	removeVersion(doomed);
 }
 
@@ -329,11 +346,11 @@ function stageRelease(from: string, app: string, version: string, run: Runner): 
 		// A damaged folder is moved aside, the new copy moved in, and only then is the old one deleted: the name is
 		// never empty for longer than two renames, and a failed second rename puts the old folder back.
 		const damaged = isFolder(target) ? join(app, `.removing-${randomUUID()}`) : undefined;
-		if (damaged !== undefined) renameSync(target, damaged);
+		if (damaged !== undefined) renameFolder(target, damaged);
 		try {
-			renameSync(staging, target);
+			renameFolder(staging, target);
 		} catch (error) {
-			if (damaged !== undefined) renameSync(damaged, target);
+			if (damaged !== undefined) renameFolder(damaged, target);
 			throw error;
 		}
 		if (damaged !== undefined) removeVersion(damaged);
