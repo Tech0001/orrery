@@ -30,7 +30,7 @@ import { selfCommand } from "../agent/running.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { holderFresh, readHolder } from "../agent/handover.ts";
 import { claudeGuard, claudeStateRoots, movedConfigDirCredentials } from "./guard.ts";
-import { summaryNotice } from "./notices.ts";
+import { summaryNotice, updateNotice } from "./notices.ts";
 import { holderLog, samePath, validSession } from "./paths.ts";
 import { type ClaudePicked, claudeRefusedNotice, claudeSession, forgetProcess } from "./pick.ts";
 import { readMode, type SessionMode, spoolEvent } from "./spool.ts";
@@ -109,6 +109,11 @@ export interface HookContext {
 	readonly home?: string;
 	/** The file `config` was read from: the guard keeps it read-only and named in no command (GuardOptions.configFile). */
 	readonly configFile?: string;
+	/**
+	 * Whether hooks show Orrery's update notices (src/claude/notices.ts updateNotice), read from `env`'s Orrery home. The
+	 * CLI turns them on; tests that leave this out see none.
+	 */
+	readonly updateNotices?: boolean;
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -161,17 +166,27 @@ function recordable(input: HookInput, ctx: HookContext): (Here & { session: stri
 /** orrery's own commands (`/orrery:memory`, `/orrery:compactor …`, `/orrery:browse`): their replies are not memory. */
 const ORRERY_COMMAND = /^\/orrery:(memory|compactor|browse)(\s|$)/;
 
-/** A summary notice for this session, never an error: a hook that fails must not disturb the turn. */
+/**
+ * This session's summary and update notices, never an error: a hook that fails must not disturb the turn. Main-thread
+ * events of an agent's session only.
+ */
 function notice(input: HookInput, ctx: HookContext): object | undefined {
 	if (input.agent_id !== undefined || !validSession(input.session_id)) return undefined;
 	const found = here(input, ctx);
 	if (found === undefined) return undefined;
-	try {
-		const message = summaryNotice(found.agent, input.session_id);
-		return message === undefined ? undefined : { systemMessage: message };
-	} catch {
-		return undefined;
-	}
+	const session = input.session_id;
+	const lines: string[] = [];
+	const add = (read: () => string | undefined) => {
+		try {
+			const message = read();
+			if (message !== undefined) lines.push(message);
+		} catch {
+			// left out
+		}
+	};
+	add(() => summaryNotice(found.agent, session));
+	if (ctx.updateNotices === true) add(() => updateNotice(found.agent, session, ctx.env, ctx.config.updates.check));
+	return lines.length === 0 ? undefined : { systemMessage: lines.join("\n") };
 }
 
 /**

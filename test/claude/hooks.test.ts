@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Holder } from "../../src/claude/holder.ts";
@@ -339,5 +339,46 @@ describe("SessionStart holder reasons", () => {
 		expect(out.systemMessage).toContain(reason);
 		expect(out.hookSpecificOutput.additionalContext).toContain(reason);
 		expect(out.systemMessage).not.toContain("open elsewhere");
+	});
+});
+
+describe("update notices in hooks", () => {
+	const AVAILABLE = "Orrery 0.6.1 is available. Run `orrery update`, then restart this session.";
+	/** An Orrery home with 0.6.0 installed and 0.6.1 as the cached latest release. */
+	const updatesHome = (t: TestAgent) => {
+		const home = join(t.dir, "orrery-home");
+		mkdirSync(join(home, "app", "0.6.0"), { recursive: true });
+		writeFileSync(join(home, "app", "0.6.0", "VERSION"), "0.6.0\n");
+		symlinkSync("0.6.0", join(home, "app", "current"));
+		writeFileSync(join(home, "update-check.json"), JSON.stringify({ checkedAt: Date.now(), latest: "0.6.1" }));
+		return { CLAUDE_PROJECT_DIR: t.folder, ORRERY_HOME: home };
+	};
+
+	it("SessionStart shows a newer release to the user only, and the next prompt is silent", async () => {
+		const t = testAgent({ setup: true });
+		const c = ctx(t, { env: updatesHome(t), updateNotices: true, startHolder: answer("recording") });
+		const out = JSON.parse(await runHook("session-start", input(t), c)) as { hookSpecificOutput: { additionalContext: string }; systemMessage?: string };
+		expect(out.systemMessage).toContain(AVAILABLE);
+		expect(out.hookSpecificOutput.additionalContext).not.toContain("available");
+		expect(await runHook("user-prompt-submit", input(t, { prompt: "hello" }), c)).toBe("");
+		expect(await runHook("stop", input(t, { last_assistant_message: "hi" }), c)).toBe("");
+	});
+
+	it("a later prompt or reply shows what came since, as a systemMessage", async () => {
+		const t = testAgent({ setup: true });
+		const env = updatesHome(t);
+		rmSync(join(env.ORRERY_HOME, "update-check.json"));
+		const c = ctx(t, { env, updateNotices: true });
+		expect(await runHook("user-prompt-submit", input(t, { prompt: "hello" }), c)).toBe("");
+		// the recorder's refresh answers
+		writeFileSync(join(env.ORRERY_HOME, "update-check.json"), JSON.stringify({ checkedAt: Date.now(), latest: "0.6.1" }));
+		expect(JSON.parse(await runHook("stop", input(t, { last_assistant_message: "hi" }), c))).toEqual({ systemMessage: AVAILABLE });
+		// not in a subagent's events
+		expect(await runHook("stop", input(t, { session_id: "s2", agent_id: "a1", last_assistant_message: "hi" }), c)).toBe("");
+	});
+
+	it("shows none unless the CLI turns them on", async () => {
+		const t = testAgent({ setup: true });
+		expect(await runHook("user-prompt-submit", input(t, { prompt: "hello" }), ctx(t, { env: updatesHome(t) }))).toBe("");
 	});
 });

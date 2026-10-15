@@ -19,6 +19,8 @@ import { compactorCommand } from "../agent/agent-commands.ts";
 import { AgentHeld, MemoryAgent } from "../agent/memory-agent.ts";
 import { agentModelSource, type ModelSource } from "../agent/model-source.ts";
 import { processAlive } from "../agent/process.ts";
+import { statusVersion } from "../agent/status-file.ts";
+import { refreshEvery } from "../install/update.ts";
 import { localIso, type NewMessage } from "../memory/index.ts";
 import { holdWriterLock } from "../memory/store.ts";
 import { remoteFooter, remoteOpenNotice } from "../remote/checkout.ts";
@@ -71,6 +73,8 @@ export class Holder {
 	readonly #alive: (pid: number) => boolean;
 	readonly #log: (line: string) => void;
 	readonly #finishMs: number;
+	/** The Orrery version this process runs, for the heartbeat: an update leaves it on the old one until the session restarts. */
+	readonly #version = statusVersion();
 	#state: "recording" | "finishing" = "recording";
 	#ended = false;
 	#busy = false;
@@ -400,6 +404,7 @@ export class Holder {
 			startedAt: this.#startedAt,
 			updatedAt: this.#beat,
 			...(remote === undefined ? {} : { remote }),
+			version: this.#version,
 		});
 		this.agent.writeStatus(this.#busy);
 	}
@@ -453,8 +458,12 @@ export async function runHolder(
 		const models = agentModelSource(createAgentModels({ credentials: new FileCredentialStore(config.credentialsPath), providers: config.providers, savedLoginsOnly: savedSummaryLoginsOnly(agent) }));
 		const holder = await Holder.start({ config, agent, ...options, models, log });
 		if (holder === undefined) return 0;
+		// The daily update check for this session's hooks (src/claude/notices.ts): here, in the session's long-lived
+		// process, because a hook must never wait on the network. A later hook shows the answer.
+		const stopChecks = config.updates.check ? refreshEvery(process.env) : () => {};
 		process.once("SIGTERM", () => void holder.stop("SIGTERM"));
 		await holder.done;
+		stopChecks();
 		return 0;
 	} catch (error) {
 		log(`holder failed: ${errorText(error)}`);

@@ -286,6 +286,19 @@ export async function refreshUpdateCache(env: NodeJS.ProcessEnv, now: number): P
 	}
 }
 
+/**
+ * For a long-lived process (Claude Code's recorder): refreshUpdateCache now and every `everyMs` (a no-op while the cache
+ * is fresh), so a session that runs for days still checks once a day. The timer never keeps the process alive. Returns
+ * what stops it.
+ */
+export function refreshEvery(env: NodeJS.ProcessEnv, everyMs = 60 * 60 * 1000): () => void {
+	const run = () => void refreshUpdateCache(env, Date.now()).catch(() => {});
+	run();
+	const timer = setInterval(run, everyMs);
+	timer.unref?.();
+	return () => clearInterval(timer);
+}
+
 /** The newest release when it is newer than what `orrery update` would replace: the installed version, else `running`. */
 export function availableRelease(env: NodeJS.ProcessEnv, latest: string | undefined, running: string | undefined): string | undefined {
 	const base = installedVersion(env) ?? running;

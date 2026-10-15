@@ -807,7 +807,7 @@ async function claudeHook(event: string | undefined, configPath: string | undefi
 		const startHolder = (agent: AgentConfig, session: string, nonce: string, since: number) => hooks.spawnHolder(agent, session, nonce, claudePid, since, configPath);
 		// The file the config came from, as loadConfig found it: the guard keeps it read-only, wherever it is.
 		const configFile = resolvePath(configPath ?? defaultConfigPath());
-		const answer = await hooks.runHook(event ?? "", stdin, { config, env: process.env, claudePid, startHolder, configFile });
+		const answer = await hooks.runHook(event ?? "", stdin, { config, env: process.env, claudePid, startHolder, configFile, updateNotices: true });
 		process.stdout.write(answer);
 	} catch (error) {
 		process.stderr.write(`Orrery: ${event ?? "claude-hook"}: ${errorText(error)}\n`);
