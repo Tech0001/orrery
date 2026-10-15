@@ -201,6 +201,8 @@ describe("cachedUpdate and refreshUpdateCache", () => {
 		await refreshUpdateCache(env, now);
 		await refreshUpdateCache(env, now + 5_000);
 		expect(hits).toEqual(["/releases/latest"]);
+		// and leaves no half-written file behind
+		expect(readdirSync(home).sort()).toEqual(["update-check.json"]);
 		await refreshUpdateCache(env, now + 25 * 3600_000);
 		expect(hits).toHaveLength(2);
 	});

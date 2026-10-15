@@ -226,8 +226,13 @@ export function cachedUpdate(env: NodeJS.ProcessEnv, now: number): { latest?: st
 function writeCache(env: NodeJS.ProcessEnv, cache: Cache): void {
 	const file = cacheFile(env);
 	const temp = `${file}.tmp-${process.pid}`;
-	writeFileSync(temp, JSON.stringify(cache), { mode: 0o600 });
-	renameSync(temp, file);
+	try {
+		writeFileSync(temp, JSON.stringify(cache), { mode: 0o600 });
+		renameSync(temp, file);
+	} catch (error) {
+		rmSync(temp, { force: true });
+		throw error;
+	}
 }
 
 /**
