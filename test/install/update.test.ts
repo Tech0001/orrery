@@ -172,6 +172,13 @@ describe("updateCheck", () => {
 
 describe("orrery update", () => {
 	const SCRIPT = `#!/bin/sh\necho "$@" > "$HOME/installed"\nexit 0\n`;
+	/** A release newer than the Orrery under test: the patch after package.json's version (the test binary is it plus a commit). */
+	const NEXT = (() => {
+		const { version } = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string };
+		const [major, minor, patch] = version.split(".").map(Number);
+		return `${major}.${minor}.${patch + 1}`;
+	})();
+	const NEXT_RE = NEXT.replaceAll(".", "\\.");
 
 	/** Async, because the release server lives in this process. */
 	function run(args: string[], base: string, home: string, tmp: string) {
@@ -192,19 +199,19 @@ describe("orrery update", () => {
 	}
 
 	it("downloads the latest release and hands over to its installer", async () => {
-		const { base } = await releasesServer("0.6.1", release("0.6.1", SCRIPT));
+		const { base } = await releasesServer(NEXT, release(NEXT, SCRIPT));
 		const home = scratch();
 		const tmp = scratch("orrery-tmp-");
 		const r = await run(["--yes"], base, home, tmp);
 		expect(r.status, r.stderr).toBe(0);
 		const installed = readFileSync(join(home, "installed"), "utf8").trim();
-		expect(installed).toMatch(new RegExp(`^install --from .*/orrery-0\\.6\\.1-${PLATFORM} --yes$`));
-		expect(r.stdout).toMatch(/Updated \S+ → 0\.6\.1/);
+		expect(installed).toMatch(new RegExp(`^install --from .*/orrery-${NEXT_RE}-${PLATFORM} --yes$`));
+		expect(r.stdout).toMatch(new RegExp(`Updated \\S+ → ${NEXT_RE}`));
 		expect(readdirSync(tmp).filter((n) => n.startsWith("orrery-update-"))).toEqual([]);
 	});
 
 	it("--check says whether a release is out and downloads nothing", async () => {
-		const { base, hits } = await releasesServer("0.6.1", release("0.6.1", SCRIPT));
+		const { base, hits } = await releasesServer(NEXT, release(NEXT, SCRIPT));
 		const r = await run(["--check"], base, scratch(), scratch("orrery-tmp-"));
 		expect(r.status, r.stderr).toBe(0);
 		expect(r.stdout).toContain("is available");
@@ -219,35 +226,35 @@ describe("orrery update", () => {
 	});
 
 	it("a release without bin/orrery says so", async () => {
-		const { base } = await releasesServer("0.6.1", release("0.6.1", ""));
+		const { base } = await releasesServer(NEXT, release(NEXT, ""));
 		const tmp = scratch("orrery-tmp-");
 		const r = await run(["--yes"], base, scratch(), tmp);
 		expect(r.status).toBe(1);
-		expect(r.stderr).toContain("could not run the installer of 0.6.1");
+		expect(r.stderr).toContain(`could not run the installer of ${NEXT}`);
 		expect(readdirSync(tmp).filter((n) => n.startsWith("orrery-update-"))).toEqual([]);
 	});
 
 	it("a failing installer says Orrery stays on the running version", async () => {
-		const { base } = await releasesServer("0.6.1", release("0.6.1", "#!/bin/sh\nexit 3\n"));
+		const { base } = await releasesServer(NEXT, release(NEXT, "#!/bin/sh\nexit 3\n"));
 		const r = await run(["--yes"], base, scratch(), scratch("orrery-tmp-"));
 		expect(r.status).toBe(3);
-		expect(r.stderr).toMatch(/The install of 0\.6\.1 failed; Orrery stays on /);
+		expect(r.stderr).toContain(`The install of ${NEXT} failed; Orrery stays on `);
 		expect(r.stdout).not.toContain("Updated");
 	});
 
 	it("an install that switched but whose setup left something says Updated, and how to finish", async () => {
 		// The installer installs and switches app/current, then exits 1 as setup does when a question was declined.
-		const SWITCH_THEN_FAIL = '#!/bin/sh\napp="$ORRERY_HOME/app"\nmkdir -p "$app/0.6.1"\necho 0.6.1 > "$app/0.6.1/VERSION"\nrm -f "$app/current"\nln -s 0.6.1 "$app/current"\nexit 1\n';
-		const { base } = await releasesServer("0.6.1", release("0.6.1", SWITCH_THEN_FAIL));
+		const SWITCH_THEN_FAIL = `#!/bin/sh\napp="$ORRERY_HOME/app"\nmkdir -p "$app/${NEXT}"\necho ${NEXT} > "$app/${NEXT}/VERSION"\nrm -f "$app/current"\nln -s ${NEXT} "$app/current"\nexit 1\n`;
+		const { base } = await releasesServer(NEXT, release(NEXT, SWITCH_THEN_FAIL));
 		const r = await run(["--yes"], base, scratch(), scratch("orrery-tmp-"));
 		expect(r.status).toBe(1);
-		expect(r.stdout).toMatch(/^Updated \S+ → 0\.6\.1\. Release notes: /m);
+		expect(r.stdout).toMatch(new RegExp(`^Updated \\S+ → ${NEXT_RE}\\. Release notes: `, "m"));
 		expect(r.stdout).toContain("Setup left something unfinished; run `orrery setup` to finish it.");
 		expect(r.stderr).not.toContain("stays on");
 	});
 
 	it("a downloaded binary that cannot be run says TMPDIR may be mounted noexec", async () => {
-		const { base } = await releasesServer("0.6.1", release("0.6.1", SCRIPT, undefined, PLATFORM, 0o644));
+		const { base } = await releasesServer(NEXT, release(NEXT, SCRIPT, undefined, PLATFORM, 0o644));
 		const tmp = scratch("orrery-tmp-");
 		const r = await run(["--yes"], base, scratch(), tmp);
 		expect(r.status).toBe(1);
@@ -278,7 +285,7 @@ describe("orrery update", () => {
 	});
 
 	it("Ctrl-C during the download stops it and leaves no work folder", async () => {
-		const { base } = await releasesServer("0.6.1", release("0.6.1", "#!/bin/sh\nexit 0\n"), { stall: true });
+		const { base } = await releasesServer(NEXT, release(NEXT, "#!/bin/sh\nexit 0\n"), { stall: true });
 		const tmp = scratch("orrery-tmp-");
 		const c = cliCommand(["update", "--yes"]);
 		const child = spawn(c.cmd, c.args, { env: { PATH: process.env.PATH, HOME: scratch(), ORRERY_HOME: join(scratch(), "orrery-home"), ORRERY_RELEASES_URL: base, TMPDIR: tmp } });
@@ -293,9 +300,9 @@ describe("orrery update", () => {
 	});
 
 	it("a bad checksum installs nothing and leaves no download", async () => {
-		const files = release("0.6.1", SCRIPT);
-		files["0.6.1/SHA256SUMS"] = Buffer.from(`${"0".repeat(64)}  ${platformAsset()}\n`);
-		const { base } = await releasesServer("0.6.1", files);
+		const files = release(NEXT, SCRIPT);
+		files[`${NEXT}/SHA256SUMS`] = Buffer.from(`${"0".repeat(64)}  ${platformAsset()}\n`);
+		const { base } = await releasesServer(NEXT, files);
 		const home = scratch();
 		const tmp = scratch("orrery-tmp-");
 		const r = await run(["--yes"], base, home, tmp);
