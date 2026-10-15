@@ -26,6 +26,8 @@ export interface HolderState {
 	readonly updatedAt: number;
 	/** Public save/lock state from this recorder's RemoteSession. */
 	readonly remote?: RemoteStatus;
+	/** The Orrery version the holder runs (status-file.ts statusVersion); the hooks compare it with the installed one. */
+	readonly version?: string;
 }
 
 /** yield.json: a newcomer asking the holder for the agent. */

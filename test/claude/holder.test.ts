@@ -9,6 +9,7 @@ import { readSetupMarker } from "../../src/claude/view-file.ts";
 import { holderFile, readHolder, requestYield } from "../../src/agent/handover.ts";
 import { agentModelSource, type ModelSource } from "../../src/agent/model-source.ts";
 import { memorySection } from "../../src/agent/view-text.ts";
+import { statusVersion } from "../../src/agent/status-file.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { fauxModels } from "../agent/support.ts";
 import { brokenGit, cleanupDirs, gitIn, messages, spool, type TestAgent, testAgent, waitUntil, withGit } from "./support.ts";
@@ -103,6 +104,12 @@ describe("the holder", () => {
 		expect(statSync(viewFile(t.folder)).mode & 0o777).toBe(0o600);
 		expect(statSync(join(t.folder, ".orrery")).mode & 0o777).toBe(0o700);
 		expect(readHolder(t.agent.dir)).toMatchObject({ session: "s1", claudePid: 111, state: "recording" });
+	});
+
+	it("names the Orrery version it runs in its heartbeat, for the hooks' restart notice", async () => {
+		const t = testAgent();
+		await start(t);
+		expect(readHolder(t.agent.dir)?.version).toBe(statusVersion());
 	});
 
 	it("keeps the reply to Orrery's own command out of memory, for that session only, until its next prompt", async () => {

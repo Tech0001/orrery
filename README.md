@@ -230,9 +230,14 @@ orrery install --rollback  # go back to the previous version
 orrery uninstall           # remove the program; memory, config and logins stay
 ```
 
-Agents that are open keep their version until they restart, and the Agents page says when one is waiting. Orrery
-checks for a new release when the TUI opens, at most once a day. That is one request to `github.com`, which sees your
-IP address; `check = false` under `[updates]` in `config.toml` turns it off. `orrery uninstall --purge` also deletes `~/.orrery`, after you type `delete`.
+Agents that are open keep their version until they restart. The Agents page says when one is waiting, and the pi, OMP
+or Claude Code session says once: "Orrery was updated to 0.6.2; restart this session to use it." Orrery checks for a
+new release at most once a day, shared by the TUI and every agent's session (pi, OMP, and Claude Code's recorder); the
+TUI header and each session then say once that it is out. A session never waits on the check: it shows what the last
+one found, and a newer answer when it comes. The check is one request to `github.com`, which sees your IP address;
+`check = false` under `[updates]` in `config.toml` turns it off, and the release notice with it (the restart notice
+needs no request and stays). Notices reach you, never the model. `orrery uninstall --purge` also deletes `~/.orrery`,
+after you type `delete`.
 
 The install script also takes `--yes` (answer every question yes; with no terminal and no `--yes`, it skips the
 questions, lists them and exits non-zero), `ORRERY_VERSION` (a specific release) and `ORRERY_HOME` (somewhere other

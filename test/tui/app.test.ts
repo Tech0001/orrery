@@ -4,6 +4,7 @@ import type { Page } from "../../src/tui/app.ts";
 import type { AgentRow } from "../../src/agent/overview.ts";
 import { agentsPage } from "../../src/tui/pages/agents.ts";
 import { makeTheme } from "../../src/tui/theme.ts";
+import { parseConfig } from "../../src/agent/config.ts";
 import { fakeDeps, keys, makeApp, row, screen, settle } from "./support.ts";
 
 const ENTER = "\r";
@@ -21,10 +22,20 @@ describe("the restart marker", () => {
 	});
 
 	it("marks an agent on another local build of the same release, and one on a local build when the release is current", () => {
-		// The State column holds 42 characters, so the second local build's name is cut short.
-		expect(screen(agents("0.6.0-aaa1111", "0.6.0-bbb2222"))).toMatch(/open · on 0\.6\.0-aaa1111, restart for 0\.6\./);
+		expect(screen(agents("0.6.0-aaa1111", "0.6.0-bbb2222"))).toMatch(/open · on 0\.6\.0-aaa1111, restart for 0\.6\.0-bbb2222/);
 		expect(screen(agents("0.6.1-aaa1111", "0.6.1"))).toMatch(/open · on 0\.6\.1-aaa1111, restart for 0\.6\.1/);
 		expect(screen(agents("0.6.0-bbb2222", "0.6.0-bbb2222"))).not.toContain("restart for");
+	});
+
+	it("fits the whole marker in the State column at 100 and 120 columns, with and without remotes", () => {
+		const remotes = parseConfig(`data_dir = "/d"\n[agents.Alpha]\nfolder = "/w/alpha"\ncompactor_model = "openai/gpt-6.1-sol"\n[remotes.home]\nkind = "cloudflare"\nurl = "https://example.com"\n`, "/d");
+		for (const withRemotes of [false, true]) {
+			const app = makeApp(fakeDeps({ installedVersion: () => "0.6.1", ...(withRemotes ? { loadConfig: () => remotes } : {}) }, [row({ name: "Alpha", state: "working", openIn: "pi", runsVersion: "0.6.0-219a227" })]), [agentsPage]);
+			for (const width of [100, 120]) {
+				expect(screen(app, width), `${width}${withRemotes ? " with remotes" : ""}`).toContain("working · on 0.6.0-219a227, restart for 0.6.1");
+				expect(app.render(width).every((line) => visibleWidth(line) <= width)).toBe(true);
+			}
+		}
 	});
 
 	it("marks nothing for an agent newer than current (after a rollback), a checkout, unknown, no version, or nothing installed", () => {
@@ -223,16 +234,16 @@ describe("the App and the Agents page", () => {
 });
 
 describe("the header's update notice", () => {
-	const NOTICE = "Orrery 0.6.1 is available: orrery update";
+	const NOTICE = "0.6.1 available · run orrery update";
 	const withNotice = async (theme = fakeDeps().theme) => {
 		const app = makeApp(fakeDeps({ updateNotice: async () => NOTICE, theme }), [agentsPage]);
 		await settle();
 		return app;
 	};
 
-	it("ends the first line after the version, dim", async () => {
-		expect((await withNotice()).render(120)[0]).toMatch(/ Orrery v0\.1\.0  Orrery 0\.6\.1 is available: orrery update *$/);
-		expect((await withNotice(makeTheme(true))).render(120)[0]).toContain(`\x1b[2m${NOTICE}\x1b[22m`);
+	it("ends the first line after the version, in yellow", async () => {
+		expect((await withNotice()).render(120)[0]).toMatch(/ Orrery v0\.1\.0  0\.6\.1 available · run orrery update *$/);
+		expect((await withNotice(makeTheme(true))).render(120)[0]).toContain(`\x1b[33m${NOTICE}\x1b[39m`);
 	});
 
 	it("is left out rather than cutting the version at 70 columns, and is absent without one", async () => {

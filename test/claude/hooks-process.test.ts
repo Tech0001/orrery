@@ -1,13 +1,15 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readMode } from "../../src/claude/spool.ts";
 import { readHolder } from "../../src/agent/handover.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
+import { cleanupFakes, releasesServer, scratch } from "../release/fake-releases.ts";
 import { cleanEnv, cleanupDirs, hookCli, messages, testAgent, waitUntil } from "./support.ts";
 
 afterEach(cleanupDirs);
+afterEach(cleanupFakes);
 
 /** A stand-in for a Claude Code process: alive until killed. */
 const claudeProcess = () => spawn("sleep", ["60"], { env: cleanEnv({}), stdio: "ignore" });
@@ -68,6 +70,24 @@ describe("the hooks as Claude Code runs them", () => {
 		const t = testAgent();
 		const none = hookCli("user-prompt-submit", { session_id: "s1", cwd: t.folder, prompt: "x" }, { HOME: t.dir });
 		expect([none.status, none.stdout, none.stderr]).toEqual([0, "", ""]);
+	}, 60_000);
+
+	it("tell the user once that a newer release is out, from the cache, and never ask the network themselves", async () => {
+		const t = testAgent();
+		const home = scratch();
+		mkdirSync(join(home, "app", "0.6.0"), { recursive: true });
+		writeFileSync(join(home, "app", "0.6.0", "VERSION"), "0.6.0\n");
+		symlinkSync("0.6.0", join(home, "app", "current"));
+		// A day-old answer: the hook shows it and leaves the refresh to the recorder.
+		writeFileSync(join(home, "update-check.json"), JSON.stringify({ checkedAt: Date.now() - 2 * 86_400_000, latest: "0.6.1" }));
+		const { base, hits } = await releasesServer("0.6.2", {});
+		const env = { ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: t.folder, ORRERY_HOME: home, ORRERY_RELEASES_URL: base };
+		const at = { session_id: "s1", cwd: t.folder };
+		const first = hookCli("user-prompt-submit", { ...at, prompt: "hello" }, env);
+		expect([first.status, first.stderr]).toEqual([0, ""]);
+		expect(JSON.parse(first.stdout)).toEqual({ systemMessage: "Orrery 0.6.1 is available. Run `orrery update`, then restart this session." });
+		expect(hookCli("stop", { ...at, last_assistant_message: "hi" }, env).stdout).toBe("");
+		expect(hits).toEqual([]);
 	}, 60_000);
 
 	it("exit 0 and print nothing outside an agent; a broken config gets one stderr line, never the input", () => {

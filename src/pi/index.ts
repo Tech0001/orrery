@@ -18,10 +18,13 @@ import { agentModelSource } from "../agent/model-source.ts";
 import { noticeKey, noticeText, type TroubleState } from "../agent/notices.ts";
 import { pickAgent, refusedNotice, workArea } from "../agent/pick.ts";
 import { NO_AGENT, noteSession, sessionStanding, settleVisit } from "../agent/session-owner.ts";
+import { runningVersion } from "../agent/running.ts";
 import { takeRequest } from "../agent/settings-request.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { openSummarySources, type SummarySources } from "../agent/summary-sources.ts";
 import { runCompactorText } from "../agent/summary-text.ts";
+import { updateNotices } from "../agent/update-notices.ts";
+import { cachedUpdate, refreshUpdateCache } from "../install/update.ts";
 import { browse, memoryReport, pageOpener } from "./commands.ts";
 import { compactorMenu, agentTarget, signInFromMenu } from "../agent/compactor-menu.ts";
 import { AgentHeld, PiAgent } from "./agent.ts";
@@ -80,6 +83,8 @@ export interface OrreryState {
 	loadedAt?: number;
 	/** The agent's instructions section for this session, read at its start (src/agent/instructions.ts). */
 	instructions?: string;
+	/** The update notices this session has shown (src/agent/update-notices.ts keys); a new set at each open. */
+	updatesShown?: Set<string>;
 }
 
 export interface OrreryOptions {
@@ -105,6 +110,16 @@ export interface OrreryOptions {
 	readonly remoteStorage?: (config: HarnessConfig, remote: string) => Storage;
 	/** The process ORRERY_AGENT_TOKEN claims are made for (src/agent/pick.ts); default this process. Tests pass another. */
 	readonly owner?: number;
+	/**
+	 * Update notices (spec 2026-10-15-update-notices): the environment whose Orrery home holds the installed version and
+	 * the daily check's cache. Left out, a session shows none and asks nothing: the entries (this file's default export,
+	 * src/omp/index.ts) pass process.env, and tests a scratch home.
+	 */
+	readonly updates?: {
+		readonly env: NodeJS.ProcessEnv;
+		/** The Orrery version this extension runs; default runningVersion(env). */
+		readonly running?: () => string | undefined;
+	};
 }
 
 /** What the agent guard judges a tool call against: where the session may write, every credential file, and "~". */
@@ -257,6 +272,41 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 		};
 
 		/**
+		 * The update notices (src/agent/update-notices.ts) as warnings, each once per session: what the cache and the
+		 * installed version say now, and, when the cache is a day old and checks are on, what a refresh in the background
+		 * brings once it answers. Nothing waits on the network, nothing reaches the model, and it never throws. At the
+		 * session's open and on each status tick: a few small files, so an update under the session is said within a tick.
+		 */
+		const showUpdates = (ctx: ExtensionContext, config: HarnessConfig): void => {
+			const updates = options.updates;
+			const shown = state.updatesShown;
+			if (updates === undefined || shown === undefined) return;
+			const now = Date.now();
+			const enabled = config.updates.check;
+			const show = () => {
+				// An answer that comes after the session ended, or another opened, is not this session's to show.
+				if (state.updatesShown !== shown) return;
+				try {
+					let running: string | undefined;
+					try {
+						running = updates.running === undefined ? runningVersion(updates.env) : updates.running();
+					} catch {
+						running = undefined;
+					}
+					for (const notice of updateNotices(updates.env, Date.now(), { enabled, running })) {
+						if (shown.has(notice.key)) continue;
+						shown.add(notice.key);
+						ctx.ui.notify(notice.text, "warning");
+					}
+				} catch {
+					// a notice that cannot be read or shown is left out
+				}
+			};
+			show();
+			if (enabled && cachedUpdate(updates.env, now).stale) void refreshUpdateCache(updates.env, now).then(show, () => {});
+		};
+
+		/**
 		 * Opens the session's agent (ORRERY_AGENT's, else the folder's), as a new session does: its guard, then (main session
 		 * only) its memory, OMP's settings, the tools, the session's copy and the status tick. `loaded`: the config already
 		 * read. `arrived`: the session moved here from another folder (OMP), so it records only what comes after the move.
@@ -296,6 +346,9 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			if (omp && subagent(ctx)) return;
 			// The session is this agent's, whether or not its memory opens.
 			noteRun(state, ctx);
+			// Before the memory opens, which may take a while (a remote check-out): these need no memory.
+			state.updatesShown = new Set();
+			showUpdates(ctx, config);
 			// The instructions are read once the memory is open (a remote check-out may bring a newer file) or has failed to
 			// open: a session without its memory keeps the agent's identity.
 			const { signal } = controller;
@@ -390,6 +443,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 						}
 					}
 					status(ctx);
+					showUpdates(ctx, config);
 					if (agent !== undefined) {
 						const now = troubleState(agent);
 						const message = noticeText(agent.config.name, now, state.notice, "/compactor");
@@ -485,6 +539,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 		// A session moved elsewhere by /move and ended before another message is no longer the agent's to save.
 		pi.on("session_shutdown", (_event, ctx) => {
 			noteRun(state, ctx);
+			state.updatesShown = undefined;
 			return closeAgent(ctx, !moved(ctx));
 		});
 
@@ -870,4 +925,4 @@ function guard(pi: ExtensionAPI, state: OrreryState, host: "pi" | "omp"): void {
 	});
 }
 
-export default createOrrery();
+export default createOrrery({ updates: { env: process.env } });
