@@ -105,8 +105,11 @@ main() {
 	mkdir "$tmp/unpacked"
 	tar -xzf "$tmp/$asset" -C "$tmp/unpacked"
 	folder="$(one_release "$tmp"/unpacked/orrery-*)" || fail "$asset does not hold one Orrery release"
-	status=0
-	"$folder/bin/orrery" install --from "$folder" "$@" || status=$?
+	# Not `|| status=$?`: under set -e, macOS's bash 3.2 gives 1 there for a program that cannot be run, not 126.
+	set +e
+	"$folder/bin/orrery" install --from "$folder" "$@"
+	status=$?
+	set -e
 	# 126: the program is there but cannot be run, which a temporary folder mounted noexec does.
 	if [ "$status" -eq 126 ]; then
 		printf 'orrery install: could not run the downloaded Orrery: %s may be mounted noexec; %s\n' "${TMPDIR:-/tmp}" \
