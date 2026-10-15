@@ -8,12 +8,12 @@ import { join, relative } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { expect } from "vitest";
-import { parseConfig } from "../../src/lane/config.ts";
+import { parseConfig } from "../../src/agent/config.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { createKey, keyToCode, unseal } from "../../src/remote/crypto.ts";
 import { FakeStorage } from "../../src/remote/fake.ts";
 import { holderFor } from "../../src/remote/index.ts";
-import { decodeRows, laneSettings } from "../../src/remote/save-format.ts";
+import { decodeRows, agentSettings } from "../../src/remote/save-format.ts";
 import { saveRemoteSecret } from "../../src/remote/secrets.ts";
 import { RemoteSession, type RemoteSessionOptions } from "../../src/remote/session.ts";
 import { type Holder, RemoteError, STALE_MS, type Storage } from "../../src/remote/types.ts";
@@ -42,8 +42,8 @@ export function streamReply(res: ServerResponse, text: string): void {
 }
 
 /** The host's only provider: the test's own server. */
-export function writeModels(agent: string, host: "pi" | "omp", baseUrl: string): void {
-	writeFileSync(join(agent, host === "pi" ? "models.json" : "models.yml"), JSON.stringify({ providers: { local: {
+export function writeModels(dir: string, host: "pi" | "omp", baseUrl: string): void {
+	writeFileSync(join(dir, host === "pi" ? "models.json" : "models.yml"), JSON.stringify({ providers: { local: {
 		baseUrl, apiKey: "none", api: "openai-completions", models: [{ id: "m", name: "m", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 4096,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, compat: { supportsStore: false, supportsDeveloperRole: false, maxTokensField: "max_tokens" } }],
 	} } }));
@@ -64,10 +64,10 @@ const hostEnv = (home: string): NodeJS.ProcessEnv => ({ PATH: process.env.PATH ?
 export async function realRemoteTurn(binary: string, host: "pi" | "omp", delayedRelease = false): Promise<void> {
 	const root = mkdtempSync(join(tmpdir(), `orrery-remote-${host}-`));
 	const home = join(root, "home");
-	const workspace = join(root, "workspace");
-	const agent = join(home, host === "pi" ? ".pi" : ".omp", "agent");
-	mkdirSync(agent, { recursive: true });
-	mkdirSync(workspace);
+	const folder = join(root, "folder");
+	const hostAgentDir = join(home, host === "pi" ? ".pi" : ".omp", "agent");
+	mkdirSync(hostAgentDir, { recursive: true });
+	mkdirSync(folder);
 	const calls: string[] = [];
 	const clock = { now: Date.now() };
 	const backend = new FakeStorage({ name: "home", now: () => clock.now });
@@ -91,25 +91,25 @@ export async function realRemoteTurn(binary: string, host: "pi" | "omp", delayed
 	});
 	await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
 	const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
-	writeModels(agent, host, baseUrl);
-	if (host === "omp") writeFileSync(join(agent, "config.yml"), "setupVersion: 2\nmodelRoles:\n  default: local/m\n");
+	writeModels(hostAgentDir, host, baseUrl);
+	if (host === "omp") writeFileSync(join(hostAgentDir, "config.yml"), "setupVersion: 2\nmodelRoles:\n  default: local/m\n");
 	const src = fileURLToPath(new URL("../../src/", import.meta.url));
 	// OMP's loader follows and rewrites relative imports, as its installed Orrery entry does.
 	const module = (file: string) => JSON.stringify(relative(root, join(src, file)));
 	const fixture = join(root, "extension.ts");
-	const toml = `data_dir = ${JSON.stringify(join(root, "data"))}\n[remotes.home]\nkind = "cloudflare"\nurl = "https://example.invalid"\n[lanes.Probe]\nworkspace = ${JSON.stringify(workspace)}\nremote = "home"\ncompactor_model = "missing/summary"\n`;
+	const toml = `data_dir = ${JSON.stringify(join(root, "data"))}\n[remotes.home]\nkind = "cloudflare"\nurl = "https://example.invalid"\n[agents.Probe]\nfolder = ${JSON.stringify(folder)}\nremote = "home"\ncompactor_model = "missing/summary"\n`;
 	writeFileSync(fixture, `
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createOrrery } from ${module("pi/index.ts")};
-import { applyLaneSettings } from ${module("omp/settings.ts")};
-import { parseConfig } from ${module("lane/config.ts")};
+import { applyAgentSettings } from ${module("omp/settings.ts")};
+import { parseConfig } from ${module("agent/config.ts")};
 import { MemoryStore } from ${module("memory/store.ts")};
 import { Part } from ${module("memory/types.ts")};
 import { FakeStorage } from ${module("remote/fake.ts")};
 import { RemoteSession } from ${module("remote/session.ts")};
 import { createKey, keyToCode, unseal } from ${module("remote/crypto.ts")};
-import { laneSettings, decodeRows } from ${module("remote/save-format.ts")};
+import { agentSettings, decodeRows } from ${module("remote/save-format.ts")};
 import { readRemoteSecret, saveRemoteSecret } from ${module("remote/secrets.ts")};
 import { codeToKey } from ${module("remote/crypto.ts")};
 import { RemoteError } from ${module("remote/types.ts")};
@@ -117,7 +117,7 @@ import { RemoteError } from ${module("remote/types.ts")};
 export default async function (api) {
  const root = ${JSON.stringify(root)};
  const config = parseConfig(${JSON.stringify(toml)}, root);
- const lane = config.lanes.get("Probe");
+ const agent = config.agents.get("Probe");
  const previous = readRemoteSecret(config, "home");
  const key = previous === undefined ? createKey() : codeToKey(previous.key);
  const storage = ${delayedRelease ? loopbackStorage(baseUrl.replace(/\/v1$/, "/remote")) : 'new FakeStorage({ name: "home" })'};
@@ -128,10 +128,10 @@ export default async function (api) {
  store.append("user", "remembered on another machine");
  store.saveNode(new Part(0, 0), "remembered on another machine");
  store.close();
- await RemoteSession.push({ lane: "Probe", laneDir: source, key, storage, holder: { machine: "macbook", device: "other", pid: 1 }, settings: laneSettings(lane), report: () => {} });
+ await RemoteSession.push({ agent: "Probe", agentDir: source, key, storage, holder: { machine: "macbook", device: "other", pid: 1 }, settings: agentSettings(agent), report: () => {} });
  }
  let opened;
- createOrrery({ config, host: ${JSON.stringify(host)}, ${host === "omp" ? "laneSettings: (ctx, workspace) => applyLaneSettings(ctx, workspace)," : ""} remoteStorage: () => storage, onLane: (memory) => { opened = memory; } })(api);
+ createOrrery({ config, host: ${JSON.stringify(host)}, ${host === "omp" ? "agentSettings: (ctx, folder) => applyAgentSettings(ctx, folder)," : ""} remoteStorage: () => storage, onAgent: (memory) => { opened = memory; } })(api);
  const report = (name, value) => writeFileSync(join(root, name + ".json"), JSON.stringify(value));
  api.on("session_start", () => report("opened", { remote: opened?.remote !== undefined, messages: opened?.store.root.map((m) => m.text) }));
  api.on("agent_end", async () => {
@@ -149,7 +149,7 @@ export default async function (api) {
 }
 `);
 	const launch = () => spawn(binary, ["--mode", "rpc", "--provider", "local", "--model", "m", "--thinking", "off", "-e", fixture], {
-		cwd: workspace,
+		cwd: folder,
 		env: hostEnv(home),
 	});
 	let child = launch();
@@ -213,10 +213,10 @@ export default async function (api) {
 export async function realRemoteRebuild(binary: string): Promise<void> {
 	const root = mkdtempSync(join(tmpdir(), "orrery-rebuild-pi-"));
 	const home = join(root, "home");
-	const workspace = join(root, "workspace");
-	const agent = join(home, ".pi", "agent");
-	mkdirSync(agent, { recursive: true });
-	mkdirSync(workspace);
+	const folder = join(root, "folder");
+	const piAgentDir = join(home, ".pi", "agent");
+	mkdirSync(piAgentDir, { recursive: true });
+	mkdirSync(folder);
 	const backend = new FakeStorage({ name: "home" });
 	const server = createServer((req, res) => {
 		let body = "";
@@ -229,27 +229,27 @@ export async function realRemoteRebuild(binary: string): Promise<void> {
 	});
 	await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
 	const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
-	writeModels(agent, "pi", baseUrl);
-	const toml = `data_dir = ${JSON.stringify(join(root, "data"))}\n[remotes.home]\nkind = "cloudflare"\nurl = "https://example.invalid"\n[lanes.Probe]\nworkspace = ${JSON.stringify(workspace)}\nremote = "home"\ncompactor_model = "missing/summary"\n`;
+	writeModels(piAgentDir, "pi", baseUrl);
+	const toml = `data_dir = ${JSON.stringify(join(root, "data"))}\n[remotes.home]\nkind = "cloudflare"\nurl = "https://example.invalid"\n[agents.Probe]\nfolder = ${JSON.stringify(folder)}\nremote = "home"\ncompactor_model = "missing/summary"\n`;
 	const config = parseConfig(toml, root);
-	const lane = config.lanes.get("Probe")!;
-	const dbPath = join(lane.dir, "memory.sqlite");
+	const agent = config.agents.get("Probe")!;
+	const dbPath = join(agent.dir, "memory.sqlite");
 	const key = createKey();
 	saveRemoteSecret(config, "home", { key: keyToCode(key), token: "fake-token" });
-	const machine = (laneDir: string, holder: Holder): RemoteSessionOptions => ({ lane: "Probe", laneDir, storage: backend, key, holder, settings: laneSettings(lane), report: () => {}, renewMs: 0 });
+	const machine = (agentDir: string, holder: Holder): RemoteSessionOptions => ({ agent: "Probe", agentDir, storage: backend, key, holder, settings: agentSettings(agent), report: () => {}, renewMs: 0 });
 	const mac = machine(join(root, "macbook", "Probe"), { machine: "macbook", device: "device-mac", pid: process.pid });
-	const here = machine(lane.dir, holderFor(config));
+	const here = machine(agent.dir, holderFor(config));
 	const session = async (o: RemoteSessionOptions, work: (store: MemoryStore, s: RemoteSession) => Promise<void> = async () => {}) => {
 		const s = await RemoteSession.checkOut(o);
-		const store = MemoryStore.open(join(o.laneDir, "memory.sqlite"));
+		const store = MemoryStore.open(join(o.agentDir, "memory.sqlite"));
 		s.attach(store);
 		try { await work(store, s); } finally { await s.close(); store.close(); }
 	};
 
-	// The Mac pushes snapshot 0. This machine checks the lane out, then writes a turn it never saves (lid shut). The Mac
+	// The Mac pushes snapshot 0. This machine checks the agent out, then writes a turn it never saves (lid shut). The Mac
 	// saves six times since: this machine's next check-out keeps its turn aside and rebuilds from snapshot 0 + saves 1-6.
 	const pushed = ["pushed 1", "pushed 2", "pushed 3"];
-	const source = MemoryStore.open(join(mac.laneDir, "memory.sqlite"));
+	const source = MemoryStore.open(join(mac.agentDir, "memory.sqlite"));
 	for (const text of pushed) source.append("user", text);
 	source.close();
 	await RemoteSession.push(mac);
@@ -276,14 +276,14 @@ export async function realRemoteRebuild(binary: string): Promise<void> {
 import { existsSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createOrrery } from ${module("pi/index.ts")};
-import { parseConfig } from ${module("lane/config.ts")};
+import { parseConfig } from ${module("agent/config.ts")};
 import { RemoteError } from ${module("remote/types.ts")};
 
 export default async function (api) {
  const root = ${JSON.stringify(root)};
  const storage = ${loopbackStorage(baseUrl.replace(/\/v1$/, "/remote"))};
  let opened;
- createOrrery({ config: parseConfig(${JSON.stringify(toml)}, root), host: "pi", remoteStorage: () => storage, onLane: (memory) => { opened = memory; } })(api);
+ createOrrery({ config: parseConfig(${JSON.stringify(toml)}, root), host: "pi", remoteStorage: () => storage, onAgent: (memory) => { opened = memory; } })(api);
  // pi may load the extension again for a new session: reports are numbered by the files already written.
  const report = (name, value) => {
    let n = 1;
@@ -306,7 +306,7 @@ export default async function (api) {
 		} catch { return []; }
 	});
 	const launch = () => {
-		const child = spawn(binary, ["--mode", "rpc", "--provider", "local", "--model", "m", "--thinking", "off", "-e", fixture], { cwd: workspace, env: hostEnv(home) });
+		const child = spawn(binary, ["--mode", "rpc", "--provider", "local", "--model", "m", "--thinking", "off", "-e", fixture], { cwd: folder, env: hostEnv(home) });
 		child.stdout.on("data", (chunk) => { output += chunk; });
 		child.stderr.on("data", (chunk) => { output += chunk; });
 		// "close": its output is all in, so notices can be told apart per phase.
@@ -338,7 +338,7 @@ export default async function (api) {
 		while ((await backend.list())[0].newestSave < 7 && Date.now() < deadline && pi.child.exitCode === null) await delay(20);
 		expect(await rows(7), output).toEqual(["A turn after the rebuild.", "rebuilt pong"]);
 		expect(trouble(notices())).toEqual([]);
-		// A new session in the same process opens the lane again (live, this open failed with "disk I/O error").
+		// A new session in the same process opens the agent again (live, this open failed with "disk I/O error").
 		const all = [...remote, "A turn after the rebuild.", "rebuilt pong"];
 		const beforeNew = notices().length;
 		send({ id: "new", type: "new_session" });
@@ -347,19 +347,19 @@ export default async function (api) {
 		pi.child.stdin.end();
 		expect(await read("closed-2")).toEqual({ memoryClosed: true });
 		await pi.exited;
-		// pi (1.0.4, 1.1.0) sends an RPC new session's session_start twice: the second open finds the lane already open in
-		// this same pi and says it runs without memory. That is not the rebuild's doing; opened-2 shows the lane open.
+		// pi (1.0.4, 1.1.0) sends an RPC new session's session_start twice: the second open finds the agent already open in
+		// this same pi and says it runs without memory. That is not the rebuild's doing; opened-2 shows the agent open.
 		expect(trouble(notices().slice(beforeNew)).filter((notice) => !notice.startsWith("Probe is open in another pi"))).toEqual([]);
 
 		// After pi: every row is in the file itself, none left in a WAL.
 		expect(lstatSync(`${dbPath}-wal`, { throwIfNoEntry: false })?.size ?? 0).toBe(0);
 		const copy = MemoryStore.openReadOnly(dbPath);
 		try { expect(copy.root.map((m) => m.text)).toEqual(all); } finally { copy.close(); }
-		const files = readdirSync(lane.dir);
+		const files = readdirSync(agent.dir);
 		expect(files.filter((name) => name.startsWith(".rebuild-") || name.startsWith(".restore-"))).toEqual([]);
 		const aside = files.filter((name) => name.startsWith("unsaved-"));
 		expect(aside).toHaveLength(1);
-		expect(readFileSync(join(lane.dir, aside[0]), "utf8")).toContain("this machine's unsaved turn");
+		expect(readFileSync(join(agent.dir, aside[0]), "utf8")).toContain("this machine's unsaved turn");
 
 		// A later pi opens the copy cleanly too.
 		const beforeLater = notices().length;

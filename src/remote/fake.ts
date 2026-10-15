@@ -3,7 +3,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { type FetchResult, type Holder, KEEP_SNAPSHOTS, type LaneEntry, type LockState, RemoteError, type RemoteFile, STALE_MS, type Storage, type TakeResult } from "./types.ts";
 
-interface Lane {
+interface Agent {
 	lock: number;
 	holder?: Holder;
 	held: boolean;
@@ -24,8 +24,8 @@ export class FakeStorage implements Storage {
 	readonly name: string;
 	readonly #now: () => number;
 	readonly #staleMs: number;
-	readonly #lanes = new Map<string, Lane>();
-	/** Lock numbers of dropped lanes: a lane created again continues from here, so an old lock can never match. */
+	readonly #agents = new Map<string, Agent>();
+	/** Lock numbers of dropped agents: an agent created again continues from here, so an old lock can never match. */
 	readonly #dropped = new Map<string, number>();
 	#check: Uint8Array | undefined;
 
@@ -35,33 +35,33 @@ export class FakeStorage implements Storage {
 		this.#staleMs = options.staleMs ?? STALE_MS;
 	}
 
-	#state(lane: Lane): LockState | undefined {
-		if (lane.holder === undefined) return undefined;
-		return { holder: lane.holder, lock: lane.lock, lastSeen: lane.lastSeen, held: lane.held, stale: lane.held && this.#now() - lane.lastSeen > this.#staleMs };
+	#state(agent: Agent): LockState | undefined {
+		if (agent.holder === undefined) return undefined;
+		return { holder: agent.holder, lock: agent.lock, lastSeen: agent.lastSeen, held: agent.held, stale: agent.held && this.#now() - agent.lastSeen > this.#staleMs };
 	}
 
-	#current(name: string, lock: number): Lane {
-		const lane = this.#lanes.get(name);
-		if (lane === undefined || !lane.held || lane.lock !== lock) throw new RemoteError("lock-lost", `${name}: lock ${lock} is no longer current`);
-		return lane;
+	#current(name: string, lock: number): Agent {
+		const agent = this.#agents.get(name);
+		if (agent === undefined || !agent.held || agent.lock !== lock) throw new RemoteError("lock-lost", `${name}: lock ${lock} is no longer current`);
+		return agent;
 	}
 
 	async take(name: string, holder: Holder, options: { force?: boolean } = {}): Promise<TakeResult> {
-		let lane = this.#lanes.get(name);
-		if (lane === undefined) {
-			lane = { lock: this.#dropped.get(name) ?? 0, held: false, lastSeen: 0, saves: new Map(), logs: new Map(), snapshots: new Map(), newestSave: 0 };
-			this.#lanes.set(name, lane);
+		let agent = this.#agents.get(name);
+		if (agent === undefined) {
+			agent = { lock: this.#dropped.get(name) ?? 0, held: false, lastSeen: 0, saves: new Map(), logs: new Map(), snapshots: new Map(), newestSave: 0 };
+			this.#agents.set(name, agent);
 		}
-		const state = this.#state(lane);
+		const state = this.#state(agent);
 		if (state !== undefined && state.held) {
 			const mine = state.holder.device === holder.device;
 			if (!(options.force === true && (state.stale || mine))) return { ok: false, held: state };
 		}
-		lane.lock += 1;
-		lane.holder = holder;
-		lane.held = true;
-		lane.lastSeen = this.#now();
-		return { ok: true, lock: lane.lock, newestSave: lane.newestSave };
+		agent.lock += 1;
+		agent.holder = holder;
+		agent.held = true;
+		agent.lastSeen = this.#now();
+		return { ok: true, lock: agent.lock, newestSave: agent.newestSave };
 	}
 
 	async renew(name: string, lock: number): Promise<void> {
@@ -69,52 +69,52 @@ export class FakeStorage implements Storage {
 	}
 
 	async release(name: string, lock: number): Promise<void> {
-		const lane = this.#lanes.get(name);
-		if (lane !== undefined && lane.held && lane.lock === lock) lane.held = false;
+		const agent = this.#agents.get(name);
+		if (agent !== undefined && agent.held && agent.lock === lock) agent.held = false;
 	}
 
 	async save(name: string, lock: number, n: number, file: Uint8Array, logEntry: Uint8Array): Promise<void> {
-		const lane = this.#current(name, lock);
-		if (n === lane.newestSave && n > 0 && isDeepStrictEqual(lane.saves.get(n), file) && isDeepStrictEqual(lane.logs.get(n), logEntry)) return;
-		if (n !== lane.newestSave + 1) throw new RemoteError("out-of-order", `${name}: save ${n} is not next (newest is ${lane.newestSave})`);
-		lane.saves.set(n, file.slice());
-		lane.logs.set(n, logEntry.slice());
-		lane.newestSave = n;
-		lane.lastSeen = this.#now();
+		const agent = this.#current(name, lock);
+		if (n === agent.newestSave && n > 0 && isDeepStrictEqual(agent.saves.get(n), file) && isDeepStrictEqual(agent.logs.get(n), logEntry)) return;
+		if (n !== agent.newestSave + 1) throw new RemoteError("out-of-order", `${name}: save ${n} is not next (newest is ${agent.newestSave})`);
+		agent.saves.set(n, file.slice());
+		agent.logs.set(n, logEntry.slice());
+		agent.newestSave = n;
+		agent.lastSeen = this.#now();
 	}
 
 	async snapshot(name: string, lock: number, n: number, file: Uint8Array): Promise<void> {
-		const lane = this.#current(name, lock);
-		if (n < 0 || n > lane.newestSave) throw new RemoteError("out-of-order", `${name}: snapshot ${n} is past the newest save ${lane.newestSave}`);
-		lane.snapshots.set(n, file.slice());
-		const kept = [...lane.snapshots.keys()].sort((a, b) => b - a).slice(0, KEEP_SNAPSHOTS);
-		for (const key of lane.snapshots.keys()) if (!kept.includes(key)) lane.snapshots.delete(key);
+		const agent = this.#current(name, lock);
+		if (n < 0 || n > agent.newestSave) throw new RemoteError("out-of-order", `${name}: snapshot ${n} is past the newest save ${agent.newestSave}`);
+		agent.snapshots.set(n, file.slice());
+		const kept = [...agent.snapshots.keys()].sort((a, b) => b - a).slice(0, KEEP_SNAPSHOTS);
+		for (const key of agent.snapshots.keys()) if (!kept.includes(key)) agent.snapshots.delete(key);
 		const oldest = Math.min(...kept);
-		for (const key of lane.saves.keys()) if (key <= oldest) lane.saves.delete(key);
-		lane.lastSeen = this.#now();
+		for (const key of agent.saves.keys()) if (key <= oldest) agent.saves.delete(key);
+		agent.lastSeen = this.#now();
 	}
 
 	async fetch(name: string, after: number): Promise<FetchResult> {
-		const lane = this.#lanes.get(name);
-		if (lane === undefined) throw new RemoteError("not-found", `No lane ${name} on remote ${this.name}`);
-		const newest = Math.max(-1, ...lane.snapshots.keys());
+		const agent = this.#agents.get(name);
+		if (agent === undefined) throw new RemoteError("not-found", `No agent ${name} on remote ${this.name}`);
+		const newest = Math.max(-1, ...agent.snapshots.keys());
 		const file = (n: number, bytes: Uint8Array): RemoteFile => ({ n, file: bytes.slice() });
 		const from = newest > after ? newest : after;
-		const saves = [...lane.saves.entries()].filter(([n]) => n > from).sort(([a], [b]) => a - b).map(([n, f]) => file(n, f));
-		return { ...(newest > after ? { snapshot: file(newest, lane.snapshots.get(newest) as Uint8Array) } : {}), saves, newestSave: lane.newestSave };
+		const saves = [...agent.saves.entries()].filter(([n]) => n > from).sort(([a], [b]) => a - b).map(([n, f]) => file(n, f));
+		return { ...(newest > after ? { snapshot: file(newest, agent.snapshots.get(newest) as Uint8Array) } : {}), saves, newestSave: agent.newestSave };
 	}
 
 	async list(): Promise<LaneEntry[]> {
-		return [...this.#lanes.entries()].map(([lane, l]) => {
+		return [...this.#agents.entries()].map(([agent, l]) => {
 			const lock = this.#state(l);
-			return { lane, newestSave: l.newestSave, ...(lock === undefined ? {} : { lock }) };
+			return { lane: agent, newestSave: l.newestSave, ...(lock === undefined ? {} : { lock }) };
 		});
 	}
 
 	async log(name: string): Promise<RemoteFile[]> {
-		const lane = this.#lanes.get(name);
-		if (lane === undefined) throw new RemoteError("not-found", `No lane ${name} on remote ${this.name}`);
-		return [...lane.logs.entries()].sort(([a], [b]) => a - b).map(([n, f]) => ({ n, file: f.slice() }));
+		const agent = this.#agents.get(name);
+		if (agent === undefined) throw new RemoteError("not-found", `No agent ${name} on remote ${this.name}`);
+		return [...agent.logs.entries()].sort(([a], [b]) => a - b).map(([n, f]) => ({ n, file: f.slice() }));
 	}
 
 	async getCheck(): Promise<Uint8Array | undefined> {
@@ -127,8 +127,8 @@ export class FakeStorage implements Storage {
 	}
 
 	async drop(name: string, lock: number): Promise<void> {
-		const lane = this.#current(name, lock);
-		this.#dropped.set(name, lane.lock);
-		this.#lanes.delete(name);
+		const agent = this.#current(name, lock);
+		this.#dropped.set(name, agent.lock);
+		this.#agents.delete(name);
 	}
 }

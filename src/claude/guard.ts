@@ -1,6 +1,6 @@
 /**
- * The lane guard on Claude Code's tool calls (spec §4 PreToolUse). Claude Code's tool inputs are mapped onto the
- * checks pi's tool calls get (src/lane/guard-paths.ts over src/lane/guard-rules.ts):
+ * The agent guard on Claude Code's tool calls (spec §4 PreToolUse). Claude Code's tool inputs are mapped onto the
+ * checks pi's tool calls get (src/agent/guard-paths.ts over src/agent/guard-rules.ts):
  * - Read, Write, Edit, MultiEdit and NotebookEdit name one file;
  * - Grep and Glob search a folder: the cwd by default, or the folder an absolute Glob pattern starts with;
  * - Bash is judged by its command, and so is any other tool's command line, at any depth: a command, cmd, script or
@@ -19,14 +19,14 @@
  * What differs from pi:
  * - paths resolve as Claude Code resolves them (claudeToolPath), not as pi does;
  * - Claude Code's login files are credentials too;
- * - the PreToolUse hook adds Claude Code's own state to the roots a lane may write (claudeStateRoots, ruling C10).
+ * - the PreToolUse hook adds Claude Code's own state to the roots an agent may write (claudeStateRoots, ruling C10).
  */
 
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { guardToolCall, type PathGuardOptions, realTarget } from "../lane/guard-paths.ts";
-import { ownFolder } from "../lane/private-file.ts";
+import { guardToolCall, type PathGuardOptions, realTarget } from "../agent/guard-paths.ts";
+import { ownFolder } from "../agent/private-file.ts";
 
 /** Claude Code's tool names as pi's guard knows them. */
 const AS_PI: Readonly<Record<string, string>> = {
@@ -123,7 +123,7 @@ function fileUriPath(text: string): string | undefined {
 /**
  * Mirrors Claude Code's expandPath (2.1.291), which its file tools, Grep and Glob call on a path: trimmed, "~" and
  * "~/…" to the home folder, an absolute path normalized, anything else resolved against the cwd. Unlike pi's, it
- * keeps a leading "@", "file://" and unicode spaces as they are, so a workspace link spelled that way is where the
+ * keeps a leading "@", "file://" and unicode spaces as they are, so a folder link spelled that way is where the
  * file lands.
  */
 export function claudeToolPath(raw: string, cwd: string, home: string = homedir()): string {
@@ -272,7 +272,7 @@ export function claudeProjectFolder(projectDir: string): string | undefined {
 }
 
 /**
- * Claude Code's own per-user state, which a lane may write (ruling C10): this project's folder under
+ * Claude Code's own per-user state, which an agent may write (ruling C10): this project's folder under
  * ~/.claude/projects (its auto memory), ~/.claude/plans, and the session scratch root <temp>/claude-<uid>, where temp
  * is Claude Code's own: CLAUDE_CODE_TMPDIR, else TMPDIR, else /tmp (a relative one is skipped).
  * - The guard follows a root's links, so a root planted as a link (to home, say) would open its target to writes.

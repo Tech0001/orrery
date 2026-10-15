@@ -4,24 +4,25 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/provid
 import { afterEach, describe, expect, it } from "vitest";
 import { browse, compactorCommand, memoryReport, pageOpener } from "../../src/pi/commands.ts";
 import { FAUX, FAUX_SUMMARY } from "./harness.ts";
-import { cleanup, lastLane, pi, world } from "./world.ts";
+import { cleanup, isolatedHome, lastAgent, pi, world } from "./world.ts";
 
 afterEach(cleanup);
+isolatedHome();
 
 describe("commands", () => {
-	it("/memory reports the lane, /compactor shows, sets (persisting) and resets, /browse writes a private page", async () => {
+	it("/memory reports the agent, /compactor shows, sets (persisting) and resets, /browse writes a private page", async () => {
 		const { root, config } = world();
 		await pi(root, join(root, "agent-Atlas"), config);
-		const lane = lastLane();
+		const agent = lastAgent();
 		const model = `${FAUX.provider}/${FAUX.model}`;
 		const summaries = `${FAUX_SUMMARY.provider}/${FAUX_SUMMARY.model}`;
-		expect(memoryReport(lane)).toMatch(/Atlas: 0 messages, 0 summaries/);
-		expect(compactorCommand(lane, "")).toBe(`summaries: ${summaries} (off) · from config`);
-		expect(compactorCommand(lane, `${model} low`)).toBe(`summaries: ${model} (low) · set in chat`);
-		expect(lane.store.getMeta("lane.compactor-model")).toContain('"low"');
-		expect(compactorCommand(lane, "reset")).toBe(`summaries: ${summaries} (off) · from config`);
-		expect(() => compactorCommand(lane, "nobody/nothing")).toThrow(/Unknown model/);
-		const page = browse(lane);
+		expect(memoryReport(agent)).toMatch(/Atlas: 0 messages, 0 summaries/);
+		expect(compactorCommand(agent, "")).toBe(`summaries: ${summaries} (off) · from config`);
+		expect(compactorCommand(agent, `${model} low`)).toBe(`summaries: ${model} (low) · set in chat`);
+		expect(agent.store.getMeta("lane.compactor-model")).toContain('"low"');
+		expect(compactorCommand(agent, "reset")).toBe(`summaries: ${summaries} (off) · from config`);
+		expect(() => compactorCommand(agent, "nobody/nothing")).toThrow(/Unknown model/);
+		const page = browse(agent);
 		expect(existsSync(page) && (statSync(page).mode & 0o777) === 0o600).toBe(true);
 	});
 
@@ -35,17 +36,17 @@ describe("commands", () => {
 		await run.session.prompt("/compactor nobody/nothing");
 		expect(run.notices.at(-1)?.type).toBe("error");
 		expect(run.notices.at(-1)?.message).toMatch(/^Not switched: unknown model nobody\/nothing/);
-		expect(lastLane().compactorModel.thinking).toBe("low");
+		expect(lastAgent().compactorModel.thinking).toBe("low");
 	});
 
-	it("blocks a write outside the lane's folder through pi's tool loop", async () => {
+	it("blocks a write outside the agent's folder through pi's tool loop", async () => {
 		const { root, config } = world();
 		const run = await pi(root, join(root, "agent-Atlas"), config);
 		run.setResponses([fauxAssistantMessage([fauxToolCall("write", { path: "/etc/orrery-test.txt", content: "x" })]), fauxAssistantMessage("done")]);
 		await run.session.prompt("write it");
 		expect(existsSync("/etc/orrery-test.txt")).toBe(false);
 		const results = run.session.messages.filter((m: { role: string }) => m.role === "toolResult") as { content: { text?: string }[]; isError?: boolean }[];
-		expect(results.at(-1)?.content.map((c) => c.text ?? "").join("")).toMatch(/outside this lane's workspace/);
+		expect(results.at(-1)?.content.map((c) => c.text ?? "").join("")).toMatch(/outside this agent's folder/);
 	});
 
 	it("refuses, through pi's tool loop, a search over Orrery's data folder (it holds Orrery's credentials.json)", async () => {
@@ -63,7 +64,7 @@ describe("commands", () => {
 		const opened: string[] = [];
 		const run = await pi(root, join(root, "agent-Atlas"), config, undefined, { openPage: (path) => opened.push(path) });
 		await run.session.prompt("/browse");
-		const page = join(root, "data", "lanes", "Atlas", "memory.html");
+		const page = join(root, "data", "agents", "Atlas", "memory.html");
 		expect(run.notices.at(-1)).toEqual({ message: `Wrote ${page}`, type: "info" });
 		expect(opened).toEqual([page]);
 	});

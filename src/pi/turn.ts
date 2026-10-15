@@ -1,6 +1,6 @@
 /** OptChat's fresh context per run inside pi (spec §4): the view goes into the system prompt, older turns stay out. */
 
-export { memorySection } from "../lane/view-text.ts";
+export { memorySection } from "../agent/view-text.ts";
 
 /**
  * The current run: from its first user message. A call a prompt did not start (continue, a sent message that triggers a

@@ -10,7 +10,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { ServerStorage } from "../../src/remote/server.ts";
 import { RemoteError } from "../../src/remote/types.ts";
 import { SERVER_SCRIPT } from "../../src/remote/server-script.ts";
-import { sshTarget } from "../../src/lane/env.ts";
+import { sshTarget } from "../../src/agent/env.ts";
 import { storageContract } from "./contract.ts";
 import { fakeSsh, serverRemote } from "./fake-ssh.ts";
 
@@ -23,8 +23,12 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
+// The SSH control socket must fit a Unix socket path (104 bytes on macOS), and macOS's tmpdir is already ~50 bytes,
+// so tests that expect a shared control path use a short root. Orrery itself falls back to ControlPath=none when its
+// folder is too long, which a separate test covers.
+const shortRoot = process.platform === "win32" ? tmpdir() : "/tmp";
 function setup(folder = "lanes", env: Record<string, string> = {}) {
-	const home = mkdtempSync(join(tmpdir(), "orrery-server-"));
+	const home = mkdtempSync(join(shortRoot, "o-"));
 	homes.push(home);
 	const ssh = fakeSsh(home, undefined, env);
 	return { home, ssh, storage: new ServerStorage(serverRemote(folder), join(home, "ssh"), { ssh: ssh.path }) };
@@ -457,7 +461,7 @@ it("kills a stuck SSH call and reports unreachable", async () => {
 });
 
 it.skipIf(process.env.ORRERY_TEST_SSH_HOST === undefined)("round-trips through a real SSH host", async () => {
-	const home = mkdtempSync(join(tmpdir(), "orrery-server-live-"));
+	const home = mkdtempSync(join(shortRoot, "o-live-"));
 	homes.push(home);
 	const folder = `/tmp/orrery-contract-${randomUUID()} 'quoted' $dollar -dash`;
 	const remote = serverRemote(folder);

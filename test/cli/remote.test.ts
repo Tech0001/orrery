@@ -3,15 +3,15 @@ import { readFileSync, statSync, renameSync, rmSync, symlinkSync, unlinkSync, wr
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { remoteCommand, setStorageForTests } from "../../src/cli/remote.ts";
-import { loadConfig } from "../../src/lane/config.ts";
+import { loadConfig } from "../../src/agent/config.ts";
 import { createKey, keyToCode, codeToKey, keyMatches, seal, sealCheck } from "../../src/remote/crypto.ts";
 import { RemoteError } from "../../src/remote/types.ts";
 import { FakeStorage } from "../../src/remote/fake.ts";
-import { checkOutLane } from "../../src/remote/checkout.ts";
+import { checkOutAgent } from "../../src/remote/checkout.ts";
 import { openStorage } from "../../src/remote/index.ts";
 import { readRemoteSecret, removeRemoteSecret, saveRemoteSecret } from "../../src/remote/secrets.ts";
-import { cleanEnv, MAIN } from "../claude/support.ts";
-import { tempDir } from "../lane/support.ts";
+import { cleanEnv, cliCommand } from "../claude/support.ts";
+import { tempDir } from "../agent/support.ts";
 
 let dir: string;
 let path: string;
@@ -31,45 +31,48 @@ beforeEach(() => {
 	saveRemoteSecret(loadConfig(path), "home", { key: code, token });
 });
 afterEach(() => { setStorageForTests(undefined); rmSync(dir, { recursive: true, force: true }); });
-const cli = (...args: string[]) => spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, "--config", path, ...args], { env: cleanEnv({}), encoding: "utf8", timeout: 15000 });
+const cli = (...args: string[]) => {
+	const c = cliCommand(["--config", path, ...args]);
+	return spawnSync(c.cmd, c.args, { env: cleanEnv({}), encoding: "utf8", timeout: 15000 });
+};
 
-describe("orrery remote lanes", () => {
-	it("lists closed, held and stale lanes without changing their locks", async () => {
+describe("orrery remote agents", () => {
+	it("lists closed, held and stale agents without changing their locks", async () => {
 		const taken = await storage.take("Birch", peer);
 		if (!taken.ok) throw new Error("held");
 		await storage.release("Birch", taken.lock);
 		await storage.take("Atlas", peer);
 		const before = await storage.list();
-		const text = await remoteCommand(path, ["lanes", "home"]);
+		const text = await remoteCommand(path, ["agents", "home"]);
 		expect(text).toContain("Birch");
 		expect(text).toContain("closed");
 		expect(text).toContain("Atlas");
 		expect(text).toContain("open on macbook");
 		expect(await storage.list()).toEqual(before);
 		clock += 181000;
-		expect(await remoteCommand(path, ["lanes", "home"])).toContain("stale");
+		expect(await remoteCommand(path, ["agents", "home"])).toContain("stale");
 	});
 
 	it("returns valid JSON with no encryption key or access token", async () => {
 		await storage.take("Atlas", peer);
-		const text = await remoteCommand(path, ["lanes", "home"], { json: true });
-		expect(JSON.parse(text)).toMatchObject({ remote: "home", lanes: [{ lane: "Atlas", newestSave: 0, lock: { holder: peer, held: true, stale: false } }] });
+		const text = await remoteCommand(path, ["agents", "home"], { json: true });
+		expect(JSON.parse(text)).toMatchObject({ remote: "home", agents: [{ agent: "Atlas", newestSave: 0, lock: { holder: peer, held: true, stale: false } }] });
 		expect(text).not.toContain(code);
 		expect(text).not.toContain(token);
 	});
 
 	it("reports an empty remote clearly in text and as an empty JSON list", async () => {
-		expect(await remoteCommand(path, ["lanes", "home"])).toMatch(/no lanes/i);
-		expect(JSON.parse(await remoteCommand(path, ["lanes", "home"], { json: true }))).toEqual({ remote: "home", lanes: [] });
+		expect(await remoteCommand(path, ["agents", "home"])).toMatch(/no agents/i);
+		expect(JSON.parse(await remoteCommand(path, ["agents", "home"], { json: true }))).toEqual({ remote: "home", agents: [] });
 	});
 
 	it("refuses unknown remotes even when a storage hook is installed", async () => {
-		await expect(remoteCommand(path, ["lanes", "missing"])).rejects.toThrow(/unknown remote/i);
+		await expect(remoteCommand(path, ["agents", "missing"])).rejects.toThrow(/unknown remote/i);
 	});
 
 	it("does not let terminal control characters in holder names escape", async () => {
 		await storage.take("Atlas", { ...peer, machine: "mac\u001b[31mbook\nforged row" });
-		const text = await remoteCommand(path, ["lanes", "home"]);
+		const text = await remoteCommand(path, ["agents", "home"]);
 		expect(text).not.toContain("\u001b");
 		expect(text.trim().split("\n")).toHaveLength(1);
 	});
@@ -113,8 +116,8 @@ describe("orrery remote remove", () => {
 		expect(await storage.list()).toEqual(before);
 	});
 
-	it("refuses a remote a lane uses and changes neither config nor credentials", async () => {
-		writeFileSync(path, `${readFileSync(path, "utf8")}\n[lanes.Atlas]\nworkspace = "${dir}"\ncompactor_model = "openai/gpt-6.1-sol"\nremote = "home"\n`);
+	it("refuses a remote an agent uses and changes neither config nor credentials", async () => {
+		writeFileSync(path, `${readFileSync(path, "utf8")}\n[agents.Atlas]\nfolder = "${dir}"\ncompactor_model = "openai/gpt-6.1-sol"\nremote = "home"\n`);
 		const before = readFileSync(path, "utf8");
 		await expect(remoteCommand(path, ["remove", "home"])).rejects.toThrow(/Atlas.*uses/);
 		expect(readFileSync(path, "utf8")).toBe(before);
@@ -145,17 +148,17 @@ describe("orrery remote remove", () => {
 		expect(readRemoteSecret(loadConfig(path), "home")).toBeUndefined();
 	});
 
-	it("wires remote lanes errors and help into the CLI", () => {
-		const result = cli("remote", "lanes", "missing", "--json");
+	it("wires remote agents errors and help into the CLI", () => {
+		const result = cli("remote", "agents", "missing", "--json");
 		expect(result.status).toBe(1);
 		expect(result.stderr).toMatch(/unknown remote/i);
 		expect(result.stdout).toBe("");
 		const help = cli("help");
-		expect(help.stdout).toContain("remote lanes <name> [--json]");
+		expect(help.stdout).toContain("remote agents <name> [--json]");
 		expect(help.stdout).toContain("remote remove <name>");
 	});
 
-	it.each([[], ["lanes"], ["remove"], ["bad", "home"], ["remove", "home", "extra"]].map((args) => [args] as const))("rejects incomplete or ambiguous arguments (%j)", async (args) => {
+	it.each([[], ["agents"], ["remove"], ["bad", "home"], ["remove", "home", "extra"]].map((args) => [args] as const))("rejects incomplete or ambiguous arguments (%j)", async (args) => {
 		const before = readFileSync(path, "utf8");
 		await expect(remoteCommand(path, args)).rejects.toThrow();
 		expect(readFileSync(path, "utf8")).toBe(before);
@@ -178,7 +181,7 @@ describe("remote add and recovery", () => {
 		}
 		const before = readFileSync(path, "utf8"); const key = createKey(); const recovery = keyToCode(key);
 		const check = sealCheck(key); await storage.putCheck(check); await storage.take("Atlas", peer);
-		const lanes = await storage.list(); const prompts: string[] = [];
+		const agents = await storage.list(); const prompts: string[] = [];
 		setStorageForTests((config, name, secret) => {
 			expect(config.remotes.get(name)?.kind).toBe(kind);
 			if (kind === "cloudflare") expect(secret?.token).toBe(token);
@@ -191,7 +194,7 @@ describe("remote add and recovery", () => {
 		expect(prompts).toEqual(kind === "cloudflare" ? ["Cloudflare access token (hidden):", "Recovery code (hidden):"] : ["Recovery code (hidden):"]);
 		expect(readRemoteSecret(loadConfig(path), "home")).toEqual({ key: recovery, ...(kind === "cloudflare" ? { token } : {}) });
 		expect(readFileSync(path, "utf8")).toBe(before); expect(await storage.getCheck()).toEqual(check);
-		expect(await storage.list()).toEqual(lanes);
+		expect(await storage.list()).toEqual(agents);
 		expect(out).toContain("Added remote home"); expect(out).not.toContain(token); expect(out).not.toContain(recovery);
 	});
 
@@ -247,10 +250,10 @@ describe("remote add and recovery", () => {
 		expect(readFileSync(path, "utf8")).toBe(before);
 	});
 
-	it("refuses a configured remote that has lanes but no key check", async () => {
+	it("refuses a configured remote that has agents but no key check", async () => {
 		removeRemoteSecret(loadConfig(path), "home"); const before = readFileSync(path, "utf8");
 		await storage.take("Atlas", { machine: "other", device: "other", pid: 1 });
-		await expect(remoteCommand(path, ["add", "home"], { new: true }, interaction(token))).rejects.toThrow(/lanes.*no key check/i);
+		await expect(remoteCommand(path, ["add", "home"], { new: true }, interaction(token))).rejects.toThrow(/agents.*no key check/i);
 		expect(await storage.getCheck()).toBeUndefined(); expect(readRemoteSecret(loadConfig(path), "home")).toBeUndefined();
 		expect(readFileSync(path, "utf8")).toBe(before);
 	});
@@ -264,11 +267,11 @@ describe("remote add and recovery", () => {
 
 	it("makes the missing-key and token hints name the bare recovery command", async () => {
 		removeRemoteSecret(loadConfig(path), "home");
-		writeFileSync(path, `${readFileSync(path, "utf8")}\n[lanes.Atlas]\nworkspace = "${dir}"\ncompactor_model = "openai/gpt-6.1-sol"\nremote = "home"\n`);
+		writeFileSync(path, `${readFileSync(path, "utf8")}\n[agents.Atlas]\nfolder = "${dir}"\ncompactor_model = "openai/gpt-6.1-sol"\nremote = "home"\n`);
 		const config = loadConfig(path);
 		expect(() => openStorage(config, "home")).toThrow("No token for remote home on this machine: run orrery remote add home");
 		try { openStorage(config, "home"); } catch (error) { expect((error as Error).message).not.toContain("--cloudflare"); }
-		await expect(checkOutLane(config, config.lanes.get("Atlas")!, { storage, report: () => {} })).rejects.toMatchObject({ kind: "key-missing", message: "No key for remote home on this machine: run orrery remote add home" });
+		await expect(checkOutAgent(config, config.agents.get("Atlas")!, { storage, report: () => {} })).rejects.toMatchObject({ kind: "key-missing", message: "No key for remote home on this machine: run orrery remote add home" });
 		const run = cli("remote", "add", "home");
 		expect(run.status).toBe(1); expect(run.stderr).toContain("--token-file"); expect(run.stderr).not.toContain("Choose exactly one");
 	});
@@ -281,10 +284,10 @@ describe("remote add and recovery", () => {
 		expect(readRemoteSecret(loadConfig(path), "home")).toBeUndefined();
 	});
 
-	it("refuses a remote with lanes but no key check instead of creating another key", async () => {
-		newConfig(); const before = readFileSync(path, "utf8"); await storage.take("Atlas", peer); const lanes = await storage.list();
-		await expect(remoteCommand(path, ["add", "home"], { server: "server:memory" })).rejects.toThrow(/lanes.*no key check/i);
-		expect(await storage.getCheck()).toBeUndefined(); expect(await storage.list()).toEqual(lanes);
+	it("refuses a remote with agents but no key check instead of creating another key", async () => {
+		newConfig(); const before = readFileSync(path, "utf8"); await storage.take("Atlas", peer); const agents = await storage.list();
+		await expect(remoteCommand(path, ["add", "home"], { server: "server:memory" })).rejects.toThrow(/agents.*no key check/i);
+		expect(await storage.getCheck()).toBeUndefined(); expect(await storage.list()).toEqual(agents);
 		expect(readFileSync(path, "utf8")).toBe(before); expect(readRemoteSecret(loadConfig(path), "home")).toBeUndefined();
 	});
 
@@ -356,7 +359,7 @@ describe("remote test, key and log", () => {
 		const key = createKey(); saveRemoteSecret(loadConfig(path), "home", { key: keyToCode(key), token });
 		await storage.putCheck(sealCheck(key)); return key;
 	}
-	it("tests reachability, locks and decryption and removes its test lane", async () => {
+	it("tests reachability, locks and decryption and removes its test agent", async () => {
 		await workingKey();
 		const text = await remoteCommand(path, ["test", "home"]);
 		expect(text.match(/✓/g)).toHaveLength(4);
@@ -370,13 +373,13 @@ describe("remote test, key and log", () => {
 		await expect(remoteCommand(path, ["test", "home"])).rejects.toThrow(/✗.*key/i);
 		expect(await storage.list()).toEqual([]);
 	});
-	it("does not delete a lane already named orrery-test", async () => {
+	it("does not delete an agent already named orrery-test", async () => {
 		await workingKey(); const taken = await storage.take("orrery-test", peer); if (!taken.ok) throw new Error("held");
 		await storage.snapshot("orrery-test", taken.lock, 0, new Uint8Array([7])); await storage.release("orrery-test", taken.lock);
 		await expect(remoteCommand(path, ["test", "home"])).rejects.toThrow(/orrery-test.*memory/);
 		expect((await storage.fetch("orrery-test", -1)).snapshot?.file).toEqual(new Uint8Array([7]));
 	});
-	it("cleans up an empty test lane left by an older remote test", async () => {
+	it("cleans up an empty test agent left by an older remote test", async () => {
 		await workingKey(); const taken = await storage.take("orrery-test", peer); if (!taken.ok) throw new Error("held");
 		await storage.release("orrery-test", taken.lock);
 		expect(await remoteCommand(path, ["test", "home"])).toContain("✓ key decrypts");
@@ -384,12 +387,12 @@ describe("remote test, key and log", () => {
 	});
 	it("does not delete memory created in orrery-test between listing and taking its lock", async () => {
 		await workingKey(); const take = storage.take.bind(storage); let first = true;
-		storage.take = async (lane, holder, options) => {
+		storage.take = async (agent, holder, options) => {
 			if (first) {
-				first = false; const other = await take(lane, peer); if (!other.ok) throw new Error("held");
-				await storage.snapshot(lane, other.lock, 0, new Uint8Array([8])); await storage.release(lane, other.lock);
+				first = false; const other = await take(agent, peer); if (!other.ok) throw new Error("held");
+				await storage.snapshot(agent, other.lock, 0, new Uint8Array([8])); await storage.release(agent, other.lock);
 			}
-			return take(lane, holder, options);
+			return take(agent, holder, options);
 		};
 		await expect(remoteCommand(path, ["test", "home"])).rejects.toThrow(/orrery-test.*memory/);
 		expect((await storage.fetch("orrery-test", -1)).snapshot?.file).toEqual(new Uint8Array([8]));
@@ -397,7 +400,7 @@ describe("remote test, key and log", () => {
 	});
 	it("releases the test lock if cleanup fails and reports the failure", async () => {
 		await workingKey(); storage.drop = async () => { throw new RemoteError("unreachable", "offline"); };
-		await expect(remoteCommand(path, ["test", "home"])).rejects.toThrow(/test lane removed.*offline/);
+		await expect(remoteCommand(path, ["test", "home"])).rejects.toThrow(/test agent removed.*offline/);
 		expect((await storage.list())[0].lock?.held).toBe(false);
 	});
 	it("prints the code only through the explicit key command, after a secret warning", async () => {
@@ -408,7 +411,7 @@ describe("remote test, key and log", () => {
 	});
 	it("marks only explicit takeovers and shows their source, ignoring ordinary lock changes", async () => {
 		const key = await workingKey();
-		writeFileSync(path, `${readFileSync(path, "utf8")}\n[lanes.Atlas]\nworkspace = "${dir}"\ncompactor_model = "openai/gpt-6.1-sol"\nremote = "home"\n`);
+		writeFileSync(path, `${readFileSync(path, "utf8")}\n[agents.Atlas]\nfolder = "${dir}"\ncompactor_model = "openai/gpt-6.1-sol"\nremote = "home"\n`);
 		for (let n = 1; n <= 3; n++) {
 			const take = await storage.take("Atlas", peer); if (!take.ok) throw new Error("held");
 			const header = { v: 1, n, lock: take.lock, machine: "macbook", device: "other", at: "2026-10-12T14:02:00Z", rows: { main: 2, tree: 0, usage: 1, meta: 0 }, sha256: "a".repeat(64), token, key: keyToCode(key), ...(n === 1 || n === 3 ? { takeover: { from: "old-pc" } } : {}) };
@@ -424,7 +427,7 @@ describe("remote test, key and log", () => {
 	});
 	it("rejects tampered and incorrectly bound log entries", async () => {
 		const key = await workingKey();
-		writeFileSync(path, `${readFileSync(path, "utf8")}\n[lanes.Atlas]\nworkspace = "${dir}"\ncompactor_model = "openai/gpt-6.1-sol"\nremote = "home"\n`);
+		writeFileSync(path, `${readFileSync(path, "utf8")}\n[agents.Atlas]\nfolder = "${dir}"\ncompactor_model = "openai/gpt-6.1-sol"\nremote = "home"\n`);
 		const take = await storage.take("Atlas", peer); if (!take.ok) throw new Error("held");
 		await storage.save("Atlas", take.lock, 1, new Uint8Array([1]), seal(key, "Atlas", "save", 1, Buffer.from("private malformed text")));
 		await expect(remoteCommand(path, ["log", "Atlas"], { json: true })).rejects.toThrow(/decrypt/);

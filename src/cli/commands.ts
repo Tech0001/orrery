@@ -1,36 +1,35 @@
-/** Non-interactive and setup commands of lane. */
+/** Non-interactive and setup commands of agent. */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { Models } from "@earendil-works/pi-ai";
 import { acceptHostKey, scanHostKey } from "@earendil-works/pi-env";
-import { checkClaudeFiles, claudeProjectDir, claudeSessionFiles, extractClaudeFiles } from "../import/claude.ts";
-import { checkCodexFiles, extractCodex, findCodexSessions } from "../import/codex.ts";
-import { interleave, splitNote } from "../import/merge.ts";
-import { buildPreview, commitPreview, readPreview, writePreview } from "../import/preview.ts";
-import { type SplitResult, splitMessage } from "../import/split.ts";
-import { emptyExtract } from "../import/turns.ts";
-import { findLane, type HarnessConfig, parseModelChoice } from "../lane/config.ts";
-import { FileCredentialStore } from "../lane/credentials.ts";
-import { sshTarget } from "../lane/env.ts";
-import { laneOverview, laneUsage, summaryText, TOOL_LABELS } from "../lane/overview.ts";
-import { laneCompactorTarget } from "../lane/compactor-target.ts";
-import { createLaneCompactor } from "../lane/lane.ts";
-import { compactorModel, createLaneModels, savedSummaryLoginsOnly } from "../lane/models.ts";
-import { openSummarySources, type SummarySources } from "../lane/summary-sources.ts";
-import { runCompactorText } from "../lane/summary-text.ts";
-import { type Compactor, type CompactorModel, MemoryStore, MemoryView, renderMemoryHtml } from "../memory/index.ts";
+import { checkClaudeFiles, claudeProjectDir, claudeSessionFiles } from "../import/claude.ts";
+import { checkCodexFiles, findCodexSessions } from "../import/codex.ts";
+import { dryRun } from "../import/dry-run.ts";
+import { commitPreview, readPreview } from "../import/preview.ts";
+import { findAgent, type HarnessConfig, parseModelChoice } from "../agent/config.ts";
+import { FileCredentialStore } from "../agent/credentials.ts";
+import { sshTarget } from "../agent/env.ts";
+import { writeBuild } from "../agent/build.ts";
+import { agentOverview, agentUsage, summaryText, TOOL_LABELS, totalCost, usageCost } from "../agent/overview.ts";
+import { agentCompactorTarget } from "../agent/compactor-target.ts";
+import { createAgentCompactor } from "../agent/agent.ts";
+import { createAgentModels, savedSummaryLoginsOnly } from "../agent/models.ts";
+import { openSummarySources, type SummarySources } from "../agent/summary-sources.ts";
+import { runCompactorText } from "../agent/summary-text.ts";
+import { type Compactor, MemoryStore, MemoryView, renderMemoryHtml } from "../memory/index.ts";
 import { attachRemoteStore, withBriefCheckOut } from "../remote/checkout.ts";
 import { clean } from "./printer.ts";
 import { formatUsage } from "./run.ts";
 
-/** `orrery status [<Lane>] [--json]`: one line per lane (or the named one): state, tool, memory, summaries. */
+/** `orrery status [<Name>] [--json]`: one line per agent (or the named one): state, tool, memory, summaries. */
 export function statusCommand(config: HarnessConfig, only?: string, options: { json?: boolean } = {}): string {
-	const name = only === undefined ? undefined : findLane(config, only).name;
-	const rows = laneOverview(config).filter((row) => name === undefined || row.name === name);
-	if (options.json === true) return `${JSON.stringify({ lanes: rows }, null, 2)}\n`;
+	const name = only === undefined ? undefined : findAgent(config, only).name;
+	const rows = agentOverview(config).filter((row) => name === undefined || row.name === name);
+	if (options.json === true) return `${JSON.stringify({ agents: rows }, null, 2)}\n`;
 	const toolWidth = Math.max(11, ...rows.map((row) => TOOL_LABELS[row.tool].length + (row.launcher === "ori" ? 6 : 0)));
 	let out = "";
 	for (const row of rows) {
@@ -38,14 +37,14 @@ export function statusCommand(config: HarnessConfig, only?: string, options: { j
 		out += `${row.name.padEnd(12)} ${row.state.padEnd(9)} ${`${TOOL_LABELS[row.tool]}${row.launcher === "ori" ? " · Ori" : ""}`.padEnd(toolWidth)} ${memory}  summaries ${summaryText(row)} · ${row.summaryModel.ref} ${row.summaryModel.thinking}\n`;
 	}
 	// status.json carries provider and model error text: never pass its control sequences to the terminal.
-	return clean(out) || "No lanes configured.\n";
+	return clean(out) || "No agents configured.\n";
 }
 
-export function usageCommand(config: HarnessConfig, laneName: string | undefined, days: number, options: { json?: boolean } = {}): string {
-	const only = laneName === undefined ? undefined : findLane(config, laneName).name;
-	const usage = laneUsage(config, days, only);
-	if (options.json === true) return `${JSON.stringify({ days, lanes: usage }, null, 2)}\n`;
-	return usage.map((lane) => `== ${lane.name}\n${formatUsage([...lane.rows])}`).join("") || "No usage recorded.\n";
+export function usageCommand(config: HarnessConfig, agentName: string | undefined, days: number, options: { json?: boolean } = {}): string {
+	const only = agentName === undefined ? undefined : findAgent(config, agentName).name;
+	const usage = agentUsage(config, days, only);
+	if (options.json === true) return `${JSON.stringify({ days, agents: usage }, null, 2)}\n`;
+	return usage.map((agent) => `== ${agent.name}\n${formatUsage([...agent.rows])}`).join("") || "No usage recorded.\n";
 }
 
 export async function trustHostCommand(config: HarnessConfig, hostName: string): Promise<void> {
@@ -62,29 +61,69 @@ export async function trustHostCommand(config: HarnessConfig, hostName: string):
 	process.stdout.write(`Trusted ${host.host} as ${host.hostKeyAlias}.\n`);
 }
 
-export async function compactCommand(config: HarnessConfig, laneName: string, models?: Models): Promise<void> {
-	const lane = findLane(config, laneName);
-	await withBriefCheckOut(config, lane, async (remote, writer) => {
-		const store = MemoryStore.open(join(lane.dir, "memory.sqlite"), writer);
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/**
+ * `orrery compact <Name> [--progress FILE]`: builds every missing summary. With `progress`, FILE (the agent's build.json,
+ * src/agent/build.ts) says how far it is and what its summaries cost so far, every 5 s and when it ends.
+ */
+export async function compactCommand(config: HarnessConfig, agentName: string, models?: Models, options: { readonly progress?: string } = {}): Promise<void> {
+	const agent = findAgent(config, agentName);
+	await withBriefCheckOut(config, agent, async (remote, writer) => {
+		const store = MemoryStore.open(join(agent.dir, "memory.sqlite"), writer);
 		let compactor: Compactor | undefined;
 		const lost = Promise.withResolvers<void>();
 		if (remote !== undefined) attachRemoteStore(remote, store, () => { lost.resolve(); void compactor?.close(); });
-		try {
-			const laneModels =
-				models ?? createLaneModels({ credentials: new FileCredentialStore(config.credentialsPath), providers: config.providers, savedLoginsOnly: savedSummaryLoginsOnly(lane) });
-			const view = new MemoryView(store, lane.memory.viewBytes);
-			compactor = createLaneCompactor(lane, laneModels, store, view, (message) => process.stderr.write(`${message}\n`));
-			const timer = setInterval(() => process.stdout.write(`${store.nodeCount} summaries for ${store.root.length} messages\n`), 5000);
+		const startedAt = Date.now();
+		let agentModels: Models | undefined;
+		let counts = { messages: 0, summaries: 0 };
+		// build.json for the Agents page (src/agent/build.ts): how far the build is, and what its summaries cost so far.
+		// Writing it never stops the build.
+		const progress = (fields: { done?: true; error?: string } = {}) => {
+			const file = options.progress;
+			if (file === undefined) return;
+			let dollars: number | undefined;
 			try {
+				counts = { messages: store.root.length, summaries: store.nodeCount };
+				const price = (provider: string, modelId: string) => agentModels?.getModel(provider, modelId)?.cost;
+				const total = totalCost(store.usageRows().filter((row) => row.role === "compactor" && Date.parse(row.at) >= startedAt).map((row) => usageCost(row, config, price)));
+				if (total?.kind === "api") dollars = total.dollars;
+			} catch {
+				// the store went with the agent (to another machine): its last counts, no price
+			}
+			try {
+				writeBuild(file, { pid: process.pid, startedAt, ...counts, ...(dollars === undefined ? {} : { dollars }), ...fields });
+			} catch (error) {
+				process.stderr.write(`Could not write ${file}: ${errorText(error)}\n`);
+			}
+		};
+		try {
+			agentModels =
+				models ?? createAgentModels({ credentials: new FileCredentialStore(config.credentialsPath), providers: config.providers, savedLoginsOnly: savedSummaryLoginsOnly(agent) });
+			const view = new MemoryView(store, agent.memory.viewBytes);
+			compactor = createAgentCompactor(agent, agentModels, store, view, (message) => process.stderr.write(`${message}\n`));
+			const timer = setInterval(() => {
+				process.stdout.write(`${store.nodeCount} summaries for ${store.root.length} messages\n`);
+				progress();
+			}, 5000);
+			try {
+				progress();
 				compactor.start();
 				await Promise.race([compactor.drain(), lost.promise]);
 				// Let withBriefCheckOut report fencing after it has closed and released the writer.
-				if (remote?.lost) return;
+				if (remote?.lost) {
+					progress({ error: "it moved to another machine" });
+					return;
+				}
+				progress({ done: true });
 				process.stdout.write(`Done: ${store.nodeCount} summaries for ${store.root.length} messages.\n`);
 			} finally {
 				clearInterval(timer);
 				await compactor.close();
 			}
+		} catch (error) {
+			progress({ error: errorText(error) });
+			throw error;
 		} finally {
 			if (remote === undefined) store.close();
 		}
@@ -102,98 +141,64 @@ export interface ImportOptions {
 	readonly out?: string;
 }
 
-export async function importDryRunCommand(config: HarnessConfig, laneName: string, options: ImportOptions, models?: Models): Promise<string> {
-	const lane = findLane(config, laneName);
+export async function importDryRunCommand(config: HarnessConfig, agentName: string, options: ImportOptions, models?: Models): Promise<string> {
+	const agent = findAgent(config, agentName);
 	const namedClaude = checkClaudeFiles(options.claudeFiles ?? []);
 	const named = checkCodexFiles(options.codexFiles ?? []);
-	const claudeDir = options.claude === "none" ? undefined : (options.claude ?? claudeProjectDir(lane.workspace));
+	const claudeDir = options.claude === "none" ? undefined : (options.claude ?? (agent.folder === undefined ? undefined : claudeProjectDir(agent.folder)));
 	const codexRoot = options.codex === "none" ? undefined : (options.codex ?? join(homedir(), ".codex", "sessions"));
 	const foundClaude = claudeDir === undefined ? [] : claudeSessionFiles(claudeDir);
-	const claude = extractClaudeFiles([...foundClaude, ...namedClaude.filter((file) => !foundClaude.includes(file))]);
-	const found = codexRoot === undefined ? [] : findCodexSessions(codexRoot, lane.workspace).map((file) => resolve(file));
-	const codex = extractCodex([...found, ...named.filter((file) => !found.includes(file))]);
-	const notes = options.notes.flatMap((file) =>
-		splitNote(basename(file), readFileSync(file, "utf8"), new Date(statSync(file).mtimeMs).toISOString()).map((message) => ({
-			source: `note:${basename(file)}`,
-			message,
-		})),
-	);
-	const out = options.out ?? join(process.cwd(), `import-${lane.name}`);
-	mkdirSync(out, { recursive: true, mode: 0o700 });
-	const cachePath = join(out, "split-cache.json");
-	const cache = new Map<string, SplitResult>(
-		existsSync(cachePath) ? Object.entries(JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, SplitResult>) : [],
-	);
-	const usage = { calls: 0, input: 0, cacheRead: 0, output: 0 };
-	// Resolve the split model up front, so a misconfigured model fails now rather than once per long message.
-	const model: CompactorModel | undefined = options.split
-		? compactorModel(
-				models ?? createLaneModels({ credentials: new FileCredentialStore(config.credentialsPath), providers: config.providers, savedLoginsOnly: savedSummaryLoginsOnly(lane) }),
-				lane.compactor.model,
-				`import:${lane.name}`,
-			)
-		: undefined;
-	const splitModel = {
-		complete: async (system: string, user: string) => {
-			if (model === undefined) throw new Error("the split model is off (--no-split)");
-			usage.calls++;
-			if (usage.calls % 10 === 0) process.stderr.write(`${usage.calls} long messages sent to the split model\n`);
-			const reply = await model.complete(system, [{ role: "user", blocks: [user] }], AbortSignal.timeout(300_000));
-			usage.input += reply.usage?.input ?? 0;
-			usage.cacheRead += reply.usage?.cacheRead ?? 0;
-			usage.output += reply.usage?.output ?? 0;
-			return reply.text;
-		},
-	};
-	let failures = 0;
-	const split = async (text: string): Promise<SplitResult> => {
-		const threshold = options.split ? options.pasteThreshold : Number.POSITIVE_INFINITY;
-		const result = await splitMessage(text, splitModel, { threshold, lanes: [...config.lanes.keys()], lane: lane.name, cache });
-		if (options.split) writeFileSync(cachePath, JSON.stringify(Object.fromEntries(cache)), { mode: 0o600 });
-		// A model or transport error (not a bad answer) will repeat for every message: stop and say so.
-		failures = result.note?.startsWith("split failed") ? failures + 1 : 0;
-		if (failures >= 3) {
-			throw new Error(`The split model failed 3 times in a row (${result.note}). Fix the model or credentials, or rerun with --no-split.`);
-		}
-		return result;
-	};
-	const omitted = [...claude.omitted, ...codex.omitted];
-	const { lines, report } = await buildPreview({ turns: interleave(claude.turns, codex.turns), notes, split, omitted });
-	const { previewPath, reportPath } = writePreview(out, lines, report);
+	const found = codexRoot === undefined || agent.folder === undefined ? [] : findCodexSessions(codexRoot, agent.folder).map((file) => resolve(file));
+	const result = await dryRun({
+		config,
+		name: agent.name,
+		names: [...config.agents.keys()],
+		summaryModel: agent.compactor.model,
+		savedLoginsOnly: savedSummaryLoginsOnly(agent),
+		claudeFiles: [...foundClaude, ...namedClaude.filter((file) => !foundClaude.includes(file))],
+		codexFiles: [...found, ...named.filter((file) => !found.includes(file))],
+		notes: options.notes,
+		pasteThreshold: options.pasteThreshold,
+		split: options.split,
+		out: options.out ?? join(process.cwd(), `import-${agent.name}`),
+		...(models === undefined ? {} : { models }),
+		progress: (line) => process.stderr.write(`${line}\n`),
+	});
+	const { claude, codex, usage } = result;
 	const splitLine = options.split
-		? `Split model: ${usage.calls} calls, ${usage.input} input + ${usage.cacheRead} cache-read + ${usage.output} output tokens\n`
+		? `Split model: ${result.splitCalls} calls, ${usage.input} input + ${usage.cacheRead} cache-read + ${usage.output} output tokens\n`
 		: "Split model: skipped (--no-split; tagged pastes were still split)\n";
 	return (
-		`Claude: ${claude.stats.turns} turns from ${claude.stats.files} files (${claude.stats.skipped} unreadable lines skipped)\n` +
-		`Codex: ${codex.stats.turns} turns from ${codex.stats.files} sessions (${codex.stats.skipped} unreadable lines skipped)\n` +
-		omitted.map((line) => `${line}\n`).join("") +
-		`Notes: ${notes.length} parts from ${options.notes.length} files\n` +
+		`Claude: ${claude.turns} turns from ${claude.files} files (${claude.skipped} unreadable lines skipped)\n` +
+		`Codex: ${codex.turns} turns from ${codex.files} sessions (${codex.skipped} unreadable lines skipped)\n` +
+		result.omitted.map((line) => `${line}\n`).join("") +
+		`Notes: ${result.noteParts} parts from ${options.notes.length} files\n` +
 		splitLine +
-		`${report.split("\n")[2]}\n` +
-		`Preview: ${previewPath}\nReport:  ${reportPath}\n` +
-		`Review the report, edit the preview if needed, then: orrery import ${lane.name} --commit ${previewPath}\n`
+		`${result.report.split("\n")[2]}\n` +
+		`Preview: ${result.previewPath}\nReport:  ${result.reportPath}\n` +
+		`Review the report, edit the preview if needed, then: orrery import ${agent.name} --commit ${result.previewPath}\n`
 	);
 }
 
-export function importCommitCommand(config: HarnessConfig, laneName: string, previewPath: string): string {
-	const lane = findLane(config, laneName);
-	if (lane.remote !== undefined) throw new Error(`${lane.name} keeps its memory on remote ${lane.remote}; run orrery lane local ${lane.name} first`);
+export function importCommitCommand(config: HarnessConfig, agentName: string, previewPath: string): string {
+	const agent = findAgent(config, agentName);
+	if (agent.remote !== undefined) throw new Error(`${agent.name} keeps its memory on remote ${agent.remote}; run orrery agent local ${agent.name} first`);
 	const lines = readPreview(previewPath);
-	const store = MemoryStore.open(join(lane.dir, "memory.sqlite"));
+	const store = MemoryStore.open(join(agent.dir, "memory.sqlite"));
 	try {
 		const count = commitPreview(store, lines);
-		return `Imported ${count} messages into ${lane.name}. Build the summaries with: orrery compact ${lane.name}\n`;
+		return `Imported ${count} messages into ${agent.name}. Build the summaries with: orrery compact ${agent.name}\n`;
 	} finally {
 		store.close();
 	}
 }
 
-export function browseCommand(config: HarnessConfig, laneName: string, out?: string): string {
-	const lane = findLane(config, laneName);
-	const store = MemoryStore.openReadOnly(join(lane.dir, "memory.sqlite"));
+export function browseCommand(config: HarnessConfig, agentName: string, out?: string): string {
+	const agent = findAgent(config, agentName);
+	const store = MemoryStore.openReadOnly(join(agent.dir, "memory.sqlite"));
 	try {
-		const html = renderMemoryHtml(new MemoryView(store, lane.memory.viewBytes), lane.name);
-		const path = out ?? join(process.cwd(), `${lane.name}-memory.html`);
+		const html = renderMemoryHtml(new MemoryView(store, agent.memory.viewBytes), agent.name);
+		const path = out ?? join(process.cwd(), `${agent.name}-memory.html`);
 		writeFileSync(path, html, { mode: 0o600 });
 		chmodSync(path, 0o600);
 		return path;
@@ -203,27 +208,27 @@ export function browseCommand(config: HarnessConfig, laneName: string, out?: str
 }
 
 /**
- * `orrery compactor <Lane> [signin|key|local ... | provider/id [thinking] | reset]`, which Claude Code's /orrery:compactor runs, shows or
- * switches the lane's summary model.
+ * `orrery compactor <Name> [signin|key|local ... | provider/id [thinking] | reset]`, which Claude Code's /orrery:compactor runs, shows or
+ * switches the agent's summary model.
  * - The choice lives where pi's /compactor keeps it (COMPACTOR_MODEL_KEY), so both agents share it.
  * - It is tested with one call first (summary-sources testChoice), with orrery's own logins, which Claude Code's holder summarizes with.
- * - While a Claude Code session records the lane, its holder applies the choice, through the spool. While pi holds
- *   the lane, it goes through request.json (compactor-target.ts).
+ * - While a Claude Code session records the agent, its holder applies the choice, through the spool. While pi holds
+ *   the agent, it goes through request.json (compactor-target.ts).
  */
 export async function compactorCliCommand(
 	config: HarnessConfig,
-	laneName: string,
+	agentName: string,
 	args: readonly string[],
 	options: { sources?: SummarySources; waitMs?: number; prefix?: string } = {},
 ): Promise<string> {
-	const lane = findLane(config, laneName);
-	const sources = options.sources ?? (await openSummarySources(config, lane));
+	const agent = findAgent(config, agentName);
+	const sources = options.sources ?? (await openSummarySources(config, agent));
 	const exists = (provider: string, modelId: string) => sources.models.getModel(provider, modelId) !== undefined;
-	const target = laneCompactorTarget(config, lane.name, { ...(options.waitMs === undefined ? {} : { waitMs: options.waitMs }), exists });
+	const target = agentCompactorTarget(config, agent.name, { ...(options.waitMs === undefined ? {} : { waitMs: options.waitMs }), exists });
 	const signin = process.stdin.isTTY ? async (name: string) => {
 		const { loginCommand } = await import("./logins.ts");
 		process.stdout.write(await loginCommand(config, { signin: name }));
 	} : undefined;
-	const text = await runCompactorText(sources, args, options.prefix ?? `orrery compactor ${lane.name}`, target, signin);
+	const text = await runCompactorText(sources, args, options.prefix ?? `orrery compactor ${agent.name}`, target, signin);
 	return `${text}\n`;
 }

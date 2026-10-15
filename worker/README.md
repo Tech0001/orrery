@@ -1,6 +1,6 @@
 # Orrery memory Worker
 
-A Worker and two SQLite-backed Durable Object classes store encrypted lane files, locks, the lane directory and a key check. The encryption key stays with Orrery.
+A Worker and two SQLite-backed Durable Object classes store encrypted agent files, locks, the agent directory and a key check. The encryption key stays with Orrery.
 
 For installation, deployment, credentials and free-plan limits, see [Your own Cloudflare Worker](../docs/remote.md#your-own-cloudflare-worker).
 

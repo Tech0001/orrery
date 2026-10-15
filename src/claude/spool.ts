@@ -1,5 +1,5 @@
 /**
- * The spool between Claude Code's hooks and the lane's holder (spec §4 "Hooks"). A hook never writes the store. It
+ * The spool between Claude Code's hooks and the agent's holder (spec §4 "Hooks"). A hook never writes the store. It
  * drops one small JSON file per event into its session's folder and returns.
  * - A name holds the time in milliseconds (15 digits), the writer's pid (10) and a per-process counter (6). Names sort
  *   in arrival order and never collide.
@@ -10,7 +10,7 @@
 import { readdirSync, readFileSync, rmdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { RemoteStatus } from "../remote/types.ts";
-import { writePrivate } from "../lane/private-file.ts";
+import { writePrivate } from "../agent/private-file.ts";
 import { sessionDir, sessionsDir, validSession } from "./paths.ts";
 
 /**
@@ -63,10 +63,10 @@ export function eventName(at: number, kind: SpoolEvent["kind"]): string {
 }
 
 /** Drops `event` into the session's spool folder (private, atomic) and returns its file name. */
-export function spoolEvent(laneDir: string, session: string, event: SpoolEvent): string {
+export function spoolEvent(agentDir: string, session: string, event: SpoolEvent): string {
 	if (!validSession(session)) throw new Error("Orrery: not a Claude Code session id");
 	const name = eventName(event.at, event.kind);
-	writePrivate(join(sessionDir(laneDir, session), name), JSON.stringify(event));
+	writePrivate(join(sessionDir(agentDir, session), name), JSON.stringify(event));
 	return name;
 }
 
@@ -87,9 +87,9 @@ export function readEvent(path: string): SpoolEvent | undefined {
 }
 
 /** The sessions that have a spool folder. */
-export function listSessions(laneDir: string): string[] {
+export function listSessions(agentDir: string): string[] {
 	try {
-		return readdirSync(sessionsDir(laneDir)).filter(validSession).sort();
+		return readdirSync(sessionsDir(agentDir)).filter(validSession).sort();
 	} catch {
 		return [];
 	}
@@ -99,16 +99,16 @@ export function listSessions(laneDir: string): string[] {
  * A session's events after `after` (the last name ingested), oldest first. Files at or before it were ingested
  * before a crash and are removed here.
  */
-export function pendingEvents(laneDir: string, session: string, after?: string): Pending[] {
+export function pendingEvents(agentDir: string, session: string, after?: string): Pending[] {
 	let names: string[];
 	try {
-		names = readdirSync(sessionDir(laneDir, session)).filter((name) => EVENT_NAME.test(name)).sort();
+		names = readdirSync(sessionDir(agentDir, session)).filter((name) => EVENT_NAME.test(name)).sort();
 	} catch {
 		return [];
 	}
 	const pending: Pending[] = [];
 	for (const name of names) {
-		const path = join(sessionDir(laneDir, session), name);
+		const path = join(sessionDir(agentDir, session), name);
 		if (after !== undefined && name <= after) rmSync(path, { force: true });
 		else pending.push({ session, name, path, at: Number(name.slice(0, 15)) });
 	}
@@ -116,9 +116,9 @@ export function pendingEvents(laneDir: string, session: string, after?: string):
 }
 
 /** The mode a session's holder chose, if any. */
-export function readMode(laneDir: string, session: string): SessionMode | undefined {
+export function readMode(agentDir: string, session: string): SessionMode | undefined {
 	try {
-		const value = JSON.parse(readFileSync(join(sessionDir(laneDir, session), MODE), "utf8")) as SessionMode;
+		const value = JSON.parse(readFileSync(join(sessionDir(agentDir, session), MODE), "utf8")) as SessionMode;
 		return value.mode === "recording" || value.mode === "read-only" ? value : undefined;
 	} catch {
 		return undefined;
@@ -126,8 +126,8 @@ export function readMode(laneDir: string, session: string): SessionMode | undefi
 }
 
 /** Records the mode a session's holder chose (private, atomic). */
-export function writeMode(laneDir: string, session: string, mode: SessionMode): void {
-	writePrivate(join(sessionDir(laneDir, session), MODE), JSON.stringify(mode));
+export function writeMode(agentDir: string, session: string, mode: SessionMode): void {
+	writePrivate(join(sessionDir(agentDir, session), MODE), JSON.stringify(mode));
 }
 
 /**
@@ -137,14 +137,14 @@ export function writeMode(laneDir: string, session: string, mode: SessionMode): 
  * - it unlinks mode.json only while it still names `owner` (the holder whose mode was checked);
  * - it removes the folder only if nothing else is left in it.
  */
-export function removeSession(laneDir: string, session: string, checked: readonly Pending[], owner: Pick<SessionMode, "pid" | "nonce"> | undefined): void {
+export function removeSession(agentDir: string, session: string, checked: readonly Pending[], owner: Pick<SessionMode, "pid" | "nonce"> | undefined): void {
 	for (const event of checked) rmSync(event.path, { force: true });
-	const mode = readMode(laneDir, session);
+	const mode = readMode(agentDir, session);
 	if (owner !== undefined && mode !== undefined && mode.pid === owner.pid && mode.nonce === owner.nonce) {
-		rmSync(join(sessionDir(laneDir, session), MODE), { force: true });
+		rmSync(join(sessionDir(agentDir, session), MODE), { force: true });
 	}
 	try {
-		rmdirSync(sessionDir(laneDir, session));
+		rmdirSync(sessionDir(agentDir, session));
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		// Not empty: someone wrote meanwhile, and what they wrote stays. Gone: someone else removed it.
@@ -153,6 +153,6 @@ export function removeSession(laneDir: string, session: string, checked: readonl
 }
 
 /** Removes a session's events from `since` on: they came while it was read-only (or undecided) and never enter memory. */
-export function dropEventsSince(laneDir: string, session: string, since: number): void {
-	for (const event of pendingEvents(laneDir, session)) if (event.at >= since) rmSync(event.path, { force: true });
+export function dropEventsSince(agentDir: string, session: string, since: number): void {
+	for (const event of pendingEvents(agentDir, session)) if (event.at >= since) rmSync(event.path, { force: true });
 }

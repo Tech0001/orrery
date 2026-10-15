@@ -1,13 +1,13 @@
-/** The lane terminal: readline input, plain streaming output from watchEvents (spec §2 "Interface"). */
+/** The agent terminal: readline input, plain streaming output from watchEvents (spec §2 "Interface"). */
 
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import type { Context } from "@earendil-works/chord";
 import { watchEvents } from "@earendil-works/pi-durable";
-import { type ModelChoice, parseModelChoice } from "../lane/config.ts";
-import { availableModels } from "../lane/models.ts";
-import type { Lane, LaneStatus } from "../lane/lane.ts";
+import { type ModelChoice, parseModelChoice } from "../agent/config.ts";
+import { availableModels } from "../agent/models.ts";
+import type { Agent, AgentStatus } from "../agent/agent.ts";
 import type { UsageRow } from "../memory/index.ts";
 import { clean, createPrinterState, renderEvents } from "./printer.ts";
 
@@ -15,28 +15,28 @@ export interface RunIo {
 	readonly input: Readable;
 	readonly output: Writable;
 	readonly terminal: boolean;
-	/** Aborted when the lane hit a fatal problem; runLane then resolves 1. */
+	/** Aborted when the agent hit a fatal problem; runHarness then resolves 1. */
 	readonly stop?: AbortSignal;
 }
 
 const HELP = `Enter sends (joins the running work if busy). Ctrl-C stops the run (or cancels the memory wait).
 /paste … /end   multi-line message      /model [provider/id [thinking] | reset]       agent model
-/status         lane and memory state   /compactor [provider/id [thinking] | reset]   summary model
+/status         agent and memory state   /compactor [provider/id [thinking] | reset]   summary model
 /usage          token usage             /models                                       models your logins offer
-/quit           exit the lane process
+/quit           exit the agent process
 Models chosen with /model and /compactor survive restarts; reset returns to the config.
 `;
 
 const source = (from: "config" | "chat") => (from === "chat" ? "set in chat" : "from config");
 
-export function formatStatus(status: LaneStatus): string {
+export function formatStatus(status: AgentStatus): string {
 	const m = status.memory;
 	return (
-		`${status.lane}: ${status.busy ? "busy" : "idle"} · ${status.model} (${status.thinking}) · ${source(status.modelSource)}\n` +
+		`${status.agent}: ${status.busy ? "busy" : "idle"} · ${status.model} (${status.thinking}) · ${source(status.modelSource)}\n` +
 		`memory: ${m.messages} messages, ${m.nodes} summaries, view ${Math.round(m.viewBytes / 1000)}/${Math.round(m.viewBudget / 1000)} KB` +
 		`${m.settled ? "" : ` (summarizing from #${m.firstUnsummarized})`}\n` +
 		`compactor: ${status.compactor.model} (${status.compactor.thinking}) · ${source(status.compactor.source)}\n` +
-		`${status.compactor.stopped ? "COMPACTOR STOPPED — restart the lane\n" : ""}` +
+		`${status.compactor.stopped ? "COMPACTOR STOPPED — restart the agent\n" : ""}` +
 		`${status.lastError ? `last error: ${status.lastError}\n` : ""}`
 	);
 }
@@ -85,13 +85,13 @@ export function createTerminalWriter(output: Pick<Writable, "write">, terminal: 
 	};
 }
 
-export async function runLane(lane: Lane, io: RunIo, context: Context): Promise<number> {
-	const state = createPrinterState(lane.config.name, `${lane.model.provider}/${lane.model.modelId}`);
+export async function runHarness(agent: Agent, io: RunIo, context: Context): Promise<number> {
+	const state = createPrinterState(agent.config.name, `${agent.model.provider}/${agent.model.modelId}`);
 	// Open the event stream before readline exists: input that arrives meanwhile stays buffered in the stream,
 	// whereas a readline "line" event emitted before its handler is attached would be lost.
-	const stream = await watchEvents(lane.harness, lane.conversation.id, context);
+	const stream = await watchEvents(agent.harness, agent.conversation.id, context);
 	// tmux kill-server or a dropped SSH session leaves a dead terminal: reads, writes and raw-mode switches fail with
-	// EIO. Stop touching it instead of crashing, so a stop still reaches lane.close().
+	// EIO. Stop touching it instead of crashing, so a stop still reaches agent.close().
 	let gone = false;
 	const hangUp = () => {
 		gone = true;
@@ -130,7 +130,7 @@ export async function runLane(lane: Lane, io: RunIo, context: Context): Promise<
 	const setTitle = (text: string | undefined) => {
 		if (text !== undefined && io.terminal) terminalOut.write(`\x1b]2;${text}\x07`);
 	};
-	lane.report = (message) => write(`! ${message}\n`);
+	agent.report = (message) => write(`! ${message}\n`);
 
 	const initial = renderEvents([stream.snapshot], state);
 	write(initial.text);
@@ -157,15 +157,15 @@ export async function runLane(lane: Lane, io: RunIo, context: Context): Promise<
 		if (!trimmed) return;
 		if (trimmed === "/quit") return resolveDone(0);
 		if (trimmed === "/help") return write(HELP);
-		if (trimmed === "/status") return write(formatStatus(await lane.status()));
-		if (trimmed === "/usage") return write(formatUsage(lane.store.usageRows()));
+		if (trimmed === "/status") return write(formatStatus(await agent.status()));
+		if (trimmed === "/usage") return write(formatUsage(agent.store.usageRows()));
 		if (trimmed === "/models") {
-			const groups = await availableModels(lane.models);
+			const groups = await availableModels(agent.models);
 			if (groups.length === 0) return write("No signed-in models: run `orrery login openai` (ChatGPT) or `orrery login anthropic`.\n");
 			const mark = (provider: string, id: string) => {
 				const tags = [
-					lane.model.provider === provider && lane.model.modelId === id ? "agent" : "",
-					lane.compactorModel.provider === provider && lane.compactorModel.modelId === id ? "compactor" : "",
+					agent.model.provider === provider && agent.model.modelId === id ? "agent" : "",
+					agent.compactorModel.provider === provider && agent.compactorModel.modelId === id ? "compactor" : "",
 				].filter(Boolean);
 				return tags.length > 0 ? `${id} [${tags.join(", ")}]` : id;
 			};
@@ -178,21 +178,21 @@ export async function runLane(lane: Lane, io: RunIo, context: Context): Promise<
 		] as const) {
 			if (trimmed !== command && !trimmed.startsWith(`${command} `)) continue;
 			const current = () => {
-				const choice = label === "model" ? lane.model : lane.compactorModel;
-				const from = label === "model" ? lane.modelSource : lane.compactorSource;
+				const choice = label === "model" ? agent.model : agent.compactorModel;
+				const from = label === "model" ? agent.modelSource : agent.compactorSource;
 				return write(`${label}: ${choice.provider}/${choice.modelId} (${choice.thinking}) · ${source(from)}\n`);
 			};
 			const [, ref, thinking] = trimmed.split(/\s+/);
 			if (!ref) return current();
-			const set = label === "model" ? (c?: ModelChoice) => lane.setModel(c) : (c?: ModelChoice) => lane.setCompactorModel(c);
-			const level = thinking ?? (label === "model" ? lane.model : lane.compactorModel).thinking;
+			const set = label === "model" ? (c?: ModelChoice) => agent.setModel(c) : (c?: ModelChoice) => agent.setCompactorModel(c);
+			const level = thinking ?? (label === "model" ? agent.model : agent.compactorModel).thinking;
 			await set(ref === "reset" ? undefined : parseModelChoice(ref, level));
 			return current();
 		}
 		if (trimmed.startsWith("/")) return write(`unknown command ${trimmed.split(/\s/)[0]}; /help lists commands\n`);
-		if (!state.busy && !lane.view.settled) write("(waiting for memory summaries; Ctrl-C cancels)\n");
+		if (!state.busy && !agent.view.settled) write("(waiting for memory summaries; Ctrl-C cancels)\n");
 		waiting = new AbortController();
-		const result = await lane.submit(line, randomUUID(), waiting.signal);
+		const result = await agent.submit(line, randomUUID(), waiting.signal);
 		waiting = undefined;
 		if (result !== undefined) submitted.push(result.submission.wait(context).catch(() => {}));
 		if (result === undefined) {
@@ -252,8 +252,8 @@ export async function runLane(lane: Lane, io: RunIo, context: Context): Promise<
 		}
 		if (state.busy) {
 			write("[stopping…]\n");
-			lane.conversation.abort(context).catch((error: unknown) => write(`! ${String(error)}\n`));
-		} else write("(idle; /quit exits the lane)\n");
+			agent.conversation.abort(context).catch((error: unknown) => write(`! ${String(error)}\n`));
+		} else write("(idle; /quit exits the agent)\n");
 	});
 	// End of piped input: answer everything that was sent before exiting (a terminal's Ctrl-D exits at once).
 	const finishInput = async () => {
@@ -267,7 +267,7 @@ export async function runLane(lane: Lane, io: RunIo, context: Context): Promise<
 		if (io.terminal) resolveDone(0);
 		else void finishInput();
 	});
-	// A fatal stop must end the lane even mid memory-wait (nothing would ever settle it) or if it came first.
+	// A fatal stop must end the agent even mid memory-wait (nothing would ever settle it) or if it came first.
 	const onStop = () => {
 		waiting?.abort();
 		resolveDone(1);

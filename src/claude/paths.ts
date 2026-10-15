@@ -1,29 +1,28 @@
 /**
- * Where Claude Code's side of a lane lives.
- * - In the lane's data folder:
+ * Where Claude Code's side of an agent lives.
+ * - In the agent's data folder:
  *   - claude/sessions/<session>/ is the spool: one folder per Claude Code session, with its events and the mode its
  *     holder chose;
- *   - claude/holder.json and claude/yield.json (src/lane/handover.ts);
+ *   - claude/holder.json and claude/yield.json (src/agent/handover.ts);
  *   - claude/holder.log, which never holds message contents;
- *   - claude/setup.json, claude-setup's marker: the view is written into the workspace it names, and nowhere else.
- * - In the workspace: .orrery/view.md, which CLAUDE.md imports.
+ *   - claude/setup.json, claude-setup's marker: the view is written into the folder it names, and nowhere else.
+ * - In the folder: .orrery/view.md, which CLAUDE.md imports.
  * Folders are 0700 and files 0600, because they hold the user's words.
  */
 
 import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { type HarnessConfig, type LaneConfig, laneForCwd } from "../lane/config.ts";
 
 /** The spool: one folder per Claude Code session. */
-export const sessionsDir = (laneDir: string) => join(laneDir, "claude", "sessions");
+export const sessionsDir = (agentDir: string) => join(agentDir, "claude", "sessions");
 /** One session's spool folder (check the id with validSession first). */
-export const sessionDir = (laneDir: string, session: string) => join(sessionsDir(laneDir), session);
+export const sessionDir = (agentDir: string, session: string) => join(sessionsDir(agentDir), session);
 /** The holders' log: lifecycle and errors only. */
-export const holderLog = (laneDir: string) => join(laneDir, "claude", "holder.log");
-/** claude-setup's marker (src/claude/view-file.ts): trusted, since it lives in the lane's data folder, not the workspace. */
-export const setupMarker = (laneDir: string) => join(laneDir, "claude", "setup.json");
+export const holderLog = (agentDir: string) => join(agentDir, "claude", "holder.log");
+/** claude-setup's marker (src/claude/view-file.ts): trusted, since it lives in the agent's data folder, not the folder. */
+export const setupMarker = (agentDir: string) => join(agentDir, "claude", "setup.json");
 /** The view file Claude Code loads through CLAUDE.md. */
-export const viewFile = (workspace: string) => join(workspace, ".orrery", "view.md");
+export const viewFile = (folder: string) => join(folder, ".orrery", "view.md");
 
 /** Claude Code's session ids are UUIDs. Anything else could name a folder outside the spool, so it is refused. */
 export function validSession(id: unknown): id is string {
@@ -41,20 +40,4 @@ function real(path: string): string {
 /** Whether two paths name the same folder, symlinks followed. */
 export function samePath(a: string, b: string): boolean {
 	return real(a) === real(b);
-}
-
-/**
- * The lane whose workspace holds `dir`, matched as pi matches it (laneForCwd). Failing that, it compares real paths,
- * since Claude Code reports the physical folder (a workspace configured through a symlink, /tmp on macOS).
- */
-export function laneHere(config: HarnessConfig, dir: string): LaneConfig | undefined {
-	const found = laneForCwd(config, dir);
-	if (found !== undefined) return found;
-	const here = real(dir);
-	let best: { lane: LaneConfig; root: string } | undefined;
-	for (const lane of config.lanes.values()) {
-		const root = real(lane.workspace);
-		if ((here === root || here.startsWith(`${root}/`)) && (best === undefined || root.length > best.root.length)) best = { lane, root };
-	}
-	return best?.lane;
 }

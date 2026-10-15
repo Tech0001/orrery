@@ -1,9 +1,9 @@
 /**
- * Git, as orrery asks it about a lane's workspace (spec §4 "The view file and CLAUDE.md"). The view in
- * <workspace>/.orrery/ is the user's memory: in a git work tree, git must ignore it and track nothing there.
- * - Git runs as an argument list (`git -C <workspace> …`), never through a shell, for at most 5 s.
+ * Git, as orrery asks it about an agent's folder (spec §4 "The view file and CLAUDE.md"). The view in
+ * <folder>/.orrery/ is the user's memory: in a git work tree, git must ignore it and track nothing there.
+ * - Git runs as an argument list (`git -C <folder> …`), never through a shell, for at most 5 s.
  * - It runs without git's local variables (GIT_DIR, GIT_INDEX_FILE, GIT_CONFIG…). Inherited, they would point it at
- *   another repo, or another index, than the workspace's own.
+ *   another repo, or another index, than the folder's own.
  * - It fails closed: only "not a git repository", or no git at all, means no repo. Any other failure means git could
  *   not say ("unchecked"): the view is not written this time, and the next write asks again.
  * - What it reports never quotes the repo's file names: SessionStart passes it on to the model.
@@ -50,27 +50,27 @@ export interface GitRun {
 	readonly stderr: string;
 }
 
-/** Runs git in `workspace` (see the module doc); undefined when git is not installed. */
-export function git(workspace: string, args: readonly string[]): GitRun | undefined {
-	const run = spawnSync("git", ["-C", workspace, ...args], { encoding: "utf8", env: gitEnv(), stdio: ["ignore", "pipe", "pipe"], timeout: 5000 });
+/** Runs git in `folder` (see the module doc); undefined when git is not installed. */
+export function git(folder: string, args: readonly string[]): GitRun | undefined {
+	const run = spawnSync("git", ["-C", folder, ...args], { encoding: "utf8", env: gitEnv(), stdio: ["ignore", "pipe", "pipe"], timeout: 5000 });
 	if ((run.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return undefined;
 	return { status: run.error === undefined ? run.status : null, stdout: run.stdout ?? "", stderr: run.stderr ?? "" };
 }
 
-/** Whether `workspace` is in a git work tree: false when it is in no repository or git is missing, undefined when git could not say. */
-export function inWorkTree(workspace: string): boolean | undefined {
-	const run = git(workspace, ["rev-parse", "--is-inside-work-tree"]);
+/** Whether `folder` is in a git work tree: false when it is in no repository or git is missing, undefined when git could not say. */
+export function inWorkTree(folder: string): boolean | undefined {
+	const run = git(folder, ["rev-parse", "--is-inside-work-tree"]);
 	if (run === undefined) return false;
 	if (run.status === 0) return run.stdout.trim() === "true";
 	return run.status === 128 && run.stderr.includes("not a git repository") ? false : undefined;
 }
 
 /**
- * Whether git tracks `path` (relative to `workspace`): false when it does not, the workspace is in no repository, or git
+ * Whether git tracks `path` (relative to `folder`): false when it does not, the folder is in no repository, or git
  * is missing; undefined when git could not say.
  */
-export function gitTracks(workspace: string, path: string): boolean | undefined {
-	const run = git(workspace, ["ls-files", "--error-unmatch", "--", path]);
+export function gitTracks(folder: string, path: string): boolean | undefined {
+	const run = git(folder, ["ls-files", "--error-unmatch", "--", path]);
 	if (run === undefined) return false;
 	if (run.status === 0) return true;
 	if (run.status === 1) return false;
@@ -87,25 +87,25 @@ export interface Exposure {
 }
 
 /**
- * Whether git would see the workspace's .orrery/; undefined when it would not (or the workspace is in no repo, or git
+ * Whether git would see the folder's .orrery/; undefined when it would not (or the folder is in no repo, or git
  * is missing). In a work tree:
  * - an entry named .orrery in another case (.Orrery) counts: a case-insensitive disk takes it for .orrery, and git
  *   with core.ignorecase reads .orrery as it;
  * - git must track nothing in .orrery/, in any case (`:(icase)`), and must ignore .orrery/view.md;
  * - a git that cannot answer gives "unchecked".
- * It throws only when the workspace cannot be listed.
+ * It throws only when the folder cannot be listed.
  */
-export function gitExposure(workspace: string): Exposure | undefined {
-	const unchecked: Exposure = { kind: "unchecked", reason: `git could not say whether it would see .orrery/ (\`git -C ${workspace} status\` may show why)` };
-	const inside = inWorkTree(workspace);
+export function gitExposure(folder: string): Exposure | undefined {
+	const unchecked: Exposure = { kind: "unchecked", reason: `git could not say whether it would see .orrery/ (\`git -C ${folder} status\` may show why)` };
+	const inside = inWorkTree(folder);
 	if (inside === false) return undefined;
 	if (inside === undefined) return unchecked;
-	const variant = readdirSync(workspace).find((name) => name !== ".orrery" && name.toLowerCase() === ".orrery");
-	if (variant !== undefined) return { kind: "case variant", reason: `the workspace has ${variant}, which a case-insensitive disk takes for .orrery` };
-	const tracked = git(workspace, ["ls-files", "--", ":(icase).orrery"]);
+	const variant = readdirSync(folder).find((name) => name !== ".orrery" && name.toLowerCase() === ".orrery");
+	if (variant !== undefined) return { kind: "case variant", reason: `the folder has ${variant}, which a case-insensitive disk takes for .orrery` };
+	const tracked = git(folder, ["ls-files", "--", ":(icase).orrery"]);
 	if (tracked?.status !== 0) return unchecked;
 	if (tracked.stdout.trim() !== "") return { kind: "tracked", reason: "git tracks files in .orrery/ (`git rm --cached .orrery/view.md` untracks the view)" };
-	const ignored = git(workspace, ["check-ignore", "-q", ".orrery/view.md"]);
+	const ignored = git(folder, ["check-ignore", "-q", ".orrery/view.md"]);
 	if (ignored?.status === 0) return undefined;
 	if (ignored?.status === 1) return { kind: "not ignored", reason: ".orrery/ is not ignored by git (a .gitignore rule may un-ignore it)" };
 	return unchecked;

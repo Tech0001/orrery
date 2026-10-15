@@ -1,17 +1,17 @@
-# Lanes in Claude Code
+# Agents in Claude Code
 
-A lane can run in Claude Code as well as in pi, on the same memory (`~/.orrery/lanes/<Lane>/`). Monday in
+An agent can run in Claude Code as well as in pi, on the same memory (`~/.orrery/agents/<Name>/`). Monday in
 pi and Tuesday in Claude Code are one memory. Claude's subscription covers Claude Code, not pi.
 
 ## Install, once per machine
 
 Or run `orrery`, open Tools (4), select Claude Code and press `I` (`orrery tools install claude-code`).
 
-1. Orrery itself, as in [pi.md](pi.md): `npm run install-local`, which installs the `orrery` command, wires the
-   plugin from `~/.orrery/app/current`, and needs `~/.orrery/config.toml`.
+1. Orrery itself, as in the README's install section: it installs the `orrery` command, wires the plugin from
+   `~/.orrery/app/current` once you say yes, and needs `~/.orrery/config.toml` (the first `orrery` run writes it).
 2. A login for summaries. Summaries run in the background on Orrery's own login, not Claude's. Run
-   `orrery login openai` (Sign in with ChatGPT) for the lanes' `compactor_model`.
-3. The plugin: `npm run install-local` wires this. If you must do it by hand, add the installed copy, never a
+   `orrery login openai` (Sign in with ChatGPT) for the agents' `compactor_model`.
+3. The plugin: the installer wires this after asking (`orrery setup` redoes it). If you must do it by hand, add the installed copy, never a
    checkout (that would move the plugin off `app/current`):
 
    ```bash
@@ -19,13 +19,24 @@ Or run `orrery`, open Tools (4), select Claude Code and press `I` (`orrery tools
    claude plugin install orrery@orrery
    ```
 
-The plugin is installed for every folder, but a lane records in Claude Code only once `orrery claude-setup <Lane>` has
-run for it (below). In any other lane's folder, or a subfolder of one, Claude Code runs without recording: no
-recorder starts, nothing is kept, and the lane stays free for pi. The first line the model gets says so, and so does
-a message to you. The guard still applies there.
+Run setup commands that name the installed app folder in your own terminal: the guard refuses them to an agent's tools
+(see [The guard](#the-guard)).
+
+The plugin is installed for every folder. Which agent a Claude Code session is gets decided when it starts, in this
+order:
+
+1. `ORRERY_AGENT`, when it names a configured agent. `orrery agent <Name>` sets it, with a one-time token
+   (`ORRERY_AGENT_TOKEN`) that the first Claude Code process claims, so a tool the agent starts itself, which inherits
+   both variables, is not the agent too. A name that is not configured gives a notice and no memory.
+2. The agent whose default folder holds the project folder, so `cd <folder> && claude` still works.
+3. None: Claude Code runs without recording. No recorder starts, nothing is kept, and the memory stays free for pi.
+   The first line the model gets says so, and so does a message to you. The guard still applies there.
+
+A picked agent records only where it is set up (below): in its default folder after `orrery claude-setup <Name>`, or
+in any folder after `orrery claude-setup <Name> --mod`.
 
 The plugin runs `~/.local/bin/orrery`, so it uses the installed version (`~/.orrery/app/current`) and this
-machine's Node. After a change to Orrery's code, run `npm run install-local` again; new hook processes use the new
+machine's Orrery. After `orrery update`, new hook processes use the new
 version at once, while a running session's own recorder keeps the old one until the session restarts. Without that
 launcher the hooks do nothing: they exit quietly and print nothing. Claude Code then lists the `orrery` MCP server as failed to connect.
 
@@ -39,15 +50,40 @@ claude plugin uninstall orrery@orrery
 claude plugin install orrery@orrery
 ```
 
-## Set up a lane, once
-
-Launching a Claude Code lane from the TUI (`L`) offers this setup the first time.
+## Opening an agent
 
 ```bash
-orrery claude-setup <Lane>
+orrery agent <Name>                       # in the current folder
+orrery agent <Name> -- <claude arguments>
 ```
 
-- A lane folder of its own gets `CLAUDE.md` with `@AGENTS.md` and `@.orrery/view.md`.
+`orrery agent` checks that Claude Code is installed and wired and that the agent is free (or can be taken over), then
+starts `claude` here with `ORRERY_AGENT` set. The TUI does the same from the Agents page (Enter or `L`), and asks first
+whether to open the agent here or in its default folder. The agent's `tool` setting picks Claude Code; `--tool
+claude-code` picks it for one session.
+
+Two cases are refused, with the reason and the fix:
+
+- **Outside the agent's default folder without the mod.** The file setup works in the agent's default folder only
+  (`orrery claude-setup <Name>` needs a `folder` in the config). Anywhere else, only the Orrery mod brings the memory
+  and instructions into Claude Code: `orrery claude-setup <Name> --mod` (Claude Code 2.1.287 or newer).
+- **A folder that another agent holds the file way.** In another agent's default folder, or inside it, the
+  `CLAUDE.md` or `CLAUDE.local.md` that `claude-setup` wrote loads that agent's memory view into every Claude Code
+  session there, and Claude Code loads the files of every ancestor folder too. Two agents would share one prompt, so
+  `orrery agent` refuses and says to open the agent in another folder. The plugin refuses such a session as well.
+
+## Set up an agent, once
+
+Opening a Claude Code agent from the TUI (`L`) offers this setup the first time.
+
+```bash
+orrery claude-setup <Name>
+```
+
+This is the file setup. It works in the agent's default folder only, and stops with a message when the agent has no
+`folder`.
+
+- An agent folder of its own gets `CLAUDE.md` with `@AGENTS.md` and `@.orrery/view.md`.
 - A shared repo gets `CLAUDE.local.md` instead, with `CLAUDE.local.md` and `.orrery/` listed in `.git/info/exclude`, so
   nothing in the repo changes.
 - If `CLAUDE.md` is a symlink (often `CLAUDE.md -> AGENTS.md`), setup uses `CLAUDE.local.md` and never writes through
@@ -58,77 +94,91 @@ orrery claude-setup <Lane>
 - Setup never writes through a symlink. It refuses, and writes nothing, when a file it would edit (`CLAUDE.md` or
   `CLAUDE.local.md`, and the repo's `info/exclude`) is a symlink, is not a regular file, or is over 256 KB, or when
   `.orrery/` or the repo's `info/` folder is a symlink, or is not a folder of yours. The exclude file is the one git
-  names (`git rev-parse --git-path info/exclude`). For a lane in a repo's subfolder, or in a worktree, that is the
-  main repository's, outside the workspace, and setup uses it.
-- In a git workspace, `.orrery/` must be invisible to git, because the view holds your messages. Setup refuses when
+  names (`git rev-parse --git-path info/exclude`). For an agent in a repo's subfolder, or in a worktree, that is the
+  main repository's, outside the folder, and setup uses it.
+- In a git folder, `.orrery/` must be invisible to git, because the view holds your messages. Setup refuses when
   `.orrery/` is tracked, is not ignored (a repo's own `.gitignore` can undo `.git/info/exclude`, for example with
   `!.orrery/`), or is spelled differently by the repo (a case variant). Fix the repo, then run setup again. Setup
   runs git itself, never through a shell string.
-- After a good setup it writes a trusted marker in the lane's data folder (`claude/setup.json`). The view is written
-  only where that marker exists, so a repo cannot make Orrery start writing into it. Setup is the only way a workspace
+- After a good setup it writes a trusted marker in the agent's data folder (`claude/setup.json`). The view is written
+  only where that marker exists, so a repo cannot make Orrery start writing into it. Setup is the only way a folder
   starts receiving the view.
 - It is safe to rerun.
+
+In the file setup, `.orrery/view.md` holds the agent's instructions first (up to 32 KB), then its memory. Elsewhere,
+only the Orrery mod brings them.
 
 Moving an agent over (the spec's section 6):
 
 1. close it in pi or Codex;
-2. run `orrery claude-setup <Lane>`;
-3. `cd <lane folder> && claude`.
+2. run `orrery claude-setup <Name>` (or add `--mod`);
+3. `orrery agent <Name>`, or `cd <agent folder> && claude` for the file setup.
 
-Only lanes where `claude-setup` ran record in Claude Code. In the others the guard still applies, and memory is not
-touched. The lane can go back to pi later.
+Only agents where `claude-setup` ran record in Claude Code. In the others the guard still applies, and memory is not
+touched. The agent can go back to pi later.
 
 ## Mod mode
 
-With Claude Code 2.1.287 or newer and the Orrery plugin 0.3.0, a lane can get its memory from the Orrery mod instead
-of the view file:
+With Claude Code 2.1.287 or newer and the Orrery plugin 0.3.0, an agent can get its instructions and memory from the
+Orrery mod instead of the view file:
 
-    orrery claude-setup <Lane> --mod
+    orrery claude-setup <Name> --mod
 
-- **The view goes in the system prompt.** The mod adds it when the session starts, and refreshes it at each
-  compaction. The `@.orrery/view.md` line is removed from CLAUDE.local.md, and from CLAUDE.md where Orrery wrote it (a
-  lane folder that is not a git repo). A committed CLAUDE.md in a git repo keeps its line, and the command says so.
-  `.orrery/view.md` is deleted (unless git tracks it); `@AGENTS.md` stays.
+- **Instructions and view go in the system prompt.** The mod adds them when the session starts: the agent's
+  `instructions.md` first (up to 32 KB; more is cut, with a notice), then the memory view, which it refreshes at each
+  compaction. A session picks up changed instructions at its next start. The `@.orrery/view.md` line is removed from
+  CLAUDE.local.md, and from CLAUDE.md where Orrery wrote it (a folder that is not a git repo). A committed CLAUDE.md in
+  a git repo keeps its line, and the command says so. `.orrery/view.md` is deleted (unless git tracks it);
+  `@AGENTS.md` stays.
+- **Any folder.** The mod needs no file in the folder, so `orrery agent <Name>` works anywhere; the folder's own
+  `AGENTS.md` and `CLAUDE.md` load as the project's rules.
 - **Orrery answers compaction.** `/compact`, Claude Code's own automatic compaction, and the mod's keep the last turn
   (its prompt, tool calls and reply) and refresh the view, with no model call. It waits up to 30 s for the summaries of
   the turns just recorded. After an Orrery compaction the kept last turn carries its text and tool calls, not images,
   the model's thinking or attachments. A turn kept in the middle of its tool loop (Claude Code's own threshold, or an
   Esc there) keeps everything, and its memory section can then stay stale until the next compaction.
-- **The conversation compacts itself** once it passes the lane's `compact_at` (default 200,000 tokens, at least
-  100,000): `orrery lane set <Lane> --compact-at 150000`, or the TUI's `E`. Only interactive sessions; `claude -p`
+- **The conversation compacts itself** once it passes the agent's `compact_at` (default 200,000 tokens, at least
+  100,000): `orrery agent set <Name> --compact-at 150000`, or the TUI's `C`. Only interactive sessions; `claude -p`
   compacts at `/compact` and Claude Code's own threshold. If a compaction the mod started cannot be answered, the
   conversation stays as it is and the mod starts no more in that session; when only the last turn was too large to
   keep, it tries again after a later turn.
-- **Fallbacks.** When the view cannot be read, the lane has no memory yet, or the last turn alone is over half of
+- **Fallbacks.** When the view cannot be read, the agent has no memory yet, or the last turn alone is over half of
   `compact_at`, Claude Code compacts its own way and one line says why. If the mod is not loaded at all (an older
   Claude Code, or mods turned off), the session runs without the memory view and the model is told to say so.
-- **A session that is not recorded** (read-only, another window on the lane) compacts the Claude Code way: its older
+- **A session that is not recorded** (read-only, another window on the agent) compacts the Claude Code way: its older
   turns are not all in memory.
 - **Recording, the guard and the one-writer rule are unchanged.**
-- **Switching back:** plain `orrery claude-setup <Lane>` puts the view file and its import line back (in CLAUDE.md for
-  a lane folder that is not a git repo, CLAUDE.local.md in a repo). Either switch takes effect at the next session
-  start. Before going back to an older Orrery version, run plain `orrery claude-setup <Lane>`: older versions do not
-  know mod mode and stop recording the lane.
+- **Switching back:** plain `orrery claude-setup <Name>` puts the view file and its import line back (in CLAUDE.md for
+  a folder that is not a git repo, CLAUDE.local.md in a repo). It works in the agent's default folder only, and from
+  then on `orrery agent` refuses to open the agent elsewhere in Claude Code. Either switch takes effect at the next
+  session start. Before going back to an older Orrery version, run plain `orrery claude-setup <Name>`: older versions
+  do not know mod mode and stop recording the agent.
 - After a compaction Claude Code does not list its deferred tools again; the memory section tells the model to load
   `zoom`, `date` and `search` with ToolSearch when they are not listed.
 
-What you see in a mod-mode lane: until your first prompt, a band above the prompt shows the Orrery logo with `Orrery ·
-<Lane>` and the lane's state (`memory loaded · N msgs · recording`, `no memory yet`, or `read-only (another window
-records this lane)`); a narrow or short window shows the two lines without the logo (the logo needs the band to be 60
+What you see in a mod-mode session: until your first prompt, a band above the prompt shows the Orrery logo with `Orrery ·
+<Name>` and the agent's state (`memory loaded · N msgs · recording`, `no memory yet`, or `read-only (another window
+records this agent)`); a narrow or short window shows the two lines without the logo (the logo needs the band to be 60
 columns wide, which is the terminal less Claude Code's margin, and 5 rows tall), as do surfaces other than the
-terminal. `Orrery · <Lane> · N msgs`, as pi's status line reads, stays among the mode labels at the right of the
+terminal. `Orrery · <Name> · N msgs`, as pi's status line reads, stays among the mode labels at the right of the
 prompt footer for the whole session; the count moves after each turn, once the turn has reached memory (in a
 read-only window, when the recording window's turns have landed and this window ends a turn). In a narrow window
 Claude Code puts the mode labels on a line of their own under the footer. After a
 `/compact`, Claude Code's own `Compacted (ctrl+o to see full summary)` row is followed by Orrery's line: `Orrery
 compacted: kept the last turn …`, or why Claude Code compacted its own way. A compaction the mod started, or Claude
-Code's automatic one, logs the same line once it is done. Lanes not in mod mode, and folders outside any lane, show
-none of this.
+Code's automatic one, logs the same line once it is done. Agents not in mod mode, and sessions that are no agent's,
+show none of this.
 
 ## Bring an agent's history
 
-Claude Code files a session under the project folder it started in. An agent whose past lives under another
-project can be imported by naming those files, with the lane's own folder skipped:
+The easiest way is the TUI: on the Agents page press `N`, then "From an existing chat". It lists every Claude Code and
+Codex chat, newest first, and marks one written to in the last ten minutes "in use". Pick one or several, name the
+agent, choose the tool it continues in and its summary model, and review a short report before anything is written.
+The import is a snapshot: the source chats are only read, never changed, and anything said in them afterwards is not in
+the agent. Its memory builds in the background, and you can open the agent once that is done.
+
+From a shell, note that Claude Code files a session under the project folder it started in. An agent whose past lives
+under another project can be imported by naming those files, with the agent's own folder skipped:
 
 ```bash
 orrery import Rowan --dry-run --claude none \
@@ -136,36 +186,41 @@ orrery import Rowan --dry-run --claude none \
   --claude-file ~/.claude/projects/-home-alex-code-sample-project/<other-session>.jsonl
 ```
 
+The dry run prints progress lines as it works. Claude Code deletes its session files after 30 days by default, so
+import early, or raise `cleanupPeriodDays` in `~/.claude/settings.json`.
+
 Review the report, then `orrery import Rowan --commit <out>/preview.jsonl`, then `orrery compact Rowan`, with Rowan
-closed everywhere. Do it before the first session in the new lane folder. A file that is missing, or is no Claude
+closed everywhere. Do it before the agent's first Claude Code session. A file that is missing, or is no Claude
 Code session, stops the import before anything is written. A record that appears in two files (a resumed session)
 is imported once.
 
 ## Daily use
 
-Start Claude Code at the lane folder's root.
+Open the agent with `orrery agent <Name>`, or start Claude Code at the root of its default folder.
 
-- The first line the model gets is `orrery · <Lane> · N msgs · recording`, or `read-only: this session is not
+- The first line the model gets is `orrery · <Name> · N msgs · recording`, or `read-only: this session is not
   recorded`, `not recording yet` (the recorder did not answer in time), `not set up for Claude Code here, so this
-  session is not recorded` (run `orrery claude-setup <Lane>`), or `no memory yet` in place of the message count. When
-  something is off, the line after it says why: the lane is open elsewhere, the recorder did not answer, `CLAUDE.md`
+  session is not recorded` (run `orrery claude-setup <Name>`), or `no memory yet` in place of the message count. When
+  something is off, the line after it says why: the agent is open elsewhere, the recorder did not answer, `CLAUDE.md`
   does not load the view, or git is the problem (below).
 - Memory keeps your prompts and each turn's final reply. Tool calls, tool output, thinking, subagents and slash
   commands are not kept. The reply to one of Orrery's own commands (`/orrery:memory`, `/orrery:compactor`,
   `/orrery:browse`) is not kept either, as in pi. The reply to any other slash command or skill is real work, so it is
   kept, without the command.
 - The view loads when a session starts. A long session runs on the view it started with plus its own transcript.
-  Start a fresh session (or `--resume`) to pick up a newer view.
+  Start a fresh session (or `--resume`) to pick up a newer view. If a session was started by another agent, or in
+  another agent's folder, and this agent resumes it, recording starts at its tail: the other agent's turns are not
+  copied.
 - If git cannot answer whether `.orrery/` is ignored (git missing, a broken repo, a timeout), the view is taken out of
-  the workspace until git can answer again. The session that takes it out says so at the start; the next write that
+  the folder until git can answer again. The session that takes it out says so at the start; the next write that
   passes the check puts it back silently.
 - If `.orrery/` becomes visible to git after setup, SessionStart removes the marker and the view and says why. That
-  session, and every later one, is not recorded until you fix the repo and run `orrery claude-setup <Lane>` again.
+  session, and every later one, is not recorded until you fix the repo and run `orrery claude-setup <Name>` again.
 - Claude Code also loads your claude.ai connectors. One that needs authorization can make the model add a note like
   "…connectors won't work until you authorize them" to its replies, and those replies are memory. Authorize or remove
   those connectors on claude.ai. In Claude Code 2.1.291 (seen in its binary), `ENABLE_CLAUDEAI_MCP_SERVERS=0` in the
   environment also stops it loading them.
-- When a lane's summaries start failing or stop, you get a one-line notice (once, and once more when they recover)
+- When an agent's summaries start failing or stop, you get a one-line notice (once, and once more when they recover)
   saying which source and why, for example "the OpenRouter account has no balance". It is shown to you, not to the
   model, so it never enters memory. Summaries keep retrying; switch the source with `/orrery:compactor`.
 - Claude Code's own compaction stays on.
@@ -186,52 +241,58 @@ Start Claude Code at the lane folder's root.
   approval" because its path was outside the session's working folders. The skill was loaded, the `touch` never
   happened, Orrery was not called, no model turn ran, and nothing entered memory. `claude -p` shows that message only
   in its `stream-json` output, not as an answer. The message ends "Allowing runs the command as written", which
-  suggests an interactive session asks you instead; that, a target inside the workspace, and other permission modes
+  suggests an interactive session asks you instead; that, a target inside the folder, and other permission modes
   were not checked. The three commands with plain arguments ran with no prompt.
-- `/orrery:browse` writes the memory explorer to `memory.html` in the lane's data folder and opens it.
+- `/orrery:browse` writes the memory explorer to `memory.html` in the agent's data folder and opens it.
 
-These commands are for you: the model cannot start them. The same commands work from a shell, with the lane name or
-`.` for the lane whose workspace holds the current folder:
+These commands are for you: the model cannot start them. The same commands work from a shell, with the agent name or
+`.` for this session's agent (`ORRERY_AGENT`, else the agent whose folder holds the current folder):
 
 ```bash
-orrery status [<Lane>]
-orrery compactor <Lane> [signin|key|local [name [words] | name/model [thinking]] | provider/id [thinking] | reset]
-orrery browse <Lane> --open
-orrery claude-setup <Lane> --mod                  # switch a lane to mod mode; plain claude-setup switches back
-orrery lane set <Lane> --compact-at TOKENS        # where the mod compacts (at least 100000)
-orrery claude-mod view --cwd DIR [--session ID] [--wait-ms N [--spool-only]]   # the mod's own call: the lane's memory section as JSON
+orrery status [<Name>]
+orrery compactor <Name> [signin|key|local [name [words] | name/model [thinking]] | provider/id [thinking] | reset]
+orrery browse <Name> --open
+orrery claude-setup <Name> --mod                  # switch an agent to mod mode; plain claude-setup switches back
+orrery agent set <Name> --compact-at TOKENS       # where the mod compacts (at least 100000)
+orrery claude-mod view --cwd DIR [--session ID] [--agent NAME [--agent-token T]] [--wait-ms N [--spool-only]]   # the mod's own call: the agent's memory section as JSON
 ```
 
 In the plugin's commands, `.` is the folder of the Bash tool's shell: the folder Claude Code started in, or wherever a
-`cd` in the Bash tool has moved it since (Claude Code gives these commands no `CLAUDE_PROJECT_DIR`). Any folder inside
-the lane's workspace still names the lane. From a folder outside it, the command answers that the folder is in no
-lane's workspace; `orrery <command> <Lane>` in a shell still works.
+`cd` in the Bash tool has moved it since (Claude Code gives these commands no `CLAUDE_PROJECT_DIR`). With
+`ORRERY_AGENT` set, `.` is that agent; otherwise any folder inside an agent's default folder names it. From a folder
+outside every agent's folder, the command answers that the folder is in no agent's folder; `orrery <command> <Name>` in a shell still
+works.
 
 `orrery compactor` tests the model with one call, using Orrery's own logins, before it switches. If the model is switched
-while a Claude Code session records the lane, that session's recorder applies it, and the command waits up to 10 seconds for it. While pi holds the
-lane, use `/compactor` in pi.
+while a Claude Code session records the agent, that session's recorder applies it, and the command waits up to 10 seconds for it. While pi holds the
+agent, use `/compactor` in pi.
 
 ## Memory tools
 
-The model gets `zoom`, `date` and `search` (named `mcp__plugin_orrery_orrery__…`), plus `lanes` and `lane_memory` for
-readers like Birch. They read snapshots of the lane's memory. Outside a lane they list no tools.
+The model gets `zoom`, `date` and `search` (named `mcp__plugin_orrery_orrery__…`), plus `agents` and `agent_memory` for
+readers like Birch. They read snapshots of the agent's memory. In a session that is no agent's they list no tools.
 
 ## One writer
 
-A lane records in one place at a time.
+An agent records in one place at a time.
 
-- Claude Code in a lane that pi (or another Claude Code) holds runs read-only, and says so. It still loads the view and
+- Claude Code on an agent that pi (or another Claude Code) holds runs read-only, and says so. It still loads the view and
   has the memory tools, but nothing it says is recorded.
-- While pi holds the lane, a Claude Code session is read-only. While a Claude Code session records, pi runs without
-  memory and warns that the lane is open in Claude Code (a second pi's warning says "already open in another pi").
+- While pi holds the agent, a Claude Code session is read-only. While a Claude Code session records, pi runs without
+  memory and warns that the agent is open in Claude Code (a second pi's warning says "already open in another pi").
 - After a session ends, its recorder finishes the summaries for up to 10 minutes. A new session, or pi, opened meanwhile
-  takes the lane over at once.
+  takes the agent over at once.
 
 ## The guard
 
-Claude Code's tool calls in a lane folder get pi's rules. A credential file is refused through any tool, in reads
+Claude Code's tool calls in an agent's session get pi's rules. A credential file is refused through any tool, in reads
 as well as writes (`~/.ssh`, credential stores, `~/.claude/.credentials.json`, `~/.claude.json`, Orrery's
-`credentials.json`). Other files in Orrery's data folder, such as another lane's `memory.sqlite`, can be read, as in pi, and writes stay inside the workspace and its `allowed_roots`.
+`credentials.json`). So is Orrery's data folder, except reading the installed program (`app/`) and `config.toml`. The
+config and the installed program are read-only to agents: no tool may change either. An agent's memory view
+(`.orrery/view.md` in its folder) is read only by that agent's own sessions; every other agent's file tools and content
+searches are refused it, by their path or a symbolic link to it (a hard link is not caught). Writes stay inside the folder the agent was opened in and its
+`allowed_roots`. Setup commands that name the installed app folder (the plugin install above, for one) are refused to
+agents, so run them in your own terminal.
 
 Claude Code's own per-user state stays writable, and only this:
 
@@ -241,58 +302,66 @@ Claude Code's own per-user state stays writable, and only this:
 
 The guard runs before every tool. A hook that crashes does not block. It is a seatbelt, not a sandbox. Its known limits:
 
+- The shell-text rules read a command's text, not what it does. Shell commands that name an `.orrery` folder or a
+  custom `ORRERY_CONFIG` file by a path the guard can read are refused, but known limits include variables, `eval`, `cd`, escape codes, brace names split across words, commands that change folder with their own flag (`git -C`, `tar -C`), a swap of the session's own folder in the same command, a shell search of an agent's whole folder, and hard links to a protected file, and a relative path or a link to the config.
 - Tools the guard does not know are judged by heuristics: path-like keys (`path`, `file`, `dir`, `source`, …),
   destination keys (`out_dir`, `output`, `dest`, `target`, `save_path`), write verbs in the tool's name, and strings
   that start like a path. A tool that names a file under another key, or writes without a verb or a destination key, is
-  not confined to the lane.
+  not confined to the agent's folder.
 - What a tool writes (`content`, `new_source`, `old_string`, `new_string`) is never read as a path, so an MCP tool that
   takes a path under one of those keys is unchecked.
 - Text that spans lines, or is over 4,096 characters once normalized, is treated as text. A tool that pulls a path out
   of such text is unchecked.
 - A one-line text value that starts like a path and names a credential file is refused, even in a tool that only sends
   text.
-- `target` and `output` are destinations in every tool, so an absolute value outside the lane is refused. A copy or move
-  tool named for writing has its source outside the lane refused.
+- `target` and `output` are destinations in every tool, so an absolute value outside the folder is refused. A copy or move
+  tool named for writing has its source outside the folder refused.
 - Bash and MCP writes are confined only by those heuristics (pattern checks on command lines, tool-name verbs and
   path-like keys). Obfuscated spellings (`~/.ss''h`, `~/.claude.j*n`) get through, and Bash can write anywhere, as in pi.
 - `/proc/self` and `/dev/fd` paths name the hook's process, not Claude Code's.
-- Auto memory for a worktree, or for a lane in a repo's subfolder, is not writable: it lives under the git root's
+- Auto memory for a worktree, or for an agent in a repo's subfolder, is not writable: it lives under the git root's
   folder. `CLAUDE_CONFIG_DIR`, `autoMemoryDirectory`, `plansDirectory` and `TMP`/`TEMP` are not followed for writes, so
   those writes are refused.
 - Project folders collide the way Claude Code's own folders do (`/a-b` and `/a/b` share one).
 - One call is checked for about 2 seconds at most. A call that names more paths than that, or whose paths take longer
   to check, is refused. So is a command line, Grep glob or Glob pattern over 64 KB, and a hook input over 1 MB (a
-  single `Write` over 1 MB included). The 1 MB rule holds even outside a lane when `CLAUDE_PROJECT_DIR` is unset;
-  Claude Code always sets it for hooks.
+  single `Write` over 1 MB included). The 1 MB rule holds even outside an agent's folder when `CLAUDE_PROJECT_DIR` is
+  unset; Claude Code always sets it for hooks.
 - A filesystem call that blocks (a hung network mount, a macOS automount such as `/net/<host>`) can still hold the hook
   past Claude Code's timeout, and that call then runs unchecked.
 
 ## Files
 
-- `<workspace>/.orrery/view.md`, the memory view (mode 0600);
-- `CLAUDE.md` or `CLAUDE.local.md`, with the two import lines;
-- `<lane data>/claude/`: the spool, `holder.json`, `setup.json` (the marker) and `holder.log`, which holds no message
+- `<folder>/.orrery/view.md`, the instructions and memory view (mode 0600; file setup only);
+- `CLAUDE.md` or `CLAUDE.local.md`, with the two import lines (file setup only);
+- `<agent data>/instructions.md`, the agent's instructions;
+- `<agent data>/claude/`: the spool, `holder.json`, `setup.json` (the marker) and `holder.log`, which holds no message
   text;
-- `<lane data>/status.json`, which `orrery status` reads;
-- `<lane data>/memory.html`, from `/orrery:browse`.
+- `<agent data>/claims/`: which process has claimed `ORRERY_AGENT_TOKEN`. A claim is written whole and published with a
+  hard link, or with an exclusive create where the filesystem has no hard links;
+- `<data>/claude-processes/`: each Claude Code process's pick, so a session keeps the agent it started with;
+- `<agent data>/status.json`, which `orrery status` reads;
+- `<agent data>/memory.html`, from `/orrery:browse`.
 
 ## Troubleshooting
 
 - "did not answer": read `holder.log`.
-- "read-only": the lane is open in pi or another Claude Code. `orrery status` shows it.
-- "not set up for Claude Code here": run `orrery claude-setup <Lane>`, then start a new session.
-- No view: run `orrery claude-setup <Lane>`, and start Claude Code at the lane's root.
+- "read-only": the agent is open in pi or another Claude Code. `orrery status` shows it.
+- "not set up for Claude Code here": run `orrery claude-setup <Name>`, then start a new session.
+- "open outside its folder, where only the Orrery mod brings its memory": run `orrery claude-setup <Name> --mod`, then
+  start a new session.
+- No view: run `orrery claude-setup <Name>`, and start Claude Code at the root of the agent's folder.
 - "git cannot answer" or ".orrery/ is visible to git": fix the repo (ignore `.orrery/`, untrack it), then rerun setup.
 - Summaries failing: check `orrery login`.
-- `/orrery:compactor` in a lane pi holds: use `/compactor` in pi.
+- `/orrery:compactor` for an agent pi holds: use `/compactor` in pi.
 
 ## Testing
 
 - `npm test` covers the hooks, the holder, the guard, the MCP server and the pi/Claude Code cross-tool check
-  (`test/claude/cross-tool.test.ts`: one lane opened in pi, then in Claude Code through the hook CLI, keeps one memory,
-  and the second agent runs without recording while the first holds the lane), all without Claude.
+  (`test/claude/cross-tool.test.ts`: one agent opened in pi, then in Claude Code through the hook CLI, keeps one memory,
+  and the second tool runs without recording while the first holds the agent), all without Claude.
 - `scripts/claude-e2e.sh` is the real `claude -p` run. It costs usage (about a dozen short sessions), so run it after
-  changes to the hooks or the plugin, or after a Claude Code update. It works on a temp lane with made-up content, runs
+  changes to the hooks or the plugin, or after a Claude Code update. It works on a temp agent with made-up content, runs
   Claude Code on a temp `HOME` whose `.claude` links to yours (for the login), leaves out your settings
   (`--setting-sources project,local`) and loads the plugin with `--plugin-dir`. If the plugin is installed, it stops:
   uninstall it for the run. Each check prints `PASS` or `FAIL`, and `INFO` lines say what each session answered and
@@ -302,7 +371,7 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
   only its own: the folders named for its session ids or its temp folder, and `plugins/data/orrery-inline` when the
   run made it and it is still empty. Like any session, Claude Code may also tidy its shared caches there.
 - In `claude -p`, Claude Code did not load even an unfenced `@~/…` import from `CLAUDE.md`, so the run's
-  `@~/.ssh/config` canary is not live there; the `@canary.md` canary inside the workspace is.
+  `@~/.ssh/config` canary is not live there; the `@canary.md` canary inside the folder is.
 
 ## Limits
 
@@ -313,6 +382,7 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
 - Hooks that fail don't block the session; they say so, or say nothing.
 - Claude Code changes fast; the plugin is written against its current hooks and plugin format.
 - `orrery usage` shows only summary tokens for Claude Code sessions, not the session's own.
-- Events left by a crash are recorded by the next Claude Code session of the lane.
+- Events left by a crash are recorded by the next Claude Code session of the agent.
+- Three processes racing for one token claim can, rarely, both believe they hold it; with two, exactly one wins.
 
 For launching this tool through Ori, see [Ori](ori.md).

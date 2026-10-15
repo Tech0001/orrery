@@ -1,46 +1,46 @@
 /**
- * `orrery claude-setup <Lane>` (spec §4 "The view file and CLAUDE.md") makes Claude Code load the lane's AGENTS.md
+ * `orrery claude-setup <Name>` (spec §4 "The view file and CLAUDE.md") makes Claude Code load the agent's AGENTS.md
  * and memory view.
- * - A lane folder of its own gets the import lines in CLAUDE.md.
+ * - An agent folder of its own gets the import lines in CLAUDE.md.
  * - A git repo (shared with other people) stays untouched: the lines go in CLAUDE.local.md, and CLAUDE.local.md
  *   and .orrery/ are listed in the repo's info/exclude, which is local and never committed.
  * - A CLAUDE.md that is a symlink (often to AGENTS.md) is never written through: the lines go in CLAUDE.local.md.
- * - It then leaves its marker in the lane's data folder (view-file.ts), the only way a workspace starts receiving the
+ * - It then leaves its marker in the agent's data folder (view-file.ts), the only way a folder starts receiving the
  *   view.
- * The workspace is untrusted, since a shared repo decides what is in it:
+ * The folder is untrusted, since a shared repo decides what is in it:
  * - it never writes through a symlink; it refuses, writing nothing, when CLAUDE.local.md, .orrery, the repo's
  *   info/exclude or its folder is one (or is not a regular file or folder of the user's);
  * - in a repo, git must ignore .orrery/ and track nothing in it, in any case (a .gitignore rule can undo
  *   info/exclude). Otherwise it refuses, and takes back an earlier setup's marker and the view it wrote
  *   (withdrawView). When git cannot say (src/claude/git.ts), it refuses too, and an earlier setup's view is taken out
  *   until git answers (takeOutView); its marker stays.
- * `claudeSetupMod` (`--mod`) switches a lane to the Orrery mod: it takes the import lines back out (see there).
- * Git runs as an argument list (`git -C <workspace> …`), never through a shell, without inherited GIT_DIR and the
+ * `claudeSetupMod` (`--mod`) switches an agent to the Orrery mod: it takes the import lines back out (see there).
+ * Git runs as an argument list (`git -C <folder> …`), never through a shell, without inherited GIT_DIR and the
  * like. Safe to rerun.
  */
 
 import { existsSync, lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { LaneConfig } from "../lane/config.ts";
-import { ownFolder, writePrivate } from "../lane/private-file.ts";
+import type { AgentConfig } from "../agent/config.ts";
+import { ownFolder, writePrivate } from "../agent/private-file.ts";
 import { git, gitExposure, inWorkTree } from "./git.ts";
 import { samePath, viewFile } from "./paths.ts";
 import { deleteViewFile, importsView, messageCount, READ_LIMIT, readHead, refreshViewFile, type SetupFile, takeOutView, VIEW_IMPORT, withdrawView, writeSetupMarker } from "./view-file.ts";
 
-/** The CLAUDE.md line that loads the lane's AGENTS.md (pi reads AGENTS.md; Claude Code reads CLAUDE.md). */
+/** The CLAUDE.md line that loads the agent's AGENTS.md (pi reads AGENTS.md; Claude Code reads CLAUDE.md). */
 export const AGENTS_IMPORT = "@AGENTS.md";
 const EXCLUDES = ["CLAUDE.local.md", ".orrery/"];
 
 /** What claude-setup did, for setupReport. */
 export interface SetupResult {
-	readonly lane: string;
+	readonly agent: string;
 	/** The file holding the import lines: CLAUDE.md, or CLAUDE.local.md. */
 	readonly file: string;
 	readonly added: readonly string[];
 	/** The repo's info/exclude and the lines added to it, in a git repo. */
 	readonly exclude?: { readonly file: string; readonly added: readonly string[] };
 	readonly view: string;
-	/** The lane's message count, once it has memory. */
+	/** The agent's message count, once it has memory. */
 	readonly messages?: number;
 	/** Where CLAUDE.md links to, when it is a symlink (so the lines went in CLAUDE.local.md). */
 	readonly claudeMdLink?: string;
@@ -49,14 +49,14 @@ export interface SetupResult {
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /**
- * The repo's info/exclude when the workspace is inside a git work tree; undefined otherwise, without git, or when git
+ * The repo's info/exclude when the folder is inside a git work tree; undefined otherwise, without git, or when git
  * fails (claudeSetup's gitExposure check then refuses).
  */
-export function gitExclude(workspace: string): string | undefined {
-	const run = git(workspace, ["rev-parse", "--is-inside-work-tree", "--git-path", "info/exclude"]);
+export function gitExclude(folder: string): string | undefined {
+	const run = git(folder, ["rev-parse", "--is-inside-work-tree", "--git-path", "info/exclude"]);
 	if (run?.status !== 0) return undefined;
 	const [inside, path] = run.stdout.trim().split("\n");
-	return inside === "true" && path ? resolve(workspace, path) : undefined;
+	return inside === "true" && path ? resolve(folder, path) : undefined;
 }
 
 /**
@@ -94,11 +94,11 @@ function missing(text: string, wanted: readonly string[]): string[] {
 /** Appends `added` to `text` (already read through editable) and writes it whole, never through a symlink. */
 function append(path: string, text: string, added: readonly string[]): void {
 	if (added.length === 0) return;
-	// The folder is the user's (a workspace's root, a repo's .git/info), not orrery's: its mode stays.
+	// The folder is the user's (a folder's root, a repo's .git/info), not orrery's: its mode stays.
 	writePrivate(path, `${text}${text === "" || text.endsWith("\n") ? "" : "\n"}${added.join("\n")}\n`, { keepFolderMode: true });
 }
 
-/** Whether the workspace's CLAUDE.md already loads AGENTS.md: it imports it, or it is a symlink to it. */
+/** Whether the folder's CLAUDE.md already loads AGENTS.md: it imports it, or it is a symlink to it. */
 function agentsLoaded(root: string): boolean {
 	const claudeMd = join(root, "CLAUDE.md");
 	try {
@@ -123,12 +123,14 @@ function setupFileName(exclude: string | undefined, claudeMdLink: string | undef
 	return exclude === undefined && claudeMdLink === undefined ? "CLAUDE.md" : "CLAUDE.local.md";
 }
 
-/** Sets the lane's workspace up for Claude Code (see the module doc). Throws, with what to fix, when it refuses. */
-export function claudeSetup(lane: LaneConfig): SetupResult {
-	if (!existsSync(lane.workspace)) throw new Error(`${lane.name}'s workspace ${lane.workspace} does not exist`);
-	// The configured path is trusted, even through a symlink; what is inside the workspace is not.
-	const root = realpathSync(lane.workspace);
-	if (ownFolder(root) !== true) throw new Error(`${lane.name}'s workspace ${lane.workspace} is not a folder of yours`);
+/** Sets the agent's folder up for Claude Code (see the module doc). Throws, with what to fix, when it refuses. */
+export function claudeSetup(agent: AgentConfig): SetupResult {
+	const folder = agent.folder;
+	if (folder === undefined) throw new Error(`${agent.name} has no folder; Claude Code's file setup needs one. Use orrery claude-setup ${agent.name} --mod.`);
+	if (!existsSync(folder)) throw new Error(`${agent.name}'s folder ${folder} does not exist`);
+	// The configured path is trusted, even through a symlink; what is inside the folder is not.
+	const root = realpathSync(folder);
+	if (ownFolder(root) !== true) throw new Error(`${agent.name}'s folder ${folder} is not a folder of yours`);
 	const exclude = gitExclude(root);
 	const claudeMdLink = linkTarget(join(root, "CLAUDE.md"));
 	const name = setupFileName(exclude, claudeMdLink);
@@ -151,35 +153,35 @@ export function claudeSetup(lane: LaneConfig): SetupResult {
 	const exposure = gitExposure(root);
 	if (exposure !== undefined) {
 		const kept = exclude !== undefined && excludeAdded.length > 0 ? ` The lines it listed in ${exclude} stay; they only make git ignore more.` : "";
-		const stuck = (error: unknown) => ` The view there could not be removed (${errorText(error)}); remove ${viewFile(lane.workspace)} yourself.`;
+		const stuck = (error: unknown) => ` The view there could not be removed (${errorText(error)}); remove ${viewFile(folder)} yourself.`;
 		if (exposure.kind === "unchecked") {
 			// Git could not say this time: an earlier setup's view is taken out until it can, and its marker stays.
 			let left = "";
 			try {
-				takeOutView(lane);
+				takeOutView(agent);
 			} catch (error) {
 				left = stuck(error);
 			}
-			throw new Error(`${lane.name}: ${exposure.reason}. Nothing was set up; try again.${left}${kept}`);
+			throw new Error(`${agent.name}: ${exposure.reason}. Nothing was set up; try again.${left}${kept}`);
 		}
 		let left = "";
 		try {
-			withdrawView(lane);
+			withdrawView(agent);
 		} catch (error) {
 			left = stuck(error);
 		}
-		const fix = `Make git ignore .orrery/ and track nothing there, then rerun \`orrery claude-setup ${lane.name}\`.`;
-		throw new Error(`${lane.name}: ${exposure.reason}, so the memory view in ${join(lane.workspace, ".orrery")} could reach a commit. ${fix} Claude Code was not set up.${left}${kept}`);
+		const fix = `Make git ignore .orrery/ and track nothing there, then rerun \`orrery claude-setup ${agent.name}\`.`;
+		throw new Error(`${agent.name}: ${exposure.reason}, so the memory view in ${join(folder, ".orrery")} could reach a commit. ${fix} Claude Code was not set up.${left}${kept}`);
 	}
 	append(join(root, name), text, added);
-	writeSetupMarker(lane.dir, lane.workspace, name);
-	const messages = refreshViewFile(lane);
+	writeSetupMarker(agent.dir, folder, name);
+	const messages = refreshViewFile(agent);
 	return {
-		lane: lane.name,
-		file: join(lane.workspace, name),
+		agent: agent.name,
+		file: join(folder, name),
 		added,
 		...(exclude === undefined ? {} : { exclude: { file: exclude, added: excludeAdded } }),
-		view: viewFile(lane.workspace),
+		view: viewFile(folder),
 		...(messages === undefined ? {} : { messages }),
 		...(claudeMdLink === undefined ? {} : { claudeMdLink }),
 	};
@@ -199,42 +201,51 @@ export function setupReport(result: SetupResult): string {
 	if (result.claudeMdLink !== undefined) {
 		out.push(`CLAUDE.md is a symlink (to ${quoted(result.claudeMdLink)}); Orrery never writes through one, so the lines go in CLAUDE.local.md.`);
 	}
-	out.push(result.added.length > 0 ? `${result.lane}: added ${result.added.join(", ")} to ${result.file}` : `${result.lane}: ${result.file} already loads the memory view`);
+	out.push(result.added.length > 0 ? `${result.agent}: added ${result.added.join(", ")} to ${result.file}` : `${result.agent}: ${result.file} already loads the memory view`);
 	if (result.exclude !== undefined) {
 		out.push(result.exclude.added.length > 0 ? `Listed ${result.exclude.added.join(", ")} in ${result.exclude.file}` : `${result.exclude.file} already lists CLAUDE.local.md and .orrery/`);
 	}
-	out.push(result.messages === undefined ? `View: ${result.view} is written once the lane has memory` : `View: ${result.view} (${result.messages} messages)`);
-	out.push("Start Claude Code in the lane's folder; a new session loads the view.");
+	out.push(result.messages === undefined ? `View: ${result.view} is written once the agent has memory` : `View: ${result.view} (${result.messages} messages)`);
+	out.push("Start Claude Code in the agent's folder; a new session loads the view.");
 	return `${out.join("\n")}\n`;
 }
 
-/** What `orrery claude-setup <Lane> --mod` did, for modSetupReport. */
+/** What `orrery claude-setup <Name> --mod` did, for modSetupReport. */
 export interface ModSetupResult {
-	readonly lane: string;
+	readonly agent: string;
 	/** The files whose view import line was removed. */
 	readonly removedFrom: readonly string[];
 	readonly viewDeleted: boolean;
 	/** A CLAUDE.md in a git repo that still imports the view: the repo's own line, left alone. */
 	readonly keptIn?: string;
-	/** The lane's message count, once it has memory. */
+	/** The agent's message count, once it has memory. */
 	readonly messages?: number;
+	/** The agent has no folder: only the marker was written, and the file setup cannot switch it back. */
+	readonly noFolder?: true;
 }
 
 /**
- * `orrery claude-setup <Lane> --mod` (spec 2026-10-08-claude-code-mod §4.6): the Orrery mod gives Claude Code the view
+ * `orrery claude-setup <Name> --mod` (spec 2026-10-08-claude-code-mod §4.6): the Orrery mod gives Claude Code the view
  * in the system prompt. It
  * - removes the view import line from CLAUDE.local.md, and from CLAUDE.md only where plain claudeSetup would have put it
- *   there: git definitely says the workspace is in no work tree (a git that cannot answer counts as a repo), and
+ *   there: git definitely says the folder is in no work tree (a git that cannot answer counts as a repo), and
  *   CLAUDE.md is no symlink. A file it edits must be a regular file of at most 256 KB, never a symlink; AGENTS.md import
  *   lines stay. In a repo CLAUDE.md's line is the repo's: that file is only read, never edited, so it never refuses;
  * - deletes .orrery/view.md (not one git tracks) and then .orrery/ if empty;
  * - writes the marker with file "mod".
- * Every check comes before the first write. Plain claudeSetup switches back.
+ * Every check comes before the first write. Plain claudeSetup switches back. An agent with no folder gets the marker
+ * alone (folder ""): there is no CLAUDE.md to take a line out of, and mod mode holds in whatever folder it opens.
  */
-export function claudeSetupMod(lane: LaneConfig): ModSetupResult {
-	if (!existsSync(lane.workspace)) throw new Error(`${lane.name}'s workspace ${lane.workspace} does not exist`);
-	const root = realpathSync(lane.workspace);
-	if (ownFolder(root) !== true) throw new Error(`${lane.name}'s workspace ${lane.workspace} is not a folder of yours`);
+export function claudeSetupMod(agent: AgentConfig): ModSetupResult {
+	if (agent.folder === undefined) {
+		writeSetupMarker(agent.dir, "", "mod");
+		const messages = messageCount(agent);
+		return { agent: agent.name, removedFrom: [], viewDeleted: false, noFolder: true, ...(messages === undefined ? {} : { messages }) };
+	}
+	const folder = agent.folder;
+	if (!existsSync(folder)) throw new Error(`${agent.name}'s folder ${folder} does not exist`);
+	const root = realpathSync(folder);
+	if (ownFolder(root) !== true) throw new Error(`${agent.name}'s folder ${folder} is not a folder of yours`);
 	const ownsClaudeMd = linkTarget(join(root, "CLAUDE.md")) === undefined && inWorkTree(root) === false;
 	const edits: { name: string; text: string }[] = [];
 	let keptIn: string | undefined;
@@ -243,7 +254,7 @@ export function claudeSetupMod(lane: LaneConfig): ModSetupResult {
 		if (linkTarget(path) !== undefined) continue; // a symlink is never written through, and setup never wrote there
 		if (name === "CLAUDE.md" && !ownsClaudeMd) {
 			// The repo's file and its line, not Orrery's: read only to say that the line stays.
-			if (importsView(path)) keptIn = join(lane.workspace, name);
+			if (importsView(path)) keptIn = join(folder, name);
 			continue;
 		}
 		const text = editable(path);
@@ -252,19 +263,23 @@ export function claudeSetupMod(lane: LaneConfig): ModSetupResult {
 		if (kept.length !== lines.length) edits.push({ name, text: kept.join("\n") });
 	}
 	for (const { name, text } of edits) writePrivate(join(root, name), text, { keepFolderMode: true });
-	const viewDeleted = deleteViewFile(lane.workspace);
-	writeSetupMarker(lane.dir, lane.workspace, "mod");
-	const messages = messageCount(lane);
-	return { lane: lane.name, removedFrom: edits.map((e) => join(lane.workspace, e.name)), viewDeleted, ...(keptIn === undefined ? {} : { keptIn }), ...(messages === undefined ? {} : { messages }) };
+	const viewDeleted = deleteViewFile(folder);
+	writeSetupMarker(agent.dir, folder, "mod");
+	const messages = messageCount(agent);
+	return { agent: agent.name, removedFrom: edits.map((e) => join(folder, e.name)), viewDeleted, ...(keptIn === undefined ? {} : { keptIn }), ...(messages === undefined ? {} : { messages }) };
 }
 
 /** What claude-setup --mod did, as lines for the terminal. */
 export function modSetupReport(result: ModSetupResult): string {
-	const out = [`${result.lane}: mod mode. Claude Code gets the memory view from the Orrery mod, in the system prompt.`];
+	const out = [`${result.agent}: mod mode. Claude Code gets the memory view from the Orrery mod, in the system prompt.`];
 	for (const file of result.removedFrom) out.push(`Removed ${VIEW_IMPORT} from ${file}`);
 	if (result.keptIn !== undefined) out.push(`${result.keptIn} imports ${VIEW_IMPORT}; that line is the repo's and stays (harmless: the view file is no longer written).`);
 	if (result.viewDeleted) out.push("Deleted the view file .orrery/view.md");
-	out.push(result.messages === undefined ? "Memory: none yet; the mod adds it once the lane has some." : `Memory: ${result.messages} messages.`);
-	out.push(`Start a new Claude Code session in the lane's folder (Claude Code 2.1.287 or newer, Orrery plugin 0.3.0). \`orrery claude-setup ${result.lane}\` switches back.`);
+	out.push(result.messages === undefined ? "Memory: none yet; the mod adds it once the agent has some." : `Memory: ${result.messages} messages.`);
+	out.push(
+		result.noFolder === true
+			? `Open it with \`orrery agent ${result.agent}\` in any folder (Claude Code 2.1.287 or newer, Orrery plugin 0.3.0).`
+			: `Open it with \`orrery agent ${result.agent}\` in any folder, or start Claude Code in its folder (Claude Code 2.1.287 or newer, Orrery plugin 0.3.0). \`orrery claude-setup ${result.agent}\` switches back.`,
+	);
 	return `${out.join("\n")}\n`;
 }

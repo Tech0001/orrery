@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import type { InstallStep, ToolCheck } from "../../src/lane/tools.ts";
+import type { InstallStep, ToolCheck } from "../../src/agent/tools.ts";
 import { toolsPage } from "../../src/tui/pages/tools.ts";
 import { answer, fakeDeps, keys, makeApp, row, screen } from "./support.ts";
 
@@ -85,9 +85,9 @@ describe("the Tools page", () => {
 		await answer(app, "pi", ENTER);
 	});
 
-	it("shows the newest backup across lanes on the Orrery row, and where backups are in its dialog", async () => {
-		const lanes = [row({ name: "Alpha", lastBackup: "2026-10-06" }), row({ name: "Cedarn", lastBackup: "2026-10-08" }), row({ name: "Gamma" })];
-		const app = makeApp(fakeDeps({ tools: () => CHECKS }, lanes), [toolsPage]);
+	it("shows the newest backup across agents on the Orrery row, and where backups are in its dialog", async () => {
+		const agents = [row({ name: "Alpha", lastBackup: "2026-10-06" }), row({ name: "Cedarn", lastBackup: "2026-10-08" }), row({ name: "Gamma" })];
+		const app = makeApp(fakeDeps({ tools: () => CHECKS }, agents), [toolsPage]);
 		expect(screen(app)).toMatch(/Orrery\s+\/opt\/orrery\s+0\.1\.0\s+—\s+last backup 2026-10-08/);
 		keys(app, "\x1b[B", "\x1b[B", "\x1b[B", ENTER);
 		await app.idle();

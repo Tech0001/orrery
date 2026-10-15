@@ -1,50 +1,131 @@
-import { copyFileSync, lstatSync, realpathSync, mkdirSync, mkdtempSync, readlinkSync, symlinkSync } from "node:fs";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, isAbsolute, join } from "node:path";
+import { removeVersion } from "../../src/install/install.ts";
+import { piExtensionFile, type Runner } from "../../src/agent/tools.ts";
 
-const REPO = fileURLToPath(new URL("../..", import.meta.url));
+const dirs: string[] = [];
 
-/** True when the repository root is itself a git work tree (a tarball or `git archive` copy is not). */
-export const repoIsGitWorkTree: boolean = (() => {
-	const top = spawnSync("git", ["-C", REPO, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
-	return top.status === 0 && realpathSync(top.stdout.trim()) === realpathSync(REPO);
-})();
-
-/** Said once on stderr when install tests skip for lack of a git work tree, since skipIf gives no reason. */
-export function noteNoGitWorkTree(): void {
-	if (!repoIsGitWorkTree) process.stderr.write("skipping install tests that copy the work tree: the repository root is not a git work tree\n");
+/** Removes every folder tempDir made, read-only version folders included (register with afterEach). */
+export function cleanupScratch(): void {
+	for (const d of dirs.splice(0)) removeVersion(d);
 }
 
-/**
- * A scratch git checkout of this repository's work tree, committed: tracked and untracked files, never ignored ones.
- * Installing it installs the code under test, uncommitted changes included. The caller removes the folder.
- */
-export function workingTreeCheckout(): string {
-	const dir = mkdtempSync(join(tmpdir(), "orrery-tree-"));
-	const files = execFileSync("git", ["-C", REPO, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], { encoding: "utf8" }).split("\0").filter((file) => file !== "");
-	for (const file of files) {
-		const from = join(REPO, file);
-		let info: ReturnType<typeof lstatSync>;
-		try {
-			info = lstatSync(from);
-		} catch {
-			continue; // deleted in the work tree
-		}
-		const to = join(dir, file);
-		mkdirSync(dirname(to), { recursive: true });
-		if (info.isSymbolicLink()) symlinkSync(readlinkSync(from), to);
-		else if (info.isFile()) copyFileSync(from, to);
-	}
-	execFileSync("git", ["-C", dir, "init", "-q"]);
-	commitAll(dir, "work tree");
+export function tempDir(prefix: string): string {
+	const dir = mkdtempSync(join(tmpdir(), prefix));
+	dirs.push(dir);
 	return dir;
 }
 
-/** Commits everything in `dir` (allowing an empty commit), so its next install is a new version. */
-export function commitAll(dir: string, message: string): void {
-	const git = (...args: string[]) => execFileSync("git", ["-C", dir, "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@example.com", ...args]);
-	git("add", "-A");
-	git("commit", "-q", "--allow-empty", "-m", message);
+export const VERSION = "0.6.0-abc1234";
+
+/** Runs only the scratch bins' fake commands: anything else (a real systemctl or claude) is refused, never run. */
+export const fakeRun: Runner = (cmd, args) => {
+	if (!isAbsolute(cmd) || !cmd.startsWith(join(tmpdir(), "orrery-wire-"))) return { status: 127, stdout: "", stderr: `not a scratch command: ${cmd}` };
+	const r = spawnSync(cmd, [...args], { encoding: "utf8", env: { PATH: dirname(cmd) } });
+	return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+};
+
+export type Style = "source" | "binary";
+
+/** The files each installed shape has: a release (binary) or a 0.5.0 source copy. */
+const SHAPES: Record<Style, string[]> = {
+	binary: ["VERSION", "bin/orrery", "extensions/pi.js", "extensions/omp.js", "deploy/workstation/backup.sh"],
+	source: ["src/cli/main.ts", "src/pi/index.ts", "src/omp/index.ts", "deploy/workstation/backup.sh"],
+};
+
+export interface Scratch {
+	readonly env: NodeJS.ProcessEnv;
+	readonly home: string;
+	readonly orreryHome: string;
+	readonly bin: string;
+	readonly calls: () => string[][];
+	readonly current: string;
+}
+
+/**
+ * A scratch home with an installed version (`style`, default the source shape) and app/current; env.PATH holds only a
+ * scratch bin of fake commands that log their arguments (claude lists no plugins; `tools` adds more, such as a fake
+ * pi). calls() reads the log.
+ */
+export function installedScratch(options: { tools?: Record<string, string>; orreryHome?: string; style?: Style } = {}): Scratch {
+	const home = tempDir("orrery-wire-");
+	const bin = join(home, "bin");
+	const log = join(home, "calls.log");
+	mkdirSync(bin);
+	const logLine = `{ printf '%s' "\${0##*/}"; for a in "$@"; do printf '\\t%s' "$a"; done; printf '\\n'; } >> ${JSON.stringify(log)}`;
+	const scripts: Record<string, string> = {
+		claude: `if [ "$1" = "--version" ]; then echo "2.1.294 (Claude Code)"; elif [ "$1 $2" = "plugin list" ]; then printf '%s' "\${FAKE_PLUGINS:-[]}"; fi`,
+		systemctl: "",
+		...options.tools,
+	};
+	for (const [name, body] of Object.entries(scripts)) {
+		writeFileSync(join(bin, name), `#!/bin/sh\n${logLine}\n${body}\n`);
+		chmodSync(join(bin, name), 0o755);
+	}
+	const orreryHome = options.orreryHome ?? join(home, ".orrery");
+	const t = {
+		env: { HOME: home, ORRERY_HOME: orreryHome, PATH: bin } as NodeJS.ProcessEnv,
+		home,
+		orreryHome,
+		bin,
+		calls: () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((l) => l !== "").map((line) => line.split("\t")) : []),
+		current: join(orreryHome, "app", "current"),
+	};
+	addVersion(t, VERSION, options.style ?? "source");
+	symlinkSync(VERSION, t.current);
+	return t;
+}
+
+/** Writes app/<name> in `style`'s shape. */
+export function addVersion(t: Pick<Scratch, "orreryHome">, name: string, style: Style): void {
+	for (const entry of SHAPES[style]) {
+		const file = join(t.orreryHome, "app", name, entry);
+		mkdirSync(dirname(file), { recursive: true });
+		writeFileSync(file, "\n", { mode: entry === "bin/orrery" ? 0o755 : 0o644 });
+	}
+}
+
+/** Relinks app/current to `name`. */
+export function pointCurrent(t: Pick<Scratch, "current">, name: string): void {
+	rmSync(t.current, { force: true });
+	symlinkSync(name, t.current);
+}
+
+export function writePiExtension(env: NodeJS.ProcessEnv, target: string): void {
+	const file = piExtensionFile(env);
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, `export { default } from ${JSON.stringify(target)};\n`);
+}
+
+/** A release folder for `version`: a bin/orrery that answers --version (and can be told to fail), and the files a release has. */
+export function fixtureRelease(version: string, options: { versionOutput?: string; exit?: number } = {}): string {
+	const dir = join(tempDir("orrery-release-"), `orrery-${version}-linux-x64`);
+	mkdirSync(join(dir, "bin"), { recursive: true });
+	mkdirSync(join(dir, "extensions"), { recursive: true });
+	writeFileSync(join(dir, "VERSION"), `${version}\n`);
+	writeFileSync(join(dir, "extensions", "pi.js"), "export default () => {};\n");
+	const said = options.versionOutput ?? `orrery ${version}`;
+	writeFileSync(join(dir, "bin", "orrery"), `#!/bin/sh\n[ "$1" = --version ] && { echo "${said}"; exit ${options.exit ?? 0}; }\nexit 0\n`, { mode: 0o755 });
+	return dir;
+}
+
+/**
+ * A PATH for a spawned orrery that must find no pi, OMP, Claude Code, Codex or systemctl, wherever the machine installs
+ * them: one scratch folder holding links to only the system commands named (found on the test runner's PATH).
+ */
+export function scratchPath(commands: readonly string[] = []): string {
+	const dir = tempDir("orrery-path-");
+	for (const name of commands) {
+		const found = (process.env.PATH ?? "").split(":").map((d) => join(d, name)).find((file) => existsSync(file));
+		if (found === undefined) throw new Error(`${name} is not on PATH`);
+		symlinkSync(found, join(dir, name));
+	}
+	return dir;
+}
+
+/** A system command's absolute path, for spawning it under a scratch PATH; undefined when it is not installed. */
+export function systemCommand(name: string): string | undefined {
+	return ["/usr/bin", "/bin", ...(process.env.PATH ?? "").split(":")].map((d) => join(d, name)).find((file) => existsSync(file));
 }

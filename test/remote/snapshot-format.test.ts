@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { parseConfig } from "../../src/lane/config.ts";
+import { parseConfig } from "../../src/agent/config.ts";
 import { createKey, seal } from "../../src/remote/crypto.ts";
 import { FakeStorage } from "../../src/remote/fake.ts";
-import { decodeSnapshot, encodeSnapshot, laneSettings, remoteLaneSettings, type SnapshotHeader } from "../../src/remote/save-format.ts";
+import { decodeSnapshot, encodeSnapshot, agentSettings, remoteAgentSettings, type SnapshotHeader } from "../../src/remote/save-format.ts";
 
 const header: SnapshotHeader = {
 	v: 1, n: 0, lock: 1, machine: "pc", at: "2026-10-12T14:02:00Z",
@@ -37,9 +37,9 @@ describe("snapshot framing", () => {
 		expect(() => decodeSnapshot(encoded)).toThrow(expect.objectContaining({ kind: "corrupt" }));
 	});
 
-	it("takes portable settings from the configured lane", () => {
-		const lane = parseConfig(`[lanes.Atlas]
-workspace = "/tmp/atlas"
+	it("takes portable settings from the configured agent", () => {
+		const agent = parseConfig(`[agents.Atlas]
+folder = "/tmp/atlas"
 tool = "omp"
 compactor_model = "openai/gpt-5.1-mini"
 compactor_thinking = "low"
@@ -48,10 +48,9 @@ node_bytes = 700
 compactor_context_bytes = 24000
 compactor_jobs = 3
 compact_at = 180000
-instructions = "NOTES.md"
 reads = ["*"]
-`, "/tmp/config").lanes.get("Atlas")!;
-		expect(laneSettings(lane)).toEqual({ tool: "omp", compactorModel: "openai/gpt-5.1-mini", compactorThinking: "low", viewBytes: 64000, nodeBytes: 700, contextBytes: 24000, compactorJobs: 3, compactAt: 180000, instructions: lane.instructions, reads: ["*"] });
+`, "/tmp/config").agents.get("Atlas")!;
+		expect(agentSettings(agent)).toEqual({ tool: "omp", compactorModel: "openai/gpt-5.1-mini", compactorThinking: "low", viewBytes: 64000, nodeBytes: 700, contextBytes: 24000, compactorJobs: 3, compactAt: 180000, reads: ["*"] });
 	});
 
 	it("reads settings from the newest authenticated FakeStorage snapshot", async () => {
@@ -61,8 +60,8 @@ reads = ["*"]
 		if (!taken.ok) throw new Error("held");
 		await storage.snapshot("Atlas", taken.lock, 0, seal(key, "Atlas", "snapshot", 0, encodeSnapshot(header, new Uint8Array([1]))));
 		const fetch = vi.spyOn(storage, "fetch");
-		expect(await remoteLaneSettings(storage, key, "Atlas")).toEqual(header);
+		expect(await remoteAgentSettings(storage, key, "Atlas")).toEqual(header);
 		expect(fetch).toHaveBeenCalledWith("Atlas", -1);
-		await expect(remoteLaneSettings(storage, createKey(), "Atlas")).rejects.toMatchObject({ kind: "corrupt" });
+		await expect(remoteAgentSettings(storage, createKey(), "Atlas")).rejects.toMatchObject({ kind: "corrupt" });
 	});
 });

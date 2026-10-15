@@ -1,48 +1,46 @@
-# Lanes in pi
+# Agents in pi
 
-Lanes run inside pi, on the workstation. Each lane is a folder (its workspace). When you start pi in that folder,
-the Orrery extension gives the agent its memory. See [deployment and backups](deploy.md) for always-on hosts
+Agents run inside pi, on the workstation. An agent is a name, instructions, memory and settings kept in Orrery's
+folder, and it can have a default folder. Open it in any folder with `orrery agent <Name>`, or start pi in its default
+folder: the Orrery extension gives pi the agent's instructions and memory. See [deployment and backups](deploy.md) for always-on hosts
 and remote backup copies.
 
 ## Install
 
-`npm run install-local` wires this: it writes pi's extension file and points it at `~/.orrery/app/current`. If pi
-is not on PATH, it prints "not found on PATH; not wired" and carries on (exit 0). If you decline a rewire, it lists
-what is still wired elsewhere and exits 1; rerun `npm run install-local -- --yes`. If pi cannot be checked (an
-unreadable extension file), it says "check pi by hand: <reason>" and also exits 1. The TUI does the same: run `orrery`,
-open Tools (4), select pi and press `I` (or `orrery tools install pi`).
+The installer asks, then wires this: it writes pi's extension file and points it at `~/.orrery/app/current`. If pi
+is not on PATH, it prints "not found on PATH; not wired" and carries on. If you say no, or there is no terminal to ask
+on, it lists what it left and exits non-zero; rerun `orrery setup --yes`. A file there that is not Orrery's is renamed
+to `orrery.ts.before-orrery-<date>` before it is replaced. If pi cannot be checked (an unreadable extension file), it
+says "check pi by hand: <reason>" and also exits non-zero. The TUI does the same: run `orrery`, open Tools (4), select
+pi and press `I` (or `orrery tools install pi`).
 
-If you ever write the file by hand, it is one line that imports Orrery by its absolute path, into the installed copy:
+If you ever write the file by hand, it is one line that imports Orrery's packed extension from the installed copy:
 
 ```bash
-printf 'export { default } from "%s/src/pi/index.ts";\n' ~/.orrery/app/current > ~/.pi/agent/extensions/orrery.ts
+printf 'export { default } from "%s/extensions/pi.js";\n' ~/.orrery/app/current > ~/.pi/agent/extensions/orrery.ts
 ```
 
-Don't symlink `src/pi` into the extensions folder. pi resolves an extension's imports from where it finds the file,
-so a link breaks Orrery's imports, and pi then fails to start at all.
+Setup commands like this one name the installed app folder, which the guard refuses to an agent's own tools: run them
+in your own terminal. The packed file carries its own dependencies, so pi needs nothing else installed. Don't symlink it into the extensions
+folder: pi resolves an extension's imports from where it finds the file.
 
 Developing Orrery itself is different: running `orrery` from a checkout is development mode, and `I` on the Tools page then
-points at that checkout. Use `npm run install-local` to put lanes back on the installed copy.
+points at that checkout. See [CONTRIBUTING.md](../CONTRIBUTING.md) for putting agents back on an installed copy.
 
-Install from a checkout. The install copies the last commit and its runtime packages to `~/.orrery/app`, so pi finds
-typebox and smol-toml there, and pi loads the extension from that copy.
-
-```bash
-cd ~/code/orrery
-npm_config_ignore_scripts=true npm ci
-npm run install-local
-```
-
-To remove Orrery from pi, delete `~/.pi/agent/extensions/orrery.ts`.
+To remove Orrery from pi, delete `~/.pi/agent/extensions/orrery.ts` (or run `orrery uninstall`).
 
 The install also puts `orrery` on your PATH, as `~/.local/bin/orrery`.
 
-Write the config. Start from [deploy/workstation/config.example.toml](../deploy/workstation/config.example.toml).
-`~` works in `data_dir`, which you can leave out to keep memory in `~/.orrery`.
+The first `orrery` run writes the config for you. To write it by hand, start from the example the release carries,
+`~/.orrery/app/current/deploy/workstation/config.example.toml`. `~` works in `data_dir`, which you can leave out to keep
+memory in `~/.orrery`.
 
 ```bash
-install -D deploy/workstation/config.example.toml ~/.orrery/config.toml
+install -D ~/.orrery/app/current/deploy/workstation/config.example.toml ~/.orrery/config.toml
 ```
+
+Most behavior needs no code: models, memory sizes, when compaction happens and each agent's tool are settings in
+`~/.orrery/config.toml`.
 
 The extension targets pi 1.0.4 and is also tested with 1.1.0. If you use mise, select a compatible version:
 
@@ -52,19 +50,31 @@ mise use -g pi@1.0.4
 
 ## Daily use
 
-One terminal panel per lane. Start pi in the lane's folder:
+One terminal panel per agent. Open the agent with Orrery, in whatever folder you are working in:
+
+```bash
+cd ~/code/some-project && orrery agent Atlas
+```
+
+Or start pi in the agent's default folder, as before:
 
 ```bash
 cd ~/code/agent-Atlas && pi -c
 ```
 
-The first time in a lane folder that already has old pi sessions, start with `pi` (a new session), not `pi -c`.
+The first time in a default folder that already has old pi sessions, start with `pi` (a new session), not `pi -c`.
 Otherwise the old session is copied into memory as if it were new.
 
-The same lane can also be opened in Claude Code (see [claude-code.md](claude-code.md)) or OMP (see [omp.md](omp.md)), one at a time.
+The same agent can also be opened in Claude Code (see [claude-code.md](claude-code.md)) or OMP (see [omp.md](omp.md)), one at a time.
 
-The folder picks the lane: pi's cwd must be the lane's workspace or a folder inside it. The footer shows the lane,
-the message count, and "summarizing" while summaries are pending. While summary calls fail it says
+**Which agent a session is** is decided when it starts, in this order: `ORRERY_AGENT` when it names a configured agent
+(`orrery agent` sets it; a name that is not configured gives a notice and no memory), then the agent whose default
+folder holds pi's folder, then none, and pi runs without Orrery's memory. `orrery agent` also gives the session a
+one-time token that the first pi process claims, so a tool the agent starts itself, which inherits `ORRERY_AGENT`, is
+not the agent too. A session belongs to the agent that first ran in it: another agent that resumes it records from its
+tail.
+
+The footer shows the agent, the message count, and "summarizing" while summaries are pending. While summary calls fail it says
 "SUMMARIES FAILING: <source and reason> · /compactor" (they retry on their own), and "SUMMARIES STOPPED" if the
 summarizer gave up or its model is unknown, with the reason. A notice says so once when summaries start failing or
 stop, and once when they work again.
@@ -81,16 +91,16 @@ Commands from Orrery:
 - `/compactor`: a menu: Sign in (ChatGPT, OpenRouter) / API key (OpenAI, Anthropic, OpenRouter) / Local, then the provider, then
   the model (with prices for keys). A long list (OpenRouter) asks for words to narrow it first. Each switch makes one
   test call; a failure keeps the current model and says why. `/compactor key openrouter/<model> [thinking]` switches
-  directly; `/compactor reset` returns to the config. The choice survives restarts. The TUI's `M` (or `orrery compactor <Lane> …` in a shell) also switches a lane that is open in pi: pi takes the change within 5 seconds and says so. Sign-in is available in the picker or through
+  directly; `/compactor reset` returns to the config. The choice survives restarts. The TUI's `M` (or `orrery compactor <Name> …` in a shell) also switches an agent that is open in pi: pi takes the change within 5 seconds and says so. Sign-in is available in the picker or through
   `orrery login`; pasted keys are entered in a terminal, never in chat.
-- `/browse`: writes `memory.html` in the lane's data folder and opens it: the view, all messages, the summary tree.
+- `/browse`: writes `memory.html` in the agent's data folder and opens it: the view, all messages, the summary tree.
   The notice gives the path, so you can open it yourself over ssh.
 
 `/model` and `/login` are pi's own. `/model` picks the agent's model. The `model` key in the config is used only by
 Orrery's own commands.
 
 Before each message, pi's context is replaced by the memory view: the summaries and the newest messages. Only the
-current run is sent in full. Memory keeps your messages and the lane's replies only. Tool calls and their results stay
+current run is sent in full. Memory keeps your messages and the agent's replies only. Tool calls and their results stay
 visible to the model during the run but are not logged. Code history lives in git.
 
 The view is 64–128 KB. It grows by one line per message; once its summaries pass 128 KB (`view_bytes`), one batch
@@ -107,13 +117,26 @@ If summaries are pending, a message waits for them for at most 60 seconds. Then 
 "(not summarized yet: zoom it)", and a warning says so. A message does not wait at all while summaries are failing or
 stopped; the warning gives the reason.
 
-If the summary model is unknown to Orrery, the lane still opens with its memory. Pick a model with `/compactor`, and
+If the summary model is unknown to Orrery, the agent still opens with its memory. Pick a model with `/compactor`, and
 summaries start.
 
-pi's own compaction is off in lanes, so a `pi -c` session keeps growing. Start a fresh session with `/new` now and then
+pi's own compaction is off for agents, so a `pi -c` session keeps growing. Start a fresh session with `/new` now and then
 (for example weekly). Memory carries over.
 
 Forks (`/fork`, `pi --fork`) are not copied into memory twice.
+
+## Instructions
+
+An agent's instructions are `instructions.md` in its data folder (`~/.orrery/agents/<Name>/`). At session start the
+extension adds them to pi's system prompt under a heading that names the agent (`# Agent: <Name>`), before the memory
+section. Up to 32 KB reach the model; a longer file is cut there, with a notice in the session and on the Agents page.
+A missing or empty file means the agent runs with memory only. The instructions go out whether or not the memory does,
+so a session without memory keeps its identity.
+
+Only a person edits them: `E` in the TUI, or `orrery agent edit <Name>` in a terminal (it uses `$EDITOR`, else `nano`,
+else `vi`, and needs a terminal). A running pi takes the change at its next start; the Agents page says which open
+agents have newer instructions than their session. The folder's own `AGENTS.md` loads as pi normally loads it, as the
+project's rules.
 
 ## Memory tools the model has
 
@@ -121,19 +144,26 @@ Forks (`/fork`, `pi --fork`) are not copied into memory twice.
 - `date`: find messages by date.
 - `search`: search the log.
 
-A lane with `reads = ["*"]` (or a list of lane names), like Birch, also gets `lanes` and `lane_memory`. They list
-the other lanes and read their memory. They are read-only.
+An agent with `reads = ["*"]` (or a list of agent names), like Birch, also gets `agents` and `agent_memory`. They list
+the other agents and read their memory. They are read-only.
 
 ## Imports and builds
 
-Import a lane's Claude Code and Codex history. Preview first, review the report, then commit.
+In the TUI, `N` on the Agents page, then "From an existing chat", turns Claude Code and Codex chats into an agent. The
+list shows every chat and marks one written to in the last ten minutes "in use". The import is a snapshot: the source
+chats are only read, never changed, and anything said in them afterwards is not in the agent. The memory builds in the
+background, and you can open the agent once it is done.
+
+From a shell, import an agent's Claude Code and Codex history. Preview first (the dry run prints progress lines),
+review the report, then commit. Claude Code deletes its
+session files after 30 days by default, so import early, or raise `cleanupPeriodDays` in `~/.claude/settings.json`.
 
 ```bash
 orrery import Atlas --dry-run
 orrery import Atlas --commit import-Atlas/preview.jsonl
 ```
 
-Orrery reads the Claude Code sessions in the lane's own project folder. A session filed under another project is
+Orrery reads the Claude Code sessions in the agent's own project folder. A session filed under another project is
 added with `--claude-file FILE` (repeatable; `--claude none` imports only the named files). A record whose uuid was
 already read, in any file, is read once.
 
@@ -141,7 +171,7 @@ already read, in any file, is read once.
 orrery import Elm --dry-run --claude none --claude-file ~/.claude/projects/-home-me-other-project/<session>.jsonl
 ```
 
-Orrery finds a Codex session only if it started in the lane's folder. If a session started elsewhere and was later
+Orrery finds a Codex session only if it started in the agent's folder. If a session started elsewhere and was later
 resumed there, name its rollout file (repeatable; `--codex none` skips the sessions folder and imports only the named
 files):
 
@@ -154,7 +184,7 @@ a copy of its parent's history, stamped with the fork's start time; that copy is
 not imported too, a warning says so: add it with `--codex-file` to keep those messages with their real dates.
 Claude Code records copied into a resumed session (same uuid) are read once. Codex subagent sessions are skipped.
 
-Build the summary tree for a big import with the CLI. Close that lane's pi first.
+Build the summary tree for a big import with the CLI. Close that agent's pi first.
 
 ```bash
 orrery compact Atlas
@@ -191,31 +221,37 @@ journalctl --user -u orrery-backup.service
 The remote destination is a mirror of the local backups, with the same retention (`orrery backup` keeps 14 days). The script refuses to
 sync when the local backups folder is missing or empty, so a failed backup cannot wipe the remote copy.
 
-Backups are in `~/.orrery/backups/<date>/<Lane>/`. Restore with `orrery restore <Lane> --from <date>`,
-with the lane's pi closed.
+Backups are in `~/.orrery/backups/<date>/<Name>/`. Restore with `orrery restore <Name> --from <date>`,
+with the agent's pi closed.
 
 ## One writer
 
-Only one pi can write to a lane. A second pi on the same lane shows a warning and runs without memory. The path guard
+Only one pi can write to an agent. A second pi on the same agent shows a warning and runs without memory. The path guard
 still applies to it. Close the first one, or work in it.
 
 ## Limits
 
-- No memory without a good config. A malformed config file shows a warning ("running without memory") and pi runs
-  as usual.
-- pi's own compaction is cancelled in lanes. The memory view replaces it. The one exception is overflow recovery:
+- No memory without a good config. A malformed config file shows a warning ("running without memory"), and pi runs
+  with the default guard on: its folder is the only place it may write, and credentials stay out. With no config file
+  at all, pi runs as usual.
+- pi's own compaction is cancelled for agents. The memory view replaces it. The one exception is overflow recovery:
   if the model's window overflows, pi may compact once to recover.
 - The path guard judges a path the way pi's tools resolve it (`~`, a leading `@`, `file://`, relative to pi's cwd)
-  and follows symlinks. So write and edit cannot reach outside the lane folder and the allowed roots, even through a
-  link. bash is only checked for ssh keys and credential stores. It is a seatbelt, not a sandbox.
+  and follows symlinks. So write and edit cannot reach outside the folder the agent was opened in and its `allowed_roots`, even through a
+  link. bash is only checked for text: ssh keys, credential stores, and Orrery's own folders. It is a seatbelt, not a
+  sandbox.
+- Orrery's data folder is refused to file tools, except reading the installed program (`app/`) and `config.toml`; the
+  config and the installed program are read-only to agents. Only an agent's own sessions read its memory view: other
+  agents' file tools and content searches are refused it. The shell-text rules are a seatbelt too. Known limits include
+  variables, `eval`, `cd`, escape codes, brace names split across words, commands that change folder with their own flag (`git -C`, `tar -C`), a swap of the session's own folder in the same command, a shell search of an agent's whole folder, and hard links to a protected file; a relative path or a link to the config is not caught either.
 - Credential files: the guard blocks ssh keys and credential stores, `~/.pi/agent/models.json` and `/proc/*/environ`.
   It refuses a grep, find or ls rooted at home or above, at a folder that holds credentials (like `~/.pi` or Orrery's
-  data folder), or in `/proc`. Search a narrower folder instead. Reads elsewhere are allowed: lanes read other repos.
+  data folder), or in `/proc`. Search a narrower folder instead. Reads elsewhere are allowed: agents read other repos.
 - The guard knows pi's built-in tools only. Tools added by other pi packages (for example context-mode's
   `ctx_execute`) are not checked.
 - A message does not wait for summaries longer than 60 seconds, and not at all while they are failing or stopped.
 - Memory tools read what is in the log. Text that was never sent through pi (for example, work in another tool) is not
   there until you import it.
-- The CLI (`orrery run`) and the always-on service are the old path. Do not run a lane there and in pi at once.
+- The CLI (`orrery run <Name>`) and the always-on service are the old path. Do not run an agent there and in pi at once.
 
 For launching this tool through Ori, see [Ori](ori.md).

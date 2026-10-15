@@ -60,6 +60,11 @@ describe("viewArgs and parseViewReply", () => {
 		expect(viewArgs("/p", "/w", "s1", 5_000, false)).toEqual(["sh", "/p/bin/orrery-run", "claude-mod", "view", "--cwd", "/w", "--session", "s1", "--wait-ms", "5000"]);
 		expect(viewArgs("/p", "/w", "s1", undefined, true)).toEqual(["sh", "/p/bin/orrery-run", "claude-mod", "view", "--cwd", "/w", "--session", "s1"]);
 	});
+	it("adds the agent and its token to the view call when Claude Code has them", () => {
+		expect(viewArgs("/p", "/w", "s", undefined, false, { name: "Atlas", token: "ab".repeat(16) })).toEqual(["sh", "/p/bin/orrery-run", "claude-mod", "view", "--cwd", "/w", "--session", "s", "--agent", "Atlas", "--agent-token", "ab".repeat(16)]);
+		expect(viewArgs("/p", "/w", "s", undefined, false, { name: "Atlas" })).toEqual(["sh", "/p/bin/orrery-run", "claude-mod", "view", "--cwd", "/w", "--session", "s", "--agent", "Atlas"]);
+		expect(viewArgs("/p", "/w", "s", 5_000, true, { name: "Atlas" })).toEqual(["sh", "/p/bin/orrery-run", "claude-mod", "view", "--cwd", "/w", "--session", "s", "--wait-ms", "5000", "--spool-only", "--agent", "Atlas"]);
+	});
 	it("reads each reply", () => {
 		expect(parseViewReply({ exitCode: 0, stdout: "" })).toEqual({ kind: "outside" });
 		expect(parseViewReply({ exitCode: 0, stdout: '{"lane":null}\n' })).toEqual({ kind: "outside" });
@@ -67,6 +72,14 @@ describe("viewArgs and parseViewReply", () => {
 		expect(parseViewReply({ exitCode: 1, stdout: '{"error":"bad \\u001b[31mconfig"}' })).toEqual({ kind: "error", text: "bad  [31mconfig" });
 		expect(parseViewReply({ exitCode: 0, stdout: "garbage" })).toMatchObject({ kind: "error" });
 		expect(parseViewReply({ exitCode: 0, stdout: '{"lane":"L","mode":"weird"}' })).toMatchObject({ kind: "error" });
+	});
+	it("reads the instructions section, and refuses one that is not text", () => {
+		const reply = (extra: object) => parseViewReply({ exitCode: 0, stdout: JSON.stringify({ lane: "Test", mode: "mod", compactAt: 200_000, messages: 2, section: "M", ...extra }) });
+		expect(reply({ instructions: "# Agent: Test\n\nYou are Test." })).toMatchObject({ kind: "lane", instructions: "# Agent: Test\n\nYou are Test." });
+		expect(reply({ instructions: null })).toMatchObject({ kind: "lane", instructions: null });
+		expect(reply({ instructions: 7 })).toEqual({ kind: "error", text: "orrery answered something unexpected" });
+		// An older orrery says nothing of instructions: none, as before.
+		expect(reply({})).not.toHaveProperty("instructions");
 	});
 	it("reads whether the session is recorded: absent stays absent, anything but a boolean is an error", () => {
 		const reply = (recording: string) => `{"lane":"L","mode":"mod","compactAt":200000,"messages":42,"section":"# Memory\\n\\nview","recording":${recording}}`;
@@ -113,7 +126,7 @@ describe("the last turn", () => {
 });
 
 describe("compaction", () => {
-	it("routes: subagents and other lanes pass, precompute is skipped in a mod lane, the rest fetch", () => {
+	it("routes: subagents and other agents pass, precompute is skipped in a mod agent, the rest fetch", () => {
 		expect(compactRoute("manual", "agent-1", MOD)).toBe("pass");
 		expect(compactRoute("manual", undefined, { kind: "outside" })).toBe("pass");
 		expect(compactRoute("auto", undefined, { ...MOD, mode: "file" })).toBe("pass");
@@ -230,11 +243,11 @@ describe("compaction", () => {
 			line: "Orrery compacted: kept the last turn (0 messages); memory view refreshed (42 messages).",
 		});
 	});
-	it("falls back when the view cannot be read, the lane has no memory or left mod mode, or the last turn is too large", () => {
+	it("falls back when the view cannot be read, the agent has no memory or left mod mode, or the last turn is too large", () => {
 		const why = (text: string) => ({ kind: "fallback", why: text, line: fallbackLine(text), lasting: true });
 		expect(compactAnswer([user("a")], { kind: "error", text: "store locked" })).toEqual(why("the memory view could not be read: store locked"));
-		expect(compactAnswer([user("a")], { ...MOD, section: null })).toEqual(why("the lane has no memory yet"));
-		expect(compactAnswer([user("a")], { ...MOD, mode: "file" })).toEqual(why("this folder's lane is no longer in mod mode"));
+		expect(compactAnswer([user("a")], { ...MOD, section: null })).toEqual(why("the agent has no memory yet"));
+		expect(compactAnswer([user("a")], { ...MOD, mode: "file" })).toEqual(why("this folder's agent is no longer in mod mode"));
 		expect(compactAnswer([user("a")], { ...MOD, recording: false })).toEqual(why("this session is not recorded"));
 		expect(compactAnswer([user("a")], { ...MOD, recording: false, section: null })).toEqual(why("this session is not recorded"));
 		expect(compactAnswer([user("a")], { ...MOD, recording: true })).toMatchObject({ kind: "answer" });
@@ -245,23 +258,23 @@ describe("compaction", () => {
 		if (tooBig.kind === "fallback") expect(tooBig.line).toBe(fallbackLine(tooBig.why));
 		expect(fallbackLine("why")).toBe("Orrery could not compact this conversation (why); Claude Code compacts it its own way.");
 	});
-	it("passes silently when the session never had a mod lane and still has none", () => {
+	it("passes silently when the session never had a mod agent and still has none", () => {
 		const rows = [user("a")];
 		const error: ViewReply = { kind: "error", text: "store locked" };
 		expect(compactAnswer(rows, { kind: "outside" }, error)).toEqual({ kind: "pass" });
 		expect(compactAnswer(rows, { ...MOD, mode: "file" }, error)).toEqual({ kind: "pass" });
 		expect(compactAnswer(rows, { ...MOD, mode: "none" }, { kind: "outside" })).toEqual({ kind: "pass" });
-		// The first fetch failed, and now the lane answers: Orrery compacts.
+		// The first fetch failed, and now the agent answers: Orrery compacts.
 		expect(compactAnswer(rows, MOD, error)).toMatchObject({ kind: "answer" });
 		// Still unreadable: said.
 		expect(compactAnswer(rows, error, error)).toMatchObject({ kind: "fallback", why: "the memory view could not be read: store locked" });
-		// A session that had a mod lane: said.
-		expect(compactAnswer(rows, { kind: "outside" }, MOD)).toMatchObject({ kind: "fallback", why: "this folder's lane is no longer in mod mode", lasting: true });
+		// A session that had a mod agent: said.
+		expect(compactAnswer(rows, { kind: "outside" }, MOD)).toMatchObject({ kind: "fallback", why: "this folder's agent is no longer in mod mode", lasting: true });
 	});
-	it("falls back when the session's folder now belongs to another lane", () => {
+	it("falls back when the session's folder now belongs to another agent", () => {
 		const rows = [user("a")];
 		const other: ViewReply = { ...MOD, lane: "Other" };
-		expect(compactAnswer(rows, other, MOD)).toEqual({ kind: "fallback", why: "this session's folder now belongs to another lane", line: fallbackLine("this session's folder now belongs to another lane"), lasting: true });
+		expect(compactAnswer(rows, other, MOD)).toEqual({ kind: "fallback", why: "this session's folder now belongs to another agent", line: fallbackLine("this session's folder now belongs to another agent"), lasting: true });
 		expect(compactAnswer(rows, MOD, MOD)).toMatchObject({ kind: "answer" });
 	});
 	it("estimates tokens as characters / 4, tool inputs and results included", () => {
@@ -286,7 +299,7 @@ describe("compaction", () => {
 		loop.self = loop;
 		for (const input of [{ n: 1n }, loop]) expect(estimateTokens([assistant("", [{ tool_use_id: "t1", input }])])).toBeGreaterThanOrEqual(25_000);
 	});
-	it("compacts past compact_at only in a mod lane", () => {
+	it("compacts past compact_at only in a mod agent", () => {
 		expect(shouldCompact(200_001, MOD)).toBe(true);
 		expect(shouldCompact(200_000, MOD)).toBe(false);
 		expect(shouldCompact(undefined, MOD)).toBe(false);
@@ -297,31 +310,31 @@ describe("compaction", () => {
 		expect(sectionFailedLine("x\u001b]0;y")).toBe("Orrery: no memory in this session's prompt (x ]0;y). Recording is not affected.");
 		expect(stopLine("not available in a headless session")).toBe("Orrery will not start compactions in this session (not available in a headless session); /compact still uses Orrery.");
 		expect(laterLine("the last turn\u001b[31m is too large")).toBe("Orrery could not compact this conversation (the last turn [31m is too large); it stays as it is for now.");
-		expect(skipLine("the lane has no memory\u001b[31m yet")).toBe("Orrery could not compact this conversation (the lane has no memory [31m yet); it stays as it is, and Orrery will not start compactions in this session.");
+		expect(skipLine("the agent has no memory\u001b[31m yet")).toBe("Orrery could not compact this conversation (the agent has no memory [31m yet); it stays as it is, and Orrery will not start compactions in this session.");
 	});
 });
 
 describe("showing that the mod is loaded (spec section 11)", () => {
-	it("the band's two lines: the lane, then memory and the session's mode as its mode file says", () => {
+	it("the band's two lines: the agent, then memory and the session's mode as its mode file says", () => {
 		expect(bandLines({ ...MOD, sessionMode: "recording" })).toEqual(["Orrery · L", "memory loaded · 42 msgs · recording"]);
 		expect(bandLines({ ...MOD, section: null, messages: 0, sessionMode: "recording" })).toEqual(["Orrery · L", "no memory yet · recording"]);
-		expect(bandLines({ ...MOD, sessionMode: "read-only" })).toEqual(["Orrery · L", "memory loaded · 42 msgs · read-only (another window records this lane)"]);
-		expect(bandLines({ ...MOD, section: null, sessionMode: "read-only" })).toEqual(["Orrery · L", "no memory yet · read-only (another window records this lane)"]);
-		expect(READ_ONLY_STATE).toBe("read-only (another window records this lane)");
+		expect(bandLines({ ...MOD, sessionMode: "read-only" })).toEqual(["Orrery · L", "memory loaded · 42 msgs · read-only (another window records this agent)"]);
+		expect(bandLines({ ...MOD, section: null, sessionMode: "read-only" })).toEqual(["Orrery · L", "no memory yet · read-only (another window records this agent)"]);
+		expect(READ_ONLY_STATE).toBe("read-only (another window records this agent)");
 		// Not known yet: the mode part is left out. `recording` (whether the turns reach memory now) does not decide it.
 		expect(bandLines(MOD)).toEqual(["Orrery · L", "memory loaded · 42 msgs"]);
 		expect(bandLines({ ...MOD, recording: true })).toEqual(["Orrery · L", "memory loaded · 42 msgs"]);
 		expect(bandLines({ ...MOD, section: null, recording: false })).toEqual(["Orrery · L", "no memory yet"]);
 		expect(bandLines({ ...MOD, lane: "Bad\u001b[31mName" })).toEqual(["Orrery · Bad [31mName", "memory loaded · 42 msgs"]);
 	});
-	it("no band outside a mod-mode lane", () => {
+	it("no band outside a mod-mode agent", () => {
 		expect(bandLines(undefined)).toBeUndefined();
 		expect(bandLines({ kind: "outside" })).toBeUndefined();
 		expect(bandLines({ kind: "error", text: "x" })).toBeUndefined();
 		expect(bandLines({ ...MOD, mode: "file", sessionMode: "recording" })).toBeUndefined();
 		expect(bandLines({ ...MOD, mode: "none" })).toBeUndefined();
 	});
-	it("the band waits to learn the session's mode while a mod lane's session has no mode file yet", () => {
+	it("the band waits to learn the session's mode while a mod agent's session has no mode file yet", () => {
 		expect(bandWaitsForMode(MOD)).toBe(true);
 		expect(bandWaitsForMode({ ...MOD, section: null, recording: false })).toBe(true);
 		expect(bandWaitsForMode({ ...MOD, sessionMode: "recording" })).toBe(false);
@@ -330,7 +343,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 		expect(bandWaitsForMode({ kind: "outside" })).toBe(false);
 		expect(bandWaitsForMode(undefined)).toBe(false);
 	});
-	it("the band asks again while it has no answer, only an error, or a mod lane's session mode is not known yet", () => {
+	it("the band asks again while it has no answer, only an error, or a mod agent's session mode is not known yet", () => {
 		expect(bandAsksAgain(undefined)).toBe(true);
 		expect(bandAsksAgain({ kind: "error", text: "store locked" })).toBe(true);
 		expect(bandAsksAgain(MOD)).toBe(true);
@@ -356,17 +369,17 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 		expect(bandHasLogo("terminal", 200, 4)).toBe(false);
 		for (const surface of ["desktop", "vscode", "mobile"]) expect(bandHasLogo(surface, 200, 40)).toBe(false);
 	});
-	it("the footer label reads pi's status text: Orrery, the lane and its message count, in a mod-mode lane only", () => {
+	it("the footer label reads pi's status text: Orrery, the agent and its message count, in a mod-mode agent only", () => {
 		expect(footerLabel(MOD)).toBe("Orrery · L · 42 msgs");
 		expect(footerLabel({ ...MOD, section: null, messages: 0, sessionMode: "read-only" })).toBe("Orrery · L · 0 msgs");
-		// The lane name is made plain, as the band makes it.
+		// The agent name is made plain, as the band makes it.
 		expect(footerLabel({ ...MOD, lane: "A\u001b[31mB" })).toBe("Orrery · A [31mB · 42 msgs");
 		expect(footerLabel({ ...MOD, mode: "file" })).toBeUndefined();
 		expect(footerLabel({ kind: "outside" })).toBeUndefined();
 		expect(footerLabel({ kind: "error", text: "x" })).toBeUndefined();
 		expect(footerLabel(undefined)).toBeUndefined();
 	});
-	it("the footer label: added to the modes in a mod-mode lane, once; elsewhere the modes stay as they are", () => {
+	it("the footer label: added to the modes in a mod-mode agent, once; elsewhere the modes stay as they are", () => {
 		expect(footerModes([], MOD)).toEqual(["Orrery · L · 42 msgs"]);
 		expect(footerModes(["focus"], { ...MOD, section: null })).toEqual(["focus", "Orrery · L · 42 msgs"]);
 		// Already there (a re-render handed the drawn modes back), with this count or another: replaced by the current one,
@@ -381,14 +394,14 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 		expect(footerModes([], { kind: "error", text: "x" })).toBeUndefined();
 		expect(footerModes([], undefined)).toBeUndefined();
 	});
-	it("a turn's end asks for the count again: the main loop's turn, in a mod-mode lane; never a subagent's, nor elsewhere", () => {
+	it("a turn's end asks for the count again: the main loop's turn, in a mod-mode agent; never a subagent's, nor elsewhere", () => {
 		expect(turnRefetches(undefined, MOD)).toBe(true);
 		expect(turnRefetches(undefined, { ...MOD, section: null, messages: 0 })).toBe(true);
 		expect(turnRefetches("agent-1", MOD)).toBe(false);
 		expect(turnRefetches(undefined, { ...MOD, mode: "file" })).toBe(false);
 		expect(turnRefetches(undefined, { ...MOD, mode: "none" })).toBe(false);
 		expect(turnRefetches(undefined, { kind: "outside" })).toBe(false);
-		// No facts yet, or only an error: no run per turn (folders outside any lane must not pay one).
+		// No facts yet, or only an error: no run per turn (folders outside any agent must not pay one).
 		expect(turnRefetches(undefined, { kind: "error", text: "x" })).toBe(false);
 		expect(turnRefetches(undefined, undefined)).toBe(false);
 	});
@@ -397,7 +410,7 @@ describe("showing that the mod is loaded (spec section 11)", () => {
 		expect(drawsSomewhere(["desktop"])).toBe(true);
 		expect(drawsSomewhere([])).toBe(false);
 	});
-	it("a turn's refetch is shown only when it is a mod-mode lane's answer; anything else keeps what the label had", () => {
+	it("a turn's refetch is shown only when it is a mod-mode agent's answer; anything else keeps what the label had", () => {
 		expect(turnReplyShown(MOD)).toBe(true);
 		expect(turnReplyShown({ ...MOD, section: null, messages: 0 })).toBe(true);
 		// orrery briefly missing (empty stdout), a plain claude-setup mid-session, or an error: the label stays.

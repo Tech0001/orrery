@@ -1,5 +1,5 @@
 /** The Cloudflare Storage client: authenticated HTTP for opaque encrypted files, with bounded calls. */
-import type { RemoteConfig } from "../lane/config.ts";
+import type { RemoteConfig } from "../agent/config.ts";
 import { CALL_TIMEOUT_MS, type FetchResult, type Holder, type LaneEntry, RemoteError, type RemoteErrorKind, type RemoteFile, sizedTimeoutMs, type Storage, type TakeResult } from "./types.ts";
 
 const CHUNK_BYTES = 1024 * 1024;
@@ -31,7 +31,7 @@ export class CloudflareStorage implements Storage {
 		this.#url = remote.url.replace(/\/+$/, ""); this.#token = token; this.#fetch = options.fetch ?? fetch;
 	}
 	#lane(lane: string): string {
-		if (!/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(lane)) throw new RemoteError("refused", "Lane names use letters, digits, - and _ (max 32)");
+		if (!/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(lane)) throw new RemoteError("refused", "Agent names use letters, digits, - and _ (max 32)");
 		return `/v1/lanes/${lane}`;
 	}
 	#number(n: number, min = 0): number {

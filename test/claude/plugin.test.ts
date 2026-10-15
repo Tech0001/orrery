@@ -1,11 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { HOOK_EVENTS } from "../../src/claude/hooks.ts";
-import { cleanEnv, cleanupDirs, MAIN, testLane } from "./support.ts";
+import { builtRelease, bunReady, installRelease, removeBuiltRelease } from "../release/support.ts";
+import { cleanEnv, cleanupDirs, MAIN, testAgent } from "./support.ts";
 
 afterEach(cleanupDirs);
+afterAll(removeBuiltRelease);
 
 const ROOT = new URL("../../", import.meta.url).pathname;
 const read = (path: string) => JSON.parse(readFileSync(join(ROOT, path), "utf8"));
@@ -30,7 +33,7 @@ describe("the Claude Code plugin", () => {
 
 	it("loads the Orrery mod beside the classic hooks", () => {
 		expect(read("claude-plugin/hooks/hooks.json").modules).toEqual(["./mod.ts"]);
-		expect(read("claude-plugin/.claude-plugin/plugin.json").version).toBe("0.5.0");
+		expect(read("claude-plugin/.claude-plugin/plugin.json").version).toBe("0.6.0");
 		const mod = readFileSync(join(ROOT, "claude-plugin/hooks/mod.ts"), "utf8");
 		const imports = [...mod.matchAll(/^\s*import\b[^;]*?from\s+["']([^"']+)["']/gm)].map((m) => m[1]);
 		expect(imports.sort()).toEqual(["./logo.ts", "./mod-logic.ts", "claude-code"]);
@@ -42,7 +45,7 @@ describe("the Claude Code plugin", () => {
 		expect(read("claude-plugin/.mcp.json")).toEqual({ mcpServers: { orrery: { command: "sh", args: ["${CLAUDE_PLUGIN_ROOT}/bin/orrery-run", "mcp"] } } });
 	});
 
-	it("has the three commands, each a user-only skill that runs an orrery command for this lane", () => {
+	it("has the three commands, each a user-only skill that runs an orrery command for this agent", () => {
 		const skills: Array<[string, string]> = [["memory", "status ."], ["memory", "usage ."], ["browse", "browse . --open"], ["compactor", "compactor ."]];
 		for (const [skill, command] of skills) {
 			const text = readFileSync(join(ROOT, "claude-plugin", "skills", skill, "SKILL.md"), "utf8");
@@ -77,19 +80,53 @@ describe("the Claude Code plugin", () => {
 	});
 
 	it("passes arguments through the wrapper untouched, even ones a shell would act on", () => {
-		const t = testLane();
+		const t = testAgent();
 		const wrapper = join(ROOT, "claude-plugin", "bin", "orrery-run");
 		const out = spawnSync("sh", [wrapper, "status", "$(touch pwned)"], { env: cleanEnv({ ORRERY_BIN: MAIN, ORRERY_CONFIG: t.configPath, HOME: t.dir }), encoding: "utf8", cwd: t.dir });
-		expect(out.stderr).toContain("No lane named");
+		expect(out.stderr).toContain("No agent named");
 		expect(existsSync(join(t.dir, "pwned"))).toBe(false);
 	});
 
 	it("runs ORRERY_BIN through the wrapper, and does nothing when Orrery is not installed", () => {
-		const t = testLane();
+		const t = testAgent();
 		const wrapper = join(ROOT, "claude-plugin", "bin", "orrery-run");
 		expect(statSync(wrapper).mode & 0o111).not.toBe(0);
 		expect(spawnSync("sh", [wrapper, "help"], { env: cleanEnv({ ORRERY_BIN: MAIN }), encoding: "utf8" }).stdout).toContain("Usage: orrery");
 		const none = spawnSync("sh", [wrapper, "claude-hook", "stop"], { env: cleanEnv({ HOME: t.dir }), encoding: "utf8", input: "{}" });
 		expect([none.status, none.stdout, none.stderr]).toEqual([0, "", ""]);
+	});
+});
+
+const claudeReady = spawnSync("claude", ["--version"], { encoding: "utf8" }).status === 0;
+
+describe.skipIf(!claudeReady || !bunReady)("the Claude Code plugin from an installed release", () => {
+	it("is added and installed from the read-only app/current, and Claude Code reads it from there", async () => {
+		const scratch = mkdtempSync(join(tmpdir(), "orrery-cc-release-"));
+		const home = join(scratch, "home");
+		const config = join(home, "claude-config");
+		mkdirSync(config, { recursive: true });
+		const installed = installRelease(await builtRelease(), home);
+		try {
+			// A scratch HOME and CLAUDE_CONFIG_DIR: the real Claude Code settings are never read or written.
+			const env = cleanEnv({ HOME: home, CLAUDE_CONFIG_DIR: config });
+			const claude = (...args: string[]) => spawnSync("claude", ["plugin", ...args], { env, encoding: "utf8", cwd: scratch, timeout: 60_000 });
+			const added = claude("marketplace", "add", installed.current);
+			expect([added.status, added.stderr]).toEqual([0, expect.any(String)]);
+			const plugin = claude("install", "orrery@orrery");
+			expect([plugin.status, plugin.stdout + plugin.stderr]).toEqual([0, expect.any(String)]);
+			const listed = claude("list", "--json");
+			expect(listed.status).toBe(0);
+			const entries = JSON.parse(listed.stdout) as Array<{ id?: string; installPath?: string }>;
+			const entry = entries.find((e) => e.id === "orrery@orrery");
+			expect(entry).toBeDefined();
+			// Claude Code copies the plugin into its own cache, so the link back to app/current is the marketplace it came from.
+			const markets = JSON.parse(readFileSync(join(config, "plugins", "known_marketplaces.json"), "utf8")) as Record<string, { source?: { path?: string }; installLocation?: string }>;
+			expect(realpathSync(markets.orrery?.installLocation ?? "")).toBe(realpathSync(installed.current));
+			expect(read(join("claude-plugin", ".claude-plugin", "plugin.json")).version).toBe(JSON.parse(readFileSync(join(entry?.installPath as string, ".claude-plugin", "plugin.json"), "utf8")).version);
+			expect(existsSync(join(entry?.installPath as string, "bin", "orrery-run"))).toBe(true);
+		} finally {
+			installed.remove();
+			rmSync(scratch, { recursive: true, force: true });
+		}
 	});
 });

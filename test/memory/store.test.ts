@@ -12,7 +12,7 @@ let path: string;
 
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "orrery-store-"));
-	path = join(dir, "lane", "memory.sqlite");
+	path = join(dir, "agent", "memory.sqlite");
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -100,13 +100,13 @@ describe("MemoryStore", () => {
 
 	it("admits exactly one of many processes racing for a lock left by a killed process", async () => {
 		for (let round = 0; round < 3; round++) {
-			const lanePath = join(dir, `lane-${round}`, "memory.sqlite");
-			const crashed = spawnHolder(lanePath);
+			const agentPath = join(dir, `agent-${round}`, "memory.sqlite");
+			const crashed = spawnHolder(agentPath);
 			await crashed.ready;
 			crashed.go();
 			expect(await crashed.result).toBe("acquired");
 			await crashed.kill();
-			const racers = Array.from({ length: 8 }, () => spawnHolder(lanePath));
+			const racers = Array.from({ length: 8 }, () => spawnHolder(agentPath));
 			await Promise.all(racers.map((racer) => racer.ready));
 			for (const racer of racers) racer.go();
 			const results = await Promise.all(racers.map((racer) => racer.result));

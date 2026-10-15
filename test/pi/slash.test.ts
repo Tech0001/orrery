@@ -2,9 +2,10 @@ import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it } from "vitest";
 import { FAUX } from "./harness.ts";
-import { cleanup, lastLane, pi, summarySourcesFor, world } from "./world.ts";
+import { cleanup, isolatedHome, lastAgent, pi, summarySourcesFor, world } from "./world.ts";
 
 afterEach(cleanup);
+isolatedHome();
 
 describe("commands typed into pi", () => {
 	it("/memory, /compactor and /browse run through pi's prompt and show their text", async () => {
@@ -23,6 +24,6 @@ describe("commands typed into pi", () => {
 		await run.session.prompt(`/compactor ${FAUX.provider}/${FAUX.model} low`);
 		const texts = run.notices.map((n: { message: string }) => n.message);
 		expect(texts.at(-1)).toBe(`summaries: ${FAUX.provider}/${FAUX.model} (low) · set in chat`);
-		expect(lastLane().compactorSource).toBe("chat");
+		expect(lastAgent().compactorSource).toBe("chat");
 	});
 });

@@ -1,22 +1,23 @@
 /** Fictional, offline data for `npm run demo`. Every file lives in the throwaway home. */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai/compat";
 import { browseCommand } from "./cli/commands.ts";
-import { loadConfig, type HarnessConfig } from "./lane/config.ts";
-import { FileCredentialStore } from "./lane/credentials.ts";
-import { loginRows } from "./lane/logins.ts";
-import { laneOverview, laneUsage, TOOL_LABELS } from "./lane/overview.ts";
-import type { LaneStatus } from "./lane/status-file.ts";
-import type { SummarySources } from "./lane/summary-sources.ts";
-import { runningRoot } from "./lane/tools.ts";
+import { loadConfig, type HarnessConfig } from "./agent/config.ts";
+import { FileCredentialStore } from "./agent/credentials.ts";
+import { instructionsTemplate, writeInstructions } from "./agent/instructions.ts";
+import { loginRows } from "./agent/logins.ts";
+import { agentOverview, agentUsage, TOOL_LABELS } from "./agent/overview.ts";
+import type { AgentStatus } from "./agent/status-file.ts";
+import type { SummarySources } from "./agent/summary-sources.ts";
+import { runningRoot, versionNumber } from "./agent/running.ts";
 import { MemoryStore, MemoryView, Part } from "./memory/index.ts";
 import type { AppDeps } from "./tui/app.ts";
 import { colorWanted, makeTheme } from "./tui/theme.ts";
 
-const LANES = [
+const AGENTS = [
 	{ name: "Bellwick", tool: "pi", state: "working", messages: 96, task: "a toy tram map" },
 	{ name: "Mossmere", tool: "claude-code", state: "open", messages: 64, task: "a pretend seed catalogue" },
 	{ name: "Puddleby", tool: "omp", state: "open", messages: 48, task: "a clockwork duck simulator" },
@@ -53,16 +54,19 @@ export function createDemo(home: string, now = Date.now()): Demo {
 	const configPath = join(home, ".orrery", "config.toml");
 	mkdirSync(join(home, ".orrery"), { recursive: true });
 	writeFileSync(configPath, [
-		...LANES.map((lane) => `\n[lanes.${lane.name}]\nworkspace = ${JSON.stringify(join(home, "workspaces", lane.name))}\ntool = "${lane.tool}"\ncompactor_model = "${MODEL}"\ncompactor_thinking = "off"`), "",
+		...AGENTS.map((agent) => `\n[agents.${agent.name}]\nfolder = ${JSON.stringify(join(home, "folders", agent.name))}\ntool = "${agent.tool}"\ncompactor_model = "${MODEL}"\ncompactor_thinking = "off"`), "",
 	].join("\n"), { mode: 0o600 });
 	const config = loadConfig(configPath);
-	for (const [index, fixture] of LANES.entries()) {
-		const lane = config.lanes.get(fixture.name)!;
-		mkdirSync(lane.workspace, { recursive: true });
-		writeFileSync(join(lane.workspace, "README.md"), `# ${fixture.name}\n\nA fictional demo project: ${fixture.task}.\n`);
+	for (const [index, fixture] of AGENTS.entries()) {
+		const agent = config.agents.get(fixture.name)!;
+		if (agent.folder !== undefined) {
+			mkdirSync(agent.folder, { recursive: true });
+			writeFileSync(join(agent.folder, "README.md"), `# ${fixture.name}\n\nA fictional demo project: ${fixture.task}.\n`);
+		}
+		writeInstructions(agent.dir, instructionsTemplate(fixture.name, `Builds ${fixture.task}, a fictional demo project.`));
 		// Codex is launch-only: do not imply that it records Orrery memory.
 		if (fixture.tool === "codex") continue;
-		const store = MemoryStore.open(join(lane.dir, "memory.sqlite"));
+		const store = MemoryStore.open(join(agent.dir, "memory.sqlite"));
 		try {
 			for (let i = 0; i < fixture.messages; i++) {
 				store.append(i % 2 === 0 ? "user" : "talk", i % 2 === 0
@@ -85,14 +89,14 @@ export function createDemo(home: string, now = Date.now()): Demo {
 				]);
 			}
 			const failing = fixture.name === "Puddleby";
-			const status: LaneStatus = {
-				lane: lane.name, pid: process.pid, open: fixture.state !== "closed", busy: fixture.state === "working",
+			const status: AgentStatus = {
+				agent: agent.name, pid: process.pid, open: fixture.state !== "closed", busy: fixture.state === "working",
 				model: fixture.tool, thinking: "off", modelSource: "config", memory: new MemoryView(store).stats(),
 				compactor: { stopped: false, failing: failing ? 2 : 0, model: MODEL, thinking: "off", source: "config" },
 				trouble: failing ? { state: "failing", plain: "Demo summary service is temporarily unavailable." } : null,
 				lastError: null, updatedAt: new Date(now).toISOString(),
 			};
-			writeFileSync(join(lane.dir, "status.json"), `${JSON.stringify(status, null, 2)}\n`);
+			writeFileSync(join(agent.dir, "status.json"), `${JSON.stringify(status, null, 2)}\n`);
 		} finally { store.close(); }
 	}
 	return { home, configPath, now };
@@ -117,8 +121,8 @@ export function demoDeps(demo: Demo, controls: Pick<AppDeps, "rows" | "quit" | "
 		...controls, configPath: demo.configPath, cwd: demo.home, theme: makeTheme(colorWanted()),
 		loadConfig: () => loadConfig(demo.configPath), configWritable: () => false, editConfig: disabled,
 		// Keep this staged snapshot fresh without a background writer pretending to be a live agent.
-		overview: (config) => laneOverview(config, { now: demo.now }),
-		usage: (config, days, only) => laneUsage(config, days, only, demo.now),
+		overview: (config) => agentOverview(config, { now: demo.now }),
+		usage: (config, days, only) => agentUsage(config, days, only, demo.now),
 		tools: () => (["pi", "claude-code", "omp", "codex"] as const).map((id) => ({
 			id, label: TOOL_LABELS[id], path: join(demo.home, "bin", id), version: "1.0.0",
 			wiring: id === "codex" ? "none" : "installed", detail: "Fictional demo tool; launches disabled.", blocked: DISABLED,
@@ -127,8 +131,11 @@ export function demoDeps(demo: Demo, controls: Pick<AppDeps, "rows" | "quit" | "
 		saveKey: async () => disabled(), signIn: async () => disabled(), removeLogin: async () => disabled(),
 		testChoice: async () => disabled(), launch: async () => disabled(), applyFix: disabled,
 		installSteps: disabled, install: disabled, openUrl: () => undefined,
-		browse: (config, lane) => ({ path: browseCommand(config, lane, join(config.lanes.get(lane)!.dir, "memory.html")) }),
-		about: () => ({ version: `${JSON.parse(readFileSync(join(runningRoot(), "package.json"), "utf8")).version} (demo)`, root: runningRoot() }),
+		chats: disabled, importPreview: async () => disabled(), importCommit: disabled, startBuild: disabled, writeInstructions: disabled,
+		browse: (config, agent) => ({ path: browseCommand(config, agent, join(config.agents.get(agent)!.dir, "memory.html")) }),
+		about: () => ({ version: `${versionNumber()} (demo)`, root: runningRoot() }),
+		installedVersion: () => undefined,
+		updateNotice: async () => undefined,
 		now: () => demo.now,
 	};
 }

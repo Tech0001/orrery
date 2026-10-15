@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { createOrrery, type OrreryOptions } from "../../src/pi/index.ts";
-import type { PiLane } from "../../src/pi/lane.ts";
+import type { PiAgent } from "../../src/pi/agent.ts";
 import { remoteOpenNotice } from "../../src/remote/checkout.ts";
 import { unseal } from "../../src/remote/crypto.ts";
 import { decodeRows } from "../../src/remote/save-format.ts";
@@ -18,16 +18,16 @@ beforeEach(async () => { f = await checkoutFixture(); });
 afterEach(async () => { vi.useRealTimers(); await ompCleanup(); vi.restoreAllMocks(); f.close(); });
 
 function hostFor(host: "pi" | "omp", ui: Record<string, unknown> = {}, extra: Partial<OrreryOptions> = {}) {
-	let lane: PiLane | undefined;
+	let agent: PiAgent | undefined;
 	const patchUi: ExtensionFactory = (api) => { api.on("session_start", (_event, ctx) => { Object.assign(ctx.ui, ui); }); };
-	const run = track(fakeOmp(f.lane.workspace, [patchUi, createOrrery({
+	const run = track(fakeOmp(f.agent.folder, [patchUi, createOrrery({
 		config: f.config, host, ...scratchHome(f.root),
 		summarySources: async (config) => summarySourcesFor(config),
 		remoteStorage: () => f.storage,
 		...extra,
-		onLane: (opened) => { lane = opened; },
+		onAgent: (opened) => { agent = opened; },
 	})], { omp: host === "omp" }));
-	return { run, lane: () => lane };
+	return { run, agent: () => agent };
 }
 
 async function turn(run: FakeOmp, host: "pi" | "omp", text = "new remote turn") {
@@ -41,33 +41,33 @@ async function turn(run: FakeOmp, host: "pi" | "omp", text = "new remote turn") 
 
 describe.each(["pi", "omp"] as const)("%s remote checkout", (host) => {
 	it("opens, records a turn, saves on agent_end, and releases on shutdown", async () => {
-		const { run, lane } = hostFor(host);
+		const { run, agent } = hostFor(host);
 		await run.emit("session_start");
-		expect(lane()?.remote).toBeDefined();
-		expect(lane()?.store.root[0].text).toBe("from the remote");
+		expect(agent()?.remote).toBeDefined();
+		expect(agent()?.store.root[0].text).toBe("from the remote");
 		const save = vi.spyOn(f.storage, "save");
 		await turn(run, host);
 		await vi.waitFor(async () => expect((await f.storage.list())[0].newestSave).toBe(1));
 		expect(save).toHaveBeenCalledTimes(1);
-		const fetched = await f.storage.fetch(f.lane.name, 0);
-		expect(decodeRows(unseal(f.key, f.lane.name, "save", 1, fetched.saves[0].file)).main.map((row) => row.text)).toEqual(["new remote turn", "remote reply"]);
+		const fetched = await f.storage.fetch(f.agent.name, 0);
+		expect(decodeRows(unseal(f.key, f.agent.name, "save", 1, fetched.saves[0].file)).main.map((row) => row.text)).toEqual(["new remote turn", "remote reply"]);
 		await run.emit("session_shutdown");
 		expect((await f.storage.list())[0].lock?.held).toBe(false);
 		expect(save).toHaveBeenCalledTimes(1);
-		expect(lane()).toBeUndefined();
-		expect(JSON.parse(readFileSync(join(f.lane.dir, "status.json"), "utf8")).open).toBe(false);
+		expect(agent()).toBeUndefined();
+		expect(JSON.parse(readFileSync(join(f.agent.dir, "status.json"), "utf8")).open).toBe(false);
 	});
 
 	it.each(["held", "unreachable", "key-missing"] as const)("keeps running without memory and keeps the guard after %s", async (kind) => {
 		const failure = new RemoteError(kind, "remote refused\u001b[31m this open");
 		vi.spyOn(f.storage, "take").mockRejectedValue(failure);
-		const { run, lane } = hostFor(host);
+		const { run, agent } = hostFor(host);
 		await run.emit("session_start");
-		expect(lane()).toBeUndefined();
+		expect(agent()).toBeUndefined();
 		expect(run.tools.has("zoom")).toBe(false);
-		expect(run.notices).toContainEqual({ message: expect.stringContaining(remoteOpenNotice(f.lane, failure)), type: "warning" });
+		expect(run.notices).toContainEqual({ message: expect.stringContaining(remoteOpenNotice(f.agent, failure)), type: "warning" });
 		expect(run.notices.some((notice) => notice.message.includes("\u001b"))).toBe(false);
-		expect(await run.emit("tool_call", { toolName: "write", input: { path: "/etc/escape", content: "no" } })).toContainEqual({ block: true, reason: expect.stringContaining("outside this lane's workspace") });
+		expect(await run.emit("tool_call", { toolName: "write", input: { path: "/etc/escape", content: "no" } })).toContainEqual({ block: true, reason: expect.stringContaining("outside this agent's folder") });
 		await expect(turn(run, host)).resolves.toBeUndefined();
 		expect(run.notices.filter((notice) => notice.type === "warning")).toHaveLength(1);
 	});
@@ -76,28 +76,28 @@ describe.each(["pi", "omp"] as const)("%s remote checkout", (host) => {
 		{ kind: "confirm", answer: true }, { kind: "confirm", answer: false },
 		{ kind: "select", answer: "Take over" }, { kind: "select", answer: "Keep it closed" }, { kind: "select", answer: undefined },
 	])("asks with $kind before a stale takeover ($answer)", async ({ kind, answer }) => {
-		await f.storage.take(f.lane.name, { machine: "macbook", device: "other", pid: 1 });
+		await f.storage.take(f.agent.name, { machine: "macbook", device: "other", pid: 1 });
 		f.clock.value += STALE_MS + 1;
 		const prompt = vi.fn(async () => answer);
-		const { run, lane } = hostFor(host, kind === "confirm" ? { confirm: prompt } : { confirm: undefined, select: prompt });
+		const { run, agent } = hostFor(host, kind === "confirm" ? { confirm: prompt } : { confirm: undefined, select: prompt });
 		await run.emit("session_start");
 		expect(prompt).toHaveBeenCalledTimes(1);
 		expect(JSON.stringify(prompt.mock.calls)).toContain("macbook");
 		expect(JSON.stringify(prompt.mock.calls)).toContain("last seen");
 		if (kind === "select") expect(prompt).toHaveBeenCalledWith(expect.any(String), ["Take over", "Keep it closed"], expect.objectContaining({ timeout: 60_000 }));
 		else expect(prompt).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.objectContaining({ timeout: 60_000 }));
-		expect(lane()?.remote !== undefined).toBe(answer === true || answer === "Take over");
+		expect(agent()?.remote !== undefined).toBe(answer === true || answer === "Take over");
 	});
 
 	it("stops recording after lock loss, leaves a moved footer and keeps the session and guard running", async () => {
-		const { run, lane } = hostFor(host);
+		const { run, agent } = hostFor(host);
 		await run.emit("session_start");
-		const opened = lane()!;
+		const opened = agent()!;
 		expect(opened.remote).toBeDefined();
 		await turn(run, host);
 		await vi.waitFor(async () => expect((await f.storage.list())[0].newestSave).toBe(1));
 		f.clock.value += STALE_MS + 1;
-		await f.storage.take(f.lane.name, { machine: "new laptop", device: "new", pid: 3 }, { force: true });
+		await f.storage.take(f.agent.name, { machine: "new laptop", device: "new", pid: 3 }, { force: true });
 		const close = vi.spyOn(opened, "close");
 		await opened.remote!.renew();
 		const save = vi.spyOn(f.storage, "save");
@@ -112,17 +112,17 @@ describe.each(["pi", "omp"] as const)("%s remote checkout", (host) => {
 		await run.emit("session_shutdown");
 		expect(save).not.toHaveBeenCalled();
 		expect(run.notices.filter((notice) => notice.message.includes("moved to new laptop"))).toHaveLength(1);
-		const copy = MemoryStore.open(join(f.lane.dir, "memory.sqlite"));
+		const copy = MemoryStore.open(join(f.agent.dir, "memory.sqlite"));
 		try { expect(copy.root.map((row) => row.text)).not.toContain("after loss"); } finally { copy.close(); }
 	});
 
 	it.each(["hook", "tick"])("stops through a %s while the lost-lock report is still pending", async (trigger) => {
-		const { run, lane } = hostFor(host, {}, { tickMs: 10 });
+		const { run, agent } = hostFor(host, {}, { tickMs: 10 });
 		await run.emit("session_start");
-		const opened = lane()!;
+		const opened = agent()!;
 		const close = vi.spyOn(opened, "close");
 		f.clock.value += STALE_MS + 1;
-		await f.storage.take(f.lane.name, { machine: "slow laptop", device: "new", pid: 3 }, { force: true });
+		await f.storage.take(f.agent.name, { machine: "slow laptop", device: "new", pid: 3 }, { force: true });
 		const entries = await f.storage.list();
 		let finish!: () => void;
 		vi.spyOn(f.storage, "list").mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve(entries); }));
@@ -132,7 +132,7 @@ describe.each(["pi", "omp"] as const)("%s remote checkout", (host) => {
 			if (trigger === "hook") expect(await run.emit("before_agent_start", { systemPrompt: "base" })).toEqual([undefined]);
 			await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
 			expect(run.notices.filter((notice) => notice.message.includes("moved to"))).toHaveLength(0);
-			expect(lane()).toBeUndefined();
+			expect(agent()).toBeUndefined();
 			expect(run.status("orrery")).toContain("home: moved to");
 		} finally { finish(); await renewal; }
 		expect(run.status("orrery")).toContain("home: moved to slow laptop");
@@ -148,7 +148,7 @@ describe("OMP remote leave and move", () => {
 			await new Promise<void>((resolve) => { finish = resolve; });
 			return take(...args);
 		});
-		const { run, lane } = hostFor("omp");
+		const { run, agent } = hostFor("omp");
 		const opening = run.emit("session_start");
 		await vi.waitFor(() => expect(finish).toBeDefined());
 		run.cwd = join(f.root, "outside");
@@ -156,11 +156,11 @@ describe("OMP remote leave and move", () => {
 		finish();
 		await Promise.all([opening, leaving]);
 		await vi.waitFor(async () => expect((await f.storage.list())[0].lock?.held).toBe(false));
-		expect(lane()).toBeUndefined();
+		expect(agent()).toBeUndefined();
 		const renew = vi.spyOn(f.storage, "renew");
 		await run.emit("agent_end");
 		expect(renew).not.toHaveBeenCalled();
-		const local = MemoryStore.open(join(f.lane.dir, "memory.sqlite"));
+		const local = MemoryStore.open(join(f.agent.dir, "memory.sqlite"));
 		local.close();
 	});
 	it("shutdown cancels an in-progress open in the same folder before its take replies", async () => {
@@ -170,7 +170,7 @@ describe("OMP remote leave and move", () => {
 			await new Promise<void>((resolve) => { finish = resolve; });
 			return take(...args);
 		});
-		const { run, lane } = hostFor("pi");
+		const { run, agent } = hostFor("pi");
 		const opening = run.emit("session_start");
 		await vi.waitFor(() => expect(finish).toBeDefined());
 		const closing = run.emit("session_shutdown");
@@ -178,7 +178,7 @@ describe("OMP remote leave and move", () => {
 		void closing.then(() => { closed = true; });
 		try {
 			await vi.waitFor(() => expect(closed).toBe(true), { timeout: 300 });
-			expect(lane()).toBeUndefined();
+			expect(agent()).toBeUndefined();
 		} finally { finish(); await Promise.all([opening, closing]); }
 		await vi.waitFor(async () => expect((await f.storage.list())[0].lock?.held).toBe(false));
 	});
@@ -193,7 +193,7 @@ describe("OMP remote leave and move", () => {
 			vi.spyOn(f.storage, "fetch").mockImplementation(async (...args) => { if (args[1] === -1) await gate; return fetch(...args); });
 		}
 		vi.useFakeTimers();
-		const { run, lane } = hostFor("omp");
+		const { run, agent } = hostFor("omp");
 		const opening = run.emit("session_start");
 		let done = false;
 		void opening.then(() => { done = true; });
@@ -202,12 +202,12 @@ describe("OMP remote leave and move", () => {
 			expect(done).toBe(false);
 			await vi.advanceTimersByTimeAsync(1);
 			expect(done).toBe(true);
-			expect(lane()).toBeUndefined();
+			expect(agent()).toBeUndefined();
 			expect(run.notices).toEqual([{ message: expect.stringMatching(/25 seconds.*without memory/), type: "warning" }]);
 			expect(await run.emit("tool_call", { toolName: "write", input: { path: "/etc/escape", content: "no" } })).toContainEqual({ block: true, reason: expect.any(String) });
 		} finally { finish(); vi.useRealTimers(); await opening; }
 		await vi.waitFor(async () => expect((await f.storage.list())[0].lock?.held).toBe(false));
-		const local = MemoryStore.open(join(f.lane.dir, "memory.sqlite"));
+		const local = MemoryStore.open(join(f.agent.dir, "memory.sqlite"));
 		local.close();
 	});
 	it("does not extend the OMP open deadline while releasing a taken lock after failure", async () => {
@@ -222,57 +222,57 @@ describe("OMP remote leave and move", () => {
 			finish = async () => { await release(...args); resolve(); };
 		}));
 		vi.useFakeTimers();
-		const { run, lane } = hostFor("omp");
+		const { run, agent } = hostFor("omp");
 		const opening = run.emit("session_start");
 		let done = false;
 		void opening.then(() => { done = true; });
 		try {
 			await vi.advanceTimersByTimeAsync(25_000);
 			expect(done).toBe(true);
-			expect(lane()).toBeUndefined();
+			expect(agent()).toBeUndefined();
 			expect(run.notices).toEqual([{ message: expect.stringContaining("without memory"), type: "warning" }]);
-			const local = MemoryStore.open(join(f.lane.dir, "memory.sqlite"));
+			const local = MemoryStore.open(join(f.agent.dir, "memory.sqlite"));
 			local.close();
 		} finally { await finish(); vi.useRealTimers(); await opening; }
 		expect((await f.storage.list())[0].lock?.held).toBe(false);
 	});
-	it.each(["session_switch", "before_agent_start", "session_shutdown"])("saves pending lane rows and closes on %s after moving", async (event) => {
-		const { run, lane } = hostFor("omp");
+	it.each(["session_switch", "before_agent_start", "session_shutdown"])("saves pending agent rows and closes on %s after moving", async (event) => {
+		const { run, agent } = hostFor("omp");
 		await run.emit("session_start");
-		expect(lane()?.remote).toBeDefined();
-		run.say("user", "still in lane");
+		expect(agent()?.remote).toBeDefined();
+		run.say("user", "still in agent");
 		await run.emit("message_end");
 		run.cwd = join(f.root, "outside");
-		run.say("user", "outside lane");
+		run.say("user", "outside agent");
 		await run.emit(event, { reason: "resume", systemPrompt: ["base"] });
 		expect((await f.storage.list())[0]).toMatchObject({ newestSave: 1, lock: { held: false } });
-		const fetched = await f.storage.fetch(f.lane.name, 0);
-		expect(decodeRows(unseal(f.key, f.lane.name, "save", 1, fetched.saves[0].file)).main.map((row) => row.text)).toEqual(["still in lane"]);
-		expect(lane()).toBeUndefined();
+		const fetched = await f.storage.fetch(f.agent.name, 0);
+		expect(decodeRows(unseal(f.key, f.agent.name, "save", 1, fetched.saves[0].file)).main.map((row) => row.text)).toEqual(["still in agent"]);
+		expect(agent()).toBeUndefined();
 	});
 });
 
 it("treats an unanswered pi takeover dialog as no after 60 s", async () => {
-	await f.storage.take(f.lane.name, { machine: "macbook", device: "other", pid: 1 });
+	await f.storage.take(f.agent.name, { machine: "macbook", device: "other", pid: 1 });
 	f.clock.value += STALE_MS + 1;
 	const take = vi.spyOn(f.storage, "take");
 	vi.useFakeTimers();
-	const { run, lane } = hostFor("pi", { confirm: vi.fn(() => new Promise(() => {})) });
+	const { run, agent } = hostFor("pi", { confirm: vi.fn(() => new Promise(() => {})) });
 	const opening = run.emit("session_start");
 	let done = false;
 	void opening.then(() => { done = true; });
 	await vi.advanceTimersByTimeAsync(60_000);
 	expect(done).toBe(true);
-	expect(lane()).toBeUndefined();
+	expect(agent()).toBeUndefined();
 	expect(take).toHaveBeenCalledTimes(1);
 });
 
 it.each(["confirm", "select"])("pi shutdown cancels a pending takeover %s immediately", async (kind) => {
-	await f.storage.take(f.lane.name, { machine: "macbook", device: "other", pid: 1 });
+	await f.storage.take(f.agent.name, { machine: "macbook", device: "other", pid: 1 });
 	f.clock.value += STALE_MS + 1;
 	const reply = Promise.withResolvers<boolean | string | undefined>();
 	const prompt = vi.fn(() => reply.promise);
-	const { run, lane } = hostFor("pi", kind === "confirm" ? { confirm: prompt } : { confirm: undefined, select: prompt });
+	const { run, agent } = hostFor("pi", kind === "confirm" ? { confirm: prompt } : { confirm: undefined, select: prompt });
 	const opening = run.emit("session_start");
 	await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
 	const take = vi.spyOn(f.storage, "take");
@@ -281,17 +281,17 @@ it.each(["confirm", "select"])("pi shutdown cancels a pending takeover %s immedi
 	void closing.then(() => { closed = true; });
 	try {
 		await vi.waitFor(() => expect(closed).toBe(true), { timeout: 300 });
-		expect(lane()).toBeUndefined();
+		expect(agent()).toBeUndefined();
 		expect(take).not.toHaveBeenCalled();
 		expect(run.notices).toEqual([]);
 	} finally { reply.resolve(undefined); await Promise.all([opening, closing]); }
 });
 
-it("describes a remote lane held locally without naming this machine as a remote host", async () => {
+it("describes a remote agent held locally without naming this machine as a remote host", async () => {
 	const first = hostFor("pi");
 	await first.run.emit("session_start");
 	const second = hostFor("pi");
 	await second.run.emit("session_start");
-	expect(second.lane()).toBeUndefined();
+	expect(second.agent()).toBeUndefined();
 	expect(second.run.notices).toEqual([{ message: expect.stringContaining("open in another pi or Claude Code on this machine"), type: "warning" }]);
 });

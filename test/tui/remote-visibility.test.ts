@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
-import { parseConfig } from "../../src/lane/config.ts";
-import { lanesPage } from "../../src/tui/pages/lanes.ts";
+import { parseConfig } from "../../src/agent/config.ts";
+import { agentsPage } from "../../src/tui/pages/agents.ts";
 import { loginsPage } from "../../src/tui/pages/logins.ts";
 import { toolsPage } from "../../src/tui/pages/tools.ts";
 import { CONFIG_TEXT, fakeDeps, makeApp, row, screen, settle } from "./support.ts";
@@ -9,14 +9,14 @@ function config(remote: boolean) {
 	return parseConfig(CONFIG_TEXT + (remote ? '\n[remotes.home]\nkind = "cloudflare"\nurl = "https://example.invalid"\n' : ""), "/d");
 }
 
-it.each([false, true])("the Memory column depends on configured remotes, even with only local lanes (remotes: %s)", (remote) => {
-	const app = makeApp(fakeDeps({ loadConfig: () => config(remote) }, [row({ name: "Alpha" })]), [lanesPage]);
-	const lines = lanesPage.render(app, 120, 10);
+it.each([false, true])("the Memory column depends on configured remotes, even with only local agents (remotes: %s)", (remote) => {
+	const app = makeApp(fakeDeps({ loadConfig: () => config(remote) }, [row({ name: "Alpha" })]), [agentsPage]);
+	const lines = agentsPage.render(app, 120, 10);
 	expect(lines[0].includes("Memory")).toBe(remote);
 	if (!remote) {
 		// Restore the original 19-column minimum for Summaries: the model drops below 100.
-		expect(lanesPage.render(app, 99, 10)[0]).not.toContain("Summary model");
-		expect(lanesPage.render(app, 100, 10)[0]).toContain("Summary model");
+		expect(agentsPage.render(app, 99, 10)[0]).not.toContain("Summary model");
+		expect(agentsPage.render(app, 100, 10)[0]).toContain("Summary model");
 	}
 });
 

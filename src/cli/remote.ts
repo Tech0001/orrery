@@ -1,16 +1,16 @@
-/** Remote lane commands shared by the CLI and TUI; credentials never appear in listings. */
+/** Remote agent commands shared by the CLI and TUI; credentials never appear in listings. */
 
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { ConfigError, defaultConfigPath, findLane, type HarnessConfig, type LaneConfig, loadConfig, parseConfig } from "../lane/config.ts";
-import { addLane, addRemote, configWritable, type NewLane, type NewRemote, editConfigFile, readOnlyConfigText, removeRemote, saveConfigText, setLaneKey } from "../lane/config-edit.ts";
-import { safeText } from "../lane/source-labels.ts";
+import { ConfigError, defaultConfigPath, findAgent, type HarnessConfig, type AgentConfig, agentNameProblem, loadConfig, parseConfig } from "../agent/config.ts";
+import { addAgent, addRemote, configWritable, type NewAgent, type NewRemote, editConfigFile, readOnlyConfigText, removeRemote, saveConfigText, setAgentKey } from "../agent/config-edit.ts";
+import { safeText } from "../agent/source-labels.ts";
 import { holdWriterLock, type WriterLock } from "../memory/store.ts";
-import { writePrivate } from "../lane/private-file.ts";
+import { writePrivate } from "../agent/private-file.ts";
 import { CloudflareStorage } from "../remote/cloudflare.ts";
 import { codeToKey, createKey, keyMatches, keyToCode, sealCheck, unseal } from "../remote/crypto.ts";
-import { laneSettings, remoteLaneSettings, type SaveHeader } from "../remote/save-format.ts";
+import { agentSettings, remoteAgentSettings, type SaveHeader } from "../remote/save-format.ts";
 import { heldMessage, RemoteSession, TAKEOVER_FILE } from "../remote/session.ts";
 import { holderFor, openStorage } from "../remote/index.ts";
 import { readRemoteSecret, type RemoteSecret, removeRemoteSecret, saveRemoteSecret } from "../remote/secrets.ts";
@@ -26,7 +26,7 @@ export function setStorageForTests(factory: StorageFactory | undefined): void {
 }
 
 /** Copies only the storage contract's public fields, never transport metadata or credentials. */
-function publicLane(entry: LaneEntry): LaneEntry {
+function publicAgent(entry: LaneEntry): LaneEntry {
 	const { lane, newestSave, lock } = entry;
 	return {
 		lane, newestSave,
@@ -39,7 +39,7 @@ function publicLane(entry: LaneEntry): LaneEntry {
 
 const shown = (value: string): string => safeText(clean(value));
 
-function laneLine(entry: LaneEntry): string {
+function agentLine(entry: LaneEntry): string {
 	const { lock } = entry;
 	const lastSeen = lock === undefined ? "" : new Date(lock.lastSeen).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 	const state = lock?.held === true ? `open on ${shown(lock.holder.machine)} (last seen ${lastSeen}${lock.stale ? "; stale" : ""})` : "closed";
@@ -145,10 +145,10 @@ export async function addRemoteCommand(configPath: string | undefined, name: str
 		if (check === undefined) {
 			// A remote already in the config was set up somewhere, so a missing key check is suspicious (a remote host
 			// could hide it to get a second, mismatched key made): refuse unless the user says it is new. A remote
-			// with lanes but no check is refused either way.
+			// with agents but no check is refused either way.
 			if (existing !== undefined && options.new !== true) throw new Error(`This configured remote has no key check. If it is new, run orrery remote add ${name} --new to create its key; otherwise restore its key check first.`);
 			if (options["code-file"] !== undefined) throw new Error("This remote has no key check; --code-file is only for an existing remote with a key check. Verify the remote's address before trying again.");
-			if ((await storage.list()).length > 0) throw new Error("This remote has lanes but no key check. Restore its original key check before adding it; a new key would not unlock those lanes.");
+			if ((await storage.list()).length > 0) throw new Error("This remote has agents but no key check. Restore its original key check before adding it; a new key would not unlock those agents.");
 			key = createKey();
 			showCode = true;
 		} else {
@@ -194,16 +194,16 @@ async function testRemote(config: HarnessConfig, name: string): Promise<string> 
 		await storage.list(); lines.push("✓ reachable");
 		step = "lock writable";
 		const taken = await storage.take("orrery-test", holderFor(config));
-		if (!taken.ok) throw new Error(`test lane is open on ${shown(taken.held.holder.machine)}`);
+		if (!taken.ok) throw new Error(`test agent is open on ${shown(taken.held.holder.machine)}`);
 		lines.push("✓ lock writable");
-		step = "test lane removed";
+		step = "test agent removed";
 		try {
 			const copy = await storage.fetch("orrery-test", -1);
 			if (copy.snapshot !== undefined || copy.saves.length > 0) throw new Error("orrery-test contains memory; its copy was kept.");
 			await storage.drop("orrery-test", taken.lock);
 		}
 		catch (error) { await storage.release("orrery-test", taken.lock).catch(() => {}); throw error; }
-		lines.push("✓ test lane removed");
+		lines.push("✓ test agent removed");
 		step = "key decrypts";
 		const check = await storage.getCheck();
 		if (check === undefined || !keyMatches(keyFor(config, name), check)) throw new Error("the recovery code does not match this remote");
@@ -228,10 +228,10 @@ function logHeader(plain: Uint8Array, n: number): SaveHeader {
 /** Remote management commands, shared with the TUI. Only explicit key display and creation return secrets. */
 export async function remoteCommand(configPath: string | undefined, args: readonly string[], options: RemoteOptions = {}, interaction: RemoteInteraction = terminalInteraction): Promise<string> {
 	const [action, name] = args;
-	if (args.length !== 2 || !name || !["add", "test", "key", "log", "lanes", "remove"].includes(action)) {
-		throw new Error("Use orrery remote add|test|key|log|lanes|remove <name>. Lists and logs accept --json.");
+	if (args.length !== 2 || !name || !["add", "test", "key", "log", "agents", "remove"].includes(action)) {
+		throw new Error("Use orrery remote add|test|key|log|agents|remove <name>. Lists and logs accept --json.");
 	}
-	if (action !== "lanes" && action !== "log" && options.json === true) throw new Error("--json is only for remote lanes and remote log.");
+	if (action !== "agents" && action !== "log" && options.json === true) throw new Error("--json is only for remote agents and remote log.");
 	if (options.yes === true && action !== "remove") throw new Error("--yes is only for remote remove.");
 	if (action === "add") {
 		const added = await addRemoteCommand(configPath, name, options, interaction);
@@ -241,21 +241,22 @@ export async function remoteCommand(configPath: string | undefined, args: readon
 	const path = configPath ?? defaultConfigPath();
 	const config = loadConfig(path);
 	if (action === "log") {
-		const lane = findLane(config, name);
-		if (lane.remote === undefined) throw new Error(`${lane.name} keeps its memory locally.`);
-		const key = keyFor(config, lane.remote);
-		const entries = await storageFor(config, lane.remote).log(lane.name);
-		const log = entries.map((entry) => logHeader(unseal(key, lane.name, "log", entry.n, entry.file), entry.n));
-		if (options.json === true) return `${JSON.stringify({ lane: lane.name, remote: lane.remote, log: log.map((h) => ({ ...h, takeover: h.takeover !== undefined, ...(h.takeover === undefined ? {} : { takeoverFrom: h.takeover.from }) })) }, null, 2)}\n`;
-		return log.length === 0 ? `No saves for ${lane.name}.\n` : `${log.map((h) => `${h.n} · ${shown(h.at)} · ${shown(h.machine)} · rows: ${h.rows.main} messages, ${h.rows.tree} summaries, ${h.rows.usage} usage, ${h.rows.meta} settings${h.takeover ? ` · taken over from ${shown(h.takeover.from)}` : ""}`).join("\n")}\n`;
+		const agent = findAgent(config, name);
+		if (agent.remote === undefined) throw new Error(`${agent.name} keeps its memory locally.`);
+		const key = keyFor(config, agent.remote);
+		const entries = await storageFor(config, agent.remote).log(agent.name);
+		const log = entries.map((entry) => logHeader(unseal(key, agent.name, "log", entry.n, entry.file), entry.n));
+		if (options.json === true) return `${JSON.stringify({ agent: agent.name, remote: agent.remote, log: log.map((h) => ({ ...h, takeover: h.takeover !== undefined, ...(h.takeover === undefined ? {} : { takeoverFrom: h.takeover.from }) })) }, null, 2)}\n`;
+		return log.length === 0 ? `No saves for ${agent.name}.\n` : `${log.map((h) => `${h.n} · ${shown(h.at)} · ${shown(h.machine)} · rows: ${h.rows.main} messages, ${h.rows.tree} summaries, ${h.rows.usage} usage, ${h.rows.meta} settings${h.takeover ? ` · taken over from ${shown(h.takeover.from)}` : ""}`).join("\n")}\n`;
 	}
 	if (!config.remotes.has(name)) throw new ConfigError(`unknown remote "${shown(name)}"`);
 	if (action === "test") return testRemote(config, name);
 	if (action === "key") return `This is a secret.\n${keyToCode(keyFor(config, name))}\n`;
-	if (action === "lanes") {
-		const lanes = (await storageFor(config, name).list()).map(publicLane);
-		if (options.json === true) return `${JSON.stringify({ remote: name, lanes }, null, 2)}\n`;
-		return lanes.length === 0 ? `No lanes on remote ${name}.\n` : `${lanes.map(laneLine).join("\n")}\n`;
+	if (action === "agents") {
+		const entries = (await storageFor(config, name).list()).map(publicAgent);
+		// The storage format calls the name `lane`; what this command prints says agent.
+		if (options.json === true) return `${JSON.stringify({ remote: name, agents: entries.map(({ lane, ...rest }) => ({ agent: lane, ...rest })) }, null, 2)}\n`;
+		return entries.length === 0 ? `No agents on remote ${name}.\n` : `${entries.map(agentLine).join("\n")}\n`;
 	}
 	// Validate the credential file before changing the config. Removal is local: remote data is never deleted.
 	readRemoteSecret(config, name);
@@ -285,7 +286,7 @@ export async function remoteCommand(configPath: string | undefined, args: readon
 	return `${warning}\nRemoved remote ${name}. Its remote data is unchanged.\n`;
 }
 
-export interface LaneRemoteOptions {
+export interface AgentRemoteOptions {
 	readonly to?: string;
 	readonly from?: string;
 	readonly folder?: string;
@@ -293,11 +294,11 @@ export interface LaneRemoteOptions {
 	readonly "delete-remote"?: boolean;
 }
 
-export interface LaneRemoteInteraction {
+export interface AgentRemoteInteraction {
 	confirm(question: string): Promise<boolean>;
 }
 
-const terminalLaneInteraction: LaneRemoteInteraction = {
+const terminalAgentInteraction: AgentRemoteInteraction = {
 	async confirm(question) {
 		if (process.stdin.isTTY !== true) return false;
 		const { createInterface } = await import("node:readline/promises");
@@ -316,74 +317,83 @@ function remoteStorage(config: HarnessConfig, name: string): Storage {
 	return storageFor(config, name);
 }
 
-function sessionOptions(config: HarnessConfig, lane: LaneConfig, storage: Storage, report: (message: string) => void) {
-	return { lane: lane.name, laneDir: lane.dir, storage, key: keyFor(config, storage.name), holder: holderFor(config), settings: laneSettings(lane), report, renewMs: 0 };
+function sessionOptions(config: HarnessConfig, agent: AgentConfig, storage: Storage, report: (message: string) => void) {
+	return { agent: agent.name, agentDir: agent.dir, storage, key: keyFor(config, storage.name), holder: holderFor(config), settings: agentSettings(agent), report, renewMs: 0 };
 }
 
-/** Pull shared by the CLI and N: copy portable settings once, then check out and close to fetch the working copy. */
-export async function pullLaneCommand(configPath: string | undefined, name: string, remote: string, folder: string): Promise<string> {
+/**
+ * Pull shared by the CLI and N: copy portable settings once, then check out and close to fetch the working copy and its
+ * instructions.md. Without a folder the agent has no default folder: it opens wherever it is opened.
+ */
+export async function pullAgentCommand(configPath: string | undefined, name: string, remote: string, folderArg?: string): Promise<string> {
 	const path = configPath ?? defaultConfigPath();
 	writable(path);
 	const config = loadConfig(path);
-	if ([...config.lanes.keys()].some((n) => n.toLowerCase() === name.toLowerCase())) throw new ConfigError(`A lane named ${shown(name)} already exists.`);
-	if (!/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(name)) throw new ConfigError("Lane names use letters, digits, - and _ (at most 32), starting with a letter.");
-	const workspace = folder === "~" || folder.startsWith("~/") ? `${homedir()}${folder.slice(1)}` : folder;
-	if (!isAbsolute(workspace)) throw new Error("The folder must be an absolute path (or start with ~/).");
-	let directory = false;
-	try { directory = statSync(workspace).isDirectory(); } catch { /* report a missing folder below */ }
-	if (!directory) throw new Error(`The folder must already exist and be a directory: ${shown(workspace)}`);
+	if ([...config.agents.keys()].some((n) => n.toLowerCase() === name.toLowerCase())) throw new ConfigError(`An agent named ${shown(name)} already exists.`);
+	const problem = agentNameProblem(name);
+	if (problem !== undefined) throw new ConfigError(problem);
+	let folder: string | undefined;
+	if (folderArg !== undefined) {
+		folder = folderArg === "~" || folderArg.startsWith("~/") ? `${homedir()}${folderArg.slice(1)}` : folderArg;
+		if (!isAbsolute(folder)) throw new Error("The folder must be an absolute path (or start with ~/).");
+		let directory = false;
+		try { directory = statSync(folder).isDirectory(); } catch { /* report a missing folder below */ }
+		if (!directory) throw new Error(`The folder must already exist and be a directory: ${shown(folder)}`);
+	}
 	const storage = remoteStorage(config, remote);
 	const secret = readRemoteSecret(config, remote);
 	let before: string | undefined;
 	let after: string | undefined;
 	let writer: WriterLock | undefined;
-	const laneDir = join(config.dataDir, "lanes", name);
-	const existed = existsSync(laneDir);
+	const agentDir = join(config.dataDir, "agents", name);
+	const existed = existsSync(agentDir);
 	let failed = false;
 	try {
-		// The config entry may be absent while a process still holds this lane's working copy.
-		writer = holdWriterLock(join(laneDir, "memory.sqlite"));
-		const { settings } = await remoteLaneSettings(storage, keyFor(config, remote), name);
-		const missing = settings.reads?.filter((n) => n !== "*" && n !== name && !config.lanes.has(n)) ?? [];
-		if (missing.length) throw new Error(`Pull these lanes first (${missing.map(shown).join(", ")}): ${name}'s reads setting needs them on this machine.`);
-		const lane: NewLane = { ...settings, name, workspace, remote, tool: settings.tool as NewLane["tool"], compactorThinking: settings.compactorThinking as NewLane["compactorThinking"] };
+		// The config entry may be absent while a process still holds this agent's working copy.
+		writer = holdWriterLock(join(agentDir, "memory.sqlite"));
+		const { settings } = await remoteAgentSettings(storage, keyFor(config, remote), name);
+		const missing = settings.reads?.filter((n) => n !== "*" && n !== name && !config.agents.has(n)) ?? [];
+		if (missing.length) throw new Error(`Pull these agents first (${missing.map(shown).join(", ")}): ${name}'s reads setting needs them on this machine.`);
+		// An older snapshot names the agent's instructions file, a key the config no longer takes: it is dropped.
+		const { instructions: _old, ...portable } = settings;
+		const agent: NewAgent = { ...portable, name, ...(folder === undefined ? {} : { folder }), remote, tool: portable.tool as NewAgent["tool"], compactorThinking: portable.compactorThinking as NewAgent["compactorThinking"] };
 		const updated = editConfigFile(path, (text, dir) => {
-			const next = addLane(text, dir, lane);
+			const next = addAgent(text, dir, agent);
 			before = text; after = next;
 			return next;
 		});
 		const notices: string[] = [];
-		const session = await RemoteSession.checkOut({ ...sessionOptions(updated, updated.lanes.get(name)!, storage, (m) => notices.push(shown(m))), writer });
+		const session = await RemoteSession.checkOut({ ...sessionOptions(updated, updated.agents.get(name)!, storage, (m) => notices.push(shown(m))), writer });
 		await session.close();
-		return [...notices, `Pulled ${name} from remote ${remote} into ${shown(workspace)}.\n`].join("\n");
+		return [...notices, `Pulled ${name} from remote ${remote}${folder === undefined ? "" : ` into ${shown(folder)}`}.\n`].join("\n");
 	} catch (error) {
 		failed = true;
 		if (before !== undefined && after !== undefined) {
-			if (readFileSync(path, "utf8") !== after) throw new Error(`Pull failed: ${errorText(error, secret?.key, secret?.token)}. The config changed during the fetch; review lanes.${name} before retrying.`);
+			if (readFileSync(path, "utf8") !== after) throw new Error(`Pull failed: ${errorText(error, secret?.key, secret?.token)}. The config changed during the fetch; review agents.${name} before retrying.`);
 			saveConfigText(path, before);
 		}
 		throw new Error(errorText(error, secret?.key, secret?.token));
 	} finally {
 		writer?.();
-		// A failed pull leaves no new lane folder behind (one that was already there, say an archived lane's, stays).
-		if (failed && !existed) rmSync(laneDir, { recursive: true, force: true });
+		// A failed pull leaves no new agent data folder behind (one that was already there, say an archived agent's, stays).
+		if (failed && !existed) rmSync(agentDir, { recursive: true, force: true });
 	}
 }
 
-/** Moves lane memory between its local working copy and remote home; independent of agent checkout adapters. */
-export async function laneRemoteCommand(configPath: string | undefined, args: readonly string[], options: LaneRemoteOptions = {}, interaction: LaneRemoteInteraction = terminalLaneInteraction): Promise<string> {
+/** Moves agent memory between its local working copy and remote home; independent of agent checkout adapters. */
+export async function agentRemoteCommand(configPath: string | undefined, args: readonly string[], options: AgentRemoteOptions = {}, interaction: AgentRemoteInteraction = terminalAgentInteraction): Promise<string> {
 	const [action, name] = args;
-	if (args.length !== 2 || !name || !["push", "pull", "takeover", "local"].includes(action)) throw new Error("Use orrery lane push|pull|takeover|local <Lane>.");
-	if ((options.to !== undefined && action !== "push") || ((options.from !== undefined || options.folder !== undefined) && action !== "pull") || (options.yes === true && action !== "takeover") || (options["delete-remote"] === true && action !== "local")) throw new Error("These options do not apply to this lane command.");
+	if (args.length !== 2 || !name || !["push", "pull", "takeover", "local"].includes(action)) throw new Error("Use orrery agent push|pull|takeover|local <Name>.");
+	if ((options.to !== undefined && action !== "push") || ((options.from !== undefined || options.folder !== undefined) && action !== "pull") || (options.yes === true && action !== "takeover") || (options["delete-remote"] === true && action !== "local")) throw new Error("These options do not apply to this agent command.");
 	if (action === "pull") {
-		if (!options.from || !options.folder) throw new Error("lane pull needs --from <remote> and --folder <dir>.");
-		return pullLaneCommand(configPath, name, options.from, options.folder);
+		if (!options.from) throw new Error("agent pull needs --from <remote> (and --folder <dir> for a default folder).");
+		return pullAgentCommand(configPath, name, options.from, options.folder);
 	}
 	const path = configPath ?? defaultConfigPath();
 	const config = loadConfig(path);
-	const lane = findLane(config, name);
-	const remote = action === "push" ? options.to : lane.remote;
-	if (!remote) throw new Error(action === "push" ? "lane push needs --to <remote>." : `${lane.name} keeps its memory locally.`);
+	const agent = findAgent(config, name);
+	const remote = action === "push" ? options.to : agent.remote;
+	if (!remote) throw new Error(action === "push" ? "agent push needs --to <remote>." : `${agent.name} keeps its memory locally.`);
 	const storage = remoteStorage(config, remote);
 	const secret = readRemoteSecret(config, remote);
 	const notices: string[] = [];
@@ -391,46 +401,46 @@ export async function laneRemoteCommand(configPath: string | undefined, args: re
 	try {
 		if (action === "push") {
 			writable(path);
-			if (lane.remote !== undefined && lane.remote !== remote) throw new Error(`${lane.name} already keeps its memory on remote ${lane.remote}; run orrery lane local ${lane.name} first.`);
+			if (agent.remote !== undefined && agent.remote !== remote) throw new Error(`${agent.name} already keeps its memory on remote ${agent.remote}; run orrery agent local ${agent.name} first.`);
 			// Validate the edit before sending anything; write it only once the upload succeeds.
-			setLaneKey(readFileSync(path, "utf8"), dirname(resolve(path)), lane.name, "remote", remote);
-			await RemoteSession.push(sessionOptions(config, lane, storage, (m) => notices.push(shown(m))));
-			editConfigFile(path, (text, dir) => setLaneKey(text, dir, lane.name, "remote", remote));
-			return [...notices, `Pushed ${lane.name} to remote ${remote}.\n`].join("\n");
+			setAgentKey(readFileSync(path, "utf8"), dirname(resolve(path)), agent.name, "remote", remote);
+			await RemoteSession.push(sessionOptions(config, agent, storage, (m) => notices.push(shown(m))));
+			editConfigFile(path, (text, dir) => setAgentKey(text, dir, agent.name, "remote", remote));
+			return [...notices, `Pushed ${agent.name} to remote ${remote}.\n`].join("\n");
 		}
-		writer = holdWriterLock(join(lane.dir, "memory.sqlite"));
+		writer = holdWriterLock(join(agent.dir, "memory.sqlite"));
 		if (action === "takeover") {
-			const entry = (await storage.list()).find((e) => e.lane === lane.name);
-			if (entry === undefined) throw new RemoteError("not-found", `${lane.name} is not on remote ${remote}.`);
-			if (entry.lock?.held !== true) return `${lane.name} is already closed on remote ${remote}.\n`;
-			const message = shown(heldMessage(lane.name, entry.lock));
+			const entry = (await storage.list()).find((e) => e.lane === agent.name);
+			if (entry === undefined) throw new RemoteError("not-found", `${agent.name} is not on remote ${remote}.`);
+			if (entry.lock?.held !== true) return `${agent.name} is already closed on remote ${remote}.\n`;
+			const message = shown(heldMessage(agent.name, entry.lock));
 			if (!entry.lock.stale) throw new RemoteError("held", `${message}; its lock is not stale.`);
 			if (options.yes !== true && !(await interaction.confirm(`${message}. Take over?`))) return `${message}. Not taken over.\n`;
-			const taken = await storage.take(lane.name, holderFor(config), { force: true });
-			if (!taken.ok) throw new RemoteError("held", shown(heldMessage(lane.name, taken.held)));
-			try { writePrivate(join(lane.dir, TAKEOVER_FILE), JSON.stringify({ machine: entry.lock.holder.machine })); }
-			finally { await storage.release(lane.name, taken.lock); }
+			const taken = await storage.take(agent.name, holderFor(config), { force: true });
+			if (!taken.ok) throw new RemoteError("held", shown(heldMessage(agent.name, taken.held)));
+			try { writePrivate(join(agent.dir, TAKEOVER_FILE), JSON.stringify({ machine: entry.lock.holder.machine })); }
+			finally { await storage.release(agent.name, taken.lock); }
 			return `${message}. Taken over and released; the next open fetches its memory.\n`;
 		}
 		writable(path);
-		setLaneKey(readFileSync(path, "utf8"), dirname(resolve(path)), lane.name, "remote", "");
-		const session = await RemoteSession.checkOut({ ...sessionOptions(config, lane, storage, (m) => notices.push(shown(m))), writer });
+		setAgentKey(readFileSync(path, "utf8"), dirname(resolve(path)), agent.name, "remote", "");
+		const session = await RemoteSession.checkOut({ ...sessionOptions(config, agent, storage, (m) => notices.push(shown(m))), writer });
 		await session.close();
-		const state = JSON.parse(readFileSync(join(lane.dir, "remote-state.json"), "utf8")) as { save: number; lock: number };
-		editConfigFile(path, (text, dir) => setLaneKey(text, dir, lane.name, "remote", ""));
+		const state = JSON.parse(readFileSync(join(agent.dir, "remote-state.json"), "utf8")) as { save: number; lock: number };
+		editConfigFile(path, (text, dir) => setAgentKey(text, dir, agent.name, "remote", ""));
 		let deleted = false;
-		if (options["delete-remote"] === true && await interaction.confirm(`Delete ${lane.name}'s copy on remote ${remote}? Its updated local copy stays on this machine.`)) {
-			const taken = await storage.take(lane.name, holderFor(config));
-			if (!taken.ok) throw new RemoteError("held", `${shown(heldMessage(lane.name, taken.held))}; its remote copy was kept. ${lane.name} now uses its local copy.`);
+		if (options["delete-remote"] === true && await interaction.confirm(`Delete ${agent.name}'s copy on remote ${remote}? Its updated local copy stays on this machine.`)) {
+			const taken = await storage.take(agent.name, holderFor(config));
+			if (!taken.ok) throw new RemoteError("held", `${shown(heldMessage(agent.name, taken.held))}; its remote copy was kept. ${agent.name} now uses its local copy.`);
 			try {
-				if (taken.newestSave !== state.save || taken.lock !== state.lock + 1) throw new Error(`${lane.name}'s remote copy changed after fetching; it was kept. ${lane.name} now uses its local copy.`);
-				await storage.drop(lane.name, taken.lock);
+				if (taken.newestSave !== state.save || taken.lock !== state.lock + 1) throw new Error(`${agent.name}'s remote copy changed after fetching; it was kept. ${agent.name} now uses its local copy.`);
+				await storage.drop(agent.name, taken.lock);
 				deleted = true;
 			} finally {
-				if (!deleted) await storage.release(lane.name, taken.lock);
+				if (!deleted) await storage.release(agent.name, taken.lock);
 			}
 		}
-		return [...notices, `${lane.name} now keeps its memory locally. Its remote copy was ${deleted ? "deleted" : "kept"}.\n`].join("\n");
+		return [...notices, `${agent.name} now keeps its memory locally. Its remote copy was ${deleted ? "deleted" : "kept"}.\n`].join("\n");
 	} catch (error) {
 		throw new Error(errorText(error, secret?.key, secret?.token));
 	} finally { writer?.(); }

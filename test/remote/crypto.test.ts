@@ -29,12 +29,12 @@ describe("remote encryption", () => {
 		expect(() => unseal(key, "Atlas", "save", n, sealed)).toThrow(expect.objectContaining({ kind: "corrupt" }));
 	});
 
-	it("round-trips and binds a file to its lane, kind and number", () => {
+	it("round-trips and binds a file to its agent, kind and number", () => {
 		const key = createKey();
 		const sealed = seal(key, "Atlas", "save", 7, text("hello"));
 		expect(new TextDecoder().decode(unseal(key, "Atlas", "save", 7, sealed))).toBe("hello");
-		for (const [lane, kind, n] of [["Birch", "save", 7], ["Atlas", "log", 7], ["Atlas", "save", 8]] as const) {
-			expect(() => unseal(key, lane, kind, n, sealed)).toThrow(expect.objectContaining({ kind: "corrupt" }));
+		for (const [agent, kind, n] of [["Birch", "save", 7], ["Atlas", "log", 7], ["Atlas", "save", 8]] as const) {
+			expect(() => unseal(key, agent, kind, n, sealed)).toThrow(expect.objectContaining({ kind: "corrupt" }));
 		}
 	});
 

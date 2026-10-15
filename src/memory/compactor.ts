@@ -136,7 +136,7 @@ export class Compactor {
 		if (this.#pump === undefined) this.#pump = this.#run().catch((error) => this.#stop(errorMessage(error)));
 	}
 
-	/** True once the compactor gave up for good (the store refuses writes); the lane must restart. */
+	/** True once the compactor gave up for good (the store refuses writes); the agent must restart. */
 	get stopped(): boolean {
 		return this.#stopped;
 	}
@@ -238,7 +238,7 @@ export class Compactor {
 			if (this.#closed || this.#stopped || this.view.store.hasNode(part)) return;
 			if (!this.view.store.writable) {
 				// A failed write poisons the store; calling the model again would only burn usage.
-				this.#stop("the memory store refuses writes; restart the lane");
+				this.#stop("the memory store refuses writes; restart the agent");
 				return;
 			}
 			let source =
@@ -280,7 +280,7 @@ export class Compactor {
 			// save. Retrying could not help: a node saved before the view's save failed is never built again, its parent is
 			// never queued, and nothing else would stop the compactor, so `drain()` would wait forever.
 			if (error instanceof StoreError || !this.view.store.writable) {
-				this.#stop(`${errorMessage(error)}; restart the lane`);
+				this.#stop(`${errorMessage(error)}; restart the agent`);
 				return;
 			}
 			this.lastError = errorMessage(error);
@@ -308,7 +308,7 @@ export class Compactor {
 		let expected = 0;
 		for (let level = 0; level < bitLength(total); level++) expected += total >> level;
 		while (this.view.store.nodeCount < expected) {
-			if (this.#stopped) throw new StoreError("Compactor stopped; restart the lane");
+			if (this.#stopped) throw new StoreError("Compactor stopped; restart the agent");
 			await this.view.changes.next();
 		}
 	}

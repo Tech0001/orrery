@@ -1,10 +1,13 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { HarnessConfig } from "../../src/lane/config.ts";
+import type { HarnessConfig } from "../../src/agent/config.ts";
+import { instructionsPath, writeInstructions } from "../../src/agent/instructions.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
-import { createOrrery, type LaneSettingsResult, summaryWaitMs } from "../../src/pi/index.ts";
-import { cleanup, scratchHome, summarySourcesFor, world } from "../pi/world.ts";
+import { createOrrery, type AgentSettingsResult, summaryWaitMs } from "../../src/pi/index.ts";
+import { ageVisitMarks, cleanup, scratchHome, summarySourcesFor, world } from "../pi/world.ts";
 import { type FakeOmp, fakeOmp, ompCleanup, ompOrrery, track } from "./world.ts";
 
 afterEach(async () => {
@@ -12,8 +15,8 @@ afterEach(async () => {
 	await cleanup();
 });
 
-const memoryOf = (root: string, lane = "Atlas") => {
-	const store = MemoryStore.openReadOnly(join(root, "data", "lanes", lane, "memory.sqlite"));
+const memoryOf = (root: string, agent = "Atlas") => {
+	const store = MemoryStore.openReadOnly(join(root, "data", "agents", agent, "memory.sqlite"));
 	const rows = store.root.map((m) => `${m.kind}: ${m.text}`);
 	store.close();
 	return rows;
@@ -44,11 +47,11 @@ async function promptedTurn(omp: FakeOmp, user: string, reply: string) {
 }
 
 describe("Orrery inside OMP (an OMP-shaped host)", () => {
-	it("opens the lane, says omp in status.json, and registers zoom, date, memory_search (essential) and /orrery", async () => {
+	it("opens the agent, says omp in status.json, and registers zoom, date, memory_search (essential) and /orrery", async () => {
 		const { root, config } = world();
 		const omp = await ompOrrery(join(root, "agent-Atlas"), config);
-		const status = JSON.parse(readFileSync(join(root, "data", "lanes", "Atlas", "status.json"), "utf8"));
-		expect(status).toMatchObject({ lane: "Atlas", model: "omp", open: true });
+		const status = JSON.parse(readFileSync(join(root, "data", "agents", "Atlas", "status.json"), "utf8"));
+		expect(status).toMatchObject({ agent: "Atlas", model: "omp", open: true });
 		expect(omp.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
 		expect([...omp.tools.keys()].sort()).toEqual(["date", "memory_search", "zoom"]);
 		expect([...omp.tools.values()].every((tool) => tool.loadMode === "essential")).toBe(true);
@@ -63,21 +66,21 @@ describe("Orrery inside OMP (an OMP-shaped host)", () => {
 		expect([...plain.commands.keys()].sort()).toEqual(["browse", "compactor", "orrery"]);
 		expect(plain.tools.size).toBe(0);
 		await plain.emit("session_start");
-		// outside a lane folder they warn and do not throw
+		// outside an agent folder they warn and do not throw
 		for (const name of ["orrery", "compactor", "browse"]) await plain.run(name);
-		expect(plain.notices).toEqual(Array(3).fill({ message: "Orrery: no lane memory is open in this OMP", type: "warning" }));
+		expect(plain.notices).toEqual(Array(3).fill({ message: "Orrery: no agent memory is open in this OMP", type: "warning" }));
 		expect(plain.tools.size).toBe(0);
-		// registered once; a lane opening later uses the same commands
-		const lane = fakeOmp(join(root, "agent-Atlas"), [createOrrery({ config, host: "omp", ...scratchHome(dirname(config.dataDir)) })]);
-		track(lane);
-		const before = [...lane.commands.values()];
-		await lane.emit("session_start");
-		expect([...lane.commands.values()]).toEqual(before);
-		await lane.run("orrery");
-		expect(lane.notices.at(-1)).toEqual({ message: expect.stringMatching(/^Atlas: 0 messages, /), type: "info" });
+		// registered once; an agent opening later uses the same commands
+		const agent = fakeOmp(join(root, "agent-Atlas"), [createOrrery({ config, host: "omp", ...scratchHome(dirname(config.dataDir)) })]);
+		track(agent);
+		const before = [...agent.commands.values()];
+		await agent.emit("session_start");
+		expect([...agent.commands.values()]).toEqual(before);
+		await agent.run("orrery");
+		expect(agent.notices.at(-1)).toEqual({ message: expect.stringMatching(/^Atlas: 0 messages, /), type: "info" });
 	});
 
-	it("pi's entry registers no commands before a lane opens, then /memory, /compactor and /browse (unchanged)", async () => {
+	it("pi's entry registers no commands before an agent opens, then /memory, /compactor and /browse (unchanged)", async () => {
 		const { root, config } = world();
 		const pi = track(fakeOmp(join(root, "agent-Atlas"), [createOrrery({ config, ...scratchHome(dirname(config.dataDir)) })], { omp: false }));
 		expect(pi.commands.size).toBe(0);
@@ -85,11 +88,11 @@ describe("Orrery inside OMP (an OMP-shaped host)", () => {
 		expect([...pi.commands.keys()].sort()).toEqual(["browse", "compactor", "memory"]);
 	});
 
-	it("gives a reading lane lanes and lane_memory, essential too", async () => {
+	it("gives a reading agent the agents and agent_memory tools, essential too", async () => {
 		const { root, config } = world();
 		const omp = await ompOrrery(join(root, "agent-Birch"), config);
-		expect(omp.tools.get("lanes")?.loadMode).toBe("essential");
-		expect(omp.tools.get("lane_memory")?.loadMode).toBe("essential");
+		expect(omp.tools.get("agents")?.loadMode).toBe("essential");
+		expect(omp.tools.get("agent_memory")?.loadMode).toBe("essential");
 	});
 
 	it("adds the memory section as the last system block, naming memory_search, and records the turn", async () => {
@@ -102,6 +105,54 @@ describe("Orrery inside OMP (an OMP-shaped host)", () => {
 		expect(result?.systemPrompt[2]).toContain("zoom, date and memory_search are the Orrery memory tools; where this section says search, call memory_search.");
 		expect(memoryOf(root)).toEqual(["user: The codename is Cedar.", "talk: Noted."]);
 		expect(omp.status("orrery")).toMatch(/^Orrery · Atlas · 2 msgs/);
+	});
+
+	it("puts the agent's instructions in a block of their own, before the memory block", async () => {
+		const { root, config } = world();
+		writeInstructions(join(root, "data", "agents", "Atlas"), "You are Atlas.\n");
+		const omp = await ompOrrery(join(root, "agent-Atlas"), config);
+		const [result] = (await omp.emit("before_agent_start", { prompt: "Hi.", systemPrompt: ["base"] })) as [{ systemPrompt: string[] }];
+		expect(result.systemPrompt[0]).toBe("base");
+		expect(result.systemPrompt[1]).toBe("# Agent: Atlas\n\nYou are Atlas.");
+		expect(result.systemPrompt[2]).toMatch(/^# Memory/);
+	});
+
+	it("reads the instructions again at /new, /resume and a rewind (pi's new session): an edit reaches the next message, and status.json notes it", async () => {
+		const { root, config } = world();
+		const dir = join(root, "data", "agents", "Atlas");
+		const status = () => JSON.parse(readFileSync(join(dir, "status.json"), "utf8")) as { instructionsAt?: number };
+		const omp = await ompOrrery(join(root, "agent-Atlas"), config);
+		expect((await turn(omp, "One.", "First.", ["base"]))?.systemPrompt[1]).toMatch(/^# Memory/);
+		expect(status().instructionsAt).toBe(0);
+		// Each edit is written after the session read the last one, with a later time: the Agents page marks it newer.
+		const switches: [string, () => Promise<unknown>][] = [
+			["/new", () => omp.emit("session_switch", { reason: "new", previousSessionFile: "/sessions/s1.jsonl" })],
+			["/resume", () => omp.emit("session_switch", { reason: "resume", previousSessionFile: "/sessions/s2.jsonl" })],
+			["a rewind", () => omp.emit("session_branch", { reason: "branch", previousSessionFile: "/sessions/s3.jsonl" })],
+		];
+		for (const [i, [what, emit]] of switches.entries()) {
+			writeInstructions(dir, `You are Atlas, edit ${i}.\n`);
+			const at = new Date(Date.now() + (i + 1) * 10_000);
+			utimesSync(instructionsPath(dir), at, at);
+			omp.session = { id: `s${i + 2}`, entries: [] };
+			await emit();
+			expect(status().instructionsAt, what).toBe(statSync(instructionsPath(dir)).mtimeMs);
+			expect((await turn(omp, `Ask ${i}.`, `Answer ${i}.`, ["base"]))?.systemPrompt[1], what).toBe(`# Agent: Atlas\n\nYou are Atlas, edit ${i}.`);
+		}
+		// Removed: the next session has none, and status.json says so (0).
+		rmSync(instructionsPath(dir));
+		omp.session = { id: "s9", entries: [] };
+		await omp.emit("session_switch", { reason: "new", previousSessionFile: "/sessions/s5.jsonl" });
+		expect(status().instructionsAt).toBe(0);
+		expect((await turn(omp, "Last.", "Done.", ["base"]))?.systemPrompt[1]).toMatch(/^# Memory/);
+	});
+
+	// A guard: it passes before instructions exist too (a subagent gets the guard, never memory or instructions).
+	it("gives a subagent no instructions block (its main session has them)", async () => {
+		const { root, config } = world();
+		writeInstructions(join(root, "data", "agents", "Atlas"), "You are Atlas.\n");
+		const sub = await ompOrrery(join(root, "agent-Atlas"), config, { agent: "sub" });
+		expect(await sub.emit("before_agent_start", { prompt: "Hi.", systemPrompt: ["base"] })).toEqual([undefined]);
 	});
 
 	it("records /fork, a rewind, /new and /resume (session_switch, session_branch) without copying a message twice", async () => {
@@ -166,15 +217,15 @@ describe("Orrery inside OMP (an OMP-shaped host)", () => {
 		expect(sub.tools.size).toBe(0);
 		// The commands exist from load (a subagent is not known then); they only warn there.
 		expect(sub.notices).toEqual([]);
-		const escape = `${root}-escape.txt`; // outside the lane's allowed roots (the workspace's parent folder)
+		const escape = `${root}-escape.txt`; // outside the agent's allowed roots (the folder's parent folder)
 		expect(await sub.emit("tool_call", { toolName: "write", toolCallId: "t1", input: { path: escape, content: "x" } })).toEqual([
-			{ block: true, reason: expect.stringMatching(/outside this lane's workspace/) },
+			{ block: true, reason: expect.stringMatching(/outside this agent's folder/) },
 		]);
 		await turn(main, "Still here.", "Yes.");
 		expect(memoryOf(root)).toEqual(["user: Still here.", "talk: Yes."]);
 	});
 
-	it("tells a second OMP on a held lane that it runs without memory, naming OMP", async () => {
+	it("tells a second OMP on a held agent that it runs without memory, naming OMP", async () => {
 		const { root, config } = world();
 		await ompOrrery(join(root, "agent-Atlas"), config);
 		const second = await ompOrrery(join(root, "agent-Atlas"), config);
@@ -182,7 +233,7 @@ describe("Orrery inside OMP (an OMP-shaped host)", () => {
 		expect(second.notices).toContainEqual({ message: "Atlas is already open in another session; this OMP runs without memory.", type: "warning" });
 	});
 
-	it("cancels OMP's compaction in a lane (its event has no reason), without a notice", async () => {
+	it("cancels OMP's compaction in an agent (its event has no reason), without a notice", async () => {
 		const { root, config } = world();
 		const omp = await ompOrrery(join(root, "agent-Atlas"), config);
 		expect(await omp.emit("session_before_compact", { branchEntries: [] })).toEqual([{ cancel: true }]);
@@ -193,7 +244,7 @@ describe("Orrery inside OMP (an OMP-shaped host)", () => {
 		const { root, config } = world();
 		const omp = await ompOrrery(join(root, "agent-Atlas"), config);
 		expect(await omp.emit("tool_call", { toolName: "edit", toolCallId: "t1", input: { paths: ["a.ts", `${root}-escape.ts`] } })).toEqual([
-			{ block: true, reason: expect.stringMatching(/outside this lane's workspace/) },
+			{ block: true, reason: expect.stringMatching(/outside this agent's folder/) },
 		]);
 	});
 
@@ -205,30 +256,31 @@ describe("Orrery inside OMP (an OMP-shaped host)", () => {
 		const call = async (toolName: string, input: object) => (await omp.emit("tool_call", { toolName, toolCallId: "t1", input }))[0];
 		expect(await call("grep", { pattern: "k", path: profile })).toEqual({ block: true, reason: expect.stringMatching(/narrower folder/) });
 		expect(await call("grep", { pattern: "k", path: ":~" })).toEqual({ block: true, reason: expect.stringMatching(/narrower folder/) });
-		expect(await call("write", { path: "[/etc/x#1a2b]", content: "x" })).toEqual({ block: true, reason: expect.stringMatching(/outside this lane's workspace/) });
+		expect(await call("write", { path: "[/etc/x#1a2b]", content: "x" })).toEqual({ block: true, reason: expect.stringMatching(/outside this agent's folder/) });
 		expect(await call("grep", { pattern: "k", path: "src" })).toBeUndefined();
 	});
 
-	it("runs each entry only in its own tool (pi and OMP may share one extensions folder); in the other, only its guard's session_start", () => {
+	it("runs each entry only in its own tool (pi and OMP may share one extensions folder); in the other, its guard's session_start and the session-owner notes", () => {
 		const { root, config } = world();
 		const cwd = join(root, "agent-Atlas");
-		expect(fakeOmp(cwd, [createOrrery({ config, host: "omp", ...scratchHome(root) })], { omp: false }).events()).toEqual(["session_start"]);
-		expect(fakeOmp(cwd, [createOrrery({ config, ...scratchHome(root) })]).events()).toEqual(["session_start"]);
+		const other = ["session_start", "message_end", "agent_end", "session_shutdown"];
+		expect(fakeOmp(cwd, [createOrrery({ config, host: "omp", ...scratchHome(root) })], { omp: false }).events()).toEqual(other);
+		expect(fakeOmp(cwd, [createOrrery({ config, ...scratchHome(root) })]).events()).toEqual(other);
 		expect(fakeOmp(cwd, [createOrrery({ config, host: "omp", ...scratchHome(root) })]).events()).toContain("session_switch");
 	});
 });
 
 describe("a session that moves to another folder (OMP's /resume of another folder's session, /move)", () => {
-	const statusOf = (root: string, lane: string) => JSON.parse(readFileSync(join(root, "data", "lanes", lane, "status.json"), "utf8")) as { open: boolean; model: string };
+	const statusOf = (root: string, agent: string) => JSON.parse(readFileSync(join(root, "data", "agents", agent, "status.json"), "utf8")) as { open: boolean; model: string };
 
-	/** OMP's laneSettings as a log: what was switched for which lane folder, and taken back. */
+	/** OMP's agentSettings as a log: what was switched for which agent folder, and taken back. */
 	function settingsLog() {
 		const log: string[] = [];
-		const laneSettings = async (_ctx: unknown, workspace: string): Promise<LaneSettingsResult> => {
-			log.push(`apply ${basename(workspace)}`);
-			return { applied: true, restore: () => log.push(`restore ${basename(workspace)}`) };
+		const agentSettings = async (_ctx: unknown, folder: string): Promise<AgentSettingsResult> => {
+			log.push(`apply ${basename(folder)}`);
+			return { applied: true, restore: () => log.push(`restore ${basename(folder)}`) };
 		};
-		return { log, laneSettings };
+		return { log, agentSettings };
 	}
 
 	/** /resume of a saved session from `cwd`: OMP moves the session there, then says session_switch "resume". */
@@ -240,10 +292,10 @@ describe("a session that moves to another folder (OMP's /resume of another folde
 		await omp.emit("session_switch", { reason: "resume", previousSessionFile: "/sessions/s1.jsonl" });
 	}
 
-	it("into a folder outside lanes: closes the lane (status, lock, footer, OMP's settings), copies nothing from there, runs as plain OMP", async () => {
+	it("into a folder outside agents: closes the agent (status, lock, footer, OMP's settings), copies nothing from there, runs as plain OMP", async () => {
 		const { root, config } = world();
-		const { log, laneSettings } = settingsLog();
-		const omp = await ompOrrery(join(root, "agent-Atlas"), config, { laneSettings });
+		const { log, agentSettings } = settingsLog();
+		const omp = await ompOrrery(join(root, "agent-Atlas"), config, { agentSettings });
 		await turn(omp, "One.", "First.");
 		await resume(omp, join(root, "plain"), "elsewhere", "Foreign question.", "Foreign answer.");
 		expect(omp.notices).toEqual([{ message: "Orrery: this session moved from Atlas to another folder; Atlas's memory is closed.", type: "info" }]);
@@ -253,20 +305,20 @@ describe("a session that moves to another folder (OMP's /resume of another folde
 		expect(await turn(omp, "Plain question.", "Plain answer.")).toBeUndefined();
 		await omp.emit("session_shutdown");
 		expect(memoryOf(root)).toEqual(["user: One.", "talk: First."]);
-		// Plain OMP: no lane guard, no lane memory.
+		// Plain OMP: no agent guard, no agent memory.
 		expect(await omp.emit("tool_call", { toolName: "write", toolCallId: "t1", input: { path: `${root}-escape.txt`, content: "x" } })).toEqual([undefined]);
 		await omp.run("orrery");
-		expect(omp.notices.at(-1)).toEqual({ message: "Orrery: no lane memory is open in this OMP", type: "warning" });
+		expect(omp.notices.at(-1)).toEqual({ message: "Orrery: no agent memory is open in this OMP", type: "warning" });
 		// The lock is free: another OMP opens Atlas.
 		const next = await ompOrrery(join(root, "agent-Atlas"), config);
 		expect(next.notices).toEqual([]);
 		expect(next.tools.size).toBe(3);
 	});
 
-	it("into another lane's folder: closes this lane and opens that one, which records only what comes after the move", async () => {
+	it("into another agent's folder: closes this agent and opens that one, which records only what comes after the move", async () => {
 		const { root, config } = world();
-		const { log, laneSettings } = settingsLog();
-		const omp = await ompOrrery(join(root, "agent-Atlas"), config, { laneSettings });
+		const { log, agentSettings } = settingsLog();
+		const omp = await ompOrrery(join(root, "agent-Atlas"), config, { agentSettings });
 		await turn(omp, "One.", "First.");
 		await resume(omp, join(root, "agent-Birch"), "birch-1", "Birch question.", "Birch answer.");
 		expect(omp.notices).toEqual([{ message: "Orrery: this session moved from Atlas to another folder; Atlas's memory is closed. Opened Birch: it records from here on.", type: "info" }]);
@@ -276,13 +328,13 @@ describe("a session that moves to another folder (OMP's /resume of another folde
 		expect(omp.status("orrery")).toMatch(/^Orrery · Birch · 0 msgs/);
 		await turn(omp, "Two.", "Second.");
 		expect(memoryOf(root)).toEqual(["user: One.", "talk: First."]);
-		// Lane privacy: none of the session's earlier messages enter Birch's memory, only the turn after the move.
+		// Agent privacy: none of the session's earlier messages enter Birch's memory, only the turn after the move.
 		expect(memoryOf(root, "Birch")).toEqual(["user: Two.", "talk: Second."]);
 		const next = await ompOrrery(join(root, "agent-Atlas"), config);
 		expect(next.notices).toEqual([]);
 	});
 
-	it("by /move into another lane's folder and back: neither lane gets the other's turns", async () => {
+	it("by /move into another agent's folder and back: neither agent gets the other's turns", async () => {
 		const { root, config } = world();
 		const omp = await ompOrrery(join(root, "agent-Atlas"), config);
 		await turn(omp, "One.", "First.");
@@ -294,7 +346,7 @@ describe("a session that moves to another folder (OMP's /resume of another folde
 		expect(memoryOf(root, "Birch")).toEqual(["user: Two.", "talk: Second."]);
 	});
 
-	it("into a lane held elsewhere: closes this lane, guards that one, and says it opened nothing", async () => {
+	it("into an agent held elsewhere: closes this agent, guards that one, and says it opened nothing", async () => {
 		const { root, config } = world();
 		await ompOrrery(join(root, "agent-Birch"), config);
 		const omp = await ompOrrery(join(root, "agent-Atlas"), config);
@@ -304,16 +356,16 @@ describe("a session that moves to another folder (OMP's /resume of another folde
 			{ message: "Orrery: this session moved from Atlas to another folder; Atlas's memory is closed.", type: "info" },
 		]);
 		expect(await omp.emit("tool_call", { toolName: "write", toolCallId: "t1", input: { path: `${root}-escape.txt`, content: "x" } })).toEqual([
-			{ block: true, reason: expect.stringMatching(/outside this lane's workspace/) },
+			{ block: true, reason: expect.stringMatching(/outside this agent's folder/) },
 		]);
 		expect(memoryOf(root)).toEqual([]);
 	});
 
-	it("within the same lane (a subfolder): changes nothing and says nothing", async () => {
+	it("within the same agent (a subfolder): changes nothing and says nothing", async () => {
 		const { root, config } = world();
-		const { log, laneSettings } = settingsLog();
+		const { log, agentSettings } = settingsLog();
 		mkdirSync(join(root, "agent-Atlas", "src"));
-		const omp = await ompOrrery(join(root, "agent-Atlas"), config, { laneSettings });
+		const omp = await ompOrrery(join(root, "agent-Atlas"), config, { agentSettings });
 		await turn(omp, "One.", "First.");
 		await resume(omp, join(root, "agent-Atlas", "src"), "s2", "Two.", "Second.");
 		expect(omp.notices).toEqual([]);
@@ -322,7 +374,7 @@ describe("a session that moves to another folder (OMP's /resume of another folde
 		expect(omp.status("orrery")).toMatch(/^Orrery · Atlas · 4 msgs/);
 	});
 
-	it("by /move (no session event): the next message, or the end, finds the new folder; nothing from there reaches the lane", async () => {
+	it("by /move (no session event): the next message, or the end, finds the new folder; nothing from there reaches the agent", async () => {
 		const { root, config } = world();
 		const omp = await ompOrrery(join(root, "agent-Atlas"), config);
 		await turn(omp, "One.", "First.");
@@ -333,7 +385,7 @@ describe("a session that moves to another folder (OMP's /resume of another folde
 		expect(omp.notices).toEqual([{ message: "Orrery: this session moved from Atlas to another folder; Atlas's memory is closed.", type: "info" }]);
 		expect(memoryOf(root)).toEqual(["user: One.", "talk: First."]);
 		expect(statusOf(root, "Atlas").open).toBe(false);
-		// Moved, then ended before another message: the lane closes without the session's new entries.
+		// Moved, then ended before another message: the agent closes without the session's new entries.
 		const { root: other, config: otherConfig } = world();
 		const quiet = await ompOrrery(join(other, "agent-Atlas"), otherConfig);
 		await turn(quiet, "One.", "First.");
@@ -354,7 +406,7 @@ describe("a session that moves to another folder (OMP's /resume of another folde
 		expect(memoryOf(third)).toEqual(["user: One.", "talk: First."]);
 	});
 
-	it("from a folder outside lanes into a lane's: opens it, recording from the move on, without a move notice", async () => {
+	it("from a folder outside agents into an agent's: opens it, recording from the move on, without a move notice", async () => {
 		const { root, config } = world();
 		const omp = await ompOrrery(join(root, "plain"), config);
 		expect(omp.tools.size).toBe(0);
@@ -364,6 +416,144 @@ describe("a session that moves to another folder (OMP's /resume of another folde
 		expect(statusOf(root, "Atlas").open).toBe(true);
 		await turn(omp, "Two.", "Second.");
 		expect(memoryOf(root)).toEqual(["user: Two.", "talk: Second."]);
+	});
+
+	it("an agent opened by ORRERY_AGENT stays the session's when /move takes it into another agent's folder", async () => {
+		const { root, config } = world();
+		const omp = await ompOrrery(join(root, "plain"), config, { env: { ORRERY_AGENT: "Atlas" } });
+		await turn(omp, "One.", "First.");
+		omp.cwd = join(root, "agent-Birch");
+		await promptedTurn(omp, "Two.", "Second.");
+		expect(memoryOf(root)).toEqual(["user: One.", "talk: First.", "user: Two.", "talk: Second."]);
+		expect(existsSync(join(root, "data", "agents", "Birch", "memory.sqlite"))).toBe(false);
+		expect(omp.notices.filter((n) => n.message.includes("moved"))).toEqual([]);
+	});
+
+	it("an agent opened by ORRERY_AGENT: /resume of a session from another agent's folder copies none of its turns", async () => {
+		const { root, config } = world();
+		const omp = await ompOrrery(join(root, "plain"), config, { env: { ORRERY_AGENT: "Atlas" } });
+		await turn(omp, "One.", "First.");
+		await resume(omp, join(root, "agent-Birch"), "birch-1", "Birch question.", "Birch answer.");
+		expect(omp.notices).toEqual([]);
+		expect(omp.status("orrery")).toMatch(/^Orrery · Atlas · 2 msgs/);
+		await turn(omp, "Two.", "Second.");
+		expect(memoryOf(root)).toEqual(["user: One.", "talk: First.", "user: Two.", "talk: Second."]);
+		expect(existsSync(join(root, "data", "agents", "Birch"))).toBe(false);
+	});
+
+	it("an agent opened by ORRERY_AGENT: its guard lets it write where the session moved, and no longer where it was", async () => {
+		const { root, config } = world();
+		const outside = mkdtempSync(join(tmpdir(), "orrery-outside-"));
+		try {
+			const write = async (omp: FakeOmp, path: string) => (await omp.emit("tool_call", { toolName: "write", toolCallId: "t1", input: { path, content: "x" } }))[0];
+			const blocked = { block: true, reason: expect.stringMatching(/outside this agent's folder/) };
+			const omp = await ompOrrery(outside, config, { env: { ORRERY_AGENT: "Atlas" } });
+			const elsewhere = mkdtempSync(join(tmpdir(), "orrery-elsewhere-"));
+			try {
+				expect(await write(omp, join(outside, "a.md"))).toBeUndefined();
+				expect(await write(omp, join(elsewhere, "a.md"))).toEqual(blocked);
+				omp.cwd = elsewhere;
+				await promptedTurn(omp, "Moved.", "Here.");
+				expect(await write(omp, join(elsewhere, "a.md"))).toBeUndefined();
+				expect(await write(omp, join(outside, "a.md"))).toEqual(blocked);
+			} finally {
+				rmSync(elsewhere, { recursive: true, force: true });
+			}
+		} finally {
+			rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	it("/resume of a session another agent recorded in this agent's folder records only what comes after", async () => {
+		const { root, config } = world();
+		const atlas = await ompOrrery(join(root, "agent-Birch"), config, { env: { ORRERY_AGENT: "Atlas" }, session: "x1" });
+		await turn(atlas, "Atlas secret question.", "Atlas secret answer.");
+		await atlas.emit("session_shutdown");
+		const birch = await ompOrrery(join(root, "agent-Birch"), config, { session: "b1" });
+		await turn(birch, "One.", "First.");
+		birch.session = { id: "x1", entries: [...atlas.session.entries] };
+		await birch.emit("session_switch", { reason: "resume", previousSessionFile: "/sessions/s1.jsonl" });
+		await turn(birch, "Two.", "Second.");
+		expect(memoryOf(root, "Birch")).toEqual(["user: One.", "talk: First.", "user: Two.", "talk: Second."]);
+		expect(memoryOf(root)).toEqual(["user: Atlas secret question.", "talk: Atlas secret answer."]);
+	});
+
+	it("an agent opened by ORRERY_AGENT: any switch into a session with turns in it, whatever its reason, records from its tail", async () => {
+		const { root, config } = world();
+		const omp = await ompOrrery(join(root, "plain"), config, { env: { ORRERY_AGENT: "Atlas" } });
+		await turn(omp, "One.", "First.");
+		for (const [id, reason] of [["r1", undefined], ["r2", "reload"]] as const) {
+			omp.session = { id, entries: [] };
+			omp.say("user", `Foreign ${id}.`);
+			omp.say("assistant", "Foreign answer.");
+			await omp.emit("session_switch", reason === undefined ? {} : { reason });
+		}
+		await turn(omp, "Two.", "Second.");
+		expect(memoryOf(root)).toEqual(["user: One.", "talk: First.", "user: Two.", "talk: Second."]);
+	});
+
+	it("an ORRERY_AGENT that names no agent: no memory, but the guard runs, with the folder's agent's rules or the default ones", async () => {
+		const { root, config } = world();
+		const call = async (omp: FakeOmp, toolName: string, input: Record<string, unknown>) => (await omp.emit("tool_call", { toolName, toolCallId: "t1", input }))[0];
+		const outside = { block: true, reason: expect.stringMatching(/outside this agent's folder/) };
+		const secret = { block: true, reason: expect.stringMatching(/sensitive file/) };
+		const inAgent = await ompOrrery(join(root, "agent-Atlas"), config, { env: { ORRERY_AGENT: "Nobody" } });
+		expect(inAgent.tools.size).toBe(0);
+		expect(inAgent.notices).toEqual([{ type: "warning", message: "Orrery: ORRERY_AGENT names Nobody, which is not a configured agent; this session runs without memory." }]);
+		expect(await call(inAgent, "read", { path: config.credentialsPath })).toEqual(secret);
+		// Atlas's rules: its folder and its allowed root (the world's folder).
+		expect(await call(inAgent, "write", { path: join(root, "plain", "x.md"), content: "x" })).toBeUndefined();
+		expect(await call(inAgent, "write", { path: `${root}-escape.txt`, content: "x" })).toEqual(outside);
+		const inPlain = await ompOrrery(join(root, "plain"), config, { env: { ORRERY_AGENT: "Nobody" } });
+		expect(await call(inPlain, "read", { path: config.credentialsPath })).toEqual(secret);
+		// No agent here: the session's folder only, as for an agent with no default folder.
+		expect(await call(inPlain, "write", { path: join(root, "plain", "x.md"), content: "x" })).toBeUndefined();
+		expect(await call(inPlain, "write", { path: join(root, "agent-Atlas", "x.md"), content: "x" })).toEqual(outside);
+		expect(existsSync(join(root, "data", "agents"))).toBe(false);
+	});
+
+	it("a visitor on the other tool's entry, running when the owner opens: the turns it says after that stay out of the owner", async () => {
+		const { root, config } = world();
+		const owner = await ompOrrery(join(root, "agent-Birch"), config, { session: "s-b" });
+		await turn(owner, "One.", "First.");
+		const history = [...owner.session.entries];
+		owner.session = { id: "n1", entries: [] };
+		await owner.emit("session_switch", { reason: "new" });
+		// OMP's entry loaded in pi under ORRERY_AGENT=Atlas: the guard and the notes, no memory.
+		const visitor = track(fakeOmp(join(root, "agent-Birch"), [createOrrery({ config, host: "omp", ...scratchHome(dirname(config.dataDir)), env: { ORRERY_AGENT: "Atlas" } })], { omp: false }));
+		visitor.session = { id: "s-b", entries: [...history] };
+		await visitor.emit("session_start");
+		ageVisitMarks(config.dataDir);
+		owner.session = { id: "s-b", entries: [...history] };
+		await owner.emit("session_switch", { reason: "resume" });
+		visitor.say("user", "Atlas secret question.");
+		visitor.say("assistant", "Atlas secret answer.");
+		await visitor.emit("message_end", { message: {} });
+		await visitor.emit("agent_end", { messages: [] });
+		await visitor.emit("session_shutdown");
+		owner.session = { id: "s-b", entries: [...visitor.session.entries] };
+		await owner.emit("session_switch", { reason: "resume" });
+		await turn(owner, "Two.", "Second.");
+		expect(memoryOf(root, "Birch")).toEqual(["user: One.", "talk: First.", "user: Two.", "talk: Second."]);
+	});
+
+	it("a visitor that says a turn after the owner loaded and is then killed (no run end, no shutdown): its turn stays out of the owner", async () => {
+		const { root, config } = world();
+		const owner = await ompOrrery(join(root, "agent-Birch"), config, { session: "s-b" });
+		await turn(owner, "One.", "First.");
+		const history = [...owner.session.entries];
+		owner.session = { id: "n1", entries: [] };
+		await owner.emit("session_switch", { reason: "new" });
+		const visitor = await ompOrrery(join(root, "agent-Birch"), config, { env: { ORRERY_AGENT: "Atlas" }, session: "s-b" });
+		ageVisitMarks(config.dataDir);
+		owner.session = { id: "s-b", entries: [...history] };
+		await owner.emit("session_switch", { reason: "resume" });
+		visitor.say("user", "Atlas secret question.");
+		await visitor.emit("message_end", { message: {} });
+		owner.session = { id: "s-b", entries: [...history, ...visitor.session.entries] };
+		await owner.emit("session_switch", { reason: "resume" });
+		await turn(owner, "Two.", "Second.");
+		expect(memoryOf(root, "Birch")).toEqual(["user: One.", "talk: First.", "user: Two.", "talk: Second."]);
 	});
 
 	it("pi is unchanged: its sessions never move (pi starts a new session instead), so its entry never looks", async () => {
@@ -393,7 +583,7 @@ describe("an entry loaded in the other tool", () => {
 	];
 
 	for (const { name, start, notice } of cases) {
-		it(`${name}: in a lane folder, guards credentials, says so once, and opens no memory, tools or commands`, async () => {
+		it(`${name}: in an agent folder, guards credentials, says so once, and opens no memory, tools or commands`, async () => {
 			const { root, config } = world();
 			const host = start(join(root, "agent-Atlas"), config);
 			await host.emit("session_start");
@@ -401,25 +591,40 @@ describe("an entry loaded in the other tool", () => {
 			expect(await host.emit("tool_call", { toolName: "read", toolCallId: "t1", input: { path: config.credentialsPath } })).toEqual([
 				{ block: true, reason: expect.stringMatching(/sensitive file/) },
 			]);
-			expect(host.events().sort()).toEqual(["session_start", "tool_call"]);
+			expect(host.events().sort()).toEqual(["agent_end", "message_end", "session_shutdown", "session_start", "tool_call"]);
 			expect(host.tools.size).toBe(0);
 			expect(host.commands.size).toBe(0);
-			expect(existsSync(join(root, "data", "lanes", "Atlas", "memory.sqlite"))).toBe(false);
-			// The lane stays free for the right entry.
+			expect(existsSync(join(root, "data", "agents", "Atlas", "memory.sqlite"))).toBe(false);
+			// The agent stays free for the right entry.
 			const omp = await ompOrrery(join(root, "agent-Atlas"), config);
 			expect(omp.tools.size).toBe(3);
 		});
 
-		it(`${name}: outside lane folders, does nothing and says nothing`, async () => {
+		it(`${name}: outside agent folders, does nothing and says nothing`, async () => {
 			const { root, config } = world();
 			const host = start(join(root, "plain"), config);
 			await host.emit("session_start");
 			expect(host.notices).toEqual([]);
-			expect(host.events()).toEqual(["session_start"]);
+			expect(host.events()).toEqual(["session_start", "message_end", "agent_end", "session_shutdown"]);
 			expect(await host.emit("tool_call", { toolName: "read", toolCallId: "t1", input: { path: config.credentialsPath } })).toEqual([]);
 			expect(host.tools.size + host.commands.size).toBe(0);
 		});
 	}
+
+	it("records who the session belongs to, as the right entry does: the folder's agent, or - under a refused ORRERY_AGENT", async () => {
+		const { root, config } = world();
+		const owner = (id: string) => readFileSync(join(root, "data", "session-owners", createHash("sha256").update(id).digest("hex")), "utf8");
+		const home = scratchHome(dirname(config.dataDir));
+		const inAgent = track(fakeOmp(join(root, "agent-Atlas"), [createOrrery({ config, ...home })]));
+		inAgent.session.id = "m1";
+		await inAgent.emit("session_start");
+		expect(owner("m1")).toBe("Atlas\n");
+		const refused = track(fakeOmp(join(root, "agent-Atlas"), [createOrrery({ config, host: "omp", ...home, env: { ORRERY_AGENT: "Nobody" } })], { omp: false }));
+		refused.session.id = "m2";
+		await refused.emit("session_start");
+		expect(owner("m2")).toBe("-\n");
+		expect(existsSync(join(root, "data", "agents", "Atlas", "memory.sqlite"))).toBe(false);
+	});
 
 	it("pi's entry in an OMP subagent: the guard, no second notice", async () => {
 		const { root, config } = world();
@@ -439,9 +644,9 @@ describe("an entry loaded in the other tool", () => {
 		// pi's entry in OMP: OMP's multi-file edit and its ;-separated path list, each path judged.
 		const inOmp = track(fakeOmp(cwd, [createOrrery({ config, ...scratchHome(root) })]));
 		await inOmp.emit("session_start");
-		expect(await inOmp.emit("tool_call", edit)).toEqual([{ block: true, reason: expect.stringMatching(/outside this lane's workspace/) }]);
+		expect(await inOmp.emit("tool_call", edit)).toEqual([{ block: true, reason: expect.stringMatching(/outside this agent's folder/) }]);
 		expect(await inOmp.emit("tool_call", grep)).toEqual([{ block: true, reason: expect.stringMatching(/narrower folder/) }]);
-		// OMP's entry in pi: pi's grep reads "a;/" as one folder name inside the lane, so pi's judgment lets it through.
+		// OMP's entry in pi: pi's grep reads "a;/" as one folder name inside the agent, so pi's judgment lets it through.
 		const inPi = track(fakeOmp(cwd, [createOrrery({ config, host: "omp", ...scratchHome(root) })], { omp: false }));
 		await inPi.emit("session_start");
 		expect(await inPi.emit("tool_call", grep)).toEqual([undefined]);
@@ -460,8 +665,8 @@ describe("summaryWaitMs", () => {
 	});
 });
 
-describe("Orrery's home through the extension's guard, with a lane's real config", () => {
-	it.each(["pi", "omp"] as const)("%s's entry refuses the remote keys, the lanes' memory and a search of the home", async (entry) => {
+describe("Orrery's home through the extension's guard, with an agent's real config", () => {
+	it.each(["pi", "omp"] as const)("%s's entry refuses the remote keys, the agents' memory and a search of the home", async (entry) => {
 		const { root, config } = world();
 		const host = track(
 			fakeOmp(join(root, "agent-Atlas"), [createOrrery({ summarySources: async (cfg) => summarySourcesFor(cfg), ...scratchHome(dirname(config.dataDir)), config, host: entry })], { omp: entry === "omp" }),
@@ -470,7 +675,7 @@ describe("Orrery's home through the extension's guard, with a lane's real config
 		const call = (toolName: string, input: Record<string, unknown>) => host.emit("tool_call", { toolName, toolCallId: "t1", input });
 		const blocked = [{ block: true, reason: expect.stringMatching(/sensitive/) }];
 		expect(await call("read", { path: join(config.dataDir, "remotes.json") })).toEqual(blocked);
-		expect(await call("read", { path: join(config.dataDir, "lanes", "Atlas", "memory.sqlite") })).toEqual(blocked);
+		expect(await call("read", { path: join(config.dataDir, "agents", "Atlas", "memory.sqlite") })).toEqual(blocked);
 		expect(await call("grep", { pattern: "x", path: config.dataDir })).toEqual([{ block: true, reason: expect.stringMatching(/credential/) }]);
 		expect(await call("read", { path: join(config.dataDir, "config.toml") })).toEqual([undefined]);
 	});

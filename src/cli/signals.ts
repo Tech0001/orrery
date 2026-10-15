@@ -1,6 +1,6 @@
 /**
- * SIGTERM (systemctl stop) and SIGHUP (tmux kill-server, a closed terminal) stop a lane the same way a fatal error
- * does: through `stop`, so `lane.close()` still runs. A second signal while closing exits at once.
+ * SIGTERM (systemctl stop) and SIGHUP (tmux kill-server, a closed terminal) stop an agent the same way a fatal error
+ * does: through `stop`, so `agent.close()` still runs. A second signal while closing exits at once.
  */
 
 const SIGNALS = { SIGHUP: 1, SIGTERM: 15 } as const;

@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { findOnPath } from "../../src/lane/tools.ts";
+import { findOnPath } from "../../src/agent/tools.ts";
 
 const scratch = mkdtempSync(join(tmpdir(), "orrery-real-ori-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -19,15 +19,15 @@ mkdirSync(versionHome);
 const ori = wanted && spawnSync(wanted, ["version", "--semver"], { env: isolated(versionHome), timeout: 5000 }).status === 0 ? wanted : undefined;
 const model = "anthropic/claude-haiku-4.5";
 
-for (const agent of ["pi", "omp"] as const) {
-	const binary = process.env[agent === "pi" ? "ORRERY_TEST_PI" : "ORRERY_TEST_OMP"] ?? findOnPath(agent);
-	describe.skipIf(ori === undefined || binary === undefined)(`Orrery inside real ori ${agent} (isolated home, fake OpenRouter, no model call)`, () => {
+for (const tool of ["pi", "omp"] as const) {
+	const binary = process.env[tool === "pi" ? "ORRERY_TEST_PI" : "ORRERY_TEST_OMP"] ?? findOnPath(tool);
+	describe.skipIf(ori === undefined || binary === undefined)(`Orrery inside real ori ${tool} (isolated home, fake OpenRouter, no model call)`, () => {
 		it("loads both extensions, registers Orrery commands and keeps its summary catalog independent", async (context) => {
-			const home = join(scratch, agent);
-			const lane = join(home, "lane");
+			const home = join(scratch, tool);
+			const agent = join(home, "agent");
 			const bin = join(home, "bin");
-			mkdirSync(lane, { recursive: true }); mkdirSync(bin);
-			symlinkSync(binary!, join(bin, agent));
+			mkdirSync(agent, { recursive: true }); mkdirSync(bin);
+			symlinkSync(binary!, join(bin, tool));
 			const requests: string[] = [];
 			const server = createServer((req, res) => {
 				requests.push(`${req.method} ${req.url}`);
@@ -37,12 +37,12 @@ for (const agent of ["pi", "omp"] as const) {
 			await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
 			const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 			const config = join(home, "config.toml");
-			writeFileSync(config, `data_dir = ${JSON.stringify(join(home, "data"))}\n[lanes.Probe]\nworkspace = ${JSON.stringify(lane)}\ntool = "${agent}"\nlauncher = "ori"\ncompactor_model = "anthropic/claude-haiku-4-5"\n`);
+			writeFileSync(config, `data_dir = ${JSON.stringify(join(home, "data"))}\n[agents.Probe]\nfolder = ${JSON.stringify(agent)}\ntool = "${tool}"\nlauncher = "ori"\ncompactor_model = "anthropic/claude-haiku-4-5"\n`);
 			const probe = join(home, "probe.ts");
 			const local = (file: string) => JSON.stringify(relative(home, resolve(file)));
-			writeFileSync(probe, `import { summarySources } from ${local("src/lane/summary-sources.ts")};
-import { parseConfig } from ${local("src/lane/config.ts")};
-import { FileCredentialStore } from ${local("src/lane/credentials.ts")};
+			writeFileSync(probe, `import { summarySources } from ${local("src/agent/summary-sources.ts")};
+import { parseConfig } from ${local("src/agent/config.ts")};
+import { FileCredentialStore } from ${local("src/agent/credentials.ts")};
 export default function(api) {
  api.on("session_start", async (_event, ctx) => {
   const own = summarySources(parseConfig('data_dir = ' + JSON.stringify(${JSON.stringify(join(home, "probe-data"))}), ${JSON.stringify(home)}), new FileCredentialStore(${JSON.stringify(join(home, "probe-credentials.json"))})).models;
@@ -50,7 +50,7 @@ export default function(api) {
  });
 }`);
 			const env = { ...isolated(home), PATH: `${bin}:${process.env.PATH ?? ""}`, ORRERY_CONFIG: config, OPENROUTER_API_KEY: "synthetic-offline-key", ORI_OPENROUTER_BASE_URL: endpoint, PI_OFFLINE: "1" };
-			const child = spawn(ori!, [agent, "--model", model, "--mode", "rpc", "--no-session", "-e", resolve(`src/${agent}/index.ts`), "-e", probe, ...(agent === "pi" ? ["--offline"] : [])], { cwd: lane, env });
+			const child = spawn(ori!, [tool, "--model", model, "--mode", "rpc", "--no-session", "-e", resolve(`src/${tool}/index.ts`), "-e", probe, ...(tool === "pi" ? ["--offline"] : [])], { cwd: agent, env });
 			const frames: Record<string, any>[] = [];
 			let output = "";
 			let buffer = "";
@@ -68,27 +68,27 @@ export default function(api) {
 				for (;;) {
 					const frame = frames.find(predicate);
 					if (frame) return frame;
-					if (Date.now() > deadline || child.exitCode !== null) throw new Error(`Ori ${agent} did not reach the expected event: ${output.slice(-6000)}`);
+					if (Date.now() > deadline || child.exitCode !== null) throw new Error(`Ori ${tool} did not reach the expected event: ${output.slice(-6000)}`);
 					await new Promise((done) => setTimeout(done, 20));
 				}
 			};
 			try {
 				await wait((f) => f.method === "setStatus" && f.statusKey === "orrery" && f.statusText?.includes("Orrery · Probe"));
-				if (agent === "pi") await wait((f) => f.method === "setStatus" && f.statusKey === "ori-openrouter");
+				if (tool === "pi") await wait((f) => f.method === "setStatus" && f.statusKey === "ori-openrouter");
 				const facts = JSON.parse((await wait((f) => f.method === "notify" && f.message?.startsWith("ORI_PROBE "))).message.slice(10));
 				expect(facts).toMatchObject({ oriMarker: true, ambientRouter: true, summaryAuth: false });
-			expect(facts.selected).toBe(agent === "pi" ? "openrouter" : "ori-openrouter");
-				if (agent === "pi") expect(facts.sessionAnthropic).toBe(0);
+			expect(facts.selected).toBe(tool === "pi" ? "openrouter" : "ori-openrouter");
+				if (tool === "pi") expect(facts.sessionAnthropic).toBe(0);
 				for (const key of ["summaryAnthropic", "summaryOpenAI", "summaryOpenRouter"]) expect(facts[key]).toBeGreaterThan(0);
 				child.stdin.write(`${JSON.stringify({ id: "commands", type: "get_commands" })}\n`);
 				const commands = await wait((f) => f.id === "commands" && f.type === "response");
-				expect(commands.data.commands.map((c: { name: string }) => c.name)).toEqual(expect.arrayContaining([agent === "pi" ? "memory" : "orrery", "compactor", "browse"]));
-				expect(readFileSync(join(home, ".ori", agent, agent === "pi" ? "openrouter-auth.ts" : "openrouter-endpoint.ts"), "utf8")).toContain("ori-openrouter");
+				expect(commands.data.commands.map((c: { name: string }) => c.name)).toEqual(expect.arrayContaining([tool === "pi" ? "memory" : "orrery", "compactor", "browse"]));
+				expect(readFileSync(join(home, ".ori", tool, tool === "pi" ? "openrouter-auth.ts" : "openrouter-endpoint.ts"), "utf8")).toContain("ori-openrouter");
 				expect(requests.every((r) => r.startsWith("GET "))).toBe(true);
 			} catch (error) {
 				// Ori 0.15.7 rebases every bundled OMP model to the chat API, including judge models.
 				// Keep other startup failures fatal; this exact upstream incompatibility is not Orrery wiring.
-				if (agent === "omp" && /Provider ori-openrouter, model typesafe\/jev-router: kind "judge" does not match api "openrouter"/.test(output) && process.env.ORRERY_TEST_ORI_STRICT !== "1") {
+				if (tool === "omp" && /Provider ori-openrouter, model typesafe\/jev-router: kind "judge" does not match api "openrouter"/.test(output) && process.env.ORRERY_TEST_ORI_STRICT !== "1") {
 					context.skip("Ori 0.15.7 cannot register OMP judge models as chat models; set ORRERY_TEST_ORI_STRICT=1 to fail on this known upstream error.");
 				}
 				throw error;

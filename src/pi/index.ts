@@ -1,26 +1,32 @@
 /**
- * orrery inside pi: a lane folder gets OptChat memory (spec 2026-10-06-pi-extension-design). Install with a one-line
- * ~/.pi/agent/extensions/orrery.ts that re-exports this file by absolute path (docs/pi.md); a symlink to this directory
- * breaks the relative imports, because pi resolves them from the link. In any other folder this extension does nothing.
+ * orrery inside pi: an agent folder, or any folder when ORRERY_AGENT names an agent, gets OptChat memory (spec
+ * 2026-10-06-pi-extension-design; src/agent/pick.ts). Install with a one-line ~/.pi/agent/extensions/orrery.ts that
+ * re-exports this file by absolute path (docs/pi.md); a symlink to this directory breaks the relative imports, because pi
+ * resolves them from the link. Anywhere else this extension does nothing.
  * In OMP, src/omp/index.ts builds this with `host: "omp"` (docs/omp.md).
  */
 
 import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { defaultConfigPath, type HarnessConfig, type LaneConfig, laneForCwd, loadConfig } from "../lane/config.ts";
-import { holderFresh, openYielding, readHolder } from "../lane/handover.ts";
-import { compactorCommand } from "../lane/lane-commands.ts";
-import { laneModelSource } from "../lane/model-source.ts";
-import { noticeKey, noticeText, type TroubleState } from "../lane/notices.ts";
-import { takeRequest } from "../lane/settings-request.ts";
-import { safeText } from "../lane/source-labels.ts";
-import { openSummarySources, type SummarySources } from "../lane/summary-sources.ts";
-import { runCompactorText } from "../lane/summary-text.ts";
+import { defaultConfigPath, type HarnessConfig, type AgentConfig, agentForCwd, loadConfig } from "../agent/config.ts";
+import { holderFresh, openYielding, readHolder } from "../agent/handover.ts";
+import { orreryHome } from "../agent/home.ts";
+import { cutNotice, instructionsSection, readInstructions } from "../agent/instructions.ts";
+import { compactorCommand } from "../agent/agent-commands.ts";
+import { agentModelSource } from "../agent/model-source.ts";
+import { noticeKey, noticeText, type TroubleState } from "../agent/notices.ts";
+import { pickAgent, refusedNotice, workArea } from "../agent/pick.ts";
+import { NO_AGENT, noteSession, sessionStanding, settleVisit } from "../agent/session-owner.ts";
+import { takeRequest } from "../agent/settings-request.ts";
+import { safeText } from "../agent/source-labels.ts";
+import { openSummarySources, type SummarySources } from "../agent/summary-sources.ts";
+import { runCompactorText } from "../agent/summary-text.ts";
 import { browse, memoryReport, pageOpener } from "./commands.ts";
-import { compactorMenu, laneTarget, signInFromMenu } from "../lane/compactor-menu.ts";
-import { LaneHeld, PiLane } from "./lane.ts";
+import { compactorMenu, agentTarget, signInFromMenu } from "../agent/compactor-menu.ts";
+import { AgentHeld, PiAgent } from "./agent.ts";
 import { copySession, markSessionCopied, moveCursor, startAtTail } from "./log.ts";
-import { guardOmpToolCall, guardToolCall, movedAgentDirCredentials, ompCredentials } from "./guard.ts";
+import { guardOmpToolCall, guardToolCall, agentViews, movedAgentDirCredentials, ompCredentials } from "./guard.ts";
 import { memoryTools, readerTools } from "./tools.ts";
 import { compactionDecision, memorySection, trimToRun } from "./turn.ts";
 import { remoteFooter, remoteOpenNotice } from "../remote/checkout.ts";
@@ -36,9 +42,9 @@ interface SessionEvent {
 	readonly entryId?: string;
 }
 
-/** What switching OMP's own features off in a lane came to (src/omp/settings.ts), and what takes it back. */
-export type LaneSettingsResult = ({ readonly applied: true } | { readonly applied: false; readonly why: string }) & {
-	/** Takes back what was switched, when the session leaves the lane's folder; may throw when OMP would not take it back. */
+/** What switching OMP's own features off in an agent came to (src/omp/settings.ts), and what takes it back. */
+export type AgentSettingsResult = ({ readonly applied: true } | { readonly applied: false; readonly why: string }) & {
+	/** Takes back what was switched, when the session leaves the agent's folder; may throw when OMP would not take it back. */
 	readonly restore?: () => void;
 };
 
@@ -46,66 +52,156 @@ export type LaneSettingsResult = ({ readonly applied: true } | { readonly applie
 export const SETTINGS_NOT_APPLIED = " · OMP settings not applied";
 
 export interface OrreryState {
-	lane?: PiLane;
+	agent?: PiAgent;
 	/** Shutdown and moves join this work, so an eventual checkout can never be orphaned. */
 	opening?: Promise<void>;
 	/** When the previous run ended (agent_end), or the session started. */
 	lastEnd?: number;
 	/** `lastEnd` as it was when the current run began: the user's !cmd output from then on goes with this run. */
 	runSince?: number;
-	/** The lane whose folder this pi runs in: its guard applies even when its memory did not open. */
+	/** The agent whose folder this pi runs in: its guard applies even when its memory did not open. */
 	guarded?: Guarded;
 	runStart?: number;
 	timer?: ReturnType<typeof setInterval>;
-	/** orrery's logins and models, which the lane summarizes with and /compactor picks from. */
+	/** orrery's logins and models, which the agent summarizes with and /compactor picks from. */
 	sources?: SummarySources;
 	/** What the user was last told about summaries (notices.ts noticeKey). */
 	notice?: string;
 	/** OMP: SETTINGS_NOT_APPLIED when its own features stayed on. */
 	settingsNote?: string;
-	/** The config the session started with: OMP re-checks which lane a moved session's folder is in against it. */
+	/** The config the session started with: OMP re-checks which agent a moved session's folder is in against it. */
 	config?: HarnessConfig;
-	/** OMP: takes back its settings Orrery switched off, when the session leaves the lane's folder. */
+	/** OMP: takes back its settings Orrery switched off, when the session leaves the agent's folder. */
 	restoreSettings?: () => void;
+	/**
+	 * When the host loaded the session now open (as close as the extension sees it: the session_start or switch that
+	 * says so). A visit mark written since stays when the agent settles the visit (src/agent/session-owner.ts).
+	 */
+	loadedAt?: number;
+	/** The agent's instructions section for this session, read at its start (src/agent/instructions.ts). */
+	instructions?: string;
 }
 
 export interface OrreryOptions {
 	readonly config?: HarnessConfig;
 	/** The longest a message waits for pending summaries before it goes with placeholders (default 60 s; in OMP 25 s from the start of the hook, see summaryWaitMs). */
 	readonly memoryWaitMs?: number;
-	readonly onLane?: (lane: PiLane | undefined) => void;
+	readonly onAgent?: (agent: PiAgent | undefined) => void;
 	/** Opens /browse's page; default: the desktop's opener (xdg-open, open), none without a display. */
 	readonly openPage?: (path: string) => void;
 	/** orrery's logins and models for summaries; default openSummarySources. Tests pass a faux one. */
-	readonly summarySources?: (config: HarnessConfig, lane?: LaneConfig) => Promise<SummarySources>;
+	readonly summarySources?: (config: HarnessConfig, agent?: AgentConfig) => Promise<SummarySources>;
 	/** How often the status and request tick runs (default 5000 ms; tests shorten it). */
 	readonly tickMs?: number;
 	/** The tool this runs in: pi (default) or OMP, whose extension API differs in a few places (spec 2026-10-10-omp-design). */
 	readonly host?: "pi" | "omp";
-	/** OMP only: switches its own compaction, memory, project CLAUDE.md and titles off for the session, in the lane whose folder is `workspace` (src/omp/settings.ts). */
-	readonly laneSettings?: (ctx: ExtensionContext, workspace: string) => Promise<LaneSettingsResult>;
+	/** OMP only: switches its own compaction, memory, project CLAUDE.md and titles off for the session, in the agent whose folder is `folder` (src/omp/settings.ts). */
+	readonly agentSettings?: (ctx: ExtensionContext, folder: string) => Promise<AgentSettingsResult>;
 	/** The environment the guard finds moved credential folders in (PI_CODING_AGENT_DIR, XDG_DATA_HOME); default process.env. Tests pass a scratch one. */
 	readonly env?: NodeJS.ProcessEnv;
 	/** The home folder whose credential files the guard keeps out, and "~" means; default the OS's. Tests pass a scratch one. */
 	readonly home?: string;
 	/** Remote transport injection for integration tests; production opens the configured storage. */
 	readonly remoteStorage?: (config: HarnessConfig, remote: string) => Storage;
+	/** The process ORRERY_AGENT_TOKEN claims are made for (src/agent/pick.ts); default this process. Tests pass another. */
+	readonly owner?: number;
 }
 
-/** What the lane guard judges a tool call against: the lane, every credential file, and the home "~" means. */
+/** What the agent guard judges a tool call against: where the session may write, every credential file, and "~". */
 interface Guarded {
-	readonly lane: LaneConfig;
+	/** The session's agent; absent when its ORRERY_AGENT was refused (then the guard alone runs, with no memory). */
+	readonly agent?: AgentConfig;
+	/**
+	 * How the session found its agent: ORRERY_AGENT, its folder, or neither, because ORRERY_AGENT was refused or Orrery's
+	 * config could not be read (unreadableGuard).
+	 */
+	readonly by: "env" | "folder" | "refused" | "unreadable";
+	/** Where writes may go besides allowedRoots (src/agent/pick.ts workArea). */
+	readonly workArea: string;
+	readonly allowedRoots: readonly string[];
 	readonly credentials: readonly string[];
 	readonly orreryData: string;
 	readonly home: string;
+	/** Every other agent's memory view file, which no tool may read (src/agent/guard-paths.ts agentViews). */
+	readonly foreignViews: readonly string[];
+	/** Of those, the ones whose agent is set up Claude Code's file way: searches stay away even before they are written. */
+	readonly fileModeViews: readonly string[];
+	/** The session's own agent's view file, if it has one. */
+	readonly ownView?: string;
+	/** The config file the session read (or could not read): read-only, and named in no command. */
+	readonly configFile?: string;
 }
 
-/** The guard for `lane`: orrery's credentials, pi's in a moved agent dir, and OMP's stores (in every tool). */
-function guarded(lane: LaneConfig, config: HarnessConfig, options: OrreryOptions): Guarded {
+/** The file each config the extension read came from (orreryConfig); none for a config passed in (OrreryOptions.config). */
+const configFiles = new WeakMap<HarnessConfig, string>();
+
+/** What every guard keeps out: orrery's credentials, pi's in a moved agent dir, OMP's stores (in every tool), and the config's file from writes. */
+function guardBase(config: HarnessConfig, options: OrreryOptions): Pick<Guarded, "credentials" | "orreryData" | "home" | "configFile"> {
 	const env = options.env ?? process.env;
 	const home = options.home ?? homedir();
-	return { lane, home, orreryData: config.dataDir, credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)] };
+	const configFile = configFiles.get(config);
+	return {
+		home,
+		orreryData: config.dataDir,
+		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)],
+		...(configFile === undefined ? {} : { configFile }),
+	};
 }
+
+/**
+ * The guard for a session that starts while Orrery's config is there (or named) but cannot be read: no agent and no
+ * memory, and the default rules, since a guard that cannot judge refuses. The session's folder is its work area, with no
+ * allowed roots. Orrery's default home is kept out (where the config would put the data is unknown), and so are the
+ * logins beside it and beside the config, every other credential store, every agent's view by name, and the config file.
+ */
+function unreadableGuard(file: string, cwd: string, options: OrreryOptions): Guarded {
+	const env = options.env ?? process.env;
+	const home = options.home ?? homedir();
+	let data: string;
+	try {
+		data = orreryHome({ ...env, HOME: home });
+	} catch {
+		data = join(home, ".orrery"); // a relative ORRERY_HOME: the default home
+	}
+	const credentials = [join(data, "credentials.json"), join(dirname(resolve(file)), "credentials.json"), ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)];
+	return { by: "unreadable", workArea: workArea({}, cwd), allowedRoots: [], home, orreryData: data, credentials, foreignViews: [], fileModeViews: [], configFile: file };
+}
+
+/** The guard for `agent` in `cwd`: no other agent's view. */
+function guarded(agent: AgentConfig, by: "env" | "folder", cwd: string, config: HarnessConfig, options: OrreryOptions): Guarded {
+	return { agent, by, workArea: workArea(agent, cwd), allowedRoots: agent.allowedRoots, ...guardBase(config, options), ...agentViews(config, agent) };
+}
+
+/**
+ * The guard for a session whose ORRERY_AGENT was refused: no agent and no memory, but the same rules as the agent whose
+ * folder it runs in, or, outside agents, an agent's with no default folder (the session's folder, no allowed roots). It
+ * is no agent's, so every agent's view is another's, the folder's agent's too.
+ */
+function refusedGuard(cwd: string, config: HarnessConfig, options: OrreryOptions): Guarded {
+	const rules = agentForCwd(config, cwd);
+	return { by: "refused", workArea: workArea(rules ?? {}, cwd), allowedRoots: rules?.allowedRoots ?? [], ...guardBase(config, options), ...agentViews(config) };
+}
+
+const subagent = (ctx: ExtensionContext) => (ctx as { agent?: { kind?: string } }).agent?.kind === "sub";
+
+/**
+ * Notes that the agent this session runs as (its agent, or NO_AGENT under a refused ORRERY_AGENT) ran in the session now
+ * open (src/agent/session-owner.ts): when it opens, at each message's and run's end, and at shutdown, so a visitor still
+ * running after the owner opened marks the turns it says later, even one killed before its run ended. Both entries do
+ * it, the other tool's too. Not in OMP subagents. Cheap, and it never throws: a note that fails never stops a message,
+ * a run's end or a shutdown (which releases the agent); the session then has no record, as before.
+ */
+function noteRun(state: OrreryState, ctx: ExtensionContext): void {
+	if (state.config === undefined || state.guarded === undefined || subagent(ctx)) return;
+	try {
+		noteSession(state.config.dataDir, ctx.sessionManager.getSessionId(), state.guarded.agent?.name ?? NO_AGENT);
+	} catch {
+		// no record
+	}
+}
+
+/** Which agent a session in `cwd` belongs to (src/agent/pick.ts). */
+const pickFor = (config: HarnessConfig, options: OrreryOptions, cwd: string) => pickAgent(config, { env: options.env ?? process.env, cwd, owner: options.owner ?? process.pid });
 
 /** OMP's extension API carries its schema libraries (`arktype`, `zod`); pi's has neither. */
 export function insideOmp(pi: object): boolean {
@@ -132,81 +228,122 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 	const label = omp ? "OMP" : "pi";
 	return (pi: ExtensionAPI) => {
 		// pi and OMP can share one extensions folder (PI_CODING_AGENT_DIR): each entry runs only in its own tool. In the
-		// other tool it still guards the lane (mismatched).
+		// other tool it still guards the agent (mismatched).
 		if (insideOmp(pi) !== omp) return mismatched(pi, options, omp);
 		const state: OrreryState = {};
-		let lostLane: PiLane | undefined;
+		let lostAgent: PiAgent | undefined;
 		let openingAbort: AbortController | undefined;
-		let closingLane: Promise<void> | undefined;
+		let closingAgent: Promise<void> | undefined;
 		// OMP builds its slash autocomplete when the extension loads: its commands exist from then on, in every session.
-		// Outside a lane they say no lane is open. pi registers them when a lane opens (register).
+		// Outside an agent they say no agent is open. pi registers them when an agent opens (register).
 		if (omp) registerCommands(pi, state, lazyPageOpener(options), host);
 		const status = (ctx: ExtensionContext) => {
-			const lane = recordingLane(ctx);
-			if (lane === undefined) return;
-			ctx.ui.setStatus("orrery", `${lane.statusLine()}${state.settingsNote ?? ""}`);
-			lane.writeStatus(!ctx.isIdle());
+			const agent = recordingAgent(ctx);
+			if (agent === undefined) return;
+			ctx.ui.setStatus("orrery", `${agent.statusLine()}${state.settingsNote ?? ""}`);
+			agent.writeStatus(!ctx.isIdle());
 		};
 
 		/**
-		 * Opens the lane of the folder the session runs in, as a new session does: its guard, then (main session only) its
-		 * memory, OMP's settings, the tools, the session's copy and the status tick. `loaded`: the config already read.
-		 * `arrived`: the session moved here from another folder (OMP), so it records only what comes after the move.
+		 * Reads the agent's instructions for the session now open: at its open, and again at each OMP session switch, which
+		 * pi makes a new session, so an edit since reaches the next message. The open memory notes when (status.json), and
+		 * the Agents page's "newer" mark clears.
+		 */
+		const loadInstructions = (agent: AgentConfig, ctx: ExtensionContext) => {
+			const found = readInstructions(agent.dir);
+			state.instructions = found === undefined ? undefined : instructionsSection(agent.name, found);
+			if (state.agent?.config.name === agent.name) state.agent.instructionsAt = found?.at;
+			if (found?.cut === true) warn(ctx, cutNotice(agent.name));
+		};
+
+		/**
+		 * Opens the session's agent (ORRERY_AGENT's, else the folder's), as a new session does: its guard, then (main session
+		 * only) its memory, OMP's settings, the tools, the session's copy and the status tick. `loaded`: the config already
+		 * read. `arrived`: the session moved here from another folder (OMP), so it records only what comes after the move.
 		 */
 		const openNow = async (event: { reason?: string }, ctx: ExtensionContext, controller: AbortController, loaded?: HarnessConfig, arrived = false): Promise<void> => {
-			const config = loaded ?? orreryConfig(options, ctx);
-			if (config === undefined) return;
+			// A runtime pi keeps for the next session holds none from the last one until this open reads its agent's.
+			state.instructions = undefined;
+			const { config, unreadable } = loaded === undefined ? orreryConfig(options, ctx) : { config: loaded, unreadable: undefined };
+			if (config === undefined) {
+				// A guard that cannot judge refuses: an unreadable config leaves the default guard on (no agent, no memory).
+				if (unreadable !== undefined) {
+					state.config = undefined;
+					state.guarded = unreadableGuard(unreadable, ctx.cwd, options);
+					guard(pi, state, host);
+				}
+				return;
+			}
 			state.config = config;
-			const lane = laneForCwd(config, ctx.cwd);
-			if (lane === undefined) return;
-			lostLane = undefined;
-			state.guarded = guarded(lane, config, options);
+			const pick = pickFor(config, options, ctx.cwd);
+			if (pick.kind === "none") return;
+			if (pick.kind === "unknown" || pick.kind === "bad-token") {
+				// No memory and no agent, but the guard runs, and the session is no agent's to copy later.
+				state.guarded = refusedGuard(ctx.cwd, config, options);
+				guard(pi, state, host);
+				// OMP starts each subagent with this extension too: only the main session says so.
+				if (subagent(ctx)) return;
+				noteRun(state, ctx);
+				warn(ctx, refusedNotice(pick));
+				return;
+			}
+			const { agent } = pick;
+			lostAgent = undefined;
+			state.guarded = guarded(agent, pick.by, ctx.cwd, config, options);
+			const area = state.guarded.workArea;
 			guard(pi, state, host);
 			// OMP loads the extension again in each subagent (its task tool): a subagent gets the guard, never the memory.
-			if (omp && (ctx as { agent?: { kind?: string } }).agent?.kind === "sub") return;
+			if (omp && subagent(ctx)) return;
+			// The session is this agent's, whether or not its memory opens.
+			noteRun(state, ctx);
+			// The instructions are read once the memory is open (a remote check-out may bring a newer file) or has failed to
+			// open: a session without its memory keeps the agent's identity.
 			const { signal } = controller;
-			const deadline = omp && lane.remote !== undefined ? setTimeout(() => controller.abort(new Error("Remote checkout took longer than 25 seconds")), 25_000) : undefined;
+			const deadline = omp && agent.remote !== undefined ? setTimeout(() => controller.abort(new Error("Remote checkout took longer than 25 seconds")), 25_000) : undefined;
 			try {
 				// Summaries use orrery's own logins (spec 2026-10-07-summary-sources-design), not pi's registry.
-				const sources = await abortable(signal, () => (options.summarySources ?? openSummarySources)(config, lane));
+				const sources = await abortable(signal, () => (options.summarySources ?? openSummarySources)(config, agent));
 				signal.throwIfAborted();
 				state.sources = sources;
-				const models = laneModelSource(sources.models);
-				const memory = { lane, models, agent: host, report: (message: string) => {
+				const models = agentModelSource(sources.models);
+				const memory = { agent, models, host, report: (message: string) => {
 					ctx.ui.notify(message, "warning");
 					// RemoteSession reports loss before its writer callback: retire this session's memory immediately.
-					if (state.lane?.remote?.lost) recordingLane(ctx);
-					else if (lostLane?.config === lane) lostStatus(ctx, lostLane);
+					if (state.agent?.remote?.lost) recordingAgent(ctx);
+					else if (lostAgent?.config === agent) lostStatus(ctx, lostAgent);
 				} };
-				state.lane = lane.remote === undefined
-					? await openYielding(() => PiLane.open(memory), lane.dir)
-					: await PiLane.openChecked({ ...memory, config,
+				state.agent = agent.remote === undefined
+					? await openYielding(() => PiAgent.open(memory), agent.dir)
+					: await PiAgent.openChecked({ ...memory, config,
 						signal,
-						storage: options.remoteStorage?.(config, lane.remote),
-						confirmTakeover: (held) => confirmTakeover(ctx, lane, held, signal),
-						open: (open) => openYielding(open, lane.dir),
+						storage: options.remoteStorage?.(config, agent.remote),
+						confirmTakeover: (held) => confirmTakeover(ctx, agent, held, signal),
+						open: (open) => openYielding(open, agent.dir),
 					});
 			} catch (error) {
-				if (error !== OPEN_CANCELLED) ctx.ui.notify(notOpened(lane, error, label), "warning");
+				if (error === OPEN_CANCELLED) return;
+				ctx.ui.notify(notOpened(agent, error, label), "warning");
+				loadInstructions(agent, ctx);
 				return;
 			} finally { clearTimeout(deadline); }
-			const left = () => signal.aborted || (omp && laneForCwd(config, ctx.cwd)?.name !== lane.name);
+			loadInstructions(agent, ctx);
+			const left = () => signal.aborted || moved(ctx);
 			const discard = async () => {
-				const memory = state.lane;
-				state.lane = undefined;
-				try { await memory?.close(); } finally { options.onLane?.(undefined); }
+				const memory = state.agent;
+				state.agent = undefined;
+				try { await memory?.close(); } finally { options.onAgent?.(undefined); }
 			};
 			if (left()) { await discard(); return; }
-			options.onLane?.(state.lane);
-			if (recordingLane(ctx) === undefined) return;
-			// The lane's open report already said what is wrong now: notices start from here.
-			state.notice = noticeKey(troubleState(state.lane));
+			options.onAgent?.(state.agent);
+			if (recordingAgent(ctx) === undefined) return;
+			// The agent's open report already said what is wrong now: notices start from here.
+			state.notice = noticeKey(troubleState(state.agent));
 			// OMP: its own compaction, memory, project CLAUDE.md and titles go off for this session, before the tools
 			// register: their registration rebuilds OMP's system prompt, now without the CLAUDE.md.
-			if (omp && options.laneSettings !== undefined) {
-				let result: LaneSettingsResult;
+			if (omp && options.agentSettings !== undefined) {
+				let result: AgentSettingsResult;
 				try {
-					result = await abortable(signal, () => options.laneSettings!(ctx, lane.workspace), (late) => late.restore?.());
+					result = await abortable(signal, () => options.agentSettings!(ctx, area), (late) => late.restore?.());
 				} catch (error) {
 					if (signal.aborted) { await discard(); return; }
 					result = { applied: false, why: errorText(error) };
@@ -214,19 +351,25 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 				state.restoreSettings = result.restore;
 				if (!result.applied) {
 					state.settingsNote = SETTINGS_NOT_APPLIED;
-					warn(ctx, `Orrery: OMP settings not applied (${safeText(result.why)}): OMP's own compaction, memory and project CLAUDE.md may still apply in ${lane.name}. Orrery's memory works as usual.`);
+					warn(ctx, `Orrery: OMP settings not applied (${safeText(result.why)}): OMP's own compaction, memory and project CLAUDE.md may still apply in ${agent.name}. Orrery's memory works as usual.`);
 				}
 			}
 			if (left()) { await discard(); return; }
-			if (recordingLane(ctx) === undefined) return;
+			if (recordingAgent(ctx) === undefined) return;
 			register(pi, state, config, lazyPageOpener(options), host);
 			// A fork is a new session id over entries its parent already copied (same entry ids): start it at its tail.
 			// That is /fork (reason "fork") and `pi --fork <file>` (reason "startup", the header names the parent). A session
-			// moved in from another folder starts at its tail too, always: its earlier turns belong to that folder (lane
-			// privacy).
-			if (arrived) startAtTail(state.lane.store, ctx.sessionManager);
-			else if (event.reason === "fork" || ctx.sessionManager.getHeader()?.parentSession !== undefined) markSessionCopied(state.lane.store, ctx.sessionManager);
-			copySession(state.lane.view, ctx.sessionManager, lane.memory.toolCap);
+			// moved in from another folder starts at its tail too, always: its earlier turns belong to that folder (agent
+			// privacy). So does a session another agent owns or ran in since (src/agent/session-owner.ts), and one an agent opened
+			// by ORRERY_AGENT finds with turns in it (`pi --session`, /resume): they were not said in this run, and may be
+			// another agent's.
+			const id = ctx.sessionManager.getSessionId();
+			const standing = sessionStanding(config.dataDir, id, agent.name);
+			if (arrived || standing !== "own" || (pick.by === "env" && ctx.sessionManager.getBranch().length > 0)) startAtTail(state.agent.store, ctx.sessionManager);
+			else if (event.reason === "fork" || ctx.sessionManager.getHeader()?.parentSession !== undefined) markSessionCopied(state.agent.store, ctx.sessionManager);
+			// Only once the tail is written: a write that failed (it threw) leaves the mark for the next open.
+			if (standing === "visited") settleVisit(config.dataDir, id, state.loadedAt ?? 0);
+			copySession(state.agent.view, ctx.sessionManager, agent.memory.toolCap);
 			state.runStart = Date.now(); // a first model call that is not a prompt (resumed session) is trimmed too
 			state.lastEnd = state.runSince = state.runStart;
 			// A status that cannot be shown or written must never take pi down (it exits on an uncaught exception).
@@ -234,22 +377,22 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			let requestWarned = false;
 			const tick = () => {
 				try {
-					const lane = recordingLane(ctx);
-					if (lane !== undefined) {
+					const agent = recordingAgent(ctx);
+					if (agent !== undefined) {
 						// Its own guard: a bad request must never stop the status below on later ticks.
 						try {
-							const taken = takeRequest(lane.config.dir, lane.config.name);
+							const taken = takeRequest(agent.config.dir, agent.config.name);
 							if (taken.ignored !== undefined) warn(ctx, `Orrery: ignored ${taken.ignored}.`);
-							if (taken.request !== undefined) ctx.ui.notify(safeText(`Orrery: ${compactorCommand(lane, taken.request.args)} (changed from outside ${label})`), "info");
+							if (taken.request !== undefined) ctx.ui.notify(safeText(`Orrery: ${compactorCommand(agent, taken.request.args)} (changed from outside ${label})`), "info");
 						} catch (error) {
 							if (!requestWarned) warn(ctx, `Orrery: a summary-model change from outside ${label} failed: ${safeText(errorText(error))}`);
 							requestWarned = true;
 						}
 					}
 					status(ctx);
-					if (lane !== undefined) {
-						const now = troubleState(lane);
-						const message = noticeText(lane.config.name, now, state.notice, "/compactor");
+					if (agent !== undefined) {
+						const now = troubleState(agent);
+						const message = noticeText(agent.config.name, now, state.notice, "/compactor");
 						state.notice = noticeKey(now);
 						if (message !== undefined) ctx.ui.notify(message, now ? "warning" : "info");
 					}
@@ -260,7 +403,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 				}
 			};
 			tick();
-			if (state.lane !== undefined) {
+			if (state.agent !== undefined) {
 				state.timer = setInterval(tick, options.tickMs ?? 5000);
 				state.timer.unref?.();
 			}
@@ -275,78 +418,87 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			state.opening = pending;
 			return pending;
 		};
-		pi.on("session_start", (event, ctx) => open(event, ctx));
+		pi.on("session_start", (event, ctx) => {
+			state.loadedAt = Date.now();
+			return open(event, ctx);
+		});
 
-		/** Closes the open lane as a session's end does: the session saved into it when `save`, status closed, lock released. */
-		const closeLane = (ctx: ExtensionContext, save: boolean): Promise<void> => {
+		/** Closes the open agent as a session's end does: the session saved into it when `save`, status closed, lock released. */
+		const closeAgent = (ctx: ExtensionContext, save: boolean): Promise<void> => {
 			openingAbort?.abort(OPEN_CANCELLED);
-			if (closingLane !== undefined) return closingLane;
+			if (closingAgent !== undefined) return closingAgent;
 			const closing = (async () => {
 				await state.opening;
 				if (state.timer !== undefined) clearInterval(state.timer);
 				state.timer = undefined;
-				const lane = state.lane;
-				if (lane === undefined) return;
-				state.lane = undefined;
+				const agent = state.agent;
+				if (agent === undefined) return;
+				state.agent = undefined;
 				try {
-					if (save && !lane.remote?.lost) copySession(lane.view, ctx.sessionManager, lane.config.memory.toolCap);
+					if (save && !agent.remote?.lost) copySession(agent.view, ctx.sessionManager, agent.config.memory.toolCap);
 				} catch (error) {
-					warn(ctx, `Orrery: saving ${lane.config.name} at shutdown failed: ${errorText(error)}`);
+					warn(ctx, `Orrery: saving ${agent.config.name} at shutdown failed: ${errorText(error)}`);
 				}
 				try {
-					// Closed even when the copy failed: a lane left "open" would look busy to lanes() and orrery status.
-					lane.writeStatus(false, false);
+					// Closed even when the copy failed: an agent left "open" would look busy to agents() and orrery status.
+					agent.writeStatus(false, false);
 				} catch (error) {
-					warn(ctx, `Orrery: writing ${lane.config.name}'s status at shutdown failed: ${errorText(error)}`);
+					warn(ctx, `Orrery: writing ${agent.config.name}'s status at shutdown failed: ${errorText(error)}`);
 				}
 				try {
-					// Always release the writer lock, or the next /new, /resume, /fork or /reload would find the lane held.
-					await lane.close();
+					// Always release the writer lock, or the next /new, /resume, /fork or /reload would find the agent held.
+					await agent.close();
 				} finally {
-					options.onLane?.(undefined);
+					options.onAgent?.(undefined);
 				}
-			})().finally(() => { if (closingLane === closing) closingLane = undefined; });
-			closingLane = closing;
+			})().finally(() => { if (closingAgent === closing) closingAgent = undefined; });
+			closingAgent = closing;
 			return closing;
 		};
 
-		const lostStatus = (ctx: ExtensionContext, lane: PiLane): void => {
-			const remote = lane.remote!;
+		const lostStatus = (ctx: ExtensionContext, agent: PiAgent): void => {
+			const remote = agent.remote!;
 			// lost becomes true before the holder lookup finishes. Show loss now and the machine when its report arrives.
-			const text = remote.status().state === "lost" ? lane.statusLine() : `Orrery · ${lane.config.name} · ${remoteFooter({ ...remote.status(), state: "lost" })}`;
+			const text = remote.status().state === "lost" ? agent.statusLine() : `Orrery · ${agent.config.name} · ${remoteFooter({ ...remote.status(), state: "lost" })}`;
 			try { ctx.ui.setStatus("orrery", `${text}${state.settingsNote ?? ""}`); }
 			catch { /* Closing memory must not depend on the footer working. */ }
 		};
 
-		/** Fencing closes the store; stop every session hook using it while the host and lane guard continue. */
-		const recordingLane = (ctx: ExtensionContext): PiLane | undefined => {
-			const lane = state.lane;
-			if (!lane?.remote?.lost) return lane;
-			lostLane = lane;
-			lostStatus(ctx, lane);
-			void closeLane(ctx, false).catch((error) => warn(ctx, `Orrery: closing ${lane.config.name}'s memory failed: ${errorText(error)}`));
+		/** Fencing closes the store; stop every session hook using it while the host and agent guard continue. */
+		const recordingAgent = (ctx: ExtensionContext): PiAgent | undefined => {
+			const agent = state.agent;
+			if (!agent?.remote?.lost) return agent;
+			lostAgent = agent;
+			lostStatus(ctx, agent);
+			void closeAgent(ctx, false).catch((error) => warn(ctx, `Orrery: closing ${agent.config.name}'s memory failed: ${errorText(error)}`));
 			return undefined;
 		};
 
 		/**
-		 * OMP only: the session now runs in a folder of another lane than the one it had, or outside lanes. OMP moves a
-		 * session to another folder in place (its /resume of another folder's session, /move); pi starts a new session.
+		 * OMP only: the session now runs in a folder of another agent than the one it found by folder, or outside agents. An
+		 * agent opened by ORRERY_AGENT is the session's wherever OMP moves it. OMP moves a session to another folder in place
+		 * (its /resume of another folder's session, /move); pi starts a new session.
 		 */
-		const moved = (ctx: ExtensionContext): boolean => omp && state.config !== undefined && laneForCwd(state.config, ctx.cwd)?.name !== state.guarded?.lane.name;
+		const moved = (ctx: ExtensionContext): boolean =>
+			omp && state.config !== undefined && state.guarded?.by !== "env" && state.guarded?.by !== "refused" && agentForCwd(state.config, ctx.cwd)?.name !== state.guarded?.agent?.name;
 
-		// A session moved elsewhere by /move and ended before another message is no longer the lane's to save.
-		pi.on("session_shutdown", (_event, ctx) => closeLane(ctx, !moved(ctx)));
+		// A session moved elsewhere by /move and ended before another message is no longer the agent's to save.
+		pi.on("session_shutdown", (_event, ctx) => {
+			noteRun(state, ctx);
+			return closeAgent(ctx, !moved(ctx));
+		});
 
-		/** Leaves the lane the session had, as its end would but without saving: its guard and OMP settings go, the footer clears. */
+		/** Leaves the agent the session had, as its end would but without saving: its guard and OMP settings go, the footer clears. */
 		const leave = async (ctx: ExtensionContext): Promise<void> => {
-			const name = state.guarded?.lane.name;
+			const name = state.guarded?.agent?.name;
 			try {
-				await closeLane(ctx, false);
+				await closeAgent(ctx, false);
 			} catch (error) {
 				warn(ctx, `Orrery: closing ${name}'s memory failed: ${errorText(error)}`);
 			}
 			state.guarded = undefined;
-			lostLane = undefined;
+			state.instructions = undefined;
+			lostAgent = undefined;
 			state.sources = undefined;
 			state.notice = undefined;
 			state.settingsNote = undefined;
@@ -365,18 +517,34 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 		};
 
 		/**
-		 * OMP only: when the session moved to a folder of another lane, or outside lanes, the lane it had closes without the
-		 * moved session copied into it, and the new folder's lane opens as at session_start (or none: plain OMP), recording
-		 * only what comes after the move. One notice when a lane is left. Returns whether the lane changed.
+		 * OMP only: when the session moved to a folder of another agent, or outside agents, the agent it had closes without the
+		 * moved session copied into it, and the new folder's agent opens as at session_start (or none: plain OMP), recording
+		 * only what comes after the move. One notice when an agent is left. Returns whether the agent changed.
 		 */
 		const follow = async (event: { reason?: string }, ctx: ExtensionContext): Promise<boolean> => {
+			// An agent opened by ORRERY_AGENT stays; its guard covers the folder the session moved to.
+			if (state.guarded?.by === "env" && state.guarded.agent !== undefined) {
+				const area = workArea(state.guarded.agent, ctx.cwd);
+				if (area !== state.guarded.workArea) state.guarded = { ...state.guarded, workArea: area };
+				return false;
+			}
+			// A refused ORRERY_AGENT opens no agent anywhere; its guard takes the rules of the folder it moved to.
+			if (state.guarded?.by === "refused" && state.config !== undefined) {
+				state.guarded = refusedGuard(ctx.cwd, state.config, options);
+				return false;
+			}
+			// Nor does a session without a readable config: its default guard's work area is the folder it moved to.
+			if (state.guarded?.by === "unreadable") {
+				state.guarded = { ...state.guarded, workArea: workArea({}, ctx.cwd) };
+				return false;
+			}
 			if (!moved(ctx)) return false;
-			const before = state.guarded?.lane.name;
-			const closed = state.lane !== undefined;
+			const before = state.guarded?.agent?.name;
+			const closed = state.agent !== undefined;
 			await leave(ctx);
 			await open(event, ctx, state.config, true);
 			if (before === undefined) return true;
-			const opened = state.lane === undefined ? "" : ` Opened ${state.lane.config.name}: it records from here on.`;
+			const opened = state.agent === undefined ? "" : ` Opened ${state.agent.config.name}: it records from here on.`;
 			ctx.ui.notify(`Orrery: this session moved from ${before} to another folder${closed ? `; ${before}'s memory is closed.` : "."}${opened}`, "info");
 			return true;
 		};
@@ -385,10 +553,13 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			const started = Date.now();
 			// OMP: /move took the session to another folder since the last message.
 			if (omp) await follow({}, ctx);
-			const lane = recordingLane(ctx);
-			if (lane === undefined) return;
+			// The agent's instructions go out whether or not its memory does: a session without memory keeps its identity.
+			const intro = state.instructions;
+			const alone = () => (intro === undefined ? undefined : withSections(event.systemPrompt, [intro]));
+			const agent = recordingAgent(ctx);
+			if (agent === undefined) return alone();
 			try {
-				copySession(lane.view, ctx.sessionManager, lane.config.memory.toolCap);
+				copySession(agent.view, ctx.sessionManager, agent.config.memory.toolCap);
 			} catch (error) {
 				// The view still goes out: memory as it was, without what could not be logged.
 				warn(ctx, `Orrery: logging this session into memory failed: ${errorText(error)}`);
@@ -396,8 +567,8 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			let section: string | undefined;
 			try {
 				// Wait only for summaries that can come: not when the summarizer is off, stopped or failing.
-				if (!lane.view.settled && lane.summaryTrouble() === undefined) {
-					ctx.ui.setStatus("orrery", `Orrery · ${lane.config.name} · summarizing before this message…`);
+				if (!agent.view.settled && agent.summaryTrouble() === undefined) {
+					ctx.ui.setStatus("orrery", `Orrery · ${agent.config.name} · summarizing before this message…`);
 					// pi emits this before the run starts, so ctx.signal is usually undefined and Esc cannot reach the wait:
 					// the cap is what keeps a stuck summarizer from hanging the message.
 					const wait = new AbortController();
@@ -405,19 +576,19 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 					const timer = setTimeout(stop, summaryWaitMs(host, Date.now() - started, options.memoryWaitMs));
 					ctx.signal?.addEventListener("abort", stop, { once: true });
 					try {
-						await lane.awaitSummaries(wait.signal);
+						await agent.awaitSummaries(wait.signal);
 					} finally {
 						clearTimeout(timer);
 						ctx.signal?.removeEventListener("abort", stop);
 					}
 				}
-				if (recordingLane(ctx) !== lane) return;
-				if (!lane.view.settled) {
-					const trouble = lane.summaryTrouble();
+				if (recordingAgent(ctx) !== agent) return alone();
+				if (!agent.view.settled) {
+					const trouble = agent.summaryTrouble();
 					const why = trouble === undefined ? "summaries still pending" : `summaries are ${trouble.state} (${trouble.plain})`;
 					warn(ctx, `Orrery: ${why}; this message sees unsummarized lines (the model can zoom them)`);
 				}
-				section = memorySection(lane.view, host);
+				section = memorySection(agent.view, host);
 			} catch (error) {
 				// pi swallows a throwing handler; say so, and still trim this run.
 				warn(ctx, `Orrery: memory for this message failed: ${errorText(error)}`);
@@ -429,29 +600,31 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			} catch {
 				// The tick reports status failures once.
 			}
-			if (section === undefined) return undefined;
-			// OMP's system prompt is a list of blocks: the section goes last, after OMP's own. pi's is one string.
-			const prompt = event.systemPrompt as string | readonly string[];
-			return (typeof prompt === "string" ? { systemPrompt: `${prompt}\n\n${section}` } : { systemPrompt: [...prompt, section] }) as { systemPrompt: string };
+			const sections = [intro, section].filter((text): text is string => text !== undefined);
+			return sections.length === 0 ? undefined : withSections(event.systemPrompt, sections);
 		});
 
 		pi.on("context", (event, ctx) => {
-			if (recordingLane(ctx) === undefined || state.runStart === undefined) return;
+			if (recordingAgent(ctx) === undefined || state.runStart === undefined) return;
 			return { messages: trimToRun(event.messages as { role: string; timestamp?: number }[], state.runStart, state.runSince) as typeof event.messages };
 		});
 
 		const log = (_event: unknown, ctx: ExtensionContext) => {
-			// OMP: a session /move took elsewhere is not the lane's to record; the next message or the end closes the lane.
-			const lane = recordingLane(ctx);
-			if (lane === undefined || moved(ctx)) return;
-			copySession(lane.view, ctx.sessionManager, lane.config.memory.toolCap);
+			// OMP: a session /move took elsewhere is not the agent's to record; the next message or the end closes the agent.
+			const agent = recordingAgent(ctx);
+			if (agent === undefined || moved(ctx)) return;
+			copySession(agent.view, ctx.sessionManager, agent.config.memory.toolCap);
 			status(ctx);
 		};
-		pi.on("message_end", log);
+		pi.on("message_end", (event, ctx) => {
+			noteRun(state, ctx);
+			log(event, ctx);
+		});
 		pi.on("agent_end", (event, ctx) => {
 			state.lastEnd = Date.now();
+			noteRun(state, ctx);
 			log(event, ctx);
-			if (!moved(ctx)) recordingLane(ctx)?.afterTurn();
+			if (!moved(ctx)) recordingAgent(ctx)?.afterTurn();
 		});
 
 		if (omp) {
@@ -461,16 +634,31 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			// /btw" starts at the entry it branched at, so the side question and answer OMP adds after it are recorded.
 			let btwLeaf: string | undefined;
 			const switched = async (event: SessionEvent, ctx: ExtensionContext) => {
+				// OMP loaded the session it switched to before saying so.
+				state.loadedAt = Date.now();
 				const leaf = event.type === "session_branch" && event.reason === "btw" ? btwLeaf : undefined;
 				if (event.type === "session_branch") btwLeaf = undefined;
-				// A /resume of another folder's session (or a /move before this) took the session there: that folder's lane, or
+				// A /resume of another folder's session (or a /move before this) took the session there: that folder's agent, or
 				// none, takes it from here.
 				if (await follow(event, ctx)) return;
-				const lane = recordingLane(ctx);
-				if (lane === undefined) return;
+				// pi starts a new session here, which reads the agent's instructions again: so does this switch (not a subagent's).
+				if (state.guarded?.agent !== undefined && !subagent(ctx)) loadInstructions(state.guarded.agent, ctx);
+				const id = ctx.sessionManager.getSessionId();
+				// The session now open is this agent's (or no agent's, under a refused ORRERY_AGENT), as at session_start.
+				noteRun(state, ctx);
+				const agent = recordingAgent(ctx);
+				if (agent === undefined || state.config === undefined) return;
 				try {
-					if (event.type === "session_branch" || event.reason === "fork" || ctx.sessionManager.getHeader()?.parentSession !== undefined) markSessionCopied(lane.store, ctx.sessionManager, leaf);
-					copySession(lane.view, ctx.sessionManager, lane.config.memory.toolCap);
+					// From its tail: a session another agent owns or ran in since; and, for an agent opened by ORRERY_AGENT, any
+					// switch into a session with turns in it (a resume, a fork, a reason OMP adds later): they were not said in
+					// this run. A branch (a rewind, /btw) is this run's own session.
+					const standing = sessionStanding(state.config.dataDir, id, agent.config.name);
+					const byEnv = state.guarded?.by === "env" && event.type === "session_switch" && ctx.sessionManager.getBranch().length > 0;
+					if (standing !== "own" || byEnv) startAtTail(agent.store, ctx.sessionManager);
+					else if (event.type === "session_branch" || event.reason === "fork" || ctx.sessionManager.getHeader()?.parentSession !== undefined) markSessionCopied(agent.store, ctx.sessionManager, leaf);
+					// Only once the tail is written: a write that failed (it threw) leaves the mark for the next open.
+					if (standing === "visited") settleVisit(state.config.dataDir, id, state.loadedAt ?? 0);
+					copySession(agent.view, ctx.sessionManager, agent.config.memory.toolCap);
 				} catch (error) {
 					warn(ctx, `Orrery: logging the new session into memory failed: ${errorText(error)}`);
 				}
@@ -493,14 +681,14 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 		}
 
 		pi.on("session_tree", (event, ctx) => {
-			const lane = recordingLane(ctx);
-			if (lane !== undefined) moveCursor(lane.store, ctx.sessionManager.getSessionId(), event.newLeafId);
+			const agent = recordingAgent(ctx);
+			if (agent !== undefined) moveCursor(agent.store, ctx.sessionManager.getSessionId(), event.newLeafId);
 		});
 
 		pi.on("session_before_compact", (event, ctx) => {
-			if (recordingLane(ctx) === undefined) return;
+			if (recordingAgent(ctx) === undefined) return;
 			const decision = compactionDecision(event.reason);
-			if (decision !== undefined && event.reason === "manual") ctx.ui.notify("Orrery: pi's compaction is off in lanes; memory keeps the history.", "info");
+			if (decision !== undefined && event.reason === "manual") ctx.ui.notify("Orrery: pi's compaction is off in agents; memory keeps the history.", "info");
 			return decision;
 		});
 	};
@@ -508,29 +696,38 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-/** The lane's summary trouble as notices see it (never the raw provider text). */
-function troubleState(lane: PiLane): TroubleState | null {
-	const trouble = lane.summaryTrouble();
+/**
+ * The system prompt with Orrery's sections after it, the instructions before the memory: OMP's is a list of blocks, one
+ * per section, after OMP's own; pi's is one string.
+ */
+function withSections(systemPrompt: unknown, sections: readonly string[]): { systemPrompt: string } {
+	const prompt = systemPrompt as string | readonly string[];
+	return (typeof prompt === "string" ? { systemPrompt: [prompt, ...sections].join("\n\n") } : { systemPrompt: [...prompt, ...sections] }) as { systemPrompt: string };
+}
+
+/** The agent's summary trouble as notices see it (never the raw provider text). */
+function troubleState(agent: PiAgent): TroubleState | null {
+	const trouble = agent.summaryTrouble();
 	return trouble === undefined ? null : { state: trouble.state, plain: trouble.plain };
 }
 
-/** Why this session runs without memory: the lane is open in Claude Code (its holder beats), in another session, or failed to open. */
-function notOpened(lane: LaneConfig, error: unknown, label: string): string {
-	if (!(error instanceof LaneHeld)) return `Orrery: ${lane.name}: ${lane.remote === undefined ? errorText(error) : remoteOpenNotice(lane, error)}; this ${label} runs without memory.`;
-	if (lane.remote !== undefined) return `${lane.name} is open in another pi or Claude Code on this machine; this ${label} runs without memory.`;
-	if (holderFresh(readHolder(lane.dir))) return `${lane.name} is open in Claude Code; this ${label} runs without memory.`;
+/** Why this session runs without memory: the agent is open in Claude Code (its holder beats), in another session, or failed to open. */
+function notOpened(agent: AgentConfig, error: unknown, label: string): string {
+	if (!(error instanceof AgentHeld)) return `Orrery: ${agent.name}: ${agent.remote === undefined ? errorText(error) : remoteOpenNotice(agent, error)}; this ${label} runs without memory.`;
+	if (agent.remote !== undefined) return `${agent.name} is open in another pi or Claude Code on this machine; this ${label} runs without memory.`;
+	if (holderFresh(readHolder(agent.dir))) return `${agent.name} is open in Claude Code; this ${label} runs without memory.`;
 	return error.message;
 }
 
 /** pi and OMP versions differ: prefer confirm when present, otherwise offer the same explicit choice in select. */
-async function confirmTakeover(ctx: ExtensionContext, lane: LaneConfig, held: LockState, opening: AbortSignal): Promise<boolean> {
-	const message = remoteOpenNotice(lane, heldMessage(lane.name, held));
+async function confirmTakeover(ctx: ExtensionContext, agent: AgentConfig, held: LockState, opening: AbortSignal): Promise<boolean> {
+	const message = remoteOpenNotice(agent, heldMessage(agent.name, held));
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), 60_000);
 	const signal = AbortSignal.any([opening, controller.signal]);
 	try {
 		return await abortable(signal, async () => {
-			if (typeof ctx.ui.confirm === "function") return ctx.ui.confirm(`Take over ${lane.name}?`, message, { timeout: 60_000, signal });
+			if (typeof ctx.ui.confirm === "function") return ctx.ui.confirm(`Take over ${agent.name}?`, message, { timeout: 60_000, signal });
 			return await ctx.ui.select(`${message} Take over?`, ["Take over", "Keep it closed"], { timeout: 60_000, signal }) === "Take over";
 		});
 	} catch (error) { if (!signal.aborted) throw error; return false; }
@@ -545,16 +742,22 @@ function warn(ctx: ExtensionContext, message: string): void {
 	}
 }
 
-/** The orrery config, or undefined for plain pi. Silent only when there is no config at all; anything else warns. */
-function orreryConfig(options: OrreryOptions, ctx: ExtensionContext): HarnessConfig | undefined {
-	if (options.config !== undefined) return options.config;
+/**
+ * The orrery config, or none: plain pi when there is no config at all (silent), and `unreadable` (the file) when one is
+ * there or named but cannot be read (it warns; the session keeps the default guard, unreadableGuard).
+ */
+function orreryConfig(options: OrreryOptions, ctx: ExtensionContext): { readonly config?: HarnessConfig; readonly unreadable?: string } {
+	if (options.config !== undefined) return { config: options.config };
 	const file = defaultConfigPath();
 	try {
-		return loadConfig(file);
+		const config = loadConfig(file);
+		configFiles.set(config, resolve(file));
+		return { config };
 	} catch (error) {
 		const absent = (error as { code?: unknown }).code === "ENOENT" && !process.env.ORRERY_CONFIG;
-		if (!absent) warn(ctx, `Orrery: ${file}: ${errorText(error)}; running without memory`);
-		return undefined;
+		if (absent) return {};
+		warn(ctx, `Orrery: ${file}: ${errorText(error)}; running without memory`);
+		return { unreadable: resolve(file) };
 	}
 }
 
@@ -563,40 +766,40 @@ const commandsOn = new WeakSet<ExtensionAPI>();
 /** How `/browse` opens its page, looked up when it runs. */
 const lazyPageOpener = (options: OrreryOptions) => (path: string) => (options.openPage ?? pageOpener()?.open)?.(path);
 
-/** Tools (and in pi, commands), registered once per runtime, the first time a lane opens in it. */
+/** Tools (and in pi, commands), registered once per runtime, the first time an agent opens in it. */
 function register(pi: ExtensionAPI, state: OrreryState, config: HarnessConfig, openPage: (path: string) => void, host: "pi" | "omp"): void {
 	if (registeredOn.has(pi)) return;
 	registeredOn.add(pi);
 	for (const tool of memoryTools(state, host)) pi.registerTool(tool);
-	if ((state.lane?.config.reads.length ?? 0) > 0) for (const tool of readerTools(state, config, host)) pi.registerTool(tool);
+	if ((state.agent?.config.reads.length ?? 0) > 0) for (const tool of readerTools(state, config, host)) pi.registerTool(tool);
 	// OMP has its commands since load (createOrrery).
 	if (host === "pi") registerCommands(pi, state, openPage, host);
 }
 
-/** The slash commands, once per runtime; they read `state`, so they see the lane whenever it opens or reopens. */
+/** The slash commands, once per runtime; they read `state`, so they see the agent whenever it opens or reopens. */
 function registerCommands(pi: ExtensionAPI, state: OrreryState, openPage: (path: string) => void, host: "pi" | "omp"): void {
 	if (commandsOn.has(pi)) return;
 	commandsOn.add(pi);
 	const label = host === "omp" ? "OMP" : "pi";
-	const withLane = (ctx: ExtensionContext, use: (lane: PiLane) => string) => {
-		if (state.lane === undefined) return ctx.ui.notify(`Orrery: no lane memory is open in this ${label}`, "warning");
+	const withAgent = (ctx: ExtensionContext, use: (agent: PiAgent) => string) => {
+		if (state.agent === undefined) return ctx.ui.notify(`Orrery: no agent memory is open in this ${label}`, "warning");
 		try {
-			ctx.ui.notify(use(state.lane), "info");
+			ctx.ui.notify(use(state.agent), "info");
 		} catch (error) {
 			ctx.ui.notify(errorText(error), "error");
 		}
 	};
 	// OMP's own /memory runs before any extension command of that name: there Orrery's is /orrery.
-	pi.registerCommand(host === "omp" ? "orrery" : "memory", { description: "Orrery: this lane's memory and token use", handler: async (_args, ctx) => withLane(ctx, memoryReport) });
+	pi.registerCommand(host === "omp" ? "orrery" : "memory", { description: "Orrery: this agent's memory and token use", handler: async (_args, ctx) => withAgent(ctx, memoryReport) });
 	pi.registerCommand("compactor", {
 		description: "Orrery: pick the summary model (a menu), or: signin|key|local …, provider/model [thinking], reset",
 		handler: async (args, ctx) => {
-			const lane = state.lane;
+			const agent = state.agent;
 			const sources = state.sources;
-			if (lane === undefined || sources === undefined) return ctx.ui.notify(`Orrery: no lane memory is open in this ${label}`, "warning");
+			if (agent === undefined || sources === undefined) return ctx.ui.notify(`Orrery: no agent memory is open in this ${label}`, "warning");
 			try {
 				const words = args.trim().split(/\s+/).filter(Boolean);
-				const text = words.length === 0 ? await compactorMenu(ctx.ui, sources, laneTarget(lane)) : await runCompactorText(sources, words, "/compactor", laneTarget(lane), (name) => signInFromMenu(ctx.ui, sources, name));
+				const text = words.length === 0 ? await compactorMenu(ctx.ui, sources, agentTarget(agent)) : await runCompactorText(sources, words, "/compactor", agentTarget(agent), (name) => signInFromMenu(ctx.ui, sources, name));
 				ctx.ui.notify(text, "info");
 			} catch (error) {
 				ctx.ui.notify(errorText(error), "error");
@@ -604,10 +807,10 @@ function registerCommands(pi: ExtensionAPI, state: OrreryState, openPage: (path:
 		},
 	});
 	pi.registerCommand("browse", {
-		description: "Orrery: write and open this lane's memory explorer (HTML)",
+		description: "Orrery: write and open this agent's memory explorer (HTML)",
 		handler: async (_args, ctx) =>
-			withLane(ctx, (lane) => {
-				const page = browse(lane);
+			withAgent(ctx, (agent) => {
+				const page = browse(agent);
 				openPage(page);
 				return `Wrote ${page}`;
 			}),
@@ -616,8 +819,8 @@ function registerCommands(pi: ExtensionAPI, state: OrreryState, openPage: (path:
 
 /**
  * An entry loaded in the other tool (pi's in OMP, OMP's in pi: a shared extensions folder, `omp -e`, or a misdetection).
- * In a lane folder the lane's guard runs as the right entry would run it, with one notice; nothing else is registered:
- * no memory, tools or commands. Outside lane folders it does nothing.
+ * In an agent folder the agent's guard runs as the right entry would run it, with one notice; nothing else is registered:
+ * no memory, tools or commands. Outside agent folders it does nothing.
  */
 function mismatched(pi: ExtensionAPI, options: OrreryOptions, omp: boolean): void {
 	const state: OrreryState = {};
@@ -625,19 +828,34 @@ function mismatched(pi: ExtensionAPI, options: OrreryOptions, omp: boolean): voi
 		? "Orrery's OMP extension is loaded in pi: no memory in this session (the guard still runs). Install Orrery for pi from orrery's Tools page."
 		: "Orrery's pi extension is loaded in OMP: no memory in this session (the guard still runs). Install Orrery for OMP from orrery's Tools page.";
 	pi.on("session_start", async (_event, ctx) => {
-		const config = orreryConfig(options, ctx);
-		if (config === undefined) return;
-		const lane = laneForCwd(config, ctx.cwd);
-		if (lane === undefined) return;
-		state.guarded = guarded(lane, config, options);
+		const { config, unreadable } = orreryConfig(options, ctx);
+		if (config === undefined) {
+			// A guard that cannot judge refuses: an unreadable config leaves the default guard on.
+			if (unreadable !== undefined) {
+				state.guarded = unreadableGuard(unreadable, ctx.cwd, options);
+				guard(pi, state, insideOmp(pi) ? "omp" : "pi");
+			}
+			return;
+		}
+		const pick = pickFor(config, options, ctx.cwd);
+		if (pick.kind === "none") return;
+		state.config = config;
+		state.guarded = pick.kind === "agent" ? guarded(pick.agent, pick.by, ctx.cwd, config, options) : refusedGuard(ctx.cwd, config, options);
 		// Judged by the tool this runs in, not the entry's: OMP's tool shapes when pi's entry is loaded in OMP.
 		guard(pi, state, insideOmp(pi) ? "omp" : "pi");
 		// One notice per session: OMP starts each subagent too (its task tool), and a subagent says nothing.
-		if ((ctx as { agent?: { kind?: string } }).agent?.kind !== "sub") warn(ctx, notice);
+		if (subagent(ctx)) return;
+		// Whose session this is, as the right entry notes it, now and as the session goes on.
+		noteRun(state, ctx);
+		warn(ctx, notice);
 	});
+	const note = (_event: unknown, ctx: ExtensionContext) => noteRun(state, ctx);
+	pi.on("message_end", note);
+	pi.on("agent_end", note);
+	pi.on("session_shutdown", note);
 }
 
-/** The lane guard on tool calls, registered once per runtime, whether or not the lane's memory opened. */
+/** The agent guard on tool calls, registered once per runtime, whether or not the agent's memory opened. */
 function guard(pi: ExtensionAPI, state: OrreryState, host: "pi" | "omp"): void {
 	if (guardedOn.has(pi)) return;
 	guardedOn.add(pi);
@@ -645,8 +863,9 @@ function guard(pi: ExtensionAPI, state: OrreryState, host: "pi" | "omp"): void {
 	const judge = host === "omp" ? guardOmpToolCall : guardToolCall;
 	pi.on("tool_call", (event, ctx) => {
 		if (state.guarded === undefined) return;
-		const { lane, credentials, orreryData, home } = state.guarded;
-		const reason = judge(event.toolName, event.input as Record<string, unknown>, { workspace: lane.workspace, allowedRoots: lane.allowedRoots, cwd: ctx.cwd, credentials, orreryData, home });
+		const { workArea: area, allowedRoots, credentials, orreryData, home, foreignViews, fileModeViews, ownView, configFile } = state.guarded;
+		const options = { folder: area, allowedRoots, cwd: ctx.cwd, credentials, orreryData, home, foreignViews, fileModeViews, ownView, configFile };
+		const reason = judge(event.toolName, event.input as Record<string, unknown>, options);
 		return reason === undefined ? undefined : { block: true, reason };
 	});
 }

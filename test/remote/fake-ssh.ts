@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { RemoteConfig } from "../../src/lane/config.ts";
+import type { RemoteConfig } from "../../src/agent/config.ts";
 
 const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 

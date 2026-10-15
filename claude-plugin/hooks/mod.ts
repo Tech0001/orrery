@@ -1,19 +1,20 @@
 /**
- * The Orrery mod (spec 2026-10-08-claude-code-mod): in a lane switched to mod mode (`orrery claude-setup <Lane> --mod`)
- * - prompt.compose adds the lane's memory view as the system-prompt section orrery:memory, fetched once per session
+ * The Orrery mod (spec 2026-10-08-claude-code-mod): in an agent switched to mod mode (`orrery claude-setup <Name> --mod`)
+ * - prompt.compose adds the agent's memory view as the system-prompt section orrery:memory, fetched once per session
  *   id and again only at a compaction, so the prompt cache holds between compactions;
  * - session.compact answers Claude Code's compactions (/compact, its own threshold, the mod's) with the last turn,
  *   and refreshes the section; no model call. When it cannot, /compact and Claude Code's threshold fall back to Claude
  *   Code's own compaction, and a compaction the mod started is skipped instead (and the mod starts no more, unless
  *   only the last turn was too large to keep: then it tries again after a later turn);
- * - session.measure starts a compaction once the conversation passes the lane's compact_at (interactive sessions);
+ * - session.measure starts a compaction once the conversation passes the agent's compact_at (interactive sessions);
  * - it shows that it is loaded (sections 11 and 12): a startup band above the prompt until the person's first prompt,
- *   a footer label with the lane and its message count (`Orrery · <Lane> · <N> msgs`), and each compaction's line after
+ *   a footer label with the agent and its message count (`Orrery · <Name> · <N> msgs`), and each compaction's line after
  *   the compaction, where it can be seen (right under the /compact row, or at the next event). The band and the label
  *   read facts of their own, fetched at session start and again after each turn's end; they never change the section.
  * Elsewhere it adds nothing and passes everything on. It reaches Orrery only through `orrery claude-mod view`, run by
  * the plugin's launcher in the session's project root as first read in this process (a shell cd, `/cd` or a worktree
- * move does not change the lane); memory is read read-only, and the classic hooks keep recording.
+ * move does not change the agent), with the ORRERY_AGENT Claude Code was started with (`orrery agent`), which names the
+ * agent in any folder; memory is read read-only, and the classic hooks keep recording.
  */
 
 import type { EngineInterface, Register, SessionCompactResult, Timer } from "claude-code";
@@ -29,6 +30,7 @@ import {
 	type Fallback,
 	fallbackLine,
 	footerModes,
+	INSTRUCTIONS_SECTION_ID,
 	laterLine,
 	parseViewReply,
 	personPrompt,
@@ -60,6 +62,8 @@ interface Held {
 	readonly reply: ViewReply;
 	/** The section in this session's prompt; null adds none. */
 	readonly section: string | null;
+	/** The agent's instructions section; null adds none. Read at the session's start; a compaction keeps them. */
+	readonly instructions: string | null;
 }
 
 let held: Held | undefined;
@@ -75,7 +79,7 @@ let stopped: string | undefined;
 let toldLater: string | undefined;
 /**
  * The project root as first read in this process. `$.session.root()` moves with `/cd`, a host's directory change or a
- * worktree move, but the lane whose memory this session carries does not.
+ * worktree move, but the agent whose memory this session carries does not.
  */
 let root: string | undefined;
 /**
@@ -116,11 +120,28 @@ async function projectRoot($: EngineInterface): Promise<string> {
 	return root;
 }
 
+/**
+ * ORRERY_AGENT and ORRERY_AGENT_TOKEN as Claude Code's own environment has them (`orrery agent` sets them), read at each
+ * view call. The names are string literals, as Claude Code's review of a mod's calls requires. A token is passed as it
+ * is, an empty one too, so orrery refuses a malformed one here as Claude Code's hooks do. A Claude Code without $.env
+ * answers nothing here, and the view call still inherits the environment.
+ */
+async function agentFromEnv($: EngineInterface): Promise<{ readonly name: string; readonly token?: string } | undefined> {
+	try {
+		const name = await $.env.get("ORRERY_AGENT");
+		if (typeof name !== "string" || name.trim() === "") return undefined;
+		const token = await $.env.get("ORRERY_AGENT_TOKEN");
+		return { name: name.trim(), ...(typeof token === "string" ? { token } : {}) };
+	} catch {
+		return undefined;
+	}
+}
+
 async function runView($: EngineInterface, session: string, waitMs?: number, spoolOnly = false): Promise<ViewReply> {
 	try {
-		// The pinned project root, not the working folder: the Bash tool's cd moves the latter, never the lane.
+		// The pinned project root, not the working folder: the Bash tool's cd moves the latter, never the agent.
 		const cwd = await projectRoot($);
-		const run = await $.process.run(viewArgs($.plugin.root, cwd, session, waitMs, spoolOnly), { cwd, timeoutMs: (waitMs ?? 0) + 15_000 });
+		const run = await $.process.run(viewArgs($.plugin.root, cwd, session, waitMs, spoolOnly, await agentFromEnv($)), { cwd, timeoutMs: (waitMs ?? 0) + 15_000 });
 		return parseViewReply(run);
 	} catch (error) {
 		return { kind: "error", text: `orrery did not answer: ${String(error)}` };
@@ -143,7 +164,8 @@ async function current($: EngineInterface): Promise<Held> {
 	if (fetching?.session !== session) {
 		const done = runView($, session).then((reply) => {
 			if (reply.kind === "error") $.ui.log(sectionFailedLine(reply.text));
-			const next: Held = { session, reply, section: reply.kind === "lane" && reply.mode === "mod" ? reply.section : null };
+			const mod = reply.kind === "lane" && reply.mode === "mod";
+			const next: Held = { session, reply, section: mod ? reply.section : null, instructions: mod ? (reply.instructions ?? null) : null };
 			// A late answer for a session that is no longer the one being fetched does not take the current one's place.
 			if (fetching?.session === session) {
 				held = next;
@@ -298,8 +320,8 @@ async function startFacts($: EngineInterface): Promise<void> {
  * taken the turn's events in: `claude-mod view` waits a few seconds at most for the session's spool alone. Display only,
  * as the band's refetch: never `held` or the section, never a compaction, and never awaited by the turn. At most one
  * runs at a time; a turn that ends meanwhile gets one more run after it. Nothing runs while the session draws nowhere
- * (`claude -p`, the SDK with no client attached). Only a mod-mode lane's answer is shown: anything else (an error,
- * orrery briefly not there, the lane switched out of mod mode) keeps the label, its count and the later refetches.
+ * (`claude -p`, the SDK with no client attached). Only a mod-mode agent's answer is shown: anything else (an error,
+ * orrery briefly not there, the agent switched out of mod mode) keeps the label, its count and the later refetches.
  */
 function refetchAfterTurn($: EngineInterface): void {
 	// Every turn refresh starts a new idle minute, including a failed refresh.
@@ -338,12 +360,18 @@ export const register: Register = (on) => {
 		return result;
 	}).catch(($, e, next) => next(e));
 
+	// The agent's instructions, then its memory, after Claude Code's own sections.
 	on("prompt.compose", async ($, e, next) => {
 		const result = await next(e);
-		const { section } = await current($);
+		const { section, instructions } = await current($);
 		await flush($);
-		if (section === null) return result;
-		return { sections: [...result.sections.filter((s) => s.id !== SECTION_ID), { id: SECTION_ID, text: section, scope: "session" as const }] };
+		if (section === null && instructions === null) return result;
+		const ours = new Set([SECTION_ID, INSTRUCTIONS_SECTION_ID]);
+		const added = [
+			...(instructions === null ? [] : [{ id: INSTRUCTIONS_SECTION_ID, text: instructions, scope: "session" as const }]),
+			...(section === null ? [] : [{ id: SECTION_ID, text: section, scope: "session" as const }]),
+		];
+		return { sections: [...result.sections.filter((s) => !ours.has(s.id)), ...added] };
 	}).catch(($, e, next) => next(e));
 
 	on("prompt.submit", async ($, e, next) => {
@@ -361,7 +389,7 @@ export const register: Register = (on) => {
 		const known = await current($);
 		const route = compactRoute(e.trigger, e.agentId, known.reply);
 		if (route === "pass") return next(e);
-		if (route === "skip") return { skip: "Orrery answers this lane's compactions itself" };
+		if (route === "skip") return { skip: "Orrery answers this agent's compactions itself" };
 		const reply = await runView($, known.session, WAIT_MS);
 		const answer = compactAnswer(e.messages, reply, known.reply);
 		if (answer.kind === "pass") return next(e);
@@ -370,7 +398,7 @@ export const register: Register = (on) => {
 			return ownWay(next(e), known.session, answer.line);
 		}
 		keep(known.session, answer.line);
-		held = { session: known.session, reply, section: answer.section };
+		held = { session: known.session, reply, section: answer.section, instructions: known.instructions };
 		showFacts($, reply);
 		// A fresh toolUses list per row: Claude Code's SessionMessage type wants a mutable one (a turn still in progress keeps
 		// its handles; a finished one goes back built).
@@ -432,7 +460,7 @@ export const register: Register = (on) => {
 		return result;
 	}).catch(($, e, next) => next(e));
 
-	// The startup band above the prompt (section 11): the logo with the lane and its state beside it, until the person's
+	// The startup band above the prompt (section 11): the logo with the agent and its state beside it, until the person's
 	// first prompt in this process; it yields to a survey, and without room for the logo shows the two lines alone.
 	on("ui.render", { component: "AbovePrompt" }, ($, e, next) => {
 		const lines = bandLines(display);
@@ -447,7 +475,7 @@ export const register: Register = (on) => {
 		});
 	}).catch(($, e, next) => next(e));
 
-	// The footer label: `Orrery · <Lane> · <N> msgs` among the mode labels at the right of the prompt footer, for the
+	// The footer label: `Orrery · <Name> · <N> msgs` among the mode labels at the right of the prompt footer, for the
 	// whole session.
 	on("ui.render", { component: "SessionMode" }, ($, e, next) => {
 		const modes = footerModes(e.props.modes, display);

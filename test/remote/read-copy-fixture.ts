@@ -1,11 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseConfig } from "../../src/lane/config.ts";
+import { parseConfig } from "../../src/agent/config.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { createKey, keyToCode, seal } from "../../src/remote/crypto.ts";
 import { FakeStorage } from "../../src/remote/fake.ts";
-import { encodeRows, encodeSnapshot, laneSettings, snapshotBytes } from "../../src/remote/save-format.ts";
+import { encodeRows, encodeSnapshot, agentSettings, snapshotBytes } from "../../src/remote/save-format.ts";
 import { saveRemoteSecret } from "../../src/remote/secrets.ts";
 
 export async function readCopyFixture() {
@@ -14,19 +14,19 @@ export async function readCopyFixture() {
 [remotes.home]
 kind = "cloudflare"
 url = "https://example.invalid"
-[lanes.Atlas]
-workspace = ${JSON.stringify(join(root, "atlas"))}
+[agents.Atlas]
+folder = ${JSON.stringify(join(root, "atlas"))}
 compactor_model = "openai/gpt-5.1-mini"
 remote = "home"
-[lanes.Birch]
-workspace = ${JSON.stringify(join(root, "birch"))}
+[agents.Birch]
+folder = ${JSON.stringify(join(root, "birch"))}
 compactor_model = "openai/gpt-5.1-mini"
 reads = ["Atlas"]
-[lanes.Cedar]
-workspace = ${JSON.stringify(join(root, "cedar"))}
+[agents.Cedar]
+folder = ${JSON.stringify(join(root, "cedar"))}
 compactor_model = "openai/gpt-5.1-mini"
 `, root);
-	const lane = config.lanes.get("Atlas")!;
+	const agent = config.agents.get("Atlas")!;
 	const key = createKey();
 	saveRemoteSecret(config, "home", { key: keyToCode(key), token: "fake-token" });
 	const clock = { value: new Date(2026, 9, 12, 14, 2).getTime() };
@@ -37,10 +37,10 @@ compactor_model = "openai/gpt-5.1-mini"
 	source.append("user", "from the snapshot");
 	let marks = source.marks();
 	let n = 0;
-	const snapshot = async () => storage.snapshot("Atlas", take.lock, n, seal(key, "Atlas", "snapshot", n, encodeSnapshot({ v: 1, n, lock: take.lock, machine: "macbook", at: new Date(clock.value).toISOString(), settings: laneSettings(lane) }, snapshotBytes(source.path))));
+	const snapshot = async () => storage.snapshot("Atlas", take.lock, n, seal(key, "Atlas", "snapshot", n, encodeSnapshot({ v: 1, n, lock: take.lock, machine: "macbook", at: new Date(clock.value).toISOString(), settings: agentSettings(agent) }, snapshotBytes(source.path))));
 	await snapshot();
 	return {
-		root, config, lane, key, storage, clock, source, snapshot,
+		root, config, agent, key, storage, clock, source, snapshot,
 		now: () => clock.value,
 		async save(text = "from a later save") {
 			source.append("talk", text);

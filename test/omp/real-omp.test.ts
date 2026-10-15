@@ -1,15 +1,14 @@
-import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join, relative } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { install } from "../../src/install/install.ts";
-import { checkTools, installSteps, ompExtensionFile, ompExtensionText, orreryRoot, runInstall, type ToolCheck } from "../../src/lane/tools.ts";
+import { installFrom, removeVersion } from "../../src/install/install.ts";
+import { checkTools, installSteps, ompExtensionFile, ompExtensionText, orreryRoot, runInstall, type ToolCheck } from "../../src/agent/tools.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
-import { noteNoGitWorkTree, repoIsGitWorkTree, workingTreeCheckout } from "../install/support.ts";
+import { fakeModel, rpc } from "../pi/host-rpc.ts";
 import { realRemoteTurn } from "../pi/remote-real-support.ts";
+import { builtRelease, bunReady, changedSince, installRelease, removeBuiltRelease } from "../release/support.ts";
 
 /**
  * OMP's whole environment for every run here: a scratch HOME and XDG folders inside it, nothing inherited but PATH.
@@ -30,7 +29,8 @@ function isolated(home: string, extra: Record<string, string> = {}): NodeJS.Proc
 }
 
 const scratch = mkdtempSync(join(tmpdir(), "orrery-real-omp-"));
-afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+afterAll(removeBuiltRelease);
+afterAll(() => removeVersion(scratch)); // installed releases under it are read-only
 
 /** The omp binary: ORRERY_TEST_OMP, or "omp" on PATH; null when there is none. Even --version runs in a scratch HOME. */
 function findOmp(): string | null {
@@ -46,96 +46,9 @@ function findOmp(): string | null {
 }
 
 const omp = findOmp();
-const sse = (payload: unknown): string => `data: ${JSON.stringify(payload)}\n\n`;
-
-interface Call {
-	readonly system: string;
-	readonly users: string[];
-}
-
-/** An OpenAI-compatible server answering every chat call with `reply`; it records each call's system text and user messages. */
-async function fakeModel(reply: string) {
-	const calls: Call[] = [];
-	const server = createServer((req, res) => {
-		let body = "";
-		req.on("data", (chunk) => (body += chunk));
-		req.on("end", () => {
-			if (req.method === "GET") {
-				res.writeHead(200, { "content-type": "application/json" });
-				res.end(JSON.stringify({ object: "list", data: [{ id: "m", object: "model" }] }));
-				return;
-			}
-			const text = (content: unknown) => (typeof content === "string" ? content : JSON.stringify(content));
-			const messages = (JSON.parse(body || "{}") as { messages?: { role: string; content: unknown }[] }).messages ?? [];
-			calls.push({
-				system: messages.filter((m) => m.role === "system" || m.role === "developer").map((m) => text(m.content)).join("\n"),
-				users: messages.filter((m) => m.role === "user").map((m) => text(m.content)),
-			});
-			res.writeHead(200, { "content-type": "text/event-stream" });
-			const base = { id: "c1", object: "chat.completion.chunk", created: 1, model: "m" };
-			res.write(sse({ ...base, choices: [{ index: 0, delta: { role: "assistant", content: reply }, finish_reason: null }] }));
-			res.write(sse({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
-			res.end("data: [DONE]\n\n");
-		});
-	});
-	await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-	return { calls, baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, close: () => server.close() };
-}
-
-type Frame = Record<string, unknown>;
-
-/** OMP in RPC mode (docs/rpc.md): JSON lines out (responses, events, extension UI requests), commands in. */
-function rpc(child: ChildProcessWithoutNullStreams) {
-	const frames: Frame[] = [];
-	const waiters: { test: (frame: Frame) => boolean; done: (frame: Frame) => void }[] = [];
-	let buffer = "";
-	let stderr = "";
-	child.stderr.on("data", (chunk) => (stderr += chunk));
-	child.stdout.on("data", (chunk) => {
-		buffer += chunk;
-		for (let at = buffer.indexOf("\n"); at !== -1; at = buffer.indexOf("\n")) {
-			const line = buffer.slice(0, at);
-			buffer = buffer.slice(at + 1);
-			let frame: Frame;
-			try {
-				frame = JSON.parse(line) as Frame;
-			} catch {
-				continue;
-			}
-			frames.push(frame);
-			for (const waiter of [...waiters]) {
-				if (waiter.test(frame)) {
-					waiters.splice(waiters.indexOf(waiter), 1);
-					waiter.done(frame);
-				}
-			}
-		}
-	});
-	const waitFor = (test: (frame: Frame) => boolean, ms = 60_000): Promise<Frame> => {
-		const seen = frames.find(test);
-		if (seen !== undefined) return Promise.resolve(seen);
-		return new Promise((done, fail) => {
-			const timer = setTimeout(() => fail(new Error(`no such frame in ${ms} ms. Last frames: ${JSON.stringify(frames.slice(-5))}\nstderr: ${stderr.slice(-2000)}`)), ms);
-			waiters.push({
-				test,
-				done: (frame) => {
-					clearTimeout(timer);
-					done(frame);
-				},
-			});
-		});
-	};
-	let next = 0;
-	const send = (command: Frame): Promise<Frame> => {
-		const id = `t${++next}`;
-		child.stdin.write(`${JSON.stringify({ id, ...command })}\n`);
-		return waitFor((f) => f.type === "response" && f.id === id);
-	};
-	return { frames, send, waitFor };
-}
 
 describe.skipIf(omp === null)("Orrery inside a real OMP (isolated OMP home)", () => {
-	it("checks out a remote lane, records a real turn, saves and closes", async () => {
+	it("checks out a remote agent, records a real turn, saves and closes", async () => {
 		await realRemoteTurn(omp as string, "omp");
 	}, 90_000);
 
@@ -147,45 +60,93 @@ describe.skipIf(omp === null)("Orrery inside a real OMP (isolated OMP home)", ()
 		await loadCheck(mkdtempSync(join(scratch, "checkout-")), orreryRoot(), "checkout");
 	}, 120_000);
 
-	// Spec call 3: an installed copy without dev packages (npm ci --omit=dev) must load in OMP. src/omp/settings.ts
-	// imports @earendil-works/pi-coding-agent at run time; OMP supplies it, or "OMP settings not applied" fails the check.
-	noteNoGitWorkTree();
-	it.skipIf(!repoIsGitWorkTree)("OMP loads Orrery through app/current", async () => {
+	// An installed release folder is read-only and holds no dev packages; OMP supplies what extensions/omp.js leaves out.
+	it.skipIf(!bunReady)("OMP loads Orrery through app/current", async () => {
 		const base = mkdtempSync(join(scratch, "installed-"));
-		const checkout = workingTreeCheckout();
 		try {
 			const home = join(base, "home");
-			const { version } = install({ checkout, env: isolated(home), checks: "minimal", omitDev: true });
-			expect(existsSync(join(home, ".orrery", "app", version, "node_modules", "@earendil-works", "pi-coding-agent"))).toBe(false);
-			await loadCheck(base, join(home, ".orrery", "app", "current"), version);
+			const { version } = installFrom({ from: await builtRelease(), env: isolated(home) });
+			expect(existsSync(join(home, ".orrery", "app", version, "node_modules"))).toBe(false);
+			const current = join(home, ".orrery", "app", "current");
+			// Written by hand until the wiring knows releases: OMP follows only a relative re-export (research section 3).
+			await loadCheck(base, current, version, (file) => {
+				writeFileSync(file, `export { default } from ${JSON.stringify(relative(dirname(file), join(current, "extensions", "omp.js")))};\n`);
+			});
 		} finally {
-			rmSync(checkout, { recursive: true, force: true });
+			removeVersion(base); // the installed version is read-only
 		}
 	}, 180_000);
+
+	describe.skipIf(!bunReady)("from a release", () => {
+		it("OMP loads extensions/omp.js from a read-only installed release, through a relative re-export, and writes nothing there", async () => {
+			const base = mkdtempSync(join(scratch, "release-"));
+			const installed = installRelease(await builtRelease(), join(base, "home"));
+			try {
+				// Written by hand until the wiring knows releases: OMP follows only a relative re-export (research §3).
+				await loadCheck(base, installed.current, installed.version, (file) => {
+					writeFileSync(file, `export { default } from ${JSON.stringify(relative(dirname(file), join(installed.current, "extensions", "omp.js")))};\n`);
+				});
+				expect(changedSince(installed.folder, installed.marker)).toEqual([]);
+			} finally {
+				installed.remove();
+			}
+		}, 120_000);
+	});
 });
 
-/**
- * The load check, in `base`: Orrery installed into a scratch OMP home the way the Tools page installs it, against
- * `root` (a checkout, or an install's app/current), then a real OMP run in a lane. Its status records `version`.
- */
-async function loadCheck(base: string, root: string, version: string): Promise<void> {
-	const model = await fakeModel("pong");
-	const home = join(base, "home");
-	const lane = join(base, "lane");
-	const data = join(base, "data", "lanes", "Probe");
-	// A Claude Code lane's import line: OMP would put the stale view in its prompt unless Orrery disables CLAUDE.md.
-	mkdirSync(join(lane, ".orrery"), { recursive: true });
-	writeFileSync(join(lane, "CLAUDE.md"), "Lane rules.\n\n@.orrery/view.md\n");
-	writeFileSync(join(lane, ".orrery", "view.md"), "STALE-VIEW-MARKER-77\n");
-	const env = isolated(home, { ORRERY_CONFIG: join(base, "config.toml") });
-	const agentDir = join(home, ".omp", "agent");
-	mkdirSync(agentDir, { recursive: true });
+/** spec §9: a real OMP opens an agent, by ORRERY_AGENT, from a folder that is not its own, with its instructions and memory. */
+describe.skipIf(omp === null)("an agent opened outside its folder, inside a real OMP", () => {
+	it("puts its instructions, then its memory, in the system prompt", async () => {
+		const root = mkdtempSync(join(scratch, "agent-"));
+		const home = join(root, "home");
+		const agentDir = join(root, "data", "agents", "Probe");
+		for (const dir of [join(root, "agent-Probe"), join(root, "elsewhere"), agentDir]) mkdirSync(dir, { recursive: true });
+		writeFileSync(join(agentDir, "instructions.md"), "You are Probe. Your tag is TAG-4712.\n");
+		const store = MemoryStore.open(join(agentDir, "memory.sqlite"));
+		store.appendBatch([{ kind: "user", text: "The codename is Cedar.", date: "2026-10-01T10:00:00.000Z" }, { kind: "talk", text: "Noted.", date: "2026-10-01T10:00:05.000Z" }]);
+		store.close();
+		const model = await fakeModel("pong");
+		try {
+			const env = isolated(home, { ORRERY_CONFIG: join(root, "config.toml"), ORRERY_AGENT: "Probe" });
+			writeOmpModels(join(home, ".omp", "agent"), model.baseUrl);
+			const file = ompExtensionFile(env);
+			mkdirSync(dirname(file), { recursive: true });
+			writeFileSync(file, ompExtensionText(orreryRoot(), file));
+			writeFileSync(join(root, "config.toml"), [`data_dir = ${JSON.stringify(join(root, "data"))}`, "[[providers]]", 'id = "local"', `base_url = ${JSON.stringify(model.baseUrl)}`, "[[providers.models]]", 'id = "m"', 'name = "m"', "context_window = 128000", "max_tokens = 4096", "reasoning = false", "[agents.Probe]", `folder = ${JSON.stringify(join(root, "agent-Probe"))}`, 'tool = "omp"', 'compactor_model = "local/m"', 'compactor_thinking = "off"', ""].join("\n"));
+			const child = spawn(omp as string, ["--mode", "rpc"], { cwd: join(root, "elsewhere"), env });
+			const exited = new Promise<void>((done) => child.on("exit", () => done()));
+			const { send, waitFor } = rpc(child);
+			try {
+				await waitFor((f) => f.type === "ready");
+				await waitFor((f) => f.method === "setStatus" && f.statusKey === "orrery" && f.statusText === "Orrery · Probe · 2 msgs");
+				await send({ type: "prompt", message: "Who are you?" });
+				await waitFor((f) => f.type === "agent_end");
+				const system = model.calls.find((call) => call.users.some((text) => text.includes("Who are you?")))?.system ?? "";
+				expect(system).toContain("# Agent: Probe");
+				expect(system).toContain("TAG-4712");
+				expect(system).toContain("The codename is Cedar.");
+				expect(system.indexOf("# Agent: Probe")).toBeLessThan(system.indexOf("# Memory"));
+			} finally {
+				child.stdin.end();
+				const stop = setTimeout(() => child.kill("SIGKILL"), 10_000);
+				await exited;
+				clearTimeout(stop);
+			}
+		} finally {
+			model.close();
+		}
+	}, 90_000);
+});
+
+/** OMP's models (the test's own server as its only provider, `local/m` its default), in `ompAgentDir`, made when needed. */
+function writeOmpModels(ompAgentDir: string, baseUrl: string): void {
+	mkdirSync(ompAgentDir, { recursive: true });
 	writeFileSync(
-		join(agentDir, "models.yml"),
+		join(ompAgentDir, "models.yml"),
 		[
 			"providers:",
 			"  local:",
-			`    baseUrl: ${model.baseUrl}`,
+			`    baseUrl: ${baseUrl}`,
 			"    apiKey: none",
 			"    api: openai-completions",
 			"    models:",
@@ -203,19 +164,43 @@ async function loadCheck(base: string, root: string, version: string): Promise<v
 			"",
 		].join("\n"),
 	);
-	writeFileSync(join(agentDir, "config.yml"), "modelRoles:\n  default: local/m\nsetupVersion: 2\n");
-	// Installed the way the Tools page installs (src/lane/tools.ts), into the scratch agent folder: env's HOME is scratch.
-	// Runner: no tool's --version or `claude plugin list` runs here; only OMP's wiring matters.
-	const quiet = () => ({ status: 1, stdout: "", stderr: "" });
-	const ompCheck = (): ToolCheck => checkTools({ root, env, run: quiet }).find((check) => check.id === "omp") as ToolCheck;
+	writeFileSync(join(ompAgentDir, "config.yml"), "modelRoles:\n  default: local/m\nsetupVersion: 2\n");
+}
+
+/**
+ * The load check, in `base`: Orrery installed into a scratch OMP home the way the Tools page installs it, against
+ * `root` (a checkout, or an install's app/current), or by `writeExtension` when given, then a real OMP run in an agent.
+ * Its status records `version`.
+ */
+async function loadCheck(base: string, root: string, version: string, writeExtension?: (file: string) => void): Promise<void> {
+	const model = await fakeModel("pong");
+	const home = join(base, "home");
+	const agent = join(base, "agent");
+	const data = join(base, "data", "agents", "Probe");
+	// A Claude Code agent's import line: OMP would put the stale view in its prompt unless Orrery disables CLAUDE.md.
+	mkdirSync(join(agent, ".orrery"), { recursive: true });
+	writeFileSync(join(agent, "CLAUDE.md"), "Agent rules.\n\n@.orrery/view.md\n");
+	writeFileSync(join(agent, ".orrery", "view.md"), "STALE-VIEW-MARKER-77\n");
+	const env = isolated(home, { ORRERY_CONFIG: join(base, "config.toml") });
+	const ompAgentDir = join(home, ".omp", "agent");
+	writeOmpModels(ompAgentDir, model.baseUrl);
 	const file = ompExtensionFile(env);
-	expect(file).toBe(join(agentDir, "extensions", "orrery.ts"));
-	expect(ompCheck().wiring).toBe("missing");
-	const steps = installSteps(ompCheck(), root, env);
-	expect(steps.map((step) => (step.kind === "write" ? step.path : step.kind))).toEqual([file]);
-	expect(runInstall(steps, quiet)).toMatchObject({ ok: true });
-	expect(readFileSync(file, "utf8")).toBe(ompExtensionText(root, file));
-	expect(ompCheck().wiring).toBe("installed");
+	expect(file).toBe(join(ompAgentDir, "extensions", "orrery.ts"));
+	if (writeExtension !== undefined) {
+		mkdirSync(dirname(file), { recursive: true });
+		writeExtension(file);
+	} else {
+		// Installed the way the Tools page installs (src/agent/tools.ts), into the scratch agent folder: env's HOME is
+		// scratch. Runner: no tool's --version or `claude plugin list` runs here; only OMP's wiring matters.
+		const quiet = () => ({ status: 1, stdout: "", stderr: "" });
+		const ompCheck = (): ToolCheck => checkTools({ root, env, run: quiet }).find((check) => check.id === "omp") as ToolCheck;
+		expect(ompCheck().wiring).toBe("missing");
+		const steps = installSteps(ompCheck(), root, env);
+		expect(steps.map((step) => (step.kind === "write" ? step.path : step.kind))).toEqual([file]);
+		expect(runInstall(steps, quiet)).toMatchObject({ ok: true });
+		expect(readFileSync(file, "utf8")).toBe(ompExtensionText(root, file));
+		expect(ompCheck().wiring).toBe("installed");
+	}
 	writeFileSync(
 		join(base, "config.toml"),
 		[
@@ -230,15 +215,15 @@ async function loadCheck(base: string, root: string, version: string): Promise<v
 			"context_window = 128000",
 			"max_tokens = 4096",
 			"reasoning = false",
-			"[lanes.Probe]",
-			`workspace = ${JSON.stringify(lane)}`,
+			"[agents.Probe]",
+			`folder = ${JSON.stringify(agent)}`,
 			'tool = "omp"',
 			'compactor_model = "local/m"',
 			'compactor_thinking = "off"',
 			"",
 		].join("\n"),
 	);
-	const child = spawn(omp as string, ["--mode", "rpc"], { cwd: lane, env });
+	const child = spawn(omp as string, ["--mode", "rpc"], { cwd: agent, env });
 	const exited = new Promise<void>((done) => child.on("exit", () => done()));
 	const { frames, send, waitFor } = rpc(child);
 	try {
@@ -261,7 +246,7 @@ async function loadCheck(base: string, root: string, version: string): Promise<v
 		expect(turn2?.system).toContain("The codename is Cedar.");
 		expect(turn2?.system).toContain("zoom, date and memory_search are the Orrery memory tools");
 		expect(turn2?.users).toHaveLength(1);
-		expect(JSON.parse(readFileSync(join(data, "status.json"), "utf8"))).toMatchObject({ lane: "Probe", model: "omp", open: true, version });
+		expect(JSON.parse(readFileSync(join(data, "status.json"), "utf8"))).toMatchObject({ agent: "Probe", model: "omp", open: true, version });
 		expect(frames.filter((f) => f.method === "notify" && String(f.message).includes("OMP settings not applied"))).toEqual([]);
 	} finally {
 		child.stdin.end();

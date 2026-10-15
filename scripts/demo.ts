@@ -9,7 +9,7 @@ import { runTui } from ${JSON.stringify(new URL("../src/tui/run.ts", import.meta
 const demo = createDemo(process.env.HOME);
 process.exitCode = await runTui(demo.configPath, {
 	createDeps: ({ tui, quit }) => demoDeps(demo, { rows: () => tui.terminal.rows, quit, requestRender: () => tui.requestRender() }),
-	notice: "Demo · fictional data and prices · browse lanes and Usage · q to quit",
+	notice: "Demo · fictional data and prices · browse agents and Usage · q to quit",
 });
 `;
 process.exitCode = await withDemoHome(async (home) => {

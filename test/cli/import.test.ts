@@ -3,25 +3,27 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:f
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { importDryRunCommand } from "../../src/cli/commands.ts";
-import { parseConfig } from "../../src/lane/config.ts";
-import { cleanEnv } from "../claude/support.ts";
-import { fauxModels, laneConfigToml, tempDir } from "../lane/support.ts";
+import { parseConfig } from "../../src/agent/config.ts";
+import { cleanEnv, cliCommand } from "../claude/support.ts";
+import { fauxModels, agentConfigToml, tempDir } from "../agent/support.ts";
 
-const MAIN = new URL("../../src/cli/main.ts", import.meta.url).pathname;
 const dirs: string[] = [];
 afterEach(() => {
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-const orrery = (args: string[]) => spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, ...args], { encoding: "utf8" });
+const orrery = (args: string[], cwd?: string) => {
+	const c = cliCommand(args);
+	return spawnSync(c.cmd, c.args, { encoding: "utf8", cwd });
+};
 const jsonl = (records: object[]) => records.map((r) => JSON.stringify(r)).join("\n");
 
 function fixture() {
 	const dir = tempDir("orrery-import-");
 	dirs.push(dir);
-	const workspace = join(dir, "ws");
+	const folder = join(dir, "ws");
 	const config = join(dir, "config.toml");
-	writeFileSync(config, laneConfigToml({ dataDir: join(dir, "data"), workspace }));
+	writeFileSync(config, agentConfigToml({ dataDir: join(dir, "data"), folder }));
 	const claude = join(dir, "claude");
 	mkdirSync(claude);
 	writeFileSync(
@@ -36,7 +38,7 @@ function fixture() {
 	writeFileSync(
 		join(codexDay, "rollout-x.jsonl"),
 		jsonl([
-			{ timestamp: "2026-08-01T09:00:00.000Z", type: "session_meta", payload: { id: "x", cwd: workspace } },
+			{ timestamp: "2026-08-01T09:00:00.000Z", type: "session_meta", payload: { id: "x", cwd: folder } },
 			{ timestamp: "2026-08-01T09:00:01.000Z", type: "event_msg", payload: { type: "user_message", message: `Codename Cedar. ${"Background detail. ".repeat(80)}` } },
 			{ timestamp: "2026-08-01T09:00:02.000Z", type: "event_msg", payload: { type: "agent_message", message: "Noted: Cedar.", phase: "final_answer" } },
 		]),
@@ -81,6 +83,19 @@ describe("orrery import and browse", () => {
 		);
 		expect(summary).toMatch(/Split model: 1 calls/);
 		expect(readFileSync(join(dir, "out", "report.md"), "utf8")).toContain("needs review: 1");
+	});
+
+	it("finds no history by folder for an agent without a folder: only the files named", async () => {
+		const { dir, config, claude, codex } = fixture();
+		const text = readFileSync(config, "utf8").replace(/^folder = .*\n/m, "").replace(/^allowed_roots = .*\n/m, "");
+		const nomad = parseConfig(text, dir);
+		expect(nomad.agents.get("Test")?.folder).toBeUndefined();
+		const options = { codex, notes: [], pasteThreshold: 1200, split: false, out: join(dir, "out") };
+		const none = await importDryRunCommand(nomad, "Test", options, fauxModels().models);
+		expect(none).toContain("Claude: 0 turns from 0 files");
+		expect(none).toContain("Codex: 0 turns from 0 sessions");
+		const named = await importDryRunCommand(nomad, "Test", { ...options, claude, out: join(dir, "out2") }, fauxModels().models);
+		expect(named).toContain("Claude: 1 turns from 1 files");
 	});
 
 	it("fails fast on an unknown split model, and stops after three split errors in a row", async () => {
@@ -137,11 +152,7 @@ describe("orrery import and browse", () => {
 			const file = elsewhere(f.dir);
 			const out = run(f, ["--codex-file", file], "none");
 			expect(out.stdout).toContain("Codex: 1 turns from 1 sessions");
-			const rel = spawnSync(
-				process.execPath,
-				["--disable-warning=ExperimentalWarning", MAIN, "import", "Test", "--config", f.config, "--dry-run", "--claude", "none", "--codex", "none", "--codex-file", "resumed/rollout-z.jsonl", "--no-split", "--out", join(f.dir, "out2")],
-				{ encoding: "utf8", cwd: f.dir },
-			);
+			const rel = orrery(["import", "Test", "--config", f.config, "--dry-run", "--claude", "none", "--codex", "none", "--codex-file", "resumed/rollout-z.jsonl", "--no-split", "--out", join(f.dir, "out2")], f.dir);
 			expect(rel.stdout).toContain("Codex: 1 turns from 1 sessions");
 		});
 
@@ -201,12 +212,10 @@ describe("orrery import and browse", () => {
 			);
 			return file;
 		}
-		const spawn = (f: ReturnType<typeof fixture>, args: string[], cwd?: string) =>
-			spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", MAIN, "import", "Test", "--config", f.config, "--dry-run", "--codex", "none", "--no-split", ...args], {
-				encoding: "utf8",
-				cwd,
-				env: cleanEnv({ HOME: f.dir }),
-			});
+		const spawn = (f: ReturnType<typeof fixture>, args: string[], cwd?: string) => {
+			const c = cliCommand(["import", "Test", "--config", f.config, "--dry-run", "--codex", "none", "--no-split", ...args]);
+			return spawnSync(c.cmd, c.args, { encoding: "utf8", cwd, env: cleanEnv({ HOME: f.dir }) });
+		};
 		const run = (f: ReturnType<typeof fixture>, extra: string[], claude = f.claude) => spawn(f, ["--claude", claude, "--out", join(f.dir, "out"), ...extra]);
 
 		it("is not found by default, is included when named, and is not duplicated", () => {

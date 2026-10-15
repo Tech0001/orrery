@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { LaneUsage } from "../../src/lane/overview.ts";
+import type { AgentUsage } from "../../src/agent/overview.ts";
 import { compactCount } from "../../src/tui/table.ts";
 import { usagePage } from "../../src/tui/pages/usage.ts";
 import { CONFIG, fakeDeps, keys, makeApp, row, screen, settle } from "./support.ts";
 
-const USAGE: LaneUsage[] = [
+const USAGE: AgentUsage[] = [
 	{
 		name: "Alpha",
 		rows: [
@@ -23,16 +23,18 @@ describe("compactCount", () => {
 });
 
 describe("the Usage page", () => {
-	it("shows tokens per lane per day, agent and summaries, with the cached share", () => {
+	it("shows tokens per agent per day, its chat and its summaries, with the cached share", () => {
 		const app = makeApp(fakeDeps({ usage: () => USAGE }, [row({ name: "Alpha" }), row({ name: "Cedarn", tool: "claude-code" })]), [usagePage]);
 		const text = screen(app);
 		expect(text).toContain("last 7 days");
+		// The agent's own model's tokens are "Chat in", so they are not read as the Agent column's.
+		expect(text).toMatch(/Agent\s+Day\s+Chat in\s+cache-read\s+share\s+out\s+Summaries in\s+cache-read\s+share\s+out/);
 		expect(text).toMatch(/Alpha\s+2026-10-08\s+400\s+300\s+75%\s+20\s+100\s+50\s+50%\s+5/);
 		expect(text).toMatch(/Cedarn\s+2026-10-07\s+—\s+—\s+—\s+—\s+10\s+0\s+0%\s+1/);
 	});
 
 	it("prints big counts compactly and fits at 60, 100 and 120 columns", () => {
-		const usage: LaneUsage[] = [{ name: "Alpha", rows: [{ at: "2026-10-08T09:00:00.000Z", role: "agent", model: "m", input: 100_000_000, cacheRead: 77_778_662, cacheWrite: 0, output: 391_343, ok: true }] }];
+		const usage: AgentUsage[] = [{ name: "Alpha", rows: [{ at: "2026-10-08T09:00:00.000Z", role: "agent", model: "m", input: 100_000_000, cacheRead: 77_778_662, cacheWrite: 0, output: 391_343, ok: true }] }];
 		const app = makeApp(fakeDeps({ usage: () => usage }), [usagePage]);
 		expect(screen(app, 120)).toMatch(/Alpha\s+2026-10-08\s+177\.8M\s+77\.8M\s+44%\s+391\.3K/);
 		expect(screen(app, 120)).not.toContain("177778662");
@@ -49,7 +51,7 @@ describe("the Usage page", () => {
 	});
 
 	it("counts cache writes in input and shows the cache-read count", () => {
-		const usage: LaneUsage[] = [{ name: "Alpha", rows: [{ at: "2026-10-08T09:00:00.000Z", role: "agent", model: "m", input: 100, cacheRead: 200, cacheWrite: 700, output: 5, ok: true }] }];
+		const usage: AgentUsage[] = [{ name: "Alpha", rows: [{ at: "2026-10-08T09:00:00.000Z", role: "agent", model: "m", input: 100, cacheRead: 200, cacheWrite: 700, output: 5, ok: true }] }];
 		const app = makeApp(fakeDeps({ usage: () => usage }), [usagePage]);
 		expect(screen(app)).toMatch(/Alpha\s+2026-10-08\s+1\.0K\s+200\s+20%\s+5/);
 	});
@@ -81,7 +83,7 @@ describe("the Usage page's summary cost", () => {
 	/** $ per million tokens, as pi-ai's catalog has them. */
 	const HAIKU = { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 };
 	const summaries = (at: string, model: string, input: number, output: number, cacheRead = 0, cacheWrite = 0) => ({ at, role: "compactor" as const, model, input, cacheRead, cacheWrite, output, ok: true });
-	const usage: LaneUsage[] = [
+	const usage: AgentUsage[] = [
 		{
 			name: "Alpha",
 			rows: [

@@ -24,7 +24,7 @@ const NOISE = [
 	"<bash-stderr",
 	"<user-memory-input",
 ];
-const AGENT_TOOLS = new Set(["Task", "Agent"]);
+const SUBAGENT_TOOLS = new Set(["Task", "Agent"]);
 
 interface Block {
 	readonly type?: string;
@@ -46,8 +46,8 @@ interface ClaudeRecord {
 	readonly message?: { readonly id?: string; readonly content?: unknown };
 }
 
-export function claudeProjectDir(workspace: string, home: string = homedir()): string {
-	return join(home, ".claude", "projects", workspace.replace(/[^A-Za-z0-9]/g, "-"));
+export function claudeProjectDir(folder: string, home: string = homedir()): string {
+	return join(home, ".claude", "projects", folder.replace(/[^A-Za-z0-9]/g, "-"));
 }
 
 function blockText(content: unknown): string {
@@ -59,7 +59,8 @@ function blockText(content: unknown): string {
 		.join("\n");
 }
 
-function directorText(content: unknown): string | undefined {
+/** A user record's own words: its text without system reminders, or undefined for noise (slash-command wrappers, ! commands, notifications). */
+export function promptText(content: unknown): string | undefined {
 	const text = blockText(content).replace(SYSTEM_REMINDER, "").trim();
 	if (!text || NOISE.some((prefix) => text.startsWith(prefix))) return undefined;
 	return text;
@@ -166,7 +167,7 @@ export function extractClaudeFiles(files: readonly string[]): Extracted {
 						}
 					}
 				}
-				const text = directorText(content);
+				const text = promptText(content);
 				if (text === undefined) {
 					// A slash command ends the turn before it: its reply is noise, and must not stand as that turn's final reply.
 					if (slashCommand(content)) flush();
@@ -178,7 +179,7 @@ export function extractClaudeFiles(files: readonly string[]): Extracted {
 			}
 			if (turn === undefined || !Array.isArray(content)) continue;
 			for (const block of content as Block[]) {
-				if (block?.type === "tool_use" && typeof block.id === "string" && AGENT_TOOLS.has(block.name ?? "")) agentCalls.add(block.id);
+				if (block?.type === "tool_use" && typeof block.id === "string" && SUBAGENT_TOOLS.has(block.name ?? "")) agentCalls.add(block.id);
 				if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
 					const id = record.message?.id;
 					if (turn.final !== undefined && id !== undefined && turn.final.id === id) {

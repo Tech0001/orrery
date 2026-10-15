@@ -2,14 +2,15 @@ import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryStore } from "../../src/memory/index.ts";
-import { cleanup, close, lastLane, pi, plainPi, world } from "./world.ts";
+import { cleanup, close, isolatedHome, lastAgent, pi, plainPi, world } from "./world.ts";
 
 afterEach(cleanup);
+isolatedHome();
 
 type Ctx = { systemPrompt?: string; messages: { role: string; content: unknown }[] };
 const textOf = (m: { content: unknown }) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content));
 const memoryOf = (root: string) => {
-	const store = MemoryStore.openReadOnly(join(root, "data", "lanes", "Atlas", "memory.sqlite"));
+	const store = MemoryStore.openReadOnly(join(root, "data", "agents", "Atlas", "memory.sqlite"));
 	const rows = store.root.map((m) => `${m.kind}: ${m.text}`);
 	store.close();
 	return rows;
@@ -141,7 +142,7 @@ describe("each run", () => {
 			},
 		]);
 		await run.session.prompt(`A long first message ${"detail ".repeat(200)}`);
-		await vi.waitFor(() => expect(lastLane().compactor.failed.size).toBeGreaterThan(0));
+		await vi.waitFor(() => expect(lastAgent().compactor.failed.size).toBeGreaterThan(0));
 		const started = Date.now();
 		await run.session.prompt("Are you there?");
 		expect(Date.now() - started).toBeLessThan(2000);
@@ -161,7 +162,7 @@ describe("each run", () => {
 			run.setSummaryResponses(Array.from({ length: 5 }, () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "quota exceeded" })));
 			run.setResponses([fauxAssistantMessage("Read.")]);
 			await run.session.prompt(`A long first message ${"detail ".repeat(200)}`);
-			await vi.waitFor(() => expect(lastLane().compactor.failed.size).toBeGreaterThan(0));
+			await vi.waitFor(() => expect(lastAgent().compactor.failed.size).toBeGreaterThan(0));
 			const failing = () => run.notices.filter((n) => n.message.startsWith("Orrery: Atlas's summaries"));
 			expect(failing()).toEqual([]);
 			vi.advanceTimersByTime(5000);
@@ -170,10 +171,10 @@ describe("each run", () => {
 				{ type: "warning", message: expect.stringMatching(/^Orrery: Atlas's summaries are failing: .+\. They keep retrying; nothing is lost\. Switch with \/compactor\.$/) },
 			]);
 			// A failed retry replaces the error, often with a new request id: the reason changes, the state does not.
-			const before = lastLane().summaryTrouble()?.plain;
-			lastLane().compactor.lastError = "upstream error, request_id req_0002";
-			expect(lastLane().summaryTrouble()?.state).toBe("failing");
-			expect(lastLane().summaryTrouble()?.plain).not.toBe(before);
+			const before = lastAgent().summaryTrouble()?.plain;
+			lastAgent().compactor.lastError = "upstream error, request_id req_0002";
+			expect(lastAgent().summaryTrouble()?.state).toBe("failing");
+			expect(lastAgent().summaryTrouble()?.plain).not.toBe(before);
 			vi.advanceTimersByTime(5000);
 			expect(failing()).toHaveLength(1);
 			// The once-per-change notice is all the user hears: no raw per-part compactor warnings.
@@ -184,7 +185,7 @@ describe("each run", () => {
 		}
 	}, 20_000);
 
-	it("does not repeat at the tick what the lane said when it opened, and says once when summaries work again", async () => {
+	it("does not repeat at the tick what the agent said when it opened, and says once when summaries work again", async () => {
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 		try {
 			const { root, config } = world({ compactorModel: "nobody/nothing" });
@@ -211,7 +212,7 @@ describe("each run", () => {
 		run.setSummaryResponses([failLater, failLater]);
 		run.setResponses([fauxAssistantMessage("Read."), fauxAssistantMessage("Still here.")]);
 		await run.session.prompt(`A long first message ${"detail ".repeat(200)}`);
-		expect(lastLane().compactor.failed.size).toBe(0); // the summary call is still out
+		expect(lastAgent().compactor.failed.size).toBe(0); // the summary call is still out
 		const started = Date.now();
 		await run.session.prompt("Are you there?");
 		expect(Date.now() - started).toBeLessThan(3000);

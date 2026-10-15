@@ -1,12 +1,12 @@
-/** Versioned, compressed saves and consistent SQLite snapshots for remote lane memory. */
+/** Versioned, compressed saves and consistent SQLite snapshots for remote agent memory. */
 
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { gzipSync, gunzipSync } from "node:zlib";
-import type { LaneConfig } from "../lane/config.ts";
+import type { AgentConfig } from "../agent/config.ts";
 import { validDate } from "../memory/bytes.ts";
-import { openDatabase, type Database } from "../memory/sqlite.ts";
+import { openDatabase, type Database, vacuumInto } from "../memory/sqlite.ts";
 import { MemoryStore, type StoreRows } from "../memory/store.ts";
 import { isKind } from "../memory/types.ts";
 import { unseal } from "./crypto.ts";
@@ -29,34 +29,34 @@ export interface SaveHeader {
 	readonly takeover?: { readonly from: string };
 }
 
-/** Portable settings copied once by lane pull; machine-specific workspace paths are not included. */
-export interface LaneSettings {
+/** Portable settings copied once by agent pull; machine-specific folder paths are not included. */
+export interface AgentSettings {
 	readonly tool?: string;
 	readonly compactorModel: string;
 	readonly compactorThinking: string;
 	readonly viewBytes?: number;
 	/** Summary size (node_bytes). */
 	readonly nodeBytes?: number;
-	/** The top of each summary call's view (compactor_context_bytes), when the lane sets one. */
+	/** The top of each summary call's view (compactor_context_bytes), when the agent sets one. */
 	readonly contextBytes?: number;
 	readonly compactorJobs?: number;
 	readonly compactAt?: number;
+	/** Before agents: the agent's instructions file name. Read from older snapshots; never written or used. */
 	readonly instructions?: string;
 	readonly reads?: readonly string[];
 }
 
-export function laneSettings(lane: LaneConfig): LaneSettings {
+export function agentSettings(agent: AgentConfig): AgentSettings {
 	return {
-		...(lane.tool === undefined ? {} : { tool: lane.tool }),
-		compactorModel: `${lane.compactor.model.provider}/${lane.compactor.model.modelId}`,
-		compactorThinking: lane.compactor.model.thinking,
-		viewBytes: lane.memory.viewBytes,
-		nodeBytes: lane.memory.nodeBytes,
-		...(lane.compactor.contextBytes === undefined ? {} : { contextBytes: lane.compactor.contextBytes }),
-		compactorJobs: lane.compactor.jobs,
-		compactAt: lane.compactAt,
-		instructions: lane.instructions,
-		reads: [...lane.reads],
+		...(agent.tool === undefined ? {} : { tool: agent.tool }),
+		compactorModel: `${agent.compactor.model.provider}/${agent.compactor.model.modelId}`,
+		compactorThinking: agent.compactor.model.thinking,
+		viewBytes: agent.memory.viewBytes,
+		nodeBytes: agent.memory.nodeBytes,
+		...(agent.compactor.contextBytes === undefined ? {} : { contextBytes: agent.compactor.contextBytes }),
+		compactorJobs: agent.compactor.jobs,
+		compactAt: agent.compactAt,
+		reads: [...agent.reads],
 	};
 }
 
@@ -67,7 +67,7 @@ export interface SnapshotHeader {
 	readonly lock: number;
 	readonly machine: string;
 	readonly at: string;
-	readonly settings: LaneSettings;
+	readonly settings: AgentSettings;
 }
 
 export function encodeSnapshot(header: SnapshotHeader, db: Uint8Array): Uint8Array {
@@ -90,7 +90,7 @@ export function decodeSnapshot(plain: Uint8Array): { header: SnapshotHeader; db:
 		if (typeof settings.compactorModel !== "string" || !/^[^/]+\/.+/.test(settings.compactorModel) || typeof settings.compactorThinking !== "string") throw new Error("Invalid model settings");
 		for (const key of ["tool", "instructions"]) if (settings[key] !== undefined && typeof settings[key] !== "string") throw new Error("Invalid text setting");
 		for (const key of ["viewBytes", "nodeBytes", "contextBytes", "compactorJobs", "compactAt"]) if (settings[key] !== undefined && (!natural(settings[key]) || settings[key] === 0)) throw new Error("Invalid numeric setting");
-		if (settings.reads !== undefined && (!Array.isArray(settings.reads) || !settings.reads.every((lane) => typeof lane === "string"))) throw new Error("Invalid reader settings");
+		if (settings.reads !== undefined && (!Array.isArray(settings.reads) || !settings.reads.every((agent) => typeof agent === "string"))) throw new Error("Invalid reader settings");
 		return { header: header as unknown as SnapshotHeader, db: bytes.subarray(4 + length) };
 	} catch {
 		throw new RemoteError("corrupt", "a snapshot header from the remote could not be read");
@@ -98,10 +98,10 @@ export function decodeSnapshot(plain: Uint8Array): { header: SnapshotHeader; db:
 }
 
 /** Read the newest snapshot's settings without opening or restoring the database. */
-export async function remoteLaneSettings(storage: Storage, key: Uint8Array, lane: string): Promise<SnapshotHeader> {
-	const { snapshot } = await storage.fetch(lane, -1);
-	if (snapshot === undefined) throw new RemoteError("not-found", `${lane} has no snapshot on remote ${storage.name}`);
-	const { header } = decodeSnapshot(unseal(key, lane, "snapshot", snapshot.n, snapshot.file));
+export async function remoteAgentSettings(storage: Storage, key: Uint8Array, agent: string): Promise<SnapshotHeader> {
+	const { snapshot } = await storage.fetch(agent, -1);
+	if (snapshot === undefined) throw new RemoteError("not-found", `${agent} has no snapshot on remote ${storage.name}`);
+	const { header } = decodeSnapshot(unseal(key, agent, "snapshot", snapshot.n, snapshot.file));
 	if (header.n !== snapshot.n) throw new RemoteError("corrupt", "a snapshot header has the wrong save number");
 	return header;
 }
@@ -151,14 +151,24 @@ function tempPath(dbPath: string, kind: string): string {
 	return join(dirname(dbPath), `.${kind}-${process.pid}-${randomBytes(12).toString("hex")}.sqlite`);
 }
 
-/** Recover files left by interrupted snapshot/restore operations, without disturbing recent work. */
+/** The private folder vacuumInto (src/memory/sqlite.ts) writes in, `<target>-XXXXXX`, beside a snapshot or a set-aside copy. */
+const VACUUM_FOLDER = /^(\.snapshot-.+|memory-before-remote-.+)\.sqlite-[A-Za-z0-9]{6}$/;
+
+/**
+ * Recover files left by interrupted snapshot/restore operations, and vacuumInto's folders left by interrupted snapshots
+ * and set-asides, without disturbing recent work. Links are never followed or removed.
+ */
 function cleanOldTemps(dbPath: string): void {
 	const cutoff = Date.now() - 60 * 60 * 1000;
 	for (const name of readdirSync(dirname(dbPath))) {
-		if (!name.startsWith(".restore-") && !name.startsWith(".snapshot-")) continue;
+		const file = name.startsWith(".restore-") || name.startsWith(".snapshot-");
+		const folder = VACUUM_FOLDER.test(name);
+		if (!file && !folder) continue;
 		const path = join(dirname(dbPath), name);
 		const stat = lstatSync(path, { throwIfNoEntry: false });
-		if (stat?.isFile() && stat.mtimeMs < cutoff) rmSync(path, { force: true });
+		if (stat === undefined || stat.mtimeMs >= cutoff) continue;
+		if (file && stat.isFile()) rmSync(path, { force: true });
+		else if (folder && stat.isDirectory()) rmSync(path, { recursive: true, force: true });
 	}
 }
 
@@ -173,20 +183,25 @@ function removeLocalMeta(db: Database): void {
 	for (const [key] of localMeta(db)) remove.run(key);
 }
 
-/** A VACUUM copy sees committed WAL data without changing the source's tree rowids. */
-export function snapshotBytes(dbPath: string): Uint8Array {
+/**
+ * A VACUUM copy sees committed WAL data without changing the source's tree rowids. `meta` is written into the copy only
+ * (a first push's values, which the working copy takes once the push has landed).
+ */
+export function snapshotBytes(dbPath: string, meta: Readonly<Record<string, string>> = {}): Uint8Array {
 	cleanOldTemps(dbPath);
 	const temp = tempPath(dbPath, "snapshot");
-	// VACUUM INTO accepts an empty destination. Reserve it privately before SQLite writes any memory text.
+	// Reserve it privately before SQLite writes any memory text.
 	closeSync(openSync(temp, "wx", 0o600));
 	try {
 		const db = openDatabase(dbPath, { readOnly: true });
-		try { db.prepare("VACUUM INTO ?").run(temp); } finally { db.close(); }
+		try { vacuumInto(db, temp); } finally { db.close(); }
 		// Local metadata is excluded from full snapshots as well as incremental saves.
 		const copy = openDatabase(temp);
 		try {
 			copy.exec("PRAGMA secure_delete = ON");
 			removeLocalMeta(copy);
+			const upsert = copy.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+			for (const [key, value] of Object.entries(meta)) upsert.run(key, value);
 		} finally { copy.close(); }
 		return gzipSync(readFileSync(temp));
 	} finally {

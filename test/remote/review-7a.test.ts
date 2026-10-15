@@ -4,15 +4,15 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Holder } from "../../src/claude/holder.ts";
 import { compactCommand } from "../../src/cli/commands.ts";
-import { COMPACTOR_MODEL_KEY } from "../../src/lane/choices.ts";
-import { laneCompactorTarget } from "../../src/lane/compactor-target.ts";
-import { laneModelSource } from "../../src/lane/model-source.ts";
+import { COMPACTOR_MODEL_KEY } from "../../src/agent/choices.ts";
+import { agentCompactorTarget } from "../../src/agent/compactor-target.ts";
+import { agentModelSource } from "../../src/agent/model-source.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
-import { attachRemoteStore, checkOutLane, remoteOpenNotice, withBriefCheckOut } from "../../src/remote/checkout.ts";
+import { attachRemoteStore, checkOutAgent, remoteOpenNotice, withBriefCheckOut } from "../../src/remote/checkout.ts";
 import * as remotes from "../../src/remote/index.ts";
 import { RemoteError, RENEW_MS, STALE_MS } from "../../src/remote/types.ts";
 import { realDeps } from "../../src/tui/deps.ts";
-import { fauxModels } from "../lane/support.ts";
+import { fauxModels } from "../agent/support.ts";
 import { checkoutFixture } from "./checkout-fixture.ts";
 
 let f: Awaited<ReturnType<typeof checkoutFixture>>;
@@ -30,8 +30,8 @@ afterEach(async () => {
 });
 
 it("compact returns lock-lost when takeover interrupts a slow faux summary", async () => {
-	await withBriefCheckOut(f.config, f.lane, (_remote, writer) => {
-		const store = MemoryStore.open(join(f.lane.dir, "memory.sqlite"), writer);
+	await withBriefCheckOut(f.config, f.agent, (_remote, writer) => {
+		const store = MemoryStore.open(join(f.agent.dir, "memory.sqlite"), writer);
 		store.append("talk", "long history ".repeat(300));
 		store.close();
 	}, () => {});
@@ -52,7 +52,7 @@ it("compact returns lock-lost when takeover interrupts a slow faux summary", asy
 		await vi.waitFor(() => expect(result).toMatchObject({ kind: "lock-lost", message: expect.stringContaining("Test moved to macbook") }), { timeout: 300 });
 		await command;
 		expect(stdout.mock.calls.flat().join("")).not.toContain("Done:");
-		const probe = MemoryStore.open(join(f.lane.dir, "memory.sqlite"));
+		const probe = MemoryStore.open(join(f.agent.dir, "memory.sqlite"));
 		probe.close();
 	} finally {
 		finish.resolve();
@@ -63,8 +63,8 @@ it("compact returns lock-lost when takeover interrupts a slow faux summary", asy
 it("the attached brief writer renews on the real interval, loses its writer on timer renewal, and cancels the timer", async () => {
 	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 	const renew = vi.spyOn(f.storage, "renew");
-	await expect(withBriefCheckOut(f.config, f.lane, async (remote, writer) => {
-		const store = MemoryStore.open(join(f.lane.dir, "memory.sqlite"), writer);
+	await expect(withBriefCheckOut(f.config, f.agent, async (remote, writer) => {
+		const store = MemoryStore.open(join(f.agent.dir, "memory.sqlite"), writer);
 		attachRemoteStore(remote!, store);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(renew).toHaveBeenCalledTimes(1);
@@ -84,13 +84,13 @@ it("the attached brief writer renews on the real interval, loses its writer on t
 });
 
 it("checkout preserves each local cursor prefix when initial local memory is set aside", async () => {
-	const local = MemoryStore.open(join(f.lane.dir, "memory.sqlite"));
+	const local = MemoryStore.open(join(f.agent.dir, "memory.sqlite"));
 	local.append("user", "local history must be set aside");
 	for (const [key, value] of Object.entries({ "projector.cursor": "10", "pi.cursor.session-a": "20", "pi.cursor.session-b": "30", "claude.spool.session-a": "event-a", "claude.spool.session-b": "event-b", "projector.cursor.not-local": "discard", "shared-setting": "discard" })) local.setMeta(key, value);
 	local.close();
-	const remote = await checkOutLane(f.config, f.lane, { report: () => {} });
+	const remote = await checkOutAgent(f.config, f.agent, { report: () => {} });
 	try {
-		const restored = MemoryStore.openReadOnly(join(f.lane.dir, "memory.sqlite"));
+		const restored = MemoryStore.openReadOnly(join(f.agent.dir, "memory.sqlite"));
 		try {
 			for (const [key, value] of Object.entries({ "projector.cursor": "10", "pi.cursor.session-a": "20", "pi.cursor.session-b": "30", "claude.spool.session-a": "event-a", "claude.spool.session-b": "event-b" })) expect(restored.getMeta(key)).toBe(value);
 			expect(restored.getMeta("projector.cursor.not-local")).toBeUndefined();
@@ -100,11 +100,11 @@ it("checkout preserves each local cursor prefix when initial local memory is set
 });
 
 it.each(["remote home cannot be reached", "Cannot reach remote home: connection refused", "Remote home timed out"])("says a self-contained transport notice only once: %s", (message) => {
-	expect(remoteOpenNotice(f.lane, new RemoteError("unreachable", message))).toBe(message);
+	expect(remoteOpenNotice(f.agent, new RemoteError("unreachable", message))).toBe(message);
 });
 
 it("the TUI routes a remote checkout notice through its report callback without writing stderr", async () => {
-	const local = MemoryStore.open(join(f.lane.dir, "memory.sqlite"));
+	const local = MemoryStore.open(join(f.agent.dir, "memory.sqlite"));
 	local.append("user", "local history to preserve");
 	local.close();
 	const report = vi.fn();
@@ -116,12 +116,12 @@ it("the TUI routes a remote checkout notice through its report callback without 
 });
 
 it("a remote summary-model switch hands the change to the recorder already open here", async () => {
-	holder = await Holder.start({ config: f.config, lane: f.lane, session: "remote-choice", claudePid: process.pid, nonce: "choice", models: laneModelSource(fauxModels().models), tickMs: 10, log: () => {} });
+	holder = await Holder.start({ config: f.config, agent: f.agent, session: "remote-choice", claudePid: process.pid, nonce: "choice", models: agentModelSource(fauxModels().models), tickMs: 10, log: () => {} });
 	expect(holder).toBeDefined();
 	const takes = vi.spyOn(f.storage, "take");
 	const choice = { provider: "faux-agent", modelId: "faux-1", thinking: "off" as const };
-	expect(await laneCompactorTarget(f.config, "Test", { waitMs: 1000 }).apply(choice)).toContain("set in chat");
-	expect(holder!.lane.store.getMeta(COMPACTOR_MODEL_KEY)).toBe(JSON.stringify(choice));
+	expect(await agentCompactorTarget(f.config, "Test", { waitMs: 1000 }).apply(choice)).toContain("set in chat");
+	expect(holder!.agent.store.getMeta(COMPACTOR_MODEL_KEY)).toBe(JSON.stringify(choice));
 	expect(takes).not.toHaveBeenCalled();
-	expect(holder!.lane.store.writable).toBe(true);
+	expect(holder!.agent.store.writable).toBe(true);
 });

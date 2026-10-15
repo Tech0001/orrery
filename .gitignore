@@ -17,7 +17,7 @@ claude-plugin/tsconfig.json
 # Local backup destination settings
 backup.env
 
-# Local work: worktrees, agent notes, and the files Orrery writes into a lane folder
+# Local work: worktrees, agent notes, and the files Orrery writes into an agent folder
 .worktrees/
 .superpowers/
 .orrery/

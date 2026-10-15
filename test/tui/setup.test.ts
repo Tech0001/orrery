@@ -1,16 +1,17 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadConfig, parseConfig } from "../../src/lane/config.ts";
-import { configWritable, editConfigFile } from "../../src/lane/config-edit.ts";
-import { saveKey } from "../../src/lane/logins.ts";
-import { explainFailure } from "../../src/lane/source-labels.ts";
-import { laneOverview } from "../../src/lane/overview.ts";
-import { summarySources } from "../../src/lane/summary-sources.ts";
-import type { ToolCheck } from "../../src/lane/tools.ts";
-import { lanesPage } from "../../src/tui/pages/lanes.ts";
+import { loadConfig, parseConfig } from "../../src/agent/config.ts";
+import { configWritable, editConfigFile } from "../../src/agent/config-edit.ts";
+import { instructionsTemplate } from "../../src/agent/instructions.ts";
+import { saveKey } from "../../src/agent/logins.ts";
+import { explainFailure } from "../../src/agent/source-labels.ts";
+import { agentOverview } from "../../src/agent/overview.ts";
+import { summarySources } from "../../src/agent/summary-sources.ts";
+import type { ToolCheck } from "../../src/agent/tools.ts";
+import { agentsPage } from "../../src/tui/pages/agents.ts";
 import { firstRun } from "../../src/tui/setup.ts";
-import { tempDir } from "../lane/support.ts";
+import { tempDir } from "../agent/support.ts";
 import { answer, fakeDeps, makeApp, screen, settle, typed } from "./support.ts";
 
 const ENTER = "\r";
@@ -42,13 +43,13 @@ function world() {
 		loadConfig: () => loadConfig(configPath),
 		editConfig: (edit) => editConfigFile(configPath, edit),
 		configWritable: () => configWritable(configPath),
-		overview: (config) => laneOverview(config),
+		overview: (config) => agentOverview(config),
 		sources: async (config) => summarySources(config),
 		saveKey,
 		tools: () => tools,
 		applyFix: (fix) => (fixes.push(fix), "fixed"),
 	});
-	const app = makeApp(deps, [lanesPage]);
+	const app = makeApp(deps, [agentsPage]);
 	return { configPath, dataDir, ws, fixes, app, deps, dir };
 }
 
@@ -59,11 +60,11 @@ function dataOnly(dataDir: string) {
 }
 
 describe("first run", () => {
-	it("asks where memory lives, a lane, a summary login and model, writes the config, and offers the wiring", async () => {
-		const { configPath, dataDir, ws, fixes, app } = world();
+	it("asks where memory lives, an agent, a summary login and model, writes the config, and offers the wiring", async () => {
+		const { configPath, dataDir, ws, fixes, app, deps } = world();
 		const done = firstRun(app);
 		await answer(app, "Where should memory live", "\x15", ...typed(dataDir), ENTER);
-		await answer(app, "first lane's name", ...typed("Main"), ENTER);
+		await answer(app, "first agent's name", ...typed("Main"), ENTER);
 		await answer(app, "Its folder", ENTER);
 		await answer(app, "Its tool", ENTER);
 		await answer(app, "one way to make summaries", ...typed("anthropic"), ENTER);
@@ -74,14 +75,15 @@ describe("first run", () => {
 		await answer(app, "pi extension is not installed", "y");
 		await answer(app, "Done", ENTER);
 		expect(await done).toBe(true);
-		const lane = loadConfig(configPath).lanes.get("Main");
-		expect(lane).toMatchObject({ workspace: ws, tool: "pi", compactor: { model: { provider: "anthropic", modelId: "claude-haiku-4-5", thinking: "low" } } });
+		const agent = loadConfig(configPath).agents.get("Main");
+		expect(agent).toMatchObject({ folder: ws, tool: "pi", compactor: { model: { provider: "anthropic", modelId: "claude-haiku-4-5", thinking: "low" } } });
 		expect(statSync(configPath).mode & 0o777).toBe(0o600);
 		expect(readFileSync(configPath, "utf8")).toContain(`data_dir = ${JSON.stringify(dataDir)}`);
 		// model too, so an orrery from before the TUI (which requires it) still reads this config.
 		expect(readFileSync(configPath, "utf8")).toContain('tool = "pi"\nmodel = "anthropic/claude-haiku-4-5"\ncompactor_model = "anthropic/claude-haiku-4-5"\n');
 		expect(await summarySources(dataOnly(dataDir)).credentials.read("anthropic")).toEqual({ type: "api_key", key: "sk-ant-setup-1" });
 		expect(fixes).toEqual(["install-pi"]);
+		expect(deps.instructions).toEqual([[join(dataDir, "agents", "Main"), instructionsTemplate("Main")]]);
 		expect(screen(app)).toContain("Orrery is set up. Main is ready: press L to launch it.");
 	});
 
@@ -100,7 +102,7 @@ describe("first run", () => {
 		await saveKey(summarySources(dataOnly(dataDir)), "anthropic", "sk-ant-earlier");
 		const done = firstRun(app);
 		await answer(app, "Where should memory live", "\x15", ...typed(dataDir), ENTER);
-		await answer(app, "first lane's name", ...typed("Main"), ENTER);
+		await answer(app, "first agent's name", ...typed("Main"), ENTER);
 		await answer(app, "Its folder", ENTER);
 		await answer(app, "Its tool", ENTER);
 		await answer(app, "Summaries from:", ENTER);
@@ -109,6 +111,19 @@ describe("first run", () => {
 		await answer(app, "pi extension is not installed", "n");
 		expect(await done).toBe(true);
 		expect(existsSync(configPath)).toBe(true);
+	});
+
+	it("refuses an agent name orrery agent uses, says why, and asks again", async () => {
+		const { configPath, dataDir, app } = world();
+		const done = firstRun(app);
+		await answer(app, "Where should memory live", "\x15", ...typed(dataDir), ENTER);
+		await answer(app, "first agent's name", ...typed("local"), ENTER);
+		await answer(app, "Agent name");
+		expect((app.host.current as unknown as { text: string }).text).toBe("local is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); pick another name.");
+		await answer(app, "Agent name", ENTER);
+		await answer(app, "first agent's name", "\x1b");
+		expect(await done).toBe(false);
+		expect(existsSync(configPath)).toBe(false);
 	});
 
 	it("refuses an empty data folder and asks again", async () => {
@@ -151,7 +166,7 @@ describe("first run", () => {
 		});
 		const done = firstRun(app);
 		await answer(app, "Where should memory live", "\x15", ...typed(dataDir), ENTER);
-		await answer(app, "first lane's name", ...typed("Main"), ENTER);
+		await answer(app, "first agent's name", ...typed("Main"), ENTER);
 		await answer(app, "Its folder", ENTER);
 		await answer(app, "Its tool", ENTER);
 		await answer(app, "one way to make summaries", ENTER);
@@ -173,7 +188,7 @@ describe("first run", () => {
 		});
 		const done = firstRun(app);
 		await answer(app, "Where should memory live", "\x15", ...typed(dataDir), ENTER);
-		await answer(app, "first lane's name", ...typed("Main"), ENTER);
+		await answer(app, "first agent's name", ...typed("Main"), ENTER);
 		await answer(app, "Its folder", ENTER);
 		await answer(app, "Its tool", ENTER);
 		await answer(app, "one way to make summaries", ...typed("anthropic"), ENTER);
@@ -191,7 +206,7 @@ describe("first run", () => {
 		Object.assign(deps, { testChoice: () => new Promise((resolve) => (release = resolve)) });
 		const done = firstRun(app);
 		await answer(app, "Where should memory live", "\x15", ...typed(dataDir), ENTER);
-		await answer(app, "first lane's name", ...typed("Main"), ENTER);
+		await answer(app, "first agent's name", ...typed("Main"), ENTER);
 		await answer(app, "Its folder", ENTER);
 		await answer(app, "Its tool", ENTER);
 		await answer(app, "one way to make summaries", ...typed("anthropic"), ENTER);

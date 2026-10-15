@@ -1,39 +1,47 @@
 /**
  * `orrery claude-mod view` (spec 2026-10-08-claude-code-mod §4.2): what the Orrery mod in Claude Code needs from the
- * lane of a folder, as one JSON document. It opens memory read-only, so it works while the holder, pi or nothing
- * holds the lane; the holder stays the single writer. It never prints message contents anywhere but the section.
- * It runs at every Claude Code session start and compaction, so it imports nothing heavy (not lane/overview.ts).
+ * session's agent (src/claude/pick.ts: ORRERY_AGENT's, as the mod passes it on, else the folder's), as one JSON
+ * document. It runs within a session, so it never decides: under ORRERY_AGENT it reads the decision the MCP server or
+ * SessionStart recorded for its parent, the Claude Code that runs it, and with none it answers no agent. The reply keeps
+ * its names (`lane`): a cached older mod reads it. It opens memory read-only, so it works while the holder, pi or nothing
+ * holds the agent; the holder stays the single writer. It never prints message contents anywhere but the section.
+ * It runs at every Claude Code session start and compaction, so it imports nothing heavy (not agent/overview.ts).
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleepFor } from "node:timers/promises";
 import { stripVTControlCharacters } from "node:util";
-import { safeText } from "../lane/source-labels.ts";
+import { safeText } from "../agent/source-labels.ts";
 import type { RemoteStatus } from "../remote/types.ts";
-import type { HarnessConfig, LaneConfig } from "../lane/config.ts";
-import { holderFresh, readHolder } from "../lane/handover.ts";
-import { processAlive } from "../lane/process.ts";
-import { readStatus } from "../lane/status-file.ts";
-import { memorySection } from "../lane/view-text.ts";
+import type { HarnessConfig, AgentConfig } from "../agent/config.ts";
+import { holderFresh, readHolder } from "../agent/handover.ts";
+import { instructionsSection, readInstructions } from "../agent/instructions.ts";
+import { AGENT_ENV, TOKEN_ENV } from "../agent/pick.ts";
+import { processAlive } from "../agent/process.ts";
+import { readStatus } from "../agent/status-file.ts";
+import { memorySection } from "../agent/view-text.ts";
 import { MemoryStore, MemoryView } from "../memory/index.ts";
-import { laneHere, validSession } from "./paths.ts";
+import { validSession } from "./paths.ts";
+import { claudeSession } from "./pick.ts";
 import { pendingEvents, readMode, type SessionMode } from "./spool.ts";
-import { type LaneMode, laneMode } from "./view-file.ts";
+import { type AgentMode, agentMode } from "./view-file.ts";
 
 const POLL_MS = 250;
-/** A status.json this fresh is from a running pi (mirrors STATUS_FRESH_MS in lane/overview.ts, which is heavy to import). */
+/** A status.json this fresh is from a running pi (mirrors STATUS_FRESH_MS in agent/overview.ts, which is heavy to import). */
 const STATUS_FRESH_MS = 30_000;
 
 export type ModViewReply =
 	| { readonly lane: null }
 	| {
 			readonly lane: string;
-			readonly mode: LaneMode;
+			readonly mode: AgentMode;
 			readonly compactAt: number;
 			readonly messages: number;
 			readonly remote?: RemoteStatus;
 			readonly section: string | null;
+			/** In mod mode, the agent's instructions section (src/agent/instructions.ts); null when it has none, and in other modes. */
+			readonly instructions: string | null;
 			/** In mod mode, with --session: whether that session is recorded, so a compaction may drop its older turns. */
 			readonly recording?: boolean;
 			/**
@@ -56,11 +64,21 @@ export interface ModViewOptions {
 	/** Tests replace the clock and the pause between looks. */
 	readonly now?: () => number;
 	readonly sleep?: (ms: number) => Promise<void>;
+	/** ORRERY_AGENT and its token as the Orrery mod read them from Claude Code's environment: they stand in for it. */
+	readonly agent?: string;
+	readonly agentToken?: string;
+	/**
+	 * The environment and Claude Code's process (default: this process's environment, and its parent). Never CLAUDE_PID:
+	 * Claude Code passes its own on to what its Bash tool runs, so a claude started from an agent's Bash has the agent's
+	 * pid there, while this command's parent is that claude itself (the mod runs it, and orrery-run execs).
+	 */
+	readonly env?: NodeJS.ProcessEnv;
+	readonly owner?: number;
 }
 
-/** Runs `use` on a read-only open of the lane's memory, closed again after. */
-function withStore<T>(lane: LaneConfig, use: (store: MemoryStore) => T): T {
-	const store = MemoryStore.openReadOnly(join(lane.dir, "memory.sqlite"));
+/** Runs `use` on a read-only open of the agent's memory, closed again after. */
+function withStore<T>(agent: AgentConfig, use: (store: MemoryStore) => T): T {
+	const store = MemoryStore.openReadOnly(join(agent.dir, "memory.sqlite"));
 	try {
 		return use(store);
 	} finally {
@@ -69,27 +87,27 @@ function withStore<T>(lane: LaneConfig, use: (store: MemoryStore) => T): T {
 }
 
 /** Whether `session`'s own holder runs (a fresh heartbeat), so it takes that session's spooled events in. */
-function ownHolder(lane: LaneConfig, session: string, now: number): boolean {
-	const holder = readHolder(lane.dir);
+function ownHolder(agent: AgentConfig, session: string, now: number): boolean {
+	const holder = readHolder(agent.dir);
 	return holderFresh(holder, now) && holder.session === session;
 }
 
 /**
  * Whether `session` is recorded now: its holder chose recording for it, still beats and records it, and nothing of it
- * waits in the spool. A session that runs read-only (pi or another Claude Code session holds the lane), or whose holder
+ * waits in the spool. A session that runs read-only (pi or another Claude Code session holds the agent), or whose holder
  * died with events spooled, is not: its older turns are not all in memory, so a compaction must not drop them.
  */
-function recorded(lane: LaneConfig, session: string, now: number): boolean {
-	if (readMode(lane.dir, session)?.mode !== "recording") return false;
-	const holder = readHolder(lane.dir);
+function recorded(agent: AgentConfig, session: string, now: number): boolean {
+	if (readMode(agent.dir, session)?.mode !== "recording") return false;
+	const holder = readHolder(agent.dir);
 	if (!holderFresh(holder, now) || holder.session !== session || holder.state !== "recording") return false;
 	// No `after`: pendingEvents then removes nothing.
-	return pendingEvents(lane.dir, session).length === 0;
+	return pendingEvents(agent.dir, session).length === 0;
 }
 
 /** Whether pi (or anything writing status.json) is running and has said it is summarizing without trouble. */
-function summarizing(lane: LaneConfig, now: number): boolean {
-	const status = readStatus(lane.dir);
+function summarizing(agent: AgentConfig, now: number): boolean {
+	const status = readStatus(agent.dir);
 	if (status === undefined || status.open === false || !processAlive(status.pid)) return false;
 	if (!(now - Date.parse(status.updatedAt) < STATUS_FRESH_MS)) return false;
 	return (status.trouble === null || status.trouble === undefined) && status.compactor.stopped === false;
@@ -111,24 +129,24 @@ function remoteStatus(value: unknown, remote: string): RemoteStatus | undefined 
 }
 
 /** No network or writer open: the recorder publishes live state, and its lost session keeps the final notice. */
-function remoteFields(lane: LaneConfig, session: string | undefined, now: number): { remote?: RemoteStatus } {
-	if (lane.remote === undefined) return {};
-	const ended = session === undefined ? undefined : remoteStatus(readMode(lane.dir, session)?.remote, lane.remote);
+function remoteFields(agent: AgentConfig, session: string | undefined, now: number): { remote?: RemoteStatus } {
+	if (agent.remote === undefined) return {};
+	const ended = session === undefined ? undefined : remoteStatus(readMode(agent.dir, session)?.remote, agent.remote);
 	if (ended?.state === "lost") return { remote: ended };
-	const holder = readHolder(lane.dir);
+	const holder = readHolder(agent.dir);
 	if (holderFresh(holder, now) && processAlive(holder.pid)) {
-		const remote = remoteStatus(holder.remote, lane.remote);
+		const remote = remoteStatus(holder.remote, agent.remote);
 		return remote === undefined ? {} : { remote };
 	}
 	try {
 		// remote-state has no timestamp field. Its atomic replacement time is the last confirmed sync time.
 		// An in-flight save has not been acknowledged: its newer mtime must never become a saved checkmark.
-		const file = join(lane.dir, "remote-state.json");
+		const file = join(agent.dir, "remote-state.json");
 		const state = JSON.parse(readFileSync(file, "utf8"));
-		if (state === null || state.v !== 1 || state.remote !== lane.remote || !Number.isSafeInteger(state.save) || state.save < 0 || state.inflight !== undefined) return {};
+		if (state === null || state.v !== 1 || state.remote !== agent.remote || !Number.isSafeInteger(state.save) || state.save < 0 || state.inflight !== undefined) return {};
 		const time = statSync(file).mtime;
 		const savedAt = `${String(time.getHours()).padStart(2, "0")}:${String(time.getMinutes()).padStart(2, "0")}`;
-		return { remote: { remote: safeText(stripVTControlCharacters(lane.remote)), state: "saved", savedAt } };
+		return { remote: { remote: safeText(stripVTControlCharacters(agent.remote)), state: "saved", savedAt } };
 	} catch {
 		return {};
 	}
@@ -137,43 +155,51 @@ function remoteFields(lane: LaneConfig, session: string | undefined, now: number
 export async function modView(config: HarnessConfig | undefined, options: ModViewOptions): Promise<ModViewReply> {
 	try {
 		if (config === undefined) return { lane: null };
-		const lane = laneHere(config, options.cwd);
-		if (lane === undefined) return { lane: null };
+		// The session's agent (src/claude/pick.ts): under ORRERY_AGENT (the one the mod passed on, else this environment's)
+		// the decision recorded for this Claude Code process; else the folder's.
+		const base = options.env ?? process.env;
+		const env = options.agent === undefined ? base : { ...base, [AGENT_ENV]: options.agent, [TOKEN_ENV]: options.agentToken ?? base[TOKEN_ENV] };
+		const picked = claudeSession(config, { env, cwd: options.cwd, pid: options.owner ?? process.ppid, decide: false });
+		if (picked.kind !== "agent") return { lane: null };
+		const { agent } = picked;
 		const { session } = options;
 		if (session !== undefined && !validSession(session)) return { error: "not a Claude Code session id" };
-		const mode = laneMode(lane);
+		const mode = agentMode(agent);
+		// Only the mod puts them in the prompt; in file mode the view file carries them.
+		const found = mode === "mod" ? readInstructions(agent.dir) : undefined;
+		const instructions = found === undefined ? null : instructionsSection(agent.name, found);
 		const now = options.now ?? Date.now;
-		const remote = () => remoteFields(lane, session, now());
-		const exists = existsSync(join(lane.dir, "memory.sqlite"));
+		const remote = () => remoteFields(agent, session, now());
+		const exists = existsSync(join(agent.dir, "memory.sqlite"));
 		/** What this session's mode file says now, when asked with the session and the file exists. */
 		const sessionMode = (): { sessionMode?: SessionMode["mode"] } => {
-			const chosen = session === undefined ? undefined : readMode(lane.dir, session)?.mode;
+			const chosen = session === undefined ? undefined : readMode(agent.dir, session)?.mode;
 			return chosen === undefined ? {} : { sessionMode: chosen };
 		};
 		if (mode !== "mod") {
-			const messages = exists ? withStore(lane, (store) => store.root.length) : 0;
-			return { lane: lane.name, mode, compactAt: lane.compactAt, messages, section: null, ...sessionMode(), ...remote() };
+			const messages = exists ? withStore(agent, (store) => store.root.length) : 0;
+			return { lane: agent.name, mode, compactAt: agent.compactAt, messages, section: null, instructions, ...sessionMode(), ...remote() };
 		}
-		const recording = (): { recording?: boolean; sessionMode?: SessionMode["mode"] } => (session === undefined ? {} : { recording: recorded(lane, session, now()), ...sessionMode() });
-		if (!exists) return { lane: lane.name, mode, compactAt: lane.compactAt, messages: 0, section: null, ...recording(), ...remote() };
+		const recording = (): { recording?: boolean; sessionMode?: SessionMode["mode"] } => (session === undefined ? {} : { recording: recorded(agent, session, now()), ...sessionMode() });
+		if (!exists) return { lane: agent.name, mode, compactAt: agent.compactAt, messages: 0, section: null, instructions, ...recording(), ...remote() };
 		const waitMs = options.waitMs ?? 0;
 		if (waitMs > 0) {
 			const sleep = options.sleep ?? ((ms: number) => sleepFor(ms));
 			const deadline = now() + waitMs;
 			for (;;) {
 				// Only this session's own holder takes its events in. No `after`: pendingEvents then removes nothing.
-				const spoolBusy = session !== undefined && ownHolder(lane, session, now()) && pendingEvents(lane.dir, session).length > 0;
-				const settled = () => withStore(lane, (store) => new MemoryView(store, lane.memory.viewBytes).settled);
-				if (!spoolBusy && (options.spoolOnly === true || !summarizing(lane, now()) || settled())) break;
+				const spoolBusy = session !== undefined && ownHolder(agent, session, now()) && pendingEvents(agent.dir, session).length > 0;
+				const settled = () => withStore(agent, (store) => new MemoryView(store, agent.memory.viewBytes).settled);
+				if (!spoolBusy && (options.spoolOnly === true || !summarizing(agent, now()) || settled())) break;
 				if (now() >= deadline) break;
 				await sleep(POLL_MS);
 			}
 		}
 		// After the wait: events still spooled now are not in the view.
 		const said = recording();
-		return withStore(lane, (store) => {
-			const view = new MemoryView(store, lane.memory.viewBytes);
-			return { lane: lane.name, mode, compactAt: lane.compactAt, messages: store.root.length, section: memorySection(view, "claude-mod"), ...said, ...remote() };
+		return withStore(agent, (store) => {
+			const view = new MemoryView(store, agent.memory.viewBytes);
+			return { lane: agent.name, mode, compactAt: agent.compactAt, messages: store.root.length, section: memorySection(view, "claude-mod"), instructions, ...said, ...remote() };
 		});
 	} catch (error) {
 		const text = error instanceof Error ? error.message : String(error);

@@ -3,7 +3,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
-import type { FauxProviderRegistration, FauxResponseStep } from "@earendil-works/pi-ai/providers/faux";
+import type { FauxProviderRegistration, FauxResponseFactory, FauxResponseStep } from "@earendil-works/pi-ai/providers/faux";
 import {
 	type AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
@@ -16,7 +16,7 @@ import {
 	SessionManager,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { FileCredentialStore } from "../../src/lane/credentials.ts";
+import { FileCredentialStore } from "../../src/agent/credentials.ts";
 
 /** The agent's model. */
 export const FAUX = { provider: "orrery-faux", model: "faux-1" } as const;
@@ -36,7 +36,12 @@ export interface PiRun {
 	readonly notices: readonly Notice[];
 	/** The footer status an extension set under `key` (ctx.ui.setStatus), if any. */
 	status(key: string): string | undefined;
-	setResponses(steps: FauxResponseStep[]): void;
+	/**
+	 * The agent's scripted replies. A step that calls bash with a command naming the home ("~", "$HOME", "${HOME}") is
+	 * refused here, before any of them runs (homeInCommand): pi's bash runs it for real, under this process's HOME. A
+	 * test that means it says so with `allowHome`, and only in a suite whose HOME is a scratch folder (isolatedHome).
+	 */
+	setResponses(steps: FauxResponseStep[], options?: { allowHome?: boolean }): void;
 	setSummaryResponses(steps: FauxResponseStep[]): void;
 	tool(name: string): { execute(id: string, params: unknown): Promise<{ content: { type: string; text?: string }[] }> } | undefined;
 	dispose(): Promise<void>;
@@ -86,6 +91,32 @@ function recordingUi(notices: Notice[], statuses: Map<string, string>): Extensio
 		getToolsExpanded: () => false,
 		setToolsExpanded: () => {},
 	};
+}
+
+/** A scripted reply as a message (the other kind of step makes one). */
+type AssistantMessage = Exclude<FauxResponseStep, FauxResponseFactory>;
+
+/** A bash command that names the home: "~" anywhere, "$HOME" or "${HOME…}". */
+const NAMES_HOME = /~|\$\{?HOME/;
+
+/** The bash command in a scripted reply that names the home (NAMES_HOME), if any: the tripwire of setResponses. */
+export function homeInCommand(message: AssistantMessage): string | undefined {
+	for (const block of message.content) {
+		if (block.type !== "toolCall") continue;
+		const command = block.arguments.command;
+		if ((block.name === "bash" || typeof command === "string") && NAMES_HOME.test(String(command))) return String(command);
+	}
+	return undefined;
+}
+
+/** `steps` with the tripwire on each: a message is checked now, a factory's result when it is made. */
+function tripwired(steps: FauxResponseStep[]): FauxResponseStep[] {
+	const check = (message: AssistantMessage): AssistantMessage => {
+		const command = homeInCommand(message);
+		if (command !== undefined) throw new Error(`test harness: a scripted bash command names the home, which pi's bash would run for real: ${JSON.stringify(command)}. Keep to scratch paths, or pass { allowHome: true } in a suite with isolatedHome().`);
+		return message;
+	};
+	return steps.map((step) => (typeof step === "function" ? async (...args: Parameters<FauxResponseFactory>) => check(await step(...args)) : check(step)));
 }
 
 function fauxProvider(names: { provider: string; model: string }, modelRuntime: ModelRuntime): FauxProviderRegistration {
@@ -143,7 +174,7 @@ export async function startPi(options: {
 		runtime,
 		notices,
 		status: (key) => statuses.get(key),
-		setResponses: (steps) => faux.setResponses(steps),
+		setResponses: (steps, options = {}) => faux.setResponses(options.allowHome ? steps : tripwired(steps)),
 		setSummaryResponses: (steps) => (options.setSummaryResponses === undefined ? summaryFaux.setResponses(steps) : options.setSummaryResponses(steps)),
 		tool: (name) => runtime.session.agent.state.tools.find((tool: { name: string }) => tool.name === name) as never,
 		dispose: async () => {

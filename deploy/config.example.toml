@@ -1,5 +1,5 @@
-# /etc/orrery/config.toml on the server. Lanes run here; their tools run on the workstation over SSH.
-# Relative paths are relative to data_dir. Reference: src/lane/config.ts and docs/deploy.md.
+# /etc/orrery/config.toml on the server. Agents run here; their tools run on the workstation over SSH.
+# Relative paths are relative to data_dir. Reference: src/agent/config.ts and docs/deploy.md.
 data_dir = "/var/lib/orrery"
 
 [hosts.workstation]
@@ -8,10 +8,9 @@ user = "alex"
 identity_file = "ssh/id_ed25519"   # created by install.sh; add its .pub to alex@workstation (docs/deploy.md)
 connect_timeout = 5
 
-[lanes.Atlas]
+[agents.Atlas]
 host = "workstation"
-workspace = "/home/alex/code/agent-Atlas"
-instructions = "AGENTS.md"
+folder = "/home/alex/code/agent-Atlas"
 # Any model your logins offer: openai/… (ChatGPT sign-in) or anthropic/… ; switch per turn with /model.
 model = "openai/gpt-6.1-sol"
 thinking = "medium"

@@ -1,5 +1,5 @@
 ---
-description: Write this lane's Orrery memory explorer (HTML) - the view, every message, the summary tree - and open it.
+description: Write this agent's Orrery memory explorer (HTML) - the view, every message, the summary tree - and open it.
 disable-model-invocation: true
 allowed-tools: Bash(sh "${CLAUDE_PLUGIN_ROOT}/bin/orrery-run" browse . --open)
 ---

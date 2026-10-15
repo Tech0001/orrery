@@ -5,7 +5,7 @@ import { buildPreview, commitPreview, readPreview, writePreview } from "../../sr
 import type { SplitResult } from "../../src/import/split.ts";
 import type { ImportTurn } from "../../src/import/turns.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
-import { tempDir } from "../lane/support.ts";
+import { tempDir } from "../agent/support.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -68,6 +68,31 @@ describe("import preview", () => {
 		expect(report).toContain("github-token: 1");
 		expect(report).not.toContain("sk-ant");
 		expect(report).not.toContain("ghp_");
+	});
+
+	it("sums the preview up: messages, first and last dates, secrets by kind, splits; progress after each turn", async () => {
+		const seen: [number, number][] = [];
+		const later = { source: "codex:x2", start: "2026-07-30T08:00:00.000Z", messages: [{ kind: "user" as const, text: "earlier, though listed last", date: "2026-07-30T08:00:00.000Z" }] };
+		const { summary } = await buildPreview({
+			turns: [...turns, later],
+			// A note with no date counts as a message but not toward the dates.
+			notes: [{ source: "note:a.md", message: { kind: "note", text: "no date" } }],
+			split: fakeSplit().split,
+			progress: (done, total) => {
+				seen.push([done, total]);
+			},
+		});
+		expect(summary).toEqual({ messages: 6, first: "2026-07-30T08:00:00.000Z", last: "2026-08-01T11:00:00.000Z", redactions: { "anthropic-key": 1, "github-token": 1 }, splits: 1, unsplit: 0 });
+		expect(seen).toEqual([[1, 3], [2, 3], [3, 3]]);
+		const none = await buildPreview({ turns: [], notes: [] });
+		expect(none.summary).toEqual({ messages: 0, redactions: {}, splits: 0, unsplit: 0 });
+	});
+
+	it("finds the date range of more lines than Math.min(...dates) can take", async () => {
+		const many = 160_000;
+		const notes = Array.from({ length: many }, (_, i) => ({ source: "note:n", message: { kind: "note" as const, text: "n", date: new Date(Date.UTC(2026, 0, 1) + (i === 7 ? -86_400_000 : i * 1000)).toISOString() } }));
+		const { summary } = await buildPreview({ turns: [], notes });
+		expect(summary).toMatchObject({ messages: many, first: "2025-12-31T00:00:00.000Z", last: new Date(Date.UTC(2026, 0, 1) + (many - 1) * 1000).toISOString() });
 	});
 
 	it("writes private files, reads them back, and commits atomically into empty memory only", async () => {

@@ -1,76 +1,88 @@
 #!/usr/bin/env -S node --disable-warning=ExperimentalWarning
 /**
- * orrery: run and inspect lanes. Each command loads its modules when it runs. The short-lived processes Claude Code
+ * orrery: run and inspect agents. Each command loads its modules when it runs. The short-lived processes Claude Code
  * starts several times a turn (claude-hook) must not load pi-durable and every model provider first.
  */
 
 import { join, resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
-import type { LaneTool } from "../lane/memory-tools.ts";
-import { findLane, type HarnessConfig, type LaneConfig, loadConfig } from "../lane/config.ts";
+import type { ReaderTool } from "../agent/memory-tools.ts";
+import { defaultConfigPath, findAgent, type HarnessConfig, type AgentConfig, loadConfig } from "../agent/config.ts";
 import { exitWhenFlushed } from "./exit.ts";
 
 const USAGE = `Usage: orrery <command> [--config FILE]
-  (no command)               in a terminal: the Orrery TUI (lanes, logins, usage, tools)
+  (no command)               in a terminal: the Orrery TUI (agents, logins, usage, tools)
   version, --version, -v     the running version (an install's version-commit, or the checkout's package version)
-  run <Lane>                 attach this terminal to a lane (one process per lane)
-  status [<Lane>] [--json]   every lane (or one): state, tool, memory, summaries
-  lane add <Name> --folder DIR --tool pi|omp|claude-code|codex --summary provider/id [--thinking L]
-                             add a lane to the config (the TUI's N)
-  lane set <Name> --tool T | --folder DIR | --view-kb N | --summary-kb N | --jobs N | --compact-at TOKENS
-                             change a lane's setting in the config, keeping its comments
-  lane set <Name> launcher direct|ori | ori_model <id>   (empty value clears; also --launcher / --ori-model)
-  lane archive <Name>        take a closed lane out of the config (its settings kept as comments at the end);
+  agent <Name> [--tool pi|omp|claude-code] [--yes] [-- <tool arguments>]
+                             open the agent here: its tool starts in this folder with its instructions and memory
+  agent edit <Name>          open the agent's instructions in $EDITOR (else nano, else vi)
+  agent add <Name> --folder DIR --tool pi|omp|claude-code|codex --summary provider/id [--thinking L]
+                             add an agent to the config (the TUI's N)
+  agent set <Name> --tool T | --folder DIR | --view-kb N | --summary-kb N | --jobs N | --compact-at TOKENS
+                             change an agent's setting in the config, keeping its comments
+  agent set <Name> launcher direct|ori | ori_model <id>   (empty value clears; also --launcher / --ori-model)
+  agent archive <Name>       take a closed agent out of the config (its settings kept as comments at the end);
                              its memory stays in its data folder (the TUI's A)
-  lane push <Lane> --to <remote>   upload a closed lane's memory, then use that remote
-  lane pull <Lane> --from <remote> --folder <dir>   add a remote lane here and fetch its memory
-  lane takeover <Lane> [--yes]    confirm taking a stale lock, then release it for the next open
-  lane local <Lane> [--delete-remote]   fetch the newest memory and keep it locally (deletion asks)
+  agent push <Name> --to <remote>   upload a closed agent's memory, then use that remote
+  agent pull <Name> --from <remote> [--folder <dir>]   add a remote agent here and fetch its memory and instructions
+  agent takeover <Name> [--yes]   confirm taking a stale lock, then release it for the next open
+  agent local <Name> [--delete-remote]   fetch the newest memory and keep it locally (deletion asks)
+  run <Name>                 start the agent's own harness in this terminal (one process per agent)
+  status [<Name>] [--json]   every agent (or one): state, tool, memory, summaries
   remote add <name> --server <host>:<folder> | --cloudflare <url> [--token-file FILE] [--code-file FILE]
                              add a memory remote; token and recovery code are entered hidden
   remote add <name> [--token-file FILE] [--code-file FILE] [--new]
                              recover this machine's key for an already configured remote
-  remote test <name>       test reachability, lock and key
-  remote key <name>        show the secret recovery code
-  remote log <Lane> [--json]  show decrypted saves and recorded takeovers
-  remote lanes <name> [--json]  list lanes stored on a remote and where each is open
+  remote test <name>         test reachability, lock and key
+  remote key <name>          show the secret recovery code
+  remote log <Name> [--json]  show decrypted saves and recorded takeovers
+  remote agents <name> [--json]  list agents stored on a remote and where each is open
   remote remove <name> --yes  remove an unused remote and its saved key (save the recovery code first)
-  usage [<Lane>] [--days N] [--json]  token usage per day, role and model (default 7 days)
+  usage [<Name>] [--days N] [--json]  token usage per day, role and model (default 7 days)
   login openai|openrouter [--manual]  sign in for summaries (--manual: paste URL/code, no browser)
   login --key <openai|anthropic|openrouter> [--from-pi]
                              save an API key (typed hidden, or copied from pi's /login)
   logins [--json]            what is saved (never the keys)
   logout openai | --key <name>   remove one login
   trust-host <host>          verify and trust an SSH host key for tools
-  compact <Lane>             build every missing summary (lane must not be running)
-  import <Lane> --dry-run [--claude DIR|none] [--claude-file FILE]... [--codex DIR|none] [--codex-file FILE]... [--notes FILE]... [--paste-threshold N] [--no-split] [--out DIR]
-                             preview a history import for review (defaults: this lane's Claude Code
+  compact <Name> [--progress FILE]   build every missing summary (agent must not be running); --progress: write how
+                             far it is to FILE
+  import <Name> --dry-run [--claude DIR|none] [--claude-file FILE]... [--codex DIR|none] [--codex-file FILE]... [--notes FILE]... [--paste-threshold N] [--no-split] [--out DIR]
+                             preview a history import for review (defaults: this agent's Claude Code
                              project and ~/.codex/sessions; --no-split skips the model pass; --claude-file adds a
                              Claude Code session that lives under another project folder; --codex-file adds a
-                             rollout that started elsewhere and was resumed in the lane's folder)
-  import <Lane> --commit FILE   append a reviewed preview to the lane's empty memory
-  browse <Lane> [--out FILE] [--open]   write an HTML explorer of the lane's memory (--open: into the lane's
+                             rollout that started elsewhere and was resumed in the agent's folder)
+  import <Name> --commit FILE   append a reviewed preview to the agent's empty memory
+  browse <Name> [--out FILE] [--open]   write an HTML explorer of the agent's memory (--open: into the agent's
                              data folder, then open it)
-  compactor <Lane> [signin|key|local [name [words] | name/model [thinking]] | provider/id [thinking] | reset]
-                                         show, list or switch the lane's summary model (shared with pi's /compactor)
-  backup [--keep N]          snapshot every lane's memory and export it as JSONL (keeps N days, default 14)
-  restore <Lane> --from DATE|DIR   put a backup back (the lane must be stopped)
-  holder <Lane> --session ID --claude-pid PID [--nonce N] [--since MS]
-                             record a Claude Code session into the lane (the plugin's SessionStart hook starts it;
+  compactor <Name> [signin|key|local [name [words] | name/model [thinking]] | provider/id [thinking] | reset]
+                                         show, list or switch the agent's summary model (shared with pi's /compactor)
+  backup [--keep N]          snapshot every agent's memory and export it as JSONL (keeps N days, default 14)
+  restore <Name> --from DATE|DIR   put a backup back (the agent must be stopped)
+  holder <Name> --session ID --claude-pid PID [--nonce N] [--since MS]
+                             record a Claude Code session into the agent (the plugin's SessionStart hook starts it;
                              --since is when SessionStart ran, in ms since the epoch)
-  launch <Lane> [--yes]      start the lane's tool (pi, omp, claude, codex) in its folder, after the checks the TUI makes
   tools [--json]             pi, Claude Code, Codex and OMP: found, version, Orrery's side installed
   tools install <pi|claude-code|omp> [--yes]   install or update Orrery's side of a tool (shows what it does first)
-  install --rollback | --list   switch back to the previous installed version, or list versions and which lanes run them
-                             (install a new version from a checkout: npm run install-local)
-  claude-setup <Lane> [--mod]  make Claude Code load the lane's memory view (CLAUDE.md, or CLAUDE.local.md in a
+  install --from DIR [--yes]   install an unpacked release folder, then run setup (install.sh and orrery update run this)
+  install --rollback [--yes] | --list   switch back to the previous installed version and run setup, or list versions
+                             and which agents run them
+  setup [--yes]              wire the orrery command, pi, OMP, Claude Code and the backup service to the installed
+                             version; asks on the terminal before connecting a tool or replacing anything that is not
+                             Orrery's (--yes: answers yes)
+  update [--check] [--version V] [--yes]   install the newest release (or V); --check only says whether one is out
+  uninstall [--purge]        unwire pi, OMP and Claude Code, remove the command, the backup service and the installed
+                             versions; agents' memory, config and logins stay (--purge: delete them too, after typing delete)
+  claude-setup <Name> [--mod]  make Claude Code load the agent's memory view (CLAUDE.md, or CLAUDE.local.md in a
                              repo); --mod: from the Orrery mod, in the system prompt
-  claude-mod view --cwd DIR [--session ID] [--wait-ms N [--spool-only]]   the Orrery mod's call: the lane's memory
-                             section as JSON; --spool-only waits for the session's spool alone, not for summaries
-  mcp                        the Claude Code plugin's MCP server: memory tools for the project folder's lane
+  claude-mod view --cwd DIR [--session ID] [--agent NAME [--agent-token T]] [--wait-ms N [--spool-only]]   the Orrery
+                             mod's call: the session's agent's memory section as JSON (--agent: the ORRERY_AGENT Claude
+                             Code has); --spool-only waits for the session's spool alone, not for summaries
+  mcp                        the Claude Code plugin's MCP server: memory tools for the session's agent (ORRERY_AGENT's,
+                             else the project folder's)
   claude-hook <event>        a Claude Code plugin hook (session-start, user-prompt-submit, stop, session-end,
                              pre-tool-use)
-A lane named "." is the lane whose workspace holds the current folder.
+An agent named "." is this session's agent: ORRERY_AGENT, else the agent whose folder holds the current folder.
 Config: --config, $ORRERY_CONFIG, ~/.orrery/config.toml (or under $ORRERY_HOME), or /etc/orrery/config.toml
 `;
 
@@ -93,7 +105,7 @@ async function askYes(question: string): Promise<boolean> {
 
 /** `orrery tools [--json]`, `orrery tools install <pi|claude-code|omp> [--yes]`. It needs no config, so a new user can run it first. */
 async function toolsCommand(positionals: string[], values: { json?: boolean; yes?: boolean }): Promise<number> {
-	const { checkTools, probeOri, installSteps, wiringRoot, runInstall } = await import("../lane/tools.ts");
+	const { checkTools, probeOri, installSteps, wiringRoot, runInstall } = await import("../agent/tools.ts");
 	const tools = checkTools();
 	if (positionals[1] === "install") {
 		const id = required(positionals[2], "pi, claude-code or omp");
@@ -130,164 +142,351 @@ async function toolsCommand(positionals: string[], values: { json?: boolean; yes
 	return 0;
 }
 
-/** `orrery install --rollback | --list`: the installed copies in the home's app folder. Installing a new one needs a checkout. */
-async function installCommand(values: { rollback?: boolean; list?: boolean }): Promise<number> {
-	const { listVersions, rollback, versionLines } = await import("../install/install.ts");
+const say = (line: string) => process.stdout.write(`${line}\n`);
+
+/** `orrery setup [--yes]`: wires the orrery command, pi, OMP, Claude Code and the backup service to app/current. 1 when something is left. */
+async function setupCommand(values: { yes?: boolean }): Promise<number> {
+	const [{ existsSync }, { orreryHome }, { wireReport, leftWarning }, { terminalConfirm }] = await Promise.all([import("node:fs"), import("../agent/home.ts"), import("../install/wire.ts"), import("../install/ask.ts")]);
+	if (!existsSync(join(orreryHome(process.env), "app", "current"))) throw new Error("Orrery is not installed yet: see the install line in the README");
+	// Each line is printed as it happens: Ctrl-C at a later question stops the process, and what was done is shown.
+	const { left, unchecked } = await wireReport(process.env, { confirm: terminalConfirm({ yes: values.yes === true, say }), onLine: say });
+	if (left.length > 0 || unchecked.length > 0) {
+		for (const line of leftWarning(left, unchecked)) say(line);
+		return 1;
+	}
+	return 0;
+}
+
+/**
+ * `orrery install --from DIR | --rollback | --list [--yes]`: install a release folder or switch back a version, each
+ * followed by setup; or list the installed copies in the home's app folder.
+ */
+async function installCommand(values: { from?: string; rollback?: boolean; list?: boolean; yes?: boolean }): Promise<number> {
+	const { installFrom, listVersions, rollback, versionLines } = await import("../install/install.ts");
+	if (values.from !== undefined) {
+		if (values.rollback === true || values.list === true) throw new Error("install takes one of --from DIR, --rollback or --list.");
+		const { version, removed } = installFrom({ from: values.from, env: process.env, log: say });
+		say(`Installed ${version}.`);
+		if (removed.length > 0) say(`Removed older versions: ${removed.join(", ")}.`);
+		const status = await setupCommand(values);
+		const [{ existsSync }, { homedir }, { defaultConfigPath }, { pathAdvice }] = await Promise.all([import("node:fs"), import("node:os"), import("../agent/config.ts"), import("../install/ask.ts")]);
+		// Said even when setup left something (a tool not connected): the install itself is done.
+		if (!existsSync(defaultConfigPath(process.env))) {
+			const onPath = pathAdvice(process.env, join(process.env.HOME || homedir(), ".local", "bin")) === undefined;
+			say(onPath ? "Run orrery to add your first agent." : "Run ~/.local/bin/orrery (or open a new terminal after adding it to PATH) to add your first agent.");
+		}
+		return status;
+	}
 	if (values.list === true) {
 		process.stdout.write(`${versionLines(listVersions(process.env)).join("\n")}\n`);
 		return 0;
 	}
 	if (values.rollback === true) {
 		const { from, to } = rollback(process.env);
-		process.stdout.write(`Switched back from ${from} to ${to}. pi and OMP lanes keep their version until they restart.\n`);
-		return 0;
+		say(`Switched back from ${from} to ${to}. pi and OMP agents keep their version until they restart.`);
+		return setupCommand(values);
 	}
-	throw new Error("install takes --rollback or --list. To install a new version, run npm run install-local in a checkout.");
+	throw new Error("install takes --from DIR, --rollback or --list.");
 }
 
-/** A lane name as given, or "." for the lane whose workspace holds the project folder (Claude Code's commands use it). */
-async function laneArg(config: HarnessConfig, name: string): Promise<string> {
-	if (name !== ".") return name;
-	const { laneHere } = await import("../claude/paths.ts");
-	const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-	const lane = laneHere(config, dir);
-	if (lane === undefined) throw new Error(`${dir} is in no lane's workspace.`);
-	return lane.name;
+/** `orrery update`: the newest release (or --version V), downloaded, checked and installed by that release's own installer. */
+async function updateCommand(values: { check?: boolean; version?: string; yes?: boolean }): Promise<number> {
+	const { latestVersion, downloadRelease, installedVersion, newer, releasesBase } = await import("../install/update.ts");
+	const { versionNumber, compiled } = await import("../agent/running.ts");
+	const { agentVersions } = await import("../install/install.ts");
+	const running = versionNumber();
+	if (values.check === true && values.version !== undefined) throw new Error("--check looks for the latest release; drop --version.");
+	const target = values.version?.replace(/^v/, "") ?? (await latestVersion(process.env));
+	if (!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(target)) throw new Error(`--version takes a release such as 0.6.1 (got ${values.version})`);
+	if (!newer(target, "0.5.99")) throw new Error("no release before 0.6.0 exists");
+	if (values.check === true) {
+		process.stdout.write(newer(target, running) ? `Orrery ${target} is available (this is ${running}). Run orrery update.\n` : `Orrery ${running} is up to date.\n`);
+		return 0;
+	}
+	if (values.version === undefined && !newer(target, running)) {
+		process.stdout.write(`Orrery ${running} is up to date.\n`);
+		return 0;
+	}
+	const { mkdtempSync, rmSync } = await import("node:fs");
+	const { constants, tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const { spawnSync } = await import("node:child_process");
+	const work = mkdtempSync(join(tmpdir(), "orrery-update-"));
+	// A signal while updating: stop the download, remove the work folder, and exit the way the shell expects.
+	const control = new AbortController();
+	const names = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+	const handlers = names.map((name) => {
+		const handler = () => {
+			control.abort();
+			rmSync(work, { recursive: true, force: true });
+			process.exit(128 + constants.signals[name]);
+		};
+		process.on(name, handler);
+		return handler;
+	});
+	const tty = process.stdout.isTTY === true;
+	let shown = false;
+	let status = 0;
+	try {
+		process.stdout.write(`Downloading Orrery ${target}...\n`);
+		const folder = await downloadRelease(process.env, target, join(work, "release"), {
+			signal: control.signal,
+			onProgress: tty
+				? (bytes, total) => {
+						shown = true;
+						const mb = (n: number) => (n / 1e6).toFixed(1);
+						process.stdout.write(`\r  ${mb(bytes)} MB${total === undefined ? "" : ` / ${mb(total)} MB (${Math.floor((bytes / total) * 100)}%)`}   `);
+					}
+				: undefined,
+		});
+		if (shown) {
+			process.stdout.write("\n");
+			shown = false;
+		}
+		const r = spawnSync(join(folder, "bin", "orrery"), ["install", "--from", folder, ...(values.yes === true ? ["--yes"] : [])], { stdio: "inherit" });
+		if (r.error) {
+			// The archive unpacked, but its program cannot run there: a temp folder mounted noexec does that.
+			const code = (r.error as { code?: unknown }).code;
+			if (code === "EACCES" || code === "EPERM") throw new Error(`could not run the downloaded Orrery: ${tmpdir()} may be mounted noexec; set TMPDIR to a folder that allows running programs and try again`);
+			throw new Error(`could not run the installer of ${target}: ${r.error.message}`);
+		}
+		if (r.signal) return 128 + (constants.signals[r.signal] ?? 0);
+		status = r.status ?? 1;
+	} finally {
+		if (shown) process.stdout.write("\n");
+		for (const [i, name] of names.entries()) process.off(name, handlers[i] as () => void);
+		rmSync(work, { recursive: true, force: true });
+	}
+	// install --from also exits non-zero when only its setup left something (a question declined, no terminal), after
+	// app/current was switched: what app/current names says whether the update happened.
+	if (status !== 0 && installedVersion(process.env) !== target) {
+		process.stderr.write(`The install of ${target} failed; Orrery stays on ${running}.\n`);
+		return status;
+	}
+	process.stdout.write(`Updated ${running} → ${target}. Release notes: ${releasesBase(process.env)}/tag/v${target}\n`);
+	const live = [...agentVersions(process.env).versions].filter(([v]) => v !== target);
+	if (live.length > 0) process.stdout.write(`These agents keep their version until they restart: ${live.map(([v, agents]) => `${agents.join(", ")} (${v})`).join("; ")}\n`);
+	if (!compiled) process.stdout.write("This Orrery runs from a checkout; the installed copy was updated, the checkout was not.\n");
+	if (status !== 0) process.stdout.write("Setup left something unfinished; run `orrery setup` to finish it.\n");
+	return status;
+}
+
+/** `orrery uninstall [--purge]`: 1 when something of Orrery's was left, agents are open, or the purge was not confirmed. */
+async function uninstallCommand(values: { purge?: boolean }): Promise<number> {
+	const [{ uninstall }, { askTyped }, { orreryHome }] = await Promise.all([import("../install/uninstall.ts"), import("../install/ask.ts"), import("../agent/home.ts")]);
+	const home = orreryHome(process.env);
+	const { lines, ok } = await uninstall({
+		env: process.env,
+		purge: values.purge === true,
+		confirmPurge: () => askTyped(`This deletes every agent's memory, logins and backups in ${home}.`, "delete"),
+	});
+	for (const line of lines) say(line);
+	return ok ? 0 : 1;
 }
 
 /**
- * `orrery lane add <Name> --folder DIR --tool T --summary provider/id [--thinking L]`, `orrery lane set <Name> --tool T |
- * --folder DIR | --view-kb N | --summary-kb N | --jobs N | --compact-at TOKENS`, `orrery lane archive <Name>`.
+ * An agent name as given, or "." for this session's agent (Claude Code's commands use it): the one ORRERY_AGENT names, as
+ * the hooks pick it (src/claude/pick.ts), else the one whose folder holds the project folder. In Claude Code
+ * (CLAUDE_PID, which it sets for the commands it runs) that is the decision recorded for its process; a command runs
+ * within a session, so it never decides. Elsewhere it is picked here, never claiming a token: a tool an agent started
+ * with the same variables falls back to its folder.
  */
-async function laneCommand(args: string[], values: Record<string, string | boolean | string[] | undefined>): Promise<number> {
-	const [{ addLane, archiveLane, configWritable, editConfigFile, readOnlyConfigText, setLaneKey, userConfigPath }, { defaultConfigPath }, { homedir }, { existsSync }, { archiveRefusal, laneOverview, TOOL_LABELS }] = await Promise.all([
-		import("../lane/config-edit.ts"),
-		import("../lane/config.ts"),
+async function agentArg(config: HarnessConfig, name: string): Promise<string> {
+	if (name !== ".") return name;
+	const { claudePick, claudeRefusedNotice, claudeSession } = await import("../claude/pick.ts");
+	const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+	const claudePid = Number(process.env.CLAUDE_PID);
+	const pick =
+		Number.isInteger(claudePid) && claudePid > 0
+			? claudeSession(config, { env: process.env, cwd: dir, pid: claudePid, decide: false })
+			: claudePick(config, { env: process.env, cwd: dir, owner: process.ppid, takeover: false });
+	if (pick.kind === "agent") return pick.agent.name;
+	if (pick.kind === "none") throw new Error(`${dir} is in no agent's folder.`);
+	throw new Error(claudeRefusedNotice(pick));
+}
+
+/**
+ * `orrery agent add <Name> --folder DIR --tool T --summary provider/id [--thinking L]`, `orrery agent set <Name> --tool T |
+ * --folder DIR | --view-kb N | --summary-kb N | --jobs N | --compact-at TOKENS`, `orrery agent archive <Name>`.
+ */
+async function agentCommand(args: string[], values: Record<string, string | boolean | string[] | undefined>): Promise<number> {
+	const [{ addAgent, archiveAgent, configWritable, editConfigFile, readOnlyConfigText, setAgentKey, userConfigPath }, { defaultConfigPath }, { homedir }, { existsSync }, { archiveRefusal, agentOverview, TOOL_LABELS }] = await Promise.all([
+		import("../agent/config-edit.ts"),
+		import("../agent/config.ts"),
 		import("node:os"),
 		import("node:fs"),
-		import("../lane/overview.ts"),
+		import("../agent/overview.ts"),
 	]);
 	const [action, name] = args;
 	// --config, else $ORRERY_CONFIG, else the default config when it exists, else the user's config path.
 	let path = values.config as string | undefined;
 	if (path === undefined) path = process.env.ORRERY_CONFIG || (existsSync(defaultConfigPath()) ? defaultConfigPath() : userConfigPath());
 	if (["push", "pull", "takeover", "local"].includes(action)) {
-		const { laneRemoteCommand } = await import("./remote.ts");
-		process.stdout.write(await laneRemoteCommand(path, args, { to: values.to as string | undefined, from: values.from as string | undefined, folder: values.folder as string | undefined, yes: values.yes === true, "delete-remote": values["delete-remote"] === true }, { confirm: askYes }));
+		const { agentRemoteCommand } = await import("./remote.ts");
+		process.stdout.write(await agentRemoteCommand(path, args, { to: values.to as string | undefined, from: values.from as string | undefined, folder: values.folder as string | undefined, yes: values.yes === true, "delete-remote": values["delete-remote"] === true }, { confirm: askYes }));
 		return 0;
 	}
-	const folder = (value: string) => resolvePath(value === "~" || value.startsWith("~/") ? `${homedir()}${value.slice(1)}` : value);
+	const fullPath = (value: string) => resolvePath(value === "~" || value.startsWith("~/") ? `${homedir()}${value.slice(1)}` : value);
 	const kb = (flag: string) => {
 		const n = Number(values[flag]);
 		if (!Number.isInteger(n) || n < 1) throw new Error(`--${flag} must be a whole number of KB`);
 		return n * 1000;
 	};
 	if (action === "add") {
-		const lane = required(name, "lane name");
+		const agent = required(name, "agent name");
 		const summary = required(values.summary as string | undefined, "--summary provider/id");
 		const thinking = (values.thinking as string | undefined) ?? "low";
 		const tool = required(values.tool as string | undefined, "--tool pi|omp|claude-code|codex");
-		const workspace = folder(required(values.folder as string | undefined, "--folder DIR"));
-		editConfigFile(path, (text, dir) => addLane(text, dir, { name: lane, workspace, tool: tool as never, compactorModel: summary, compactorThinking: thinking as never }));
-		process.stdout.write(`Added lane ${lane}: ${workspace}, ${(TOOL_LABELS as Record<string, string>)[tool] ?? tool}, summaries ${summary} (${thinking}).\n`);
+		const folder = fullPath(required(values.folder as string | undefined, "--folder DIR"));
+		editConfigFile(path, (text, dir) => addAgent(text, dir, { name: agent, folder, tool: tool as never, compactorModel: summary, compactorThinking: thinking as never }));
+		process.stdout.write(`Added agent ${agent}: ${folder}, ${(TOOL_LABELS as Record<string, string>)[tool] ?? tool}, summaries ${summary} (${thinking}).\n`);
 		return 0;
 	}
 	if (action === "set") {
-		// The name as the config spells it (`orrery lane set rowan` finds Rowan), as every other command does.
-		const lane = existsSync(path) ? findLane(loadConfig(path), required(name, "lane name")).name : required(name, "lane name");
-		const changes: [Parameters<typeof setLaneKey>[3], string | number][] = [];
+		// The name as the config spells it (`orrery agent set rowan` finds Rowan), as every other command does.
+		const agent = existsSync(path) ? findAgent(loadConfig(path), required(name, "agent name")).name : required(name, "agent name");
+		const changes: [Parameters<typeof setAgentKey>[3], string | number][] = [];
 		if (args.length > 2) {
 			const key = args[2];
-			if (args.length !== 4 || (key !== "launcher" && key !== "ori_model")) throw new Error("Use lane set <Name> launcher direct|ori or ori_model <id> (empty value clears).");
+			if (args.length !== 4 || (key !== "launcher" && key !== "ori_model")) throw new Error("Use agent set <Name> launcher direct|ori or ori_model <id> (empty value clears).");
 			changes.push([key, args[3]]);
 		}
 		if (values.launcher !== undefined) changes.push(["launcher", values.launcher as string]);
 		if (values["ori-model"] !== undefined) changes.push(["ori_model", values["ori-model"] as string]);
 		if (values.tool !== undefined) changes.push(["tool", values.tool as string]);
-		if (values.folder !== undefined) changes.push(["workspace", folder(values.folder as string)]);
+		if (values.folder !== undefined) changes.push(["folder", fullPath(values.folder as string)]);
 		if (values["view-kb"] !== undefined) changes.push(["view_bytes", kb("view-kb")]);
 		if (values["summary-kb"] !== undefined) changes.push(["compactor_context_bytes", kb("summary-kb")]);
 		if (values.jobs !== undefined) changes.push(["compactor_jobs", Number(values.jobs)]);
 		if (values["compact-at"] !== undefined) changes.push(["compact_at", Number(values["compact-at"])]);
-		if (changes.length === 0) throw new Error(`lane set needs one of --launcher, --ori-model, --tool, --folder, --view-kb, --summary-kb, --jobs, --compact-at.\n${USAGE}`);
-		editConfigFile(path, (text, dir) => changes.reduce((acc, [key, value]) => setLaneKey(acc, dir, lane, key, value), text));
-		for (const [key, value] of changes) process.stdout.write(`Set lanes.${lane}.${key} = ${value}. It applies when ${lane} next opens.\n`);
+		if (changes.length === 0) throw new Error(`agent set needs one of --launcher, --ori-model, --tool, --folder, --view-kb, --summary-kb, --jobs, --compact-at.\n${USAGE}`);
+		editConfigFile(path, (text, dir) => changes.reduce((acc, [key, value]) => setAgentKey(acc, dir, agent, key, value), text));
+		for (const [key, value] of changes) process.stdout.write(`Set agents.${agent}.${key} = ${value}. It applies when ${agent} next opens.\n`);
 		return 0;
 	}
 	if (action === "archive") {
-		// The same refusals as the TUI's A: the lane must be closed and the config writable.
+		// The same refusals as the TUI's A: the agent must be closed and the config writable.
 		const config = loadConfig(path);
-		const lane = findLane(config, required(name, "lane name")).name;
-		const row = laneOverview(config).find((r) => r.name === lane);
+		const agent = findAgent(config, required(name, "agent name")).name;
+		const row = agentOverview(config).find((r) => r.name === agent);
 		const refusal = row === undefined ? undefined : archiveRefusal(row);
 		if (refusal !== undefined) throw new Error(refusal);
 		if (!configWritable(path)) throw new Error(readOnlyConfigText(path));
 		const { localIso } = await import("../memory/index.ts");
-		editConfigFile(path, (text, dir) => archiveLane(text, dir, lane, localIso(new Date()).slice(0, 10)));
-		process.stdout.write(`Archived ${lane}.\n`);
+		editConfigFile(path, (text, dir) => archiveAgent(text, dir, agent, localIso(new Date()).slice(0, 10)));
+		process.stdout.write(`Archived ${agent}.\n`);
 		return 0;
 	}
-	throw new Error(`lane needs add, set, archive, push, pull, takeover or local.\n${USAGE}`);
+	throw new Error(`agent needs add, set, archive, push, pull, takeover or local.\n${USAGE}`);
 }
 
-async function main(argv: string[]): Promise<number> {
+/** The command line's options; parseArgs reads them, and main's command finder skips a string option's value. */
+const OPTIONS = {
+	config: { type: "string" },
+	"api-key": { type: "boolean" },
+	key: { type: "string" },
+	"from-pi": { type: "boolean" },
+	days: { type: "string" },
+	keep: { type: "string" },
+	from: { type: "string" },
+	to: { type: "string" },
+	"delete-remote": { type: "boolean" },
+	"dry-run": { type: "boolean" },
+	commit: { type: "string" },
+	claude: { type: "string" },
+	"claude-file": { type: "string", multiple: true },
+	codex: { type: "string" },
+	"codex-file": { type: "string", multiple: true },
+	notes: { type: "string", multiple: true },
+	"paste-threshold": { type: "string" },
+	"no-split": { type: "boolean" },
+	out: { type: "string" },
+	progress: { type: "string" },
+	session: { type: "string" },
+	cwd: { type: "string" },
+	"wait-ms": { type: "string" },
+	"spool-only": { type: "boolean" },
+	agent: { type: "string" },
+	"agent-token": { type: "string" },
+	"claude-pid": { type: "string" },
+	nonce: { type: "string" },
+	since: { type: "string" },
+	open: { type: "boolean" },
+	mod: { type: "boolean" },
+	manual: { type: "boolean" },
+	"no-browser": { type: "boolean" },
+	prefix: { type: "string" },
+	folder: { type: "string" },
+	tool: { type: "string" },
+	launcher: { type: "string" },
+	"ori-model": { type: "string" },
+	summary: { type: "string" },
+	thinking: { type: "string" },
+	"view-kb": { type: "string" },
+	"summary-kb": { type: "string" },
+	jobs: { type: "string" },
+	"compact-at": { type: "string" },
+	server: { type: "string" },
+	cloudflare: { type: "string" },
+	"token-file": { type: "string" },
+	"code-file": { type: "string" },
+	new: { type: "boolean" },
+	json: { type: "boolean" },
+	yes: { type: "boolean" },
+	rollback: { type: "boolean" },
+	list: { type: "boolean" },
+	purge: { type: "boolean" },
+	check: { type: "boolean" },
+	help: { type: "boolean", short: "h" },
+	version: { type: "boolean", short: "v" },
+} as const;
+
+/** "--config", "--tool", …: the options whose next token is their value, not the command. */
+const VALUED = new Set(Object.entries(OPTIONS).flatMap(([name, option]) => (option.type === "string" ? [`--${name}`] : [])));
+
+async function main(rawArgv: string[]): Promise<number> {
+	// --version is the version flag everywhere but `update`, where it names a release: take its value out first.
+	// The command is the first token that is neither an option nor a string option's value (--config X, --tool T, …).
+	let updateVersion: string | undefined;
+	let argv = rawArgv;
+	let first: string | undefined;
+	for (let i = 0; i < rawArgv.length; i++) {
+		const a = rawArgv[i] as string;
+		if (VALUED.has(a)) i++;
+		else if (!a.startsWith("-")) {
+			first = a;
+			break;
+		}
+	}
+	// `orrery agent <Name> … -- <tool arguments>`: everything after `--` goes to the tool untouched.
+	let toolArgs: string[] = [];
+	if (first === "agent") {
+		const dash = argv.indexOf("--");
+		if (dash !== -1) {
+			toolArgs = argv.slice(dash + 1);
+			argv = argv.slice(0, dash);
+		}
+	}
+	if (first === "update") {
+		argv = [];
+		let seen = false;
+		for (let i = 0; i < rawArgv.length; i++) {
+			const a = rawArgv[i] as string;
+			if (a === "-v") throw new Error("use --version <release> with update.");
+			if (!seen && a === "update") {
+				seen = true;
+				argv.push(a);
+			} else if (a === "--version") {
+				updateVersion = rawArgv[++i];
+				if (updateVersion === undefined) throw new Error("--version takes a release such as 0.6.1");
+			} else if (a.startsWith("--version=")) updateVersion = a.slice("--version=".length);
+			else argv.push(a);
+		}
+	}
 	const { positionals, values } = parseArgs({
 		args: argv,
 		allowPositionals: true,
-		options: {
-			config: { type: "string" },
-			"api-key": { type: "boolean" },
-			key: { type: "string" },
-			"from-pi": { type: "boolean" },
-			days: { type: "string" },
-			keep: { type: "string" },
-			from: { type: "string" },
-			to: { type: "string" },
-			"delete-remote": { type: "boolean" },
-			"dry-run": { type: "boolean" },
-			commit: { type: "string" },
-			claude: { type: "string" },
-			"claude-file": { type: "string", multiple: true },
-			codex: { type: "string" },
-			"codex-file": { type: "string", multiple: true },
-			notes: { type: "string", multiple: true },
-			"paste-threshold": { type: "string" },
-			"no-split": { type: "boolean" },
-			out: { type: "string" },
-			session: { type: "string" },
-			cwd: { type: "string" },
-			"wait-ms": { type: "string" },
-			"spool-only": { type: "boolean" },
-			"claude-pid": { type: "string" },
-			nonce: { type: "string" },
-			since: { type: "string" },
-			open: { type: "boolean" },
-			mod: { type: "boolean" },
-			manual: { type: "boolean" },
-			"no-browser": { type: "boolean" },
-			prefix: { type: "string" },
-			folder: { type: "string" },
-			tool: { type: "string" },
-			launcher: { type: "string" },
-			"ori-model": { type: "string" },
-			summary: { type: "string" },
-			thinking: { type: "string" },
-			"view-kb": { type: "string" },
-			"summary-kb": { type: "string" },
-			jobs: { type: "string" },
-			"compact-at": { type: "string" },
-			server: { type: "string" },
-			cloudflare: { type: "string" },
-			"token-file": { type: "string" },
-			"code-file": { type: "string" },
-			new: { type: "boolean" },
-			json: { type: "boolean" },
-			yes: { type: "boolean" },
-			rollback: { type: "boolean" },
-			list: { type: "boolean" },
-			help: { type: "boolean", short: "h" },
-			version: { type: "boolean", short: "v" },
-		},
+		options: OPTIONS,
 	});
 	const [command, arg] = positionals;
 	if (values.help === true) {
@@ -295,7 +494,7 @@ async function main(argv: string[]): Promise<number> {
 		return 0;
 	}
 	if (values.version === true || command === "version") {
-		const { versionLine } = await import("../lane/running.ts");
+		const { versionLine } = await import("../agent/running.ts");
 		process.stdout.write(versionLine());
 		return 0;
 	}
@@ -310,7 +509,6 @@ async function main(argv: string[]): Promise<number> {
 	if (command === "claude-hook") return claudeHook(arg, values.config);
 	if (command === "claude-mod") return claudeModCommand(arg, values);
 	if (command === "mcp") return mcpServer(values.config);
-	if (command === "lane") return laneCommand(positionals.slice(1), values);
 	if (command === "remote") {
 		const { remoteCommand } = await import("./remote.ts");
 		process.stdout.write(await remoteCommand(values.config, positionals.slice(1), { json: values.json === true, yes: values.yes === true, server: values.server, cloudflare: values.cloudflare, "token-file": values["token-file"], "code-file": values["code-file"], new: values.new === true }));
@@ -318,22 +516,43 @@ async function main(argv: string[]): Promise<number> {
 	}
 	if (command === "tools") return toolsCommand(positionals, values);
 	if (command === "install") return installCommand(values);
+	if (command === "setup") return setupCommand(values);
+	if (command === "update") return updateCommand({ check: values.check, version: updateVersion, yes: values.yes });
+	if (command === "uninstall") return uninstallCommand(values);
+	if (command === "agent") {
+		// The config and remote subcommands. No agent may take one of their names (RESERVED_NAMES, src/agent/config.ts).
+		const sub = positionals[1];
+		if (sub !== undefined && ["add", "set", "archive", "push", "pull", "takeover", "local"].includes(sub)) return agentCommand(positionals.slice(1), values);
+		const [{ editAgentCommand, openAgentCommand }, { agentRemoteCommand }] = await Promise.all([import("./agent.ts"), import("./remote.ts")]);
+		const io = { say, confirm: (question: string) => (values.yes === true ? Promise.resolve(true) : askYes(question)) };
+		if (positionals[1] === "edit") {
+			if (positionals.length > 3) throw new Error(`orrery agent edit takes one agent name (got ${positionals.slice(2).join(" ")}).`);
+			return editAgentCommand(values.config, required(positionals[2], "agent name"), io);
+		}
+		if (positionals.length > 2) {
+			const name = positionals[1] as string;
+			throw new Error(`orrery agent takes one agent name; ${positionals.slice(2).join(" ")} would be dropped. The tool's arguments go after --: orrery agent ${name} -- ${positionals.slice(2).join(" ")}`);
+		}
+		return openAgentCommand(values.config, required(positionals[1], "agent name"), { tool: values.tool, args: toolArgs, cwd: process.cwd() }, io, {
+			takeover: (name) => agentRemoteCommand(values.config, ["takeover", name], { yes: true }),
+		});
+	}
 	const config = loadConfig(values.config);
 	switch (command) {
 		case "status": {
 			const { statusCommand } = await import("./commands.ts");
-			process.stdout.write(statusCommand(config, arg === undefined ? undefined : await laneArg(config, arg), { json: values.json === true }));
+			process.stdout.write(statusCommand(config, arg === undefined ? undefined : await agentArg(config, arg), { json: values.json === true }));
 			return 0;
 		}
 		case "usage": {
 			const { usageCommand } = await import("./commands.ts");
 			const days = Number(values.days ?? "7");
 			if (!Number.isInteger(days) || days < 1) throw new Error("--days must be a whole number of days, at least 1");
-			process.stdout.write(usageCommand(config, arg === undefined ? undefined : await laneArg(config, arg), days, { json: values.json === true }));
+			process.stdout.write(usageCommand(config, arg === undefined ? undefined : await agentArg(config, arg), days, { json: values.json === true }));
 			return 0;
 		}
 		case "login": {
-			const [{ loginCommand }, { configureHttp }] = await Promise.all([import("./logins.ts"), import("../lane/http.ts")]);
+			const [{ loginCommand }, { configureHttp }] = await Promise.all([import("./logins.ts"), import("../agent/http.ts")]);
 			configureHttp();
 			const key = values.key ?? (values["api-key"] ? required(arg, "provider") : undefined);
 			const request = key !== undefined ? { key, fromPi: values["from-pi"] ?? false } : { signin: required(arg, "provider"), manual: values.manual === true || values["no-browser"] === true };
@@ -356,16 +575,16 @@ async function main(argv: string[]): Promise<number> {
 			return 0;
 		}
 		case "compact": {
-			const [{ compactCommand }, { configureHttp }] = await Promise.all([import("./commands.ts"), import("../lane/http.ts")]);
+			const [{ compactCommand }, { configureHttp }] = await Promise.all([import("./commands.ts"), import("../agent/http.ts")]);
 			configureHttp();
-			await compactCommand(config, required(arg, "lane"));
+			await compactCommand(config, required(arg, "agent"), undefined, values.progress === undefined ? {} : { progress: values.progress });
 			return 0;
 		}
 		case "import": {
-			const [{ importCommitCommand, importDryRunCommand }, { configureHttp }] = await Promise.all([import("./commands.ts"), import("../lane/http.ts")]);
-			const lane = required(arg, "lane");
+			const [{ importCommitCommand, importDryRunCommand }, { configureHttp }] = await Promise.all([import("./commands.ts"), import("../agent/http.ts")]);
+			const agent = required(arg, "agent");
 			if (values.commit !== undefined) {
-				process.stdout.write(importCommitCommand(config, lane, values.commit));
+				process.stdout.write(importCommitCommand(config, agent, values.commit));
 				return 0;
 			}
 			if (values["dry-run"] !== true) throw new Error(`import needs --dry-run or --commit FILE.\n${USAGE}`);
@@ -373,7 +592,7 @@ async function main(argv: string[]): Promise<number> {
 			if (!Number.isInteger(threshold) || threshold < 0) throw new Error("--paste-threshold must be a whole number of bytes");
 			configureHttp();
 			process.stdout.write(
-				await importDryRunCommand(config, lane, {
+				await importDryRunCommand(config, agent, {
 					claude: values.claude,
 					claudeFiles: values["claude-file"] ?? [],
 					codex: values.codex,
@@ -387,33 +606,48 @@ async function main(argv: string[]): Promise<number> {
 			return 0;
 		}
 		case "backup": {
-			const { backupLanes } = await import("../lane/backup.ts");
+			const { backupAgents } = await import("../agent/backup.ts");
 			const keep = Number(values.keep ?? "14");
 			if (!Number.isInteger(keep) || keep < 1) throw new Error("--keep must be a whole number of days, at least 1");
-			const report = backupLanes(config, { keep });
-			for (const lane of report.lanes) process.stdout.write(`${lane.name}: ${lane.messages} messages, ${lane.nodes} summaries -> ${report.dir}/${lane.name}\n`);
-			if (report.lanes.length === 0) process.stdout.write(`No lane has memory yet; wrote ${report.dir}\n`);
+			const report = backupAgents(config, { keep });
+			for (const agent of report.agents) {
+				const what = agent.files.includes("memory.sqlite") ? `${agent.messages} messages, ${agent.nodes} summaries` : "instructions only (no memory yet)";
+				process.stdout.write(`${agent.name}: ${what} -> ${report.dir}/${agent.name}\n`);
+			}
+			if (report.agents.length === 0) process.stdout.write(`No agent has memory or instructions yet; wrote ${report.dir}\n`);
 			if (report.pruned.length > 0) process.stdout.write(`Removed old backups: ${report.pruned.join(", ")}\n`);
+			// A warning leaves the backup good (exit 0): the nightly script still copies it.
+			for (const warning of report.warnings) process.stderr.write(`Warning: ${warning}\n`);
 			return 0;
 		}
 		case "restore": {
-			const { restoreLane } = await import("../lane/backup.ts");
-			const lane = required(arg, "lane");
+			const { restoreAgent } = await import("../agent/backup.ts");
+			const agent = required(arg, "agent");
 			if (values.from === undefined) throw new Error(`restore needs --from DATE (YYYY-MM-DD) or --from DIR.\n${USAGE}`);
-			const report = restoreLane(config, lane, { from: values.from });
-			process.stdout.write(`Restored ${report.lane} from ${report.from}: ${report.messages} messages, ${report.nodes} summaries (${report.files.join(", ")})\n`);
+			const report = restoreAgent(config, agent, { from: values.from });
+			if (report.memory) process.stdout.write(`Restored ${report.agent} from ${report.from}: ${report.messages} messages, ${report.nodes} summaries (${report.files.join(", ")})\n`);
+			else process.stdout.write(`The backup at ${report.from} holds instructions only; ${report.agent}'s memory is left as it is\n`);
+			if (report.instructions === "restored") process.stdout.write(`${report.agent} had no instructions; put back the backup's instructions.md\n`);
+			if (report.instructions === "kept") {
+				process.stdout.write(`Kept ${report.agent}'s own instructions.md; the backup's copy is ${join(report.from, "instructions.md")}\n`);
+			}
+			if (report.instructions === "none in effect") {
+				process.stdout.write(`Left ${report.agent}'s instructions.md as it is (not a regular file; none in effect); the backup's copy is ${join(report.from, "instructions.md")}\n`);
+			}
+			// The memory's restore stands (exit 0); what went wrong with instructions.md is said, naming the file.
+			for (const warning of report.warnings) process.stderr.write(`Warning: ${warning}\n`);
 			return 0;
 		}
 		case "browse": {
 			const { browseCommand } = await import("./commands.ts");
-			const lane = findLane(config, await laneArg(config, required(arg, "lane")));
-			// --open writes where pi's /browse does (the lane's data folder), not into the folder Claude Code runs in.
-			const path = browseCommand(config, lane.name, values.out ?? (values.open === true ? join(lane.dir, "memory.html") : undefined));
+			const agent = findAgent(config, await agentArg(config, required(arg, "agent")));
+			// --open writes where pi's /browse does (the agent's data folder), not into the folder Claude Code runs in.
+			const path = browseCommand(config, agent.name, values.out ?? (values.open === true ? join(agent.dir, "memory.html") : undefined));
 			if (values.open !== true) {
 				process.stdout.write(`Wrote ${path}\n`);
 				return 0;
 			}
-			const { pageOpener } = await import("../lane/lane-commands.ts");
+			const { pageOpener } = await import("../agent/agent-commands.ts");
 			// ORRERY_NO_OPEN=1 (tests) never opens a page, even with a display.
 			const opener = process.env.ORRERY_NO_OPEN === "1" ? undefined : pageOpener();
 			opener?.open(path);
@@ -421,37 +655,37 @@ async function main(argv: string[]): Promise<number> {
 			return 0;
 		}
 		case "compactor": {
-			const [{ compactorCliCommand }, { configureHttp }] = await Promise.all([import("./commands.ts"), import("../lane/http.ts")]);
+			const [{ compactorCliCommand }, { configureHttp }] = await Promise.all([import("./commands.ts"), import("../agent/http.ts")]);
 			configureHttp(); // a switch makes a test call to the model
-			process.stdout.write(await compactorCliCommand(config, await laneArg(config, required(arg, "lane")), positionals.slice(2), values.prefix === undefined ? {} : { prefix: values.prefix }));
+			process.stdout.write(await compactorCliCommand(config, await agentArg(config, required(arg, "agent")), positionals.slice(2), values.prefix === undefined ? {} : { prefix: values.prefix }));
 			return 0;
 		}
 		case "run": {
-			const [{ BACKGROUND_CONTEXT }, { configureHttp }, { Lane }, { runLane }, { SignalStop, stopOnSignals }] = await Promise.all([
+			const [{ BACKGROUND_CONTEXT }, { configureHttp }, { Agent }, { runHarness }, { SignalStop, stopOnSignals }] = await Promise.all([
 				import("@earendil-works/chord/context"),
-				import("../lane/http.ts"),
-				import("../lane/lane.ts"),
+				import("../agent/http.ts"),
+				import("../agent/agent.ts"),
 				import("./run.ts"),
 				import("./signals.ts"),
 			]);
 			configureHttp();
 			const fatal = new AbortController();
-			const lane = await Lane.open({
+			const agent = await Agent.open({
 				config,
-				lane: required(arg, "lane"),
+				agent: required(arg, "agent"),
 				onFatal: (reason) => {
 					process.stderr.write(`\nFATAL: ${reason}\n`);
 					fatal.abort();
 				},
 			});
-			// systemctl stop (SIGTERM) and tmux kill-server (SIGHUP) close the lane like a fatal stop, but exit 0.
+			// systemctl stop (SIGTERM) and tmux kill-server (SIGHUP) close the agent like a fatal stop, but exit 0.
 			const releaseSignals = stopOnSignals(fatal);
-			const code = await runLane(
-				lane,
+			const code = await runHarness(
+				agent,
 				{ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY === true, stop: fatal.signal },
 				BACKGROUND_CONTEXT,
 			);
-			await lane.close();
+			await agent.close();
 			releaseSignals();
 			return fatal.signal.reason instanceof SignalStop ? 0 : code;
 		}
@@ -461,7 +695,7 @@ async function main(argv: string[]): Promise<number> {
 			const since = values.since === undefined ? undefined : Number(values.since);
 			if (since !== undefined && !(Number.isInteger(since) && since >= 0)) throw new Error(`holder: --since must be a time in ms since the epoch.\n${USAGE}`);
 			const { runHolder } = await import("../claude/holder.ts");
-			return runHolder(config, required(arg, "lane"), {
+			return runHolder(config, required(arg, "agent"), {
 				session: required(values.session, "--session"),
 				claudePid,
 				nonce: values.nonce ?? "",
@@ -470,33 +704,9 @@ async function main(argv: string[]): Promise<number> {
 		}
 		case "claude-setup": {
 			const setup = await import("../claude/setup.ts");
-			const lane = findLane(config, await laneArg(config, required(arg, "lane")));
-			process.stdout.write(values.mod === true ? setup.modSetupReport(setup.claudeSetupMod(lane)) : setup.setupReport(setup.claudeSetup(lane)));
+			const agent = findAgent(config, await agentArg(config, required(arg, "agent")));
+			process.stdout.write(values.mod === true ? setup.modSetupReport(setup.claudeSetupMod(agent)) : setup.setupReport(setup.claudeSetup(agent)));
 			return 0;
-		}
-		case "launch": {
-			const [{ laneOverview }, { applyFix, exitText, launchLabel, launchPlan, runTool }, { checkTools }] = await Promise.all([import("../lane/overview.ts"), import("../lane/launch.ts"), import("../lane/tools.ts")]);
-			const name = findLane(config, await laneArg(config, required(arg, "lane"))).name;
-			const row = laneOverview(config).find((r) => r.name === name);
-			if (row === undefined) throw new Error(`No lane named ${name}.`);
-			const tools = checkTools();
-			const plan = launchPlan(config, row, tools);
-			if (plan.blocked !== undefined) throw new Error(plan.blocked);
-			for (const step of plan.steps) {
-				if (!step.confirm) {
-					process.stdout.write(`${step.text}\n`);
-					continue;
-				}
-				if (values.yes !== true && !(await askYes(step.text))) {
-					process.stdout.write("Not launched.\n");
-					return 1;
-				}
-				if (step.fix !== undefined) process.stdout.write(`${applyFix(step.fix, config, row, tools)}\n`);
-			}
-			const exit = await runTool(plan, typeof values.config === "string" ? { env: { ...process.env, ORRERY_CONFIG: resolvePath(values.config) } } : {});
-			const text = exitText(launchLabel(plan), exit);
-			if (text !== undefined) process.stderr.write(`${text}\n`);
-			return exit.code ?? 1;
 		}
 		default:
 			process.stderr.write(`Unknown command ${command}.\n${USAGE}`);
@@ -512,23 +722,39 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
  * Code then runs plain. A config that is named but missing, or broken, gets one stderr line, `label` first.
  */
 function optionalConfig(configPath: string | undefined, label: string): HarnessConfig | undefined {
+	return foundConfig(configPath, label).config;
+}
+
+/** optionalConfig, and whether a config is there (or named) but could not be read: `broken`. */
+function foundConfig(configPath: string | undefined, label: string): { readonly config?: HarnessConfig; readonly broken: boolean } {
 	try {
-		return loadConfig(configPath);
+		return { config: loadConfig(configPath), broken: false };
 	} catch (error) {
 		const absent = (error as { code?: unknown }).code === "ENOENT" && configPath === undefined && !process.env.ORRERY_CONFIG;
 		if (!absent) process.stderr.write(`${label}: ${errorText(error)}\n`);
-		return undefined;
+		return { broken: !absent };
 	}
 }
 
-/** Claude Code's MCP server. Outside a lane, or without an orrery config, it serves no tools rather than failing. */
+/** PreToolUse's answer that refuses the call, made here so it needs nothing that may have failed to load. */
+const denyToolCall = (reason: string) =>
+	JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: `Orrery guard: ${reason}` } });
+
+/**
+ * Claude Code's MCP server, for the session's agent (src/claude/pick.ts: ORRERY_AGENT's, else the project folder's).
+ * Outside an agent, under a refused ORRERY_AGENT, or without an orrery config, it serves no tools rather than failing.
+ * Claude Code starts it with the session, before SessionStart runs, so it may make the process's decision; a restarted
+ * server reads the one recorded. The process is its parent, the Claude Code that started it (orrery-run execs), never
+ * CLAUDE_PID, which a claude started from an agent's Bash inherits from the agent.
+ */
 async function mcpServer(configPath: string | undefined): Promise<number> {
-	const [{ laneTools, runMcp }, { laneHere }] = await Promise.all([import("../claude/mcp.ts"), import("../claude/paths.ts")]);
-	let tools: LaneTool[] = [];
+	const { agentTools, runMcp } = await import("../claude/mcp.ts");
+	let tools: ReaderTool[] = [];
 	const config = optionalConfig(configPath, "orrery mcp");
 	if (config !== undefined) {
-		const lane = laneHere(config, process.env.CLAUDE_PROJECT_DIR || process.cwd());
-		if (lane !== undefined) tools = laneTools(config, lane);
+		const { claudeSession } = await import("../claude/pick.ts");
+		const pick = claudeSession(config, { env: process.env, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), pid: process.ppid, decide: true });
+		if (pick.kind === "agent") tools = agentTools(config, pick.agent);
 	}
 	await runMcp(process.stdin, process.stdout, tools);
 	return 0;
@@ -550,34 +776,46 @@ async function readStdin(max: number): Promise<string | undefined> {
 
 /**
  * `orrery claude-hook <event>`: Claude Code's hooks never fail a session. They exit 0, print only their JSON answer,
- * and note any error in one stderr line, never with message contents.
+ * and note any error in one stderr line, never with message contents. PreToolUse never lets a call through on a failure
+ * of its own (Claude Code allows a call the hook says nothing about): a config that is there, or named, but cannot be
+ * read denies every call until it is fixed, and so does an error. Without any config Claude Code runs plain.
  */
 async function claudeHook(event: string | undefined, configPath: string | undefined): Promise<number> {
+	const guarding = event === "pre-tool-use";
 	try {
-		const config = optionalConfig(configPath, "Orrery");
+		const { config, broken } = foundConfig(configPath, "Orrery");
 		if (config === undefined) {
 			await readStdin(0); // read to its end all the same, so Claude Code's write completes
+			if (guarding && broken) process.stdout.write(denyToolCall("Orrery's config could not be read, so no call can be checked; nothing was run. Fix the config file."));
 			return 0;
 		}
 		const hooks = await import("../claude/hooks.ts");
 		// A PreToolUse input over 1 MB is read but not kept (hookInputMax): the guard refuses it unread.
 		const stdin = await readStdin(hooks.hookInputMax(event ?? ""));
 		const claudePid = Number(process.env.CLAUDE_PID) || process.ppid;
-		const startHolder = (lane: LaneConfig, session: string, nonce: string, since: number) => hooks.spawnHolder(lane, session, nonce, claudePid, since, configPath);
-		process.stdout.write(await hooks.runHook(event ?? "", stdin, { config, env: process.env, claudePid, startHolder }));
+		const startHolder = (agent: AgentConfig, session: string, nonce: string, since: number) => hooks.spawnHolder(agent, session, nonce, claudePid, since, configPath);
+		// The file the config came from, as loadConfig found it: the guard keeps it read-only, wherever it is.
+		const configFile = resolvePath(configPath ?? defaultConfigPath());
+		const answer = await hooks.runHook(event ?? "", stdin, { config, env: process.env, claudePid, startHolder, configFile });
+		process.stdout.write(answer);
 	} catch (error) {
 		process.stderr.write(`Orrery: ${event ?? "claude-hook"}: ${errorText(error)}\n`);
+		if (guarding) process.stdout.write(denyToolCall(`this call could not be checked (${errorText(error)}); nothing was run.`));
 	}
 	return 0;
 }
 
 /**
- * `orrery claude-mod view --cwd DIR [--session ID] [--wait-ms N [--spool-only]]`: the Orrery mod's one call
- * (src/claude/mod-view.ts).
+ * `orrery claude-mod view --cwd DIR [--session ID] [--agent NAME [--agent-token T]] [--wait-ms N [--spool-only]]`: the
+ * Orrery mod's one call (src/claude/mod-view.ts). --agent and --agent-token are ORRERY_AGENT and its token as the mod
+ * read them from Claude Code's environment.
  * It prints one JSON line; exit 1 with { error } when the config or memory cannot be read. Nothing goes to stderr.
  * No config at all (none named, none at the default paths) is not an error: the reply is { lane: null }.
  */
-async function claudeModCommand(action: string | undefined, values: { config?: string; cwd?: string; session?: string; "wait-ms"?: string; "spool-only"?: boolean }): Promise<number> {
+async function claudeModCommand(
+	action: string | undefined,
+	values: { config?: string; cwd?: string; session?: string; "wait-ms"?: string; "spool-only"?: boolean; agent?: string; "agent-token"?: string },
+): Promise<number> {
 	let reply: object;
 	try {
 		if (action !== "view") throw new Error("claude-mod needs view");
@@ -591,7 +829,8 @@ async function claudeModCommand(action: string | undefined, values: { config?: s
 			const absent = (error as { code?: unknown }).code === "ENOENT" && values.config === undefined && !process.env.ORRERY_CONFIG;
 			if (!absent) throw error;
 		}
-		reply = await modView(config, { cwd: values.cwd ?? process.cwd(), ...(values.session === undefined ? {} : { session: values.session }), waitMs, spoolOnly: values["spool-only"] === true });
+		const agent = values.agent === undefined ? {} : { agent: values.agent, ...(values["agent-token"] === undefined ? {} : { agentToken: values["agent-token"] }) };
+		reply = await modView(config, { cwd: values.cwd ?? process.cwd(), ...(values.session === undefined ? {} : { session: values.session }), waitMs, spoolOnly: values["spool-only"] === true, ...agent });
 	} catch (error) {
 		reply = { error: errorText(error).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, 300) };
 	}

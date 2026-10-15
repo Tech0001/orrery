@@ -1,19 +1,19 @@
-/** First run (spec §3.5): no config yet. Asks where memory lives, a first lane, a summary login and model, then wires the tool. */
+/** First run (spec §3.5): no config yet. Asks where memory lives, a first agent, a summary login and model, then wires the tool. */
 
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { pickSummaryModel } from "../lane/compactor-menu.ts";
-import { LANE_TOOLS, type ModelChoice, parseConfig } from "../lane/config.ts";
-import { addLane, newConfigText } from "../lane/config-edit.ts";
-import { TOOL_LABELS } from "../lane/overview.ts";
-import { explainFailure, safeText } from "../lane/source-labels.ts";
-import { listSources, usable } from "../lane/summary-sources.ts";
+import { pickSummaryModel } from "../agent/compactor-menu.ts";
+import { AGENT_TOOLS, agentNameProblem, type ModelChoice, parseConfig } from "../agent/config.ts";
+import { addAgent, newConfigText } from "../agent/config-edit.ts";
+import { instructionsTemplate, readInstructions } from "../agent/instructions.ts";
+import { TOOL_LABELS } from "../agent/overview.ts";
+import { explainFailure, safeText } from "../agent/source-labels.ts";
+import { listSources, usable } from "../agent/summary-sources.ts";
 import type { App } from "./app.ts";
 import { InputModal, MessageModal, menuUI, SecretModal, SelectModal } from "./dialogs.ts";
-import { expandHome, wireLane } from "./pages/lane-actions.ts";
+import { expandHome, wireAgent } from "./pages/agent-actions.ts";
 import { signInInteraction } from "./signin.ts";
 
-const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 const WAYS = ["Sign in to ChatGPT", "Add an Anthropic key", "Add an OpenAI key", "Add an OpenRouter key", "Sign in to OpenRouter"] as const;
 const KEY_NAMES: Record<string, string> = { "Add an Anthropic key": "anthropic", "Add an OpenAI key": "openai", "Add an OpenRouter key": "openrouter" };
 const errorText = (error: unknown) => safeText(error instanceof Error ? error.message : String(error));
@@ -35,7 +35,7 @@ export async function firstRun(app: App): Promise<boolean> {
 		let dataText: string | undefined;
 		let draft: ReturnType<typeof parseConfig> | undefined;
 		while (draft === undefined) {
-			dataText = await app.host.open(new InputModal("Welcome to Orrery. It keeps a long memory for each agent folder (a lane).\n\nWhere should memory live? (Esc leaves without writing anything)", "~/.orrery"));
+			dataText = await app.host.open(new InputModal("Welcome to Orrery. It keeps each agent's instructions and memory.\n\nWhere should memory live? (Esc leaves without writing anything)", "~/.orrery"));
 			if (dataText === undefined) return false;
 			if (dataText.trim() === "") continue;
 			try {
@@ -49,10 +49,11 @@ export async function firstRun(app: App): Promise<boolean> {
 		const data = dataText ?? "";
 		let name: string | undefined;
 		for (;;) {
-			name = await app.host.open(new InputModal("Your first lane's name (letters, digits, - and _):"));
+			name = await app.host.open(new InputModal("Your first agent's name (letters, digits, - and _):"));
 			if (name === undefined) return false;
-			if (NAME.test(name)) break;
-			await app.host.open(new MessageModal("Lane name", "Lane names use letters, digits, - and _ (at most 32), starting with a letter."));
+			const problem = agentNameProblem(name);
+			if (problem === undefined) break;
+			await app.host.open(new MessageModal("Agent name", problem));
 		}
 		const folder = await app.host.open(new InputModal("Its folder:", app.deps.cwd));
 		if (folder === undefined) return false;
@@ -62,7 +63,7 @@ export async function firstRun(app: App): Promise<boolean> {
 			return false;
 		}
 		const toolLabel = await app.host.open(new SelectModal("Its tool:", found.map((t) => t.label)));
-		const tool = LANE_TOOLS.find((t) => TOOL_LABELS[t] === toolLabel);
+		const tool = AGENT_TOOLS.find((t) => TOOL_LABELS[t] === toolLabel);
 		if (tool === undefined) return false;
 		const sources = await app.deps.sources(draft);
 		let choice: ModelChoice | undefined;
@@ -114,12 +115,12 @@ export async function firstRun(app: App): Promise<boolean> {
 			choice = picked.choice;
 		}
 		const chosen = choice;
-		const laneName = name;
+		const agentName = name;
 		try {
 			app.deps.editConfig((text, dir) =>
-				addLane(text.trim() === "" || text === newConfigText() ? newConfigText(dataFor(data, app.deps.configPath)) : text, dir, {
-					name: laneName,
-					workspace: resolve(expandHome(folder)),
+				addAgent(text.trim() === "" || text === newConfigText() ? newConfigText(dataFor(data, app.deps.configPath)) : text, dir, {
+					name: agentName,
+					folder: resolve(expandHome(folder)),
 					tool,
 					compactorModel: `${chosen.provider}/${chosen.modelId}`,
 					compactorThinking: chosen.thinking,
@@ -129,10 +130,18 @@ export async function firstRun(app: App): Promise<boolean> {
 			await app.host.open(new MessageModal("Can't write the config", `${errorText(error)}\nThe login you saved stays saved. Fix that and run orrery again.`));
 			return false;
 		}
+		// The first agent starts with the instructions' template too (an archived agent's data folder keeps its own). The config
+		// is written: a template that can't be is no reason to stop (the Agents page then says "no instructions").
+		try {
+			const made = app.deps.loadConfig().agents.get(agentName);
+			if (made !== undefined && readInstructions(made.dir) === undefined) app.deps.writeInstructions(made.dir, instructionsTemplate(made.name));
+		} catch (error) {
+			await app.host.open(new MessageModal("Instructions", `${agentName}'s instructions template could not be written: ${errorText(error)}. Press E on its row to write them.`));
+		}
 		app.setup = false;
-		await wireLane(app, laneName);
-		app.showPage("lanes");
-		app.say(`Orrery is set up. ${laneName} is ready: press L to launch it.`);
+		await wireAgent(app, agentName);
+		app.showPage("agents");
+		app.say(`Orrery is set up. ${agentName} is ready: press L to launch it.`);
 		return true;
 	} finally {
 		app.setup = false;

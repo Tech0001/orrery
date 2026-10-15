@@ -1,6 +1,7 @@
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
-import { ConfirmModal, hardWrap, InputModal, MessageModal, ModalHost, menuUI, SecretModal, SelectModal } from "../../src/tui/dialogs.ts";
+import type { Chat } from "../../src/import/chats.ts";
+import { ChatListModal, ConfirmModal, hardWrap, InputModal, MessageModal, ModalHost, menuUI, ProgressModal, ReportModal, SecretModal, SelectModal } from "../../src/tui/dialogs.ts";
 import { PLAIN } from "../../src/tui/theme.ts";
 
 const DOWN = "\x1b[B";
@@ -8,6 +9,9 @@ const ENTER = "\r";
 const ESC = "\x1b";
 /** Esc under the Kitty keyboard protocol, which pi-tui turns on when the terminal has it. */
 const KITTY_ESC = "\x1b[27u";
+const TAB = "\t";
+
+const chat = (title: string, folder: string | undefined, lastActive: number, fields: Partial<Chat> = {}): Chat => ({ tool: "claude-code", file: `/f/${title}`, id: title, title, ...(folder === undefined ? {} : { folder }), lastActive, size: 1000, inUse: false, ...fields });
 
 describe("dialogs", () => {
 	it("SelectModal moves, filters by typing, picks with Enter, and cancels with Esc", async () => {
@@ -87,6 +91,100 @@ describe("dialogs", () => {
 		message.handleInput(ENTER);
 		await message.result;
 		expect(message.done).toBe(true);
+	});
+
+	it("ChatListModal marks several chats of one folder with space, refuses another folder's, and goes on with them", async () => {
+		const modal = new ChatListModal("Pick", [chat("One", "/w/a", 3), chat("Two", "/w/b", 2), chat("Three", "/w/a", 1)], { home: "/home/x", now: 10 });
+		modal.handleInput(" ");
+		modal.handleInput(DOWN);
+		modal.handleInput(" ");
+		expect(modal.render(120, 20, PLAIN).join("\n")).toContain("Mark chats of one folder: the first is in /w/a.");
+		modal.handleInput(DOWN);
+		modal.handleInput(" ");
+		modal.handleInput(ENTER);
+		expect((await modal.result)?.map((c) => c.title)).toEqual(["One", "Three"]);
+	});
+
+	it("ChatListModal: once a filter is typed, space is part of it and Tab marks", async () => {
+		const chats = [chat("Install Redis", "/w/a", 3), chat("Install Steam", "/w/a", 2), chat("Plan the trip", "/w/a", 1)];
+		const modal = new ChatListModal("Pick", chats, { home: "/home/x", now: 10 });
+		for (const c of "install redis") modal.handleInput(c);
+		const shown = modal.render(120, 20, PLAIN).join("\n");
+		expect(shown).toContain("filter: install redis");
+		expect(shown).toContain("Install Redis");
+		expect(shown).not.toContain("Install Steam");
+		expect(shown).toContain("Tab mark several");
+		expect(shown).not.toContain("space or Tab");
+		modal.handleInput(TAB);
+		for (let i = 0; i < "install redis".length; i++) modal.handleInput("\x7f");
+		modal.handleInput(DOWN);
+		modal.handleInput(DOWN);
+		modal.handleInput(TAB);
+		modal.handleInput(ENTER);
+		expect((await modal.result)?.map((c) => c.title)).toEqual(["Install Redis", "Plan the trip"]);
+	});
+
+	it("ChatListModal shows each chat's folder, tool, age, size and use; Enter takes the one under the cursor; Esc leaves", async () => {
+		const now = Date.parse("2026-10-13T12:00:00.000Z");
+		const chats = [
+			chat("Install Redis", "/home/x/Work", now - 5 * 60_000, { tool: "codex", size: 2_500_000, inUse: true }),
+			chat("Lost folder", undefined, now - 3 * 3_600_000),
+		];
+		const modal = new ChatListModal("Turn which chat into an agent?", chats, { home: "/home/x", now });
+		const lines = modal.render(120, 20, PLAIN);
+		expect(lines.map((line) => line.trimEnd())).toContain("› [ ] Install Redis  ·  ~/Work  ·  Codex  ·  5 min  ·  2.5 MB  ·  in use");
+		expect(lines.join("\n")).toContain("  [ ] Lost folder  ·  ?  ·  Claude Code  ·  3 h  ·  1 KB");
+		expect(lines.join("\n")).toContain("space or Tab mark several");
+		for (const line of modal.render(60, 20, PLAIN)) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
+		modal.handleInput(DOWN);
+		modal.handleInput(ENTER);
+		expect((await modal.result)?.map((c) => c.title)).toEqual(["Lost folder"]);
+		const left = new ChatListModal("Pick", chats, { home: "/home/x", now });
+		left.handleInput(ESC);
+		expect(await left.result).toBeUndefined();
+	});
+
+	it("ProgressModal shows the line the work says; Esc aborts its signal and closes it; close() does not abort", async () => {
+		const progress = new ProgressModal("Preparing Atlas's memory");
+		progress.say("Reading 1 chat…");
+		expect(progress.render(60, 10, PLAIN).join("\n")).toContain("Reading 1 chat…");
+		progress.handleInput(ESC);
+		await progress.result;
+		expect(progress.signal.aborted).toBe(true);
+		const done = new ProgressModal("Preparing");
+		done.close();
+		await done.result;
+		expect(done.signal.aborted).toBe(false);
+	});
+
+	it("ReportModal: Enter imports, R asks for the full report, Esc leaves", async () => {
+		const answers: unknown[] = [];
+		for (const key of [ENTER, "r", "R", ESC]) {
+			const report = new ReportModal("Import preview for Atlas", "2 messages, 2026-10-13 to 2026-10-13");
+			expect(report.render(60, 10, PLAIN).join("\n")).toContain("2 messages, 2026-10-13 to 2026-10-13");
+			report.handleInput(key);
+			answers.push(await report.result);
+		}
+		expect(answers).toEqual(["import", "full", "full", undefined]);
+	});
+
+	it("ReportModal and ProgressModal show no control characters or escape sequences, whoever made the text", () => {
+		const dirty = "Left out: parent \u001b]0;owned\u0007\u001b[31mred\u001b[0m \u009b2J end";
+		const report = new ReportModal("Import preview for Atlas", `2 messages\n${dirty}`);
+		const shown = report.render(80, 10, PLAIN).join("\n");
+		expect(shown).toContain("Left out: parent ]0;owned[31mred[0m 2J end");
+		expect(shown).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+		const progress = new ProgressModal("Preparing");
+		progress.say(dirty);
+		expect(progress.render(80, 10, PLAIN).join("\n")).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+	});
+
+	it("ReportModal keeps its keys in view when the report is longer than the window", () => {
+		const report = new ReportModal("Import preview for Atlas", Array.from({ length: 30 }, (_, i) => `Left out: line ${i}`).join("\n"));
+		const lines = report.render(60, 10, PLAIN);
+		expect(lines).toHaveLength(10);
+		expect(lines[8]?.trimEnd()).toBe("… (R shows the full report)");
+		expect(lines[9]).toContain("Enter import · R full report · Esc leave without writing");
 	});
 
 	it("ModalHost stacks modals, routes input to the top one, and menuUI asks through it", async () => {

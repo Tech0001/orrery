@@ -2,7 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { extractCodex, findCodexSessions } from "../../src/import/codex.ts";
-import { tempDir } from "../lane/support.ts";
+import { tempDir } from "../agent/support.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -36,7 +36,7 @@ function root(): string {
 }
 
 describe("findCodexSessions", () => {
-	it("finds rollout files whose session ran in the workspace or below it", () => {
+	it("finds rollout files whose session ran in the folder or below it", () => {
 		const r = root();
 		const a = session(r, "rollout-a.jsonl", "/w/agent-Atlas", []);
 		const b = session(r, "rollout-b.jsonl", "/w/agent-Atlas/sub", []);

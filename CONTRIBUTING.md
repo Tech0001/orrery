@@ -8,7 +8,7 @@ Security problems go through [SECURITY.md](SECURITY.md), not public issues.
 
 Open an issue with:
 
-- the Orrery commit (`git rev-parse --short HEAD`) and Node version (`node --version`)
+- the Orrery version (`orrery --version`; from a checkout, the commit from `git rev-parse --short HEAD`)
 - the coding tool and its version: `orrery tools` lists pi, OMP, Claude Code and Codex
 - what you ran, what you expected and what happened
 - the error text
@@ -25,12 +25,20 @@ npm_config_ignore_scripts=true npm ci
 npm run check
 ```
 
-Orrery needs Node 22.19 or newer. Keep install scripts off for every npm install in this repo, including `worker/`.
-The README's [Development](README.md#development) section covers the Bun store check, the Python parity oracle and the
-real pi, OMP and Ori tests.
+Tests and the typecheck need Node 22.19 or newer. Building the program needs Bun at the version in `.bun-version`
+(`npm run install-local` refuses another version). The program carries Bun's runtime, so a change to `.bun-version`
+also replaces `scripts/licenses/bun-LICENSE.md` with that Bun tag's `LICENSE.md`. Keep install scripts off for every
+npm install in this repo, including `worker/`. The README's [Development](README.md#development) section covers the
+Bun store check, the Python parity oracle and the real pi, OMP and Ori tests.
 
-To try a change in your real lanes, commit it and run `npm run install-local`. It installs the last commit into
-`~/.orrery/app`; `orrery install --rollback` undoes it.
+- `npm run check`: typecheck and the full suite on Node.
+- `npm run test:binary`: the compiled program, built for this machine.
+- `npm run test:bun-suite`: the suite on Bun.
+
+To try a change on your own machine, commit it and run `npm run install-local`. It builds a release from the last
+commit and installs it as `<version>-<commit>`, then wires your tools to it. `orrery install --rollback` goes back to the
+previous version, and `orrery update --version <X>` returns to release X (plain `orrery update` installs only a newer
+release).
 
 ## Making a change
 
@@ -45,7 +53,7 @@ To try a change in your real lanes, commit it and run `npm run install-local`. I
 
 ## Areas that need extra care
 
-- **The store.** Lanes hold long histories. Existing memory has to keep opening after an upgrade, so a change to the
+- **The store.** Agents hold long histories. Existing memory has to keep opening after an upgrade, so a change to the
   store comes with a test that opens data written the old way.
 - **Summaries and the view.** The summary prompts and view selection follow
   [OptChat](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449). The Python reference in
@@ -56,8 +64,8 @@ To try a change in your real lanes, commit it and run `npm run install-local`. I
   change comes with tests for the bypass it closes. The guard is not a sandbox, and the docs say what it covers.
 - **The pi extension.** Code under `src/pi/` imports pi-ai only through entry points pi supplies. A test enforces this
   ([adapters and boundaries](docs/architecture.md#adapters-and-boundaries)).
-- **Remote lanes.** One machine writes a lane at a time, and memory is encrypted before upload. Storage changes must
-  pass the shared contract tests in `test/remote/` ([remote lanes](docs/remote.md)).
+- **Remote agents.** One machine writes an agent at a time, and memory is encrypted before upload. Storage changes must
+  pass the shared contract tests in `test/remote/` ([remote agents](docs/remote.md)).
 
 ## Dependencies
 
