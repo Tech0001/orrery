@@ -191,6 +191,20 @@ describe("cachedUpdate and refreshUpdateCache", () => {
 		expect(cachedUpdate(env, Date.now()).latest).toBe("0.6.1");
 	});
 
+	it("asks once a day per process even when the answer cannot be written", async () => {
+		const home = scratch();
+		const { base, hits } = await releasesServer("0.6.1", {});
+		const env = { ORRERY_HOME: home, ORRERY_RELEASES_URL: base };
+		// A folder where the cache file should be: the lock can be written, the cache cannot.
+		mkdirSync(join(home, "update-check.json"));
+		const now = Date.now();
+		await refreshUpdateCache(env, now);
+		await refreshUpdateCache(env, now + 5_000);
+		expect(hits).toEqual(["/releases/latest"]);
+		await refreshUpdateCache(env, now + 25 * 3600_000);
+		expect(hits).toHaveLength(2);
+	});
+
 	it("keeps the last answer when the server is down, and does not ask again that day", async () => {
 		const home = scratch();
 		const now = Date.parse("2026-10-15T12:00:00Z");

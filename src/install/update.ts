@@ -230,6 +230,12 @@ function writeCache(env: NodeJS.ProcessEnv, cache: Cache): void {
 	renameSync(temp, file);
 }
 
+/**
+ * When this process last asked, per cache file: it asks at most once a day even when the answer cannot be written (a
+ * session looks on every status tick).
+ */
+const asked = new Map<string, number>();
+
 /** A lock older than this was left by a process that died while asking (a request takes at most 5 s). */
 const LOCK_STALE_MS = 60_000;
 
@@ -271,7 +277,9 @@ export async function refreshUpdateCache(env: NodeJS.ProcessEnv, now: number): P
 	try {
 		// Another process may have asked while this one took the lock.
 		const before = readCache(env);
-		if (!stale(before, now)) return;
+		const last = asked.get(lock);
+		if (!stale(before, now) || (last !== undefined && !stale({ checkedAt: last }, now))) return;
+		asked.set(lock, now);
 		let latest = before?.latest;
 		try {
 			latest = await latestVersion(env, { timeoutMs: 5_000 });

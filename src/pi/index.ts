@@ -85,8 +85,6 @@ export interface OrreryState {
 	instructions?: string;
 	/** The update notices this session has shown (src/agent/update-notices.ts keys); a new set at each open. */
 	updatesShown?: Set<string>;
-	/** When the session last looked for update notices. */
-	updatesAt?: number;
 }
 
 export interface OrreryOptions {
@@ -121,8 +119,6 @@ export interface OrreryOptions {
 		readonly env: NodeJS.ProcessEnv;
 		/** The Orrery version this extension runs; default runningVersion(env). */
 		readonly running?: () => string | undefined;
-		/** How often an open agent's session looks again, on its status tick (default every minute). */
-		readonly everyMs?: number;
 	};
 }
 
@@ -278,16 +274,14 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 		/**
 		 * The update notices (src/agent/update-notices.ts) as warnings, each once per session: what the cache and the
 		 * installed version say now, and, when the cache is a day old and checks are on, what a refresh in the background
-		 * brings once it answers. Nothing waits on the network, nothing reaches the model, and it never throws. `force`: look
-		 * now (the session's open), not only once `everyMs` has passed (the status tick).
+		 * brings once it answers. Nothing waits on the network, nothing reaches the model, and it never throws. At the
+		 * session's open and on each status tick: a few small files, so an update under the session is said within a tick.
 		 */
-		const showUpdates = (ctx: ExtensionContext, config: HarnessConfig, force = false): void => {
+		const showUpdates = (ctx: ExtensionContext, config: HarnessConfig): void => {
 			const updates = options.updates;
 			const shown = state.updatesShown;
 			if (updates === undefined || shown === undefined) return;
 			const now = Date.now();
-			if (!force && now - (state.updatesAt ?? 0) < (updates.everyMs ?? 60_000)) return;
-			state.updatesAt = now;
 			const enabled = config.updates.check;
 			const show = () => {
 				// An answer that comes after the session ended, or another opened, is not this session's to show.
@@ -354,8 +348,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			noteRun(state, ctx);
 			// Before the memory opens, which may take a while (a remote check-out): these need no memory.
 			state.updatesShown = new Set();
-			state.updatesAt = undefined;
-			showUpdates(ctx, config, true);
+			showUpdates(ctx, config);
 			// The instructions are read once the memory is open (a remote check-out may bring a newer file) or has failed to
 			// open: a session without its memory keeps the agent's identity.
 			const { signal } = controller;

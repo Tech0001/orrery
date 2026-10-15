@@ -463,9 +463,13 @@ describe.skipIf(compiledPi === null || !releaseReady)("Orrery installed in app/c
 			run.child.stdin.write(`${JSON.stringify({ id: `t${count}`, type: "prompt", message })}\n`);
 			return until(`${count} rows`, run, () => (rows().length >= count ? rows() : undefined));
 		};
+		// The daily check's answer, fresh: the session shows it and asks nothing.
+		writeFileSync(join(orreryHome, "update-check.json"), JSON.stringify({ checkedAt: Date.now(), latest: "99.0.0" }), { mode: 0o600 });
+		const said = (run: (typeof runs)[number], text: string) => until(`"${text}"`, run, () => (run.output().includes(text) ? true : undefined));
 		try {
 			const running = launch();
 			expect((await openStatus(running)).version).toBe(first.version);
+			await said(running, "Orrery 99.0.0 is available. Run `orrery update`, then restart this session.");
 			await turn(running, "The codename is Cedar.", 2);
 
 			// A second version: the same release under another VERSION (its binary reports the file's version).
@@ -482,6 +486,8 @@ describe.skipIf(compiledPi === null || !releaseReady)("Orrery installed in app/c
 				{ name: second.version, current: true, agents: [] },
 			]);
 
+			// The running pi says, on its next status tick, that Orrery was updated under it.
+			await said(running, `Orrery was updated to ${second.version}; restart this session to use it.`);
 			expect(await turn(running, "What is the codename?", 4)).toEqual(["user: The codename is Cedar.", "talk: pong", "user: What is the codename?", "talk: pong"]);
 			expect(readStatus(agentDir)).toMatchObject({ pid: running.child.pid, version: first.version });
 			running.child.stdin.end();

@@ -50,7 +50,7 @@ async function heldServer(): Promise<{ base: string; hits: string[]; release: ()
 
 /** The update options for a session running 0.6.0, with `home` as its Orrery home and no reachable releases server unless given. */
 function updates(home: string, base = "http://127.0.0.1:9/releases"): NonNullable<OrreryOptions["updates"]> {
-	return { env: { HOME: home, ORRERY_HOME: home, ORRERY_RELEASES_URL: base }, running: () => "0.6.0", everyMs: 10 };
+	return { env: { HOME: home, ORRERY_HOME: home, ORRERY_RELEASES_URL: base }, running: () => "0.6.0" };
 }
 
 const cached = (home: string, latest: string) => writeFileSync(join(home, "update-check.json"), JSON.stringify({ checkedAt: Date.now() - 3600_000, latest }));
