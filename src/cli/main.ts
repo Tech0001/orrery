@@ -444,6 +444,15 @@ const OPTIONS = {
 /** "--config", "--tool", …: the options whose next token is their value, not the command. */
 const VALUED = new Set(Object.entries(OPTIONS).flatMap(([name, option]) => (option.type === "string" ? [`--${name}`] : [])));
 
+/**
+ * A release binary registers the OAuth flows compiled into it (the ChatGPT sign-in among them): pi-ai otherwise imports
+ * them by a file path that exists only in node_modules. Only the CLI does this; pi and OMP bring their own flows.
+ */
+async function registerReleaseOAuthFlows(): Promise<void> {
+	const { compiled } = await import("../agent/running.ts");
+	if (compiled) (await import("@earendil-works/pi-ai/bun-oauth")).registerBunOAuthFlows();
+}
+
 async function main(rawArgv: string[]): Promise<number> {
 	// --version is the version flag everywhere but `update`, where it names a release: take its value out first.
 	// The command is the first token that is neither an option nor a string option's value (--config X, --tool T, …).
@@ -498,6 +507,8 @@ async function main(rawArgv: string[]): Promise<number> {
 		process.stdout.write(versionLine());
 		return 0;
 	}
+	// Claude Code's hook runs several times a turn and never signs in or calls a model.
+	if (command !== "claude-hook") await registerReleaseOAuthFlows();
 	if (command === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true) {
 		const { runTui } = await import("../tui/run.ts");
 		return runTui(values.config);
