@@ -70,6 +70,7 @@ describe("orrery holder", () => {
 		const { base, hits } = await releasesServer("0.6.1", {});
 		const claude = spawn("sleep", ["60"], { env: cleanEnv({}), stdio: "ignore" });
 		const holder = holderProcess(t.configPath, claude.pid!, [], { ORRERY_HOME: home, ORRERY_RELEASES_URL: base });
+		const exited = new Promise((resolve) => holder.on("exit", resolve));
 		try {
 			await waitUntil(() => readMode(t.agent.dir, "s1")?.mode === "recording", 10_000);
 			await waitUntil(() => existsSync(join(home, "update-check.json")), 10_000);
@@ -78,6 +79,8 @@ describe("orrery holder", () => {
 		} finally {
 			holder.kill();
 			claude.kill();
+			// The holder writes into the agent folder as it stops: the folder is removed only after it has.
+			await exited;
 		}
 	}, 60_000);
 
@@ -88,6 +91,7 @@ describe("orrery holder", () => {
 		const { base, hits } = await releasesServer("0.6.1", {});
 		const claude = spawn("sleep", ["60"], { env: cleanEnv({}), stdio: "ignore" });
 		const holder = holderProcess(t.configPath, claude.pid!, [], { ORRERY_HOME: home, ORRERY_RELEASES_URL: base });
+		const exited = new Promise((resolve) => holder.on("exit", resolve));
 		try {
 			await waitUntil(() => readMode(t.agent.dir, "s1")?.mode === "recording", 10_000);
 			await new Promise((done) => setTimeout(done, 500));
@@ -96,6 +100,8 @@ describe("orrery holder", () => {
 		} finally {
 			holder.kill();
 			claude.kill();
+			// The holder writes into the agent folder as it stops: the folder is removed only after it has.
+			await exited;
 		}
 	}, 60_000);
 });
