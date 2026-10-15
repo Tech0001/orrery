@@ -31,7 +31,7 @@ from pi to Claude Code, open the agent in another project or carry on from anoth
   OpenAI, Anthropic or OpenRouter API key, or run a local model server. See [Summaries](#summaries).
 - **Let agents read each other.** An agent you allow can look up other agents' memory, read-only.
 - **Compact Claude Code sessions for free.** With the optional mod, Claude Code's compaction is answered from the
-  agent's memory: about two seconds, no tokens.
+  agent's memory: about two seconds, no additional tokens.
 - **Take an agent to another computer.** Keep its memory on your own SSH server or a Cloudflare Worker, encrypted
   before it leaves your machine.
 - **Back up and restore.** `orrery backup` snapshots every agent (on Linux, a systemd timer can run it nightly), and
