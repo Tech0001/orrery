@@ -9,4 +9,9 @@
 import { createOrrery } from "../pi/index.ts";
 import { applyAgentSettings } from "./settings.ts";
 
+// pi-ai imports its OAuth flows (the ChatGPT sign-in among them) by a file path that exists only in node_modules, not
+// beside a packed extensions/omp.js: register the flows packed with it. OMP has no copy of this entry, so they go to
+// Orrery's own pi-ai, the one its summaries use. pi supplies its own pi-ai and flows to extensions.
+(await import("@earendil-works/pi-ai/bun-oauth")).registerBunOAuthFlows();
+
 export default createOrrery({ host: "omp", agentSettings: (ctx, folder) => applyAgentSettings(ctx, folder), updates: { env: process.env } });
