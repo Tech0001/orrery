@@ -9,4 +9,4 @@
 import { createOrrery } from "../pi/index.ts";
 import { applyAgentSettings } from "./settings.ts";
 
-export default createOrrery({ host: "omp", agentSettings: (ctx, folder) => applyAgentSettings(ctx, folder) });
+export default createOrrery({ host: "omp", agentSettings: (ctx, folder) => applyAgentSettings(ctx, folder), updates: { env: process.env } });

@@ -127,7 +127,8 @@ afterAll(() => {
  */
 export function cleanEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
 	const kept = Object.entries(process.env).filter(([key]) => !key.startsWith("CLAUDE") && !key.startsWith("ORRERY_"));
-	return { ...Object.fromEntries(kept), HOME: scratchHome(), ...extra };
+	// A holder's daily update check asks a closed local port, never github.com.
+	return { ...Object.fromEntries(kept), HOME: scratchHome(), ORRERY_RELEASES_URL: "http://127.0.0.1:9/releases", ...extra };
 }
 
 /** Runs `orrery claude-hook <event>` as Claude Code does: the input as JSON on stdin, only the given environment. */

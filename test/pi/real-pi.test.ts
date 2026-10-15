@@ -24,6 +24,8 @@ function isolated(home: string): NodeJS.ProcessEnv {
 		XDG_STATE_HOME: join(home, ".local", "state"),
 		XDG_CACHE_HOME: join(home, ".cache"),
 		TERM: "dumb",
+		// The extension's daily update check: a closed local port, never github.com.
+		ORRERY_RELEASES_URL: "http://127.0.0.1:9/releases",
 		PI_OFFLINE: "1",
 	};
 }
