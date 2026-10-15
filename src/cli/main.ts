@@ -446,7 +446,8 @@ const VALUED = new Set(Object.entries(OPTIONS).flatMap(([name, option]) => (opti
 
 /**
  * A release binary registers the OAuth flows compiled into it (the ChatGPT sign-in among them): pi-ai otherwise imports
- * them by a file path that exists only in node_modules. Only the CLI does this; pi and OMP bring their own flows.
+ * them by a file path that exists only in node_modules. OMP's entry registers the flows packed into extensions/omp.js
+ * (src/omp/index.ts); pi brings its own.
  */
 async function registerReleaseOAuthFlows(): Promise<void> {
 	const { compiled } = await import("../agent/running.ts");

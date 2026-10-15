@@ -100,10 +100,11 @@ describe("pi extension entry points", () => {
 		expect([...walk(PI_ENTRY).seen].map(rel).filter((file) => file.startsWith(join("src", "omp") + sep))).toEqual([]);
 	});
 
-	it("loads from OMP's entry what pi's loads, plus src/omp, under the same import rule", () => {
+	it("loads from OMP's entry what pi's loads, plus src/omp, under the same import rule but for pi-ai's packed OAuth flows", () => {
 		const omp = walk(OMP_ENTRY);
 		const pi = walk(PI_ENTRY).seen;
-		expect(omp.bad).toEqual([]);
+		// OMP has no copy of bun-oauth, so omp.js packs it and registers its flows (src/omp/index.ts); pi's entry never does.
+		expect(omp.bad).toEqual([`${join("src", "omp", "index.ts")} imports @earendil-works/pi-ai/bun-oauth`]);
 		expect([...omp.seen].filter((file) => !pi.has(file)).map(rel).filter((file) => !file.startsWith(join("src", "omp") + sep))).toEqual([]);
 	});
 

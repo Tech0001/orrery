@@ -1,8 +1,10 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { OMP_SUPPLIED } from "../../scripts/build-release.ts";
-import { builtRelease, bunReady, removeBuiltRelease } from "./support.ts";
+import { builtRelease, bunReady, REPO, removeBuiltRelease } from "./support.ts";
 
 /**
  * Bare specifiers a packed file still imports (node: builtins and Node's bare builtin names left out): the static imports
@@ -45,4 +47,35 @@ describe.skipIf(!bunReady)("packed extensions", () => {
 		expect(left).not.toContain("typebox");
 		expect(readFileSync(join(folder, "extensions", "omp.js"), "utf8")).toMatch(/\/\/# sourceMappingURL=omp\.js\.map\s*$/);
 	});
+
+	it("omp.js carries the OAuth flows it signs in with: a summary call on the ChatGPT sign-in reaches OpenAI", async () => {
+		// pi-ai imports its OAuth flows by a file path that exists only in node_modules, not beside a packed omp.js.
+		// omp.js runs from a scratch folder outside the repository, with an empty stand-in for the one import OMP serves
+		// from its own pi-ai (pi-ai/compat, which has no model registry), as OMP has it.
+		const base = mkdtempSync(join(tmpdir(), "orrery-omp-oauth-"));
+		try {
+			const extension = join(base, "extensions", "omp.js");
+			const compat = join(base, "node_modules", "@earendil-works", "pi-ai");
+			const agent = join(base, "agent");
+			for (const dir of [join(base, "extensions"), compat, agent, join(base, "home")]) mkdirSync(dir, { recursive: true });
+			copyFileSync(join(await builtRelease(), "extensions", "omp.js"), extension);
+			writeFileSync(join(compat, "package.json"), JSON.stringify({ name: "@earendil-works/pi-ai", type: "module", exports: { "./compat": "./compat.js" } }));
+			writeFileSync(join(compat, "compat.js"), "export {};\n");
+			writeFileSync(join(base, "logins.json"), JSON.stringify({ openai: { type: "oauth", access: "test-access-token", refresh: "r", expires: Date.now() + 3_600_000 } }), { mode: 0o600 });
+			writeFileSync(
+				join(base, "config.toml"),
+				[`data_dir = ${JSON.stringify(join(base, "data"))}`, `credentials = ${JSON.stringify(join(base, "logins.json"))}`, "[updates]", "check = false", "[agents.Probe]", `folder = ${JSON.stringify(agent)}`, 'tool = "omp"', 'compactor_model = "openai/gpt-5.4-mini"', 'compactor_thinking = "off"', ""].join("\n"),
+			);
+			// `/compactor reset` makes one test call on the agent's configured model.
+			const r = spawnSync("bun", [join(REPO, "test", "release", "omp-host.ts"), extension, "reset"], { cwd: agent, encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: join(base, "home"), ORRERY_CONFIG: join(base, "config.toml") } });
+			expect(r.status, r.stderr).toBe(0);
+			const { notices, requests } = JSON.parse(r.stdout.trim().split("\n").at(-1) as string) as { notices: { message: string; type?: string }[]; requests: { url: string; authorization: string | null }[] };
+			expect(notices.map((notice) => notice.message).join("\n")).not.toContain("OAuth");
+			expect(requests).toEqual([{ url: "https://api.openai.com/v1/responses", authorization: "Bearer test-access-token" }]);
+			// The host answers 401, so the switch is refused for the sign-in, not for a missing module.
+			expect(notices.at(-1)).toEqual({ message: "Not switched: the ChatGPT sign-in expired or was refused (orrery login openai). Still on openai/gpt-5.4-mini.", type: "error" });
+		} finally {
+			rmSync(base, { recursive: true, force: true });
+		}
+	}, 60_000);
 });

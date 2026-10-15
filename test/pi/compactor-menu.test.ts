@@ -61,16 +61,28 @@ describe("/compactor menu", () => {
 		const agent = lastAgent();
 		const sources = summarySourcesFor(config);
 		sources.summary.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "connect ECONNREFUSED 127.0.0.1:9" })]);
-		const failed = scripted(["Local", "faux-2  ·  128K"]);
+		const failed = scripted(["Local", "faux-2  ·  128K", "off"]);
 		expect(await compactorMenu(failed.ui, sources, agentTarget(agent))).toMatch(new RegExp(`^Not switched: .+\\.\\nsummaries: ${summaries} \\(off\\) · from config$`));
-		expect(failed.shown.map((s) => s.options)).toEqual([["Local", "Sign in"], ["faux-1  ·  128K", "faux-2  ·  128K"]]);
+		expect(failed.shown.map((s) => s.options)).toEqual([["Local", "Sign in"], ["faux-1  ·  128K", "faux-2  ·  128K"], ["off", "minimal", "low", "medium", "high", "xhigh", "max"]]);
 		expect(agent.compactorSource).toBe("config");
 
 		sources.summary.setResponses([fauxAssistantMessage("OK")]);
-		const { ui } = scripted(["Local", "faux-2  ·  128K"]);
+		const { ui } = scripted(["Local", "faux-2  ·  128K", "off"]);
 		expect(await compactorMenu(ui, sources, agentTarget(agent))).toBe(`summaries: ${FAUX_SUMMARY.provider}/faux-2 (off) · set in chat`);
 		expect(agent.compactorModel.modelId).toBe("faux-2");
 		expect(agent.compactorSource).toBe("chat");
+	});
+
+	it("/compactor typed into pi asks the thinking level after the model, the current one first, and switches to it", async () => {
+		const { root, config } = world({ local: true });
+		const run = await pi(root, join(root, "agent-Atlas"), config);
+		summarySourcesFor(config).summary.setResponses([fauxAssistantMessage("OK")]); // the test call before the switch
+		run.dialogs.answers.push("Local", "faux-2  ·  128K", "high");
+		await run.session.prompt("/compactor");
+		expect(run.dialogs.shown.map((dialog) => dialog.title).at(-1)).toBe("Thinking (now off):");
+		expect(run.dialogs.shown.at(-1)?.options).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+		expect(run.notices.at(-1)?.message).toBe(`summaries: ${FAUX_SUMMARY.provider}/faux-2 (high) · set in chat`);
+		expect(lastAgent().compactorModel.thinking).toBe("high");
 	});
 
 	it("returns the current line unchanged when the menu is closed", async () => {
