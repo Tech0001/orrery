@@ -1,4 +1,4 @@
-import { execFileSync, type SpawnSyncReturns, spawnSync } from "node:child_process";
+import { execFileSync, type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -84,19 +84,34 @@ describe("orrery", () => {
 		expect(versionNumber()).toBe(version);
 	});
 
-	it("starts the ChatGPT sign-in: a release binary carries pi-ai's OAuth flows", () => {
+	it("starts the ChatGPT sign-in: a release binary carries pi-ai's OAuth flows", async () => {
 		// pi-ai imports its OAuth flows by a file path that exists only in node_modules, not inside a compiled binary.
 		const dir = tempDir("orrery-main-");
 		dirs.push(dir);
 		const configPath = join(dir, "config.toml");
 		writeFileSync(configPath, "");
 		const c = cliCommand(["login", "openai", "--manual", "--config", configPath]);
-		// The flow then waits for the pasted redirect URL; the timeout stops it.
-		const r = spawnSync(c.cmd, c.args, { encoding: "utf8", timeout: 4000, env: { PATH: process.env.PATH, HOME: dir, ORRERY_HOME: dir } });
-		const out = r.stdout + r.stderr;
+		// The flow prints its link, then waits for the pasted redirect URL: stop it at the link. A busy callback port (another
+		// login running on this machine) fails inside the flow, which still proves the flow loaded.
+		const reached = /Open: https:\/\/auth\.openai\.com\/|Port 1455 is in use/;
+		const out = await new Promise<string>((done) => {
+			const child = spawn(c.cmd, c.args, { env: { PATH: process.env.PATH, HOME: dir, ORRERY_HOME: dir }, stdio: ["pipe", "pipe", "pipe"] });
+			let text = "";
+			const stop = setTimeout(() => child.kill(), 15_000);
+			const read = (d: Buffer) => {
+				text += d.toString();
+				if (reached.test(text)) child.kill();
+			};
+			child.stdout.on("data", read);
+			child.stderr.on("data", read);
+			child.on("close", () => {
+				clearTimeout(stop);
+				done(text);
+			});
+		});
 		expect(out).not.toContain("Cannot find module");
-		expect(out).toContain("Open: https://auth.openai.com/");
-	});
+		expect(out).toMatch(reached);
+	}, 20_000);
 
 	it("strips control sequences from status.json text", () => {
 		const dir = tempDir("orrery-main-");
