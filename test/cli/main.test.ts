@@ -84,6 +84,20 @@ describe("orrery", () => {
 		expect(versionNumber()).toBe(version);
 	});
 
+	it("starts the ChatGPT sign-in: a release binary carries pi-ai's OAuth flows", () => {
+		// pi-ai imports its OAuth flows by a file path that exists only in node_modules, not inside a compiled binary.
+		const dir = tempDir("orrery-main-");
+		dirs.push(dir);
+		const configPath = join(dir, "config.toml");
+		writeFileSync(configPath, "");
+		const c = cliCommand(["login", "openai", "--manual", "--config", configPath]);
+		// The flow then waits for the pasted redirect URL; the timeout stops it.
+		const r = spawnSync(c.cmd, c.args, { encoding: "utf8", timeout: 4000, env: { PATH: process.env.PATH, HOME: dir, ORRERY_HOME: dir } });
+		const out = r.stdout + r.stderr;
+		expect(out).not.toContain("Cannot find module");
+		expect(out).toContain("Open: https://auth.openai.com/");
+	});
+
 	it("strips control sequences from status.json text", () => {
 		const dir = tempDir("orrery-main-");
 		dirs.push(dir);
