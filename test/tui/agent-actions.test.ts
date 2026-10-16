@@ -145,6 +145,22 @@ describe("L launch", () => {
 		expect(screen(app)).toContain("Not launched.");
 	});
 
+	it("starts plain Codex on an open agent without asking about a second session: it opens no agent", async () => {
+		const plans: LaunchPlan[] = [];
+		const deps = fakeDeps(
+			{ tools: () => [tool("pi"), tool("codex")], codexCheck: async () => ({ ok: false, text: "Orrery's hooks don't load in Codex 0.163.0: x." }), launch: async (plan) => (plans.push(plan), { code: 0, signal: null }) },
+			[row({ name: "Alpha", tool: "codex", folder: "/", state: "open", openIn: "pi" })],
+		);
+		const app = makeApp(deps, [agentsPage]);
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "Orrery's hooks don't load", "y");
+		await app.idle();
+		expect(plans).toHaveLength(1);
+		expect(plans[0]).toMatchObject({ withoutOrrery: true, steps: [] });
+		expect(screen(app)).toContain("Back from Codex (Alpha), started without Orrery: that session was not recorded.");
+	});
+
 	it("reports a tool that exits with an error, and one that is not on PATH", async () => {
 		const deps = fakeDeps({ tools: () => [tool("pi"), tool("claude-code"), tool("codex")], launch: async () => ({ code: 2, signal: null }) }, [row({ name: "Alpha", folder: "/" })]);
 		const app = makeApp(deps, [agentsPage]);

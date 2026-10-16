@@ -133,7 +133,8 @@ export function launchAgent(app: App, row: AgentRow | undefined): void {
 		// Codex's hook check comes first: a no to it must leave no lock taken over and no step done.
 		const launching = await codexHooksOrPlain(app, plan);
 		if (launching === undefined) return "Not launched.";
-		if (gate.takeover !== undefined) {
+		// Plain Codex opens no agent: it takes no lock over (nor asks about a second session, withoutOrrery).
+		if (gate.takeover !== undefined && launching.withoutOrrery !== true) {
 			if (app.deps.takeoverAgent === undefined) throw new Error("Remote takeover is unavailable here.");
 			if (!(await app.host.open(new ConfirmModal(safeLines(gate.takeover))))) return "Not launched.";
 			await app.deps.takeoverAgent(row.name);

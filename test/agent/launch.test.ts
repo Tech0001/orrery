@@ -106,7 +106,15 @@ describe("launchPlan and runTool", () => {
 	it("warns that a second session won't record when the agent is open", () => {
 		const { config, row, tools } = setup("codex");
 		const open = { ...row, state: "open" as const, openIn: "pi" as const };
-		expect(launchPlan(config, open, tools).steps[0]).toEqual({ text: "A is already open in pi. A second session won't record. Launch anyway?", confirm: true });
+		expect(launchPlan(config, open, tools).steps[0]).toEqual({ text: "A is already open in pi. A second session won't record. Launch anyway?", confirm: true, asAgent: true });
+	});
+
+	it("plain Codex (a yes to starting without Orrery) opens no agent: no second-session question, but the folder is still made", () => {
+		const { config, row, tools } = setup("codex");
+		const gone = { ...row, state: "open" as const, openIn: "claude-code" as const, folder: join(row.folder as string, "not-yet") };
+		const plan = launchPlan(config, gone, tools);
+		expect(plan.steps.map((step) => step.text)).toEqual([`The folder ${gone.folder} does not exist. Create it?`, "A is already open in Claude Code. A second session won't record. Launch anyway?"]);
+		expect(withoutOrrery(plan).steps).toEqual([{ text: `The folder ${gone.folder} does not exist. Create it?`, confirm: true, fix: "create-folder" }]);
 	});
 
 	it("gives the signal when a tool cannot start, and passes the env it is given", async () => {
@@ -142,7 +150,7 @@ describe("launchPlan and runTool", () => {
 		expect(launchPlan(config, row, noTools).blocked).toBe('OMP is not on PATH (looked for "omp"). Get it at https://omp.sh, or change the agent\'s tool with C.');
 		const codex = setup("codex");
 		const open = { ...codex.row, state: "open" as const, openIn: "omp" as const };
-		expect(launchPlan(codex.config, open, codex.tools).steps[0]).toEqual({ text: "A is already open in OMP. A second session won't record. Launch anyway?", confirm: true });
+		expect(launchPlan(codex.config, open, codex.tools).steps[0]).toEqual({ text: "A is already open in OMP. A second session won't record. Launch anyway?", confirm: true, asAgent: true });
 	});
 });
 

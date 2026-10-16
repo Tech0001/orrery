@@ -109,12 +109,18 @@ describe("L on a remote agent", () => {
 		await answer(app, "Orrery's hooks don't load", "n"); await app.idle();
 		expect(deps.launched).toEqual([]);
 		expect((await storage.list())[0].lock).toMatchObject({ held: true, lock, holder: peer });
-		// Yes to plain Codex: then the takeover is asked, as for any launch.
+		// Yes to plain Codex: it opens no agent, so it takes nothing over and asks nothing about the lock.
 		keys(app, "L"); await inItsFolder(app);
-		await answer(app, "Orrery's hooks don't load", "y");
+		await answer(app, "Orrery's hooks don't load", "y"); await app.idle();
+		expect(deps.launched).toEqual(["Atlas"]);
+		expect(screen(app)).toContain("Back from Codex (Atlas), started without Orrery: that session was not recorded.");
+		expect((await storage.list())[0].lock).toMatchObject({ held: true, lock, holder: peer });
+		// As the agent (the hooks load), the takeover is asked, as for any launch.
+		deps.codexCheck = async () => ({ ok: true });
+		keys(app, "L"); await inItsFolder(app);
 		expect(app.host.current?.title).toBe(question);
 		await answer(app, "Take over?", "n"); await app.idle();
-		expect(deps.launched).toEqual([]);
+		expect(deps.launched).toHaveLength(1);
 	});
 
 	it.each(["n", "\x1b"])("%j leaves the stale lock alone and does not launch", async (key) => {

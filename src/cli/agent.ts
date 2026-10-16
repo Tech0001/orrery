@@ -33,12 +33,18 @@ export async function openAgentCommand(
 	name: string,
 	options: { readonly tool?: string; readonly args: readonly string[]; readonly cwd: string },
 	io: AgentIo,
-	deps: { readonly takeover: (name: string) => Promise<string>; readonly run?: (plan: LaunchPlan) => Promise<ToolExit>; readonly codexGate?: (plan: LaunchPlan) => Promise<CodexGate> },
+	deps: {
+		readonly takeover: (name: string) => Promise<string>;
+		readonly run?: (plan: LaunchPlan) => Promise<ToolExit>;
+		readonly codexGate?: (plan: LaunchPlan) => Promise<CodexGate>;
+		/** Where the agents' rows and remotes are read (tests give one with their own storage). */
+		readonly cache?: OverviewCache;
+	},
 ): Promise<number> {
 	const config = loadConfig(configPath);
 	const agent = findAgent(config, name);
 	if (options.tool !== undefined && !OPENED_IN.includes(options.tool as AgentTool)) throw new Error(`--tool takes pi, omp, claude-code or codex (not ${options.tool}).`);
-	const cache = new OverviewCache();
+	const cache = deps.cache ?? new OverviewCache();
 	const row = agentOverview(config, { cache }).find((r) => r.name === agent.name);
 	if (row === undefined) throw new Error(`No agent named ${agent.name}.`);
 	// Without --tool, the agent's own (the TUI's guess when the config names none).
@@ -55,7 +61,8 @@ export async function openAgentCommand(
 		io.say("Not opened.");
 		return 1;
 	}
-	if (gate.takeover !== undefined) {
+	// Plain Codex opens no agent: it takes no lock over (nor asks about a second session, withoutOrrery).
+	if (gate.takeover !== undefined && launching.withoutOrrery !== true) {
 		if (!(await io.confirm(gate.takeover))) {
 			io.say("Not opened.");
 			return 1;

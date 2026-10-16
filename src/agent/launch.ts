@@ -30,6 +30,8 @@ export interface LaunchStep {
 	readonly confirm: boolean;
 	/** What a yes does before launching. */
 	readonly fix?: LaunchFix;
+	/** A question about opening the agent itself (it is open elsewhere): plain Codex (withoutOrrery), which opens no agent, skips it. */
+	readonly asAgent?: true;
 }
 
 export interface LaunchPlan {
@@ -134,7 +136,7 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 	const steps: LaunchStep[] = [];
 	if (!existsSync(cwd)) steps.push({ text: `The folder ${cwd} does not exist. Create it?`, confirm: true, fix: "create-folder" });
 	if ((row.state === "open" || row.state === "working") && row.openIn !== undefined) {
-		steps.push({ text: `${row.name} is already open in ${TOOL_LABELS[row.openIn]}. A second session won't record. Launch anyway?`, confirm: true });
+		steps.push({ text: `${row.name} is already open in ${TOOL_LABELS[row.openIn]}. A second session won't record. Launch anyway?`, confirm: true, asAgent: true });
 	}
 	// "update available" for pi or OMP: the file names Orrery's entry of the other install shape, which app/current lacks.
 	const stale = (label: string) => (check.wiring === "missing" ? `Orrery's ${label} extension is not installed` : `Orrery's ${label} extension names the other install shape's entry`);
@@ -193,12 +195,13 @@ export async function checkCodexHooks(
 /**
  * The plan as plain Codex, after the person said yes to starting without Orrery: none of Orrery's flags, and no
  * ORRERY_AGENT or token, not even ones this process inherited (a session that records nothing must not hand an agent
- * to a tool it starts).
+ * to a tool it starts). It opens no agent, so it asks nothing about the agent (asAgent: a second session) and says
+ * nothing about Orrery's flags; its callers skip a remote takeover too.
  */
 export function withoutOrrery(plan: LaunchPlan): LaunchPlan {
 	if (plan.codex === undefined) return plan;
 	const { codex, ...rest } = plan;
-	const steps = plan.steps.filter((step) => step.confirm || !codex.notices.includes(step.text));
+	const steps = plan.steps.filter((step) => step.asAgent !== true && (step.confirm || !codex.notices.includes(step.text)));
 	return { ...rest, args: [...codex.plainArgs], env: {}, unsetEnv: [AGENT_ENV, TOKEN_ENV], steps, withoutOrrery: true };
 }
 

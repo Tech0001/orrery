@@ -1,10 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { openAgentCommand } from "../../src/cli/agent.ts";
 import { agentRemoteCommand, pullAgentCommand, setStorageForTests } from "../../src/cli/remote.ts";
 import { setAgentKey, editConfigFile } from "../../src/agent/config-edit.ts";
 import { loadConfig } from "../../src/agent/config.ts";
+import { OverviewCache } from "../../src/agent/overview.ts";
+import { WITHOUT_ORRERY_QUESTION, WITHOUT_ORRERY_SAID } from "../../src/codex/check.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { createKey, keyToCode } from "../../src/remote/crypto.ts";
 import { FakeStorage } from "../../src/remote/fake.ts";
@@ -185,6 +188,38 @@ describe("agent takeover", () => {
 		await held(); clock -= STALE_MS + 1; const before = await storage.list();
 		await expect(agentRemoteCommand(path, ["takeover", "Atlas"], { yes: true })).rejects.toThrow(/macbook/);
 		expect(await storage.list()).toEqual(before);
+	});
+	it("orrery agent: plain Codex (a yes to starting without Orrery) takes no stale lock over; as the agent it asks", async () => {
+		await held(); const before = await storage.list();
+		// A Codex on PATH (only its version is asked: the hook check is the test's).
+		const bin = join(dir, "bin"); mkdirSync(bin);
+		writeFileSync(join(bin, "codex"), '#!/bin/sh\n[ "$1" = "--version" ] && echo "codex-cli 0.162.1"\nexit 0\n', { mode: 0o755 });
+		vi.stubEnv("PATH", `${bin}:/usr/bin:/bin`); vi.stubEnv("HOME", dir); vi.stubEnv("ORRERY_HOME", join(dir, ".orrery"));
+		try {
+			for (const hooksLoad of [false, true]) {
+				const said: string[] = []; const ran: { withoutOrrery?: true }[] = [];
+				const io = { say: (line: string) => said.push(`say: ${line}`), confirm: async (q: string) => (said.push(`confirm: ${q}`), false), askPerson: async (q: string) => (said.push(`ask: ${q}`), true) };
+				const deps = {
+					takeover: async () => { throw new Error("must not take over"); },
+					codexGate: async () => (hooksLoad ? { ok: true as const } : { ok: false as const, text: "Orrery's hooks don't load in Codex 0.162.1: x." }),
+					run: async (plan: { withoutOrrery?: true }) => (ran.push(plan), { code: 0, signal: null }),
+					cache: new OverviewCache({ storage: () => storage, now: () => clock }),
+				};
+				const code = await openAgentCommand(path, "Atlas", { tool: "codex", args: [], cwd: folder }, io, deps);
+				if (!hooksLoad) {
+					expect(code).toBe(0);
+					expect(said).toEqual(["say: Checking Atlas on home…", "say: Orrery's hooks don't load in Codex 0.162.1: x.", `ask: ${WITHOUT_ORRERY_QUESTION}`, `say: ${WITHOUT_ORRERY_SAID}`]);
+					expect(ran).toEqual([expect.objectContaining({ withoutOrrery: true })]);
+				} else {
+					expect(code).toBe(1);
+					expect(said.slice(1)).toEqual([expect.stringMatching(/^confirm: Atlas was open on macbook, last seen .*\. Take over\?$/), "say: Not opened."]);
+					expect(ran).toEqual([]);
+				}
+				expect(await storage.list()).toEqual(before);
+			}
+		} finally {
+			vi.unstubAllEnvs();
+		}
 	});
 });
 

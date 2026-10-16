@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { instructionsTemplate } from "../../src/agent/instructions.ts";
 import { openAgentCommand } from "../../src/cli/agent.ts";
-import { WITHOUT_ORRERY_QUESTION } from "../../src/codex/check.ts";
+import { WITHOUT_ORRERY_QUESTION, WITHOUT_ORRERY_SAID } from "../../src/codex/check.ts";
 import { CODEX_HOOKS, trustKey } from "../../src/codex/launch.ts";
 import { hookShell } from "../../src/codex/shell.ts";
-import { cleanEnv, cliCommand } from "../claude/support.ts";
+import { cleanEnv, cliCommand, statusOf } from "../claude/support.ts";
 import { systemCommand } from "../install/support.ts";
 import { tempDir } from "../agent/support.ts";
 
@@ -253,6 +253,43 @@ describe("orrery agent", () => {
 			} else {
 				expect(ran).toEqual([]);
 				expect(said.at(-1)).toBe("say: Not opened.");
+			}
+		}
+	});
+
+	it("starts plain Codex on an agent open elsewhere without asking about a second session: it opens no agent", async () => {
+		const s = scene();
+		fakeCodex(s, "trusted");
+		for (const [key, value] of Object.entries(s.env)) if (value !== undefined) vi.stubEnv(key, value);
+		// Atlas is open in pi: a live process wrote its status just now.
+		mkdirSync(s.agentDir, { recursive: true });
+		writeFileSync(join(s.agentDir, "status.json"), JSON.stringify(statusOf("pi")));
+		const second = "Atlas is already open in pi. A second session won't record. Launch anyway?";
+		for (const hooksLoad of [false, true]) {
+			const said: string[] = [];
+			const ran: { args: readonly string[]; withoutOrrery?: true }[] = [];
+			const io = {
+				say: (line: string) => said.push(`say: ${line}`),
+				confirm: async (question: string) => (said.push(`confirm: ${question}`), false),
+				askPerson: async (question: string) => (said.push(`ask: ${question}`), true),
+			};
+			const deps = {
+				takeover: async () => { throw new Error("must not take over"); },
+				codexGate: async () => (hooksLoad ? { ok: true as const } : { ok: false as const, text: "Orrery's hooks don't load in Codex 0.162.1: x." }),
+				run: async (plan: { args: readonly string[]; withoutOrrery?: true }) => (ran.push(plan), { code: 0, signal: null }),
+			};
+			const code = await openAgentCommand(s.config, "Atlas", { tool: "codex", args: ["-x"], cwd: s.elsewhere }, io, deps);
+			if (!hooksLoad) {
+				// Plain Codex: the hooks question, then Codex, with nothing asked about pi's session.
+				expect(code).toBe(0);
+				expect(said).toEqual(["say: Orrery's hooks don't load in Codex 0.162.1: x.", `ask: ${WITHOUT_ORRERY_QUESTION}`, `say: ${WITHOUT_ORRERY_SAID}`]);
+				expect(ran).toHaveLength(1);
+				expect(ran[0]).toMatchObject({ args: ["-x"], withoutOrrery: true });
+			} else {
+				// As the agent, a second session is asked about first (here: no).
+				expect(code).toBe(1);
+				expect(said).toEqual([`confirm: ${second}`, "say: Not opened."]);
+				expect(ran).toEqual([]);
 			}
 		}
 	});
