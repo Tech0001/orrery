@@ -482,7 +482,7 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 		return 0;
 	}
 	if (command === "claude-hook") return claudeHook(arg, values.config);
-	if (command === "codex-hook") return codexHook();
+	if (command === "codex-hook") return codexHook(arg);
 	if (command === "claude-mod") return claudeModCommand(arg, values);
 	if (command === "mcp") return mcpServer(values.config);
 	if (command === "remote") {
@@ -783,12 +783,19 @@ async function claudeHook(event: string | undefined, configPath: string | undefi
 }
 
 /**
- * `orrery codex-hook <event>`: the hooks `orrery agent --tool codex` gives Codex (src/codex/launch.ts). For now each one
- * reads its input to the end and answers `{}` (nothing to add, nothing refused), so a Codex session opens.
+ * `orrery codex-hook <event>`: the hooks `orrery agent --tool codex` gives Codex (src/codex/launch.ts). Until the
+ * recorder and the guard are built, each reads its input to the end; pre-tool-use refuses every call (Codex runs a call
+ * a hook says nothing about, so the guard must never answer `{}`), the others answer `{}` (nothing to add). The reason
+ * has no final period: Codex adds one.
  */
-async function codexHook(): Promise<number> {
-	await readStdin(0);
-	process.stdout.write("{}");
+async function codexHook(event: string | undefined): Promise<number> {
+	const guarding = event === "pre-tool-use";
+	try {
+		await readStdin(0);
+	} catch {
+		// unreadable input: a tool call is refused all the same
+	}
+	process.stdout.write(guarding ? JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "Orrery's Codex guard is not built yet" } }) : "{}");
 	return 0;
 }
 
