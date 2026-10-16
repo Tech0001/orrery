@@ -49,6 +49,12 @@ export async function openAgentCommand(
 	const changeTool = `open ${agent.name} in another tool: --tool for this session, orrery agent set ${agent.name} --tool T for good`;
 	const plan = launchPlan(config, gate.row, tools, { cwd: options.cwd, tool, args: options.args, changeTool });
 	if (plan.blocked !== undefined) throw new Error(plan.blocked);
+	// Codex's hook check comes first: a no to it must leave no lock taken over and no step done.
+	const launching = await codexHooksOrPlain(plan, agent.name, io, deps.codexGate ?? ((p) => checkCodexHooks(p, { onCheck: (text) => io.say(text) })));
+	if (launching === undefined) {
+		io.say("Not opened.");
+		return 1;
+	}
 	if (gate.takeover !== undefined) {
 		if (!(await io.confirm(gate.takeover))) {
 			io.say("Not opened.");
@@ -56,7 +62,7 @@ export async function openAgentCommand(
 		}
 		io.say((await deps.takeover(agent.name)).trimEnd());
 	}
-	for (const step of plan.steps) {
+	for (const step of launching.steps) {
 		if (!step.confirm) {
 			io.say(step.text);
 			continue;
@@ -66,11 +72,6 @@ export async function openAgentCommand(
 			return 1;
 		}
 		if (step.fix !== undefined) io.say(applyFix(step.fix, config, gate.row, tools, { cwd: plan.cwd }));
-	}
-	const launching = await codexHooksOrPlain(plan, agent.name, io, deps.codexGate ?? ((p) => checkCodexHooks(p, { onCheck: (text) => io.say(text) })));
-	if (launching === undefined) {
-		io.say("Not opened.");
-		return 1;
 	}
 	const run = deps.run ?? ((p: LaunchPlan) => runTool(p, configPath === undefined ? {} : { env: { ...process.env, ORRERY_CONFIG: resolve(configPath) } }));
 	const exit = await runAgent(launching, run);

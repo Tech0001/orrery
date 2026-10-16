@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { codexCheckDetail, codexHookGate, probeHooks, readCodexCheck } from "../../src/codex/check.ts";
 import { CODEX_HOOKS, codexLaunch, trustHash, trustKey, shellWords } from "../../src/codex/launch.ts";
@@ -44,7 +44,7 @@ function listed(change: (hook: Record<string, unknown>) => Record<string, unknow
  * A fake `codex app-server`: it notes its arguments and CODEX_HOME, answers initialize, then answers hooks/list with
  * `reply` (a JSON-RPC result or error), unless told to hang or to die first.
  */
-function fakeCodex(dir: string, reply: { result?: unknown; error?: unknown } | "hang" | "die"): { path: string; seen: string } {
+function fakeCodex(dir: string, reply: { result?: unknown; error?: unknown } | "hang" | "die", options: { lockHome?: boolean } = {}): { path: string; seen: string } {
 	const path = join(dir, "codex");
 	const seen = join(dir, "seen.txt");
 	const answer = reply === "hang" || reply === "die" ? "" : JSON.stringify({ id: 2, ...reply });
@@ -53,6 +53,8 @@ function fakeCodex(dir: string, reply: { result?: unknown; error?: unknown } | "
 		[
 			"#!/bin/sh",
 			`printf '%s\\n' "$CODEX_HOME" "$CODEX_SQLITE_HOME" "$PWD" "$@" > ${JSON.stringify(seen)}`,
+			// A folder its scratch home cannot be cleared of (not for root): the clean-up after it fails.
+			options.lockHome === true ? 'mkdir -p "$CODEX_HOME/locked/inner" && chmod 000 "$CODEX_HOME/locked"' : "",
 			reply === "die" ? "exit 7" : "",
 			"while IFS= read -r line; do",
 			"  case \"$line\" in",
@@ -94,6 +96,19 @@ describe("probeHooks", () => {
 		const s = scene();
 		const codex = fakeCodex(s.dir, { result: listed(change) });
 		expect(await probeHooks(codex.path, s.launch.config, { env: s.env })).toEqual({ ok: false, why });
+	});
+
+	it("answers even when its scratch home cannot be removed after", async () => {
+		const s = scene();
+		const codex = fakeCodex(s.dir, { result: listed() }, { lockHome: true });
+		expect(await probeHooks(codex.path, s.launch.config, { env: s.env })).toEqual({ ok: true });
+		// Clean up after the probe: only its own scratch folder, which it could not remove.
+		const home = readFileSync(codex.seen, "utf8").split("\n")[0] as string;
+		expect(home).toMatch(/\/orrery-codex-check-[^/]+\/home$/);
+		if (existsSync(join(home, "locked"))) {
+			chmodSync(join(home, "locked"), 0o700);
+			rmSync(dirname(home), { recursive: true, force: true });
+		}
 	});
 
 	it("names the first error Codex had reading the hooks", async () => {

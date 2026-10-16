@@ -99,6 +99,24 @@ describe("L on a remote agent", () => {
 		expect(launched).toBe(true); expect(screen(app)).toContain("Back from pi (Atlas)");
 	});
 
+	it("for Codex, asks about its hooks before taking a stale lock over: a no leaves the lock alone", async () => {
+		writeFileSync(path, readFileSync(path, "utf8").replace('tool = "pi"', 'tool = "codex"'));
+		const lock = await hold(true); const { app, deps } = setup();
+		deps.tools = () => [{ id: "codex", label: "Codex", path: "/bin/codex", version: "codex-cli 0.163.0", wiring: "memory", detail: "" }];
+		deps.codexCheck = async () => ({ ok: false, text: "Orrery's hooks don't load in Codex 0.163.0: x." });
+		keys(app, "L"); await inItsFolder(app);
+		expect(app.host.current?.title).toContain("Orrery's hooks don't load in Codex 0.163.0");
+		await answer(app, "Orrery's hooks don't load", "n"); await app.idle();
+		expect(deps.launched).toEqual([]);
+		expect((await storage.list())[0].lock).toMatchObject({ held: true, lock, holder: peer });
+		// Yes to plain Codex: then the takeover is asked, as for any launch.
+		keys(app, "L"); await inItsFolder(app);
+		await answer(app, "Orrery's hooks don't load", "y");
+		expect(app.host.current?.title).toBe(question);
+		await answer(app, "Take over?", "n"); await app.idle();
+		expect(deps.launched).toEqual([]);
+	});
+
 	it.each(["n", "\x1b"])("%j leaves the stale lock alone and does not launch", async (key) => {
 		const lock = await hold(true); const { app, deps } = setup();
 		keys(app, "L"); await inItsFolder(app); await answer(app, "Take over?", key); await app.idle();

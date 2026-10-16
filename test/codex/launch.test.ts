@@ -84,9 +84,10 @@ describe("codexLaunch", () => {
 		expect(c.get("hooks.Stop")).toEqual([{ hooks: [{ type: "command", command: command("stop"), timeout: 10 }] }]);
 		expect(c.get("hooks.SessionEnd")).toEqual([{ hooks: [{ type: "command", command: command("session-end"), timeout: 3 }] }]);
 		expect(c.get("hooks.PreToolUse")).toEqual([{ hooks: [{ type: "command", command: command("pre-tool-use"), timeout: 10 }] }]);
-		// One inline table: -c splits keys on ".", and each trust key holds "config.toml".
+		// One inline table: -c splits keys on ".", and each trust key holds "config.toml". enabled=true outweighs a hook
+		// turned off in Codex's /hooks screen, which the person's config keeps under the same key.
 		expect(c.get("hooks.state")).toEqual(
-			Object.fromEntries(CODEX_HOOKS.map((hook) => [trustKey(hook.event), { trusted_hash: trustHash(hook.event, { command: command(hook.arg), timeout: hook.timeout, ...(hook.additionalContextLimit === undefined ? {} : { additionalContextLimit: hook.additionalContextLimit }) }) }])),
+			Object.fromEntries(CODEX_HOOKS.map((hook) => [trustKey(hook.event), { enabled: true, trusted_hash: trustHash(hook.event, { command: command(hook.arg), timeout: hook.timeout, ...(hook.additionalContextLimit === undefined ? {} : { additionalContextLimit: hook.additionalContextLimit }) }) }])),
 		);
 		expect(Object.keys(c.get("hooks.state") as object)).toHaveLength(5);
 		// MCP servers inherit no environment: the agent, its token and where Orrery's config is are passed by name.

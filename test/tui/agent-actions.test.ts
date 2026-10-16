@@ -56,6 +56,27 @@ describe("L launch", () => {
 		expect(screen(app)).toContain("Back from Codex (Alpha).");
 	});
 
+	it("asks about Codex's hooks before any launch step: a no makes no folder", async () => {
+		const here = tempDir("orrery-tui-here-");
+		dirs.push(here);
+		const missing = join(here, "not-yet");
+		const fixes: string[] = [];
+		const config = parseConfig(`data_dir = "/d"\n[agents.Alpha]\nfolder = ${JSON.stringify(missing)}\ntool = "codex"\ncompactor_model = "openai/gpt-6.1-sol"\n`, "/d");
+		const deps = fakeDeps(
+			{ cwd: here, loadConfig: () => config, tools: () => [tool("pi"), tool("codex")], codexCheck: async () => ({ ok: false, text: "Orrery's hooks don't load in Codex 0.163.0: x." }), applyFix: (fix) => (fixes.push(fix), "fixed") },
+			[row({ name: "Alpha", tool: "codex", folder: missing })],
+		);
+		const app = makeApp(deps, [agentsPage]);
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		// The hook question comes first, before "does not exist. Create it?".
+		await answer(app, "Orrery's hooks don't load", "n");
+		await app.idle();
+		expect(fixes).toEqual([]);
+		expect(deps.launched).toEqual([]);
+		expect(screen(app)).toContain("Not launched.");
+	});
+
 	it("when Orrery's hooks don't load in Codex: says so and asks, default no; yes starts plain Codex, unrecorded", async () => {
 		const plans: LaunchPlan[] = [];
 		const text = "Orrery's hooks don't load in Codex 0.163.0: Codex lists no Stop hook from Orrery. Without them a session has no memory and no guard.";

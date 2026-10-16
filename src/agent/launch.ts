@@ -40,6 +40,8 @@ export interface LaunchPlan {
 	readonly cwd: string;
 	/** Added to the tool's environment: ORRERY_AGENT and ORRERY_AGENT_TOKEN (src/agent/pick.ts). */
 	readonly env: Readonly<Record<string, string>>;
+	/** Taken out of the tool's environment, even when this process inherited them (withoutOrrery). */
+	readonly unsetEnv?: readonly string[];
 	/** The agent's data folder in Orrery's home, where the tool's extension claims the token, and runAgent removes the claim. */
 	readonly agentDir: string;
 	readonly steps: readonly LaunchStep[];
@@ -49,9 +51,9 @@ export interface LaunchPlan {
 	readonly needsMod?: true;
 	/**
 	 * Codex with Orrery: the Codex the hook check asks (on PATH, also under Ori), its version number, Orrery's `-c` flags,
-	 * and the arguments Codex would get without Orrery (withoutOrrery).
+	 * the arguments Codex would get without Orrery, and the steps' notices about Orrery's flags (withoutOrrery drops both).
 	 */
-	readonly codex?: { readonly path: string; readonly version?: string; readonly config: readonly string[]; readonly plainArgs: readonly string[] };
+	readonly codex?: { readonly path: string; readonly version?: string; readonly config: readonly string[]; readonly plainArgs: readonly string[]; readonly notices: readonly string[] };
 	/** Codex started without Orrery's flags, after the person said yes (withoutOrrery): not recorded, no guard. */
 	readonly withoutOrrery?: true;
 }
@@ -152,7 +154,7 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 	for (const notice of codex?.notices ?? []) steps.push({ text: notice, confirm: false });
 	const own = codex?.args ?? [];
 	const version = codexVersion(check.version);
-	const codexPlan = (prefix: readonly string[]) => (codex === undefined ? {} : { codex: { path: check.path as string, ...(version === undefined ? {} : { version }), config: codex.config, plainArgs: [...prefix, ...base.args] } });
+	const codexPlan = (prefix: readonly string[]) => (codex === undefined ? {} : { codex: { path: check.path as string, ...(version === undefined ? {} : { version }), config: codex.config, plainArgs: [...prefix, ...base.args], notices: codex.notices } });
 	if (ori !== undefined) {
 		if (tool === "omp") steps.push({ text: 'Ori 0.15.7 can\'t start OMP: its model registration fails before startup. See docs/ori.md, or set launcher = "direct".', confirm: false });
 		steps.push({ text: `Launching ${label} through Ori in ${cwd}`, confirm: false });
@@ -179,12 +181,14 @@ export function checkCodexHooks(plan: LaunchPlan, options: { readonly env?: Node
 
 /**
  * The plan as plain Codex, after the person said yes to starting without Orrery: none of Orrery's flags, and no
- * ORRERY_AGENT or token (a session that records nothing must not hand the agent to a tool it starts).
+ * ORRERY_AGENT or token, not even ones this process inherited (a session that records nothing must not hand an agent
+ * to a tool it starts).
  */
 export function withoutOrrery(plan: LaunchPlan): LaunchPlan {
 	if (plan.codex === undefined) return plan;
 	const { codex, ...rest } = plan;
-	return { ...rest, args: [...codex.plainArgs], env: {}, withoutOrrery: true };
+	const steps = plan.steps.filter((step) => step.confirm || !codex.notices.includes(step.text));
+	return { ...rest, args: [...codex.plainArgs], env: {}, unsetEnv: [AGENT_ENV, TOKEN_ENV], steps, withoutOrrery: true };
 }
 
 /**
@@ -212,8 +216,8 @@ export interface ToolExit {
 }
 
 /**
- * Runs the tool in the plan's folder with this terminal attached, the plan's variables over `env`'s; Ctrl-C goes to the
- * tool, not to orrery.
+ * Runs the tool in the plan's folder with this terminal attached, the plan's variables over `env`'s (less unsetEnv);
+ * Ctrl-C goes to the tool, not to orrery.
  */
 export function runTool(plan: LaunchPlan, options: { spawn?: typeof spawn; env?: NodeJS.ProcessEnv } = {}): Promise<ToolExit> {
 	if (plan.command === undefined) return Promise.reject(new Error(plan.blocked ?? "Nothing to run."));
@@ -222,7 +226,9 @@ export function runTool(plan: LaunchPlan, options: { spawn?: typeof spawn; env?:
 	return new Promise((done, fail) => {
 		let child: ReturnType<typeof spawn>;
 		try {
-			child = (options.spawn ?? spawn)(plan.command as string, [...plan.args], { cwd: plan.cwd, stdio: "inherit", env: { ...(options.env ?? process.env), ...plan.env } });
+			const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env), ...plan.env };
+			for (const name of plan.unsetEnv ?? []) delete env[name];
+			child = (options.spawn ?? spawn)(plan.command as string, [...plan.args], { cwd: plan.cwd, stdio: "inherit", env });
 		} catch (error) {
 			process.off("SIGINT", ignore);
 			fail(error);

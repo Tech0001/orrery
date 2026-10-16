@@ -128,12 +128,15 @@ export function launchAgent(app: App, row: AgentRow | undefined): void {
 		const plan = launchPlan(config, gate.row, tools, { cwd });
 		const label = launchLabel(plan);
 		if (plan.blocked !== undefined) throw new Error(plan.blocked);
+		// Codex's hook check comes first: a no to it must leave no lock taken over and no step done.
+		const launching = await codexHooksOrPlain(app, plan);
+		if (launching === undefined) return "Not launched.";
 		if (gate.takeover !== undefined) {
 			if (app.deps.takeoverAgent === undefined) throw new Error("Remote takeover is unavailable here.");
 			if (!(await app.host.open(new ConfirmModal(safeLines(gate.takeover))))) return "Not launched.";
 			await app.deps.takeoverAgent(row.name);
 		}
-		for (const step of plan.steps) {
+		for (const step of launching.steps) {
 			if (!step.confirm) {
 				await app.host.open(new MessageModal(label, safeLines(step.text)));
 				continue;
@@ -142,8 +145,6 @@ export function launchAgent(app: App, row: AgentRow | undefined): void {
 			const { fix } = step;
 			if (fix !== undefined && !(await runFix(app, () => app.deps.applyFix(fix, config, gate.row, tools, plan.cwd)))) return "Not launched.";
 		}
-		const launching = await codexHooksOrPlain(app, plan);
-		if (launching === undefined) return "Not launched.";
 		const exit = await runAgent(launching, (p) => app.deps.launch(p));
 		const plain = launching.withoutOrrery === true ? ", started without Orrery: that session was not recorded" : "";
 		return exitText(label, exit) ?? `Back from ${label} (${row.name})${plain}.`;

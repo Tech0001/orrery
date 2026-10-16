@@ -110,7 +110,10 @@ export const CODEX_ARG_MAX = 100 * 1024;
 /** A word the shell reads as it is. */
 const PLAIN_WORD = /^[A-Za-z0-9_\/.,:@%+=-]+$/;
 
-/** `words` as one shell command (Codex runs a hook as `$SHELL -lc <command>`): a word that needs it in single quotes. */
+/**
+ * `words` as one shell command (Codex 0.162.1 runs a hook as `<the account's shell> -c <command>`, not a login shell and not $SHELL):
+ * a word that needs it in single quotes.
+ */
 export function shellWords(words: readonly string[]): string {
 	return words.map((word) => (PLAIN_WORD.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`)).join(" ");
 }
@@ -188,7 +191,9 @@ export function codexLaunch(agent: { readonly name: string; readonly dir: string
 		const fields: CodexHook = { command: shellWords([...orrery, "codex-hook", hook.arg]), timeout: hook.timeout, ...(hook.additionalContextLimit === undefined ? {} : { additionalContextLimit: hook.additionalContextLimit }) };
 		const handler = inlineTable({ type: tomlString("command"), command: tomlString(fields.command), timeout: String(fields.timeout), ...(fields.additionalContextLimit === undefined ? {} : { additionalContextLimit: String(fields.additionalContextLimit) }) });
 		config.push("-c", `hooks.${hook.event}=${tomlArray([inlineTable({ hooks: tomlArray([handler]) })])}`);
-		state.push(`${tomlString(trustKey(hook.event))}=${inlineTable({ trusted_hash: tomlString(trustHash(hook.event, fields)) })}`);
+		// enabled=true: the person's config may hold enabled=false under the same key (a toggle in Codex's /hooks screen),
+		// which would merge with these flags and turn Orrery's hook off in every session.
+		state.push(`${tomlString(trustKey(hook.event))}=${inlineTable({ enabled: "true", trusted_hash: tomlString(trustHash(hook.event, fields)) })}`);
 	}
 	config.push("-c", `hooks.state={${state.join(",")}}`);
 	const [command = "", ...rest] = orrery;

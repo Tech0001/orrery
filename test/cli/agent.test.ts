@@ -1,8 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { instructionsTemplate } from "../../src/agent/instructions.ts";
+import { openAgentCommand } from "../../src/cli/agent.ts";
+import { WITHOUT_ORRERY_QUESTION } from "../../src/codex/check.ts";
 import { CODEX_HOOKS, trustKey } from "../../src/codex/launch.ts";
 import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { systemCommand } from "../install/support.ts";
@@ -14,6 +16,7 @@ const quote = (part: string) => `'${part.replace(/'/g, `'\\''`)}'`;
 
 const dirs: string[] = [];
 afterEach(() => {
+	vi.unstubAllEnvs();
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -186,6 +189,28 @@ describe("orrery agent", () => {
 		expect(JSON.parse(readFileSync(join(s.env.ORRERY_HOME as string, "codex-check.json"), "utf8"))).toMatchObject({ codex: "0.162.1", ok: false });
 	});
 
+	it("asks about Codex's hooks before any launch step, so a no changes nothing", async () => {
+		const s = scene();
+		fakeCodex(s, "trusted");
+		for (const [key, value] of Object.entries(s.env)) if (value !== undefined) vi.stubEnv(key, value);
+		const missing = join(s.dir, "not-yet");
+		const said: string[] = [];
+		const io = {
+			say: (line: string) => said.push(`say: ${line}`),
+			confirm: async (question: string) => (said.push(`confirm: ${question}`), true),
+			askPerson: async (question: string) => (said.push(`ask: ${question}`), false),
+		};
+		const deps = {
+			takeover: async () => { throw new Error("must not take over"); },
+			codexGate: async () => ({ ok: false as const, text: "Orrery's hooks don't load in Codex 0.162.1: x." }),
+			run: async () => { throw new Error("must not run"); },
+		};
+		expect(await openAgentCommand(s.config, "Atlas", { tool: "codex", args: [], cwd: missing }, io, deps)).toBe(1);
+		expect(said).toEqual(["say: Orrery's hooks don't load in Codex 0.162.1: x.", `ask: ${WITHOUT_ORRERY_QUESTION}`, "say: Not opened."]);
+		// The folder it would open in was not made: that step comes after the check.
+		expect(existsSync(missing)).toBe(false);
+	});
+
 	it.skipIf(!hasScript)("in a terminal, when the hooks don't load: asks, default no; yes starts plain Codex and says it is not recorded", () => {
 		const s = scene();
 		fakeCodex(s, "untrusted");
@@ -197,10 +222,12 @@ describe("orrery agent", () => {
 			expect(no.stdout).toContain("Not opened.");
 			expect(existsSync(s.out)).toBe(false);
 		}
-		const yes = typedInTerminal("y\n", s.env, s.elsewhere, "agent", "Atlas", "--tool", "codex", "--", "-x");
+		// Run from a shell that has another agent's variables: plain Codex must not inherit them either.
+		const inherited = { ...s.env, ORRERY_AGENT: "Other", ORRERY_AGENT_TOKEN: "e".repeat(32) };
+		const yes = typedInTerminal("y\n", inherited, s.elsewhere, "agent", "Atlas", "--tool", "codex", "--", "-x");
 		expect(yes.status, yes.stdout).toBe(0);
 		expect(yes.stdout).toContain("Starting Codex without Orrery: this session isn't recorded and the guard is off.");
-		// Plain Codex: the person's arguments only, and not as the agent.
+		// Plain Codex: the person's arguments only, and not as any agent.
 		expect(started(s.out)).toMatchObject({ agent: "", token: "", args: "-x" });
 	});
 

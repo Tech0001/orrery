@@ -783,19 +783,29 @@ async function claudeHook(event: string | undefined, configPath: string | undefi
 }
 
 /**
+ * A Codex PreToolUse refusal: the reason on stderr and exit code 2. Codex runs a hook through the account's shell
+ * (`<shell> -c`), whose startup files (bash's $BASH_ENV, zsh's .zshenv, fish's config.fish) may print to stdout: a JSON
+ * answer there would arrive garbled and the call would go through. With exit 2 Codex reads only stderr, so the refusal
+ * holds whatever is on stdout. The reason has no final period: Codex adds one.
+ */
+function denyCodexCall(reason: string): number {
+	process.stderr.write(reason);
+	return 2;
+}
+
+/**
  * `orrery codex-hook <event>`: the hooks `orrery agent --tool codex` gives Codex (src/codex/launch.ts). Until the
  * recorder and the guard are built, each reads its input to the end; pre-tool-use refuses every call (Codex runs a call
- * a hook says nothing about, so the guard must never answer `{}`), the others answer `{}` (nothing to add). The reason
- * has no final period: Codex adds one.
+ * a hook says nothing about, so the guard must never answer `{}`), the others answer `{}` (nothing to add).
  */
 async function codexHook(event: string | undefined): Promise<number> {
-	const guarding = event === "pre-tool-use";
 	try {
 		await readStdin(0);
 	} catch {
 		// unreadable input: a tool call is refused all the same
 	}
-	process.stdout.write(guarding ? JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "Orrery's Codex guard is not built yet" } }) : "{}");
+	if (event === "pre-tool-use") return denyCodexCall("Orrery's Codex guard is not built yet");
+	process.stdout.write("{}");
 	return 0;
 }
 

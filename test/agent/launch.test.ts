@@ -306,7 +306,7 @@ describe("Codex launch plans", () => {
 		expect(plan.command).toBe(join(env.PATH, "codex"));
 		expect(plan.args).toEqual([...launch.args, "resume", "--last"]);
 		expect(plan.steps).toEqual([{ text: cutNotice("A"), confirm: false }]);
-		expect(plan.codex).toEqual({ path: join(env.PATH, "codex"), config: launch.config, plainArgs: ["resume", "--last"] });
+		expect(plan.codex).toEqual({ path: join(env.PATH, "codex"), config: launch.config, plainArgs: ["resume", "--last"], notices: [cutNotice("A")] });
 		expect(plan.env.ORRERY_AGENT).toBe("A");
 		// The fake answers --version with "1.0": no version number, so the check runs at every launch.
 		const asked: [string, readonly string[]][] = [];
@@ -319,9 +319,21 @@ describe("Codex launch plans", () => {
 		expect(gate).toEqual({ ok: false, text: "Orrery's hooks don't load in Codex (its version is unknown): Codex lists no Stop hook from Orrery. Without them a session has no memory and no guard." });
 		// A yes to starting without Orrery: plain Codex with the person's arguments, not as the agent.
 		const plain = withoutOrrery(plan);
-		expect(plain).toMatchObject({ command: join(env.PATH, "codex"), args: ["resume", "--last"], env: {}, withoutOrrery: true });
+		expect(plain).toMatchObject({ command: join(env.PATH, "codex"), args: ["resume", "--last"], env: {}, unsetEnv: ["ORRERY_AGENT", "ORRERY_AGENT_TOKEN"], withoutOrrery: true });
 		expect(plain.codex).toBeUndefined();
+		// Plain Codex gets no instructions: the notice about cutting them is not said.
+		expect(plain.steps).toEqual([]);
 		expect(await runAgent(plain, async () => ({ code: 0, signal: null }))).toEqual({ code: 0, signal: null });
+		// An ORRERY_AGENT and token this process inherited are taken out too, not only left unset by the plan.
+		const seen: unknown[] = [];
+		const fake = ((_c: string, _a: string[], o: { env?: unknown }) => {
+			seen.push(o.env);
+			const h: Record<string, (...a: unknown[]) => void> = {};
+			setTimeout(() => h.exit?.(0, null), 0);
+			return { on: (n: string, f: (...a: unknown[]) => void) => { h[n] = f; } };
+		}) as never;
+		await runTool(plain, { env: { PATH: "/bin", ORRERY_AGENT: "Other", ORRERY_AGENT_TOKEN: "e".repeat(32), ORRERY_CONFIG: "/x.toml" }, spawn: fake });
+		expect(seen).toEqual([{ PATH: "/bin", ORRERY_CONFIG: "/x.toml" }]);
 	});
 
 	it("leaves every other tool's plan alone: no check, nothing to take away", async () => {

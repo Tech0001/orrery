@@ -55,9 +55,10 @@ export type HookListing = { readonly ok: true; readonly result: unknown } | { re
 /**
  * Asks `codex app-server` (stdio JSON-RPC: initialize, then hooks/list) for the hooks `config` gives, with their trust.
  * It runs in a scratch CODEX_HOME and folder, both removed after, with no other CODEX_ variable (one could name the
- * person's own state), and is stopped once it has answered or after `timeoutMs`. Never throws.
+ * person's own state), and is stopped once it has answered or after `timeoutMs`. Never throws, and always settles.
+ * `home`: a prepared CODEX_HOME to ask instead of a scratch one, left as it is (tests).
  */
-export function listHooks(codex: string, config: readonly string[], options: { readonly env?: NodeJS.ProcessEnv; readonly timeoutMs?: number } = {}): Promise<HookListing> {
+export function listHooks(codex: string, config: readonly string[], options: { readonly env?: NodeJS.ProcessEnv; readonly timeoutMs?: number; readonly home?: string } = {}): Promise<HookListing> {
 	const timeoutMs = options.timeoutMs ?? PROBE_MS;
 	let scratch: string;
 	try {
@@ -76,11 +77,15 @@ export function listHooks(codex: string, config: readonly string[], options: { r
 		const finish = () => {
 			if (finished) return;
 			finished = true;
-			rmSync(scratch, { recursive: true, force: true });
+			try {
+				rmSync(scratch, { recursive: true, force: true });
+			} catch {
+				// left in the temporary folder: the answer stands
+			}
 			done(answer ?? { ok: false, why: "Codex's app server stopped before answering" });
 		};
 		try {
-			child = spawn(codex, ["app-server", ...config], { cwd, env: { ...env, CODEX_HOME: join(scratch, "home") }, stdio: ["pipe", "pipe", "ignore"] });
+			child = spawn(codex, ["app-server", ...config], { cwd, env: { ...env, CODEX_HOME: options.home ?? join(scratch, "home") }, stdio: ["pipe", "pipe", "ignore"] });
 		} catch (error) {
 			answer = { ok: false, why: `Codex's app server could not start (${plain(errorText(error))})` };
 			finish();
