@@ -84,8 +84,9 @@ The instructions travel on Codex's command line, so they show in `ps`, like ever
 - The hooks only drop each event in a spool; a recorder in the background holds the agent for the session, records the
   spool into memory, runs the summaries, and leaves once the session has ended and the summaries are done (at most 10
   minutes). It is the same recorder Claude Code uses.
-- A session is Codex's session: resuming it through `orrery agent <Name> -- resume --last` goes on recording it. A plain
-  `codex resume` is plain Codex, with no memory and no guard.
+- A session is Codex's session: resuming it through `orrery agent <Name> --tool codex -- resume <id>` goes on recording
+  it. When Codex ends it prints `codex resume <id>`, which reopens the chat as plain Codex, with no memory and no guard;
+  `orrery agent` then prints the line that resumes it as the agent (`resume --last` when it can't tell the session).
 - One writer: an agent records in one place at a time. A Codex session of an agent that is open elsewhere (pi, OMP,
   Claude Code, or another Codex session) is read-only: it gets the view and the memory tools, but nothing it says is
   recorded, and it says which tool holds the agent. A session that has ended leaves its recorder finishing summaries;
@@ -117,7 +118,9 @@ plain `codex` gets no memory tools.
 
 The agent's `instructions.md` (`E` in the TUI, or `orrery agent edit <Name>`) reaches the model as Codex's developer
 instructions, ahead of the memory, up to 32 KB; more is cut, with a notice. A session reads them when it is launched, so
-a change applies at the next `orrery agent`.
+a change applies at the next `orrery agent`. Codex takes one set of developer instructions, so an agent that has
+instructions replaces the `developer_instructions` of your own `~/.codex/config.toml` in its sessions; an agent with
+none leaves yours as they are.
 
 ## Compaction
 
@@ -188,7 +191,8 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
 
 - Your `~/.codex/config.toml` (model, sandbox and approval settings, profiles), your own hooks, your MCP servers and
   your `~/.codex/AGENTS.md` all apply in an agent's session, alongside Orrery's. Codex's sandbox and approvals are
-  yours: the guard adds to them and changes none.
+  yours: the guard adds to them and changes none. One exception: an agent's instructions take the place of your own
+  `developer_instructions` (see Instructions).
 - Don't turn Orrery's hooks off or on in Codex's `/hooks` screen: a toggle there is saved to your `config.toml`. Orrery
   switches its hooks back on at each launch, so it changes nothing for agent sessions, but it leaves an entry in your
   config.
@@ -214,6 +218,7 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
   with Claude Code's recorder);
 - `<agent data>/claims/`: which process has claimed `ORRERY_AGENT_TOKEN`;
 - `<agent data>/status.json`, which `orrery status` reads;
+- `<agent data>/claude/codex-sessions.json`: which session each running Codex of the agent is on, for the resume line;
 - `codex-check.json` in Orrery's home: the last hook check.
 
 Orrery writes nothing to `~/.codex`. Codex keeps its usual files there: session files, its prompt history, logs.
