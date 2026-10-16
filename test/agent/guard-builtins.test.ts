@@ -35,7 +35,9 @@ const HOME_FILES = [
 	".terraform.d/credentials.tfrc.json",
 	".wrangler/config/default.toml",
 	".config/.wrangler/config/default.toml",
+	"Library/Preferences/.wrangler/config/default.toml",
 	".cache/huggingface/token",
+	".cache/huggingface/stored_tokens",
 	".huggingface/token",
 	".password-store/mail.gpg",
 	".config/op/config",
@@ -189,6 +191,7 @@ describe("secret files built in by name, in any folder", () => {
 		"wrangler deploy",
 		"cat wrangler.toml",
 		"cat .secrets.example",
+		"detect-secrets scan --baseline .secrets.baseline",
 		"kubectl get secrets",
 		"gh secret list",
 		"ls secrets/",
@@ -299,6 +302,9 @@ describe("credential files and folders under home, built in", () => {
 			"cat ~/.wrangler/config/default.toml",
 			"cat ~/.config/.wrangler/config/default.toml",
 			"cat ~/.cache/huggingface/token",
+			"cat ~/.cache/huggingface/stored_tokens",
+			"cat ~/Library/Preferences/.wrangler/config/default.toml",
+			"cat $HOME/library/preferences/.wrangler/config/default.toml",
 			"cat ~/.huggingface/token",
 			"ls ~/.password-store",
 			"cat ~/.config/op/config",
@@ -351,7 +357,7 @@ describe("credential files and folders under home, built in", () => {
 	it("refuses a search whose root holds one, or is one, and leaves a search beside them", () => {
 		const t = world();
 		const holds = /would search credential files .*narrower folder/;
-		for (const root of ["~/.cache", "~/.cache/huggingface", "~/.cargo", "~/.terraform.d", "~/.huggingface"]) {
+		for (const root of ["~/.cache", "~/.cache/huggingface", "~/.cargo", "~/.terraform.d", "~/.huggingface", "~/Library/Preferences"]) {
 			for (const tool of ["grep", "find", "ls"]) expect([tool, root, pi(t, tool, { pattern: "x", path: root })]).toEqual([tool, root, expect.stringMatching(holds)]);
 			expect([root, omp(t, "grep", { pattern: "x", path: root })]).toEqual([root, expect.stringMatching(/narrower folder/)]);
 			expect([root, claude(t, "Grep", { pattern: "x", path: root })]).toEqual([root, expect.stringMatching(/narrower folder/)]);
@@ -362,7 +368,7 @@ describe("credential files and folders under home, built in", () => {
 			expect([root, omp(t, "glob", { path: `${root}/**` })]).toEqual([root, expect.stringMatching(SENSITIVE)]);
 			expect([root, claude(t, "Glob", { pattern: "*", path: root })]).toEqual([root, expect.stringMatching(SENSITIVE)]);
 		}
-		for (const root of ["~/.cache/pip", "~/.config/opencode", ".azure", ".wrangler", "."]) {
+		for (const root of ["~/.cache/pip", "~/.config/opencode", "~/.cargo/registry", ".azure", ".wrangler", "."]) {
 			expect([root, pi(t, "grep", { pattern: "x", path: root })]).toEqual([root, undefined]);
 			expect([root, claude(t, "Grep", { pattern: "x", path: root })]).toEqual([root, undefined]);
 		}

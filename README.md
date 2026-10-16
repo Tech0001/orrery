@@ -264,9 +264,9 @@ refused, and Orrery's own config and program are read-only to agents. Out of the
 - **Keys and logins in your home folder:** `~/.ssh`, `~/.gnupg`, `~/.aws/credentials`, `~/.kube/config`,
   `~/.docker/config.json`, `~/.config/gh/hosts.yml`, `~/.netrc`, `~/.git-credentials`, `~/.pgpass`, `~/.npmrc`,
   `~/.pypirc`, `~/.cargo/credentials`, `~/.gem/credentials`, `~/.config/gcloud`, `~/.azure`,
-  `~/.terraform.d/credentials.tfrc.json`, wrangler's login (`~/.wrangler`, `~/.config/.wrangler`), Hugging Face's
-  token, `~/.password-store`, the 1Password CLI's `~/.config/op`, and the logins of pi, OMP and Orrery (Claude
-  Code's too, in its sessions).
+  `~/.terraform.d/credentials.tfrc.json`, wrangler's login (`~/.wrangler`, `~/.config/.wrangler`, and
+  `~/Library/Preferences/.wrangler` on macOS), Hugging Face's tokens, `~/.password-store`, the 1Password CLI's
+  `~/.config/op`, and the logins of pi, OMP and Orrery (Claude Code's too, in its sessions).
 - **Secret files in any folder:** `.env` and `.env.<anything>`, `.dev.vars` and `.dev.vars.<anything>` (Cloudflare
   Workers), `.secrets`, `secrets.toml`, `master.key` and `.htpasswd`. The shared templates stay open: `.env.example`,
   `.env.sample`, `.env.template` and `.env.dist`, and the same for `.dev.vars`.

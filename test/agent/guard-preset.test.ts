@@ -109,10 +109,17 @@ compactor_model = "openai/gpt-6.1-sol"
 		expect(parse(next)).toEqual({ ...(parse(OLD) as object), guard: { protect: [] } });
 	});
 
-	it("puts it above a file's opening comments when they run into the first table, past a value that only looks like one, and else at the end", () => {
-		const glued = `# my config\n[agents.Alpha]\nfolder = "/w/alpha"\ncompactor_model = "openai/gpt-6.1-sol"\n`;
-		expect(addGuardPreset(glued, "/x")).toBe(`${GUARD_PRESET}\n\n${glued}`);
-		// A line starting with "[" inside a value is no table: the block goes before the first real one.
+	it("puts it right before the table when the comments above it start the file or hold a setting, past a value that only looks like a table, and else at the end", () => {
+		const table = `[agents.Alpha]\nfolder = "/w/alpha"\ncompactor_model = "openai/gpt-6.1-sol"\n`;
+		// The file's own title, and settings commented out above every table, stay above the block.
+		const titled = `# my config\n# data_dir = "/mnt/big"\n${table}`;
+		const placed = addGuardPreset(titled, "/x") as string;
+		expect(placed).toBe(`# my config\n# data_dir = "/mnt/big"\n\n${GUARD_PRESET}\n\n${table}`);
+		expect(parseConfig(placed.replace('# data_dir = "/mnt/big"', 'data_dir = "/mnt/big"'), "/x").dataDir).toBe("/mnt/big");
+		const commented = `data_dir = "/m"\n\n# data_dir = "/other"\n# the agents\n${table}`;
+		expect(addGuardPreset(commented, "/x")).toBe(`data_dir = "/m"\n\n# data_dir = "/other"\n# the agents\n\n${GUARD_PRESET}\n\n${table}`);
+		// A line starting with "[" inside a value is no table: the block goes before the first real one, above its comment.
+		const glued = `# my config\n${table}`;
 		const nested = `extra = [\n  ["a", "b"],\n]\n${glued}`;
 		expect(addGuardPreset(nested, "/x")).toBe(`extra = [\n  ["a", "b"],\n]\n\n${GUARD_PRESET}\n\n${glued}`);
 		// No real table at all: at the end, where it cannot split a value.
@@ -139,6 +146,9 @@ describe("[guard] protect read from a config that does not parse (protectInText)
 		expect(protectInText(broken("[guard]\nprotect = []\n"))).toEqual([]);
 		expect(protectInText(broken("[guard]   # mine\nprotect = [   # none yet\n]\n"))).toEqual([]);
 		expect(protectInText(broken("[guard]\n"))).toEqual([]);
+		// CRLF line ends, as the editor keeps them.
+		expect(protectInText(broken(newConfigText()).replace(/\n/g, "\r\n"))).toEqual([]);
+		expect(protectInText(broken('[guard]\r\nprotect = ["secrets.yml"]\r\n').replace(/\r?\n/g, "\r\n"))).toBeUndefined();
 	});
 
 	it("still knows nothing when that table holds an entry, is broken itself, or another line may hold [guard] protect", () => {

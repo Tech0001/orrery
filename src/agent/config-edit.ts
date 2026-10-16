@@ -262,12 +262,17 @@ export function newConfigText(dataDir?: string): string {
 	return `${dataDir === undefined ? head : `${head}data_dir = ${tomlValue(dataDir)}\n`}\n${GUARD_PRESET}\n`;
 }
 
+/** A comment line that holds a setting, commented out ("# data_dir = …"): uncommented, it belongs where it stands. */
+const COMMENTED_KEY = /^[ \t]*#[ \t]*["']?[A-Za-z0-9_.-]+["']?[ \t]*=/;
+
 /**
  * The config with the [guard] preset added (GUARD_PRESET), or undefined when it has a [guard] table already. Every other
  * line stays byte for byte. The block goes before the first table, above the comment lines right over it, so a table
- * keeps its comment; else (no table, or none that the block can go before without changing a value) at the end. Checked
- * as the other edits are: the result must parse, and differ from the old config by the empty [guard] table alone. A
- * config Orrery cannot read throws its ConfigError.
+ * keeps its comment; but right before the table when those comments run up from the file's first line (its title, or
+ * settings above every table) or hold a setting commented out, which uncommented must stay where it was, not land in
+ * [guard]. Else (no table, or none that the block can go before without changing a value) at the end. Checked as the
+ * other edits are: the result must parse, and differ from the old config by the empty [guard] table alone. A config
+ * Orrery cannot read throws its ConfigError.
  */
 export function addGuardPreset(text: string, configDir: string): string | undefined {
 	parseConfig(text, configDir);
@@ -289,6 +294,7 @@ export function addGuardPreset(text: string, configDir: string): string | undefi
 		if (!/^[ \t]*\[/.test(lines[header])) continue;
 		let at = header;
 		while (at > 0 && /^[ \t]*#/.test(lines[at - 1])) at--;
+		if (at === 0 || lines.slice(at, header).some((line) => COMMENTED_KEY.test(line))) at = header;
 		const gap = at > 0 && lines[at - 1].trim() !== "" ? [cr] : [];
 		const next = [...lines.slice(0, at), ...gap, ...block, cr, ...lines.slice(at)].join("\n");
 		if (fits(next)) return next;

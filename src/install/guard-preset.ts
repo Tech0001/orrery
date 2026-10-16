@@ -3,17 +3,36 @@
  * (GUARD_PRESET) to the config in use once, so its user sees where more protected files go. "Once" is kept in Orrery's
  * home, in guard-preset.json: the configs it was offered to, by path. A config is offered when setup finds it with no
  * [guard] table (the block is added), with one (nothing to add), or not there yet (a new config starts with the block);
- * after that it is left alone, so a block the user deletes does not come back. A config Orrery cannot read, or may not
- * write, is left alone and not counted: it is offered once it reads again.
+ * after that it is left alone, so a block the user deletes does not come back. A config Orrery cannot read (a link that
+ * leads nowhere yet among them), or may not write, is left alone and not counted: it is offered once it reads again.
+ * Setup keeps the config's last text as .bak, as every edit Orrery makes to it does.
  */
 
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { addGuardPreset, configWritable, saveConfigText, userConfigPath } from "../agent/config-edit.ts";
 import { orreryHome } from "../agent/home.ts";
 import { writePrivate } from "../agent/private-file.ts";
 
-const markerFile = (env: NodeJS.ProcessEnv) => join(orreryHome(env), "guard-preset.json");
+/** The marker in Orrery's home, where the home really is: a home that is a link to another folder keeps it too. */
+function markerFile(env: NodeJS.ProcessEnv): string {
+	const home = orreryHome(env);
+	try {
+		return join(realpathSync(home), "guard-preset.json");
+	} catch {
+		return join(home, "guard-preset.json");
+	}
+}
+
+/** Whether nothing at all is at `path`: no file, and no link, not even one that leads nowhere yet. */
+function absent(path: string): boolean {
+	try {
+		lstatSync(path);
+		return false;
+	} catch (error) {
+		return (error as { code?: unknown }).code === "ENOENT";
+	}
+}
 
 /** The configs the preset was offered to; none when the file is missing or unreadable. */
 function offered(env: NodeJS.ProcessEnv): string[] {
@@ -54,7 +73,7 @@ export function offerGuardPreset(env: NodeJS.ProcessEnv): string | undefined {
 		const names = spellings(path);
 		const done = offered(env);
 		if (names.some((name) => done.includes(name))) return undefined;
-		if (!existsSync(path)) {
+		if (absent(path)) {
 			remember(env, names);
 			return undefined;
 		}
@@ -62,7 +81,7 @@ export function offerGuardPreset(env: NodeJS.ProcessEnv): string | undefined {
 		try {
 			next = addGuardPreset(readFileSync(path, "utf8"), dirname(resolve(path)));
 		} catch {
-			return undefined; // a config Orrery cannot read: left alone
+			return undefined; // a config Orrery cannot read (a link that leads nowhere yet among them): left alone
 		}
 		if (next === undefined) {
 			remember(env, names);

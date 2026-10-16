@@ -314,8 +314,8 @@ agents, so run them in your own terminal.
 
 Tool logins in your home folder are refused the same way: `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`,
 `~/.gem/credentials`, `~/.config/gcloud`, `~/.azure`, `~/.terraform.d/credentials.tfrc.json`, `~/.wrangler`,
-`~/.config/.wrangler`, `~/.cache/huggingface/token`, `~/.huggingface/token`, `~/.password-store` and `~/.config/op`. A
-project's own `.npmrc`, `.pypirc`, `.azure` or `.wrangler` stays open; Bash is refused those four only when it names
+`~/.config/.wrangler` (`~/Library/Preferences/.wrangler` on macOS), `~/.cache/huggingface/token` and `stored_tokens`,
+`~/.huggingface/token`, `~/.password-store` and `~/.config/op`. A project's own `.npmrc`, `.pypirc`, `.azure` or `.wrangler` stays open; Bash is refused those four only when it names
 them from home (`~/.npmrc`, `$HOME/.npmrc`, the home folder's path).
 
 Secret files in any folder are refused too, so agents neither read nor edit them: `.env` and `.env.<anything>`,

@@ -298,8 +298,8 @@ memory (`ORRERY_AGENT` with its claimed token, else the folder), so a tool an ag
 Claude Code, a config that is there but cannot be read refuses every tool call.
 Tool logins under home are credentials too: `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials` (and `.toml`),
 `~/.gem/credentials`, `~/.config/gcloud`, `~/.azure`, `~/.terraform.d/credentials.tfrc.json`, `~/.wrangler`,
-`~/.config/.wrangler`, `~/.cache/huggingface/token`, `~/.huggingface/token`, `~/.password-store` and `~/.config/op`.
-File tools are refused them by path, links followed, and a search whose root holds one is refused. Shell text names
+`~/.config/.wrangler` (`~/Library/Preferences/.wrangler` on macOS), `~/.cache/huggingface/token` and `stored_tokens`,
+`~/.huggingface/token`, `~/.password-store` and `~/.config/op`. File tools are refused them by path, links followed, and a search whose root holds one is refused. Shell text names
 most of them anywhere, as `.aws/credentials`; `.npmrc`, `.pypirc`, `.azure` and `.wrangler`, which projects have of
 their own, only from home (`~`, `~user`, `$HOME`, `${HOME…}` or the home's path, or where the file really is).
 A project's `.env` and `.env.<anything>` files are refused like credentials, except `.env.example`, `.env.sample`,
@@ -336,9 +336,11 @@ For the built-in secret files and `[guard] protect` these hold too. Above all, a
 path and the credential locations under home are checked against a search's folder. Also, a glob that does
 not spell the name (`.en?`, or `*.env` where `*` matches a leading dot, as in `find -name`) and a command over a folder
 that holds a protected path (`tar`, `grep -r`) get through, and so does a command that names `.npmrc`, `.pypirc`,
-`.azure` or `.wrangler` relative to the home folder (`cd ~ && cat .npmrc`). The other way round, a command that has a
-protected name as a word is refused even when it means something else, such as `git commit -m "ignore .env"`,
-`python -m venv .env` or `jq .secrets`.
+`.azure` or `.wrangler` relative to the home folder (`cd ~ && cat .npmrc`), one that spells home inside a brace group
+(`{${HOME},x}/.npmrc`), and a name split across two brace groups when one of them has more than 64 alternatives. The
+other way round, a command that has a protected name as a word is refused even when it means something else, such as
+`git commit -m "ignore .env"`, `python -m venv .env` or `jq .secrets`, and an OMP edit whose text names a home login
+(a release workflow that writes `~/.npmrc`) is refused, as for any credential file.
 Generated code can reach files through mechanisms the guard cannot see.
 Unknown plugin tools and hook failures can also fall outside the protection offered by a host integration.
 Do not use it as the security boundary for untrusted code or a hostile agent.

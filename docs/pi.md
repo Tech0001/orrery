@@ -256,8 +256,9 @@ still applies to it. Close the first one, or work in it.
   variables, `eval`, `cd`, escape codes, brace names split across words, commands that change folder with their own flag (`git -C`, `tar -C`), a swap of the session's own folder in the same command, a shell search of an agent's whole folder, and hard links to a protected file; a relative path or a link to the config is not caught either.
 - Credential files: the guard blocks ssh keys and credential stores, `~/.pi/agent/models.json` and `/proc/*/environ`,
   and tool logins in your home folder: `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`, `~/.gem/credentials`,
-  `~/.config/gcloud`, `~/.azure`, `~/.terraform.d/credentials.tfrc.json`, `~/.wrangler`, `~/.config/.wrangler`,
-  `~/.cache/huggingface/token`, `~/.huggingface/token`, `~/.password-store` and `~/.config/op`. A project's own
+  `~/.config/gcloud`, `~/.azure`, `~/.terraform.d/credentials.tfrc.json`, `~/.wrangler`, `~/.config/.wrangler`
+  (`~/Library/Preferences/.wrangler` on macOS), `~/.cache/huggingface/token` and `stored_tokens`,
+  `~/.huggingface/token`, `~/.password-store` and `~/.config/op`. A project's own
   `.npmrc`, `.pypirc`, `.azure` or `.wrangler` stays open, and bash is refused those four only when it names them from
   home (`~/.npmrc`, `$HOME/.npmrc`, the home folder's path): `cd ~ && cat .npmrc` gets through. The guard refuses a
   grep, find or ls rooted at home or above, at a folder that holds credentials (like `~/.pi`, `~/.cache` or Orrery's

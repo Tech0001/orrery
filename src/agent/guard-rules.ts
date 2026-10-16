@@ -105,7 +105,11 @@ export const HOME_SECRETS: readonly string[] = [
 	".terraform.d/credentials.tfrc.json",
 	".wrangler",
 	".config/.wrangler",
+	// wrangler's login on macOS, whose config folder is Library/Preferences.
+	"Library/Preferences/.wrangler",
 	".cache/huggingface/token",
+	// huggingface_hub keeps every saved token here, beside the active one.
+	".cache/huggingface/stored_tokens",
 	".huggingface/token",
 	".password-store",
 	".config/op",
@@ -120,8 +124,11 @@ const HOME_ONLY = [".npmrc", ".pypirc", ".azure", ".wrangler"];
 
 const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** The other HOME_SECRETS, named anywhere as a whole path (not .config/opencode for .config/op), like SENSITIVE's. */
-const HOME_NAMED = new RegExp(`${DOT_START}(?:${HOME_SECRETS.filter((name) => !HOME_ONLY.includes(name)).map(literal).join("|")})${NAME_END}`);
+/**
+ * The other HOME_SECRETS, named anywhere as a whole path (not .config/opencode for .config/op), like SENSITIVE's; lower
+ * case, as the readings are.
+ */
+const HOME_NAMED = new RegExp(`${DOT_START}(?:${HOME_SECRETS.filter((name) => !HOME_ONLY.includes(name)).map((name) => literal(name.toLowerCase())).join("|")})${NAME_END}`);
 
 /** The credential patterns: SENSITIVE's and HOME_NAMED. */
 const CREDENTIALS = [...SENSITIVE, HOME_NAMED];

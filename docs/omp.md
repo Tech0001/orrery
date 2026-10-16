@@ -97,8 +97,8 @@ file tools and content searches are refused it. Writes go to the folder the agen
 
 Tool logins in your home folder are blocked like OMP's: `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`,
 `~/.gem/credentials`, `~/.config/gcloud`, `~/.azure`, `~/.terraform.d/credentials.tfrc.json`, `~/.wrangler`,
-`~/.config/.wrangler`, `~/.cache/huggingface/token`, `~/.huggingface/token`, `~/.password-store` and `~/.config/op`.
-A project's own `.npmrc`, `.pypirc`, `.azure` or `.wrangler` stays open; `bash` and `eval` are refused those four only
+`~/.config/.wrangler` (`~/Library/Preferences/.wrangler` on macOS), `~/.cache/huggingface/token` and `stored_tokens`,
+`~/.huggingface/token`, `~/.password-store` and `~/.config/op`. A project's own `.npmrc`, `.pypirc`, `.azure` or `.wrangler` stays open; `bash` and `eval` are refused those four only
 when they name them from home (`~/.npmrc`, `$HOME/.npmrc`, the home folder's path).
 
 Secret files in any folder are blocked like credentials: `.env` and `.env.<anything>`, `.dev.vars` and

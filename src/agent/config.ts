@@ -315,7 +315,7 @@ export function protectInText(text: string | undefined): readonly string[] | und
 }
 
 /** A plain [guard] header line, as Orrery writes it (a comment after it allowed). */
-const GUARD_HEADER = /^[ \t]*\[[ \t]*guard[ \t]*\][ \t]*(?:#.*)?\r?$/;
+const GUARD_HEADER = /^[ \t]*\[[ \t]*guard[ \t]*\][ \t]*(?:#.*)?$/;
 
 /**
  * Whether a config text that does not parse holds [guard] protect only in one plain [guard] table that holds no entry:
@@ -325,7 +325,8 @@ const GUARD_HEADER = /^[ \t]*\[[ \t]*guard[ \t]*\][ \t]*(?:#.*)?\r?$/;
  * protect key anywhere else, and the text stays unknown.
  */
 function emptyGuard(body: string): boolean {
-	const lines = body.split("\n");
+	// Each line without its CR, so a CRLF config's table reads on its own as an LF one does.
+	const lines = body.split("\n").map((line) => line.replace(/\r$/, ""));
 	const headers = lines.flatMap((line, at) => (GUARD_HEADER.test(line) ? [at] : []));
 	if (headers.length !== 1) return false;
 	const start = headers[0];

@@ -122,6 +122,32 @@ describe("offering the [guard] preset", () => {
 		expect(readdirSync(t.orrery)).not.toContain("config.toml.bak");
 	});
 
+	it("keeps the marker when Orrery's home is a link to another folder", () => {
+		const t = scratch();
+		const elsewhere = join(tempDir("orrery-preset-disk-"), "orrery");
+		mkdirSync(elsewhere, { mode: 0o700 });
+		const linked = join(t.home, "linked-home");
+		symlinkSync(elsewhere, linked);
+		const env = { HOME: t.home, ORRERY_HOME: linked } as NodeJS.ProcessEnv;
+		writeFileSync(join(elsewhere, "config.toml"), OLD);
+		expect(offerGuardPreset(env)).toMatch(/added a \[guard\] example/);
+		expect(existsSync(join(elsewhere, "guard-preset.json"))).toBe(true);
+		writeFileSync(join(elsewhere, "config.toml"), OLD);
+		expect(offerGuardPreset(env)).toBeUndefined();
+		expect(readFileSync(join(elsewhere, "config.toml"), "utf8")).toBe(OLD);
+	});
+
+	it("does not count a config that is a link leading nowhere yet, and offers it once the link leads to a file", () => {
+		const t = scratch();
+		const target = join(tempDir("orrery-preset-dotfiles-"), "orrery.toml");
+		symlinkSync(target, t.config);
+		expect(offerGuardPreset(t.env)).toBeUndefined();
+		expect(existsSync(target)).toBe(false);
+		writeFileSync(target, OLD);
+		expect(offerGuardPreset(t.env)).toMatch(/added a \[guard\] example/);
+		expect(readFileSync(target, "utf8")).toContain(GUARD_PRESET);
+	});
+
 	it("leaves a config it may not write alone, saying nothing", () => {
 		const t = scratch();
 		writeFileSync(t.config, OLD);
