@@ -15,6 +15,7 @@ import { heldMessage, RemoteSession, TAKEOVER_FILE } from "../remote/session.ts"
 import { holderFor, openStorage } from "../remote/index.ts";
 import { readRemoteSecret, type RemoteSecret, removeRemoteSecret, saveRemoteSecret } from "../remote/secrets.ts";
 import { type LaneEntry, RemoteError, type Storage } from "../remote/types.ts";
+import { UsageError } from "./help.ts";
 import { clean } from "./printer.ts";
 
 type StorageFactory = (config: HarnessConfig, name: string, secret?: RemoteSecret) => Storage;
@@ -229,7 +230,7 @@ function logHeader(plain: Uint8Array, n: number): SaveHeader {
 export async function remoteCommand(configPath: string | undefined, args: readonly string[], options: RemoteOptions = {}, interaction: RemoteInteraction = terminalInteraction): Promise<string> {
 	const [action, name] = args;
 	if (args.length !== 2 || !name || !["add", "test", "key", "log", "agents", "remove"].includes(action)) {
-		throw new Error("Use orrery remote add|test|key|log|agents|remove <name>. Lists and logs accept --json.");
+		throw new UsageError("Use orrery remote add|test|key|log|agents|remove <name>. Lists and logs accept --json.");
 	}
 	if (action !== "agents" && action !== "log" && options.json === true) throw new Error("--json is only for remote agents and remote log.");
 	if (options.yes === true && action !== "remove") throw new Error("--yes is only for remote remove.");
@@ -383,7 +384,7 @@ export async function pullAgentCommand(configPath: string | undefined, name: str
 /** Moves agent memory between its local working copy and remote home; independent of agent checkout adapters. */
 export async function agentRemoteCommand(configPath: string | undefined, args: readonly string[], options: AgentRemoteOptions = {}, interaction: AgentRemoteInteraction = terminalAgentInteraction): Promise<string> {
 	const [action, name] = args;
-	if (args.length !== 2 || !name || !["push", "pull", "takeover", "local"].includes(action)) throw new Error("Use orrery agent push|pull|takeover|local <Name>.");
+	if (args.length !== 2 || !name || !["push", "pull", "takeover", "local"].includes(action)) throw new UsageError("Use orrery agent push|pull|takeover|local <Name>.");
 	if ((options.to !== undefined && action !== "push") || ((options.from !== undefined || options.folder !== undefined) && action !== "pull") || (options.yes === true && action !== "takeover") || (options["delete-remote"] === true && action !== "local")) throw new Error("These options do not apply to this agent command.");
 	if (action === "pull") {
 		if (!options.from) throw new Error("agent pull needs --from <remote> (and --folder <dir> for a default folder).");

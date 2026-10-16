@@ -558,11 +558,14 @@ describe("orrery install", () => {
 		expect(plain.stderr).toContain("--from");
 	});
 
-	it("answers --help, which lists install --from", () => {
-		const help = cli(scratchEnv(), "--help");
+	it("answers install --help and help all, which list install --from", () => {
+		const install = cli(scratchEnv(), "install", "--help");
+		expect(install.status, install.stderr).toBe(0);
+		expect(install.stdout).toContain("install --from DIR");
+		expect(install.stdout).toContain("install --rollback [--yes] | --list");
+		const help = cli(scratchEnv(), "help", "all");
 		expect(help.status, help.stderr).toBe(0);
 		expect(help.stdout).toContain("install --from DIR");
-		expect(help.stdout).toContain("install --rollback [--yes] | --list");
 		expect(help.stdout).toContain("setup [--yes]");
 		expect(help.stdout).toContain("uninstall [--purge]");
 		expect(help.stdout).not.toContain("npm run install-local");

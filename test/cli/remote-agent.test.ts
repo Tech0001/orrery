@@ -234,7 +234,7 @@ it("wires all four commands and their flags into main and help", () => {
 		const c = cliCommand(["--config", path, ...args]);
 		return spawnSync(c.cmd, c.args, { env: cleanEnv({}), encoding: "utf8", timeout: 15000 });
 	};
-	const help = cli("help").stdout;
+	const help = cli("help", "agent").stdout;
 	for (const action of ["push", "pull", "takeover", "local"]) expect(help).toContain(`agent ${action} <Name>`);
 	for (const args of [["push", "Missing", "--to", "home"], ["pull", "Atlas", "--from", "missing", "--folder", folder], ["takeover", "Missing", "--yes"], ["local", "Missing", "--delete-remote"]]) {
 		const result = cli("agent", ...args); expect(result.status).toBe(1);
