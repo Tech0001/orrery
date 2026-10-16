@@ -6,6 +6,7 @@ import { instructionsTemplate } from "../../src/agent/instructions.ts";
 import { openAgentCommand } from "../../src/cli/agent.ts";
 import { WITHOUT_ORRERY_QUESTION } from "../../src/codex/check.ts";
 import { CODEX_HOOKS, trustKey } from "../../src/codex/launch.ts";
+import { hookShell } from "../../src/codex/shell.ts";
 import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { systemCommand } from "../install/support.ts";
 import { tempDir } from "../agent/support.ts";
@@ -209,6 +210,51 @@ describe("orrery agent", () => {
 		expect(said).toEqual(["say: Orrery's hooks don't load in Codex 0.162.1: x.", `ask: ${WITHOUT_ORRERY_QUESTION}`, "say: Not opened."]);
 		// The folder it would open in was not made: that step comes after the check.
 		expect(existsSync(missing)).toBe(false);
+	});
+
+	// Codex runs hooks in the account's shell when it is bash, zsh or sh, else bash on Linux: $BASH_ENV is bash's.
+	it.skipIf(hookShell({ PATH: "/usr/bin:/bin" }).kind !== "bash")("refuses without a terminal when the shell Codex runs the hooks in prints at startup, naming the likely file", () => {
+		const s = scene();
+		fakeCodex(s, "trusted");
+		const chatty = join(s.dir, "bash-env");
+		writeFileSync(chatty, 'echo "Welcome back!"\n');
+		const r = orrery({ ...s.env, BASH_ENV: chatty }, s.elsewhere, "agent", "Atlas", "--tool", "codex", "--yes");
+		expect(r.status).toBe(1);
+		expect(r.stderr).toContain(`which prints when it starts (most likely from $BASH_ENV (${chatty})). Codex then can't read the hooks' answers, so Atlas's memory won't load`);
+		expect(r.stderr).toContain("Atlas was not opened: only a person at a terminal can choose to start Codex anyway (run orrery agent Atlas there).");
+		expect(existsSync(s.out)).toBe(false);
+	});
+
+	it("asks about a printing hook shell after the hook check; yes opens Codex as the agent all the same, no opens nothing", async () => {
+		const s = scene();
+		fakeCodex(s, "trusted");
+		for (const [key, value] of Object.entries(s.env)) if (value !== undefined) vi.stubEnv(key, value);
+		for (const answer of [true, false]) {
+			const said: string[] = [];
+			const ran: { codex?: unknown; args: readonly string[]; withoutOrrery?: true }[] = [];
+			const io = {
+				say: (line: string) => said.push(`say: ${line}`),
+				confirm: async (question: string) => (said.push(`confirm: ${question}`), true),
+				askPerson: async (question: string) => (said.push(`ask: ${question}`), answer),
+			};
+			const deps = {
+				takeover: async () => { throw new Error("must not take over"); },
+				codexGate: async () => ({ ok: false as const, text: "Codex runs Orrery's hooks through /bin/bash -c, which prints when it starts.", noisyShell: true as const, question: "Start Codex anyway?" }),
+				run: async (plan: { codex?: unknown; args: readonly string[]; withoutOrrery?: true }) => (ran.push(plan), { code: 0, signal: null }),
+			};
+			expect(await openAgentCommand(s.config, "Atlas", { tool: "codex", args: ["-x"], cwd: s.elsewhere }, io, deps)).toBe(answer ? 0 : 1);
+			expect(said.slice(0, 2)).toEqual(["say: Codex runs Orrery's hooks through /bin/bash -c, which prints when it starts.", "ask: Start Codex anyway?"]);
+			if (answer) {
+				// As the agent: Orrery's flags, then the person's arguments.
+				expect(ran).toHaveLength(1);
+				expect(ran[0]?.withoutOrrery).toBeUndefined();
+				expect(ran[0]?.args[0]).toBe("--no-daemon");
+				expect(ran[0]?.args.at(-1)).toBe("-x");
+			} else {
+				expect(ran).toEqual([]);
+				expect(said.at(-1)).toBe("say: Not opened.");
+			}
+		}
 	});
 
 	it.skipIf(!hasScript)("in a terminal, when the hooks don't load: asks, default no; yes starts plain Codex and says it is not recorded", () => {

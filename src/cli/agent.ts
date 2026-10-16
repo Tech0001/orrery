@@ -81,17 +81,21 @@ export async function openAgentCommand(
 }
 
 /**
- * The plan to run after the Codex hook check: as it is when the hooks load; when they don't, plain Codex if the person
- * says yes (undefined on no). Without a terminal it refuses with what the check said.
+ * The plan to run after the Codex checks: as it is when they pass; when the hooks don't load, plain Codex if the person
+ * says yes; when the hooks' shell prints, the plan as it is if they say yes (undefined on no). Without a terminal it
+ * refuses with what the check said.
  */
 async function codexHooksOrPlain(plan: LaunchPlan, name: string, io: AgentIo, gate: (plan: LaunchPlan) => Promise<CodexGate>): Promise<LaunchPlan | undefined> {
 	if (plan.codex === undefined) return plan;
 	const checked = await gate(plan);
 	if (checked.ok) return plan;
+	const noisy = "noisyShell" in checked;
 	if (io.askPerson === undefined) {
-		throw new Error(`${checked.text} ${name} was not opened: only a person at a terminal can choose to start Codex without them (run orrery agent ${name} there).`);
+		const choice = noisy ? "start Codex anyway" : "start Codex without them";
+		throw new Error(`${checked.text} ${name} was not opened: only a person at a terminal can choose to ${choice} (run orrery agent ${name} there).`);
 	}
 	io.say(checked.text);
+	if (noisy) return (await io.askPerson(checked.question)) ? plan : undefined;
 	if (!(await io.askPerson(WITHOUT_ORRERY_QUESTION))) return undefined;
 	io.say(WITHOUT_ORRERY_SAID);
 	return withoutOrrery(plan);

@@ -100,13 +100,15 @@ async function whereToOpen(app: App, row: AgentRow): Promise<string | undefined>
 }
 
 /**
- * Codex's hook check (src/codex/check.ts): the plan as it is when Orrery's hooks load; when they don't, plain Codex
- * after a yes (the question's default is no: n and Esc), else undefined.
+ * Codex's checks (src/agent/launch.ts checkCodexHooks): the plan as it is when they pass; when Orrery's hooks don't
+ * load, plain Codex after a yes; when the hooks' shell prints, the plan as it is after a yes (each question's default is
+ * no: n and Esc), else undefined.
  */
 async function codexHooksOrPlain(app: App, plan: LaunchPlan): Promise<LaunchPlan | undefined> {
 	if (plan.codex === undefined) return plan;
 	const gate = await app.deps.codexCheck(plan, (text) => app.say(text));
 	if (gate.ok) return plan;
+	if ("noisyShell" in gate) return (await app.host.open(new ConfirmModal(safeLines(`${gate.text}\n\n${gate.question}`)))) ? plan : undefined;
 	if (!(await app.host.open(new ConfirmModal(safeLines(`${gate.text}\n\n${WITHOUT_ORRERY_QUESTION}`))))) return undefined;
 	return withoutOrrery(plan);
 }

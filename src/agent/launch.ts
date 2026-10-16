@@ -13,6 +13,7 @@ import { claudeSetup, claudeSetupMod, modSetupReport, setupReport } from "../cla
 import { agentMode, markedHere, readSetupMarker } from "../claude/view-file.ts";
 import { type CodexGate, codexHookGate, type probeHooks } from "../codex/check.ts";
 import { codexLaunch, orreryCommand } from "../codex/launch.ts";
+import { checkHookShell, NOISY_SHELL_QUESTION, noisyShellText, type ShellCheck } from "../codex/shell.ts";
 import { buildRunning, readBuild } from "./build.ts";
 import { findAgent, type HarnessConfig, insideFolder, type AgentConfig, type AgentLauncher, type AgentTool } from "./config.ts";
 import { type AgentRow, TOOL_LABELS } from "./overview.ts";
@@ -165,18 +166,28 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 }
 
 /**
- * The hook check before a Codex launch (src/codex/check.ts): ok at once for any other plan, and for a Codex this Orrery
- * verified before. `onCheck` hears when Codex is asked (it may take a few seconds).
+ * The checks before a Codex launch: ok at once for any other plan. First the hook check (src/codex/check.ts; at once
+ * for a Codex this Orrery verified before), `onCheck` hearing when Codex is asked (it may take a few seconds). Then,
+ * at every launch since a startup file may change any day, the shell Codex runs the hooks in must start without a
+ * word (src/codex/shell.ts), run with the environment Codex will have (`env` and the plan's variables).
  */
-export function checkCodexHooks(plan: LaunchPlan, options: { readonly env?: NodeJS.ProcessEnv; readonly probe?: typeof probeHooks; readonly onCheck?: (text: string) => void } = {}): Promise<CodexGate> {
-	if (plan.codex === undefined) return Promise.resolve({ ok: true });
+export async function checkCodexHooks(
+	plan: LaunchPlan,
+	options: { readonly env?: NodeJS.ProcessEnv; readonly probe?: typeof probeHooks; readonly onCheck?: (text: string) => void; readonly shellCheck?: (env: NodeJS.ProcessEnv, cwd: string) => ShellCheck } = {},
+): Promise<CodexGate> {
+	if (plan.codex === undefined) return { ok: true };
 	const { path, version, config } = plan.codex;
-	return codexHookGate({ path, ...(version === undefined ? {} : { version }), config }, {
+	const hooks = await codexHookGate({ path, ...(version === undefined ? {} : { version }), config }, {
 		orrery: orreryVersion(),
 		...(options.env === undefined ? {} : { env: options.env }),
 		...(options.probe === undefined ? {} : { probe: options.probe }),
 		...(options.onCheck === undefined ? {} : { onCheck: () => options.onCheck?.(`Checking that Orrery's hooks load in Codex${version === undefined ? "" : ` ${version}`}…`) }),
 	});
+	if (!hooks.ok) return hooks;
+	const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env), ...plan.env };
+	for (const name of plan.unsetEnv ?? []) delete env[name];
+	const shell = (options.shellCheck ?? checkHookShell)(env, plan.cwd);
+	return shell.quiet ? { ok: true } : { ok: false, text: noisyShellText(plan.agent, shell), noisyShell: true, question: NOISY_SHELL_QUESTION };
 }
 
 /**

@@ -191,7 +191,15 @@ function writeCodexCheck(env: NodeJS.ProcessEnv, state: CodexCheckState): void {
 	}
 }
 
-export type CodexGate = { readonly ok: true } | { readonly ok: false; readonly text: string };
+/**
+ * Whether Codex may open the agent: ok; or not, with what to say. Orrery's hooks that don't load: a yes starts plain
+ * Codex (withoutOrrery). A hook shell that prints (src/codex/shell.ts, `noisyShell`): the hooks load and record, so a
+ * yes (to `question`) starts Codex as the agent all the same.
+ */
+export type CodexGate =
+	| { readonly ok: true }
+	| { readonly ok: false; readonly text: string }
+	| { readonly ok: false; readonly text: string; readonly noisyShell: true; readonly question: string };
 
 /** What the person is asked when the hooks don't load (default no). */
 export const WITHOUT_ORRERY_QUESTION = "Start Codex without Orrery anyway? The session won't be recorded and the guard will be off.";

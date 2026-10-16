@@ -106,6 +106,34 @@ describe("L launch", () => {
 		expect(screen(app)).toContain("Back from Codex (Alpha), started without Orrery: that session was not recorded.");
 	});
 
+	it("when the hooks' shell prints at startup: says so and asks, default no; yes opens Codex as the agent all the same", async () => {
+		const plans: LaunchPlan[] = [];
+		const text = "Codex runs Orrery's hooks through /bin/zsh -c, which prints when it starts (most likely from /home/u/.zshenv).";
+		const deps = fakeDeps(
+			{ tools: () => [tool("pi"), tool("claude-code"), tool("codex")], codexCheck: async () => ({ ok: false, text, noisyShell: true, question: "Start Codex anyway?" }), launch: async (plan) => (plans.push(plan), { code: 0, signal: null }) },
+			[row({ name: "Alpha", tool: "codex", folder: "/" })],
+		);
+		const app = makeApp(deps, [agentsPage]);
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "Codex runs Orrery's hooks through /bin/zsh");
+		expect(screen(app)).toContain("Start Codex anyway?");
+		expect(screen(app)).not.toContain("without Orrery");
+		keys(app, "n");
+		await app.idle();
+		expect(plans).toEqual([]);
+		expect(screen(app)).toContain("Not launched.");
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "Codex runs Orrery's hooks", "y");
+		await app.idle();
+		expect(plans).toHaveLength(1);
+		// As the agent, with Orrery's flags.
+		expect(plans[0]).toMatchObject({ command: "/bin/codex", env: { ORRERY_AGENT: "Alpha" }, codex: { path: "/bin/codex" } });
+		expect(plans[0]?.withoutOrrery).toBeUndefined();
+		expect(screen(app)).toContain("Back from Codex (Alpha).");
+	});
+
 	it("asks before a second session on an open agent; no cancels", async () => {
 		const deps = fakeDeps({ tools: () => [tool("pi"), tool("claude-code"), tool("codex")] }, [row({ name: "Alpha", folder: "/", state: "open", openIn: "pi" })]);
 		const app = makeApp(deps, [agentsPage]);

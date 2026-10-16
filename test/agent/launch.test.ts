@@ -336,6 +336,32 @@ describe("Codex launch plans", () => {
 		expect(seen).toEqual([{ PATH: "/bin", ORRERY_CONFIG: "/x.toml" }]);
 	});
 
+	it("then checks, at every launch, that the shell Codex runs the hooks in starts without a word, with Codex's environment", async () => {
+		const { config, row, tools, env } = setup("codex");
+		const plan = launchPlan(config, row, tools, { env, orrery: ["/opt/orrery/bin/orrery"] });
+		const ok = async () => ({ ok: true as const });
+		const seen: [NodeJS.ProcessEnv, string][] = [];
+		const quiet = (shellEnv: NodeJS.ProcessEnv, cwd: string) => (seen.push([shellEnv, cwd]), { quiet: true as const });
+		expect(await checkCodexHooks(plan, { env: { ...env, ORRERY_AGENT: "Other" }, probe: ok, shellCheck: quiet })).toEqual({ ok: true });
+		expect(await checkCodexHooks(plan, { env, probe: ok, shellCheck: quiet })).toEqual({ ok: true });
+		expect(seen).toHaveLength(2);
+		// The shell gets what Codex's hooks get: the launch's variables over this process's.
+		expect(seen[0]?.[0]).toMatchObject({ PATH: env.PATH, ORRERY_AGENT: "A", ORRERY_AGENT_TOKEN: plan.env.ORRERY_AGENT_TOKEN });
+		expect(seen[0]?.[1]).toBe(plan.cwd);
+		const shell = { path: "/bin/bash", kind: "bash" as const };
+		const noisy = await checkCodexHooks(plan, { env, probe: ok, shellCheck: () => ({ quiet: false, shell, source: "$BASH_ENV (/home/u/env.sh)" }) });
+		expect(noisy).toEqual({
+			ok: false,
+			noisyShell: true,
+			question: "Start Codex anyway?",
+			text: "Codex runs Orrery's hooks through /bin/bash -c, which prints when it starts (most likely from $BASH_ENV (/home/u/env.sh)). Codex then can't read the hooks' answers, so A's memory won't load and its status won't show until that shell prints nothing when it isn't interactive; its turns are still recorded and the guard still works.",
+		});
+		// Hooks that don't load are said first; the shell is not asked.
+		const notLoaded = await checkCodexHooks(plan, { env, probe: async () => ({ ok: false as const, why: "x" }), shellCheck: () => { throw new Error("must not ask"); } });
+		expect(notLoaded).toMatchObject({ ok: false });
+		expect("noisyShell" in notLoaded).toBe(false);
+	});
+
 	it("leaves every other tool's plan alone: no check, nothing to take away", async () => {
 		for (const tool of ["pi", "omp", "claude-code"]) {
 			const { config, row, tools, env } = setup(tool);
