@@ -9,85 +9,10 @@ import { parseArgs } from "node:util";
 import type { ReaderTool } from "../agent/memory-tools.ts";
 import { defaultConfigPath, findAgent, type HarnessConfig, type AgentConfig, loadConfig } from "../agent/config.ts";
 import { exitWhenFlushed } from "./exit.ts";
-
-const USAGE = `Usage: orrery <command> [--config FILE]
-  (no command)               in a terminal: the Orrery TUI (agents, logins, usage, tools)
-  version, --version, -v     the running version (an install's version-commit, or the checkout's package version)
-  agent <Name> [--tool pi|omp|claude-code] [--yes] [-- <tool arguments>]
-                             open the agent here: its tool starts in this folder with its instructions and memory
-  agent edit <Name>          open the agent's instructions in $EDITOR (else nano, else vi)
-  agent add <Name> --folder DIR --tool pi|omp|claude-code|codex --summary provider/id [--thinking L]
-                             add an agent to the config (the TUI's N)
-  agent set <Name> --tool T | --folder DIR | --view-kb N | --summary-kb N | --jobs N | --compact-at TOKENS
-                             change an agent's setting in the config, keeping its comments
-  agent set <Name> launcher direct|ori | ori_model <id>   (empty value clears; also --launcher / --ori-model)
-  agent archive <Name>       take a closed agent out of the config (its settings kept as comments at the end);
-                             its memory stays in its data folder (the TUI's A)
-  agent push <Name> --to <remote>   upload a closed agent's memory, then use that remote
-  agent pull <Name> --from <remote> [--folder <dir>]   add a remote agent here and fetch its memory and instructions
-  agent takeover <Name> [--yes]   confirm taking a stale lock, then release it for the next open
-  agent local <Name> [--delete-remote]   fetch the newest memory and keep it locally (deletion asks)
-  run <Name>                 start the agent's own harness in this terminal (one process per agent)
-  status [<Name>] [--json]   every agent (or one): state, tool, memory, summaries
-  remote add <name> --server <host>:<folder> | --cloudflare <url> [--token-file FILE] [--code-file FILE]
-                             add a memory remote; token and recovery code are entered hidden
-  remote add <name> [--token-file FILE] [--code-file FILE] [--new]
-                             recover this machine's key for an already configured remote
-  remote test <name>         test reachability, lock and key
-  remote key <name>          show the secret recovery code
-  remote log <Name> [--json]  show decrypted saves and recorded takeovers
-  remote agents <name> [--json]  list agents stored on a remote and where each is open
-  remote remove <name> --yes  remove an unused remote and its saved key (save the recovery code first)
-  usage [<Name>] [--days N] [--json]  token usage per day, role and model (default 7 days)
-  login openai|openrouter [--manual]  sign in for summaries (--manual: paste URL/code, no browser)
-  login --key <openai|anthropic|openrouter> [--from-pi]
-                             save an API key (typed hidden, or copied from pi's /login)
-  logins [--json]            what is saved (never the keys)
-  logout openai | --key <name>   remove one login
-  trust-host <host>          verify and trust an SSH host key for tools
-  compact <Name> [--progress FILE]   build every missing summary (agent must not be running); --progress: write how
-                             far it is to FILE
-  import <Name> --dry-run [--claude DIR|none] [--claude-file FILE]... [--codex DIR|none] [--codex-file FILE]... [--notes FILE]... [--paste-threshold N] [--no-split] [--out DIR]
-                             preview a history import for review (defaults: this agent's Claude Code
-                             project and ~/.codex/sessions; --no-split skips the model pass; --claude-file adds a
-                             Claude Code session that lives under another project folder; --codex-file adds a
-                             rollout that started elsewhere and was resumed in the agent's folder)
-  import <Name> --commit FILE   append a reviewed preview to the agent's empty memory
-  browse <Name> [--out FILE] [--open]   write an HTML explorer of the agent's memory (--open: into the agent's
-                             data folder, then open it)
-  compactor <Name> [signin|key|local [name [words] | name/model [thinking]] | provider/id [thinking] | reset]
-                                         show, list or switch the agent's summary model (shared with pi's /compactor)
-  backup [--keep N]          snapshot every agent's memory and export it as JSONL (keeps N days, default 14)
-  restore <Name> --from DATE|DIR   put a backup back (the agent must be stopped)
-  holder <Name> --session ID --claude-pid PID [--nonce N] [--since MS]
-                             record a Claude Code session into the agent (the plugin's SessionStart hook starts it;
-                             --since is when SessionStart ran, in ms since the epoch)
-  tools [--json]             pi, Claude Code, Codex and OMP: found, version, Orrery's side installed
-  tools install <pi|claude-code|omp> [--yes]   install or update Orrery's side of a tool (shows what it does first)
-  install --from DIR [--yes]   install an unpacked release folder, then run setup (install.sh and orrery update run this)
-  install --rollback [--yes] | --list   switch back to the previous installed version and run setup, or list versions
-                             and which agents run them
-  setup [--yes]              wire the orrery command, pi, OMP, Claude Code and the backup service to the installed
-                             version; asks on the terminal before connecting a tool or replacing anything that is not
-                             Orrery's (--yes: answers yes)
-  update [--check] [--version V] [--yes]   install the newest release (or V); --check only says whether one is out
-  uninstall [--purge]        unwire pi, OMP and Claude Code, remove the command, the backup service and the installed
-                             versions; agents' memory, config and logins stay (--purge: delete them too, after typing delete)
-  claude-setup <Name> [--mod]  make Claude Code load the agent's memory view (CLAUDE.md, or CLAUDE.local.md in a
-                             repo); --mod: from the Orrery mod, in the system prompt
-  claude-mod view --cwd DIR [--session ID] [--agent NAME [--agent-token T]] [--wait-ms N [--spool-only]]   the Orrery
-                             mod's call: the session's agent's memory section as JSON (--agent: the ORRERY_AGENT Claude
-                             Code has); --spool-only waits for the session's spool alone, not for summaries
-  mcp                        the Claude Code plugin's MCP server: memory tools for the session's agent (ORRERY_AGENT's,
-                             else the project folder's)
-  claude-hook <event>        a Claude Code plugin hook (session-start, user-prompt-submit, stop, session-end,
-                             pre-tool-use)
-An agent named "." is this session's agent: ORRERY_AGENT, else the agent whose folder holds the current folder.
-Config: --config, $ORRERY_CONFIG, ~/.orrery/config.toml (or under $ORRERY_HOME), or /etc/orrery/config.toml
-`;
+import { allHelp, commandHelp, isCommand, shortHelp, UsageError } from "./help.ts";
 
 function required(value: string | undefined, what: string): string {
-	if (!value) throw new Error(`Missing ${what}.\n${USAGE}`);
+	if (!value) throw new UsageError(`Missing ${what}.`);
 	return value;
 }
 
@@ -359,7 +284,7 @@ async function agentCommand(args: string[], values: Record<string, string | bool
 		if (values["summary-kb"] !== undefined) changes.push(["compactor_context_bytes", kb("summary-kb")]);
 		if (values.jobs !== undefined) changes.push(["compactor_jobs", Number(values.jobs)]);
 		if (values["compact-at"] !== undefined) changes.push(["compact_at", Number(values["compact-at"])]);
-		if (changes.length === 0) throw new Error(`agent set needs one of --launcher, --ori-model, --tool, --folder, --view-kb, --summary-kb, --jobs, --compact-at.\n${USAGE}`);
+		if (changes.length === 0) throw new UsageError("agent set needs one of --launcher, --ori-model, --tool, --folder, --view-kb, --summary-kb, --jobs, --compact-at.");
 		editConfigFile(path, (text, dir) => changes.reduce((acc, [key, value]) => setAgentKey(acc, dir, agent, key, value), text));
 		for (const [key, value] of changes) process.stdout.write(`Set agents.${agent}.${key} = ${value}. It applies when ${agent} next opens.\n`);
 		return 0;
@@ -377,7 +302,7 @@ async function agentCommand(args: string[], values: Record<string, string | bool
 		process.stdout.write(`Archived ${agent}.\n`);
 		return 0;
 	}
-	throw new Error(`agent needs add, set, archive, push, pull, takeover or local.\n${USAGE}`);
+	throw new UsageError("agent needs add, set, archive, push, pull, takeover or local.");
 }
 
 /** The command line's options; parseArgs reads them, and main's command finder skips a string option's value. */
@@ -493,29 +418,67 @@ async function main(rawArgv: string[]): Promise<number> {
 			else argv.push(a);
 		}
 	}
-	const { positionals, values } = parseArgs({
-		args: argv,
-		allowPositionals: true,
-		options: OPTIONS,
-	});
+	const { positionals, values } = parseCommandLine(argv);
 	const [command, arg] = positionals;
-	if (values.help === true) {
-		process.stdout.write(USAGE);
-		return 0;
-	}
+	// Help runs nothing else: `orrery help [<command>|all]`, or --help with any command.
+	if (values.help === true || command === "help") return helpCommand(command === "help" ? arg : command);
 	if (values.version === true || command === "version") {
 		const { versionLine } = await import("../agent/running.ts");
 		process.stdout.write(versionLine());
 		return 0;
 	}
+	if (command !== undefined && !isCommand(command)) return unknownCommand(command);
+	try {
+		return await dispatch(positionals, values, updateVersion, toolArgs);
+	} catch (error) {
+		// A command used the wrong way: its own help follows the message.
+		const help = error instanceof UsageError ? commandHelp(command) : undefined;
+		if (help !== undefined) throw new Error(`${(error as Error).message}\n\n${help.trimEnd()}`);
+		throw error;
+	}
+}
+
+/** The command line as parseArgs reads it. */
+const parseCommandLine = (args: string[]) => parseArgs({ args, allowPositionals: true, options: OPTIONS });
+
+/** The version the help pages name; none when this copy cannot tell (a binary copied out of its release). */
+async function helpVersion(): Promise<string | undefined> {
+	const { versionNumber } = await import("../agent/running.ts");
+	try {
+		return versionNumber();
+	} catch {
+		return undefined;
+	}
+}
+
+/** `orrery help`, `orrery help all`, `orrery help <command>`; an unknown command gets the short page, on stderr. */
+async function helpCommand(topic: string | undefined): Promise<number> {
+	if (topic === undefined || topic === "help") process.stdout.write(shortHelp(await helpVersion()));
+	else if (topic === "all") process.stdout.write(allHelp(await helpVersion()));
+	else {
+		const page = commandHelp(topic);
+		if (page === undefined) return unknownCommand(topic);
+		process.stdout.write(page);
+	}
+	return 0;
+}
+
+async function unknownCommand(command: string): Promise<number> {
+	process.stderr.write(`Unknown command ${command}.\n\n${shortHelp(await helpVersion())}`);
+	return 2;
+}
+
+/** Runs the command: everything but help and the version. */
+async function dispatch(positionals: string[], values: ReturnType<typeof parseCommandLine>["values"], updateVersion: string | undefined, toolArgs: string[]): Promise<number> {
+	const [command, arg] = positionals;
 	// Claude Code's hook runs several times a turn and never signs in or calls a model.
 	if (command !== "claude-hook") await registerReleaseOAuthFlows();
 	if (command === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true) {
 		const { runTui } = await import("../tui/run.ts");
 		return runTui(values.config);
 	}
-	if (command === undefined || command === "help") {
-		process.stdout.write(USAGE);
+	if (command === undefined) {
+		process.stdout.write(shortHelp(await helpVersion()));
 		return 0;
 	}
 	if (command === "claude-hook") return claudeHook(arg, values.config);
@@ -599,7 +562,7 @@ async function main(rawArgv: string[]): Promise<number> {
 				process.stdout.write(importCommitCommand(config, agent, values.commit));
 				return 0;
 			}
-			if (values["dry-run"] !== true) throw new Error(`import needs --dry-run or --commit FILE.\n${USAGE}`);
+			if (values["dry-run"] !== true) throw new UsageError("import needs --dry-run or --commit FILE.");
 			const threshold = Number(values["paste-threshold"] ?? "1200");
 			if (!Number.isInteger(threshold) || threshold < 0) throw new Error("--paste-threshold must be a whole number of bytes");
 			configureHttp();
@@ -635,7 +598,7 @@ async function main(rawArgv: string[]): Promise<number> {
 		case "restore": {
 			const { restoreAgent } = await import("../agent/backup.ts");
 			const agent = required(arg, "agent");
-			if (values.from === undefined) throw new Error(`restore needs --from DATE (YYYY-MM-DD) or --from DIR.\n${USAGE}`);
+			if (values.from === undefined) throw new UsageError("restore needs --from DATE (YYYY-MM-DD) or --from DIR.");
 			const report = restoreAgent(config, agent, { from: values.from });
 			if (report.memory) process.stdout.write(`Restored ${report.agent} from ${report.from}: ${report.messages} messages, ${report.nodes} summaries (${report.files.join(", ")})\n`);
 			else process.stdout.write(`The backup at ${report.from} holds instructions only; ${report.agent}'s memory is left as it is\n`);
@@ -703,9 +666,9 @@ async function main(rawArgv: string[]): Promise<number> {
 		}
 		case "holder": {
 			const claudePid = Number(values["claude-pid"]);
-			if (!Number.isInteger(claudePid) || claudePid < 1) throw new Error(`holder needs --claude-pid PID.\n${USAGE}`);
+			if (!Number.isInteger(claudePid) || claudePid < 1) throw new UsageError("holder needs --claude-pid PID.");
 			const since = values.since === undefined ? undefined : Number(values.since);
-			if (since !== undefined && !(Number.isInteger(since) && since >= 0)) throw new Error(`holder: --since must be a time in ms since the epoch.\n${USAGE}`);
+			if (since !== undefined && !(Number.isInteger(since) && since >= 0)) throw new UsageError("holder: --since must be a time in ms since the epoch.");
 			const { runHolder } = await import("../claude/holder.ts");
 			return runHolder(config, required(arg, "agent"), {
 				session: required(values.session, "--session"),
@@ -721,8 +684,7 @@ async function main(rawArgv: string[]): Promise<number> {
 			return 0;
 		}
 		default:
-			process.stderr.write(`Unknown command ${command}.\n${USAGE}`);
-			return 2;
+			return unknownCommand(command);
 	}
 }
 

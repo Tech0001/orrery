@@ -153,7 +153,7 @@ describe("orrery remote remove", () => {
 		expect(result.status).toBe(1);
 		expect(result.stderr).toMatch(/unknown remote/i);
 		expect(result.stdout).toBe("");
-		const help = cli("help");
+		const help = cli("help", "remote");
 		expect(help.stdout).toContain("remote agents <name> [--json]");
 		expect(help.stdout).toContain("remote remove <name>");
 	});

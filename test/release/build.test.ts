@@ -24,14 +24,14 @@ describe.skipIf(!bunReady)("build-release (host)", () => {
 		expect(readdirSync(folder).sort()).toEqual([".claude-plugin", "LICENSE", "THIRD_PARTY_LICENSES", "VERSION", "bin", "claude-plugin", "deploy", "extensions"].sort());
 	});
 
-	it("the binary answers --version with the release's version and --help with the usage", async () => {
+	it("the binary answers --version with the release's version and --help with the short page, which names it", async () => {
 		const folder = await builtRelease();
 		const version = readFileSync(join(folder, "VERSION"), "utf8").trim();
 		const v = spawnSync(join(folder, "bin", "orrery"), ["--version"], { encoding: "utf8" });
 		expect(v.status).toBe(0);
 		expect(v.stdout).toBe(`orrery ${version}\n`);
 		const h = spawnSync(join(folder, "bin", "orrery"), ["--help"], { encoding: "utf8" });
-		expect(h.stdout).toMatch(/^Usage: orrery <command>/);
+		expect(h.stdout.split("\n")[0]).toBe(`Orrery ${version}: long-lived memory for coding agents`);
 	});
 
 	it("refuses to name a version when copied out of its release, even beside a stray package.json", async () => {

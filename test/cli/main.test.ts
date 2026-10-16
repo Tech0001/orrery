@@ -49,7 +49,7 @@ describe("orrery", () => {
 		expect(usage).toContain("openai/gpt-6.1-sol");
 		expect(usage).toMatch(/agent\s+openai\/gpt-6\.1-sol\s+1\s+100\s+50\s+0\s+20/);
 		expect(usage).toMatch(/compactor\s+omlx\/Bonsai\s+1\s+30/);
-		expect(runCli([])).toContain("Usage: orrery");
+		expect(runCli([])).toContain("orrery help all");
 	});
 
 	// A fresh install has no config anywhere: say where Orrery looks, not a raw ENOENT for the server path.

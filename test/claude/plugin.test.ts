@@ -91,7 +91,7 @@ describe("the Claude Code plugin", () => {
 		const t = testAgent();
 		const wrapper = join(ROOT, "claude-plugin", "bin", "orrery-run");
 		expect(statSync(wrapper).mode & 0o111).not.toBe(0);
-		expect(spawnSync("sh", [wrapper, "help"], { env: cleanEnv({ ORRERY_BIN: MAIN }), encoding: "utf8" }).stdout).toContain("Usage: orrery");
+		expect(spawnSync("sh", [wrapper, "help"], { env: cleanEnv({ ORRERY_BIN: MAIN }), encoding: "utf8" }).stdout).toContain("orrery help <command>");
 		const none = spawnSync("sh", [wrapper, "claude-hook", "stop"], { env: cleanEnv({ HOME: t.dir }), encoding: "utf8", input: "{}" });
 		expect([none.status, none.stdout, none.stderr]).toEqual([0, "", ""]);
 	});
