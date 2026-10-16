@@ -1,6 +1,6 @@
 /**
- * Notices for Claude Code's hooks, shown once per change per session through a hook's systemMessage, which reaches the
- * user, not the model:
+ * Notices for Claude Code's and Codex's hooks, shown once per change per session through a hook's systemMessage, which
+ * reaches the user, not the model:
  * - summary trouble, read from the agent's status.json (written in plain words by the holder);
  * - updates (spec 2026-10-15-update-notices): a newer release, from the daily check's cache, and an Orrery updated under
  *   the session, whose recorder (holder.json) runs another build than the installed one. Read from files only: the
@@ -28,8 +28,11 @@ function readTrouble(agentDir: string): { trouble: TroubleState | null } | undef
 	}
 }
 
-/** The notice for `session`, if the agent's summary state changed since that session last heard. Remembers what it said. */
-export function summaryNotice(agent: AgentConfig, session: string): string | undefined {
+/**
+ * The notice for `session`, if the agent's summary state changed since that session last heard. Remembers what it said.
+ * `command`: how this session switches the summary model (Claude Code's command; Codex has the CLI's).
+ */
+export function summaryNotice(agent: AgentConfig, session: string, command = "/orrery:compactor"): string | undefined {
 	const status = readTrouble(agent.dir);
 	if (status === undefined) return undefined;
 	const file = join(agent.dir, "claude", "notice.json");
@@ -41,7 +44,7 @@ export function summaryNotice(agent: AgentConfig, session: string): string | und
 		previous = undefined;
 	}
 	const key = noticeKey(status.trouble);
-	const message = noticeText(agent.name, status.trouble, previous, "/orrery:compactor");
+	const message = noticeText(agent.name, status.trouble, previous, command);
 	if (key !== previous) writePrivate(file, JSON.stringify({ session, key }));
 	return message;
 }

@@ -90,6 +90,18 @@ describe("agentOverview", () => {
 		expect(agentOverview(config, { now: NOW, alive })[0].state).toBe("closed");
 	});
 
+	it("reads a Codex session's heartbeat as open in Codex (working when busy), and guesses Codex as the tool", () => {
+		const { config, agentDir } = setup();
+		writeHolder(agentDir, { pid: 1, session: "s", claudePid: 2, host: "codex", state: "recording", startedAt: NOW - 5000, updatedAt: NOW - 1000 });
+		writeFileSync(join(agentDir, "status.json"), JSON.stringify(status({ model: "codex", thinking: "codex", busy: true, updatedAt: localIso(new Date(NOW - 600_000)) })));
+		expect(agentOverview(config, { now: NOW, alive })[0]).toMatchObject({ state: "working", openIn: "codex", tool: "codex", toolSet: false });
+		writeFileSync(join(agentDir, "status.json"), JSON.stringify(status({ model: "codex", thinking: "codex", busy: false })));
+		expect(agentOverview(config, { now: NOW, alive })[0]).toMatchObject({ state: "open", openIn: "codex" });
+		// The heartbeat gone, a fresh status of the holder's still says Codex.
+		writeHolder(agentDir, { pid: 1, session: "s", claudePid: 2, host: "codex", state: "recording", startedAt: NOW - 50_000, updatedAt: NOW - 40_000 });
+		expect(agentOverview(config, { now: NOW, alive })[0]).toMatchObject({ state: "open", openIn: "codex", tool: "codex" });
+	});
+
 	it("reads memory read-only: counts, last message, waiting summaries, and a model chosen in chat", () => {
 		const { config, agentDir } = setup();
 		const store = MemoryStore.open(join(agentDir, "memory.sqlite"));

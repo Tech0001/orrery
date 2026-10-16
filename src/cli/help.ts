@@ -159,11 +159,13 @@ const GROUPS: readonly Group[] = [
 				"holder <Name> --session ID --claude-pid PID [--nonce N] [--since MS]",
 				"record a Claude Code session into the agent (the plugin's SessionStart hook starts it; --since is when SessionStart ran, in ms since the epoch)",
 			],
+			["holder <Name> --session ID --host-pid PID --tool codex [--nonce N] [--since MS]", "record a Codex session into the agent (Orrery's SessionStart hook in Codex starts it)"],
 			[
 				"claude-mod view [--cwd DIR] [--session ID] [--agent NAME [--agent-token T]] [--wait-ms N [--spool-only]]",
 				"the Orrery mod's call: the session's agent's memory section as JSON (--agent: the ORRERY_AGENT Claude Code has; --wait-ms: up to 120000; --spool-only waits for the session's spool alone, not for summaries)",
 			],
 			["mcp", "the Claude Code plugin's MCP server: memory tools for the session's agent (ORRERY_AGENT's, else the project folder's)"],
+			["mcp --tool codex", "the MCP server orrery agent gives Codex: memory tools for ORRERY_AGENT's agent, with its token"],
 			["claude-hook <event>", "a Claude Code plugin hook (session-start, user-prompt-submit, stop, session-end, pre-tool-use)"],
 			["codex-hook <event>", "a hook orrery agent gives Codex (session-start, user-prompt-submit, stop, session-end, pre-tool-use)"],
 		],

@@ -2,7 +2,7 @@
  * The summary-model target for an agent seen from outside it (the shell, the TUI): spec 2026-10-08-orrery-tui-design
  * §4.3. One process writes an agent's memory, so the change goes to whoever has it:
  * - closed: written to memory.sqlite directly;
- * - open in Claude Code: sent to its recorder through the spool;
+ * - open in Claude Code or Codex: sent to its recorder through the spool;
  * - open in anything else (pi): written to request.json, which pi's tick takes.
  * It then waits for the agent's stored choice to change. Node only: pi never loads this file.
  */
@@ -17,7 +17,7 @@ import { holdWriterLock } from "../memory/store.ts";
 import { attachRemoteStore, withBriefCheckOut } from "../remote/checkout.ts";
 import { COMPACTOR_MODEL_KEY, storedChoice } from "./choices.ts";
 import { findAgent, type HarnessConfig, type ModelChoice } from "./config.ts";
-import { holderFresh, readHolder } from "./handover.ts";
+import { HOST_LABELS, holderFresh, readHolder } from "./handover.ts";
 import { summaryLine } from "./agent-commands.ts";
 import { requestFile, writeRequest } from "./settings-request.ts";
 import { readStatus } from "./status-file.ts";
@@ -103,8 +103,8 @@ export function agentCompactorTarget(
 						if (stored().raw === value) break;
 					}
 					const status = readStatus(agent.dir);
-					const piOpen = status !== undefined && status.open !== false && status.model !== "claude-code" && Date.now() - Date.parse(status.updatedAt) < 30_000;
-					const who = claude ? "Claude Code" : piOpen ? "pi" : "another Orrery process (an import or build?)";
+					const piOpen = status !== undefined && status.open !== false && status.model !== "claude-code" && status.model !== "codex" && Date.now() - Date.parse(status.updatedAt) < 30_000;
+					const who = claude ? HOST_LABELS[holder.host === "codex" ? "codex" : "claude-code"] : piOpen ? "pi" : "another Orrery process (an import or build?)";
 					throw new Error(`${agent.name} (open in ${who}) didn't answer within ${waitMs / 1000} s; the change was not applied.${claude ? ` See ${holderLog(agent.dir)}.` : ""}`);
 				}
 				await sleep(100);

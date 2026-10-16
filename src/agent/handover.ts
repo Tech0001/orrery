@@ -1,11 +1,11 @@
 /**
- * Handing an agent over (spec §4 "One writer"). Claude Code's holder keeps a heartbeat in
- * <agent.dir>/claude/holder.json.
- * - Once its session has ended, the holder only finishes summaries. Whoever opens the agent next (a new Claude Code
- *   session, or pi) may then ask it to yield by writing yield.json, and it saves what it has and releases the agent
+ * Handing an agent over (spec §4 "One writer"). The holder that records a Claude Code or Codex session keeps a heartbeat
+ * in <agent.dir>/claude/holder.json.
+ * - Once its session has ended, the holder only finishes summaries. Whoever opens the agent next (a new Claude Code or
+ *   Codex session, or pi) may then ask it to yield by writing yield.json, and it saves what it has and releases the agent
  *   within a tick.
- * - A holder still recording yields only to its own Claude Code process, which starts a new session on /clear or
- *   /resume.
+ * - A holder still recording yields only to its own host process (the same Claude Code or Codex), which starts a new
+ *   session on /clear or /resume.
  * Without a holder.json (an agent only pi uses), opening works exactly as before.
  */
 
@@ -16,11 +16,20 @@ import type { RemoteStatus } from "../remote/types.ts";
 import { AgentHeld } from "./memory-agent.ts";
 import { writePrivate } from "./private-file.ts";
 
-/** holder.json: who records the agent, for which session and Claude Code process, and whether it only finishes. */
+/** The tool whose session a holder records. */
+export type HolderHost = "claude-code" | "codex";
+
+/** A host's name as said to a person. */
+export const HOST_LABELS: Record<HolderHost, string> = { "claude-code": "Claude Code", codex: "Codex" };
+
+/** holder.json: who records the agent, for which session and host process, and whether it only finishes. */
 export interface HolderState {
 	readonly pid: number;
 	readonly session: string;
+	/** The host's process: Claude Code's, or Codex's (the name is older than Codex, and kept for files already written). */
 	readonly claudePid: number;
+	/** "codex" for a Codex session's holder; absent for Claude Code's, as in every holder.json before Codex. */
+	readonly host?: "codex";
 	readonly state: "recording" | "finishing";
 	readonly startedAt: number;
 	readonly updatedAt: number;
@@ -33,7 +42,7 @@ export interface HolderState {
 /** yield.json: a newcomer asking the holder for the agent. */
 export interface YieldRequest {
 	readonly at: number;
-	/** The asking Claude Code process; pi leaves it out. */
+	/** The asking host process (Claude Code's or Codex's); pi leaves it out. */
 	readonly claudePid?: number;
 }
 

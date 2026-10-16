@@ -45,8 +45,11 @@ export interface Where {
 	readonly takeover?: boolean;
 }
 
+/** Whether `token` has the form newToken gives (32 lowercase hex digits). */
+export const tokenForm = (token: string): boolean => TOKEN.test(token);
+
 /** The agent `name` names: an exact match, else the one match ignoring case. */
-function agentNamed(config: HarnessConfig, name: string): AgentConfig | undefined {
+export function agentNamed(config: HarnessConfig, name: string): AgentConfig | undefined {
 	const exact = config.agents.get(name);
 	if (exact !== undefined) return exact;
 	const matches = [...config.agents.values()].filter((agent) => agent.name.toLowerCase() === name.toLowerCase());

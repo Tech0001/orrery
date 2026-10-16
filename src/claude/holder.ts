@@ -1,20 +1,21 @@
 /**
  * The agent holder (spec §4 "The agent holder"):
  * `orrery holder <Name> --session <id> --claude-pid <pid> --nonce <n> --since <ms>`, started detached by SessionStart,
- * one per Claude Code session.
+ * one per Claude Code session; for a Codex session (spec 2026-10-16-codex-design, "Recorder"), `--host-pid <pid> --tool
+ * codex` in place of --claude-pid. Codex's hooks spool into the same folders, so a holder takes in any session's leftovers.
  * - While it holds the agent's store (the same writer lock pi takes), it ingests the hooks' spool in order, runs the
- *   compactor on orrery's own login, and keeps <folder>/.orrery/view.md current.
- * - If pi, or a live session of another Claude Code process, holds the agent, it marks its session read-only and exits.
- * - It exits once its session has ended (SessionEnd, or the Claude Code process is gone) and the summaries have
- *   settled, cannot come (stopped or failing), or took longer than `finishMs`.
+ *   compactor on orrery's own login, and keeps <folder>/.orrery/view.md current (Claude Code's file mode only).
+ * - If pi, or a live session of another host process, holds the agent, it marks its session read-only and exits.
+ * - It exits once its session has ended (SessionEnd, or the host process is gone) and the summaries have settled,
+ *   cannot come (stopped or failing), or took longer than `finishMs`.
  * - Until then, a newcomer may ask it to yield (src/agent/handover.ts).
- * It logs lifecycle and errors only, never message contents.
+ * It logs lifecycle and errors only, never message contents; its lines name the host (Claude Code or Codex).
  */
 
 import { appendFileSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { findAgent, type HarnessConfig, type AgentConfig } from "../agent/config.ts";
-import { clearYield, holderFresh, openYielding, readHolder, readYield, removeHolder, writeHolder } from "../agent/handover.ts";
+import { clearYield, HOST_LABELS, type HolderHost, holderFresh, openYielding, readHolder, readYield, removeHolder, writeHolder } from "../agent/handover.ts";
 import { compactorCommand } from "../agent/agent-commands.ts";
 import { AgentHeld, MemoryAgent } from "../agent/memory-agent.ts";
 import { agentModelSource, type ModelSource } from "../agent/model-source.ts";
@@ -35,8 +36,10 @@ export interface HolderOptions {
 	readonly config?: HarnessConfig;
 	readonly agent: AgentConfig;
 	readonly session: string;
-	/** Claude Code's process: when it is gone, the session has ended. */
+	/** The host's process (Claude Code's, or Codex's): when it is gone, the session has ended. */
 	readonly claudePid: number;
+	/** Whose session it records (default Claude Code): named in its log, its status file and holder.json. */
+	readonly host?: HolderHost;
 	/** SessionStart's token, written into the mode file so the hook knows this holder answered. */
 	readonly nonce: string;
 	/**
@@ -57,16 +60,21 @@ export interface HolderOptions {
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
-const READ_ONLY = "the agent is open elsewhere (pi, or a session of another Claude Code)";
+/** Why a session runs read-only, in the log: the agent is open elsewhere. */
+const READ_ONLY: Record<HolderHost, string> = {
+	"claude-code": "the agent is open elsewhere (pi, or a session of another Claude Code)",
+	codex: "the agent is open elsewhere (pi, Claude Code, or another Codex session)",
+};
 const YIELDED = "yielded the agent";
 
-/** One Claude Code session's hold on an agent: the single writer while it runs. */
+/** One Claude Code or Codex session's hold on an agent: the single writer while it runs. */
 export class Holder {
 	readonly agent: MemoryAgent;
 	readonly session: string;
 	/** Resolves once the holder has released the agent. */
 	readonly done: Promise<void>;
 	readonly #claudePid: number;
+	readonly #host: HolderHost;
 	readonly #nonce: string;
 	readonly #startedAt: number;
 	readonly #since: number;
@@ -96,6 +104,7 @@ export class Holder {
 		this.agent = agent;
 		this.session = options.session;
 		this.#claudePid = options.claudePid;
+		this.#host = options.host ?? "claude-code";
 		this.#nonce = options.nonce;
 		this.#startedAt = startedAt;
 		this.#since = since;
@@ -115,6 +124,7 @@ export class Holder {
 	/** Opens the agent and starts recording; or, when another writer keeps it, marks the session read-only and returns undefined. */
 	static async start(options: HolderOptions): Promise<Holder | undefined> {
 		const { agent, session } = options;
+		const host = options.host ?? "claude-code";
 		const log = options.log ?? (() => {});
 		const startedAt = Date.now();
 		// SessionStart runs before its holder starts; a later `since` cannot be right (it would hide this run's own end).
@@ -135,12 +145,12 @@ export class Holder {
 		let takeover: LockState | undefined;
 		try {
 			const open = (sync: () => MemoryAgent) => openYielding(sync, agent.dir, { claudePid: options.claudePid, waitMs: options.yieldWaitMs ?? 5000 });
-			if (agent.remote === undefined) memory = await open(() => MemoryAgent.open({ agent, models: options.models, report: log, host: "claude-code" }));
+			if (agent.remote === undefined) memory = await open(() => MemoryAgent.open({ agent, models: options.models, report: log, host }));
 			else {
 				if (options.config === undefined) throw new Error("A remote recorder needs its harness config");
 				const checked = () => {
 					takeover = undefined;
-					return MemoryAgent.openChecked({ config: options.config!, agent, models: options.models, report, host: "claude-code", open,
+					return MemoryAgent.openChecked({ config: options.config!, agent, models: options.models, report, host, open,
 						confirmTakeover: async (held) => { takeover = held; return false; },
 					});
 				};
@@ -155,7 +165,7 @@ export class Holder {
 					await openYielding(() => {
 						try { holdWriterLock(join(agent.dir, "memory.sqlite"))(); }
 						catch (probe) {
-							if (/already open/i.test(errorText(probe))) throw new AgentHeld(agent.name, "claude-code");
+							if (/already open/i.test(errorText(probe))) throw new AgentHeld(agent.name, host);
 							throw probe;
 						}
 					}, agent.dir, { claudePid: options.claudePid, waitMs: options.yieldWaitMs ?? 5000 });
@@ -164,7 +174,7 @@ export class Holder {
 			}
 		} catch (error) {
 			if (!(error instanceof AgentHeld) && !(agent.remote !== undefined && error instanceof RemoteError)) throw error;
-			const reason = error instanceof AgentHeld ? READ_ONLY : `${remoteOpenNotice(agent, error)}${takeover !== undefined ? `; run orrery agent takeover ${agent.name}` : ""}`;
+			const reason = error instanceof AgentHeld ? READ_ONLY[host] : `${remoteOpenNotice(agent, error)}${takeover !== undefined ? `; run orrery agent takeover ${agent.name}` : ""}`;
 			mode(false, error instanceof AgentHeld ? undefined : reason);
 			dropEventsSince(agent.dir, session, since);
 			log(`${session}: read-only: ${reason}`);
@@ -198,7 +208,7 @@ export class Holder {
 		const now = Date.now();
 		if (!this.#ended && !this.#alive(this.#claudePid)) {
 			this.#ended = true;
-			this.#log(`${this.session}: Claude Code (pid ${this.#claudePid}) is gone`);
+			this.#log(`${this.session}: ${HOST_LABELS[this.#host]} (pid ${this.#claudePid}) is gone`);
 		}
 		if (this.#ended && this.#state === "recording") {
 			this.#state = "finishing";
@@ -307,8 +317,8 @@ export class Holder {
 	 * session's holder is gone.
 	 * - A session that recorded: all of it.
 	 * - A read-only session: only what came before it turned read-only.
-	 * - A session whose holder never answered: all of it, once its Claude Code is gone (until then its holder may
-	 *   still be starting).
+	 * - A session whose holder never answered: all of it, once its host (Claude Code or Codex) is gone (until then its
+	 *   holder may still be starting).
 	 */
 	#adoptable(session: string, pending: Pending[]): Pending[] {
 		const mode = readMode(this.agent.config.dir, session);
@@ -318,7 +328,7 @@ export class Holder {
 	}
 
 	/**
-	 * Removes other sessions' folders once nothing in them is left to record and their Claude Code is gone. Only what
+	 * Removes other sessions' folders once nothing in them is left to record and their host process is gone. Only what
 	 * it checked goes (removeSession): the session may be resumed meanwhile, and its new holder and hooks write there.
 	 */
 	#sweep(): void {
@@ -400,6 +410,7 @@ export class Holder {
 			pid: process.pid,
 			session: this.session,
 			claudePid: this.#claudePid,
+			...(this.#host === "codex" ? { host: "codex" as const } : {}),
 			state: this.#state,
 			startedAt: this.#startedAt,
 			updatedAt: this.#beat,
@@ -443,10 +454,10 @@ export function holderLogger(agentDir: string): (line: string) => void {
 export async function runHolder(
 	config: HarnessConfig,
 	agentName: string,
-	options: { session: string; claudePid: number; nonce: string; since?: number },
+	options: { session: string; claudePid: number; nonce: string; since?: number; host?: HolderHost },
 ): Promise<number> {
 	const agent = findAgent(config, agentName);
-	if (!validSession(options.session)) throw new Error("holder: --session must be a Claude Code session id");
+	if (!validSession(options.session)) throw new Error(`holder: --session must be a ${HOST_LABELS[options.host ?? "claude-code"]} session id`);
 	const log = holderLogger(agent.dir);
 	try {
 		const [{ createAgentModels, savedSummaryLoginsOnly }, { FileCredentialStore }, { configureHttp }] = await Promise.all([

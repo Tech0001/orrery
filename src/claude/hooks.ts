@@ -28,7 +28,7 @@ import { workArea } from "../agent/pick.ts";
 import { writePrivate } from "../agent/private-file.ts";
 import { selfCommand } from "../agent/running.ts";
 import { safeText } from "../agent/source-labels.ts";
-import { holderFresh, readHolder } from "../agent/handover.ts";
+import { type HolderHost, holderFresh, readHolder } from "../agent/handover.ts";
 import { claudeGuard, claudeStateRoots, movedConfigDirCredentials } from "./guard.ts";
 import { summaryNotice, updateNotice } from "./notices.ts";
 import { holderLog, samePath, validSession } from "./paths.ts";
@@ -39,9 +39,9 @@ import { markedHere, refreshViewFile, type ViewGate, viewGate } from "./view-fil
 /**
  * Whether this recorder start's notice was already shown to this session (a /compact reuses the recorder and runs
  * SessionStart again). Records it when not. Keyed by the recorder start's nonce; a file that can't be read or written
- * just means the notice is shown again.
+ * just means the notice is shown again. Codex's SessionStart (src/codex/hooks.ts) asks it too.
  */
-function noticeShownBefore(agentDir: string, session: string, nonce: string | undefined): boolean {
+export function noticeShownBefore(agentDir: string, session: string, nonce: string | undefined): boolean {
 	if (nonce === undefined) return false;
 	const path = join(agentDir, "notices-shown.json");
 	let shown: Record<string, string> = {};
@@ -222,7 +222,8 @@ export function sessionEnd(input: HookInput, ctx: HookContext): void {
 	if (input.agent_id === undefined && (input.reason === "prompt_input_exit" || input.reason === "other")) forgetProcess(ctx.config, ctx.claudePid);
 }
 
-async function waitForMode(agentDir: string, session: string, nonce: string, ms: number): Promise<SessionMode | undefined> {
+/** The mode the holder started with `nonce` chose for `session`, once it has, or undefined after `ms`. */
+export async function waitForMode(agentDir: string, session: string, nonce: string, ms: number): Promise<SessionMode | undefined> {
 	const deadline = Date.now() + ms;
 	for (;;) {
 		const mode = readMode(agentDir, session);
@@ -435,13 +436,22 @@ export async function runHook(event: string, stdin: string | undefined, ctx: Hoo
 }
 
 /**
- * Starts `orrery holder` detached, so it outlives this hook and Claude Code (Phase 0, finding 4). `since` is when
- * SessionStart ran: a run that turns read-only drops this session's events from then on.
+ * `orrery holder`'s arguments for a session of `host`'s process `hostPid`: Claude Code's with --claude-pid, as always;
+ * Codex's with --host-pid and --tool codex.
  */
-export function spawnHolder(agent: AgentConfig, session: string, nonce: string, claudePid: number, since: number, configPath?: string): void {
-	const args = ["holder", agent.name, "--session", session, "--claude-pid", String(claudePid), "--nonce", nonce, "--since", String(since)];
+export function holderArgs(agent: AgentConfig, session: string, nonce: string, hostPid: number, since: number, configPath?: string, host: HolderHost = "claude-code"): string[] {
+	const owner = host === "codex" ? ["--host-pid", String(hostPid), "--tool", "codex"] : ["--claude-pid", String(hostPid)];
+	const args = ["holder", agent.name, "--session", session, ...owner, "--nonce", nonce, "--since", String(since)];
 	if (configPath !== undefined) args.push("--config", configPath);
-	const self = selfCommand(args);
+	return args;
+}
+
+/**
+ * Starts `orrery holder` detached, so it outlives this hook and its host, Claude Code or Codex (Phase 0, finding 4).
+ * `since` is when SessionStart ran: a run that turns read-only drops this session's events from then on.
+ */
+export function spawnHolder(agent: AgentConfig, session: string, nonce: string, claudePid: number, since: number, configPath?: string, host: HolderHost = "claude-code"): void {
+	const self = selfCommand(holderArgs(agent, session, nonce, claudePid, since, configPath, host));
 	const child = spawn(self.cmd, self.args, { detached: true, stdio: "ignore" });
 	child.on("error", () => {});
 	child.unref();

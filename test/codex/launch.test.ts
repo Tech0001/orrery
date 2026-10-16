@@ -90,10 +90,11 @@ describe("codexLaunch", () => {
 			Object.fromEntries(CODEX_HOOKS.map((hook) => [trustKey(hook.event), { enabled: true, trusted_hash: trustHash(hook.event, { command: command(hook.arg), timeout: hook.timeout, ...(hook.additionalContextLimit === undefined ? {} : { additionalContextLimit: hook.additionalContextLimit }) }) }])),
 		);
 		expect(Object.keys(c.get("hooks.state") as object)).toHaveLength(5);
-		// MCP servers inherit no environment: the agent, its token and where Orrery's config is are passed by name.
+		// MCP servers inherit no environment: the agent, its token and where Orrery's config is are passed by name. The
+		// server is Codex's: ORRERY_AGENT's agent only.
 		expect(c.get("mcp_servers.orrery")).toEqual({
 			command: "/opt/my orrery/bin/orrery",
-			args: ["mcp"],
+			args: ["mcp", "--tool", "codex"],
 			env_vars: ["ORRERY_AGENT", "ORRERY_AGENT_TOKEN", "ORRERY_CONFIG", "ORRERY_HOME"],
 			default_tools_approval_mode: "approve",
 		});
@@ -120,7 +121,7 @@ describe("codexLaunch", () => {
 		const launch = codexLaunch({ name: "Atlas", dir: agentDir() }, ["/usr/bin/node", "--disable-warning=ExperimentalWarning", "/src/orrery/src/cli/main.ts"]);
 		const c = flags(launch.config);
 		expect((c.get("hooks.Stop") as { hooks: { command: string }[] }[])[0]?.hooks[0]?.command).toBe("/usr/bin/node --disable-warning=ExperimentalWarning /src/orrery/src/cli/main.ts codex-hook stop");
-		expect(c.get("mcp_servers.orrery")).toMatchObject({ command: "/usr/bin/node", args: ["--disable-warning=ExperimentalWarning", "/src/orrery/src/cli/main.ts", "mcp"] });
+		expect(c.get("mcp_servers.orrery")).toMatchObject({ command: "/usr/bin/node", args: ["--disable-warning=ExperimentalWarning", "/src/orrery/src/cli/main.ts", "mcp", "--tool", "codex"] });
 		// No instructions file: no developer_instructions (the person's own Codex setting stays).
 		expect(c.has("developer_instructions")).toBe(false);
 	});

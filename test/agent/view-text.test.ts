@@ -36,6 +36,17 @@ describe("memorySection", () => {
 		expect(text.endsWith(view.render())).toBe(true);
 	});
 
+	it("codex: refreshed at start and compaction, the tools by their Codex names with no one way to look, the view unfenced", () => {
+		const view = quotingView();
+		const text = memorySection(view, "codex");
+		expect(text.startsWith("# Memory\n\nEarlier conversation reaches you only through the view below. It is refreshed when this session starts and each\ntime the conversation is compacted;")).toBe(true);
+		expect(text).toContain("(`mcp__orrery__zoom`, `…__date`, `…__search`); if you don't see them, look for the zoom, date and search tools.");
+		expect(text).not.toMatch(/tool ?search/i);
+		expect(text).toContain("search(query) finds messages anywhere in the full log");
+		expect(text).not.toContain("```text");
+		expect(text.endsWith(`\n\n${view.render()}`)).toBe(true);
+	});
+
 	it("gives pi the section it always had: no memory between turns, the rules, then the view as is", () => {
 		const view = quotingView();
 		const pi = memorySection(view);

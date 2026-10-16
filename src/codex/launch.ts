@@ -197,7 +197,8 @@ export function codexLaunch(agent: { readonly name: string; readonly dir: string
 	}
 	config.push("-c", `hooks.state={${state.join(",")}}`);
 	const [command = "", ...rest] = orrery;
-	config.push("-c", `mcp_servers.orrery=${inlineTable({ command: tomlString(command), args: tomlArray([...rest, "mcp"].map(tomlString)), env_vars: tomlArray(MCP_ENV.map(tomlString)), default_tools_approval_mode: tomlString("approve") })}`);
+	// --tool codex: the server serves ORRERY_AGENT's agent only, for this Codex (src/codex/pick.ts).
+	config.push("-c", `mcp_servers.orrery=${inlineTable({ command: tomlString(command), args: tomlArray([...rest, "mcp", "--tool", "codex"].map(tomlString)), env_vars: tomlArray(MCP_ENV.map(tomlString)), default_tools_approval_mode: tomlString("approve") })}`);
 	const notices: string[] = [];
 	const found = readInstructions(agent.dir);
 	if (found !== undefined) {

@@ -85,6 +85,9 @@ describe("orrery compactor", () => {
 			writeHolder(t.agent.dir, { pid: process.pid, session: "s9", claudePid: 111, state: "recording", startedAt: Date.now(), updatedAt: Date.now() });
 			await expect(compactorCliCommand(t.config, "Test", ["reset"], { sources, waitMs: 300 })).rejects.toThrow(/^Test \(open in Claude Code\) didn't answer within 0\.3 s; the change was not applied\. See /);
 			expect(readdirSync(sessionDir(t.agent.dir, "s9"))).toEqual([]);
+			// A Codex session's holder is named as Codex.
+			writeHolder(t.agent.dir, { pid: process.pid, session: "s8", claudePid: 111, host: "codex", state: "recording", startedAt: Date.now(), updatedAt: Date.now() });
+			await expect(compactorCliCommand(t.config, "Test", ["reset"], { sources, waitMs: 300 })).rejects.toThrow(/^Test \(open in Codex\) didn't answer within 0\.3 s; the change was not applied\. See /);
 		} finally {
 			store.close();
 		}

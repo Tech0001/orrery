@@ -5,10 +5,14 @@ import type { AddressInfo } from "node:net";
 import { tmpdir, userInfo } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { readHolder } from "../../src/agent/handover.ts";
 import { instructionsSection, readInstructions, writeInstructions } from "../../src/agent/instructions.ts";
+import { newToken } from "../../src/agent/pick.ts";
 import { listHooks, probeHooks, readCodexCheck } from "../../src/codex/check.ts";
 import { CODEX_HOOKS, type CodexEvent, type CodexHook, codexLaunch, shellWords, tomlString, trustHash, trustKey } from "../../src/codex/launch.ts";
-import { cliCommand } from "../claude/support.ts";
+import { checkHookShell, hookShell } from "../../src/codex/shell.ts";
+import { MemoryStore } from "../../src/memory/index.ts";
+import { cliCommand, waitUntil } from "../claude/support.ts";
 
 /**
  * The installed Codex itself, asked without a model and without its user's state: every run here has a scratch HOME
@@ -237,9 +241,194 @@ describe.skipIf(codex === null)("Orrery's Codex launch against the installed Cod
 		expect(mcp.status, mcp.stderr).toBe(0);
 		const server = (JSON.parse(mcp.stdout.slice(mcp.stdout.indexOf("{"))) as { transport: { command: string; args: string[]; env_vars: string[] } }).transport;
 		expect(server.env_vars).toEqual(["ORRERY_AGENT", "ORRERY_AGENT_TOKEN", "ORRERY_CONFIG", "ORRERY_HOME"]);
-		expect(server.args.at(-1)).toBe("mcp");
+		expect(server.args.slice(-3)).toEqual(["mcp", "--tool", "codex"]);
 		if (process.env.ORRERY_TEST_BIN) expect(realpathSync(server.command)).toBe(realpathSync(process.env.ORRERY_TEST_BIN));
-		const self = spawnSync(server.command, [...server.args.slice(0, -1), "--version"], { env, encoding: "utf8", timeout: 30_000 });
+		const self = spawnSync(server.command, [...server.args.slice(0, -3), "--version"], { env, encoding: "utf8", timeout: 30_000 });
 		expect(self.stdout).toMatch(/^orrery \d+\.\d+\.\d+/);
 	}, 90_000);
+});
+
+type Item = { type?: string; role?: string; content?: { text?: string }[]; name?: string };
+type Request = { input?: Item[]; tools?: { type?: string; name?: string; tools?: { name?: string }[] }[] };
+
+/**
+ * A fake model on the Responses API that answers request `n` with `answer(n)`: a reply message, or a shell call that
+ * reports `tokens` used (so a low auto-compaction limit compacts the conversation mid-turn). It keeps each request.
+ */
+async function scriptedModel(answer: (n: number) => { readonly reply: string } | { readonly shell: string; readonly tokens: number }) {
+	const requests: Request[] = [];
+	const server = createServer((request, response) => {
+		let body = "";
+		request.on("data", (chunk) => (body += chunk));
+		request.on("end", () => {
+			if (!request.url?.endsWith("/responses")) {
+				response.writeHead(404).end();
+				return;
+			}
+			requests.push(JSON.parse(body) as Request);
+			const n = requests.length;
+			const id = `resp_${n}`;
+			const said = answer(n);
+			const item =
+				"reply" in said
+					? { type: "message", id: `msg_${n}`, role: "assistant", content: [{ type: "output_text", text: said.reply }] }
+					: { type: "function_call", id: `fc_${n}`, call_id: `call_${n}`, name: "exec_command", arguments: JSON.stringify({ cmd: said.shell }) };
+			const total = "tokens" in said ? said.tokens : 2;
+			const usage = { input_tokens: total - 1, input_tokens_details: { cached_tokens: 0 }, output_tokens: 1, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: total };
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			for (const event of [{ type: "response.created", response: { id } }, { type: "response.output_item.done", item }, { type: "response.completed", response: { id, usage } }]) {
+				response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+			}
+			response.end();
+		});
+	});
+	await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+	return { port: (server.address() as AddressInfo).port, requests, close: () => server.close() };
+}
+
+/** A request's developer messages, as text. */
+const developerTexts = (request: Request | undefined) => (request?.input ?? []).filter((item) => item.role === "developer").map((item) => (item.content ?? []).map((part) => part.text ?? "").join(""));
+/** Those that Orrery's SessionStart gave (they begin with its status line). */
+const orreryContext = (request: Request | undefined) => developerTexts(request).filter((text) => text.startsWith("Orrery · Atlas · "));
+
+describe.skipIf(codex === null)("an agent's session in the installed Codex (scratch homes, a fake model)", () => {
+	/** Atlas in a scratch home: its config, folder and data, and the environment `orrery agent --tool codex` gives Codex. */
+	function atlas(name: string) {
+		const env = isolated(name);
+		const home = env.HOME as string;
+		const work = join(home, "work");
+		mkdirSync(work);
+		const config = join(home, "config.toml");
+		// Its summary model has no login here: summaries stop, and nothing calls a real model.
+		writeFileSync(config, `data_dir = ${JSON.stringify(join(home, "data"))}\n[agents.Atlas]\nfolder = ${JSON.stringify(work)}\ntool = "codex"\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+		const agentDir = join(home, "data", "agents", "Atlas");
+		const launch = codexLaunch({ name: "Atlas", dir: agentDir }, [cliCommand([]).cmd, ...cliCommand([]).args]);
+		const agentEnv: NodeJS.ProcessEnv = { ...env, ORRERY_CONFIG: config, ORRERY_HOME: join(home, "orrery-home"), ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: newToken() };
+		return { env: agentEnv, work, agentDir, launch };
+	}
+
+	/** `codex exec` as the agent, against the fake model: Orrery's flags, then the session's. */
+	const exec = (a: ReturnType<typeof atlas>, port: number, args: readonly string[], extra: readonly string[] = []) =>
+		runCodex(
+			[
+				"exec",
+				...a.launch.config,
+				"--skip-git-repo-check",
+				"--dangerously-bypass-approvals-and-sandbox",
+				"-C",
+				a.work,
+				"-c",
+				`model_providers.fake={name="fake",base_url="http://127.0.0.1:${port}/v1",wire_api="responses"}`,
+				"-c",
+				'model_provider="fake"',
+				"-c",
+				'model="fake-model"',
+				"-c",
+				"analytics.enabled=false",
+				...extra,
+				...args,
+			],
+			a.env,
+		);
+
+	/** The agent's messages, read-only. */
+	const memory = (agentDir: string) => {
+		const store = MemoryStore.openReadOnly(join(agentDir, "memory.sqlite"));
+		try {
+			return store.root.map((m) => `${m.kind}: ${m.text}`);
+		} finally {
+			store.close();
+		}
+	};
+	/** Waits until no holder records the agent: the last session's has finished and left. */
+	const settled = (agentDir: string) => waitUntil(() => readHolder(agentDir) === undefined, 30_000);
+
+	it("records each turn into the agent's memory, gives the view as developer context, and a later session sees the earlier one", async () => {
+		const a = atlas("session");
+		const model = await scriptedModel((n) => ({ reply: `Reply ${n}.` }));
+		try {
+			const first = await exec(a, model.port, ["Codename Saffron."]);
+			expect(first.status, first.stderr).toBe(0);
+			// The view came as developer context, right before the prompt: the status line, then the memory section.
+			const [context] = orreryContext(model.requests[0]);
+			expect(context).toMatch(/^Orrery · Atlas · 0 msgs · recording\n/);
+			expect(context).toContain("\n\n# Memory\n\nEarlier conversation reaches you only through the view below.");
+			const input = model.requests[0]?.input ?? [];
+			expect(input.at(-1)?.content?.[0]?.text).toBe("Codename Saffron.");
+			expect(input.at(-2)?.role).toBe("developer");
+			// The memory server Codex started is the agent's: its tools are offered to the model.
+			const namespace = (model.requests[0]?.tools ?? []).find((tool) => tool.type === "namespace" && tool.name === "mcp__orrery");
+			expect(namespace?.tools?.map((tool) => tool.name).sort()).toEqual(["date", "search", "zoom"]);
+			await waitUntil(() => memory(a.agentDir).length === 2, 30_000);
+			expect(memory(a.agentDir)).toEqual(["user: Codename Saffron.", "talk: Reply 1."]);
+			await settled(a.agentDir);
+			const second = await exec(a, model.port, ["What was the codename?"]);
+			expect(second.status, second.stderr).toBe(0);
+			const [later] = orreryContext(model.requests[1]);
+			expect(later).toMatch(/^Orrery · Atlas · 2 msgs · recording\n/);
+			expect(later).toMatch(/<chat>\n0\+1\|.*\n1\+1\|.*\n<\/chat>$/);
+			await waitUntil(() => memory(a.agentDir).length === 4, 30_000);
+			expect(memory(a.agentDir).slice(2)).toEqual(["user: What was the codename?", "talk: Reply 2."]);
+			await settled(a.agentDir);
+		} finally {
+			model.close();
+		}
+	}, 120_000);
+
+	it("gives the view again after Codex compacts, one copy, and not again at resume, which still records", async () => {
+		const a = atlas("compact");
+		// The first answer asks for a shell call and reports a full context: Codex compacts mid-turn (locally, with the fake
+		// model), then SessionStart(compact) runs before the turn goes on.
+		const model = await scriptedModel((n) => (n === 1 ? { shell: "echo hi", tokens: 900_000 } : { reply: `Reply ${n}.` }));
+		try {
+			const run = await exec(a, model.port, ["Codename Juniper."], ["-c", "model_auto_compact_token_limit=100000"]);
+			expect(run.status, run.stderr).toBe(0);
+			expect(model.requests).toHaveLength(3);
+			// Request 2 is the compaction; request 3 the turn going on, with one view: the old one went with the compaction.
+			const after = orreryContext(model.requests[2]);
+			expect(after).toHaveLength(1);
+			expect(after[0]).toMatch(/^Orrery · Atlas · 1 msgs · recording\n/);
+			expect(after[0]).toContain("# Memory");
+			await waitUntil(() => memory(a.agentDir).length === 2, 30_000);
+			expect(memory(a.agentDir)).toEqual(["user: Codename Juniper.", "talk: Reply 3."]);
+			await settled(a.agentDir);
+			const session = /session id: ([0-9a-f-]{36})/.exec(run.stderr)?.[1];
+			expect(session, run.stderr).toBeDefined();
+			const resumed = await exec(a, model.port, ["resume", session as string, "And now?"]);
+			expect(resumed.status, resumed.stderr).toBe(0);
+			// The resumed history brings the view it had; SessionStart(resume) adds none.
+			expect(orreryContext(model.requests[3])).toEqual(after);
+			await waitUntil(() => memory(a.agentDir).length === 4, 30_000);
+			expect(memory(a.agentDir).slice(2)).toEqual(["user: And now?", "talk: Reply 4."]);
+			await settled(a.agentDir);
+		} finally {
+			model.close();
+		}
+	}, 120_000);
+
+	// Codex runs hooks in the account's shell when it is bash, zsh or sh, else bash on Linux: $BASH_ENV is bash's.
+	it.skipIf(hookShell({ PATH: process.env.PATH ?? "" }).kind !== "bash")("a shell setup that prints garbles the hooks' answers: the launch's check sees it first", async () => {
+		const a = atlas("chatty");
+		const startup = join(a.env.HOME as string, "bash-env");
+		writeFileSync(startup, 'echo "Welcome back!"\n');
+		const chatty = { ...a, env: { ...a.env, BASH_ENV: startup } };
+		// What orrery agent checks before it starts Codex.
+		expect(checkHookShell(chatty.env, a.work)).toMatchObject({ quiet: false, source: `$BASH_ENV (${startup})` });
+		const model = await scriptedModel((n) => ({ reply: `Reply ${n}.` }));
+		try {
+			const run = await exec(chatty, model.port, ["Codename Saffron."]);
+			expect(run.status, run.stderr).toBe(0);
+			const developer = developerTexts(model.requests[0]);
+			// SessionStart's answer arrives as raw text after the shell's words, the view inside it as escaped JSON, and the
+			// status line never reaches the person; the prompt's hook adds the shell's words to the model's context again.
+			expect(orreryContext(model.requests[0])).toEqual([]);
+			expect(developer.some((text) => text.startsWith('Welcome back!\n{"systemMessage":"Orrery · Atlas · 0 msgs · recording'))).toBe(true);
+			expect(developer).toContain("Welcome back!");
+			// The hooks still record.
+			await waitUntil(() => memory(a.agentDir).length === 2, 30_000);
+			await settled(a.agentDir);
+		} finally {
+			model.close();
+		}
+	}, 120_000);
 });

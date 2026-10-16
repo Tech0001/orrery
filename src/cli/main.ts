@@ -334,6 +334,7 @@ const OPTIONS = {
 	agent: { type: "string" },
 	"agent-token": { type: "string" },
 	"claude-pid": { type: "string" },
+	"host-pid": { type: "string" },
 	nonce: { type: "string" },
 	since: { type: "string" },
 	open: { type: "boolean" },
@@ -482,9 +483,9 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 		return 0;
 	}
 	if (command === "claude-hook") return claudeHook(arg, values.config);
-	if (command === "codex-hook") return codexHook(arg);
+	if (command === "codex-hook") return codexHook(arg, values.config);
 	if (command === "claude-mod") return claudeModCommand(arg, values);
-	if (command === "mcp") return mcpServer(values.config);
+	if (command === "mcp") return mcpServer(values.config, values.tool);
 	if (command === "remote") {
 		const { remoteCommand } = await import("./remote.ts");
 		process.stdout.write(await remoteCommand(values.config, positionals.slice(1), { json: values.json === true, yes: values.yes === true, server: values.server, cloudflare: values.cloudflare, "token-file": values["token-file"], "code-file": values["code-file"], new: values.new === true }));
@@ -668,16 +669,22 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 			return fatal.signal.reason instanceof SignalStop ? 0 : code;
 		}
 		case "holder": {
-			const claudePid = Number(values["claude-pid"]);
-			if (!Number.isInteger(claudePid) || claudePid < 1) throw new UsageError("holder needs --claude-pid PID.");
+			// The host's process: --claude-pid, Claude Code's (as always); or --host-pid, with --tool codex for Codex's.
+			if (values["claude-pid"] !== undefined && values["host-pid"] !== undefined) throw new UsageError("holder takes --claude-pid or --host-pid, not both.");
+			const host = values.tool ?? "claude-code";
+			if (host !== "claude-code" && host !== "codex") throw new UsageError(`holder: --tool takes claude-code or codex (not ${host}).`);
+			if (host === "codex" && values["host-pid"] === undefined) throw new UsageError("holder --tool codex needs --host-pid PID.");
+			const hostPid = Number(values["host-pid"] ?? values["claude-pid"]);
+			if (!Number.isInteger(hostPid) || hostPid < 1) throw new UsageError("holder needs --claude-pid PID (or --host-pid PID).");
 			const since = values.since === undefined ? undefined : Number(values.since);
 			if (since !== undefined && !(Number.isInteger(since) && since >= 0)) throw new UsageError("holder: --since must be a time in ms since the epoch.");
 			const { runHolder } = await import("../claude/holder.ts");
 			return runHolder(config, required(arg, "agent"), {
 				session: required(values.session, "--session"),
-				claudePid,
+				claudePid: hostPid,
 				nonce: values.nonce ?? "",
 				...(since === undefined ? {} : { since }),
+				...(host === "codex" ? { host } : {}),
 			});
 		}
 		case "claude-setup": {
@@ -723,12 +730,19 @@ const denyToolCall = (reason: string) =>
  * Claude Code starts it with the session, before SessionStart runs, so it may make the process's decision; a restarted
  * server reads the one recorded. The process is its parent, the Claude Code that started it (orrery-run execs), never
  * CLAUDE_PID, which a claude started from an agent's Bash inherits from the agent.
+ * With --tool codex it is Codex's (src/codex/launch.ts): the agent ORRERY_AGENT names, with its token, and nothing else
+ * (src/codex/pick.ts), claimed for the Codex that started it, at its start, before any SessionStart.
  */
-async function mcpServer(configPath: string | undefined): Promise<number> {
+async function mcpServer(configPath: string | undefined, tool: string | undefined): Promise<number> {
+	if (tool !== undefined && tool !== "claude-code" && tool !== "codex") throw new UsageError(`mcp: --tool takes claude-code or codex (not ${tool}).`);
 	const { agentTools, runMcp } = await import("../claude/mcp.ts");
 	let tools: ReaderTool[] = [];
 	const config = optionalConfig(configPath, "orrery mcp");
-	if (config !== undefined) {
+	if (config !== undefined && tool === "codex") {
+		const [{ codexAgent }, { codexPid }] = await Promise.all([import("../codex/pick.ts"), import("../codex/host.ts")]);
+		const pick = codexAgent(config, { env: process.env, pid: codexPid(), takeover: true });
+		if (pick.kind === "agent") tools = agentTools(config, pick.agent);
+	} else if (config !== undefined) {
 		const { claudeSession } = await import("../claude/pick.ts");
 		const pick = claudeSession(config, { env: process.env, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), pid: process.ppid, decide: true });
 		if (pick.kind === "agent") tools = agentTools(config, pick.agent);
@@ -784,9 +798,9 @@ async function claudeHook(event: string | undefined, configPath: string | undefi
 
 /**
  * A Codex PreToolUse refusal: the reason on stderr and exit code 2. Codex runs a hook through the account's shell
- * (`<shell> -c`), whose startup files (bash's $BASH_ENV, zsh's .zshenv, fish's config.fish) may print to stdout: a JSON
- * answer there would arrive garbled and the call would go through. With exit 2 Codex reads only stderr, so the refusal
- * holds whatever is on stdout. The reason has no final period: Codex adds one.
+ * (`<shell> -c`: bash, zsh or sh, src/codex/shell.ts), whose startup files (bash's $BASH_ENV, zsh's .zshenv) may print to
+ * stdout: a JSON answer there would arrive garbled and the call would go through. With exit 2 Codex reads only stderr,
+ * so the refusal holds whatever is on stdout. The reason has no final period: Codex adds one.
  */
 function denyCodexCall(reason: string): number {
 	process.stderr.write(reason);
@@ -794,18 +808,38 @@ function denyCodexCall(reason: string): number {
 }
 
 /**
- * `orrery codex-hook <event>`: the hooks `orrery agent --tool codex` gives Codex (src/codex/launch.ts). Until the
- * recorder and the guard are built, each reads its input to the end; pre-tool-use refuses every call (Codex runs a call
- * a hook says nothing about, so the guard must never answer `{}`), the others answer `{}` (nothing to add).
+ * `orrery codex-hook <event>`: the hooks `orrery agent --tool codex` gives Codex (src/codex/launch.ts). pre-tool-use
+ * refuses every call until the guard is built (Codex runs a call a hook says nothing about, so the guard must never
+ * answer `{}`). The others record (src/codex/hooks.ts) and never fail the session: exit 0 (a 2 would block the prompt, or
+ * keep a turn going), only their JSON answer on stdout, and an error in one stderr line, never with message contents.
+ * A config that cannot be read is said at SessionStart; the session then runs as plain Codex.
  */
-async function codexHook(event: string | undefined): Promise<number> {
-	try {
-		await readStdin(0);
-	} catch {
-		// unreadable input: a tool call is refused all the same
+async function codexHook(event: string | undefined, configPath: string | undefined): Promise<number> {
+	if (event === "pre-tool-use") {
+		try {
+			await readStdin(0);
+		} catch {
+			// unreadable input: a tool call is refused all the same
+		}
+		return denyCodexCall("Orrery's Codex guard is not built yet");
 	}
-	if (event === "pre-tool-use") return denyCodexCall("Orrery's Codex guard is not built yet");
-	process.stdout.write("{}");
+	try {
+		const stdin = (await readStdin(Number.POSITIVE_INFINITY)) ?? "";
+		const hooks = await import("../codex/hooks.ts");
+		let config: HarnessConfig;
+		try {
+			config = loadConfig(configPath);
+		} catch (error) {
+			if (event === "session-start") process.stdout.write(hooks.configNotice(errorText(error)));
+			return 0;
+		}
+		const [{ codexPid }, { spawnHolder }] = await Promise.all([import("../codex/host.ts"), import("../claude/hooks.ts")]);
+		const pid = codexPid();
+		const startHolder = (agent: AgentConfig, session: string, nonce: string, since: number) => spawnHolder(agent, session, nonce, pid, since, configPath, "codex");
+		process.stdout.write(await hooks.runCodexHook(event ?? "", stdin, { config, env: process.env, codexPid: pid, startHolder, updateNotices: true }));
+	} catch (error) {
+		process.stderr.write(`Orrery: ${event ?? "codex-hook"}: ${errorText(error)}\n`);
+	}
 	return 0;
 }
 
