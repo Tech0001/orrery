@@ -560,7 +560,7 @@ async function take(o: RemoteSessionOptions): Promise<{ lock: number; takeoverFr
 	let force = false;
 	if (sameMachine) force = held.stale || (held.holder.pid === process.pid ? !OPEN_HERE.has(openKey(storage, agent)) : !processAlive(held.holder.pid));
 	else if (held.stale && o.confirmTakeover !== undefined) force = await o.confirmTakeover(held);
-	if (!force) throw new RemoteError("held", sameMachine ? `${agent} is open in another pi or Claude Code on this machine (last seen ${hhmm(held.lastSeen)})` : heldMessage(agent, held));
+	if (!force) throw new RemoteError("held", sameMachine ? `${agent} is open in another pi, OMP, Claude Code or Codex session on this machine (last seen ${hhmm(held.lastSeen)})` : heldMessage(agent, held));
 	const second = await storage.take(agent, holder, { force: true });
 	if (!second.ok) throw new RemoteError("held", heldMessage(agent, second.held));
 	return sameMachine ? { lock: second.lock } : { lock: second.lock, takeoverFrom: held.holder.machine };

@@ -100,14 +100,15 @@ export function holdingTool(agentDir: string, now = Date.now(), alive: (pid: num
 }
 
 /**
- * Where the agent is open, said to a session of `host` that runs read-only because of it: "open in Codex", "open in
- * another Claude Code session", or, when nothing says which tool, every tool it could be.
+ * Where the agent is open, said to a session of `self` that can't have it: "open in Codex", "open in another Claude Code
+ * session", or, when nothing says which tool, every tool it could be.
  */
-export function openElsewhere(agentDir: string, host: HolderHost, now = Date.now()): string {
+export function openElsewhere(agentDir: string, self: HoldingTool, now = Date.now()): string {
 	const tool = holdingTool(agentDir, now);
-	if (tool === host) return `open in another ${HOST_LABELS[host]} session`;
+	if (tool === self) return `open in another ${HOLDING_LABELS[self]} session`;
 	if (tool !== undefined) return `open in ${HOLDING_LABELS[tool]}`;
-	return host === "codex" ? "open elsewhere (pi, OMP, Claude Code, or another Codex session)" : "open elsewhere (pi, OMP, Codex, or another Claude Code session)";
+	const others = (["pi", "omp", "claude-code", "codex"] as const).filter((other) => other !== self).map((other) => HOLDING_LABELS[other]);
+	return `open elsewhere (${others.join(", ")}, or another ${HOLDING_LABELS[self]} session)`;
 }
 
 /** Writes the heartbeat (private, atomic). */
