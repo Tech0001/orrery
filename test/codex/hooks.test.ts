@@ -9,6 +9,7 @@ import { Holder } from "../../src/claude/holder.ts";
 import { holderLog, sessionDir } from "../../src/claude/paths.ts";
 import { listSessions, pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
 import { CODEX_RECORD_EVENTS, type CodexHookContext, runCodexHook } from "../../src/codex/hooks.ts";
+import { codexSessionOf } from "../../src/codex/resume.ts";
 import { fauxModels } from "../agent/support.ts";
 import { cleanupDirs, messages, seed, statusOf, type TestAgent, testAgent, waitUntil } from "../claude/support.ts";
 
@@ -167,6 +168,21 @@ describe("SessionStart for a Codex session", () => {
 		expect(await run("stop", input({ last_assistant_message: "ok" }), c)).toBe("");
 		writeFileSync(statusFile, JSON.stringify({ trouble: null, summarized: true }));
 		expect(await run("stop", input({ last_assistant_message: "ok" }), c)).toEqual({ systemMessage: "Orrery: Test's summaries are working again." });
+	});
+
+	it("notes the session this Codex is on, for orrery agent's resume line once Codex ends: at start, resume and /clear", async () => {
+		const t = testAgent();
+		const c = ctx(t, { startHolder: answer("recording") });
+		await run("session-start", input({ session_id: "s1", source: "startup" }), c);
+		expect(codexSessionOf(t.agent.dir, CODEX)).toBe("s1");
+		await run("session-start", input({ session_id: "s2", source: "clear" }), c);
+		expect(codexSessionOf(t.agent.dir, CODEX)).toBe("s2");
+		await run("session-start", input({ session_id: "s1", source: "resume" }), c);
+		expect(codexSessionOf(t.agent.dir, CODEX)).toBe("s1");
+		// A Codex that is not the agent notes nothing.
+		const other = { ...c, codexPid: 5151, alive: (pid: number) => pid === CODEX || pid === 5151 };
+		await run("session-start", input({ session_id: "s9" }), other);
+		expect(codexSessionOf(t.agent.dir, 5151)).toBeUndefined();
 	});
 
 	it("is said nothing by a subagent's start, and nothing is started", async () => {

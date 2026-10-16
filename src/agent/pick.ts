@@ -163,6 +163,11 @@ export function claimToken(agentDir: string, token: string, owner: number, alive
 }
 
 /** Removes a claim its launcher made, once its tool has exited. */
+/** The pid that claimed `token` for the agent, or undefined when none has (or the token is no token). */
+export function claimedBy(agentDir: string, token: string): number | undefined {
+	return TOKEN.test(token) ? claimant(join(agentDir, "claims", token)) : undefined;
+}
+
 export function releaseClaim(agentDir: string, token: string): void {
 	if (TOKEN.test(token)) rmSync(join(agentDir, "claims", token), { force: true });
 }

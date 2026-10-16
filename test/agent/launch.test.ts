@@ -178,7 +178,8 @@ describe("opening an agent in a folder (orrery agent, the TUI)", () => {
 		// What the tool's extension does at its start: it claims the token.
 		expect(claimToken(plan.agentDir, token, 999_999)).toBe(true);
 		expect(readdirSync(join(plan.agentDir, "claims"))).toEqual([token]);
-		expect(await runAgent(plan, (p) => runTool(p, { env }))).toEqual({ code: 0, signal: null });
+		// It says which process had claimed the token (the tool, as the agent) before it removes the claim.
+		expect(await runAgent(plan, (p) => runTool(p, { env }))).toEqual({ code: 0, signal: null, claimedBy: 999_999 });
 		const [agent, seen, cwd, args] = readFileSync(out, "utf8").trim().split("|");
 		expect([agent, seen, realpathSync(cwd as string)]).toEqual(["A", token, realpathSync(elsewhere)]);
 		expect(args?.startsWith("--no-daemon -c hooks.SessionStart=")).toBe(true);

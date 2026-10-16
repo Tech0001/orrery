@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { instructionsTemplate } from "../../src/agent/instructions.ts";
 import { openAgentCommand } from "../../src/cli/agent.ts";
-import { WITHOUT_ORRERY_QUESTION, WITHOUT_ORRERY_SAID } from "../../src/codex/check.ts";
+import type { AgentConfig } from "../../src/agent/config.ts";
+import { loadConfig } from "../../src/agent/config.ts";
+import type { LaunchPlan } from "../../src/agent/launch.ts";
+import { claimToken } from "../../src/agent/pick.ts";
+import { writeMode } from "../../src/claude/spool.ts";
+import { type CodexGate, WITHOUT_ORRERY_QUESTION, WITHOUT_ORRERY_SAID } from "../../src/codex/check.ts";
+import { runCodexHook } from "../../src/codex/hooks.ts";
 import { CODEX_HOOKS, trustKey } from "../../src/codex/launch.ts";
 import { hookShell } from "../../src/codex/shell.ts";
 import { cleanEnv, cliCommand, statusOf } from "../claude/support.ts";
@@ -293,6 +299,46 @@ describe("orrery agent", () => {
 				expect(ran).toEqual([]);
 			}
 		}
+	});
+
+	it("after Codex ends, says how to resume the session as the agent (Codex's own line reopens it as plain Codex)", async () => {
+		const s = scene();
+		fakeCodex(s, "trusted");
+		for (const [key, value] of Object.entries(s.env)) if (value !== undefined) vi.stubEnv(key, value);
+		const session = "01a146c5-9608-7e51-9376-7ac91c238b48";
+		const said: string[] = [];
+		const io = { say: (line: string) => said.push(line), confirm: async () => true, askPerson: async () => true };
+		/**
+		 * A Codex run, this process standing in for a Codex of pid `pid`: its memory server claims the token, and (`prompted`)
+		 * its first prompt starts a session.
+		 */
+		const codexRun = (prompted: boolean, pid = process.pid) => async (plan: LaunchPlan) => {
+			claimToken(s.agentDir, plan.env.ORRERY_AGENT_TOKEN as string, pid);
+			if (prompted) {
+				const hookCtx = { config: loadConfig(s.config), env: { ...plan.env }, codexPid: pid, modeWaitMs: 100, startHolder: (agent: AgentConfig, sid: string, nonce: string, since: number) => writeMode(agent.dir, sid, { mode: "recording", pid: 1, claudePid: pid, nonce, since }) };
+				await runCodexHook("session-start", JSON.stringify({ session_id: session, source: "startup" }), hookCtx);
+			}
+			return { code: 0, signal: null };
+		};
+		const gate = async () => ({ ok: true as const });
+		const open = (run: (plan: LaunchPlan) => Promise<{ code: number; signal: null }>, codexGate: (plan: LaunchPlan) => Promise<CodexGate> = gate, args: string[] = []) =>
+			openAgentCommand(s.config, "Atlas", { tool: "codex", args, cwd: s.elsewhere }, io, { takeover: async () => "", run, codexGate });
+		expect(await open(codexRun(true))).toBe(0);
+		expect(said.at(-1)).toBe(`To continue it as Atlas, with its memory and the guard: orrery agent Atlas --tool codex -- resume ${session}`);
+		// Another Codex that ended before any session it noted: the latest session here (Codex picks it by folder).
+		said.length = 0;
+		expect(await open(codexRun(false, 2 ** 22 + 7))).toBe(0);
+		expect(said.at(-1)).toBe("To continue it as Atlas, with its memory and the guard: orrery agent Atlas --tool codex -- resume --last");
+		// A subcommand that starts no session (Codex's debug, mcp…) gets no such line.
+		said.length = 0;
+		expect(await open(codexRun(false, 2 ** 22 + 8), gate, ["debug", "prompt-input"])).toBe(0);
+		expect(said.filter((line) => line.startsWith("To continue"))).toEqual([]);
+		// Codex never became the agent, or started as plain Codex: no such line.
+		said.length = 0;
+		expect(await open(async () => ({ code: 0, signal: null }))).toBe(0);
+		expect(said.filter((line) => line.startsWith("To continue"))).toEqual([]);
+		expect(await open(codexRun(true), async () => ({ ok: false as const, text: "Orrery's hooks don't load in Codex 0.162.1: x." }))).toBe(0);
+		expect(said.filter((line) => line.startsWith("To continue"))).toEqual([]);
 	});
 
 	it.skipIf(!hasScript)("in a terminal, when the hooks don't load: asks, default no; yes starts plain Codex and says it is not recorded", () => {

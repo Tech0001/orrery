@@ -17,7 +17,7 @@ import { checkHookShell, NOISY_SHELL_QUESTION, noisyShellText, type ShellCheck }
 import { buildRunning, readBuild } from "./build.ts";
 import { findAgent, type HarnessConfig, insideFolder, type AgentConfig, type AgentLauncher, type AgentTool } from "./config.ts";
 import { type AgentRow, TOOL_LABELS } from "./overview.ts";
-import { AGENT_ENV, newToken, releaseClaim, TOKEN_ENV, workArea } from "./pick.ts";
+import { AGENT_ENV, claimedBy, newToken, releaseClaim, TOKEN_ENV, workArea } from "./pick.ts";
 import { BINARIES, codexVersion, findOnPath, installSteps, orreryVersion, wiringRoot, type Runner, realRunner, runInstall, type ToolCheck } from "./tools.ts";
 
 const HINTS: Record<AgentTool, string> = { pi: "Get it at https://pi.dev", "claude-code": "Get it at https://claude.com/claude-code", codex: "Get it at https://github.com/openai/codex", omp: "Get it at https://omp.sh" };
@@ -265,12 +265,18 @@ export function runTool(plan: LaunchPlan, options: { spawn?: typeof spawn; env?:
 	});
 }
 
-/** Runs the plan's tool, then removes the claim its token made (src/agent/pick.ts), however the tool ended. */
-export async function runAgent(plan: LaunchPlan, run: (plan: LaunchPlan) => Promise<ToolExit>): Promise<ToolExit> {
+/**
+ * Runs the plan's tool, then removes the claim its token made (src/agent/pick.ts), however the tool ended. Says which
+ * process had claimed it (`claimedBy`: the tool's own process, as the agent), when one had.
+ */
+export async function runAgent(plan: LaunchPlan, run: (plan: LaunchPlan) => Promise<ToolExit>): Promise<ToolExit & { readonly claimedBy?: number }> {
+	const token = plan.env[TOKEN_ENV] ?? "";
 	try {
-		return await run(plan);
+		const exit = await run(plan);
+		const by = claimedBy(plan.agentDir, token);
+		return by === undefined ? exit : { ...exit, claimedBy: by };
 	} finally {
-		releaseClaim(plan.agentDir, plan.env[TOKEN_ENV] ?? "");
+		releaseClaim(plan.agentDir, token);
 	}
 }
 

@@ -13,6 +13,7 @@ import { applyFix, checkCodexHooks, exitText, launchLabel, launchPlan, type Laun
 import { type AgentRow, agentOverview, OverviewCache, TOOL_LABELS } from "../agent/overview.ts";
 import { checkTools } from "../agent/tools.ts";
 import { type CodexGate, WITHOUT_ORRERY_QUESTION, WITHOUT_ORRERY_SAID } from "../codex/check.ts";
+import { codexResumeLine } from "../codex/resume.ts";
 
 export interface AgentIo {
 	say(line: string): void;
@@ -84,6 +85,11 @@ export async function openAgentCommand(
 	const exit = await runAgent(launching, run);
 	const text = exitText(launchLabel(plan), exit);
 	if (text !== undefined) io.say(text);
+	// Codex's own "codex resume <id>" reopens the chat as plain Codex: the way to resume it as the agent (not after plain Codex).
+	if (launching.codex !== undefined) {
+		const resume = codexResumeLine(agent, exit.claimedBy, options.args);
+		if (resume !== undefined) io.say(resume);
+	}
 	return exit.code ?? 1;
 }
 

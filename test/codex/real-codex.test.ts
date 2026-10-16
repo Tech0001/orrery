@@ -179,6 +179,10 @@ describe.skipIf(codex === null)("Orrery's Codex launch against the installed Cod
 			const instructions = instructionsSection("Atlas", readInstructions(a.agentDir) as NonNullable<ReturnType<typeof readInstructions>>);
 			expect(developerTexts(model.requests[0]).some((text) => text.startsWith(instructions))).toBe(true);
 			expect(callOutputs(model.requests).get("call_1")).toBe("Command blocked by PreToolUse hook: Orrery guard: This command touches secret.txt, protected by [guard] protect in Orrery's config. Command: cat secret.txt");
+			// Once Codex ends, the Orrery way to resume this very session.
+			const session = /session id: ([0-9a-f-]{36})/.exec(run.stderr)?.[1];
+			expect(session, run.stderr).toBeDefined();
+			expect(run.stdout).toContain(`To continue it as Atlas, with its memory and the guard: orrery agent Atlas --tool codex -- resume ${session}\n`);
 			await waitUntil(() => readHolder(a.agentDir) === undefined, 30_000);
 		} finally {
 			model.close();

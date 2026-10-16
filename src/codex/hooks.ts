@@ -29,6 +29,7 @@ import { holderLog, validSession } from "../claude/paths.ts";
 import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
 import { MemoryStore, MemoryView } from "../memory/index.ts";
 import { codexAgent } from "./pick.ts";
+import { recordCodexSession } from "./resume.ts";
 
 /** The events `orrery codex-hook` records (pre-tool-use is the guard, src/codex/guard.ts). */
 export const CODEX_RECORD_EVENTS = ["session-start", "user-prompt-submit", "stop", "session-end"] as const;
@@ -151,6 +152,8 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 	if (pick.kind === "refused") return { systemMessage: pick.notice };
 	const { agent } = pick;
 	const session = input.session_id;
+	// For the launcher's resume line once Codex ends (src/codex/resume.ts).
+	recordCodexSession(agent.dir, ctx.codexPid, session, ctx.alive);
 	// The holder's cut-off: this session's events from now on belong to this run.
 	const since = Date.now();
 	// At resume (and a fork) the session's history holds the view it had: another would sit beside it.
