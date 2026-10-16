@@ -991,6 +991,7 @@ describe("[guard] protect: speed", () => {
 			"orrery holder.",
 			"x holder ",
 			"codex-hoo",
+			"\\nholder.",
 		];
 		// As the guard's own speed test: a 4x step must cost under 10x (linear is about 4x, quadratic about 16x).
 		const time = (unit: string, times: number) => {

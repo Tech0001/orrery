@@ -31,8 +31,9 @@
  * - The home secrets whose names projects have of their own (.npmrc, .pypirc, .azure, .wrangler) are named in shell
  *   text only from home: a command run in the home folder that names one relatively gets through.
  * - The hook commands are refused by name anywhere in shell text, so a search or a commit message that names
- *   codex-hook or claude-hook is refused too; orrery run through a link or alias of another name, or a hook's name
- *   built from a variable, gets through.
+ *   codex-hook or claude-hook is refused too, and so is text that names Orrery's program and the word holder together
+ *   (`cd ~/orrery && grep holder src`). Orrery's program through a link or alias of another name, or a name built from a
+ *   variable or read from a file, gets through.
  * - A deleted config is no config: Claude Code then runs plain, and so do pi and OMP sessions started after it. Deleting
  *   it takes a spelling the guard cannot see (its name and its path are refused in commands; no file tool deletes).
  * - A pi or OMP session that starts while the config cannot be read (src/pi/index.ts unreadableGuard) knows no agent, so
