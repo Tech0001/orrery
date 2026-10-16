@@ -808,21 +808,39 @@ function denyCodexCall(reason: string): number {
 }
 
 /**
- * `orrery codex-hook <event>`: the hooks `orrery agent --tool codex` gives Codex (src/codex/launch.ts). pre-tool-use
- * refuses every call until the guard is built (Codex runs a call a hook says nothing about, so the guard must never
- * answer `{}`). The others record (src/codex/hooks.ts) and never fail the session: exit 0 (a 2 would block the prompt, or
- * keep a turn going), only their JSON answer on stdout, and an error in one stderr line, never with message contents.
- * A config that cannot be read is said at SessionStart; the session then runs as plain Codex.
+ * `orrery codex-hook pre-tool-use`, the guard (src/codex/guard.ts): a call it lets through gets exit 0 and nothing on
+ * stdout, which Codex reads as no objection; a refusal is denyCodexCall's. Codex lets a call through when its hook
+ * fails, so everything that keeps the guard from judging refuses: input over 1 MB (read to its end, not kept), a config
+ * that cannot be read, any error.
+ */
+async function codexGuardHook(configPath: string | undefined): Promise<number> {
+	try {
+		const guard = await import("../codex/guard.ts");
+		const stdin = await readStdin(guard.CODEX_TOOL_INPUT_MAX);
+		let config: HarnessConfig;
+		try {
+			config = loadConfig(configPath);
+		} catch (error) {
+			return denyCodexCall(guard.codexRefusal(`Orrery's config could not be read (${errorText(error)}), so no call can be checked; nothing was run. Fix the config file.`));
+		}
+		const { codexPid } = await import("../codex/host.ts");
+		// The file the config came from, as loadConfig found it: the guard keeps it read-only, wherever it is.
+		const configFile = resolvePath(configPath ?? defaultConfigPath());
+		const refusal = guard.runCodexGuard(stdin, { config, env: process.env, codexPid: codexPid(), configFile });
+		return refusal === undefined ? 0 : denyCodexCall(refusal);
+	} catch (error) {
+		return denyCodexCall(`Orrery guard: this call could not be checked (${errorText(error).replace(/\.+$/, "")}); nothing was run`);
+	}
+}
+
+/**
+ * `orrery codex-hook <event>`: the hooks `orrery agent --tool codex` gives Codex (src/codex/launch.ts). pre-tool-use is
+ * the guard (codexGuardHook). The others record (src/codex/hooks.ts) and never fail the session: exit 0 (a 2 would block
+ * the prompt, or keep a turn going), only their JSON answer on stdout, and an error in one stderr line, never with
+ * message contents. A config that cannot be read is said at SessionStart; the session then runs as plain Codex.
  */
 async function codexHook(event: string | undefined, configPath: string | undefined): Promise<number> {
-	if (event === "pre-tool-use") {
-		try {
-			await readStdin(0);
-		} catch {
-			// unreadable input: a tool call is refused all the same
-		}
-		return denyCodexCall("Orrery's Codex guard is not built yet");
-	}
+	if (event === "pre-tool-use") return codexGuardHook(configPath);
 	try {
 		const stdin = (await readStdin(Number.POSITIVE_INFINITY)) ?? "";
 		const hooks = await import("../codex/hooks.ts");

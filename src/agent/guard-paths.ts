@@ -1,6 +1,6 @@
 /**
- * The agent guard's path judgment for any agent's tool calls, shared by pi (src/pi/guard.ts) and Claude Code
- * (src/claude/guard.ts). It judges the path the tool will actually touch: resolved the way the tool resolves it (pi's
+ * The agent guard's path judgment for any agent's tool calls, shared by pi (src/pi/guard.ts), Claude Code
+ * (src/claude/guard.ts) and Codex (src/codex/guard.ts, through Claude Code's). It judges the path the tool will actually touch: resolved the way the tool resolves it (pi's
  * way by default), then with symlinks followed. The rules themselves are src/agent/guard-rules.ts.
  *
  * Another agent's memory view (agentViews) is kept from every tool that reads, writes or searches file contents. Orrery's
@@ -311,7 +311,7 @@ function headerPath(target: string): string {
 }
 
 /** What Rust's trim() strips (Unicode White_Space): JS's \s without U+FEFF, plus U+0085. */
-const RUST_SPACE = "\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+export const RUST_SPACE = "\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
 const RUST_TRIM = new RegExp(`^[${RUST_SPACE}]+|[${RUST_SPACE}]+$`, "g");
 
 /** apply_patch noise OMP strips from the front of a hashline path: `*** Update File:`, `add:`, `move to:`… (pi-edit hashline/input.rs:28-32). */

@@ -30,7 +30,7 @@ import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
 import { MemoryStore, MemoryView } from "../memory/index.ts";
 import { codexAgent } from "./pick.ts";
 
-/** The events `orrery codex-hook` records (pre-tool-use, the guard, is answered on its own). */
+/** The events `orrery codex-hook` records (pre-tool-use is the guard, src/codex/guard.ts). */
 export const CODEX_RECORD_EVENTS = ["session-start", "user-prompt-submit", "stop", "session-end"] as const;
 
 /** The fields read from Codex's input; every one is checked before use. */

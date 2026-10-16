@@ -11,6 +11,7 @@ import { guardOmpToolCall, guardToolCall } from "../../src/agent/guard-paths.ts"
 import { checkToolCall } from "../../src/agent/guard-rules.ts";
 import { claudeGuard } from "../../src/claude/guard.ts";
 import { runHook } from "../../src/claude/hooks.ts";
+import { codexGuard } from "../../src/codex/guard.ts";
 import { createOrrery } from "../../src/pi/index.ts";
 import { fakeOmp, ompCleanup, ompOrrery, track } from "../omp/world.ts";
 import { scratchHome, summarySourcesFor } from "../pi/world.ts";
@@ -805,6 +806,35 @@ describe("[guard] protect and .env: one table through every gate", () => {
 	};
 
 	/**
+	 * Codex (src/codex/guard.ts): a patch's every target form (Add, Update, Delete, Move to, and a move away from the
+	 * file), view_image, an MCP tool, spawn_agent handing over an image, its shell and an MCP shell. It has no glob tool.
+	 * A code cell's calls reach the hook one by one, as these do.
+	 */
+	const codex: Gate = async (t, c) => {
+		const out: (string | undefined)[] = [];
+		const call = (tool: string, input: Record<string, unknown>) => out.push(codexGuard(tool, input, t.options));
+		const patch = (...lines: string[]) => call("apply_patch", { command: ["*** Begin Patch", ...lines, "*** End Patch"].join("\n") });
+		if (c.cwd !== undefined) call("mcp__shell__run", { command: "ls", cwd: c.cwd });
+		if (c.path !== undefined) {
+			call("view_image", { path: c.path });
+			call("mcp__files__read_file", { path: c.path });
+			call("spawn_agent", { message: "look at this", items: [{ type: "local_image", path: c.path }] });
+			if (c.refused) {
+				patch(`*** Add File: ${c.path}`, "+x");
+				patch(`*** Update File: ${c.path}`, "@@", "-a", "+b");
+				patch(`*** Delete File: ${c.path}`);
+				patch("*** Update File: src/a.ts", `*** Move to: ${c.path}`, "@@", "-a", "+b");
+				patch(`*** Update File: ${c.path}`, "*** Move to: src/moved.ts", "@@", "-a", "+b");
+			}
+		}
+		if (c.command !== undefined) {
+			call("Bash", { command: c.command });
+			call("mcp__shell__run", { command: c.command });
+		}
+		return out;
+	};
+
+	/**
 	 * orrery run: its pre-check on every call (durablePreCheck), then the file tools' own resolved check
 	 * (checkResolvedPath), as the durable harness runs them, with the scratch home as its home. Its tools still expand "~"
 	 * from the OS's home, so it takes the folder entry by its absolute path and skips the cases that spell the home.
@@ -832,12 +862,12 @@ describe("[guard] protect and .env: one table through every gate", () => {
 		return out;
 	};
 
-	it("gets the same verdict from pi, OMP, Claude Code and orrery run for every case", async () => {
+	it("gets the same verdict from pi, OMP, Claude Code, Codex and orrery run for every case", async () => {
 		const t = protectWorld();
 		writeFileSync(join(t.atlas, ".env.dist"), "KEY=");
 		const disagree: string[] = [];
 		for (const c of table(t)) {
-			for (const [gate, judge] of Object.entries({ pi, omp, claude, durable })) {
+			for (const [gate, judge] of Object.entries({ pi, omp, claude, codex, durable })) {
 				const verdicts = await judge(t, c);
 				verdicts.forEach((verdict, at) => {
 					if ((verdict !== undefined) !== c.refused) disagree.push(`${gate} #${at} on ${c.name}: ${verdict ?? "allowed"}`);

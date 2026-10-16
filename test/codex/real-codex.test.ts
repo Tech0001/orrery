@@ -41,38 +41,6 @@ function findCodex(): string | null {
 const codex = findCodex();
 const version = codex === null ? "" : (spawnSync(codex, ["--version"], { env: isolated("version"), encoding: "utf8" }).stdout.match(/\d+\.\d+\.\d+\S*/)?.[0] ?? "");
 
-/**
- * A fake model on the Responses API: the first request is answered with one shell call (`echo ran > marker.txt`), every
- * later one with a short message. It keeps each request's body.
- */
-async function fakeModel(): Promise<{ readonly port: number; readonly requests: { input?: { type?: string; output?: unknown }[] }[]; close(): void }> {
-	const requests: { input?: { type?: string; output?: unknown }[] }[] = [];
-	const server = createServer((request, response) => {
-		let body = "";
-		request.on("data", (chunk) => (body += chunk));
-		request.on("end", () => {
-			if (!request.url?.endsWith("/responses")) {
-				response.writeHead(404).end();
-				return;
-			}
-			requests.push(JSON.parse(body) as (typeof requests)[number]);
-			const id = `resp_${requests.length}`;
-			const item =
-				requests.length === 1
-					? { type: "function_call", id: "fc_1", call_id: "call_1", name: "exec_command", arguments: JSON.stringify({ cmd: "echo ran > marker.txt" }) }
-					: { type: "message", id: `msg_${requests.length}`, role: "assistant", content: [{ type: "output_text", text: "done" }] };
-			const usage = { input_tokens: 1, input_tokens_details: { cached_tokens: 0 }, output_tokens: 1, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 2 };
-			response.writeHead(200, { "content-type": "text/event-stream" });
-			for (const event of [{ type: "response.created", response: { id } }, { type: "response.output_item.done", item }, { type: "response.completed", response: { id, usage } }]) {
-				response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
-			}
-			response.end();
-		});
-	});
-	await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-	return { port: (server.address() as AddressInfo).port, requests, close: () => server.close() };
-}
-
 /** Runs codex to its end without blocking this process (the fake model answers from it). */
 function runCodex(args: readonly string[], env: NodeJS.ProcessEnv): Promise<{ readonly status: number | null; readonly stdout: string; readonly stderr: string }> {
 	return new Promise((done) => {
@@ -155,55 +123,74 @@ describe.skipIf(codex === null)("Orrery's Codex launch against the installed Cod
 		expect(((off as { result: { data: { hooks: Record<string, unknown>[] }[] } }).result.data[0]?.hooks ?? []).filter((hook) => hook.source === "sessionFlags").map((hook) => hook.enabled)).toEqual(CODEX_HOOKS.map(() => false));
 	}, 60_000);
 
-	it("runs Orrery's hooks in a real session, and a refusal holds even when the hook's shell prints at startup", async () => {
+	it("guards a real session: a shell read and a patch of a protected file are refused with Orrery's reason, the rest goes through, even when the hook's shell prints at startup", async () => {
 		// Codex runs a hook as `<the account's shell> -c <command>`: bash then reads $BASH_ENV, zsh .zshenv, fish
 		// config.fish. Each of these prints here, as a chatty shell setup does, and notes that it was read.
 		const orrery = [cliCommand([]).cmd, ...cliCommand([]).args];
 		const shell = basename(userInfo().shell ?? "");
+		const PROTECTED = "secret.txt, protected by [guard] protect in Orrery's config";
+		const secretPatch = "*** Begin Patch\n*** Update File: secret.txt\n@@\n-s3cret\n+leaked\n*** End Patch";
+		const notesPatch = "*** Begin Patch\n*** Add File: notes.md\n+hello\n*** End Patch";
 		for (const chatty of [false, true]) {
-			const env = isolated(chatty ? "chatty" : "quiet");
-			const dir = env.HOME as string;
-			const cwd = join(dir, "work");
-			mkdirSync(cwd);
-			const read = join(dir, "startup-read");
+			const a = guardedAtlas(chatty ? "chatty" : "quiet", orrery);
+			const read = join(a.home, "startup-read");
 			const startup = `echo "Welcome back!"; touch ${shellWords([read])}\n`;
-			writeFileSync(join(dir, "bash-env"), startup);
-			mkdirSync(join(dir, "zdot"));
-			writeFileSync(join(dir, "zdot", ".zshenv"), startup);
-			mkdirSync(join(dir, "xdg", "fish"), { recursive: true });
-			writeFileSync(join(dir, "xdg", "fish", "config.fish"), startup);
-			const model = await fakeModel();
+			writeFileSync(join(a.home, "bash-env"), startup);
+			mkdirSync(join(a.home, "zdot"));
+			writeFileSync(join(a.home, "zdot", ".zshenv"), startup);
+			mkdirSync(join(a.home, "xdg", "fish"), { recursive: true });
+			writeFileSync(join(a.home, "xdg", "fish", "config.fish"), startup);
+			const calls: Answer[] = [{ shell: "cat secret.txt" }, { patch: secretPatch }, { shell: "echo ran > marker.txt" }, { patch: notesPatch }];
+			const model = await scriptedModel((n) => calls[n - 1] ?? { reply: "done" });
 			try {
-				const launch = codexLaunch({ name: "Atlas", dir: mkdtempSync(join(scratch, "agent-")) }, orrery);
 				const run = await runCodex(
-					[
-						"exec",
-						...launch.config,
-						"--skip-git-repo-check",
-						"--dangerously-bypass-approvals-and-sandbox",
-						"-C",
-						cwd,
-						"-c",
-						`model_providers.fake={name="fake",base_url="http://127.0.0.1:${model.port}/v1",wire_api="responses"}`,
-						"-c",
-						'model_provider="fake"',
-						"-c",
-						'model="fake-model"',
-						"-c",
-						"analytics.enabled=false",
-						"run it",
-					],
-					{ ...env, ...(chatty ? { BASH_ENV: join(dir, "bash-env"), ZDOTDIR: join(dir, "zdot"), XDG_CONFIG_HOME: join(dir, "xdg") } : {}) },
+					["exec", ...a.launch.config, ...fakeFlags(model.port, a.catalog), "-C", a.work, "run it"],
+					{ ...a.env, ...(chatty ? { BASH_ENV: join(a.home, "bash-env"), ZDOTDIR: join(a.home, "zdot"), XDG_CONFIG_HOME: join(a.home, "xdg") } : {}) },
 				);
 				expect(run.status, run.stderr).toBe(0);
 				if (chatty && ["bash", "zsh", "fish"].includes(shell)) expect(existsSync(read)).toBe(true);
-				// The guard's refusal reached the model, and the command never ran.
-				expect(existsSync(join(cwd, "marker.txt"))).toBe(false);
-				const outputs = model.requests.flatMap((request) => request.input ?? []).filter((item) => item.type === "function_call_output").map((item) => String(item.output));
-				expect(outputs).toEqual(["Command blocked by PreToolUse hook: Orrery's Codex guard is not built yet. Command: echo ran > marker.txt"]);
+				// The model got Orrery's reasons for the protected file, with Codex's period after them, and the file is as it was.
+				const outputs = callOutputs(model.requests);
+				expect(outputs.get("call_1")).toBe(`Command blocked by PreToolUse hook: Orrery guard: This command touches ${PROTECTED}. Command: cat secret.txt`);
+				expect(outputs.get("call_2")).toBe(`Command blocked by PreToolUse hook: Orrery guard: ${PROTECTED.replace(", protected", " is protected")}. Command: ${secretPatch}`);
+				expect(readFileSync(join(a.work, "secret.txt"), "utf8")).toBe("s3cret\n");
+				// The ordinary command and patch ran.
+				expect(readFileSync(join(a.work, "marker.txt"), "utf8")).toBe("ran\n");
+				expect(readFileSync(join(a.work, "notes.md"), "utf8")).toBe("hello\n");
+				await waitUntil(() => readHolder(a.agentDir) === undefined, 30_000);
 			} finally {
 				model.close();
 			}
+		}
+	}, 180_000);
+
+	it("guards each call a code cell makes: Codex hands the hook the cell's calls one by one, never the cell", async () => {
+		const orrery = [cliCommand([]).cmd, ...cliCommand([]).args];
+		const a = guardedAtlas("cells", orrery);
+		// One cell, as a model that runs its tools from code writes it: each call's refusal is caught and said.
+		const cell = [
+			"const calls = [",
+			'  () => tools.exec_command({ cmd: "cat secret.txt" }),',
+			'  () => tools.apply_patch("*** Begin Patch\\n*** Update File: secret.txt\\n@@\\n-s3cret\\n+leaked\\n*** End Patch"),',
+			'  () => tools.exec_command({ cmd: "echo ran > marker.txt" }),',
+			'  () => tools.apply_patch("*** Begin Patch\\n*** Add File: notes.md\\n+hello\\n*** End Patch"),',
+			"];",
+			'for (const call of calls) { try { await call(); text("ok"); } catch (error) { text(String(error)); } }',
+		].join("\n");
+		const model = await scriptedModel((n) => (n === 1 ? { cell } : { reply: "done" }));
+		try {
+			const run = await runCodex(["exec", ...a.launch.config, ...fakeFlags(model.port, a.catalog, "fake-cells"), "-C", a.work, "run it"], a.env);
+			expect(run.status, run.stderr).toBe(0);
+			const said = callOutputs(model.requests).get("call_1") ?? "";
+			expect(said).toContain("Command blocked by PreToolUse hook: Orrery guard: This command touches secret.txt, protected by [guard] protect in Orrery's config. Command: cat secret.txt");
+			expect(said).toContain("Command blocked by PreToolUse hook: Orrery guard: secret.txt is protected by [guard] protect in Orrery's config. Command: *** Begin Patch");
+			expect(said.match(/"text":"ok"/g)).toHaveLength(2);
+			expect(readFileSync(join(a.work, "secret.txt"), "utf8")).toBe("s3cret\n");
+			expect(readFileSync(join(a.work, "marker.txt"), "utf8")).toBe("ran\n");
+			expect(readFileSync(join(a.work, "notes.md"), "utf8")).toBe("hello\n");
+			await waitUntil(() => readHolder(a.agentDir) === undefined, 30_000);
+		} finally {
+			model.close();
 		}
 	}, 120_000);
 
@@ -248,14 +235,18 @@ describe.skipIf(codex === null)("Orrery's Codex launch against the installed Cod
 	}, 90_000);
 });
 
-type Item = { type?: string; role?: string; content?: { text?: string }[]; name?: string };
+type Item = { type?: string; role?: string; content?: { text?: string }[]; name?: string; call_id?: string; output?: unknown };
 type Request = { input?: Item[]; tools?: { type?: string; name?: string; tools?: { name?: string }[] }[] };
 
+/** What the fake model says next: a reply, a shell call (reporting `tokens` used), a patch, or a code cell. */
+type Answer = { readonly reply: string } | { readonly shell: string; readonly tokens?: number } | { readonly patch: string } | { readonly cell: string };
+
 /**
- * A fake model on the Responses API that answers request `n` with `answer(n)`: a reply message, or a shell call that
- * reports `tokens` used (so a low auto-compaction limit compacts the conversation mid-turn). It keeps each request.
+ * A fake model on the Responses API that answers request `n` with `answer(n)`: a reply message, a shell call that
+ * reports `tokens` used (so a low auto-compaction limit compacts the conversation mid-turn), an apply_patch call, or a
+ * code cell (Codex's `exec`, for a model that runs its tools from code). It keeps each request.
  */
-async function scriptedModel(answer: (n: number) => { readonly reply: string } | { readonly shell: string; readonly tokens: number }) {
+async function scriptedModel(answer: (n: number) => Answer) {
 	const requests: Request[] = [];
 	const server = createServer((request, response) => {
 		let body = "";
@@ -272,8 +263,10 @@ async function scriptedModel(answer: (n: number) => { readonly reply: string } |
 			const item =
 				"reply" in said
 					? { type: "message", id: `msg_${n}`, role: "assistant", content: [{ type: "output_text", text: said.reply }] }
-					: { type: "function_call", id: `fc_${n}`, call_id: `call_${n}`, name: "exec_command", arguments: JSON.stringify({ cmd: said.shell }) };
-			const total = "tokens" in said ? said.tokens : 2;
+					: "shell" in said
+						? { type: "function_call", id: `fc_${n}`, call_id: `call_${n}`, name: "exec_command", arguments: JSON.stringify({ cmd: said.shell }) }
+						: { type: "custom_tool_call", id: `ctc_${n}`, call_id: `call_${n}`, name: "patch" in said ? "apply_patch" : "exec", input: "patch" in said ? said.patch : said.cell };
+			const total = "tokens" in said && said.tokens !== undefined ? said.tokens : 2;
 			const usage = { input_tokens: total - 1, input_tokens_details: { cached_tokens: 0 }, output_tokens: 1, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: total };
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			for (const event of [{ type: "response.created", response: { id } }, { type: "response.output_item.done", item }, { type: "response.completed", response: { id, usage } }]) {
@@ -284,6 +277,83 @@ async function scriptedModel(answer: (n: number) => { readonly reply: string } |
 	});
 	await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
 	return { port: (server.address() as AddressInfo).port, requests, close: () => server.close() };
+}
+
+/** What each tool call gave back to the model, by its call id, as the last request carries it. */
+function callOutputs(requests: readonly Request[]): Map<string, string> {
+	const items = requests.at(-1)?.input ?? [];
+	return new Map(items.filter((item) => item.type?.endsWith("_call_output") === true).map((item) => [String(item.call_id), typeof item.output === "string" ? item.output : JSON.stringify(item.output)]));
+}
+
+/**
+ * A model catalog for the fake model: Codex offers apply_patch only to a model whose catalog entry has it, and runs every
+ * tool from a code cell for one whose tool mode says so.
+ */
+function modelCatalog(dir: string): string {
+	const model = (slug: string, extra: object = {}) => ({
+		slug,
+		display_name: slug,
+		description: null,
+		supported_reasoning_levels: [],
+		shell_type: "unified_exec",
+		visibility: "list",
+		supported_in_api: true,
+		priority: 1,
+		upgrade: null,
+		model_messages: null,
+		base_instructions: "You are a test model.",
+		default_reasoning_summary: "auto",
+		support_verbosity: false,
+		default_verbosity: null,
+		apply_patch_tool_type: "freeform",
+		truncation_policy: { mode: "bytes", limit: 10000 },
+		supports_image_detail_original: false,
+		context_window: null,
+		auto_compact_token_limit: null,
+		effective_context_window_percent: 95,
+		experimental_supported_tools: [],
+		...extra,
+	});
+	const file = join(dir, "models.json");
+	writeFileSync(file, JSON.stringify({ models: [model("fake-model"), model("fake-cells", { tool_mode: "code_mode_only" })] }));
+	return file;
+}
+
+/** The flags that point Codex at the fake model, its catalog, and no approvals (a scratch home). */
+function fakeFlags(port: number, catalog: string, model = "fake-model"): string[] {
+	return [
+		"--skip-git-repo-check",
+		"--dangerously-bypass-approvals-and-sandbox",
+		"-c",
+		`model_providers.fake={name="fake",base_url="http://127.0.0.1:${port}/v1",wire_api="responses"}`,
+		"-c",
+		'model_provider="fake"',
+		"-c",
+		`model=${tomlString(model)}`,
+		"-c",
+		`model_catalog_json=${tomlString(catalog)}`,
+		"-c",
+		"analytics.enabled=false",
+	];
+}
+
+/**
+ * Atlas in a scratch home with a protected file in its folder ([guard] protect = ["secret.txt"]), the launch's flags,
+ * and the environment `orrery agent --tool codex` gives Codex.
+ */
+function guardedAtlas(name: string, orrery: readonly string[]) {
+	const env = isolated(name);
+	const home = env.HOME as string;
+	const work = join(home, "work");
+	mkdirSync(work);
+	writeFileSync(join(work, "secret.txt"), "s3cret\n");
+	const config = join(home, "config.toml");
+	// Its summary model has no login here: summaries stop, and nothing calls a real model.
+	writeFileSync(config, `data_dir = ${JSON.stringify(join(home, "data"))}\n[guard]\nprotect = ["secret.txt"]\n[agents.Atlas]\nfolder = ${JSON.stringify(work)}\ntool = "codex"\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+	const agentDir = join(home, "data", "agents", "Atlas");
+	const launch = codexLaunch({ name: "Atlas", dir: agentDir }, orrery);
+	const agentEnv: NodeJS.ProcessEnv = { ...env, ORRERY_CONFIG: config, ORRERY_HOME: join(home, "orrery-home"), ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: newToken() };
+	return { env: agentEnv, home, work, agentDir, launch, catalog: modelCatalog(home) };
 }
 
 /** A request's developer messages, as text. */

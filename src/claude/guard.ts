@@ -17,7 +17,8 @@
  * - a command line, Grep glob, Glob pattern or path over 64 KB is refused before any pattern runs on it, and a call
  *   that names more than can be judged in 2 s is refused, since a hook that times out lets it through.
  * What differs from pi:
- * - paths resolve as Claude Code resolves them (claudeToolPath), not as pi does;
+ * - paths resolve as Claude Code resolves them (claudeToolPath), not as pi does, unless the caller says otherwise (Codex's
+ *   gate, src/codex/guard.ts, which judges Codex's tools through this one);
  * - Claude Code's login files are credentials too;
  * - the PreToolUse hook adds Claude Code's own state to the roots an agent may write (claudeStateRoots, ruling C10).
  */
@@ -195,8 +196,8 @@ function judge(tool: string, args: Readonly<Record<string, unknown>>, options: P
 	if (typeof names === "string" && loginNamed(names)) return `${tool} ${nameKey} "${names}" names sensitive files (Claude Code's login).`;
 	const raw = args.path;
 	if (typeof raw !== "string" || raw === "") return undefined;
-	// All three forms, as guardToolCall checks them: what the model wrote, where Claude Code resolves it, where it lands.
-	const resolved = claudeToolPath(raw, options.cwd, options.home);
+	// All three forms, as guardToolCall checks them: what the model wrote, where the tool resolves it, where it lands.
+	const resolved = (options.resolvePath ?? claudeToolPath)(raw, options.cwd, options.home);
 	return [raw, resolved, realTarget(resolved)].some(loginNamed) ? LOGIN_FILE(raw) : undefined;
 }
 
@@ -206,14 +207,18 @@ function judge(tool: string, args: Readonly<Record<string, unknown>>, options: P
  */
 function judgeBounded(tool: string, args: Readonly<Record<string, unknown>>, options: PathGuardOptions & { readonly home: string }): string | undefined {
 	const raw = args.path;
-	if (typeof raw === "string" && claudeToolPath(raw, options.cwd, options.home).length > PATH_MAX) {
+	if (typeof raw === "string" && (options.resolvePath ?? claudeToolPath)(raw, options.cwd, options.home).length > PATH_MAX) {
 		return `${raw.slice(0, 60)}… is longer than a path can be (${PATH_MAX} characters); nothing was checked.`;
 	}
 	if (typeof raw === "string" && raw.length > CHECK_MAX) return TOO_LONG(`${raw.slice(0, 60)}…`);
 	return judge(tool, args, options);
 }
 
-/** Where a Claude Code tool call runs, for the guard (PathGuardOptions), and how long the guard may judge it. */
+/**
+ * Where a Claude Code tool call runs, for the guard (PathGuardOptions), and how long the guard may judge it. Paths
+ * resolve as Claude Code resolves them unless `resolvePath` says otherwise (Codex's apply_patch and view_image,
+ * src/codex/guard.ts).
+ */
 export interface ClaudeGuardOptions extends PathGuardOptions {
 	/** The time the guard may take to judge one call, in ms (default 2000): a call it cannot judge in time is refused. */
 	readonly judgeMs?: number;
@@ -224,7 +229,7 @@ export function claudeGuard(toolName: string, input: Readonly<Record<string, unk
 	const { judgeMs = JUDGE_MS, ...where } = options;
 	const deadline = performance.now() + judgeMs;
 	const home = where.home ?? homedir();
-	const guard = { ...where, home, credentials: [...(where.credentials ?? []), ...claudeLoginFiles(home)], resolvePath: claudeToolPath };
+	const guard = { ...where, home, credentials: [...(where.credentials ?? []), ...claudeLoginFiles(home)], resolvePath: where.resolvePath ?? claudeToolPath };
 	const found = named(input);
 	const as = AS_PI[toolName];
 	// Text too long to check in time is refused before any pattern runs (paths in judgeBounded).
