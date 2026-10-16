@@ -657,5 +657,12 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 		const parts = pathParts(raw).flatMap((part) => [part, ...selectorPrefixes(part)]);
 		return firstRefusal([...new Set(parts)], (part) => judge("read", { ...input, path: part }));
 	}
+	// OMP's bash runs in its cwd argument (and moves a leading "cd dir &&" there itself), so its command reads that folder:
+	// the folder is judged as a read of it, resolved as OMP resolves paths, links followed. A relative name in the command
+	// is then not seen, as after a cd (a known limit). pi's bash and eval take no cwd.
+	if (toolName === "bash" && typeof input.cwd === "string" && input.cwd.trim() !== "") {
+		const reason = judge("read", { path: input.cwd });
+		if (reason !== undefined) return reason;
+	}
 	return judge(toolName, input);
 }

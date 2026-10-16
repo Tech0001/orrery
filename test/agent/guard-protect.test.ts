@@ -137,6 +137,24 @@ describe("[guard] protect in Orrery's config", () => {
 });
 
 describe("[guard] protect: the review's findings", () => {
+	it("judges the folder OMP's bash runs in (its cwd) as a read of that folder", () => {
+		const t = protectWorld();
+		const omp = (command: string, cwd: string) => guardOmpToolCall("bash", { command, cwd }, t.options);
+		expect(omp("cat q3.csv", "~/finance")).toMatch(PROTECTED);
+		expect(omp("cat q3.csv", join(t.home, "finance"))).toMatch(PROTECTED);
+		expect(omp("cat token.txt", "vault")).toMatch(PROTECTED);
+		expect(omp("cat token.txt", join(t.atlas, "vault"))).toMatch(PROTECTED);
+		expect(omp("cat config", "~/.ssh")).toMatch(SENSITIVE);
+		expect(omp("cat remotes.json", "~/.orrery")).toMatch(SENSITIVE);
+		// Through a link to a protected folder, and relative to the session's folder.
+		expect(omp("cat q3.csv", "fin")).toMatch(PROTECTED);
+		expect(omp("ls", "src")).toBeUndefined();
+		expect(omp("cat x.csv", "~/finance-old")).toBeUndefined();
+		expect(omp("ls", ".")).toBeUndefined();
+		// pi's bash and Claude Code's Bash take no cwd; a cwd key a tool does take is judged as a path (Claude Code's rule).
+		expect(claudeGuard("mcp__shell__run", { command: "cat q3.csv", cwd: join(t.home, "finance") }, t.options)).toMatch(PROTECTED);
+	});
+
 	it("judges a bash call's command when it carries a path too (pi, OMP)", () => {
 		const t = protectWorld();
 		expect(guardToolCall("bash", { command: "cat ~/finance/q3.csv", path: "." }, t.options)).toMatch(PROTECTED);
@@ -571,6 +589,8 @@ describe("[guard] protect and .env: one table through every gate", () => {
 		readonly command?: string;
 		readonly glob?: string;
 		readonly home?: boolean;
+		/** A folder a shell runs in: OMP's bash cwd, and a cwd key Claude Code judges as a path. */
+		readonly cwd?: string;
 	}
 
 	function table(t: World): Case[] {
@@ -602,6 +622,13 @@ describe("[guard] protect and .env: one table through every gate", () => {
 			{ name: "a plain file", refused: false, path: join(t.atlas, "src", "a.ts"), command: "cat src/a.ts", glob: "**/*.ts" },
 			{ name: "beside a path entry", refused: false, path: join(t.home, "finance-old", "x.csv"), command: `cat ${join(t.home, "finance-old", "x.csv")}` },
 			{ name: "beside a name entry", refused: false, path: join(t.atlas, "secrets.yml.bak"), command: "cat secrets.yml.bak", glob: "**/secrets.yml.bak" },
+			{ name: "a shell in a path entry", refused: true, cwd: join(t.home, "finance") },
+			{ name: "a shell in a path entry from ~", refused: true, home: true, cwd: "~/finance" },
+			{ name: "a shell in a name entry", refused: true, cwd: join(t.atlas, "vault") },
+			{ name: "a shell in a link to a path entry", refused: true, cwd: join(t.atlas, "fin") },
+			{ name: "a shell in a credential folder", refused: true, home: true, cwd: "~/.ssh" },
+			{ name: "a shell in a plain folder", refused: false, cwd: join(t.atlas, "src") },
+			{ name: "a shell beside a path entry", refused: false, cwd: join(t.home, "finance-old") },
 		];
 	}
 
@@ -635,6 +662,7 @@ describe("[guard] protect and .env: one table through every gate", () => {
 	const omp: Gate = async (t, c) => {
 		const out: (string | undefined)[] = [];
 		const call = (tool: string, input: Record<string, unknown>) => out.push(guardOmpToolCall(tool, input, t.options));
+		if (c.cwd !== undefined) call("bash", { command: "ls", cwd: c.cwd });
 		if (c.path !== undefined) {
 			call("read", { path: c.path });
 			call("read", { path: `${c.path}:1-5` });
@@ -665,6 +693,7 @@ describe("[guard] protect and .env: one table through every gate", () => {
 	const claude: Gate = async (t, c) => {
 		const out: (string | undefined)[] = [];
 		const call = (tool: string, input: Record<string, unknown>) => out.push(claudeGuard(tool, input, t.options));
+		if (c.cwd !== undefined) call("mcp__shell__run", { command: "ls", cwd: c.cwd });
 		if (c.path !== undefined) {
 			call("Read", { file_path: c.path });
 			call("Grep", { pattern: "x", path: c.path });
