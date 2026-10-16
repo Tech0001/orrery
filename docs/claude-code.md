@@ -312,10 +312,18 @@ searches are refused it, by their path or a symbolic link to it (a hard link is 
 `allowed_roots`. Setup commands that name the installed app folder (the plugin install above, for one) are refused to
 agents, so run them in your own terminal.
 
-A project's `.env` and `.env.<anything>` files are refused the same way, so agents neither read nor edit them
-(`.env.example`, `.env.sample`, `.env.template` and `.env.dist` stay open). So is everything `[guard] protect` lists in the config:
-a path (`/…` or `~/…`, a file or a folder) or a name (every file or folder so named); see the
-[README](../README.md#safety). Its refusals say `protected by [guard] protect in Orrery's config`.
+Tool logins in your home folder are refused the same way: `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`,
+`~/.gem/credentials`, `~/.config/gcloud`, `~/.azure`, `~/.terraform.d/credentials.tfrc.json`, `~/.wrangler`,
+`~/.config/.wrangler` (`~/Library/Preferences/.wrangler` on macOS), `~/.cache/huggingface/token` and `stored_tokens`,
+`~/.huggingface/token`, `~/.password-store` and `~/.config/op`. A project's own `.npmrc`, `.pypirc`, `.azure` or `.wrangler` stays open; Bash is refused those four only when it names
+them from home (`~/.npmrc`, `$HOME/.npmrc`, the home folder's path).
+
+Secret files in any folder are refused too, so agents neither read nor edit them: `.env` and `.env.<anything>`,
+`.dev.vars` and `.dev.vars.<anything>`, `.secrets`, `secrets.toml`, `master.key` and `.htpasswd` (the shared templates,
+`.example`, `.sample`, `.template` and `.dist` after `.env` or `.dev.vars`, stay open). So is everything `[guard]
+protect` lists in the config: a path (`/…` or `~/…`, a file or a folder) or a name (every file or folder so named); new
+configs have it with examples, and setup adds it once to an older one; see the [README](../README.md#safety). Its
+refusals say `protected by [guard] protect in Orrery's config`.
 
 Claude Code's own per-user state stays writable, and only this:
 
@@ -325,8 +333,8 @@ Claude Code's own per-user state stays writable, and only this:
 
 The guard runs before every tool. A hook that crashes does not block. It is a seatbelt, not a sandbox. Its known limits:
 
-- **A search of a folder can still read a `.env` inside it**, or a file a protected name covers: only a protected path
-  is checked against a Grep's folder. A command over a folder that holds a protected path (`tar`, `grep -r`) is not
+- **A search of a folder can still read a `.env` inside it**, or another of those secret files, or a file a protected
+  name covers: only a protected path and the tool logins under home are checked against a Grep's folder. A command over a folder that holds a protected path (`tar`, `grep -r`) is not
   refused either, and a command that has a protected name as a word is refused even when it means something else
   (`git commit -m "ignore .env"`).
 - The shell-text rules read a command's text, not what it does. Shell commands that name an `.orrery` folder or a

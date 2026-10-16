@@ -66,43 +66,99 @@ const SENSITIVE = [
 // entry's spelling ends the same way (Protection.spelled), so ~/finance never stands for ~/finance-old.
 const NAME_START = "(?:^|[\\s\"'=:/~<>;|&()`{,*@]|(?:^|[\\s\"'])-[a-z]+)";
 const NAME_END = "(?=$|[\\s\"'/:;|&()<>`,}*?\\[])";
+/** NAME_START for a name that starts with a dot: without "*", which a shell does not let match a leading dot. */
+const DOT_START = "(?:^|[\\s\"'=:/~<>;|&()`{,@]|(?:^|[\\s\"'])-[a-z]+)";
 
 /**
- * The built-in .env rule (spec 2026-10-15-guard-protect): .env and .env.<anything> standing as a name, but not the
- * templates meant to be shared (.env.example, .env.sample, .env.template, .env.dist, each followed by a plain end, not a
- * glob). As a name, so process.env, import.meta.env, prod.env and .envrc never match; nor does *.env, since a shell's
- * "*" does not match a leading dot (NAME_START without "*"). A brace group right after it ends it too: .env.lo{…} is a
- * .env file whatever the group holds. What follows ".env." holds no character a name starts or ends at, so a try reads
- * no further than the next place a name may start: the text is read in linear time.
+ * The built-in .env rule (spec 2026-10-15-guard-protect), and Cloudflare Workers' .dev.vars by the same rule (spec
+ * 2026-10-16-guard-presets): .env and .env.<anything>, .dev.vars and .dev.vars.<anything>, standing as a name, but not the
+ * templates meant to be shared (.env.example, .env.sample, .env.template, .env.dist and the same for .dev.vars, each
+ * followed by a plain end, not a glob). As a name, so process.env, import.meta.env, prod.env and .envrc never match; nor
+ * does *.env, since a shell's "*" does not match a leading dot (DOT_START). A brace group right after it ends it too:
+ * .env.lo{…} is a .env file whatever the group holds. What follows ".env." holds no character a name starts or ends at,
+ * so a try reads no further than the next place a name may start: the text is read in linear time.
  */
 const ENV_FILE = new RegExp(
-	`(?:^|[\\s"'=:/~<>;|&()\`{,@]|(?:^|[\\s"'])-[a-z]+)\\.env(?!\\.(?:example|sample|template|dist)(?=$|[\\s"'/:;|&()<>\`,}]))(?:\\.[^\\s"'=:/~<>;|&()\`{,*}?\\[@]*)?(?=$|[\\s"'/:;|&()<>\`,}*?\\[{])`,
+	`${DOT_START}\\.(?:env|dev\\.vars)(?!\\.(?:example|sample|template|dist)(?=$|[\\s"'/:;|&()<>\`,}]))(?:\\.[^\\s"'=:/~<>;|&()\`{,*}?\\[@]*)?(?=$|[\\s"'/:;|&()<>\`,}*?\\[{])`,
 );
 
 /**
- * How far around a brace group the readings look (Reading.pieces) for the built-in rules: room for the longest fixed
- * name they look for (.pi/agent/models.json, .env.template) and its edges.
+ * The other secret files built in by name, in any folder, matched as whole names (spec 2026-10-16-guard-presets): act's
+ * .secrets, Streamlit's secrets.toml, Rails' master.key and .htpasswd. secrets.toml.example and my-secrets.toml are other
+ * names. Like the .env rule, not judged in an OMP edit's text, where a .gitignore line names them.
  */
-const ENV_REACH = 32;
+const SECRET_NAMES = new RegExp(`${DOT_START}\\.(?:secrets|htpasswd)${NAME_END}|${NAME_START}(?:secrets\\.toml|master\\.key)${NAME_END}`);
+
+/**
+ * Credential files and folders under home (spec 2026-10-16-guard-presets), beside HOME_CREDENTIALS's (guard-paths.ts):
+ * file tools by path, links followed, and a search whose root holds one, as HOME_CREDENTIALS. In shell text most are
+ * named by HOME_NAMED anywhere, as .aws/credentials is; HOME_ONLY's are not.
+ */
+export const HOME_SECRETS: readonly string[] = [
+	".npmrc",
+	".pypirc",
+	".cargo/credentials",
+	".cargo/credentials.toml",
+	".gem/credentials",
+	".config/gcloud",
+	".azure",
+	".terraform.d/credentials.tfrc.json",
+	".wrangler",
+	".config/.wrangler",
+	// wrangler's login on macOS, whose config folder is Library/Preferences.
+	"Library/Preferences/.wrangler",
+	".cache/huggingface/token",
+	// huggingface_hub keeps every saved token here, beside the active one.
+	".cache/huggingface/stored_tokens",
+	".huggingface/token",
+	".password-store",
+	".config/op",
+];
+
+/**
+ * HOME_SECRETS whose names are common in projects: a project's own .npmrc or .pypirc, an Azure Developer CLI project's
+ * .azure folder, wrangler's .wrangler cache. Shell text names one only from home (Protection.secretSpelled): ~/.npmrc is
+ * refused, .npmrc is not.
+ */
+const HOME_ONLY = [".npmrc", ".pypirc", ".azure", ".wrangler"];
+
+const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The other HOME_SECRETS, named anywhere as a whole path (not .config/opencode for .config/op), like SENSITIVE's; lower
+ * case, as the readings are.
+ */
+const HOME_NAMED = new RegExp(`${DOT_START}(?:${HOME_SECRETS.filter((name) => !HOME_ONLY.includes(name)).map((name) => literal(name.toLowerCase())).join("|")})${NAME_END}`);
+
+/** The credential patterns: SENSITIVE's and HOME_NAMED. */
+const CREDENTIALS = [...SENSITIVE, HOME_NAMED];
+
+/**
+ * How far around a brace group the readings look (Reading.pieces) for the built-in rules: room for the longest fixed
+ * name they look for (.terraform.d/credentials.tfrc.json, .pi/agent/models.json, .dev.vars.template) and its edges.
+ */
+const ENV_REACH = 48;
 
 /**
  * Case-insensitive: on a case-insensitive file system (macOS) ~/.SSH is ~/.ssh. The text is judged as written and as the
- * shell reads it (readings), each by the credential patterns, the built-in .env rule and Orrery's own names. `views`:
- * which agent view file the text may name (viewRules); by default none.
+ * shell reads it (readings), each by the credential patterns, the built-in secret names (.env and the like) and
+ * Orrery's own names. `views`: which agent view file the text may name (viewRules); by default none. The built-in home
+ * secrets named only from home (HOME_ONLY) need the guard's home: secretText and secretPath.
  */
 export function sensitive(text: string, views: ViewRule = NO_VIEW): boolean {
 	return flagged(readings(text), views, false);
 }
 
 /**
- * Why an OMP edit's whole text is refused, or undefined: a credential file it names, by sensitive's rules but the .env
- * rule, then a [guard] protect path entry. Not .env or a protect name, which its content may name as text (a line of a
- * .gitignore, code that loads it): the edit's targets are still judged as paths, by every rule. Its readings are made
- * once for both, as checkToolCall makes a command's.
+ * Why an OMP edit's whole text is refused, or undefined: a credential file it names, by sensitive's rules but the
+ * built-in secret names, or a built-in home secret spelt from home, then a [guard] protect path entry. Not .env, the
+ * other built-in names or a protect name, which its content may name as text (a line of a .gitignore, code that loads
+ * it): the edit's targets are still judged as paths, by every rule. Its readings are made once for all, as checkToolCall
+ * makes a command's.
  */
 export function editTextRefusal(text: string, views: ViewRule, protect: Protection): string | undefined {
 	const reading = readings(text, protect.reach);
-	if (flagged(reading, views, false, [], false)) return "This edit touches sensitive files (keys, credentials or Orrery's private data).";
+	if (flagged(reading, views, false, [], false) || secretIn(reading, protect)) return "This edit touches sensitive files (keys, credentials or Orrery's private data).";
 	const entry = protect.spelled === undefined ? undefined : protectedIn(reading, protect, false);
 	return entry === undefined ? undefined : `This edit touches ${entry}, ${PROTECTED_BY}.`;
 }
@@ -110,20 +166,33 @@ export function editTextRefusal(text: string, views: ViewRule, protect: Protecti
 /**
  * Whether a text's readings name a sensitive file. For `shell` text (a command line, code to run) Orrery's config is
  * refused by name too, since a command could rewrite it (an agent's view and the guard's rules come from it), and so is
- * the config file in use by any of `config`, its spellings (configSpellings); file tools may still read it. `env`: the
- * built-in .env rule. The credential patterns and the .env rule also read the pieces of brace groups the readings could
- * not expand (Reading.pieces), as [guard] protect does; Orrery's own names have their own rule for those (readings).
+ * the config file in use by any of `config`, its spellings (configSpellings); file tools may still read it. `names`:
+ * the built-in secret names (.env and .dev.vars, SECRET_NAMES). The credential patterns and the secret names also read
+ * the pieces of brace groups the readings could not expand (Reading.pieces), as [guard] protect does; Orrery's own names
+ * have their own rule for those (readings).
  */
-function flagged(reading: Reading, views: ViewRule, shell: boolean, config: readonly string[] = [], env = true): boolean {
-	return (
-		reading.forms.some(
-			(form) =>
-				SENSITIVE.some((pattern) => pattern.test(form)) ||
-				(env && ENV_FILE.test(form)) ||
-				orreryNamed(form, views, shell) ||
-				config.some((spelling) => form.includes(spelling)),
-		) || reading.pieces.some((piece) => SENSITIVE.some((pattern) => pattern.test(piece)) || (env && ENV_FILE.test(piece)))
-	);
+function flagged(reading: Reading, views: ViewRule, shell: boolean, config: readonly string[] = [], names = true): boolean {
+	const builtIn = (text: string) => CREDENTIALS.some((pattern) => pattern.test(text)) || (names && (ENV_FILE.test(text) || SECRET_NAMES.test(text)));
+	return reading.forms.some((form) => builtIn(form) || orreryNamed(form, views, shell) || config.some((spelling) => form.includes(spelling))) || reading.pieces.some(builtIn);
+}
+
+/** Whether a reading spells a built-in home secret from the guard's home (Protection.secretSpelled). */
+function secretIn(reading: Reading, protect: Protection): boolean {
+	return reading.forms.some((form) => protect.secretSpelled.test(form)) || reading.pieces.some((piece) => protect.secretSpelled.test(piece));
+}
+
+/** Whether a text (a glob, a path as written) spells a built-in home secret from the guard's home, read as shell text is. */
+export function secretText(text: string, protect: Protection): boolean {
+	return secretIn(readings(text, protect.reach), protect);
+}
+
+/**
+ * Whether a path (one spelling of it: as written, as the tool resolves it, or real) is a built-in home secret or inside
+ * one (Protection.secrets), compared ignoring case, or spells one from home as text (secretText).
+ */
+export function secretPath(path: string, protect: Protection): boolean {
+	const folded = posix.normalize(path).toLowerCase();
+	return protect.secrets.some((secret) => within(folded, secret.toLowerCase())) || secretText(path, protect);
 }
 
 /** What a refusal for a [guard] protect entry says: the entry is the user's, not a built-in rule, so it names the setting. */
@@ -144,9 +213,14 @@ export interface Protection {
 	readonly named?: RegExp;
 	/** How far around a brace group the readings look (Reading.pieces) to hold any spelling or name whole. */
 	readonly reach: number;
+	/** HOME_SECRETS where they are from the guard's home: built in, so a hit is a sensitive file. */
+	readonly secrets: readonly string[];
+	/**
+	 * HOME_ONLY's spelt from the guard's home ("~", "~user", $HOME, ${HOME…}, the home's path) or where one really is,
+	 * as a path entry is spelt (spelled): shell text names them only so.
+	 */
+	readonly secretSpelled: RegExp;
 }
-
-const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * A name or path folded for [guard] protect: lower case, and composed (NFC), since macOS file systems take "café" and
@@ -158,17 +232,45 @@ export const foldName = (text: string) => text.toLowerCase().normalize("NFC");
 const HOME_REACH = 32;
 
 /**
+ * HOME_ONLY spelt from `home` (`base`, its path without a final "/") as a path entry under home is (protection): "~" or
+ * "~user", $HOME, ${HOME…} or the home's path, then the name; and where each really is (`real`), from home the same ways
+ * when it is under home, else by its path. Folded, as the readings are. The pattern and the reach a piece needs to hold
+ * a spelling whole (Protection.reach).
+ */
+function secretSpellings(home: string, base: string, real: (path: string) => string): { readonly pattern: RegExp; readonly reach: number } {
+	const folded = foldName(base);
+	const rests = new Set<string>();
+	const elsewhere = new Set<string>();
+	for (const name of HOME_ONLY) {
+		const path = posix.join(home, name);
+		for (const at of [path, real(path)].map(foldName)) {
+			if (folded === "" || at.startsWith(`${folded}/`)) rests.add(at.slice(folded.length));
+			else elsewhere.add(at);
+		}
+	}
+	// Home as the shell may spell it. Each home-part run stops at the next "~" or "$", so the text is read in linear time.
+	// A home of "/" has no path of its own to spell: its names then need a start where a word may begin.
+	const homes = ["~[^\\s\"'/;|&()<>`~]*", "\\$home", "\\$\\{home[^}\\s$]*\\}", folded === "" ? "(?:^|[\\s\"'=:<>;|&()`{,@])" : literal(folded)];
+	const fromHome = `(?:${homes.join("|")})(?:${[...rests].map(literal).join("|")})`;
+	const pattern = new RegExp(`(?:${[fromHome, ...[...elsewhere].map(literal)].join("|")})${NAME_END}`);
+	const longest = Math.max(0, ...[...rests].map((rest) => rest.length));
+	return { pattern, reach: Math.max(folded.length + longest + 2, HOME_REACH + longest, ...[...elsewhere].map((at) => at.length + 2)) };
+}
+
+/**
  * [guard] protect `entries` (GuardOptions.protect) for matching: a path entry from `home`, and where it really is by
  * `real` (a link followed; by default as written); a name entry folded to lower case, as the other rules fold. Made per
  * tool call, as configSpellings is. A path entry under home is spelt by configSpellings, and also from "~" with a user
- * name ("~alex/…") and from a ${HOME…} expansion ("${HOME%/}/…"), as the shell may spell home.
+ * name ("~alex/…") and from a ${HOME…} expansion ("${HOME%/}/…"), as the shell may spell home. The built-in home secrets
+ * (HOME_SECRETS) come with it, from the same home: Protection.secrets and secretSpelled.
  */
 export function protection(entries: readonly string[] = [], home: string = homedir(), real: (path: string) => string = (path) => path): Protection {
 	const paths: { entry: string; path: string; real: string }[] = [];
 	const names = new Map<string, string>();
 	const spellings: string[] = [];
 	const base = posix.normalize(home).replace(/\/+$/, "");
-	let reach = ENV_REACH;
+	const secrets = secretSpellings(home, base, real);
+	let reach = Math.max(ENV_REACH, secrets.reach);
 	for (const entry of entries) {
 		if (!entry.includes("/")) {
 			names.set(foldName(entry), entry);
@@ -189,6 +291,8 @@ export function protection(entries: readonly string[] = [], home: string = homed
 		paths,
 		names,
 		reach,
+		secrets: HOME_SECRETS.map((name) => posix.join(home, name)),
+		secretSpelled: secrets.pattern,
 		...(spellings.length === 0 ? {} : { spelled: new RegExp(`(?:${spellings.join("|")})${NAME_END}`) }),
 		...(names.size === 0 ? {} : { named: new RegExp(`${NAME_START}(${[...names.keys()].map(literal).join("|")})${NAME_END}`) }),
 	};
@@ -558,7 +662,7 @@ export function within(path: string, root: string): boolean {
 
 /**
  * A cheap pre-filter on the raw arguments; the authoritative file check is checkResolvedPath. `views`: viewRules;
- * `config`: configSpellings; `protect`: protection, "~" from the OS's home by default.
+ * `config`: configSpellings; `protect`: protection, with the built-in home secrets, "~" from the OS's home by default.
  */
 export function checkToolCall(
 	call: { readonly name: string; readonly arguments: Readonly<Record<string, unknown>> },
@@ -569,9 +673,10 @@ export function checkToolCall(
 ): string | undefined {
 	const command = call.arguments.command;
 	if (call.name === "bash" && typeof command === "string") {
-		// Shell text's readings, made once: sensitive by flagged's rules for shell text, then the [guard] protect entries.
+		// Shell text's readings, made once: sensitive by flagged's rules for shell text and the built-in home secrets spelt
+		// from home, then the [guard] protect entries.
 		const reading = readings(command, protect.reach);
-		if (flagged(reading, views.command, true, config)) return "This command touches sensitive files (keys, credentials or Orrery's private data).";
+		if (flagged(reading, views.command, true, config) || secretIn(reading, protect)) return "This command touches sensitive files (keys, credentials or Orrery's private data).";
 		const entry = protectedIn(reading, protect);
 		if (entry !== undefined) return `This command touches ${entry}, ${PROTECTED_BY}.`;
 	}
@@ -579,7 +684,7 @@ export function checkToolCall(
 	if (typeof raw !== "string") return undefined;
 	const path = posix.normalize(posix.isAbsolute(raw) ? raw : posix.join(options.cwd ?? options.folder, raw));
 	const named = views.path(path);
-	if (sensitive(raw, named) || sensitive(path, named)) return `${path} is a sensitive file (keys, credentials or Orrery's private data).`;
+	if (sensitive(raw, named) || sensitive(path, named) || secretPath(raw, protect) || secretPath(path, protect)) return `${path} is a sensitive file (keys, credentials or Orrery's private data).`;
 	if (pathProtected(raw, protect) !== undefined || pathProtected(path, protect) !== undefined) return PROTECTED_FILE(path);
 	const writes = call.name === "write" || call.name === "edit";
 	if (writes && (orreryConfigNamed(path) || config.includes(path.toLowerCase()))) return CONFIG_READ_ONLY(path);

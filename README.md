@@ -259,17 +259,39 @@ the trade-offs.
 ## Safety
 
 Orrery guards credentials: an agent's tool calls that would read key files, your logins or another agent's memory are
-refused, and Orrery's own config and program are read-only to agents. A project's `.env` and `.env.<anything>` files
-are protected too: agents can neither read nor edit them, so you edit them yourself. `.env.example`, `.env.sample`,
-`.env.template` and `.env.dist` stay open. An agent's file edits also stay inside the folder it was opened in;
-`allowed_roots = ["/abs/path"]` in its `[agents.<Name>]` section adds more.
+refused, and Orrery's own config and program are read-only to agents. Out of the box, agents can neither read nor edit:
 
-To protect more files and folders, for every agent and in every tool, list them in `config.toml`:
+- **Keys and logins in your home folder:** `~/.ssh`, `~/.gnupg`, `~/.aws/credentials`, `~/.kube/config`,
+  `~/.docker/config.json`, `~/.config/gh/hosts.yml`, `~/.netrc`, `~/.git-credentials`, `~/.pgpass`, `~/.npmrc`,
+  `~/.pypirc`, `~/.cargo/credentials`, `~/.gem/credentials`, `~/.config/gcloud`, `~/.azure`,
+  `~/.terraform.d/credentials.tfrc.json`, wrangler's login (`~/.wrangler`, `~/.config/.wrangler`, and
+  `~/Library/Preferences/.wrangler` on macOS), Hugging Face's tokens, `~/.password-store`, the 1Password CLI's
+  `~/.config/op`, and the logins of pi, OMP and Orrery (Claude Code's too, in its sessions).
+- **Secret files in any folder:** `.env` and `.env.<anything>`, `.dev.vars` and `.dev.vars.<anything>` (Cloudflare
+  Workers), `.secrets`, `secrets.toml`, `master.key` and `.htpasswd`. The shared templates stay open: `.env.example`,
+  `.env.sample`, `.env.template` and `.env.dist`, and the same for `.dev.vars`.
+
+You edit those files yourself. A project's own `.npmrc`, `.pypirc`, `.azure` or `.wrangler` is not a login and stays
+open, and so do `npm`, `cargo`, `gcloud`, `az`, `wrangler`, `pass` and `op` themselves: only naming the protected files
+and folders is refused. An agent's file edits also stay inside the folder it was opened in; `allowed_roots =
+["/abs/path"]` in its `[agents.<Name>]` section adds more.
+
+**You can add your own files and folders.** List them under `[guard]` in `~/.orrery/config.toml` (or the file
+`ORRERY_CONFIG` names), and every agent is kept from them, in every tool:
 
 ```toml
 [guard]
-protect = ["~/finance", "/srv/keys/prod.pem", "secrets.yml"]
+protect = [
+  "~/finance",           # a folder in your home, and everything in it
+  "/srv/keys/prod.pem",  # one file, by its full path
+  "secrets.yml",         # every file or folder with this name, in any folder
+  ".envrc",
+]
 ```
+
+New configs already have this block, with its examples commented out: uncomment a line or add your own. An older
+config gets it once, the first time `orrery setup` runs (it runs on install and on `orrery update`); if you delete it,
+it does not come back.
 
 An entry that starts with `/` or `~/` is a path: that file, or that folder and everything in it. An entry with no `/`
 is a name: every file or folder with exactly that name, in any folder. Letter case is ignored, and so is how an accent
@@ -279,13 +301,15 @@ anywhere but under `[guard]`. The table must be spelled `[guard]`: a misspelt on
 protects nothing. Agents cannot change the list, since the config is read-only to them. A refusal says which entry it
 came from.
 
-**A search of a folder can still read a `.env` inside it.** The same goes for a file a name entry protects: the guard
-refuses tools that name the file, but a grep of the folder that holds it reads it too. A path entry does not have this
-gap: a search of a folder that holds it is refused.
+**A search of a folder can still read a `.env` inside it.** The same goes for the other secret files named above and
+a file a name entry protects: the guard refuses tools that name the file, but a grep of the folder that holds it reads
+it too. A path entry and the logins in your home folder do not have this gap: a search of a folder that holds one is
+refused.
 
 If `config.toml` cannot be read, pi and OMP sessions keep the built-in rules, and its `[guard] protect` when that part
 of the file reads cleanly; if it does not (the TOML is broken around it, or an entry is refused), they refuse every
-tool call until the config is fixed, as Claude Code does for any config it cannot read.
+tool call until the config is fixed, as Claude Code does for any config it cannot read. A `[guard] protect` that lists
+nothing, as a new config has it, counts as no entries even when the TOML is broken elsewhere.
 
 **It is a guard, not a sandbox.** It checks file paths and the text of shell commands, so a determined program can get
 around it; the [architecture guide](docs/architecture.md#the-credential-guard) lists the known limits.

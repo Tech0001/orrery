@@ -296,18 +296,30 @@ view: it is refused to every other agent's file tools and content searches (grep
 listings (ls, find, glob) may list its folder. Which agent a session is comes from the same choice that picks its
 memory (`ORRERY_AGENT` with its claimed token, else the folder), so a tool an agent starts itself is not that agent. In
 Claude Code, a config that is there but cannot be read refuses every tool call.
+Tool logins under home are credentials too: `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials` (and `.toml`),
+`~/.gem/credentials`, `~/.config/gcloud`, `~/.azure`, `~/.terraform.d/credentials.tfrc.json`, `~/.wrangler`,
+`~/.config/.wrangler` (`~/Library/Preferences/.wrangler` on macOS), `~/.cache/huggingface/token` and `stored_tokens`,
+`~/.huggingface/token`, `~/.password-store` and `~/.config/op`. File tools are refused them by path, links followed, and a search whose root holds one is refused. Shell text names
+most of them anywhere, as `.aws/credentials`; `.npmrc`, `.pypirc`, `.azure` and `.wrangler`, which projects have of
+their own, only from home (`~`, `~user`, `$HOME`, `${HOME…}` or the home's path, or where the file really is).
 A project's `.env` and `.env.<anything>` files are refused like credentials, except `.env.example`, `.env.sample`,
-`.env.template` and `.env.dist`; `process.env`, `prod.env` and `.envrc` are not `.env` files. `[guard] protect` in the config adds the
+`.env.template` and `.env.dist`; `process.env`, `prod.env` and `.envrc` are not `.env` files. `.dev.vars` and
+`.dev.vars.<anything>` (Cloudflare Workers) follow the same rule, and `.secrets`, `secrets.toml`, `master.key` and
+`.htpasswd` are refused as whole names (`secrets.toml.example` is another name). `[guard] protect` in the config adds the
 user's own files and folders, for every agent: a path (`/…` or `~/…`) covers that file or folder, and a name (no `/`)
 covers every file or folder so named. They are refused to file tools (by the path as written, as the tool resolves it,
 and through links), in shell text, and as the root of a search that holds a protected path; the refusal names the
 setting. Two things differ from the built-in credentials: a protected name is not checked against a search's root
-(which folders hold one is not known without listing them), and neither a protected name nor `.env` is checked in an
-OMP edit's text, only in its targets, so an edit may add `.env` to a `.gitignore`. A pi or OMP session that starts
+(which folders hold one is not known without listing them), and neither a protected name nor a built-in secret name
+(`.env` and the others above) is checked in an OMP edit's text, only in its targets, so an edit may add `.env` to a
+`.gitignore`. New configs come with an empty `[guard] protect` and commented examples; `orrery setup` adds the same
+block once to a config that has no `[guard]` table, keeping the rest of the file as it was, and records that it did
+(`guard-preset.json` in Orrery's home), so a block the user deletes does not come back. A pi or OMP session that starts
 while the config cannot be read reads `[guard] protect` from its text on its own: when the TOML parses and `[guard]`
-reads cleanly, it keeps its entries; when the text has no `[guard]` table, the built-in rules apply alone; otherwise
-(the TOML does not parse and has a `[guard]` table or a `protect` key, `[guard]` is malformed, an entry is refused, or
-the file cannot be read at all) it refuses every tool call and says why, as Claude Code does. Names and paths are
+reads cleanly, it keeps its entries; when the text has no `[guard]` table, or its one plain `[guard]` table reads on its
+own and lists nothing (the preset as it comes), the built-in rules apply alone; otherwise (the TOML does not parse and
+may hold `[guard] protect` elsewhere or in entries, `[guard]` is malformed, an entry is refused, or the file cannot be
+read at all) it refuses every tool call and says why, as Claude Code does. Names and paths are
 compared ignoring case and Unicode normal form (NFC), as macOS file systems compare them. The table must be spelled
 `[guard]`: a `protect` key anywhere else and a `[Guard]` in another case are config errors, but a misspelt table name
 is not noticed (an unknown table stays allowed, so an older Orrery can read a newer config).
@@ -319,11 +331,16 @@ The rules are tested against concrete tool shapes and need review when upstream 
 This is a credential guard, not a sandbox.
 Shell and evaluation tools receive text checks, not an operating-system isolation boundary.
 The shell-text rules are a seatbelt. Known limits include variables, `eval`, `cd`, escape codes, brace names split across words, commands that change folder with their own flag (`git -C`, `tar -C`), a swap of the session's own folder in the same command, a shell search of an agent's whole folder, and hard links to a protected file.
-For `.env` and `[guard] protect` these hold too. Above all, a search of a folder can still read a `.env` inside it,
-or a file a protected name covers: only a protected path is checked against a search's folder. Also, a glob that does
+For the built-in secret files and `[guard] protect` these hold too. Above all, a search of a folder can still read a
+`.env` inside it (or `.dev.vars`, `secrets.toml` and the others), or a file a protected name covers: only a protected
+path and the credential locations under home are checked against a search's folder. Also, a glob that does
 not spell the name (`.en?`, or `*.env` where `*` matches a leading dot, as in `find -name`) and a command over a folder
-that holds a protected path (`tar`, `grep -r`) get through. The other way round, a command that has a protected name as a word is refused even
-when it means something else, such as `git commit -m "ignore .env"` or `python -m venv .env`.
+that holds a protected path (`tar`, `grep -r`) get through, and so does a command that names `.npmrc`, `.pypirc`,
+`.azure` or `.wrangler` relative to the home folder (`cd ~ && cat .npmrc`), one that spells home inside a brace group
+(`{${HOME},x}/.npmrc`), and a name split across two brace groups when one of them has more than 64 alternatives. The
+other way round, a command that has a protected name as a word is refused even when it means something else, such as
+`git commit -m "ignore .env"`, `python -m venv .env` or `jq .secrets`, and an OMP edit whose text names a home login
+(a release workflow that writes `~/.npmrc`) is refused, as for any credential file.
 Generated code can reach files through mechanisms the guard cannot see.
 Unknown plugin tools and hook failures can also fall outside the protection offered by a host integration.
 Do not use it as the security boundary for untrusted code or a hostile agent.

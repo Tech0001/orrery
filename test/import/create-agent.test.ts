@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createFromPreview, type NewAgentFromChat, storeRefusal } from "../../src/import/create-agent.ts";
+import { type CreateSteps, createFromPreview, type NewAgentFromChat, storeRefusal } from "../../src/import/create-agent.ts";
 import { commitPreview, writePreview } from "../../src/import/preview.ts";
 import { addAgent, editConfigFile } from "../../src/agent/config-edit.ts";
 import { loadConfig } from "../../src/agent/config.ts";
@@ -207,17 +207,19 @@ describe("createFromPreview when a step fails", () => {
 	it("config: a save that fails after copying the .bak puts the old .bak back", () => {
 		const s = scene();
 		writeFileSync(`${s.configPath}.bak`, "an older config\n");
-		// The save's temporary file can't be written (a folder is in its place): the .bak copy is made, the rename never.
-		const temp = `${s.configPath}.tmp-${process.pid}`;
-		mkdirSync(temp);
+		// The save writes the .bak, then fails before the config is replaced (a full disk, say). Its temporary files have
+		// names no one can take first, so the failure is made here, at the step.
+		const failing: CreateSteps["editConfig"] = (path, edit) => {
+			const text = readFileSync(path, "utf8");
+			edit(text, dirname(path));
+			writeFileSync(`${path}.bak`, text);
+			throw new Error("ENOSPC: no space left on device");
+		};
 		const config = readFileSync(s.configPath, "utf8");
 		const files = tree(s.dir);
-		expect(() => createFromPreview(s.configPath, s.request)).toThrow(/EISDIR/);
+		expect(() => createFromPreview(s.configPath, s.request, { editConfig: failing })).toThrow(/ENOSPC/);
 		expect(readFileSync(`${s.configPath}.bak`, "utf8")).toBe("an older config\n");
-		undone(s, config, files, () => {
-			rmSync(temp, { recursive: true });
-			return createFromPreview(s.configPath, s.request);
-		});
+		undone(s, config, files);
 	});
 
 	it("takes away only the folders it made: one another process made meanwhile stays", () => {

@@ -3,7 +3,8 @@
  * command, the backup service, pi, OMP and Claude Code are pointed at <home>/app/current, never at a version folder, in
  * the shape the version there has (layout.ts). What is already right is left alone; Orrery's own wiring of either shape
  * is moved without asking; a tool with no Orrery wiring yet is connected only after asking, and anything that is not
- * Orrery's own is replaced only after asking, with a copy of it kept beside it.
+ * Orrery's own is replaced only after asking, with a copy of it kept beside it. Last, the config in use gets the [guard]
+ * example once (guard-preset.ts).
  */
 
 import { chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -12,6 +13,7 @@ import { dirname, join, resolve } from "node:path";
 import { orreryHome } from "../agent/home.ts";
 import { checkTools, findOnPath, setAside, type InstallStep, installSteps, ompExtensionFile, piExtensionFile, runInstall, type Runner, type ToolCheck } from "../agent/tools.ts";
 import { type Confirm, pathAdvice } from "./ask.ts";
+import { offerGuardPreset } from "./guard-preset.ts";
 import { envRunner } from "./install.ts";
 import { ENTRY_TAILS, endsWithSegments, entries, isOrreryCommand, oneLineTarget } from "./layout.ts";
 
@@ -194,6 +196,9 @@ export async function wireReport(env: NodeJS.ProcessEnv, options: { run?: Runner
 	if (advice !== undefined) emit(advice);
 	for (const line of pointBackup(env, home, run, left, options.platform ?? process.platform)) emit(line);
 	await wireTools(env, current, { probe, install: run }, options.confirm, left, unchecked, emit);
+	// The [guard] example, once per config: nothing is left when it is not added.
+	const preset = offerGuardPreset(env);
+	if (preset !== undefined) emit(preset);
 	return { lines, left, unchecked };
 }
 

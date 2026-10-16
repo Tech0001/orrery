@@ -5,7 +5,8 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { afterEach, describe, expect, it } from "vitest";
 import { Agent } from "../../src/agent/agent.ts";
 import { ConfigError, type HarnessConfig, parseConfig } from "../../src/agent/config.ts";
-import { checkResolvedPath } from "../../src/agent/guard.ts";
+import { newConfigText } from "../../src/agent/config-edit.ts";
+import { checkResolvedPath, durablePreCheck } from "../../src/agent/guard.ts";
 import { guardOmpToolCall, guardToolCall } from "../../src/agent/guard-paths.ts";
 import { checkToolCall } from "../../src/agent/guard-rules.ts";
 import { claudeGuard } from "../../src/claude/guard.ts";
@@ -35,13 +36,49 @@ function protectWorld() {
 	const home = join(root, "home");
 	const atlas = join(root, "projects", "agent-Atlas");
 	const keys = join(root, "keys");
-	for (const folder of [join(home, "finance"), join(home, "finance-old"), keys, join(atlas, "src"), join(atlas, "vault"), join(root, "data")]) mkdirSync(folder, { recursive: true });
+	for (const folder of [
+		join(home, "finance"),
+		join(home, "finance-old"),
+		join(home, ".config", "gcloud"),
+		join(home, ".azure"),
+		keys,
+		join(atlas, "src"),
+		join(atlas, "vault"),
+		join(atlas, "config"),
+		join(atlas, ".streamlit"),
+		join(atlas, ".wrangler", "state"),
+		join(root, "data"),
+	]) {
+		mkdirSync(folder, { recursive: true });
+	}
 	writeFileSync(join(home, "finance", "q3.csv"), "q3");
 	writeFileSync(join(home, "finance-old", "x.csv"), "old");
 	writeFileSync(join(home, "financial.txt"), "x");
+	for (const file of [".npmrc", ".config/gcloud/adc.json", ".azure/tokens.json"]) writeFileSync(join(home, file), "x");
 	writeFileSync(join(keys, "prod.pem"), "key");
 	writeFileSync(join(keys, "dev.pem"), "key");
-	for (const file of ["secrets.yml", "secrets.yml.bak", "my-secrets.yml", "vault/token.txt", "src/a.ts", ".gitignore", ".env", ".env.local", ".env.example", ".envrc", "prod.env"]) {
+	for (const file of [
+		"secrets.yml",
+		"secrets.yml.bak",
+		"my-secrets.yml",
+		"vault/token.txt",
+		"src/a.ts",
+		".gitignore",
+		".env",
+		".env.local",
+		".env.example",
+		".envrc",
+		"prod.env",
+		".dev.vars",
+		".dev.vars.example",
+		".secrets",
+		"config/master.key",
+		".streamlit/secrets.toml",
+		".streamlit/secrets.toml.example",
+		".htpasswd",
+		".npmrc",
+		".wrangler/state/x",
+	]) {
 		writeFileSync(join(atlas, file), "x");
 	}
 	symlinkSync(join(home, "finance", "q3.csv"), join(atlas, "link.csv"));
@@ -49,6 +86,7 @@ function protectWorld() {
 	symlinkSync(join(keys, "prod.pem"), join(atlas, "key-link"));
 	symlinkSync(join(atlas, "secrets.yml"), join(atlas, "notes.yml"));
 	symlinkSync(join(atlas, ".env"), join(atlas, "settings.txt"));
+	symlinkSync(join(home, ".npmrc"), join(atlas, "npmrc-link"));
 	const protect = ["~/finance", join(keys, "prod.pem"), "secrets.yml", "vault"];
 	const toml = `data_dir = ${JSON.stringify(join(root, "data"))}
 
@@ -652,6 +690,26 @@ describe("[guard] protect and .env: one table through every gate", () => {
 			{ name: "a shell in a credential folder", refused: true, home: true, cwd: "~/.ssh" },
 			{ name: "a shell in a plain folder", refused: false, cwd: join(t.atlas, "src") },
 			{ name: "a shell beside a path entry", refused: false, cwd: join(t.home, "finance-old") },
+			// Built in from 0.6.5 (spec 2026-10-16-guard-presets): secret files by name, in any folder.
+			{ name: ".dev.vars", refused: true, path: join(t.atlas, ".dev.vars"), command: "cat .dev.vars", glob: "**/.dev.vars" },
+			{ name: ".dev.vars.example", refused: false, path: join(t.atlas, ".dev.vars.example"), command: "cat .dev.vars.example", glob: "**/.dev.vars.example" },
+			{ name: ".secrets", refused: true, path: join(t.atlas, ".secrets"), command: "act --secret-file .secrets", glob: "**/.secrets" },
+			{ name: "master.key", refused: true, path: join(t.atlas, "config", "master.key"), command: "cat config/master.key", glob: "**/master.key" },
+			{ name: "secrets.toml", refused: true, path: join(t.atlas, ".streamlit", "secrets.toml"), command: "cat .streamlit/secrets.toml", glob: "**/secrets.toml" },
+			{ name: "secrets.toml.example", refused: false, path: join(t.atlas, ".streamlit", "secrets.toml.example"), command: "cat .streamlit/secrets.toml.example", glob: "**/secrets.toml.example" },
+			{ name: ".htpasswd", refused: true, path: join(t.atlas, ".htpasswd"), command: "htpasswd -b .htpasswd user pass", glob: "**/.htpasswd" },
+			{ name: "brace-split .dev.vars", refused: true, command: "cat .dev.{vars,x}" },
+			{ name: "$'…' .htpasswd", refused: true, command: "cat $'\\x2e'htpasswd" },
+			// ... and credential files and folders under home.
+			{ name: "home's .npmrc", refused: true, path: join(t.home, ".npmrc"), command: `cat ${join(t.home, ".npmrc")}` },
+			{ name: "home's .npmrc from ~", refused: true, home: true, path: "~/.npmrc", command: "cat ~/.npmrc" },
+			{ name: "home's .azure from $HOME", refused: true, home: true, command: "ls $HOME/.azure" },
+			{ name: "home's gcloud folder", refused: true, path: join(t.home, ".config", "gcloud", "adc.json"), command: `cat ${join(t.home, ".config", "gcloud", "adc.json")}` },
+			{ name: "link to home's .npmrc", refused: true, path: join(t.atlas, "npmrc-link") },
+			{ name: "a shell in home's .azure", refused: true, cwd: join(t.home, ".azure") },
+			{ name: "a project's .npmrc", refused: false, path: join(t.atlas, ".npmrc"), command: "cat .npmrc", glob: "**/.npmrc" },
+			{ name: "a project's .wrangler", refused: false, path: join(t.atlas, ".wrangler", "state", "x"), command: "rm -rf .wrangler", glob: ".wrangler/**" },
+			{ name: "the tools' own commands", refused: false, command: "npm install && cargo build && gcloud auth list && az login && wrangler dev && pass show x && op read x" },
 		];
 	}
 
@@ -742,18 +800,18 @@ describe("[guard] protect and .env: one table through every gate", () => {
 	};
 
 	/**
-	 * orrery run: its pre-check on every call (checkToolCall), then the file tools' own resolved check (checkResolvedPath),
-	 * as the durable harness runs them. Its "~" is the OS's home, so it takes the folder entry by its absolute path and
-	 * skips the cases that spell the guard's scratch home.
+	 * orrery run: its pre-check on every call (durablePreCheck), then the file tools' own resolved check
+	 * (checkResolvedPath), as the durable harness runs them, with the scratch home as its home. Its tools still expand "~"
+	 * from the OS's home, so it takes the folder entry by its absolute path and skips the cases that spell the home.
 	 */
 	const durable: Gate = async (t, c) => {
 		if (c.home === true) return [];
-		const options = { folder: t.atlas, allowedRoots: [join(t.root, "projects")], cwd: t.atlas, foreignViews: [] as string[], protect: [join(t.home, "finance"), ...t.protect.slice(1)] };
+		const options = { folder: t.atlas, allowedRoots: [join(t.root, "projects")], cwd: t.atlas, foreignViews: [] as string[], home: t.home, protect: [join(t.home, "finance"), ...t.protect.slice(1)] };
 		const env = new NodeExecutionEnv({ cwd: t.atlas });
 		const out: (string | undefined)[] = [];
 		const file = async (tool: string, mode: "read" | "write") => {
 			const path = c.path as string;
-			out.push(checkToolCall({ name: tool, arguments: { path } }, options) ?? (await checkResolvedPath(env, path, mode, options, ctx)));
+			out.push(durablePreCheck({ name: tool, arguments: { path } }, options) ?? (await checkResolvedPath(env, path, mode, options, ctx)));
 		};
 		if (c.path !== undefined) {
 			await file("read", "read");
@@ -763,8 +821,8 @@ describe("[guard] protect and .env: one table through every gate", () => {
 			}
 		}
 		if (c.command !== undefined) {
-			out.push(checkToolCall({ name: "bash", arguments: { command: c.command } }, options));
-			out.push(checkToolCall({ name: "bash", arguments: { command: c.command, path: "." } }, options));
+			out.push(durablePreCheck({ name: "bash", arguments: { command: c.command } }, options));
+			out.push(durablePreCheck({ name: "bash", arguments: { command: c.command, path: "." } }, options));
 		}
 		return out;
 	};
@@ -855,6 +913,15 @@ describe("a pi or OMP session whose config cannot be read", () => {
 		expect(await s.tool("read", { path: ".env" })).toEqual({ block: true, reason: expect.stringMatching(SENSITIVE) });
 	});
 
+	it.each(["pi", "omp"] as const)("%s keeps the built-in rules alone when the broken config's [guard] is the preset, with no entry", async (host) => {
+		const t = protectWorld();
+		const s = await session(t, `${newConfigText()}\n[agents.Atlas\n`, host);
+		expect(s.notices).toEqual([{ type: "warning", message: expect.stringMatching(/; running without memory$/) }]);
+		expect(await s.tool("read", { path: "src/a.ts" })).toBeUndefined();
+		expect(await s.tool("bash", { command: "ls" })).toBeUndefined();
+		expect(await s.tool("read", { path: ".dev.vars" })).toEqual({ block: true, reason: expect.stringMatching(SENSITIVE) });
+	});
+
 	it.each(["pi", "omp"] as const)("%s reads [guard] protect on its own when the TOML parses but another key is bad, keeping the valid entries", async (host) => {
 		const t = protectWorld();
 		const s = await session(t, `[guard]\nprotect = ["secrets.yml", "vault"]\n\n[agents.Atlas]\nfolder = ${JSON.stringify(t.atlas)}\ntool = "nope"\ncompactor_model = "a/b"\n`, host);
@@ -890,7 +957,31 @@ describe("a pi or OMP session whose config cannot be read", () => {
 describe("[guard] protect: speed", () => {
 	it("judges a very long command in time that grows linearly, entries and the .env rule included", () => {
 		const t = protectWorld();
-		const units = [".env.=", "=.env", "/.env", "{.env,", ".env.x=y", "~/finance", "~/fin", "secrets.yml=", "=secrets.y", "$HOME/fin", "{a,b}/vault=", "vault.", "$'\\x2e'{a,b}", "x $'\\x2e'"];
+		const units = [
+			".env.=",
+			"=.env",
+			"/.env",
+			"{.env,",
+			".env.x=y",
+			"~/finance",
+			"~/fin",
+			"secrets.yml=",
+			"=secrets.y",
+			"$HOME/fin",
+			"{a,b}/vault=",
+			"vault.",
+			"$'\\x2e'{a,b}",
+			"x $'\\x2e'",
+			// the built-in names and home paths of 0.6.5
+			".dev.vars.=",
+			"=master.key",
+			"/secrets.tom",
+			"~/.npmrc",
+			"~/.np",
+			"${HOME}/.azur",
+			".cargo/credentials=",
+			"{a,b}/.config/op=",
+		];
 		// As the guard's own speed test: a 4x step must cost under 10x (linear is about 4x, quadratic about 16x).
 		const time = (unit: string, times: number) => {
 			const command = `cat ${unit.repeat(times)}`;
