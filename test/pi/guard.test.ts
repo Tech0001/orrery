@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it } from "vitest";
 import { guardToolCall, movedAgentDirCredentials } from "../../src/pi/guard.ts";
-import type { HarnessConfig } from "../../src/agent/config.ts";
+import { type HarnessConfig, parseConfig } from "../../src/agent/config.ts";
 import { createOrrery } from "../../src/pi/index.ts";
 import { fakeOmp, ompCleanup, track } from "../omp/world.ts";
 import type { PiRun } from "./harness.ts";
@@ -401,5 +401,59 @@ describe("pi: only the agent that owns a folder's memory view reads it", () => {
 		refused(await call(run, "read", { path: ".orrery/view.md" }));
 		refused(await call(run, "bash", { command: "cat .orrery/view.md" }));
 		refused(await call(run, "read", { path: birchView }));
+	}, 20_000);
+});
+
+describe("pi: [guard] protect and .env files", () => {
+	afterEach(async () => {
+		await ompCleanup();
+		await cleanup();
+	});
+	// pi's real bash runs a command the guard lets through, under a scratch HOME.
+	isolatedHome();
+
+	async function call(run: PiRun, name: string, args: Parameters<typeof fauxToolCall>[1]): Promise<string> {
+		run.setResponses([fauxAssistantMessage([fauxToolCall(name, args)]), fauxAssistantMessage("done")]);
+		await run.session.prompt(`${name}, please`);
+		const results = run.session.messages.filter((m: { role: string }) => m.role === "toolResult") as { content: { text?: string }[] }[];
+		return results.at(-1)?.content.map((c) => c.text ?? "").join("") ?? "";
+	}
+
+	it("refuses a protected name, a protected path and .env to pi's tools and bash, and lets .env.example through", async () => {
+		const made = world();
+		dir = made.root;
+		const atlas = join(made.root, "agent-Atlas");
+		const kept = join(made.root, "kept");
+		mkdirSync(kept);
+		writeFileSync(join(kept, "a.txt"), "hidden-value");
+		writeFileSync(join(atlas, "secrets.yml"), "token: hidden-value");
+		writeFileSync(join(atlas, ".env"), "KEY=hidden-value");
+		writeFileSync(join(atlas, ".env.example"), "KEY=");
+		const config = parseConfig(`${readFileSync(made.configPath, "utf8")}\n[guard]\nprotect = ["secrets.yml", ${JSON.stringify(kept)}]\n`, made.root);
+		const atlasRun = await pi(made.root, atlas, config);
+		expect(atlasRun.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
+		const calls: [string, Parameters<typeof fauxToolCall>[1]][] = [
+			["read", { path: "secrets.yml" }],
+			["read", { path: join(kept, "a.txt") }],
+			["bash", { command: "cat secrets.yml" }],
+			["bash", { command: `cat ${kept}/a.txt` }],
+		];
+		for (const [name, args] of calls) {
+			const text = await call(atlasRun, name, args);
+			expect([name, args, text]).toEqual([name, args, expect.stringMatching(/protected by \[guard\] protect in Orrery's config/)]);
+			expect(text).not.toContain("hidden-value");
+		}
+		for (const [name, args] of [
+			["read", { path: ".env" }],
+			["bash", { command: "cat .env" }],
+			["edit", { path: ".env", edits: [{ oldText: "hidden-value", newText: "planted" }] }],
+			["write", { path: ".env", content: "planted" }],
+		] as [string, Parameters<typeof fauxToolCall>[1]][]) {
+			const text = await call(atlasRun, name, args);
+			expect([name, args, text]).toEqual([name, args, expect.stringMatching(/sensitive file/)]);
+			expect(text).not.toContain("hidden-value");
+		}
+		expect(readFileSync(join(atlas, ".env"), "utf8")).toBe("KEY=hidden-value");
+		expect(await call(atlasRun, "read", { path: ".env.example" })).toContain("KEY=");
 	}, 20_000);
 });
