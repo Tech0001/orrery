@@ -70,12 +70,16 @@ const NAME_END = "(?=$|[\\s\"'/:;|&()<>`,}*?\\[])";
  * The built-in .env rule (spec 2026-10-15-guard-protect): .env and .env.<anything> standing as a name, but not the
  * examples meant to be shared (.env.example, .env.sample, .env.template, each followed by a plain end, not a glob). As a
  * name, so process.env, import.meta.env, prod.env and .envrc never match; nor does *.env, since a shell's "*" does not
- * match a leading dot (NAME_START without "*"). What follows ".env." holds no character a name starts or ends at, so a
- * try reads no further than the next place a name may start: the text is read in linear time.
+ * match a leading dot (NAME_START without "*"). A brace group right after it ends it too: .env.lo{…} is a .env file
+ * whatever the group holds. What follows ".env." holds no character a name starts or ends at, so a try reads no further
+ * than the next place a name may start: the text is read in linear time.
  */
 const ENV_FILE = new RegExp(
-	`(?:^|[\\s"'=:/~<>;|&()\`{,])\\.env(?!\\.(?:example|sample|template)(?=$|[\\s"'/:;|&()<>\`,}]))(?:\\.[^\\s"'=:/~<>;|&()\`{,*}?\\[]*)?${NAME_END}`,
+	`(?:^|[\\s"'=:/~<>;|&()\`{,])\\.env(?!\\.(?:example|sample|template)(?=$|[\\s"'/:;|&()<>\`,}]))(?:\\.[^\\s"'=:/~<>;|&()\`{,*}?\\[]*)?(?=$|[\\s"'/:;|&()<>\`,}*?\\[{])`,
 );
+
+/** How far around a brace group the readings look (Reading.pieces) for the .env rule: ".env.template" and its edges. */
+const ENV_REACH = 16;
 
 /**
  * Case-insensitive: on a case-insensitive file system (macOS) ~/.SSH is ~/.ssh. The text is judged as written and as the
@@ -95,18 +99,21 @@ export function credentialNamed(text: string, views: ViewRule = NO_VIEW): boolea
 }
 
 /**
- * Whether readings `forms` name a sensitive file. For `shell` text (a command line, code to run) Orrery's config is
+ * Whether a text's readings name a sensitive file. For `shell` text (a command line, code to run) Orrery's config is
  * refused by name too, since a command could rewrite it (an agent's view and the guard's rules come from it), and so is
  * the config file in use by any of `config`, its spellings (configSpellings); file tools may still read it. `env`: the
- * built-in .env rule.
+ * built-in .env rule, which also reads the pieces of brace groups the readings could not expand.
  */
-function flagged(forms: readonly string[], views: ViewRule, shell: boolean, config: readonly string[] = [], env = true): boolean {
-	return forms.some(
-		(form) =>
-			SENSITIVE.some((pattern) => pattern.test(form)) ||
-			(env && ENV_FILE.test(form)) ||
-			orreryNamed(form, views, shell) ||
-			config.some((spelling) => form.includes(spelling)),
+function flagged(reading: Reading, views: ViewRule, shell: boolean, config: readonly string[] = [], env = true): boolean {
+	return (
+		reading.forms.some(
+			(form) =>
+				SENSITIVE.some((pattern) => pattern.test(form)) ||
+				(env && ENV_FILE.test(form)) ||
+				orreryNamed(form, views, shell) ||
+				config.some((spelling) => form.includes(spelling)),
+		) ||
+		(env && reading.pieces.some((piece) => ENV_FILE.test(piece)))
 	);
 }
 
@@ -116,65 +123,77 @@ export const PROTECTED_FILE = (path: string) => `${path} is ${PROTECTED_BY}.`;
 
 /** [guard] protect as the guard matches it (protection). */
 export interface Protection {
-	/**
-	 * Each path entry as the config writes it, where it is ("~/" from the guard's home), where it really is, and the
-	 * last part of each, lower case (for brace groups the readings cannot expand, protectedIn).
-	 */
-	readonly paths: readonly { readonly entry: string; readonly path: string; readonly real: string; readonly last: readonly string[] }[];
+	/** Each path entry as the config writes it, where it is ("~/" from the guard's home), and where it really is. */
+	readonly paths: readonly { readonly entry: string; readonly path: string; readonly real: string }[];
 	/** Each name entry by its lower-case name, to the entry as the config writes it. */
 	readonly names: ReadonlyMap<string, string>;
-	/** Each spelling shell text may name a path entry by (configSpellings), to its entry. */
-	readonly spellings: ReadonlyMap<string, string>;
-	/** One pattern for every spelling, and one for every name, so a long text is read once for all of them; none for none. */
+	/**
+	 * One pattern for every path entry's spellings, with a group per entry in `paths` order, and one for every name, so a
+	 * long text is read once for all of them; none for none.
+	 */
 	readonly spelled?: RegExp;
 	readonly named?: RegExp;
+	/** How far around a brace group the readings look (Reading.pieces) to hold any spelling or name whole. */
+	readonly reach: number;
 }
 
 const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/** Room for the home part of "~user/…" or "${HOME…}/…" in a piece (Protection.reach). */
+const HOME_REACH = 32;
+
 /**
  * [guard] protect `entries` (GuardOptions.protect) for matching: a path entry from `home`, and where it really is by
  * `real` (a link followed; by default as written); a name entry folded to lower case, as the other rules fold. Made per
- * tool call, as configSpellings is.
+ * tool call, as configSpellings is. A path entry under home is spelt by configSpellings, and also from "~" with a user
+ * name ("~alex/…") and from a ${HOME…} expansion ("${HOME%/}/…"), as the shell may spell home.
  */
 export function protection(entries: readonly string[] = [], home: string = homedir(), real: (path: string) => string = (path) => path): Protection {
-	const paths: { entry: string; path: string; real: string; last: string[] }[] = [];
+	const paths: { entry: string; path: string; real: string }[] = [];
 	const names = new Map<string, string>();
-	const spellings = new Map<string, string>();
+	const spellings: string[] = [];
+	const base = posix.normalize(home).replace(/\/+$/, "");
+	let reach = ENV_REACH;
 	for (const entry of entries) {
 		if (!entry.includes("/")) {
 			names.set(entry.toLowerCase(), entry);
+			reach = Math.max(reach, entry.length + 2);
 			continue;
 		}
 		const path = (entry.startsWith("~/") ? posix.join(home, entry.slice(2)) : posix.normalize(entry)).replace(/(.)\/+$/, "$1");
-		const realPath = real(path);
-		const where = { entry, path, real: realPath, last: [...new Set([path, realPath].map((at) => posix.basename(at).toLowerCase()))] };
+		const where = { entry, path, real: real(path) };
 		paths.push(where);
-		for (const spelling of configSpellings({ configFile: path, home }, where.real)) if (!spellings.has(spelling)) spellings.set(spelling, entry);
+		const literals = configSpellings({ configFile: path, home }, where.real);
+		const fromHome = base === "" ? [] : [path, where.real].filter((at) => at.startsWith(`${base}/`)).map((at) => literal(at.slice(base.length).toLowerCase()));
+		// Each home-part run stops at the next "~" or "$", so the text is read in linear time.
+		const patterns = [...literals.map(literal), ...fromHome.flatMap((rest) => [`~[^\\s"'/;|&()<>\`~]*${rest}`, `\\$\\{home[^}\\s$]*\\}${rest}`])];
+		spellings.push(`(${patterns.join("|")})`);
+		reach = Math.max(reach, ...literals.map((spelling) => spelling.length + HOME_REACH));
 	}
 	return {
 		paths,
 		names,
-		spellings,
-		...(spellings.size === 0 ? {} : { spelled: new RegExp(`(?:${[...spellings.keys()].map(literal).join("|")})${NAME_END}`) }),
+		reach,
+		...(spellings.length === 0 ? {} : { spelled: new RegExp(`(?:${spellings.join("|")})${NAME_END}`) }),
 		...(names.size === 0 ? {} : { named: new RegExp(`${NAME_START}(${[...names.keys()].map(literal).join("|")})${NAME_END}`) }),
 	};
 }
 
 /**
- * The [guard] protect entry a text names, by its readings `forms` and what they could not read in full (`cut`, read),
- * or undefined: a path entry by any of its spellings, then (`names`) a name entry as a path segment, the way .ssh is
- * named. Text the readings cut is refused if it holds a path entry's last part, as a brace body that spells orrery is.
- * A name needs no such rule: a brace or comma may stand before it and after it.
+ * The [guard] protect entry a text's readings name, or undefined: a path entry by any of its spellings, then (`names`) a
+ * name entry as a path segment, the way .ssh is named. The pieces of brace groups the readings could not expand are read
+ * too, so a name a group splits past the caps is still found.
  */
-function protectedIn(forms: readonly string[], cut: readonly string[], protect: Protection, names = true): string | undefined {
-	for (const form of forms) {
-		const spelled = protect.spelled?.exec(form);
-		if (spelled) return protect.spellings.get(spelled[0]);
-		const named = names ? protect.named?.exec(form) : undefined;
-		if (named) return protect.names.get(named[1]);
+function protectedIn(reading: Reading, protect: Protection, names = true): string | undefined {
+	for (const forms of [reading.forms, reading.pieces]) {
+		for (const form of forms) {
+			const spelled = protect.spelled?.exec(form);
+			// The entry whose group matched; the first entry if none can be told (never a match let through).
+			if (spelled) return protect.paths[Math.max(0, spelled.findIndex((group, at) => at > 0 && group !== undefined) - 1)].entry;
+			const named = names ? protect.named?.exec(form) : undefined;
+			if (named) return protect.names.get(named[1]) ?? named[1];
+		}
 	}
-	for (const { entry, last } of protect.paths) if (cut.some((text) => last.some((part) => text.includes(part)))) return entry;
 	return undefined;
 }
 
@@ -184,8 +203,7 @@ function protectedIn(forms: readonly string[], cut: readonly string[], protect: 
  */
 export function textProtected(text: string, protect: Protection, names = true): string | undefined {
 	if (protect.spelled === undefined && (!names || protect.named === undefined)) return undefined;
-	const { forms, cut } = read(text.toLowerCase());
-	return protectedIn(forms, cut, protect, names);
+	return protectedIn(readings(text.toLowerCase(), protect.reach), protect, names);
 }
 
 /**
@@ -222,30 +240,33 @@ export function configSpellings(options: Pick<GuardOptions, "configFile"> & { re
 	return [...spellings];
 }
 
-/**
- * The ways a shell (or a path tool) may read a text: as written; with line continuations, quotes, backslashes and empty
- * substitutions gone (bash joins "~/.orr''ery" and "~/.orr$()ery"); with "//", "./" and "x/.." collapsed; and, for those
- * two, with each brace group {p,q,...} read as each of its alternatives in turn.
- */
-function readings(lower: string): string[] {
-	return read(lower).forms;
+/** A text as a shell may read it (readings). */
+interface Reading {
+	/** The whole text, read each way. */
+	readonly forms: readonly string[];
+	/**
+	 * Each brace group the forms could not read alternative by alternative (one past MAX_ALTERNATIVES, or any in a word
+	 * past MAX_BRACE_WORD), read as each of its alternatives with up to the readings' reach of text on either side: so a
+	 * name or path such a group splits is still spelt whole somewhere. For the .env and [guard] protect rules.
+	 */
+	readonly pieces: readonly string[];
 }
 
 /**
- * readings (`forms`), and what they could not read in full (`cut`): each word past MAX_BRACE_WORD that holds a brace
- * group, and each group past MAX_ALTERNATIVES, for protectedIn to look in.
+ * The ways a shell (or a path tool) may read a text: as written; with line continuations, quotes, backslashes and empty
+ * substitutions gone (bash joins "~/.orr''ery" and "~/.orr$()ery"); with "//", "./" and "x/.." collapsed; for those two,
+ * with each brace group {p,q,...} read as each of its alternatives in turn; and, when it has $'…' with an escape, with
+ * those escapes read as bash reads them ($'\x2eenv' is .env). `reach`: how much text a piece holds on either side of its
+ * group (Reading.pieces).
  */
-function read(lower: string): { readonly forms: string[]; readonly cut: string[] } {
-	let bare = lower.replace(/\\\n/g, "").replace(/\$(?=['"])/g, "");
-	for (let pass = 0; pass < 4; pass++) {
-		const next = bare.replace(/\$\(\)|``/g, "");
-		if (next === bare) break;
-		bare = next;
+function readings(lower: string, reach = ENV_REACH): Reading {
+	const forms = [lower, ...bareForms(lower)];
+	if (/\$'[^']*\\/.test(lower)) {
+		const decoded = lower.replace(ANSI_C, (_quoted, body: string) => ansiC(body)).toLowerCase();
+		forms.push(decoded, ...bareForms(decoded));
 	}
-	bare = bare.replace(/[\\'"]/g, "");
-	const collapsed = bare.replace(/[^\s;|&()<>`]+/g, collapse);
-	const forms = [lower, bare, collapsed];
-	const cut: string[] = [];
+	const [bare, collapsed] = forms.slice(1, 3);
+	const pieces = new Set<string>();
 	for (const full of [bare, collapsed]) {
 		// Brace readings cost work per group, so they apply to words of at most MAX_BRACE_WORD characters. A longer word with
 		// a brace group is refused if it spells "orr" anywhere (the bare name stands for it); otherwise it gets no reading.
@@ -254,7 +275,8 @@ function read(lower: string): { readonly forms: string[]; readonly cut: string[]
 			for (const word of full.match(LONG_WORD) ?? []) {
 				if (!BRACE_ONE.test(word)) continue;
 				if (word.includes("orr")) forms.push("/.orrery");
-				cut.push(word);
+				const padded = ` ${word} `;
+				for (const group of padded.matchAll(BRACE)) piecesOf(padded, group.index, group[0], reach, pieces);
 			}
 			base = full.replace(LONG_WORD, " ");
 		}
@@ -262,13 +284,60 @@ function read(lower: string): { readonly forms: string[]; readonly cut: string[]
 		for (const group of base.matchAll(BRACE)) {
 			const alternatives = group[1].split(",").length;
 			widest = Math.max(widest, alternatives);
-			if (alternatives > MAX_ALTERNATIVES) cut.push(group[0]);
+			if (alternatives > MAX_ALTERNATIVES) piecesOf(base, group.index, group[0], reach, pieces);
 		}
 		// Past the cap, a brace body that spells orrery is refused outright (the bare name stands for it).
 		if (widest > MAX_ALTERNATIVES && /\{[^{}]*orrery/.test(base)) forms.push("/.orrery");
 		for (let pick = 0; pick < Math.min(widest, MAX_ALTERNATIVES); pick++) forms.push(braces(base, pick));
 	}
-	return { forms: [...new Set(forms)], cut };
+	return { forms: [...new Set(forms)], pieces: [...pieces] };
+}
+
+/** A text with line continuations, quotes, backslashes and empty substitutions gone, then that with its paths collapsed. */
+function bareForms(text: string): [string, string] {
+	let bare = text.replace(/\\\n/g, "").replace(/\$(?=['"])/g, "");
+	for (let pass = 0; pass < 4; pass++) {
+		const next = bare.replace(/\$\(\)|``/g, "");
+		if (next === bare) break;
+		bare = next;
+	}
+	bare = bare.replace(/[\\'"]/g, "");
+	return [bare, bare.replace(/[^\s;|&()<>`]+/g, collapse)];
+}
+
+/**
+ * Each alternative of brace group `group`, at `at` in `text`, with up to `reach` characters of `text` on either side,
+ * into `pieces`, and each also with its paths collapsed. An end cut short gets a letter, never a word edge, so a cut
+ * makes no name start or end where the text has none. Linear: each piece is at most its alternative and twice `reach`.
+ */
+function piecesOf(text: string, at: number, group: string, reach: number, pieces: Set<string>): void {
+	const end = at + group.length;
+	const before = `${at > reach ? "x" : ""}${text.slice(Math.max(0, at - reach), at)}`;
+	const after = `${text.slice(end, end + reach)}${end + reach < text.length ? "x" : ""}`;
+	for (const alternative of group.slice(1, -1).split(",")) {
+		const piece = `${before}${alternative}${after}`;
+		pieces.add(piece);
+		if (/\/\.|\/\//.test(piece)) pieces.add(piece.replace(/[^\s;|&()<>`]+/g, collapse));
+	}
+}
+
+/** bash's ANSI-C quoting, $'…', its body in group 1. */
+const ANSI_C = /\$'((?:[^'\\]|\\[^])*)'/g;
+
+/** The single-letter escapes of $'…'. */
+const ANSI_LETTERS: Readonly<Record<string, string>> = { a: "\x07", b: "\b", e: "\x1b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v" };
+
+/**
+ * A $'…' body as bash reads it: \xHH, \NNN (octal), \uHHHH, \cX and the letter escapes decoded; any other escaped
+ * character stands for itself. Read in lower case, so \U (eight digits) is taken as \u.
+ */
+function ansiC(body: string): string {
+	return body.replace(/\\(x[0-9a-f]{1,2}|u[0-9a-f]{1,4}|[0-7]{1,3}|c[^]|[^])/g, (_escape, code: string) => {
+		if (/^[xu][0-9a-f]/.test(code)) return String.fromCodePoint(Number.parseInt(code.slice(1), 16));
+		if (/^[0-7]/.test(code)) return String.fromCharCode(Number.parseInt(code, 8) & 0xff);
+		if (code.length === 2 && code[0] === "c") return String.fromCharCode(code.charCodeAt(1) & 0x1f);
+		return ANSI_LETTERS[code] ?? code;
+	});
 }
 
 /** One word as a path with "//" and "/." joined and "x/.." removed (a stack, so any depth, in linear time). */
@@ -450,9 +519,9 @@ export function checkToolCall(
 	const command = call.arguments.command;
 	if (call.name === "bash" && typeof command === "string") {
 		// Shell text's readings, made once: sensitive by flagged's rules for shell text, then the [guard] protect entries.
-		const { forms, cut } = read(command.toLowerCase());
-		if (flagged(forms, views.command, true, config)) return "This command touches sensitive files (keys, credentials or Orrery's private data).";
-		const entry = protectedIn(forms, cut, protect);
+		const reading = readings(command.toLowerCase(), protect.reach);
+		if (flagged(reading, views.command, true, config)) return "This command touches sensitive files (keys, credentials or Orrery's private data).";
+		const entry = protectedIn(reading, protect);
 		if (entry !== undefined) return `This command touches ${entry}, ${PROTECTED_BY}.`;
 	}
 	const raw = call.arguments.path;

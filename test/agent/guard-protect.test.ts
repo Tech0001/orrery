@@ -198,6 +198,39 @@ describe("[guard] protect: shell text", () => {
 		expect(bash(t, `cat ~/{a,b}/${"y".repeat(5000)}`)).toBeUndefined();
 	});
 
+	it("reads names and paths as bash does: $'…' escapes, home spelt another way, and groups split a name past the brace readings' caps", () => {
+		const t = protectWorld();
+		const many = Array.from({ length: 70 }, (_, i) => `d${i}`).join(",");
+		const pad = "y".repeat(5000);
+		for (const command of [
+			// ANSI-C quoting: bash decodes the escapes
+			"cat $'\\x2eenv'",
+			"cat $'\\056env'",
+			"cat $'secrets\\x2eyml'",
+			"cat ~/$'\\x66'inance/q3.csv",
+			"cat ~/$'\\x2e'ssh/config",
+			// home by a user's name or a parameter expansion
+			"cat ~u/finance/q3.csv",
+			"cat ${HOME%/}/finance/q3.csv",
+			'cat "${HOME:-/x}"/finance',
+			// a group past 64 alternatives that splits the name
+			`cat .e{${many},n}v`,
+			`cat secrets.{${many},yml}`,
+			`cat ~/fin{${many},ance}/q3.csv`,
+			`cat ${t.keys}/prod.{${many},pem}`,
+			`cat .env.lo{${many},cal}`,
+			// a word past 4096 characters, which gets no brace readings
+			`cat .e{n,x}v/${pad}`,
+			`cat secrets.{yml,x}/${pad}`,
+			`cat ~/fin{ance,x}/${pad}`,
+		]) {
+			expect([command.slice(0, 60), bash(t, command)]).toEqual([command.slice(0, 60), expect.stringMatching(/protected by \[guard\] protect|sensitive files/)]);
+		}
+		for (const command of [`cat .e{${many},x}v`, `cat secrets.{${many},yaml}`, `cat ~/fin{ance-old,x}/${pad}`, "cat $'\\x2eenvrc'", "cat ~u/finance-old"]) {
+			expect([command.slice(0, 60), bash(t, command)]).toEqual([command.slice(0, 60), undefined]);
+		}
+	});
+
 	it("allows commands that only resemble an entry", () => {
 		const t = protectWorld();
 		for (const command of [
