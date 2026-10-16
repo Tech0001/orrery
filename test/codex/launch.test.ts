@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { parse } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 import { cutNotice, instructionsSection, writeInstructions } from "../../src/agent/instructions.ts";
-import { CODEX_ARG_MAX, CODEX_HOOKS, codexArgs, codexCutNotice, codexLaunch, type CodexEvent, shellWords, tomlString, trustHash, trustKey } from "../../src/codex/launch.ts";
+import { CODEX_ARG_MAX, CODEX_HOOKS, codexArgs, codexCutNotice, codexLaunch, type CodexEvent, misplacedSubcommand, shellWords, tomlString, trustHash, trustKey } from "../../src/codex/launch.ts";
 import { tempDir } from "../agent/support.ts";
 
 const dirs: string[] = [];
@@ -117,15 +117,30 @@ describe("codexLaunch", () => {
 		]);
 	});
 
-	it("puts Orrery's flags after a session subcommand, where Codex reads them (it ignores those before exec), else before", () => {
+	it("puts Orrery's flags after a session subcommand, where Codex applies them to the session, else before", () => {
 		const launch = codexLaunch({ name: "Atlas", dir: agentDir() }, ORRERY);
-		for (const sub of ["exec", "e", "resume", "fork", "review"]) {
+		for (const sub of ["exec", "e", "review"]) {
 			expect(codexArgs(launch, [sub, "--last", "go"])).toEqual(["--no-daemon", sub, ...launch.config, "--last", "go"]);
+		}
+		// resume and fork take --no-daemon of their own: a resumed session never joins Codex's shared server.
+		for (const sub of ["resume", "fork"]) {
+			expect(codexArgs(launch, [sub, "--last", "go"])).toEqual(["--no-daemon", sub, "--no-daemon", ...launch.config, "--last", "go"]);
 		}
 		expect(codexArgs(launch, ["exec", "resume", "--last"])).toEqual(["--no-daemon", "exec", ...launch.config, "resume", "--last"]);
 		// The TUI, with a prompt or not, and every other subcommand: before the person's arguments.
-		for (const args of [[], ["fix the tests"], ["debug", "prompt-input"], ["mcp", "list"], ["-m", "gpt-x", "exec"]]) {
+		for (const args of [[], ["fix the tests"], ["debug", "prompt-input"], ["mcp", "list"]]) {
 			expect(codexArgs(launch, args)).toEqual([...launch.args, ...args]);
+		}
+	});
+
+	it("finds a session subcommand that comes after other arguments, where Orrery's flags can't follow it", () => {
+		expect(misplacedSubcommand(["-m", "gpt-x", "exec", "go"])).toBe("exec");
+		expect(misplacedSubcommand(["-c", "k=v", "resume", "--last"])).toBe("resume");
+		expect(misplacedSubcommand(["-p", "work", "e", "go"])).toBe("e");
+		expect(misplacedSubcommand(["-s", "read-only", "review"])).toBe("review");
+		expect(misplacedSubcommand(["--no-alt-screen", "fork", "--last"])).toBe("fork");
+		for (const args of [[], ["fix the tests"], ["exec", "resume", "--last"], ["resume", "--last"], ["debug", "prompt-input"], ["review my exec code"]]) {
+			expect(misplacedSubcommand(args), JSON.stringify(args)).toBeUndefined();
 		}
 	});
 

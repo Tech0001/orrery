@@ -312,8 +312,8 @@ describe("Codex launch plans", () => {
 		const plan = launchPlan(config, row, tools, { env, args: ["resume", "--last"], orrery });
 		const launch = codexLaunch(agent, orrery);
 		expect(plan.command).toBe(join(env.PATH, "codex"));
-		// resume is a session subcommand: Orrery's flags go after it, where Codex reads them.
-		expect(plan.args).toEqual(["--no-daemon", "resume", ...launch.config, "--last"]);
+		// resume is a session subcommand: Orrery's flags go after it, where Codex applies them, with its own --no-daemon.
+		expect(plan.args).toEqual(["--no-daemon", "resume", "--no-daemon", ...launch.config, "--last"]);
 		expect(plan.steps).toEqual([{ text: cutNotice("A"), confirm: false }]);
 		expect(plan.codex).toEqual({ path: join(env.PATH, "codex"), config: launch.config, plainArgs: ["resume", "--last"], notices: [cutNotice("A")] });
 		expect(plan.env.ORRERY_AGENT).toBe("A");
@@ -369,6 +369,21 @@ describe("Codex launch plans", () => {
 		const notLoaded = await checkCodexHooks(plan, { env, probe: async () => ({ ok: false as const, why: "x" }), shellCheck: () => { throw new Error("must not ask"); } });
 		expect(notLoaded).toMatchObject({ ok: false });
 		expect("noisyShell" in notLoaded).toBe(false);
+	});
+
+	it("refuses a session subcommand after other arguments, where Codex would not apply Orrery's flags, and says how to write it", () => {
+		const { config, row, tools, env } = setup("codex");
+		for (const [args, fixed] of [
+			[["-m", "gpt-x", "exec", "fix it"], "exec -m gpt-x 'fix it'"],
+			[["-c", "k=v", "resume", "--last"], "resume -c k=v --last"],
+		] as const) {
+			const plan = launchPlan(config, row, tools, { env, args: [...args] });
+			expect(plan.blocked).toBe(`Put Codex's subcommand first, or Codex won't apply Orrery's flags to the session (no memory, no guard): orrery agent A --tool codex -- ${fixed}`);
+			expect(plan.steps).toEqual([]);
+		}
+		// Other tools take their arguments as they are.
+		const pi = setup("pi");
+		expect(launchPlan(pi.config, pi.row, pi.tools, { env: pi.env, args: ["-m", "x", "exec"] }).blocked).toBeUndefined();
 	});
 
 	it("leaves every other tool's plan alone: no check, nothing to take away", async () => {

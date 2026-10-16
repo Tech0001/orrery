@@ -162,7 +162,7 @@ describe("orrery agent", () => {
 		expect([seen.agent, seen.cwd]).toEqual(["Atlas", realpathSync(s.elsewhere)]);
 		expect(seen.token).toMatch(/^[0-9a-f]{32}$/);
 		// resume is a session subcommand: Orrery's flags come right after it, then the person's other arguments.
-		expect(seen.args?.startsWith("--no-daemon resume -c hooks.SessionStart=")).toBe(true);
+		expect(seen.args?.startsWith("--no-daemon resume --no-daemon -c hooks.SessionStart=")).toBe(true);
 		expect(seen.args).toContain(" codex-hook session-start");
 		expect(seen.args?.endsWith(" -c features.hooks=true --last")).toBe(true);
 		expect(codex.checks()).toBe(1);

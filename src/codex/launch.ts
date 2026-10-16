@@ -213,19 +213,38 @@ export function codexLaunch(agent: { readonly name: string; readonly dir: string
 }
 
 /**
- * Codex's subcommands that start a session and take `-c` flags of their own. Codex 0.162.1 applies none of the `-c`
- * flags given before `exec` (no hooks, no memory server, no instructions: an unguarded session), so Orrery's go after the
- * subcommand's name; the others take them there too.
+ * Codex's subcommands that start a session and take `-c` flags of their own. Codex 0.162.1 reads the `-c` flags given
+ * before `exec` (it checks them) but does not apply them to the session (no hooks, no memory server, no instructions: an
+ * unguarded session), so Orrery's go after the subcommand's name; the others take them there too.
  */
 const SESSION_SUBCOMMANDS: ReadonlySet<string> = new Set(["exec", "e", "resume", "fork", "review"]);
 
+/** The session subcommands with a --no-daemon of their own, which keeps a resumed or forked session off Codex's shared server. */
+const OWN_NO_DAEMON: ReadonlySet<string> = new Set(["resume", "fork"]);
+
 /**
  * Codex's command line for `launch` and the person's arguments: --no-daemon, then Orrery's `-c` flags right after a
- * session subcommand the arguments start with (`exec …`, `resume --last`), else before the arguments (the TUI, with or
- * without a prompt, and the other subcommands, which read them there).
+ * session subcommand the arguments start with (`exec …`, `resume --last`; resume and fork get their own --no-daemon too),
+ * else before the arguments (the TUI, with or without a prompt, and the other subcommands, which read them there).
+ * Arguments with a session subcommand after other words are refused first (misplacedSubcommand).
  */
 export function codexArgs(launch: CodexLaunch, args: readonly string[]): string[] {
 	const [first, ...rest] = args;
-	if (first !== undefined && SESSION_SUBCOMMANDS.has(first)) return ["--no-daemon", first, ...launch.config, ...rest];
+	if (first !== undefined && SESSION_SUBCOMMANDS.has(first)) return ["--no-daemon", first, ...(OWN_NO_DAEMON.has(first) ? ["--no-daemon"] : []), ...launch.config, ...rest];
 	return [...launch.args, ...args];
+}
+
+/**
+ * A session subcommand that comes after other arguments (`-m M exec …`, `-c k=v resume`), or undefined. Orrery's flags
+ * would then go before it, where Codex does not apply them: the launch is refused (src/agent/launch.ts), never guessed at.
+ */
+export function misplacedSubcommand(args: readonly string[]): string | undefined {
+	if (args[0] !== undefined && SESSION_SUBCOMMANDS.has(args[0])) return undefined;
+	return args.slice(1).find((word) => SESSION_SUBCOMMANDS.has(word));
+}
+
+/** What to run instead of `args` with the session subcommand `sub` misplaced: the subcommand first, the rest as they were. */
+export function subcommandFirst(name: string, args: readonly string[], sub: string): string {
+	const at = args.indexOf(sub);
+	return `orrery agent ${shellWords([name])} --tool codex -- ${shellWords([sub, ...args.slice(0, at), ...args.slice(at + 1)])}`;
 }

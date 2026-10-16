@@ -12,7 +12,7 @@ import { resolve } from "node:path";
 import { claudeSetup, claudeSetupMod, modSetupReport, setupReport } from "../claude/setup.ts";
 import { agentMode, markedHere, readSetupMarker } from "../claude/view-file.ts";
 import { type CodexGate, codexHookGate, type probeHooks } from "../codex/check.ts";
-import { codexArgs, codexLaunch, orreryCommand } from "../codex/launch.ts";
+import { codexArgs, codexLaunch, misplacedSubcommand, orreryCommand, subcommandFirst } from "../codex/launch.ts";
 import { checkHookShell, NOISY_SHELL_QUESTION, noisyShellText, type ShellCheck } from "../codex/shell.ts";
 import { buildRunning, readBuild } from "./build.ts";
 import { findAgent, type HarnessConfig, insideFolder, type AgentConfig, type AgentLauncher, type AgentTool } from "./config.ts";
@@ -133,6 +133,11 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 	const inFolder = agent.folder !== undefined && workArea(agent, cwd) === agent.folder;
 	const refused = tool === "claude-code" ? claudeCodeRefusal(config, agent, cwd, inFolder) : undefined;
 	if (refused !== undefined) return { ...base, steps: [], blocked: refused.text, ...(refused.needsMod === true ? { needsMod: true as const } : {}) };
+	// Codex would not apply Orrery's flags to a session subcommand they can't follow: no memory, no guard.
+	const misplaced = tool === "codex" ? misplacedSubcommand(base.args) : undefined;
+	if (misplaced !== undefined) {
+		return { ...base, steps: [], blocked: `Put Codex's subcommand first, or Codex won't apply Orrery's flags to the session (no memory, no guard): ${subcommandFirst(agent.name, base.args, misplaced)}` };
+	}
 	const steps: LaunchStep[] = [];
 	if (!existsSync(cwd)) steps.push({ text: `The folder ${cwd} does not exist. Create it?`, confirm: true, fix: "create-folder" });
 	if ((row.state === "open" || row.state === "working") && row.openIn !== undefined) {

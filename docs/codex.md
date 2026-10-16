@@ -32,8 +32,10 @@ to open it here or in its default folder. Codex opens an agent in any folder, wi
 own `AGENTS.md` loads as that project's rules.
 
 - What follows `--` goes to Codex: a prompt, `resume --last`, or `exec "…"` for a run without the TUI. Orrery puts its
-  flags where Codex reads them: before your arguments, or right after `exec`, `resume`, `fork` or `review` (Codex
-  0.162.1 ignores the flags given before `exec`).
+  flags where Codex applies them to the session: before your arguments, or right after `exec`, `resume`, `fork` or
+  `review`, which must then come first. Codex 0.162.1 reads flags given before `exec` but does not apply them to the
+  session, so `-- -m <model> exec "…"` is refused, with the order that works: `-- exec -m <model> "…"`. A resumed or
+  forked session also stays off Codex's shared background server, as a new one does.
 - A plain `codex` is not an agent's session, even in the agent's folder: no memory, no recording, no guard. Opening by
   folder would need Orrery's hooks in `~/.codex`, which Orrery does not write.
 - `orrery agent` refuses an agent whose memory is still being built, and asks before opening an agent that is already

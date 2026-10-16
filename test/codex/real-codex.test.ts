@@ -185,6 +185,23 @@ describe.skipIf(codex === null)("Orrery's Codex launch against the installed Cod
 		}
 	}, 120_000);
 
+	it("orrery agent --tool codex -- <option> exec …: refused before Codex starts, since Codex would not apply Orrery's flags (no guard)", async () => {
+		const orrery = [cliCommand([]).cmd, ...cliCommand([]).args];
+		const a = guardedAtlas("agent-option-exec", orrery);
+		const { ORRERY_AGENT: _agent, ORRERY_AGENT_TOKEN: _token, ...env } = a.env;
+		const model = await scriptedModel((n) => (n === 1 ? { shell: "cat secret.txt" } : { reply: "done" }));
+		try {
+			const c = cliCommand(["agent", "Atlas", "--tool", "codex", "--", "-c", "analytics.enabled=false", "exec", ...fakeFlags(model.port, a.catalog), "run it"]);
+			const run = await runCodex(c.args, { ...env, PATH: `${dirname(codex as string)}${delimiter}/usr/bin${delimiter}/bin` }, c.cmd, a.work);
+			expect(run.status, run.stdout).toBe(1);
+			expect(run.stderr).toContain("Put Codex's subcommand first, or Codex won't apply Orrery's flags to the session (no memory, no guard): orrery agent Atlas --tool codex -- exec -c analytics.enabled=false");
+			// Codex never ran: no request reached the model, and the protected file was not read.
+			expect(model.requests).toEqual([]);
+		} finally {
+			model.close();
+		}
+	}, 120_000);
+
 	it("judges a patch sent through the shell by its targets: Codex applies the heredoc itself, past any name in the text", async () => {
 		const orrery = [cliCommand([]).cmd, ...cliCommand([]).args];
 		const a = guardedAtlas("shell-patch", orrery);
