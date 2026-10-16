@@ -328,12 +328,18 @@ function guardProtect(root: Table): string[] {
 	return protectEntries(guard.protect);
 }
 
-/** A protect key in table `t` (dotted name `where`, "" at the top) or any table below it, but [guard]'s own. */
+/** The tables whose keys are names the user chooses ([agents.<Name>], [hosts.<name>], [remotes.<name>]), not settings. */
+const NAMED_TABLES = new Set(["agents", "hosts", "remotes"]);
+
+/**
+ * A protect key in table `t` (dotted name `where`, "" at the top) or any table below it, but [guard]'s own. A name the
+ * user chose (an agent, host or remote called protect) is no key: only the keys inside its table are looked at.
+ */
 function misplacedProtect(t: Table, where: string): void {
 	for (const [key, value] of Object.entries(t)) {
 		const at = where === "" ? key : `${where}.${key}`;
 		if (at === "guard") continue;
-		if (key.toLowerCase() === "protect") throw new ConfigError(`${at} is read only under [guard]: write [guard], then protect = [...]`);
+		if (key.toLowerCase() === "protect" && !NAMED_TABLES.has(where)) throw new ConfigError(`${at} is read only under [guard]: write [guard], then protect = [...]`);
 		for (const inner of Array.isArray(value) ? value : [value]) {
 			if (typeof inner === "object" && inner !== null && !Array.isArray(inner)) misplacedProtect(inner as Table, at);
 		}

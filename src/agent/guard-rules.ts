@@ -61,10 +61,10 @@ const SENSITIVE = [
 // Where a protected name stands as a path segment or a word of its own in a reading (ENV_FILE, Protection.named). Before
 // it: the text's start, a blank, a quote, "=", ":", "/", "~", a shell operator or redirection, a backquote, a brace or a
 // comma (a group past the brace readings' caps), "*" (a glob that matches the bare name too), "@" (curl's and httpie's
-// "send this file", @.env), or a one-letter option the name is glued to (curl -T.env). After it: the text's end, a
-// blank, a quote, "/", ":", a shell operator, a backquote, a comma or closing brace, or a glob character. A path entry's
-// spelling ends the same way (Protection.spelled), so ~/finance never stands for ~/finance-old.
-const NAME_START = "(?:^|[\\s\"'=:/~<>;|&()`{,*@]|(?:^|[\\s\"'])-[a-z])";
+// "send this file", @.env), or short options the name is glued to (curl -T.env, curl -sT.env). After it: the text's
+// end, a blank, a quote, "/", ":", a shell operator, a backquote, a comma or closing brace, or a glob character. A path
+// entry's spelling ends the same way (Protection.spelled), so ~/finance never stands for ~/finance-old.
+const NAME_START = "(?:^|[\\s\"'=:/~<>;|&()`{,*@]|(?:^|[\\s\"'])-[a-z]+)";
 const NAME_END = "(?=$|[\\s\"'/:;|&()<>`,}*?\\[])";
 
 /**
@@ -76,7 +76,7 @@ const NAME_END = "(?=$|[\\s\"'/:;|&()<>`,}*?\\[])";
  * no further than the next place a name may start: the text is read in linear time.
  */
 const ENV_FILE = new RegExp(
-	`(?:^|[\\s"'=:/~<>;|&()\`{,@]|(?:^|[\\s"'])-[a-z])\\.env(?!\\.(?:example|sample|template|dist)(?=$|[\\s"'/:;|&()<>\`,}]))(?:\\.[^\\s"'=:/~<>;|&()\`{,*}?\\[@]*)?(?=$|[\\s"'/:;|&()<>\`,}*?\\[{])`,
+	`(?:^|[\\s"'=:/~<>;|&()\`{,@]|(?:^|[\\s"'])-[a-z]+)\\.env(?!\\.(?:example|sample|template|dist)(?=$|[\\s"'/:;|&()<>\`,}]))(?:\\.[^\\s"'=:/~<>;|&()\`{,*}?\\[@]*)?(?=$|[\\s"'/:;|&()<>\`,}*?\\[{])`,
 );
 
 /**
@@ -282,12 +282,12 @@ function readings(text: string, reach = ENV_REACH): Reading {
 	const lower = text.toLowerCase();
 	const forms = [lower, ...bareForms(lower)];
 	const fulls = forms.slice(1, 3);
-	// $'…' decoded in the case it is written in (\U takes eight digits, \u four), then read like the rest, braces too.
+	// $'…' decoded in the case it is written in (\U takes eight digits, \u four), then read like the rest. Brace groups are
+	// read again only in the words that hold one (decodedWords): elsewhere the decoded text is the text, already read.
 	if (/\$'[^']*\\/.test(text)) {
 		const decoded = text.replace(ANSI_C, (_quoted, body: string) => ansiC(body)).toLowerCase();
-		const bare = bareForms(decoded);
-		forms.push(decoded, ...bare);
-		fulls.push(...bare);
+		forms.push(decoded, ...bareForms(decoded));
+		fulls.push(...bareForms(decodedWords(text).join(" ").toLowerCase()));
 	}
 	const pieces = new Set<string>();
 	for (const full of fulls) {
@@ -364,6 +364,31 @@ function ansiC(body: string): string {
 		if (code.length === 2 && code[0] === "c") return String.fromCharCode(code.charCodeAt(1) & 0x1f);
 		return ANSI_LETTERS[code] ?? code;
 	});
+}
+
+/** A $'…' starting at lastIndex, to step over one whole while a word is read. */
+const ANSI_C_AT = /\$'(?:[^'\\]|\\[^])*'/y;
+
+/**
+ * Each word of `text` that holds a $'…', whole (from one word edge to the next, a $'…' stepped over whole even with a
+ * blank inside it), with its escapes decoded: what readings reads brace groups in again. Linear: each character of the
+ * text is looked at once.
+ */
+function decodedWords(text: string): string[] {
+	const words: string[] = [];
+	let end = 0;
+	for (const quoted of text.matchAll(ANSI_C)) {
+		if (quoted.index < end) continue;
+		let start = quoted.index;
+		while (start > end && !WORD_EDGE.test(text[start - 1])) start--;
+		end = quoted.index + quoted[0].length;
+		while (end < text.length && !WORD_EDGE.test(text[end])) {
+			ANSI_C_AT.lastIndex = end;
+			end = text.startsWith("$'", end) && ANSI_C_AT.test(text) ? ANSI_C_AT.lastIndex : end + 1;
+		}
+		words.push(text.slice(start, end).replace(ANSI_C, (_quoted, body: string) => ansiC(body)));
+	}
+	return words;
 }
 
 /** One word as a path with "//" and "/." joined and "x/.." removed (a stack, so any depth, in linear time). */
