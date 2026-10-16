@@ -69,11 +69,12 @@ const NAME_END = "(?=$|[\\s\"'/:;|&()<>`,}*?\\[])";
 /**
  * The built-in .env rule (spec 2026-10-15-guard-protect): .env and .env.<anything> standing as a name, but not the
  * examples meant to be shared (.env.example, .env.sample, .env.template, each followed by a plain end, not a glob). As a
- * name, so process.env, import.meta.env, prod.env and .envrc never match. What follows ".env." holds no character a name
- * starts or ends at, so a try reads no further than the next place a name may start: the text is read in linear time.
+ * name, so process.env, import.meta.env, prod.env and .envrc never match; nor does *.env, since a shell's "*" does not
+ * match a leading dot (NAME_START without "*"). What follows ".env." holds no character a name starts or ends at, so a
+ * try reads no further than the next place a name may start: the text is read in linear time.
  */
 const ENV_FILE = new RegExp(
-	`${NAME_START}\\.env(?!\\.(?:example|sample|template)(?=$|[\\s"'/:;|&()<>\`,}]))(?:\\.[^\\s"'=:/~<>;|&()\`{,*}?\\[]*)?${NAME_END}`,
+	`(?:^|[\\s"'=:/~<>;|&()\`{,])\\.env(?!\\.(?:example|sample|template)(?=$|[\\s"'/:;|&()<>\`,}]))(?:\\.[^\\s"'=:/~<>;|&()\`{,*}?\\[]*)?${NAME_END}`,
 );
 
 /**
@@ -115,8 +116,11 @@ export const PROTECTED_FILE = (path: string) => `${path} is ${PROTECTED_BY}.`;
 
 /** [guard] protect as the guard matches it (protection). */
 export interface Protection {
-	/** Each path entry as the config writes it, where it is ("~/" from the guard's home), and where it really is. */
-	readonly paths: readonly { readonly entry: string; readonly path: string; readonly real: string }[];
+	/**
+	 * Each path entry as the config writes it, where it is ("~/" from the guard's home), where it really is, and the
+	 * last part of each, lower case (for brace groups the readings cannot expand, protectedIn).
+	 */
+	readonly paths: readonly { readonly entry: string; readonly path: string; readonly real: string; readonly last: readonly string[] }[];
 	/** Each name entry by its lower-case name, to the entry as the config writes it. */
 	readonly names: ReadonlyMap<string, string>;
 	/** Each spelling shell text may name a path entry by (configSpellings), to its entry. */
@@ -134,7 +138,7 @@ const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
  * tool call, as configSpellings is.
  */
 export function protection(entries: readonly string[] = [], home: string = homedir(), real: (path: string) => string = (path) => path): Protection {
-	const paths: { entry: string; path: string; real: string }[] = [];
+	const paths: { entry: string; path: string; real: string; last: string[] }[] = [];
 	const names = new Map<string, string>();
 	const spellings = new Map<string, string>();
 	for (const entry of entries) {
@@ -143,7 +147,8 @@ export function protection(entries: readonly string[] = [], home: string = homed
 			continue;
 		}
 		const path = (entry.startsWith("~/") ? posix.join(home, entry.slice(2)) : posix.normalize(entry)).replace(/(.)\/+$/, "$1");
-		const where = { entry, path, real: real(path) };
+		const realPath = real(path);
+		const where = { entry, path, real: realPath, last: [...new Set([path, realPath].map((at) => posix.basename(at).toLowerCase()))] };
 		paths.push(where);
 		for (const spelling of configSpellings({ configFile: path, home }, where.real)) if (!spellings.has(spelling)) spellings.set(spelling, entry);
 	}
@@ -157,16 +162,19 @@ export function protection(entries: readonly string[] = [], home: string = homed
 }
 
 /**
- * The [guard] protect entry readings `forms` name, or undefined: a path entry by any of its spellings, then (`names`) a
- * name entry as a path segment, the way .ssh is named.
+ * The [guard] protect entry a text names, by its readings `forms` and what they could not read in full (`cut`, read),
+ * or undefined: a path entry by any of its spellings, then (`names`) a name entry as a path segment, the way .ssh is
+ * named. Text the readings cut is refused if it holds a path entry's last part, as a brace body that spells orrery is.
+ * A name needs no such rule: a brace or comma may stand before it and after it.
  */
-function protectedIn(forms: readonly string[], protect: Protection, names = true): string | undefined {
+function protectedIn(forms: readonly string[], cut: readonly string[], protect: Protection, names = true): string | undefined {
 	for (const form of forms) {
 		const spelled = protect.spelled?.exec(form);
 		if (spelled) return protect.spellings.get(spelled[0]);
 		const named = names ? protect.named?.exec(form) : undefined;
 		if (named) return protect.names.get(named[1]);
 	}
+	for (const { entry, last } of protect.paths) if (cut.some((text) => last.some((part) => text.includes(part)))) return entry;
 	return undefined;
 }
 
@@ -176,7 +184,8 @@ function protectedIn(forms: readonly string[], protect: Protection, names = true
  */
 export function textProtected(text: string, protect: Protection, names = true): string | undefined {
 	if (protect.spelled === undefined && (!names || protect.named === undefined)) return undefined;
-	return protectedIn(readings(text.toLowerCase()), protect, names);
+	const { forms, cut } = read(text.toLowerCase());
+	return protectedIn(forms, cut, protect, names);
 }
 
 /**
@@ -219,6 +228,14 @@ export function configSpellings(options: Pick<GuardOptions, "configFile"> & { re
  * two, with each brace group {p,q,...} read as each of its alternatives in turn.
  */
 function readings(lower: string): string[] {
+	return read(lower).forms;
+}
+
+/**
+ * readings (`forms`), and what they could not read in full (`cut`): each word past MAX_BRACE_WORD that holds a brace
+ * group, and each group past MAX_ALTERNATIVES, for protectedIn to look in.
+ */
+function read(lower: string): { readonly forms: string[]; readonly cut: string[] } {
 	let bare = lower.replace(/\\\n/g, "").replace(/\$(?=['"])/g, "");
 	for (let pass = 0; pass < 4; pass++) {
 		const next = bare.replace(/\$\(\)|``/g, "");
@@ -228,23 +245,30 @@ function readings(lower: string): string[] {
 	bare = bare.replace(/[\\'"]/g, "");
 	const collapsed = bare.replace(/[^\s;|&()<>`]+/g, collapse);
 	const forms = [lower, bare, collapsed];
+	const cut: string[] = [];
 	for (const full of [bare, collapsed]) {
 		// Brace readings cost work per group, so they apply to words of at most MAX_BRACE_WORD characters. A longer word with
 		// a brace group is refused if it spells "orr" anywhere (the bare name stands for it); otherwise it gets no reading.
 		let base = full;
 		if (full.length > MAX_BRACE_WORD) {
 			for (const word of full.match(LONG_WORD) ?? []) {
-				if (word.includes("orr") && BRACE_ONE.test(word)) forms.push("/.orrery");
+				if (!BRACE_ONE.test(word)) continue;
+				if (word.includes("orr")) forms.push("/.orrery");
+				cut.push(word);
 			}
 			base = full.replace(LONG_WORD, " ");
 		}
 		let widest = 0;
-		for (const group of base.matchAll(BRACE)) widest = Math.max(widest, group[1].split(",").length);
+		for (const group of base.matchAll(BRACE)) {
+			const alternatives = group[1].split(",").length;
+			widest = Math.max(widest, alternatives);
+			if (alternatives > MAX_ALTERNATIVES) cut.push(group[0]);
+		}
 		// Past the cap, a brace body that spells orrery is refused outright (the bare name stands for it).
 		if (widest > MAX_ALTERNATIVES && /\{[^{}]*orrery/.test(base)) forms.push("/.orrery");
 		for (let pick = 0; pick < Math.min(widest, MAX_ALTERNATIVES); pick++) forms.push(braces(base, pick));
 	}
-	return [...new Set(forms)];
+	return { forms: [...new Set(forms)], cut };
 }
 
 /** One word as a path with "//" and "/." joined and "x/.." removed (a stack, so any depth, in linear time). */
@@ -426,9 +450,9 @@ export function checkToolCall(
 	const command = call.arguments.command;
 	if (call.name === "bash" && typeof command === "string") {
 		// Shell text's readings, made once: sensitive by flagged's rules for shell text, then the [guard] protect entries.
-		const forms = readings(command.toLowerCase());
+		const { forms, cut } = read(command.toLowerCase());
 		if (flagged(forms, views.command, true, config)) return "This command touches sensitive files (keys, credentials or Orrery's private data).";
-		const entry = protectedIn(forms, protect);
+		const entry = protectedIn(forms, cut, protect);
 		if (entry !== undefined) return `This command touches ${entry}, ${PROTECTED_BY}.`;
 	}
 	const raw = call.arguments.path;

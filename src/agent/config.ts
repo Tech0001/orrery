@@ -310,7 +310,10 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 	const remotes = parseRemotes(root.remotes, hosts);
 	const updates = table(root.updates, "updates");
 	if (updates.check !== undefined && typeof updates.check !== "boolean") throw new ConfigError("updates.check must be true or false");
-	const protect = protectEntries(table(root.guard, "guard").protect);
+	const guard = table(root.guard, "guard");
+	// A misspelt key would leave the files it names open with no word said: [guard] takes protect alone.
+	for (const key of Object.keys(guard)) if (key !== "protect") throw new ConfigError(`guard.${key} is not a setting; [guard] takes protect`);
+	const protect = protectEntries(guard.protect);
 	const agents = new Map<string, AgentConfig>();
 	for (const [name, value] of Object.entries(table(root.agents, "agents"))) {
 		const where = `agents.${name}`;

@@ -114,6 +114,11 @@ describe("[guard] protect in Orrery's config", () => {
 	it("refuses a [guard] that is not a table", () => {
 		expect(() => parseConfig(`guard = 1\n${agent}`, "/x")).toThrow(/guard must be a table/);
 	});
+
+	it("refuses a key [guard] does not have, so a misspelt protect never leaves files open", () => {
+		expect(() => parseConfig(`[guard]\nprotects = ["secrets.yml"]\n${agent}`, "/x")).toThrow(ConfigError);
+		expect(() => parseConfig(`[guard]\nprotects = ["secrets.yml"]\n${agent}`, "/x")).toThrow(/guard\.protects is not a setting/);
+	});
 });
 
 describe("[guard] protect: file tools", () => {
@@ -177,9 +182,20 @@ describe("[guard] protect: shell text", () => {
 	it("refuses a command that names a name entry as a path segment", () => {
 		const t = protectWorld();
 		expect(bash(t, "cat secrets.yml")).toBe("This command touches secrets.yml, protected by [guard] protect in Orrery's config.");
-		for (const command of ["cat config/secrets.yml", 'cat "secrets.yml"', "cp x secrets.yml", "cat <secrets.yml", "app --file=secrets.yml", "cat Secrets.YML", "ls vault", "cat vault/token.txt", "tar czf x ./vault", "cat secrets.yml|head", "cat secrets.yml*"]) {
+		for (const command of ["cat config/secrets.yml", 'cat "secrets.yml"', "cp x secrets.yml", "cat <secrets.yml", "app --file=secrets.yml", "cat Secrets.YML", "ls vault", "cat vault/token.txt", "tar czf x ./vault", "cat secrets.yml|head", "cat secrets.yml*", "cat *secrets.yml"]) {
 			expect([command, bash(t, command)]).toEqual([command, expect.stringMatching(PROTECTED)]);
 		}
+	});
+
+	it("refuses a path entry's name among brace alternatives the readings cannot all expand", () => {
+		const t = protectWorld();
+		const many = Array.from({ length: 70 }, (_, i) => `d${i}`);
+		expect(bash(t, `cat ~/{${[...many, "finance"].join(",")}}/q3.csv`)).toMatch(PROTECTED);
+		expect(bash(t, `cat ${t.keys}/{${[...many, "prod.pem"].join(",")}}`)).toMatch(PROTECTED);
+		// A word past 4096 characters gets no brace readings at all.
+		expect(bash(t, `cat ~/{finance,x}/${"y".repeat(5000)}`)).toMatch(PROTECTED);
+		expect(bash(t, `cat ~/{${[...many, "notes"].join(",")}}/q3.csv`)).toBeUndefined();
+		expect(bash(t, `cat ~/{a,b}/${"y".repeat(5000)}`)).toBeUndefined();
 	});
 
 	it("allows commands that only resemble an entry", () => {
@@ -272,6 +288,9 @@ describe(".env built in", () => {
 		"direnv allow",
 		"echo $ENV",
 		"python -c 'import os; print(os.environ)'",
+		// A shell's * does not match a leading dot: these read prod.env and the like, never .env.
+		"ls config/*.env",
+		"cat *.env",
 	])("allows the command %s", (command) => {
 		const t = protectWorld();
 		expect(guardToolCall("bash", { command }, plain(t))).toBeUndefined();

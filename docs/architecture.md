@@ -313,9 +313,9 @@ The rules are tested against concrete tool shapes and need review when upstream 
 This is a credential guard, not a sandbox.
 Shell and evaluation tools receive text checks, not an operating-system isolation boundary.
 The shell-text rules are a seatbelt. Known limits include variables, `eval`, `cd`, escape codes, brace names split across words, commands that change folder with their own flag (`git -C`, `tar -C`), a swap of the session's own folder in the same command, a shell search of an agent's whole folder, and hard links to a protected file.
-For `.env` and `[guard] protect` these hold too, and also: a glob that does not spell the name (`.en?`), a command over
-a folder that holds a protected path (`tar`, `grep -r`), and a content search (grep) of a folder that holds a `.env` file
-or a protected name get through. The other way round, a command that has a protected name as a word is refused even
+For `.env` and `[guard] protect` these hold too, and also: a glob that does not spell the name (`.en?`, or `*.env`
+where `*` matches a leading dot, as in `find -name`), a command over a folder that holds a protected path (`tar`,
+`grep -r`), and a content search (grep) of a folder that holds a `.env` file or a protected name get through. The other way round, a command that has a protected name as a word is refused even
 when it means something else, such as `git commit -m "ignore .env"` or `python -m venv .env`.
 Generated code can reach files through mechanisms the guard cannot see.
 Unknown plugin tools and hook failures can also fall outside the protection offered by a host integration.
