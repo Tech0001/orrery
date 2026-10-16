@@ -33,7 +33,7 @@ const GROUPS: readonly Group[] = [
 		detail: [
 			[
 				"agent <Name> [--tool pi|omp|claude-code|codex] [--yes] [-- <tool arguments>]",
-				"open the agent here: its tool starts in this folder with its instructions and memory (--tool: another tool this time; --yes: answers its questions yes; what follows -- goes to the tool)",
+				"open the agent here: its tool starts in this folder with its instructions and memory (--tool: another tool this time; --yes: answers its questions yes; what follows -- goes to the tool). Codex gets Orrery's hooks, memory tools and instructions on its command line, after a check that the hooks load in that Codex; only a person at a terminal can start it without them",
 			],
 			[
 				"agent add <Name> --folder DIR --tool pi|omp|claude-code|codex --summary provider/id [--thinking L]",

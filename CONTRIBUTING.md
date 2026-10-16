@@ -48,11 +48,12 @@ ORRERY_TEST_PI=/path/to/pi npm test -- test/pi/real-pi.test.ts
 ORRERY_TEST_OMP=/path/to/omp npm test -- test/omp/real-omp.test.ts
 ORRERY_TEST_ORI=/path/to/ori ORRERY_TEST_PI=/path/to/pi ORRERY_TEST_OMP=/path/to/omp \
   npm test -- test/ori/real-ori.test.ts
+ORRERY_TEST_CODEX=/path/to/codex npm test -- test/codex/real-codex.test.ts
 ```
 
 These tests isolate agent homes and use fake model services. `ORRERY_TEST_ORI_STRICT=1` turns the named upstream
-Ori/OMP compatibility skip into a failure. [Claude Code testing](docs/claude-code.md#testing) describes the separate
-opt-in live script, which makes paid calls. CI runs the suite on Node 22.19 and 24 and on macOS. There the real-pi
+Ori/OMP compatibility skip into a failure. [Claude Code testing](docs/claude-code.md#testing) and
+[Codex testing](docs/codex.md#testing) describe the separate opt-in live scripts, which make paid calls. CI runs the suite on Node 22.19 and 24 and on macOS. There the real-pi
 tests use the npm pi from the dev dependencies and fail rather than skip (`ORRERY_REQUIRE_PI=1`); CI needs no other
 agent binaries and no credentials.
 
@@ -69,7 +70,8 @@ release).
 - Add a test that fails without the change. For a bug fix, start with the failing test.
 - `npm run check` must pass. CI runs it on Ubuntu with Node 22.19 and 24, and on macOS.
 - Update the README or the guide in `docs/` when users will see the change.
-- Tests use synthetic data and scratch homes, never a real `~/.pi`, `~/.claude`, `~/.omp` or Orrery data folder.
+- Tests use synthetic data and scratch homes, never a real `~/.pi`, `~/.claude`, `~/.omp`, `~/.codex` or Orrery data
+  folder.
   Write fake keys in two pieces (`"sk-" + "proj-…"`) so secret scanners don't flag them.
 
 ## Areas that need extra care

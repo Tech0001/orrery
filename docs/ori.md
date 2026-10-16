@@ -12,8 +12,9 @@ curl -fsSL https://openrouter.ai/labs/ori/install.sh | bash
 ori login
 ```
 
-Install the agent too: [pi](pi.md), [OMP](omp.md), or [Claude Code](claude-code.md). In Orrery's Tools page, install
-Orrery's extension or plugin for that agent. Ori adds its own extension or settings when it launches the agent.
+Install the agent too: [pi](pi.md), [OMP](omp.md), [Claude Code](claude-code.md) or [Codex](codex.md). In Orrery's
+Tools page, install Orrery's extension or plugin for that agent (Codex needs none). Ori adds its own extension or
+settings when it launches the agent.
 The Ori row shows its path and an offline version check. Sign-in shows `unknown`: Ori 0.15.7 has no public auth
 command guaranteed to stay offline. Enter shows the install and login commands; Orrery does not run them for you.
 
@@ -49,7 +50,9 @@ orrery agent set Atlas launcher ''
 
 Launch mapping: `pi` → `ori pi`, `omp` → `ori omp`, `claude-code` → `ori claude`, `codex` → `ori codex`.
 The folder, existing setup checks, terminal handover and exit status handling are the same as direct launches.
-Codex still has no Orrery memory. If Ori is missing, Orrery refuses the launch and names this document.
+For Codex, Orrery's hooks, memory server and instructions follow `ori codex` as they follow `codex` in a direct launch,
+after the same hook check; a Codex session through Ori has not been checked yet. If Ori is missing, Orrery refuses the
+launch and names this document.
 
 ## Sign in for summaries
 
@@ -102,7 +105,7 @@ test reports this exact upstream incompatibility as a named skip; `ORRERY_TEST_O
 OMP extension in this version also provides no separate footer key. Do not assume the two pi footers exist in OMP.
 
 `ori claude` can change Claude Code's auto-compaction window by seeding its model cache. The Orrery mod's
-compaction behavior under it still needs the manual check below. Codex memory remains unsupported.
+compaction behavior under it still needs the manual check below, and so does Codex through Ori.
 
 ## Checks
 
