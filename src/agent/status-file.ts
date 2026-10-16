@@ -24,6 +24,8 @@ export interface AgentStatus {
 	readonly lastError: string | null;
 	/** Why summaries cannot come, in plain words (absent in files from before it existed). */
 	readonly trouble?: { readonly state: "stopped" | "failing"; readonly plain: string } | null;
+	/** Whether a summary has worked for the process that wrote it (absent in files from before it existed). */
+	readonly summarized?: boolean;
 	readonly updatedAt: string;
 	/** The installed version the agent's process runs, "checkout", or "unknown" (absent in files from before it existed). */
 	readonly version?: string;

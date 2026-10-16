@@ -154,6 +154,21 @@ describe("SessionStart for a Codex session", () => {
 		expect(await run("stop", input({ last_assistant_message: "ok" }), c)).toBe("");
 	});
 
+	it("at resume, says nothing of summaries working again until the new recorder has had one work", async () => {
+		const t = testAgent();
+		mkdirSync(t.agent.dir, { recursive: true });
+		const statusFile = join(t.agent.dir, "status.json");
+		const c = ctx(t, { startHolder: answer("recording") });
+		writeFileSync(statusFile, JSON.stringify({ trouble: { state: "failing", plain: "no key for the summary model" }, summarized: false }));
+		expect(((await run("session-start", input(), c)) as Answer).systemMessage).toContain("Test's summaries are failing: no key for the summary model.");
+		// The session is resumed: a new recorder, which has had no summary fail or work yet.
+		writeFileSync(statusFile, JSON.stringify({ trouble: null, summarized: false }));
+		expect((await run("session-start", input({ source: "resume" }), c)) as Answer).toEqual({ systemMessage: "Orrery · Test · no memory yet · recording" });
+		expect(await run("stop", input({ last_assistant_message: "ok" }), c)).toBe("");
+		writeFileSync(statusFile, JSON.stringify({ trouble: null, summarized: true }));
+		expect(await run("stop", input({ last_assistant_message: "ok" }), c)).toEqual({ systemMessage: "Orrery: Test's summaries are working again." });
+	});
+
 	it("is said nothing by a subagent's start, and nothing is started", async () => {
 		const t = testAgent();
 		const started: string[] = [];

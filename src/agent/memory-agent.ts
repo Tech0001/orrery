@@ -251,6 +251,8 @@ export class MemoryAgent {
 				source: this.compactorSource,
 			},
 			trouble: trouble === undefined ? null : { state: trouble.state, plain: trouble.plain },
+			// Whether a summary has worked in this process: without one, no trouble is not yet news that summaries work.
+			summarized: this.compactor.summarized > 0,
 			lastError: trouble?.plain ?? null,
 			updatedAt: localIso(),
 			version: statusVersion(),

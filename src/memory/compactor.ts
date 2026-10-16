@@ -99,6 +99,8 @@ export class Compactor {
 	readonly failed = new Set<string>();
 	/** Why summaries last failed or stopped; cleared once no part is failing. */
 	lastError: string | undefined;
+	/** How many summaries the summarizer (a model) has written since this compactor was made; a part kept as it is is none. */
+	summarized = 0;
 	readonly #abort = new AbortController();
 	readonly #closedSignal: Promise<void>;
 	#wakeClosed: () => void = () => {};
@@ -263,6 +265,7 @@ export class Compactor {
 						{ part, context: this.context.context(part), source, onStart: release },
 						this.#abort.signal,
 					);
+					this.summarized += 1;
 				} finally {
 					release();
 				}

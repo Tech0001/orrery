@@ -16,13 +16,18 @@ import { noticeKey, noticeText, type TroubleState } from "../agent/notices.ts";
 import { writePrivate } from "../agent/private-file.ts";
 import { updateNotices } from "../agent/update-notices.ts";
 
-function readTrouble(agentDir: string): { trouble: TroubleState | null } | undefined {
+/**
+ * status.json's summary state: its trouble, and whether a summary has worked for the recorder that wrote it (false only
+ * when it says so: a file from before the field counts as having worked, as it always did).
+ */
+function readTrouble(agentDir: string): { trouble: TroubleState | null; summarized: boolean } | undefined {
 	try {
-		const status = JSON.parse(readFileSync(join(agentDir, "status.json"), "utf8")) as { trouble?: unknown };
+		const status = JSON.parse(readFileSync(join(agentDir, "status.json"), "utf8")) as { trouble?: unknown; summarized?: unknown };
+		const summarized = status.summarized !== false;
 		const t = status.trouble as Partial<TroubleState> | null | undefined;
-		if (t === null || t === undefined) return { trouble: null };
-		if ((t.state === "failing" || t.state === "stopped") && typeof t.plain === "string") return { trouble: { state: t.state, plain: t.plain } };
-		return { trouble: null };
+		if (t === null || t === undefined) return { trouble: null, summarized };
+		if ((t.state === "failing" || t.state === "stopped") && typeof t.plain === "string") return { trouble: { state: t.state, plain: t.plain }, summarized };
+		return { trouble: null, summarized };
 	} catch {
 		return undefined;
 	}
@@ -35,6 +40,9 @@ function readTrouble(agentDir: string): { trouble: TroubleState | null } | undef
 export function summaryNotice(agent: AgentConfig, session: string, command = "/orrery:compactor"): string | undefined {
 	const status = readTrouble(agent.dir);
 	if (status === undefined) return undefined;
+	// No trouble from a recorder that has had no summary work yet (a resumed session's new one) is no news either way:
+	// nothing is said, and what the session heard stands.
+	if (status.trouble === null && !status.summarized) return undefined;
 	const file = join(agent.dir, "claude", "notice.json");
 	let previous: string | undefined;
 	try {
