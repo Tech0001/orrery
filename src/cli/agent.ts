@@ -87,7 +87,7 @@ export async function openAgentCommand(
 	if (text !== undefined) io.say(text);
 	// Codex's own "codex resume <id>" reopens the chat as plain Codex: the way to resume it as the agent (not after plain Codex).
 	if (launching.codex !== undefined) {
-		const resume = codexResumeLine(agent, exit.claimedBy, options.args);
+		const resume = codexResumeLine(agent, exit.claimedBy);
 		if (resume !== undefined) io.say(resume);
 	}
 	return exit.code ?? 1;

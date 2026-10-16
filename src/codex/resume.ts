@@ -3,7 +3,8 @@
  * plain Codex (no memory, no guard), so `orrery agent --tool codex` follows it with the line that resumes it as the
  * agent. Which session that is: Codex's session-start hook notes, per Codex process (the token's owner), the session
  * it is on (recordCodexSession), in <agent dir>/claude/codex-sessions.json; the launcher reads it for the Codex that
- * claimed its token. The holder and the spool forget a session moments after it ends, so they can't say.
+ * claimed its token. The holder and the spool forget a session moments after it ends, so they can't say. A Codex that
+ * noted none gets no line: guessing could resume another chat as the agent.
  */
 
 import { readFileSync } from "node:fs";
@@ -49,20 +50,12 @@ export function codexSessionOf(agentDir: string, pid: number): string | undefine
 	return validSession(session) ? session : undefined;
 }
 
-/** Codex 0.162.1's subcommands that start no session of the agent (its others are exec, review, resume and fork). */
-const NO_SESSION: ReadonlySet<string> = new Set([
-	"agents", "login", "logout", "mcp", "plugin", "app-server", "remote-control", "completion", "update", "doctor", "sandbox", "debug",
-	"apply", "a", "queue", "archive", "delete", "migrate-rollouts", "unarchive", "cloud", "exec-server", "features", "help",
-]);
-
 /**
- * The line `orrery agent` says after Codex ends: how to resume the session as the agent. When this Codex noted no
- * session, `resume --last`, but only after a launch that starts one (`args`: the person's arguments to Codex: none, a
- * prompt, options, or a session subcommand). Undefined when no Codex ever claimed the agent's token (`claimedBy`).
+ * The line `orrery agent` says after Codex ends: how to resume this Codex's session as the agent. Only with the session
+ * this Codex noted (`claimedBy`: the process that claimed the agent's token): without it, nothing. A guess (`resume
+ * --last`) could reopen another agent's or a plain Codex chat as this agent and record it into its memory.
  */
-export function codexResumeLine(agent: { readonly name: string; readonly dir: string }, claimedBy: number | undefined, args: readonly string[] = []): string | undefined {
-	if (claimedBy === undefined) return undefined;
-	const session = codexSessionOf(agent.dir, claimedBy);
-	if (session === undefined && args[0] !== undefined && NO_SESSION.has(args[0])) return undefined;
-	return `To continue it as ${agent.name}, with its memory and the guard: orrery agent ${shellWords([agent.name])} --tool codex -- resume ${session ?? "--last"}`;
+export function codexResumeLine(agent: { readonly name: string; readonly dir: string }, claimedBy: number | undefined): string | undefined {
+	const session = claimedBy === undefined ? undefined : codexSessionOf(agent.dir, claimedBy);
+	return session === undefined ? undefined : `To continue it as ${agent.name}, with its memory and the guard: orrery agent ${shellWords([agent.name])} --tool codex -- resume ${session}`;
 }

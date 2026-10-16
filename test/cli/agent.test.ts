@@ -325,14 +325,13 @@ describe("orrery agent", () => {
 			openAgentCommand(s.config, "Atlas", { tool: "codex", args, cwd: s.elsewhere }, io, { takeover: async () => "", run, codexGate });
 		expect(await open(codexRun(true))).toBe(0);
 		expect(said.at(-1)).toBe(`To continue it as Atlas, with its memory and the guard: orrery agent Atlas --tool codex -- resume ${session}`);
-		// Another Codex that ended before any session it noted: the latest session here (Codex picks it by folder).
-		said.length = 0;
-		expect(await open(codexRun(false, 2 ** 22 + 7))).toBe(0);
-		expect(said.at(-1)).toBe("To continue it as Atlas, with its memory and the guard: orrery agent Atlas --tool codex -- resume --last");
-		// A subcommand that starts no session (Codex's debug, mcp…) gets no such line.
-		said.length = 0;
-		expect(await open(codexRun(false, 2 ** 22 + 8), gate, ["debug", "prompt-input"])).toBe(0);
-		expect(said.filter((line) => line.startsWith("To continue"))).toEqual([]);
+		// Another Codex that ended before it noted a session (quit before a first prompt, or a subcommand that starts none):
+		// no line, never a guess such as resume --last, which could reopen another agent's chat as this one.
+		for (const args of [[], ["debug", "prompt-input"]]) {
+			said.length = 0;
+			expect(await open(codexRun(false, 2 ** 22 + 7), gate, args)).toBe(0);
+			expect(said.filter((line) => line.startsWith("To continue")), JSON.stringify(args)).toEqual([]);
+		}
 		// Codex never became the agent, or started as plain Codex: no such line.
 		said.length = 0;
 		expect(await open(async () => ({ code: 0, signal: null }))).toBe(0);

@@ -86,7 +86,9 @@ The instructions travel on Codex's command line, so they show in `ps`, like ever
   minutes). It is the same recorder Claude Code uses.
 - A session is Codex's session: resuming it through `orrery agent <Name> --tool codex -- resume <id>` goes on recording
   it. When Codex ends it prints `codex resume <id>`, which reopens the chat as plain Codex, with no memory and no guard;
-  `orrery agent` then prints the line that resumes it as the agent (`resume --last` when it can't tell the session).
+  `orrery agent` then prints the line that resumes it as the agent. It prints none when it can't tell which session
+  that Codex was on (you quit before a first prompt, say): use `orrery agent <Name> --tool codex -- resume` and pick
+  the session from Codex's list.
 - One writer: an agent records in one place at a time. A Codex session of an agent that is open elsewhere (pi, OMP,
   Claude Code, or another Codex session) is read-only: it gets the view and the memory tools, but nothing it says is
   recorded, and it says which tool holds the agent. A session that has ended leaves its recorder finishing summaries;

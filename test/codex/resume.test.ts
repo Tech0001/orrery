@@ -46,20 +46,12 @@ describe("the session a Codex process is on", () => {
 });
 
 describe("codexResumeLine", () => {
-	it("gives the Orrery way to resume: the session when this Codex recorded one, else the latest, and nothing for a Codex that was never the agent", () => {
+	it("gives the Orrery way to resume only this Codex's own session: never a guess, which could be another agent's chat", () => {
 		const dir = agentDir();
 		recordCodexSession(dir, 11, S1, () => true);
 		expect(codexResumeLine({ name: "Atlas", dir }, 11)).toBe(`To continue it as Atlas, with its memory and the guard: orrery agent Atlas --tool codex -- resume ${S1}`);
-		expect(codexResumeLine({ name: "Atlas", dir }, 12)).toBe("To continue it as Atlas, with its memory and the guard: orrery agent Atlas --tool codex -- resume --last");
+		// A Codex that noted no session (it ended before a first prompt), or never claimed the agent's token: nothing.
+		expect(codexResumeLine({ name: "Atlas", dir }, 12)).toBeUndefined();
 		expect(codexResumeLine({ name: "Atlas", dir }, undefined)).toBeUndefined();
-		// The latest is said only after a launch that starts a session: the TUI, a prompt, or a session subcommand.
-		for (const args of [[], ["fix the tests"], ["exec", "go"], ["resume", "--last"], ["-m", "gpt-x"]]) {
-			expect(codexResumeLine({ name: "Atlas", dir }, 12, args), JSON.stringify(args)).toMatch(/-- resume --last$/);
-		}
-		for (const args of [["debug", "prompt-input"], ["mcp", "list"], ["login"], ["features", "list"]]) {
-			expect(codexResumeLine({ name: "Atlas", dir }, 12, args), JSON.stringify(args)).toBeUndefined();
-		}
-		// A session this Codex noted is said whatever the arguments.
-		expect(codexResumeLine({ name: "Atlas", dir }, 11, ["debug", "prompt-input"])).toMatch(/-- resume 01a146c5/);
 	});
 });
