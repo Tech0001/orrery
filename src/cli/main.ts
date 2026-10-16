@@ -821,6 +821,7 @@ async function codexGuardHook(configPath: string | undefined): Promise<number> {
 		const stdin = await readStdin(guard.CODEX_TOOL_INPUT_MAX);
 		let config: HarnessConfig;
 		try {
+			// A synchronous read the watchdog (src/codex/guard-exit.ts) can't interrupt; its path is fixed by the launch (ORRERY_CONFIG, else the default), not chosen by the agent.
 			config = loadConfig(configPath);
 		} catch (error) {
 			return denyCodexCall(guard.codexRefusal(`Orrery's config could not be read (${errorText(error)}), so no call can be checked; nothing was run. Fix the config file.`));
