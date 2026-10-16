@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { parse } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 import { cutNotice, instructionsSection, writeInstructions } from "../../src/agent/instructions.ts";
-import { CODEX_ARG_MAX, CODEX_HOOKS, codexCutNotice, codexLaunch, type CodexEvent, shellWords, tomlString, trustHash, trustKey } from "../../src/codex/launch.ts";
+import { CODEX_ARG_MAX, CODEX_HOOKS, codexArgs, codexCutNotice, codexLaunch, type CodexEvent, shellWords, tomlString, trustHash, trustKey } from "../../src/codex/launch.ts";
 import { tempDir } from "../agent/support.ts";
 
 const dirs: string[] = [];
@@ -115,6 +115,18 @@ describe("codexLaunch", () => {
 			"features.unified_exec_tty",
 			"features.hooks",
 		]);
+	});
+
+	it("puts Orrery's flags after a session subcommand, where Codex reads them (it ignores those before exec), else before", () => {
+		const launch = codexLaunch({ name: "Atlas", dir: agentDir() }, ORRERY);
+		for (const sub of ["exec", "e", "resume", "fork", "review"]) {
+			expect(codexArgs(launch, [sub, "--last", "go"])).toEqual(["--no-daemon", sub, ...launch.config, "--last", "go"]);
+		}
+		expect(codexArgs(launch, ["exec", "resume", "--last"])).toEqual(["--no-daemon", "exec", ...launch.config, "resume", "--last"]);
+		// The TUI, with a prompt or not, and every other subcommand: before the person's arguments.
+		for (const args of [[], ["fix the tests"], ["debug", "prompt-input"], ["mcp", "list"], ["-m", "gpt-x", "exec"]]) {
+			expect(codexArgs(launch, args)).toEqual([...launch.args, ...args]);
+		}
 	});
 
 	it("runs a checkout's CLI through its runtime: hooks as one shell command, the server as a command and arguments", () => {

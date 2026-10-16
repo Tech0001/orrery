@@ -12,7 +12,7 @@ import { resolve } from "node:path";
 import { claudeSetup, claudeSetupMod, modSetupReport, setupReport } from "../claude/setup.ts";
 import { agentMode, markedHere, readSetupMarker } from "../claude/view-file.ts";
 import { type CodexGate, codexHookGate, type probeHooks } from "../codex/check.ts";
-import { codexLaunch, orreryCommand } from "../codex/launch.ts";
+import { codexArgs, codexLaunch, orreryCommand } from "../codex/launch.ts";
 import { checkHookShell, NOISY_SHELL_QUESTION, noisyShellText, type ShellCheck } from "../codex/shell.ts";
 import { buildRunning, readBuild } from "./build.ts";
 import { findAgent, type HarnessConfig, insideFolder, type AgentConfig, type AgentLauncher, type AgentTool } from "./config.ts";
@@ -155,16 +155,17 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 	// Codex: Orrery's hooks, memory tools and instructions go on its command line, before the person's arguments.
 	const codex = tool === "codex" ? codexLaunch(agent, options.orrery ?? orreryCommand(options.env ?? process.env)) : undefined;
 	for (const notice of codex?.notices ?? []) steps.push({ text: notice, confirm: false });
-	const own = codex?.args ?? [];
+	// The tool's arguments: for Codex, Orrery's flags where Codex reads them (codexArgs), around the person's.
+	const toolArgs = codex === undefined ? base.args : codexArgs(codex, base.args);
 	const version = codexVersion(check.version);
 	const codexPlan = (prefix: readonly string[]) => (codex === undefined ? {} : { codex: { path: check.path as string, ...(version === undefined ? {} : { version }), config: codex.config, plainArgs: [...prefix, ...base.args], notices: codex.notices } });
 	if (ori !== undefined) {
 		if (tool === "omp") steps.push({ text: 'Ori 0.15.7 can\'t start OMP: its model registration fails before startup. See docs/ori.md, or set launcher = "direct".', confirm: false });
 		steps.push({ text: `Launching ${label} through Ori in ${cwd}`, confirm: false });
 		const prefix = [BINARIES[tool], ...(agent.oriModel === undefined ? [] : ["--model", agent.oriModel])];
-		return { ...base, command: ori, args: [...prefix, ...own, ...base.args], steps, ...codexPlan(prefix) };
+		return { ...base, command: ori, args: [...prefix, ...toolArgs], steps, ...codexPlan(prefix) };
 	}
-	return { ...base, command: check.path, args: [...own, ...base.args], steps, ...codexPlan([]) };
+	return { ...base, command: check.path, args: toolArgs, steps, ...codexPlan([]) };
 }
 
 /**

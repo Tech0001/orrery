@@ -312,7 +312,8 @@ describe("Codex launch plans", () => {
 		const plan = launchPlan(config, row, tools, { env, args: ["resume", "--last"], orrery });
 		const launch = codexLaunch(agent, orrery);
 		expect(plan.command).toBe(join(env.PATH, "codex"));
-		expect(plan.args).toEqual([...launch.args, "resume", "--last"]);
+		// resume is a session subcommand: Orrery's flags go after it, where Codex reads them.
+		expect(plan.args).toEqual(["--no-daemon", "resume", ...launch.config, "--last"]);
 		expect(plan.steps).toEqual([{ text: cutNotice("A"), confirm: false }]);
 		expect(plan.codex).toEqual({ path: join(env.PATH, "codex"), config: launch.config, plainArgs: ["resume", "--last"], notices: [cutNotice("A")] });
 		expect(plan.env.ORRERY_AGENT).toBe("A");

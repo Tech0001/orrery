@@ -169,7 +169,7 @@ export function orreryCommand(env: NodeJS.ProcessEnv = process.env): string[] {
 }
 
 export interface CodexLaunch {
-	/** What goes before the person's own arguments: --no-daemon, then `config`. */
+	/** --no-daemon, then `config`: what goes before the person's own arguments, but for a session subcommand (codexArgs). */
 	readonly args: readonly string[];
 	/** The `-c` flags alone (the hook check gives Codex these). */
 	readonly config: readonly string[];
@@ -210,4 +210,22 @@ export function codexLaunch(agent: { readonly name: string; readonly dir: string
 	}
 	config.push("-c", "features.memories=false", "-c", "features.unified_exec_tty=false", "-c", "features.hooks=true");
 	return { args: ["--no-daemon", ...config], config, notices };
+}
+
+/**
+ * Codex's subcommands that start a session and take `-c` flags of their own. Codex 0.162.1 applies none of the `-c`
+ * flags given before `exec` (no hooks, no memory server, no instructions: an unguarded session), so Orrery's go after the
+ * subcommand's name; the others take them there too.
+ */
+const SESSION_SUBCOMMANDS: ReadonlySet<string> = new Set(["exec", "e", "resume", "fork", "review"]);
+
+/**
+ * Codex's command line for `launch` and the person's arguments: --no-daemon, then Orrery's `-c` flags right after a
+ * session subcommand the arguments start with (`exec …`, `resume --last`), else before the arguments (the TUI, with or
+ * without a prompt, and the other subcommands, which read them there).
+ */
+export function codexArgs(launch: CodexLaunch, args: readonly string[]): string[] {
+	const [first, ...rest] = args;
+	if (first !== undefined && SESSION_SUBCOMMANDS.has(first)) return ["--no-daemon", first, ...launch.config, ...rest];
+	return [...launch.args, ...args];
 }

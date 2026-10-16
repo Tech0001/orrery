@@ -161,9 +161,10 @@ describe("orrery agent", () => {
 		const seen = started(s.out);
 		expect([seen.agent, seen.cwd]).toEqual(["Atlas", realpathSync(s.elsewhere)]);
 		expect(seen.token).toMatch(/^[0-9a-f]{32}$/);
-		expect(seen.args?.startsWith("--no-daemon -c hooks.SessionStart=")).toBe(true);
+		// resume is a session subcommand: Orrery's flags come right after it, then the person's other arguments.
+		expect(seen.args?.startsWith("--no-daemon resume -c hooks.SessionStart=")).toBe(true);
 		expect(seen.args).toContain(" codex-hook session-start");
-		expect(seen.args?.endsWith(" resume --last")).toBe(true);
+		expect(seen.args?.endsWith(" -c features.hooks=true --last")).toBe(true);
 		expect(codex.checks()).toBe(1);
 		expect(JSON.parse(readFileSync(join(s.env.ORRERY_HOME as string, "codex-check.json"), "utf8"))).toMatchObject({ codex: "0.162.1", ok: true });
 		// Verified: the next launch does not ask again. An agent whose tool is codex opens it without --tool.

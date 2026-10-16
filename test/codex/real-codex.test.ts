@@ -41,10 +41,10 @@ function findCodex(): string | null {
 const codex = findCodex();
 const version = codex === null ? "" : (spawnSync(codex, ["--version"], { env: isolated("version"), encoding: "utf8" }).stdout.match(/\d+\.\d+\.\d+\S*/)?.[0] ?? "");
 
-/** Runs codex to its end without blocking this process (the fake model answers from it). */
-function runCodex(args: readonly string[], env: NodeJS.ProcessEnv): Promise<{ readonly status: number | null; readonly stdout: string; readonly stderr: string }> {
+/** Runs codex (or `command`, from `cwd`) to its end without blocking this process (the fake model answers from it). */
+function runCodex(args: readonly string[], env: NodeJS.ProcessEnv, command = codex as string, cwd?: string): Promise<{ readonly status: number | null; readonly stdout: string; readonly stderr: string }> {
 	return new Promise((done) => {
-		const child = spawn(codex as string, [...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn(command, [...args], { env, stdio: ["ignore", "pipe", "pipe"], ...(cwd === undefined ? {} : { cwd }) });
 		let stdout = "";
 		let stderr = "";
 		child.stdout.on("data", (chunk) => (stdout += chunk));
@@ -163,6 +163,27 @@ describe.skipIf(codex === null)("Orrery's Codex launch against the installed Cod
 			}
 		}
 	}, 180_000);
+
+	it("orrery agent --tool codex -- exec …: Orrery's flags reach the session (Codex ignores them before exec), so the guard, view and instructions do", async () => {
+		const orrery = [cliCommand([]).cmd, ...cliCommand([]).args];
+		const a = guardedAtlas("agent-exec", orrery);
+		writeInstructions(a.agentDir, "Atlas keeps notes short.\n");
+		const { ORRERY_AGENT: _agent, ORRERY_AGENT_TOKEN: _token, ...env } = a.env;
+		const model = await scriptedModel((n) => (n === 1 ? { shell: "cat secret.txt" } : { reply: "done" }));
+		try {
+			const c = cliCommand(["agent", "Atlas", "--tool", "codex", "--", "exec", ...fakeFlags(model.port, a.catalog), "run it"]);
+			const run = await runCodex(c.args, { ...env, PATH: `${dirname(codex as string)}${delimiter}/usr/bin${delimiter}/bin` }, c.cmd, a.work);
+			expect(run.status, run.stderr).toBe(0);
+			const [context] = orreryContext(model.requests[0]);
+			expect(context).toMatch(/^Orrery · Atlas · 0 msgs · recording\n/);
+			const instructions = instructionsSection("Atlas", readInstructions(a.agentDir) as NonNullable<ReturnType<typeof readInstructions>>);
+			expect(developerTexts(model.requests[0]).some((text) => text.startsWith(instructions))).toBe(true);
+			expect(callOutputs(model.requests).get("call_1")).toBe("Command blocked by PreToolUse hook: Orrery guard: This command touches secret.txt, protected by [guard] protect in Orrery's config. Command: cat secret.txt");
+			await waitUntil(() => readHolder(a.agentDir) === undefined, 30_000);
+		} finally {
+			model.close();
+		}
+	}, 120_000);
 
 	it("judges a patch sent through the shell by its targets: Codex applies the heredoc itself, past any name in the text", async () => {
 		const orrery = [cliCommand([]).cmd, ...cliCommand([]).args];
