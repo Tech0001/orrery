@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync,
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { instructionsTemplate } from "../../src/agent/instructions.ts";
+import { CODEX_HOOKS, trustKey } from "../../src/codex/launch.ts";
 import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { systemCommand } from "../install/support.ts";
 import { tempDir } from "../agent/support.ts";
@@ -47,8 +48,34 @@ function orrery(env: NodeJS.ProcessEnv, cwd: string, ...args: string[]) {
 
 /** The CLI in a new pseudo-terminal (util-linux script): stdin and stdout are a terminal, as in a person's shell. */
 function inTerminal(env: NodeJS.ProcessEnv, cwd: string, ...args: string[]) {
+	return typedInTerminal("", env, cwd, ...args);
+}
+
+/** inTerminal, with `input` typed into the terminal. */
+function typedInTerminal(input: string, env: NodeJS.ProcessEnv, cwd: string, ...args: string[]) {
 	const c = cliCommand(args);
-	return spawnSync(SCRIPT as string, ["-qec", [c.cmd, ...c.args].map(quote).join(" "), "/dev/null"], { env, cwd, encoding: "utf8", input: "", timeout: 20_000 });
+	return spawnSync(SCRIPT as string, ["-qec", [c.cmd, ...c.args].map(quote).join(" "), "/dev/null"], { env, cwd, encoding: "utf8", input, timeout: 20_000 });
+}
+
+/**
+ * A fake Codex 0.162.1 in the scene's bin: its app server lists Orrery's hooks as `trust` says (as the real one does
+ * for the flags it was given); run as the session, it writes what it was started with, as the fake pi does.
+ */
+function fakeCodex(s: ReturnType<typeof scene>, trust: "trusted" | "untrusted") {
+	const hooks = CODEX_HOOKS.map((hook) => ({ key: trustKey(hook.event), source: "sessionFlags", trustStatus: trust, enabled: true }));
+	const list = JSON.stringify({ id: 2, result: { data: [{ cwd: "/x", hooks, warnings: [], errors: [] }] } });
+	writeFileSync(
+		join(s.dir, "bin", "codex"),
+		[
+			"#!/bin/sh",
+			'if [ "$1" = "--version" ]; then echo "codex-cli 0.162.1"; exit 0; fi',
+			`if [ "$1" = "app-server" ]; then echo x >> ${JSON.stringify(`${s.out}.checks`)}; while IFS= read -r line; do case "$line" in *'"id":1'*) echo '{"id":1,"result":{}}' ;; *'"id":2'*) echo ${quote(list)}; exit 0 ;; esac; done; exit 0; fi`,
+			`printf '%s|%s|%s|%s\n' "$ORRERY_AGENT" "$ORRERY_AGENT_TOKEN" "$(pwd)" "$*" > ${JSON.stringify(s.out)}`,
+		].join("\n"),
+		{ mode: 0o755 },
+	);
+	/** How many times the app server was asked. */
+	return { checks: () => (existsSync(`${s.out}.checks`) ? readFileSync(`${s.out}.checks`, "utf8").trim().split("\n").length : 0) };
 }
 
 /** What the fake pi was started with: ORRERY_AGENT, the token, its folder (physical) and its arguments. */
@@ -115,11 +142,66 @@ describe("orrery agent", () => {
 		expect(readFileSync(s.out, "utf8")).toBe("omp|Atlas\n");
 	});
 
-	it("refuses Codex, which has no Orrery memory yet, and names the configured agents for an unknown name", () => {
+	it("names the tools --tool takes, and the configured agents for an unknown name", () => {
 		const s = scene();
-		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "codex").stderr).toContain("Codex has no Orrery memory yet: open Atlas in pi, OMP or Claude Code (--tool).");
-		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "claude").stderr).toContain("--tool takes pi, omp or claude-code (not claude).");
+		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "claude").stderr).toContain("--tool takes pi, omp, claude-code or codex (not claude).");
 		expect(orrery(s.env, s.elsewhere, "agent", "Nobody").stderr).toContain("No agent named Nobody. Configured agents: Atlas");
+	});
+
+	it("opens Codex with Orrery's flags and the person's arguments after the hook check, which runs once per Codex version", () => {
+		const s = scene();
+		const codex = fakeCodex(s, "trusted");
+		const r = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "codex", "--", "resume", "--last");
+		expect(r.status, r.stderr).toBe(0);
+		expect(r.stdout).toContain("Checking that Orrery's hooks load in Codex 0.162.1…");
+		const seen = started(s.out);
+		expect([seen.agent, seen.cwd]).toEqual(["Atlas", realpathSync(s.elsewhere)]);
+		expect(seen.token).toMatch(/^[0-9a-f]{32}$/);
+		expect(seen.args?.startsWith("--no-daemon -c hooks.SessionStart=")).toBe(true);
+		expect(seen.args).toContain(" codex-hook session-start");
+		expect(seen.args?.endsWith(" resume --last")).toBe(true);
+		expect(codex.checks()).toBe(1);
+		expect(JSON.parse(readFileSync(join(s.env.ORRERY_HOME as string, "codex-check.json"), "utf8"))).toMatchObject({ codex: "0.162.1", ok: true });
+		// Verified: the next launch does not ask again. An agent whose tool is codex opens it without --tool.
+		writeFileSync(s.config, readFileSync(s.config, "utf8").replace('tool = "pi"', 'tool = "codex"'));
+		rmSync(s.out);
+		const again = orrery(s.env, s.elsewhere, "agent", "Atlas");
+		expect(again.status, again.stderr).toBe(0);
+		expect(again.stdout).not.toContain("Checking");
+		expect(started(s.out).args?.startsWith("--no-daemon ")).toBe(true);
+		expect(codex.checks()).toBe(1);
+	});
+
+	it("refuses without a terminal when Orrery's hooks don't load in Codex, --yes or not, and starts nothing", () => {
+		const s = scene();
+		fakeCodex(s, "untrusted");
+		for (const yes of [[], ["--yes"]]) {
+			const r = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "codex", ...yes);
+			expect(r.status).toBe(1);
+			expect(r.stderr).toContain(
+				"Orrery's hooks don't load in Codex 0.162.1: Codex does not trust Orrery's SessionStart hook (untrusted). Without them a session has no memory and no guard. Atlas was not opened: only a person at a terminal can choose to start Codex without them (run orrery agent Atlas there).",
+			);
+			expect(existsSync(s.out)).toBe(false);
+		}
+		expect(JSON.parse(readFileSync(join(s.env.ORRERY_HOME as string, "codex-check.json"), "utf8"))).toMatchObject({ codex: "0.162.1", ok: false });
+	});
+
+	it.skipIf(!hasScript)("in a terminal, when the hooks don't load: asks, default no; yes starts plain Codex and says it is not recorded", () => {
+		const s = scene();
+		fakeCodex(s, "untrusted");
+		for (const answer of ["\n", "n\n"]) {
+			const no = typedInTerminal(answer, s.env, s.elsewhere, "agent", "Atlas", "--tool", "codex", "--yes", "--", "-x");
+			expect(no.status).toBe(1);
+			expect(no.stdout).toContain("Orrery's hooks don't load in Codex 0.162.1");
+			expect(no.stdout).toContain("Start Codex without Orrery anyway? The session won't be recorded and the guard will be off. (y/N)");
+			expect(no.stdout).toContain("Not opened.");
+			expect(existsSync(s.out)).toBe(false);
+		}
+		const yes = typedInTerminal("y\n", s.env, s.elsewhere, "agent", "Atlas", "--tool", "codex", "--", "-x");
+		expect(yes.status, yes.stdout).toBe(0);
+		expect(yes.stdout).toContain("Starting Codex without Orrery: this session isn't recorded and the guard is off.");
+		// Plain Codex: the person's arguments only, and not as the agent.
+		expect(started(s.out)).toMatchObject({ agent: "", token: "", args: "-x" });
 	});
 
 	it("refuses Claude Code outside the agent's folder without the mod, and starts nothing", () => {

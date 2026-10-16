@@ -11,12 +11,13 @@ import { COMPACT_AT_MIN, findAgent, type HarnessConfig, AGENT_TOOLS, agentNamePr
 import { editInstructionsFile } from "../../agent/editor.ts";
 import { instructionsTemplate, readInstructions } from "../../agent/instructions.ts";
 import { summaryLine } from "../../agent/agent-commands.ts";
-import { exitText, launchLabel, launchPlan, remoteGate, runAgent } from "../../agent/launch.ts";
+import { exitText, launchLabel, type LaunchPlan, launchPlan, remoteGate, runAgent, withoutOrrery } from "../../agent/launch.ts";
 import { archiveRefusal, type AgentRow, TOOL_LABELS } from "../../agent/overview.ts";
 import { workArea } from "../../agent/pick.ts";
 import { safeText } from "../../agent/source-labels.ts";
 import { switchSummaryModel } from "../../agent/summary-text.ts";
 import { shortHome } from "../../agent/tools.ts";
+import { WITHOUT_ORRERY_QUESTION } from "../../codex/check.ts";
 import { localIso } from "../../memory/index.ts";
 import type { App } from "../app.ts";
 import { ConfirmModal, hardWrap, InputModal, MessageModal, menuUI, SelectModal } from "../dialogs.ts";
@@ -99,6 +100,18 @@ async function whereToOpen(app: App, row: AgentRow): Promise<string | undefined>
 }
 
 /**
+ * Codex's hook check (src/codex/check.ts): the plan as it is when Orrery's hooks load; when they don't, plain Codex
+ * after a yes (the question's default is no: n and Esc), else undefined.
+ */
+async function codexHooksOrPlain(app: App, plan: LaunchPlan): Promise<LaunchPlan | undefined> {
+	if (plan.codex === undefined) return plan;
+	const gate = await app.deps.codexCheck(plan, (text) => app.say(text));
+	if (gate.ok) return plan;
+	if (!(await app.host.open(new ConfirmModal(safeLines(`${gate.text}\n\n${WITHOUT_ORRERY_QUESTION}`))))) return undefined;
+	return withoutOrrery(plan);
+}
+
+/**
  * Enter and L: open the agent in its tool as the agent (src/agent/launch.ts), where the person says, after what the launch
  * plan asks. A remote agent's remote is asked first, so an agent open on another machine is refused before any question.
  */
@@ -129,8 +142,11 @@ export function launchAgent(app: App, row: AgentRow | undefined): void {
 			const { fix } = step;
 			if (fix !== undefined && !(await runFix(app, () => app.deps.applyFix(fix, config, gate.row, tools, plan.cwd)))) return "Not launched.";
 		}
-		const exit = await runAgent(plan, (p) => app.deps.launch(p));
-		return exitText(label, exit) ?? `Back from ${label} (${row.name}).`;
+		const launching = await codexHooksOrPlain(app, plan);
+		if (launching === undefined) return "Not launched.";
+		const exit = await runAgent(launching, (p) => app.deps.launch(p));
+		const plain = launching.withoutOrrery === true ? ", started without Orrery: that session was not recorded" : "";
+		return exitText(label, exit) ?? `Back from ${label} (${row.name})${plain}.`;
 	});
 }
 

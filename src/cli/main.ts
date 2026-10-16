@@ -16,13 +16,13 @@ function required(value: string | undefined, what: string): string {
 	return value;
 }
 
-/** Asks a yes/no question on the terminal; no without a terminal. */
-async function askYes(question: string): Promise<boolean> {
+/** Asks a yes/no question on the terminal; no without a terminal. `hint` shows the answers ("y/N": no unless y). */
+async function askYes(question: string, hint = "y/n"): Promise<boolean> {
 	if (process.stdin.isTTY !== true) return false;
 	const { createInterface } = await import("node:readline/promises");
 	const rl = createInterface({ input: process.stdin, output: process.stdout });
 	try {
-		return /^y(es)?$/i.test((await rl.question(`${question} (y/n) `)).trim());
+		return /^y(es)?$/i.test((await rl.question(`${question} (${hint}) `)).trim());
 	} finally {
 		rl.close();
 	}
@@ -471,8 +471,8 @@ async function unknownCommand(command: string): Promise<number> {
 /** Runs the command: everything but help and the version. */
 async function dispatch(positionals: string[], values: ReturnType<typeof parseCommandLine>["values"], updateVersion: string | undefined, toolArgs: string[]): Promise<number> {
 	const [command, arg] = positionals;
-	// Claude Code's hook runs several times a turn and never signs in or calls a model.
-	if (command !== "claude-hook") await registerReleaseOAuthFlows();
+	// Claude Code's and Codex's hooks run several times a turn and never sign in or call a model.
+	if (command !== "claude-hook" && command !== "codex-hook") await registerReleaseOAuthFlows();
 	if (command === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true) {
 		const { runTui } = await import("../tui/run.ts");
 		return runTui(values.config);
@@ -482,6 +482,7 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 		return 0;
 	}
 	if (command === "claude-hook") return claudeHook(arg, values.config);
+	if (command === "codex-hook") return codexHook();
 	if (command === "claude-mod") return claudeModCommand(arg, values);
 	if (command === "mcp") return mcpServer(values.config);
 	if (command === "remote") {
@@ -499,7 +500,9 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 		const sub = positionals[1];
 		if (sub !== undefined && ["add", "set", "archive", "push", "pull", "takeover", "local"].includes(sub)) return agentCommand(positionals.slice(1), values);
 		const [{ editAgentCommand, openAgentCommand }, { agentRemoteCommand }] = await Promise.all([import("./agent.ts"), import("./remote.ts")]);
-		const io = { say, confirm: (question: string) => (values.yes === true ? Promise.resolve(true) : askYes(question)) };
+		// A question only a person answers (starting Codex without Orrery's memory and guard) needs a terminal; --yes is no answer to it.
+		const terminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
+		const io = { say, confirm: (question: string) => (values.yes === true ? Promise.resolve(true) : askYes(question)), ...(terminal ? { askPerson: (question: string) => askYes(question, "y/N") } : {}) };
 		if (positionals[1] === "edit") {
 			if (positionals.length > 3) throw new Error(`orrery agent edit takes one agent name (got ${positionals.slice(2).join(" ")}).`);
 			return editAgentCommand(values.config, required(positionals[2], "agent name"), io);
@@ -776,6 +779,16 @@ async function claudeHook(event: string | undefined, configPath: string | undefi
 		process.stderr.write(`Orrery: ${event ?? "claude-hook"}: ${errorText(error)}\n`);
 		if (guarding) process.stdout.write(denyToolCall(`this call could not be checked (${errorText(error)}); nothing was run.`));
 	}
+	return 0;
+}
+
+/**
+ * `orrery codex-hook <event>`: the hooks `orrery agent --tool codex` gives Codex (src/codex/launch.ts). For now each one
+ * reads its input to the end and answers `{}` (nothing to add, nothing refused), so a Codex session opens.
+ */
+async function codexHook(): Promise<number> {
+	await readStdin(0);
+	process.stdout.write("{}");
 	return 0;
 }
 

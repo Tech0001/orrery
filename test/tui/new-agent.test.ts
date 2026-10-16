@@ -192,7 +192,10 @@ describe("N: an agent from an existing chat", () => {
 		await answer(app, "Turn which chat into an agent?", " ", DOWN, " ", ENTER);
 		await answer(app, "In use", "y");
 		await answer(app, "Agent name", ENTER);
-		await answer(app, "It continues in", ...typed("Claude"), ENTER);
+		// Codex is one of the tools it can continue in.
+		await answer(app, "It continues in");
+		for (const label of ["pi", "OMP", "Claude Code", "Codex"]) expect(screen(app)).toContain(label);
+		keys(app, ...typed("Codex"), ENTER);
 		await answer(app, "Summaries from:", ENTER);
 		await answer(app, "Anthropic model:", ...typed("haiku-4-5"), ENTER);
 		await answer(app, "Thinking", ENTER);

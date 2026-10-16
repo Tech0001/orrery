@@ -64,7 +64,7 @@ describe("orrery help", () => {
 		const shown = new Set(lines.flatMap(usageWords));
 		const people = DISPATCHED.filter((command) => !PLUGIN_COMMANDS.includes(command) && !DETAIL_ONLY.includes(command));
 		expect(people.filter((command) => !shown.has(command))).toEqual([]);
-		expect([...PLUGIN_COMMANDS].sort()).toEqual(["claude-hook", "claude-mod", "holder", "mcp"]);
+		expect([...PLUGIN_COMMANDS].sort()).toEqual(["claude-hook", "claude-mod", "codex-hook", "holder", "mcp"]);
 		expect(PLUGIN_COMMANDS.filter((command) => new RegExp(`(^|[^\\w-])${command}([^\\w-]|$)`, "m").test(page.stdout))).toEqual([]);
 		expect(page.stdout).toContain("\norrery help <command>       every option for one command\norrery help all             the full list, incl. what the plugins run\n");
 	});

@@ -9,7 +9,7 @@ const ENTER = "\r";
 const CHECKS: ToolCheck[] = [
 	{ id: "pi", label: "pi", path: "/bin/pi", version: "1.1.0", wiring: "missing", detail: "no /h/.pi/agent/extensions/orrery.ts" },
 	{ id: "claude-code", label: "Claude Code", path: "/bin/claude", version: "2.1.294 (Claude Code)", wiring: "installed", detail: "plugin 0.2.0" },
-	{ id: "codex", label: "Codex", wiring: "none", detail: "no memory yet" },
+	{ id: "codex", label: "Codex", wiring: "memory", detail: "hooks are checked at the first launch" },
 ];
 
 describe("the Tools page", () => {
@@ -17,7 +17,7 @@ describe("the Tools page", () => {
 		const app = makeApp(fakeDeps({ tools: () => CHECKS }), [toolsPage]);
 		const text = screen(app);
 		expect(text).toMatch(/pi\s+\/bin\/pi\s+1\.1\.0\s+missing/);
-		expect(text).toMatch(/Codex\s+not found\s+—\s+none/);
+		expect(text).toMatch(/Codex\s+not found\s+—\s+memory\s+hooks are check/);
 		expect(text).toMatch(/Orrery\s+\/opt\/orrery\s+0\.1\.0/);
 	});
 
@@ -45,10 +45,21 @@ describe("the Tools page", () => {
 	});
 
 	it("says when there is nothing it can do", async () => {
-		const app = makeApp(fakeDeps({ tools: () => CHECKS, installSteps: () => [] }), [toolsPage]);
+		const app = makeApp(fakeDeps({ tools: () => [{ ...CHECKS[0]!, wiring: "other", detail: "pi and OMP share one extensions folder" }], installSteps: () => [] }), [toolsPage]);
+		keys(app, "I");
+		await app.idle();
+		expect(screen(app)).toContain("Nothing Orrery can do for pi: pi and OMP share one extensions folder.");
+	});
+
+	it("Codex needs nothing installed: I and Enter say its memory comes with each launch, and the last hook check", async () => {
+		const app = makeApp(fakeDeps({ tools: () => CHECKS, installSteps: () => [], install: () => { throw new Error("must not install"); } }), [toolsPage]);
 		keys(app, "\x1b[B", "\x1b[B", "I");
 		await app.idle();
-		expect(screen(app)).toContain("Nothing Orrery can do for Codex: no memory yet.");
+		expect(screen(app, 200)).toContain("Nothing to install for Codex: Orrery's hooks and memory tools come with each launch (hooks are checked at the first launch).");
+		keys(app, ENTER);
+		await answer(app, "Codex");
+		expect(screen(app)).toContain("Orrery: memory");
+		expect(screen(app)).toContain("Nothing to install: Orrery's hooks and memory tools come with each launch.");
 	});
 
 	it("I on the Orrery row says how Orrery updates: orrery update for a release, commit then npm run install-local from a checkout", async () => {
@@ -147,7 +158,7 @@ it("uses ~ and middle ellipses in Found and Detail, with bare version numbers", 
 	const checks: ToolCheck[] = [
 		{ id: "pi", label: "pi", path: `${home}/.local/share/mise/installs/deeply/nested/pi-wrapper-packages/pi/1.1.0/bin/pi`, version: "1.1.0", wiring: "installed", detail: `${home}/.pi/agent/extensions/orrery.ts` },
 		{ id: "claude-code", label: "Claude Code", path: `${home}/.local/bin/claude`, version: "2.1.296 (Claude Code)", wiring: "installed", detail: `points at ${home}/code/very-long-project-directory/claude-plugin` },
-		{ id: "codex", label: "Codex", path: `${home}/.local/bin/codex`, version: "codex-cli 0.162.1", wiring: "none", detail: "no memory yet" },
+		{ id: "codex", label: "Codex", path: `${home}/.local/bin/codex`, version: "codex-cli 0.162.1", wiring: "memory", detail: "hooks checked with Codex 0.162.1" },
 		{ id: "omp", label: "OMP", path: `${home}/.local/share/mise/installs/oh-my-pi/18.10.2/omp`, version: "omp/18.10.2", wiring: "installed", detail: `${home}/.omp/agent/extensions/orrery.ts` },
 	];
 	const snapshot = JSON.stringify(checks);
