@@ -90,7 +90,7 @@ agent's folder, it asks whether to open the agent here or there. Its tool starts
 | **4 Tools** | **Enter** details · **I** install or repair Orrery's side of pi, OMP or Claude Code |
 
 **?** shows help on any page and **q** quits. Nearly everything the TUI does can also be done from the command line;
-`orrery help` lists every command.
+`orrery help` lists the commands, and `orrery help <command>` every option of one.
 
 ## Agents
 
@@ -116,7 +116,7 @@ and marks the ones written to in the last ten minutes as in use. Pick one, or ma
 combined in time order. Orrery reads them, shows a short report, and creates the agent. Its memory builds in the
 background, the agents list shows the progress, and the agent opens once the build is done. An import is a
 snapshot: anything said in those chats later is not in the agent. From the command line, `orrery import` can also
-gather a whole project's Claude Code and Codex history; see `orrery help`.
+gather a whole project's Claude Code and Codex history; see `orrery help import`.
 
 **Reading other agents.** In the agent's `[agents.<Name>]` section of `config.toml`, `reads = ["Atlas", "Birch"]`
 (or `["*"]` for all) lets it use the `agents` and `agent_memory` tools to look into those agents' memory, read-only.
@@ -175,7 +175,7 @@ which also lets Claude Code open the agent in any folder.
 
 ## If you are an agent helping someone with Orrery
 
-The TUI is for people; you have the command line. `orrery help` lists every command. Start here:
+The TUI is for people; you have the command line. `orrery help all` lists every command and option. Start here:
 
 | To | Run |
 | --- | --- |
