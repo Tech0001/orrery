@@ -66,6 +66,8 @@ describe("a Codex session, process by process", () => {
 		const end = hook("session-end", { session_id: "c1", reason: "other" }, env);
 		expect([end.status, end.stdout, end.stderr]).toEqual([0, "", ""]);
 		await waitUntil(() => readHolder(t.agent.dir) === undefined && !existsSync(sessionDir(t.agent.dir, "c1")), 20_000);
+		// The holder logs its stop last, after it has handed the agent over and cleaned up the spool.
+		await waitUntil(() => readFileSync(holderLog(t.agent.dir), "utf8").includes("c1: stopped: session over"), 20_000);
 		const log = readFileSync(holderLog(t.agent.dir), "utf8");
 		expect(log).toContain("c1: recording");
 		expect(log).toContain("c1: stopped: session over");
