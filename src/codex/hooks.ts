@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
-import { holderFresh, readHolder } from "../agent/handover.ts";
+import { holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { memorySection } from "../agent/view-text.ts";
 import { noticeShownBefore, waitForMode } from "../claude/hooks.ts";
@@ -172,7 +172,7 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 		warnings.push(`Orrery: ${agent.name}'s recorder did not answer in time; see ${holderLog(agent.dir)}.`);
 	} else if (mode.mode === "read-only") {
 		state = "read-only: this session is not recorded";
-		if (held) warnings.push(`Orrery: ${agent.name} is open elsewhere (pi, Claude Code, or another Codex session); this session reads memory but is not recorded.`);
+		if (held) warnings.push(`Orrery: ${agent.name} is ${openElsewhere(agent.dir, "codex")}; this session reads memory but is not recorded.`);
 	}
 	// A recording recorder's notices (memory kept aside, unsaved turns kept) are said once per recorder start, not again
 	// after each compaction that keeps it.

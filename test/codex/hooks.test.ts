@@ -1,8 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentConfig } from "../../src/agent/config.ts";
-import { readHolder } from "../../src/agent/handover.ts";
+import { holderFile, readHolder, writeHolder } from "../../src/agent/handover.ts";
 import { agentModelSource } from "../../src/agent/model-source.ts";
 import { newToken } from "../../src/agent/pick.ts";
 import { Holder } from "../../src/claude/holder.ts";
@@ -10,7 +10,7 @@ import { holderLog, sessionDir } from "../../src/claude/paths.ts";
 import { listSessions, pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
 import { CODEX_RECORD_EVENTS, type CodexHookContext, runCodexHook } from "../../src/codex/hooks.ts";
 import { fauxModels } from "../agent/support.ts";
-import { cleanupDirs, messages, seed, type TestAgent, testAgent, waitUntil } from "../claude/support.ts";
+import { cleanupDirs, messages, seed, statusOf, type TestAgent, testAgent, waitUntil } from "../claude/support.ts";
 
 const holders: Holder[] = [];
 afterEach(async () => {
@@ -114,7 +114,7 @@ describe("SessionStart for a Codex session", () => {
 		const t = testAgent();
 		const readOnly = (await run("session-start", input(), ctx(t, { startHolder: answer("read-only") }))) as Answer;
 		expect(readOnly.systemMessage).toBe(
-			"Orrery · Test · no memory yet · read-only: this session is not recorded\nOrrery: Test is open elsewhere (pi, Claude Code, or another Codex session); this session reads memory but is not recorded.",
+			"Orrery · Test · no memory yet · read-only: this session is not recorded\nOrrery: Test is open elsewhere (pi, OMP, Claude Code, or another Codex session); this session reads memory but is not recorded.",
 		);
 		expect(readOnly.hookSpecificOutput?.additionalContext).toBe(readOnly.systemMessage);
 		// A read-only session spools nothing.
@@ -123,6 +123,23 @@ describe("SessionStart for a Codex session", () => {
 		const silent = (await run("session-start", input({ session_id: "s2" }), ctx(t))) as Answer;
 		expect(silent.systemMessage).toContain("not recording yet");
 		expect(silent.systemMessage).toContain(holderLog(t.agent.dir));
+	});
+
+	it("names the tool that holds the agent when a recorder or a running session says which", async () => {
+		const t = testAgent();
+		mkdirSync(t.agent.dir, { recursive: true });
+		const warning = async (session: string) => ((await run("session-start", input({ session_id: session }), ctx(t, { startHolder: answer("read-only") }))) as Answer).systemMessage?.split("\n")[1];
+		const now = Date.now();
+		const recorder = { pid: process.pid, session: "other", claudePid: 777, state: "recording" as const, startedAt: now, updatedAt: now };
+		writeHolder(t.agent.dir, recorder);
+		expect(await warning("s1")).toBe("Orrery: Test is open in Claude Code; this session reads memory but is not recorded.");
+		writeHolder(t.agent.dir, { ...recorder, host: "codex" });
+		expect(await warning("s2")).toBe("Orrery: Test is open in another Codex session; this session reads memory but is not recorded.");
+		rmSync(holderFile(t.agent.dir));
+		for (const [tool, label] of [["pi", "pi"], ["omp", "OMP"]]) {
+			writeFileSync(join(t.agent.dir, "status.json"), JSON.stringify(statusOf(tool)));
+			expect(await warning(`s-${tool}`)).toBe(`Orrery: Test is open in ${label}; this session reads memory but is not recorded.`);
+		}
 	});
 
 	it("tells the person of summary trouble with Orrery's command for it, once", async () => {

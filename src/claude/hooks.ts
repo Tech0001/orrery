@@ -28,7 +28,7 @@ import { workArea } from "../agent/pick.ts";
 import { writePrivate } from "../agent/private-file.ts";
 import { selfCommand } from "../agent/running.ts";
 import { safeText } from "../agent/source-labels.ts";
-import { type HolderHost, holderFresh, readHolder } from "../agent/handover.ts";
+import { type HolderHost, holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
 import { claudeGuard, claudeStateRoots, movedConfigDirCredentials } from "./guard.ts";
 import { summaryNotice, updateNotice } from "./notices.ts";
 import { holderLog, samePath, validSession } from "./paths.ts";
@@ -296,7 +296,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 			warnings.push(`Orrery: ${agent.name}'s recorder did not answer in time; see ${holderLog(agent.dir)}.`);
 		} else if (mode.mode === "read-only") {
 			state = "read-only: this session is not recorded";
-			if (genericHeld) warnings.push(`Orrery: ${agent.name} is open elsewhere (pi, or a session of another Claude Code); this session reads memory but is not recorded.`);
+			if (genericHeld) warnings.push(`Orrery: ${agent.name} is ${openElsewhere(agent.dir, "claude-code")}; this session reads memory but is not recorded.`);
 		}
 		// A recording recorder's notices (memory kept aside, unsaved turns kept) are said once per recorder start, not
 		// again at every /compact that reuses it.
