@@ -710,6 +710,11 @@ describe("[guard] protect and .env: one table through every gate", () => {
 			{ name: "a project's .npmrc", refused: false, path: join(t.atlas, ".npmrc"), command: "cat .npmrc", glob: "**/.npmrc" },
 			{ name: "a project's .wrangler", refused: false, path: join(t.atlas, ".wrangler", "state", "x"), command: "rm -rf .wrangler", glob: ".wrangler/**" },
 			{ name: "the tools' own commands", refused: false, command: "npm install && cargo build && gcloud auth list && az login && wrangler dev && pass show x && op read x" },
+			// Orrery's hook plumbing, which only its hooks run (a hook run by hand could put made-up words in the agent's memory).
+			{ name: "a hook run by hand", refused: true, command: "echo '{}' | orrery codex-hook user-prompt-submit" },
+			{ name: "Claude Code's hook run by hand", refused: true, command: "orrery claude-hook stop < x.json" },
+			{ name: "the recorder run by hand", refused: true, command: `${join(t.root, "bin", "orrery")} --config x holder Atlas` },
+			{ name: "Orrery's other commands", refused: false, command: "orrery status Atlas && orrery help && cat placeholder.txt" },
 		];
 	}
 
@@ -981,6 +986,11 @@ describe("[guard] protect: speed", () => {
 			"${HOME}/.azur",
 			".cargo/credentials=",
 			"{a,b}/.config/op=",
+			// the hook plumbing's words
+			"orrery ",
+			"orrery holder.",
+			"x holder ",
+			"codex-hoo",
 		];
 		// As the guard's own speed test: a 4x step must cost under 10x (linear is about 4x, quadratic about 16x).
 		const time = (unit: string, times: number) => {

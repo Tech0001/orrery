@@ -134,6 +134,32 @@ const HOME_NAMED = new RegExp(`${DOT_START}(?:${HOME_SECRETS.filter((name) => !H
 const CREDENTIALS = [...SENSITIVE, HOME_NAMED];
 
 /**
+ * Orrery's hook plumbing, which only Orrery's own hooks run: Claude Code and Codex run them, never an agent's shell. An
+ * agent that ran a hook could give it made-up input and put words in the person's mouth (a "user:" message in its own
+ * memory). Shell text runs it when, in any reading (readings), it names a hook command, codex-hook or claude-hook, as a
+ * word anywhere, or has the word holder after Orrery's program (orrery, or a path ending in it) in the same simple
+ * command: the recorder, `orrery holder`. Orrery's other commands (orrery status, orrery help…) stay open.
+ */
+const HOOK_COMMAND = new RegExp(`${NAME_START}(?:codex|claude)-hook${NAME_END}`);
+const ORRERY_PROGRAM = new RegExp(`${NAME_START}orrery(?:\\.exe)?(?=$|[\\s"';|&()<>\`])`);
+const HOLDER_WORD = new RegExp(`[\\s"'()\`]holder${NAME_END}`);
+/** Where one simple command ends: ";", "|", a newline, or "&" that is not part of a redirection (2>&1, &>). */
+const COMMAND_END = /[;|\n]|(?<![<>])&(?!>)/;
+
+/** Whether a reading runs Orrery's hook plumbing (HOOK_COMMAND, ORRERY_PROGRAM). Linear: each simple command is read once. */
+function runsPlumbing(form: string): boolean {
+	if (HOOK_COMMAND.test(form)) return true;
+	if (!form.includes("holder")) return false;
+	return form.split(COMMAND_END).some((command) => {
+		const program = ORRERY_PROGRAM.exec(command);
+		return program !== null && HOLDER_WORD.test(command.slice(program.index + program[0].length));
+	});
+}
+
+/** Why shell text that runs Orrery's hook plumbing is refused (runsPlumbing). */
+export const PLUMBING_REFUSED = "This command runs Orrery's hook plumbing (codex-hook, claude-hook, orrery holder), which only Orrery's own hooks run.";
+
+/**
  * How far around a brace group the readings look (Reading.pieces) for the built-in rules: room for the longest fixed
  * name they look for (.terraform.d/credentials.tfrc.json, .pi/agent/models.json, .dev.vars.template) and its edges.
  */
@@ -679,6 +705,7 @@ export function checkToolCall(
 		if (flagged(reading, views.command, true, config) || secretIn(reading, protect)) return "This command touches sensitive files (keys, credentials or Orrery's private data).";
 		const entry = protectedIn(reading, protect);
 		if (entry !== undefined) return `This command touches ${entry}, ${PROTECTED_BY}.`;
+		if (reading.forms.some(runsPlumbing) || reading.pieces.some(runsPlumbing)) return PLUMBING_REFUSED;
 	}
 	const raw = call.arguments.path;
 	if (typeof raw !== "string") return undefined;

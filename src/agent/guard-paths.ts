@@ -9,7 +9,8 @@
  * [guard] protect (GuardOptions.protect) and the built-in secret names (.env, .dev.vars and the others of
  * guard-rules.ts, but the shared examples) are kept as credentials are, with two differences: a protect name entry or a
  * secret name is not judged against a search's root, and neither is judged in an OMP edit's text, only in its targets
- * (specs 2026-10-15-guard-protect, 2026-10-16-guard-presets). Known limits:
+ * (specs 2026-10-15-guard-protect, 2026-10-16-guard-presets). Shell text may not run Orrery's hook plumbing (codex-hook,
+ * claude-hook, orrery holder; guard-rules.ts runsPlumbing), which only Orrery's own hooks run. Known limits:
  * - A hard link is another name for the same file, and the guard does not count links: one to another agent's view (the
  *   copy goes stale once Orrery replaces the view on its next write), to the config file in use, or to a file of the
  *   installed program (app/), made before the guard ran or by a spelling it cannot see, reads or writes the file
@@ -29,6 +30,9 @@
  *   reads it: which folders hold one is not known without listing them.
  * - The home secrets whose names projects have of their own (.npmrc, .pypirc, .azure, .wrangler) are named in shell
  *   text only from home: a command run in the home folder that names one relatively gets through.
+ * - The hook commands are refused by name anywhere in shell text, so a search or a commit message that names
+ *   codex-hook or claude-hook is refused too; orrery run through a link or alias of another name, or a hook's name
+ *   built from a variable, gets through.
  * - A deleted config is no config: Claude Code then runs plain, and so do pi and OMP sessions started after it. Deleting
  *   it takes a spelling the guard cannot see (its name and its path are refused in commands; no file tool deletes).
  * - A pi or OMP session that starts while the config cannot be read (src/pi/index.ts unreadableGuard) knows no agent, so
