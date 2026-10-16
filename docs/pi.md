@@ -271,6 +271,10 @@ still applies to it. Close the first one, or work in it.
   [README](../README.md#safety). **A search of a folder can still read a `.env` inside it**, or another of those
   files, or a file a protected name covers: only a protected path is checked against a search's folder. A bash command
   that has a protected name as a word is refused even when it means something else (`git commit -m "ignore .env"`).
+- Shell text that runs Orrery's hook plumbing is refused: the hook commands (`claude-hook`, `codex-hook`) named
+  anywhere, or Orrery's program with the word `holder`. An agent that ran a hook by hand could feed it made-up input and
+  put words in your mouth in its own memory. The cost: a bash command that only names them is refused too, such as
+  `grep -r codex-hook src/` or a `git commit -m` whose message names one. A name built at run time still gets through.
 - The guard knows pi's built-in tools only. Tools added by other pi packages (for example context-mode's
   `ctx_execute`) are not checked.
 - A message does not wait for summaries longer than 60 seconds, and not at all while they are failing or stopped.

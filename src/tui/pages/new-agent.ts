@@ -19,8 +19,8 @@ import type { App } from "../app.ts";
 import { ChatListModal, ConfirmModal, hardWrap, InputModal, MessageModal, menuUI, ProgressModal, ReportModal, SelectModal } from "../dialogs.ts";
 import { addFromRemote, emptyAgent, expandHome, pickedChoice, safeLines, wireAgent } from "./agent-actions.ts";
 
-/** The tools an imported chat continues in: Codex has no Orrery memory yet. */
-const CONTINUES_IN: readonly AgentTool[] = ["pi", "omp", "claude-code"];
+/** The tools an imported chat continues in. */
+const CONTINUES_IN: readonly AgentTool[] = ["pi", "omp", "claude-code", "codex"];
 
 const NOT_IMPORTED = "Not imported; nothing was written.";
 
@@ -70,7 +70,7 @@ async function fromChat(app: App, config: HarnessConfig): Promise<string | undef
 	// Said now, not after the preview: the import would refuse this folder at the end.
 	const refusal = storeRefusal(config.dataDir, name);
 	if (refusal !== undefined) throw new Error(refusal);
-	const continues = await app.host.open(new SelectModal("It continues in (Codex has no Orrery memory yet):", CONTINUES_IN.map((id) => TOOL_LABELS[id])));
+	const continues = await app.host.open(new SelectModal("It continues in:", CONTINUES_IN.map((id) => TOOL_LABELS[id])));
 	const tool = CONTINUES_IN.find((id) => TOOL_LABELS[id] === continues);
 	if (tool === undefined) return undefined;
 	const sources = await app.deps.sources(config);

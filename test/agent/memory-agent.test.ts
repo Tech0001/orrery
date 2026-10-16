@@ -99,9 +99,13 @@ describe("MemoryAgent", () => {
 			expect(status.trouble).toEqual({ state: "failing", plain: expect.any(String) });
 			expect(status.trouble.plain.length).toBeGreaterThan(0);
 			expect(status.lastError).toBe(status.trouble.plain);
+			// No summary has worked in this process yet: status.json says so, so no hook calls that a recovery.
+			expect(status.summarized).toBe(false);
 			agent.setCompactorModel({ provider: "faux-ok", modelId: "faux-1", thinking: "off" });
 			await vi.waitFor(() => expect(agent.view.settled).toBe(true), { timeout: 5000 });
 			expect(agent.summaryTrouble()).toBeUndefined();
+			agent.writeStatus();
+			expect(JSON.parse(readFileSync(join(config.dir, "status.json"), "utf8"))).toMatchObject({ trouble: null, summarized: true });
 		} finally {
 			await agent.close();
 		}

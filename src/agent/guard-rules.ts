@@ -134,6 +134,53 @@ const HOME_NAMED = new RegExp(`${DOT_START}(?:${HOME_SECRETS.filter((name) => !H
 const CREDENTIALS = [...SENSITIVE, HOME_NAMED];
 
 /**
+ * Orrery's hook plumbing, which only Orrery's own hooks run: Claude Code and Codex run them, never an agent's shell. An
+ * agent that ran a hook could give it made-up input and put words in the person's mouth (a "user:" message in its own
+ * memory). In any reading of shell text (readings: quotes, backslashes and empty $() or `` gone, $'…' decoded, brace
+ * groups read each way, any case):
+ * - a hook command, codex-hook or claude-hook, named as a word anywhere, so it is refused however Orrery is reached
+ *   (orrery, a path to it, env/command/exec, $(which orrery), xargs, the source's cli/main.ts under node or bun); an
+ *   expansion glued to either end (${x}codex-hook, codex-hook$x), which may be empty, does not hide it;
+ * - the recorder, `orrery holder`: the word holder anywhere in text that also names Orrery's program as a word
+ *   (orrery, a path ending in it, or the source's cli/main.ts), in either order, so neither an argument list fed in
+ *   (`echo holder | xargs orrery`) nor a quoted separator between them (`orrery --config ';' holder`) splits them.
+ *   Text that names both for other reasons (`cd ~/orrery && grep holder src`) is refused too.
+ * A word may also start or end at an escape that printf or echo -e turns into a separator (`printf 'A\nholder'`).
+ * Orrery's other commands (orrery status, orrery help…) stay open; `orrery claude-mod view` only reads. As with every
+ * shell-text rule, a name built at run time (o=orrery; $o holder, or codex-$x"hook"), read from a file (xargs -a), or a
+ * link or alias of another name to Orrery's program gets through.
+ */
+const ESCAPE_BEFORE = "\\\\(?:[a-z]|x[0-9a-f]{1,2}|[0-7]{1,3})";
+const PLUMBING_START = `(?:^|[\\s"'=:/~<>;|&()\`{},*@]|(?:^|[\\s"'])-[a-z]+|${ESCAPE_BEFORE})`;
+const PLUMBING_END = "(?=$|[\\s\"'/:;|&()<>`,{}*?\\[$\\\\])";
+const HOOK_COMMAND = new RegExp(`${PLUMBING_START}(?:codex|claude)-hook${PLUMBING_END}`);
+const ORRERY_PROGRAM = new RegExp(`${PLUMBING_START}(?:orrery(?:\\.exe)?|cli/main\\.[cm]?[jt]s)(?=$|[\\s"';|&()<>\`{}$\\\\])`);
+const HOLDER_WORD = new RegExp(`(?:^|[\\s"'<>;|&()\`{},]|${ESCAPE_BEFORE})holder${PLUMBING_END}`);
+
+/**
+ * A pattern for `names` standing as words in a reading of shell text, with the hook plumbing's edges (PLUMBING_START,
+ * PLUMBING_END): a path's last part, quotes, an escape or an expansion that may be empty around it. Lower case, as the
+ * readings are.
+ */
+export function shellWord(names: readonly string[]): RegExp {
+	return new RegExp(`${PLUMBING_START}(?:${names.map(literal).join("|")})${PLUMBING_END}`);
+}
+
+/** Whether any reading of shell text (readings: its forms and brace pieces) passes `test`. */
+export function inAnyReading(text: string, test: (form: string) => boolean): boolean {
+	const reading = readings(text);
+	return reading.forms.some(test) || reading.pieces.some(test);
+}
+
+/** Whether a reading runs Orrery's hook plumbing (HOOK_COMMAND; ORRERY_PROGRAM with HOLDER_WORD). Linear. */
+function runsPlumbing(form: string): boolean {
+	return HOOK_COMMAND.test(form) || (form.includes("holder") && ORRERY_PROGRAM.test(form) && HOLDER_WORD.test(form));
+}
+
+/** Why shell text that runs Orrery's hook plumbing is refused (runsPlumbing). */
+export const PLUMBING_REFUSED = "This command runs Orrery's hook plumbing (codex-hook, claude-hook, orrery holder), which only Orrery's own hooks run.";
+
+/**
  * How far around a brace group the readings look (Reading.pieces) for the built-in rules: room for the longest fixed
  * name they look for (.terraform.d/credentials.tfrc.json, .pi/agent/models.json, .dev.vars.template) and its edges.
  */
@@ -679,6 +726,7 @@ export function checkToolCall(
 		if (flagged(reading, views.command, true, config) || secretIn(reading, protect)) return "This command touches sensitive files (keys, credentials or Orrery's private data).";
 		const entry = protectedIn(reading, protect);
 		if (entry !== undefined) return `This command touches ${entry}, ${PROTECTED_BY}.`;
+		if (reading.forms.some(runsPlumbing) || reading.pieces.some(runsPlumbing)) return PLUMBING_REFUSED;
 	}
 	const raw = call.arguments.path;
 	if (typeof raw !== "string") return undefined;

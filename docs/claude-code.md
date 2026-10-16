@@ -219,8 +219,8 @@ Open the agent with `orrery agent <Name>`, or start Claude Code at the root of i
 - The first line the model gets is `orrery · <Name> · N msgs · recording`, or `read-only: this session is not
   recorded`, `not recording yet` (the recorder did not answer in time), `not set up for Claude Code here, so this
   session is not recorded` (run `orrery claude-setup <Name>`), or `no memory yet` in place of the message count. When
-  something is off, the line after it says why: the agent is open elsewhere, the recorder did not answer, `CLAUDE.md`
-  does not load the view, or git is the problem (below).
+  something is off, the line after it says why: the agent is open elsewhere (it names the tool), the recorder did not
+  answer, `CLAUDE.md` does not load the view, or git is the problem (below).
 - Memory keeps your prompts and each turn's final reply. Tool calls, tool output, thinking, subagents and slash
   commands are not kept. The reply to one of Orrery's own commands (`/orrery:memory`, `/orrery:compactor`,
   `/orrery:browse`) is not kept either, as in pi. The reply to any other slash command or skill is real work, so it is
@@ -294,8 +294,8 @@ readers like Birch. They read snapshots of the agent's memory. In a session that
 
 An agent records in one place at a time.
 
-- Claude Code on an agent that pi (or another Claude Code) holds runs read-only, and says so. It still loads the view and
-  has the memory tools, but nothing it says is recorded.
+- Claude Code on an agent that pi, OMP, Codex or another Claude Code session holds runs read-only, and says which. It
+  still loads the view and has the memory tools, but nothing it says is recorded.
 - While pi holds the agent, a Claude Code session is read-only. While a Claude Code session records, pi runs without
   memory and warns that the agent is open in Claude Code (a second pi's warning says "already open in another pi").
 - After a session ends, its recorder finishes the summaries for up to 10 minutes. A new session, or pi, opened meanwhile
@@ -311,6 +311,12 @@ config and the installed program are read-only to agents: no tool may change eit
 searches are refused it, by their path or a symbolic link to it (a hard link is not caught). Writes stay inside the folder the agent was opened in and its
 `allowed_roots`. Setup commands that name the installed app folder (the plugin install above, for one) are refused to
 agents, so run them in your own terminal.
+
+Shell text that runs Orrery's hook plumbing is refused too: the hook commands (`claude-hook`, `codex-hook`) named
+anywhere, or Orrery's program with the word `holder`. An agent that ran a hook by hand could feed it made-up input and
+put words in your mouth in its own memory. The cost: a Bash command that only names them is refused as well, such as
+`grep -r claude-hook src/` or a `git commit -m` whose message names one; the Grep tool's pattern is not read this way.
+A name built at run time still gets through.
 
 Tool logins in your home folder are refused the same way: `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`,
 `~/.gem/credentials`, `~/.config/gcloud`, `~/.azure`, `~/.terraform.d/credentials.tfrc.json`, `~/.wrangler`,
@@ -382,7 +388,8 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
 ## Troubleshooting
 
 - "did not answer": read `holder.log`.
-- "read-only": the agent is open in pi or another Claude Code. `orrery status` shows it.
+- "read-only": the agent is open in the tool the notice names (pi, OMP, Codex or another Claude Code session).
+  `orrery status` shows it.
 - "not set up for Claude Code here": run `orrery claude-setup <Name>`, then start a new session.
 - "open outside its folder, where only the Orrery mod brings its memory": run `orrery claude-setup <Name> --mod`, then
   start a new session.
@@ -395,7 +402,8 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
 
 - `npm test` covers the hooks, the holder, the guard, the MCP server and the pi/Claude Code cross-tool check
   (`test/claude/cross-tool.test.ts`: one agent opened in pi, then in Claude Code through the hook CLI, keeps one memory,
-  and the second tool runs without recording while the first holds the agent), all without Claude.
+  and the second tool runs without recording while the first holds the agent), and `test/codex/cross-tool.test.ts` does
+  the same with Codex, all without Claude.
 - `scripts/claude-e2e.sh` is the real `claude -p` run. It costs usage (about a dozen short sessions), so run it after
   changes to the hooks or the plugin, or after a Claude Code update. It works on a temp agent with made-up content, runs
   Claude Code on a temp `HOME` whose `.claude` links to yours (for the login), leaves out your settings

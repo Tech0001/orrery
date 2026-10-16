@@ -8,9 +8,10 @@ import { claudeSetup, claudeSetupMod } from "../../src/claude/setup.ts";
 import { listSessions, pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import type { AgentConfig } from "../../src/agent/config.ts";
+import { holderFile, writeHolder } from "../../src/agent/handover.ts";
 import { agentModelSource } from "../../src/agent/model-source.ts";
 import { fauxModels } from "../agent/support.ts";
-import { brokenGit, cleanupDirs, gitIn, seed, type TestAgent, testAgent, withGit } from "./support.ts";
+import { brokenGit, cleanupDirs, gitIn, seed, statusOf, type TestAgent, testAgent, withGit } from "./support.ts";
 
 const holders: Holder[] = [];
 afterEach(async () => {
@@ -209,10 +210,33 @@ describe("SessionStart", () => {
 		claudeSetup(t.agent);
 		const readOnly = JSON.parse(await runHook("session-start", input(t), ctx(t, { startHolder: answer("read-only") })));
 		expect(readOnly.hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · no memory yet · read-only/);
-		expect(readOnly.systemMessage).toBe("Orrery: Test is open elsewhere (pi, or a session of another Claude Code); this session reads memory but is not recorded.");
+		expect(readOnly.systemMessage).toBe("Orrery: Test is open elsewhere (pi, OMP, Codex, or another Claude Code session); this session reads memory but is not recorded.");
 		const silent = JSON.parse(await runHook("session-start", input(t, { session_id: "s2" }), ctx(t)));
 		expect(silent.hookSpecificOutput.additionalContext).toContain("not recording yet");
 		expect(silent.systemMessage).toContain(holderLog(t.agent.dir));
+	});
+
+	it("names the tool that holds the agent when a recorder or a running session says which", async () => {
+		const t = testAgent();
+		claudeSetup(t.agent);
+		const said = async (session: string) => JSON.parse(await runHook("session-start", input(t, { session_id: session }), ctx(t, { startHolder: answer("read-only") }))).systemMessage as string;
+		const now = Date.now();
+		const recorder = { pid: process.pid, session: "other", claudePid: 777, state: "recording" as const, startedAt: now, updatedAt: now };
+		writeHolder(t.agent.dir, { ...recorder, host: "codex" });
+		expect(await said("s1")).toBe("Orrery: Test is open in Codex; this session reads memory but is not recorded.");
+		writeHolder(t.agent.dir, recorder);
+		expect(await said("s2")).toBe("Orrery: Test is open in another Claude Code session; this session reads memory but is not recorded.");
+		// No recorder: a running pi or OMP says so in status.json (a live pid, written in the last 30 s).
+		rmSync(holderFile(t.agent.dir));
+		for (const [tool, label] of [["pi", "pi"], ["omp", "OMP"]]) {
+			writeFileSync(join(t.agent.dir, "status.json"), JSON.stringify(statusOf(tool)));
+			expect(await said(`s-${tool}`)).toBe(`Orrery: Test is open in ${label}; this session reads memory but is not recorded.`);
+		}
+		// A stale status, or one of a process that is gone, names no tool.
+		writeFileSync(join(t.agent.dir, "status.json"), JSON.stringify(statusOf("pi", { updatedAt: new Date(now - 60_000).toISOString() })));
+		expect(await said("s-stale")).toContain("is open elsewhere (pi, OMP, Codex, or another Claude Code session)");
+		writeFileSync(join(t.agent.dir, "status.json"), JSON.stringify(statusOf("pi", { pid: 2 ** 22 + 12_345 })));
+		expect(await said("s-gone")).toContain("is open elsewhere");
 	});
 
 	it("passes its own start time to the holder, the cut-off for a read-only run", async () => {
@@ -338,7 +362,7 @@ describe("SessionStart holder reasons", () => {
 		const out = JSON.parse(await runHook("session-start", input(t), ctx(t, { startHolder: (agent, session, nonce, since) => writeMode(agent.dir, session, { mode, pid: 1, claudePid: 4242, nonce, since, reason }) })));
 		expect(out.systemMessage).toContain(reason);
 		expect(out.hookSpecificOutput.additionalContext).toContain(reason);
-		expect(out.systemMessage).not.toContain("open elsewhere");
+		expect(out.systemMessage).not.toContain("this session reads memory but is not recorded");
 	});
 });
 

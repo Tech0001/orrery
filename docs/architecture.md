@@ -16,8 +16,8 @@ The store is local and inspectable; summaries are derived data rather than the o
 An agent has a data directory under `data_dir/agents/<Name>/`, a summary model, and optionally a default folder.
 The `tool` setting selects pi, OMP, Claude Code or Codex for launching.
 The optional `launcher` setting selects direct launch or Ori.
-Those launch choices do not select a different memory database.
-Codex currently launches without an Orrery memory adapter.
+Those launch choices do not select a different memory database: each tool reaches the same memory through its own
+adapter.
 
 The data directory holds everything that makes the agent:
 
@@ -250,6 +250,14 @@ The mod can replace compaction while the existing hooks continue recording and g
 It depends on the host's mod interface and is more tightly coupled than the plugin alone.
 See [Claude Code](claude-code.md) for setup, compaction behavior and current limitations.
 
+**Codex:** nothing is installed into Codex.
+`orrery agent` launches it with `-c` flags that supply the hooks, their trust values, the MCP server and the agent's instructions for that one process, and turn Codex's own memory feature off.
+The hooks and the holder are Claude Code's, generalized to a host process: hooks spool prompts and final replies, and the holder owns the writer.
+The session-start hook returns the memory section as developer context at the start and after each compaction; Codex keeps its own compaction, since its provider may compact remotely.
+The agent is the one `ORRERY_AGENT` names, with its token; no folder picks it, so a plain `codex` is no agent's session.
+Before a Codex or Orrery version it has not seen, the launch asks Codex's app server whether the hooks load, because Codex skips an untrusted hook silently.
+See [Codex](codex.md) for the guard's Codex-specific limits.
+
 **Ori:** Ori supplies OpenRouter models to the agent executable.
 Orrery launches `ori pi`, `ori omp`, `ori claude` or `ori codex` in the folder the agent is opened in.
 The optional `ori_model` is passed through as `--model`.
@@ -327,6 +335,13 @@ Shared rules handle normalization and symlinks; adapters map each host's argumen
 Host-specific checks cover multi-file edits and known credential locations.
 Some ambiguous OMP edit or glob forms are refused because their targets cannot be judged reliably.
 The rules are tested against concrete tool shapes and need review when upstream parsers change.
+Shell text that runs Orrery's hook plumbing is refused in every tool: a hook command (`codex-hook`, `claude-hook`) named
+as a word, or Orrery's program with the word `holder`. Otherwise an agent could run a hook by hand with made-up input
+and put a "user:" message in its own memory. The cost is that a command which only mentions those names, such as a
+`grep` or a commit message, is refused too; a name built at run time still gets through.
+In Codex the guard runs as its `PreToolUse` hook, which sees neither a command's `workdir` nor hosted web search, and
+which Codex lets through when the hook crashes or times out; the guard therefore refuses within its own deadline, and
+[Codex](codex.md#its-limits-in-codex) lists what remains.
 
 This is a credential guard, not a sandbox.
 Shell and evaluation tools receive text checks, not an operating-system isolation boundary.
@@ -360,10 +375,10 @@ They compare both fresh builds and continuing runs, with Unicode and varying mes
 The Python oracle is a behavioral reference, not the runtime serving an agent.
 
 Adapter tests exercise resumes, rewinds, tool calls, recording conflicts and cross-tool ownership.
-Real pi and OMP tests load the actual installed binaries with scratch homes and fake model services.
+Real pi, OMP and Codex tests load the actual installed binaries with scratch homes and fake model services.
 The real-Ori test uses a fake catalog and synthetic credentials without a live model call.
 A missing binary skips its real-tool tests; a known Ori/OMP mismatch is a named compatibility skip.
-Paid live checks and the opt-in Claude script are separate from the default test suite.
+Paid live checks and the opt-in Claude Code and Codex scripts are separate from the default test suite.
 
 The core trade-off is compression with recoverable detail: summaries can lose facts, but `zoom` reaches the source.
 A local single-writer store favors predictable ordering and simple recovery over simultaneous collaboration.

@@ -37,7 +37,7 @@ export interface AgentRow {
 	readonly toolSet: boolean;
 	readonly state: AgentState;
 	/** The tool that has the agent open, when one does. */
-	readonly openIn?: "pi" | "omp" | "claude-code";
+	readonly openIn?: "pi" | "omp" | "claude-code" | "codex";
 	/** The agent's default folder; absent: it opens wherever it is opened. */
 	readonly folder?: string;
 	readonly dataDir: string;
@@ -228,12 +228,14 @@ function agentRow(agent: AgentConfig, now: number, cache: OverviewCache, alive: 
 	const status = readStatus(agent.dir);
 	const holder = readHolder(agent.dir);
 	let state: AgentState = "closed";
-	let openIn: "pi" | "omp" | "claude-code" | undefined;
+	let openIn: "pi" | "omp" | "claude-code" | "codex" | undefined;
+	// A recorder's host: Codex when its holder.json says so (status.json's model names it too), else Claude Code.
+	const recorderHost = holder?.host === "codex" ? "codex" : "claude-code";
 	if (holderFresh(holder, now)) {
-		openIn = "claude-code";
-		state = holder.state === "finishing" ? "finishing" : status?.busy === true && status.model === "claude-code" ? "working" : "open";
+		openIn = recorderHost;
+		state = holder.state === "finishing" ? "finishing" : status?.busy === true && status.model === recorderHost ? "working" : "open";
 	} else if (status !== undefined && status.open !== false && alive(status.pid) && now - Date.parse(status.updatedAt) < STATUS_FRESH_MS) {
-		openIn = status.model === "claude-code" ? "claude-code" : status.model === "omp" ? "omp" : "pi";
+		openIn = status.model === "claude-code" || status.model === "codex" ? status.model : status.model === "omp" ? "omp" : "pi";
 		state = status.busy ? "working" : "open";
 	}
 	const instructions = instructionsFacts(agent.dir);
@@ -241,7 +243,7 @@ function agentRow(agent: AgentConfig, now: number, cache: OverviewCache, alive: 
 		name: agent.name,
 		launcher: agent.launcher ?? "direct",
 		...(agent.oriModel === undefined ? {} : { oriModel: agent.oriModel }),
-		tool: agent.tool ?? (status?.model === "claude-code" || holder !== undefined ? "claude-code" : status?.model === "omp" ? "omp" : "pi"),
+		tool: agent.tool ?? (status?.model === "codex" ? "codex" : status?.model === "claude-code" || holder !== undefined ? recorderHost : status?.model === "omp" ? "omp" : "pi"),
 		toolSet: agent.tool !== undefined,
 		state,
 		...(openIn === undefined ? {} : { openIn }),

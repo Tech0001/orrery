@@ -64,8 +64,8 @@ export function createDemo(home: string, now = Date.now()): Demo {
 			writeFileSync(join(agent.folder, "README.md"), `# ${fixture.name}\n\nA fictional demo project: ${fixture.task}.\n`);
 		}
 		writeInstructions(agent.dir, instructionsTemplate(fixture.name, `Builds ${fixture.task}, a fictional demo project.`));
-		// Codex is launch-only: do not imply that it records Orrery memory.
-		if (fixture.tool === "codex") continue;
+		// Cloudfen is new: no memory yet.
+		if (fixture.messages === 0) continue;
 		const store = MemoryStore.open(join(agent.dir, "memory.sqlite"));
 		try {
 			for (let i = 0; i < fixture.messages; i++) {
@@ -125,11 +125,11 @@ export function demoDeps(demo: Demo, controls: Pick<AppDeps, "rows" | "quit" | "
 		usage: (config, days, only) => agentUsage(config, days, only, demo.now),
 		tools: () => (["pi", "claude-code", "omp", "codex"] as const).map((id) => ({
 			id, label: TOOL_LABELS[id], path: join(demo.home, "bin", id), version: "1.0.0",
-			wiring: id === "codex" ? "none" : "installed", detail: "Fictional demo tool; launches disabled.", blocked: DISABLED,
+			wiring: id === "codex" ? "memory" : "installed", detail: "Fictional demo tool; launches disabled.", blocked: DISABLED,
 		})),
 		sources, target: disabled, loginRows: (source, rows) => loginRows(source, rows, {}),
 		saveKey: async () => disabled(), signIn: async () => disabled(), removeLogin: async () => disabled(),
-		testChoice: async () => disabled(), launch: async () => disabled(), applyFix: disabled,
+		testChoice: async () => disabled(), launch: async () => disabled(), codexCheck: async () => disabled(), applyFix: disabled,
 		installSteps: disabled, install: disabled, openUrl: () => undefined,
 		chats: disabled, importPreview: async () => disabled(), importCommit: disabled, startBuild: disabled, writeInstructions: disabled,
 		browse: (config, agent) => ({ path: browseCommand(config, agent, join(config.agents.get(agent)!.dir, "memory.html")) }),

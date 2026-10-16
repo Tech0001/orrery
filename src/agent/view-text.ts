@@ -1,17 +1,18 @@
 /**
- * The memory section an agent reads (spec §4 "The view file"): how memory works, then the view. It comes in four
+ * The memory section an agent reads (spec §4 "The view file"): how memory works, then the view. It comes in five
  * forms. pi appends it to the system prompt on every run; OMP gets pi's form with one more intro line naming
  * memory_search. Claude Code loads it once per session from
  * <folder>/.orrery/view.md, which CLAUDE.md imports. There the view sits in a fenced block: Claude Code evaluates
  * no `@path` import inside a code block, and summaries quote such paths. The Orrery mod ("claude-mod") puts it in
  * Claude Code's system prompt, unfenced (a system-prompt section evaluates no import), and refreshes it at each
- * compaction.
+ * compaction. Codex gets it from Orrery's SessionStart hook as developer context, unfenced, at the session's start and
+ * after each compaction (src/codex/hooks.ts).
  */
 
 import { type MemoryView, VIEW_DOC } from "../memory/index.ts";
 
-/** The tool that reads a memory section: pi, OMP, Claude Code's view file, or the Orrery mod. */
-export type Host = "pi" | "omp" | "claude-code" | "claude-mod";
+/** The tool that reads a memory section: pi, OMP, Claude Code's view file, the Orrery mod, or Codex. */
+export type Host = "pi" | "omp" | "claude-code" | "claude-mod" | "codex";
 
 const PI_INTRO = `You keep no memory between turns. Each turn starts with the view below, followed by the user's new
 message. Tool calls and their results are not kept in memory, only your replies, so say in your reply what you did and
@@ -32,6 +33,16 @@ and your final reply of each turn, not tool calls, their results or your other t
 you did and learned that will matter later. zoom, date and search are the Orrery memory tools
 (\`mcp__plugin_orrery_orrery__zoom\`, \`…__date\`, \`…__search\`); if they are not listed, load them with ToolSearch.`;
 
+/**
+ * Codex: the memory tools come from Orrery's MCP server. A model finds them by looking (Codex's tool search, or the tool
+ * list of a model that calls tools from code), so the section names no one way to look.
+ */
+const CODEX_INTRO = `Earlier conversation reaches you only through the view below. It is refreshed when this session starts and each
+time the conversation is compacted; what was said since then you see directly. Memory keeps the user's messages
+and your final reply of each turn, not tool calls, their results or your other text, so say in your final reply what
+you did and learned that will matter later. zoom, date and search are the Orrery memory tools, from the orrery MCP
+server (\`mcp__orrery__zoom\`, \`…__date\`, \`…__search\`); if you don't see them, look for the zoom, date and search tools.`;
+
 const RULES = `${VIEW_DOC}
 
 search(query) finds messages anywhere in the full log by keywords (all must appear) or /regex/, newest first, even when
@@ -50,6 +61,7 @@ export function memorySection(view: MemoryView, host: Host = "pi"): string {
 	if (host === "pi") return `# Memory\n\n${PI_INTRO}\n\n${RULES}\n\n${view.render()}`;
 	if (host === "omp") return `# Memory\n\n${OMP_INTRO}\n\n${RULES}\n\n${view.render()}`;
 	if (host === "claude-mod") return `# Memory\n\n${CLAUDE_MOD_INTRO}\n\n${RULES}\n\n${view.render()}`;
+	if (host === "codex") return `# Memory\n\n${CODEX_INTRO}\n\n${RULES}\n\n${view.render()}`;
 	return `# Memory\n\n${CLAUDE_INTRO}\n\n${RULES}\n\n${fenced(view.render())}`;
 }
 

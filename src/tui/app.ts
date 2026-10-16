@@ -12,6 +12,7 @@ import type { AuthInteraction } from "@earendil-works/pi-ai";
 import { type Component, decodeKittyPrintable, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import type { HarnessConfig, AgentConfig, ModelChoice } from "../agent/config.ts";
 import type { LaunchFix, LaunchPlan, ToolExit } from "../agent/launch.ts";
+import type { CodexGate } from "../codex/check.ts";
 import type { LoginRow } from "../agent/logins.ts";
 import type { AgentRow, AgentUsage, RemoteRow } from "../agent/overview.ts";
 import { safeText } from "../agent/source-labels.ts";
@@ -60,6 +61,8 @@ export interface AppDeps {
 	testChoice(sources: SummarySources, choice: ModelChoice): Promise<TestResult>;
 	/** Gives the terminal to the tool and takes it back when the tool exits. */
 	launch(plan: LaunchPlan): Promise<ToolExit>;
+	/** Before Codex opens: whether Orrery's hooks load in it (src/codex/check.ts); `say` hears when Codex is asked. */
+	codexCheck(plan: LaunchPlan, say: (text: string) => void): Promise<CodexGate>;
 	/** `cwd`: the folder the launch opens in (create-folder makes it). */
 	applyFix(fix: LaunchFix, config: HarnessConfig, row: AgentRow, tools: readonly ToolCheck[], cwd?: string): string;
 	/** Gives the terminal to $EDITOR on `path` and takes it back (src/agent/editor.ts). Absent in the read-only demo. */

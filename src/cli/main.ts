@@ -8,6 +8,7 @@ import { join, resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
 import type { ReaderTool } from "../agent/memory-tools.ts";
 import { defaultConfigPath, findAgent, type HarnessConfig, type AgentConfig, loadConfig } from "../agent/config.ts";
+import { armCodexGuard, CODEX_GUARD_DEADLINE_MS, isCodexGuard } from "../codex/guard-exit.ts";
 import { exitWhenFlushed } from "./exit.ts";
 import { allHelp, commandHelp, isCommand, shortHelp, UsageError } from "./help.ts";
 
@@ -16,13 +17,13 @@ function required(value: string | undefined, what: string): string {
 	return value;
 }
 
-/** Asks a yes/no question on the terminal; no without a terminal. */
-async function askYes(question: string): Promise<boolean> {
+/** Asks a yes/no question on the terminal; no without a terminal. `hint` shows the answers ("y/N": no unless y). */
+async function askYes(question: string, hint = "y/n"): Promise<boolean> {
 	if (process.stdin.isTTY !== true) return false;
 	const { createInterface } = await import("node:readline/promises");
 	const rl = createInterface({ input: process.stdin, output: process.stdout });
 	try {
-		return /^y(es)?$/i.test((await rl.question(`${question} (y/n) `)).trim());
+		return /^y(es)?$/i.test((await rl.question(`${question} (${hint}) `)).trim());
 	} finally {
 		rl.close();
 	}
@@ -334,6 +335,7 @@ const OPTIONS = {
 	agent: { type: "string" },
 	"agent-token": { type: "string" },
 	"claude-pid": { type: "string" },
+	"host-pid": { type: "string" },
 	nonce: { type: "string" },
 	since: { type: "string" },
 	open: { type: "boolean" },
@@ -471,8 +473,8 @@ async function unknownCommand(command: string): Promise<number> {
 /** Runs the command: everything but help and the version. */
 async function dispatch(positionals: string[], values: ReturnType<typeof parseCommandLine>["values"], updateVersion: string | undefined, toolArgs: string[]): Promise<number> {
 	const [command, arg] = positionals;
-	// Claude Code's hook runs several times a turn and never signs in or calls a model.
-	if (command !== "claude-hook") await registerReleaseOAuthFlows();
+	// Claude Code's and Codex's hooks run several times a turn and never sign in or call a model.
+	if (command !== "claude-hook" && command !== "codex-hook") await registerReleaseOAuthFlows();
 	if (command === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true) {
 		const { runTui } = await import("../tui/run.ts");
 		return runTui(values.config);
@@ -482,8 +484,9 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 		return 0;
 	}
 	if (command === "claude-hook") return claudeHook(arg, values.config);
+	if (command === "codex-hook") return codexHook(arg, values.config);
 	if (command === "claude-mod") return claudeModCommand(arg, values);
-	if (command === "mcp") return mcpServer(values.config);
+	if (command === "mcp") return mcpServer(values.config, values.tool);
 	if (command === "remote") {
 		const { remoteCommand } = await import("./remote.ts");
 		process.stdout.write(await remoteCommand(values.config, positionals.slice(1), { json: values.json === true, yes: values.yes === true, server: values.server, cloudflare: values.cloudflare, "token-file": values["token-file"], "code-file": values["code-file"], new: values.new === true }));
@@ -499,7 +502,9 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 		const sub = positionals[1];
 		if (sub !== undefined && ["add", "set", "archive", "push", "pull", "takeover", "local"].includes(sub)) return agentCommand(positionals.slice(1), values);
 		const [{ editAgentCommand, openAgentCommand }, { agentRemoteCommand }] = await Promise.all([import("./agent.ts"), import("./remote.ts")]);
-		const io = { say, confirm: (question: string) => (values.yes === true ? Promise.resolve(true) : askYes(question)) };
+		// A question only a person answers (starting Codex without Orrery's memory and guard) needs a terminal; --yes is no answer to it.
+		const terminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
+		const io = { say, confirm: (question: string) => (values.yes === true ? Promise.resolve(true) : askYes(question)), ...(terminal ? { askPerson: (question: string) => askYes(question, "y/N") } : {}) };
 		if (positionals[1] === "edit") {
 			if (positionals.length > 3) throw new Error(`orrery agent edit takes one agent name (got ${positionals.slice(2).join(" ")}).`);
 			return editAgentCommand(values.config, required(positionals[2], "agent name"), io);
@@ -665,16 +670,22 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 			return fatal.signal.reason instanceof SignalStop ? 0 : code;
 		}
 		case "holder": {
-			const claudePid = Number(values["claude-pid"]);
-			if (!Number.isInteger(claudePid) || claudePid < 1) throw new UsageError("holder needs --claude-pid PID.");
+			// The host's process: --claude-pid, Claude Code's (as always); or --host-pid, with --tool codex for Codex's.
+			if (values["claude-pid"] !== undefined && values["host-pid"] !== undefined) throw new UsageError("holder takes --claude-pid or --host-pid, not both.");
+			const host = values.tool ?? "claude-code";
+			if (host !== "claude-code" && host !== "codex") throw new UsageError(`holder: --tool takes claude-code or codex (not ${host}).`);
+			if (host === "codex" && values["host-pid"] === undefined) throw new UsageError("holder --tool codex needs --host-pid PID.");
+			const hostPid = Number(values["host-pid"] ?? values["claude-pid"]);
+			if (!Number.isInteger(hostPid) || hostPid < 1) throw new UsageError("holder needs --claude-pid PID (or --host-pid PID).");
 			const since = values.since === undefined ? undefined : Number(values.since);
 			if (since !== undefined && !(Number.isInteger(since) && since >= 0)) throw new UsageError("holder: --since must be a time in ms since the epoch.");
 			const { runHolder } = await import("../claude/holder.ts");
 			return runHolder(config, required(arg, "agent"), {
 				session: required(values.session, "--session"),
-				claudePid,
+				claudePid: hostPid,
 				nonce: values.nonce ?? "",
 				...(since === undefined ? {} : { since }),
+				...(host === "codex" ? { host } : {}),
 			});
 		}
 		case "claude-setup": {
@@ -720,12 +731,19 @@ const denyToolCall = (reason: string) =>
  * Claude Code starts it with the session, before SessionStart runs, so it may make the process's decision; a restarted
  * server reads the one recorded. The process is its parent, the Claude Code that started it (orrery-run execs), never
  * CLAUDE_PID, which a claude started from an agent's Bash inherits from the agent.
+ * With --tool codex it is Codex's (src/codex/launch.ts): the agent ORRERY_AGENT names, with its token, and nothing else
+ * (src/codex/pick.ts), claimed for the Codex that started it, at its start, before any SessionStart.
  */
-async function mcpServer(configPath: string | undefined): Promise<number> {
+async function mcpServer(configPath: string | undefined, tool: string | undefined): Promise<number> {
+	if (tool !== undefined && tool !== "claude-code" && tool !== "codex") throw new UsageError(`mcp: --tool takes claude-code or codex (not ${tool}).`);
 	const { agentTools, runMcp } = await import("../claude/mcp.ts");
 	let tools: ReaderTool[] = [];
 	const config = optionalConfig(configPath, "orrery mcp");
-	if (config !== undefined) {
+	if (config !== undefined && tool === "codex") {
+		const [{ codexAgent }, { codexPid }] = await Promise.all([import("../codex/pick.ts"), import("../codex/host.ts")]);
+		const pick = codexAgent(config, { env: process.env, pid: codexPid(), takeover: true });
+		if (pick.kind === "agent") tools = agentTools(config, pick.agent);
+	} else if (config !== undefined) {
 		const { claudeSession } = await import("../claude/pick.ts");
 		const pick = claudeSession(config, { env: process.env, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), pid: process.ppid, decide: true });
 		if (pick.kind === "agent") tools = agentTools(config, pick.agent);
@@ -780,6 +798,73 @@ async function claudeHook(event: string | undefined, configPath: string | undefi
 }
 
 /**
+ * A Codex PreToolUse refusal: the reason on stderr and exit code 2. Codex runs a hook through the account's shell
+ * (`<shell> -c`: bash, zsh or sh, src/codex/shell.ts), whose startup files (bash's $BASH_ENV, zsh's .zshenv) may print to
+ * stdout: a JSON answer there would arrive garbled and the call would go through. With exit 2 Codex reads only stderr,
+ * so the refusal holds whatever is on stdout. The reason has no final period: Codex adds one.
+ */
+function denyCodexCall(reason: string): number {
+	process.stderr.write(reason);
+	return 2;
+}
+
+/**
+ * `orrery codex-hook pre-tool-use`, the guard (src/codex/guard.ts): a call it lets through gets exit 0 and nothing on
+ * stdout, which Codex reads as no objection; a refusal is denyCodexCall's. Codex lets a call through when its hook
+ * fails, so everything that keeps the guard from judging refuses: input over 1 MB (read to its end, not kept), a config
+ * that cannot be read, any error, and a judgment not done by CODEX_GUARD_DEADLINE_MS after the process started; past
+ * that, a crash or a stall is refused by src/codex/guard-exit.ts.
+ */
+async function codexGuardHook(configPath: string | undefined): Promise<number> {
+	try {
+		const guard = await import("../codex/guard.ts");
+		const stdin = await readStdin(guard.CODEX_TOOL_INPUT_MAX);
+		let config: HarnessConfig;
+		try {
+			// A synchronous read the watchdog (src/codex/guard-exit.ts) can't interrupt; its path is fixed by the launch (ORRERY_CONFIG, else the default), not chosen by the agent.
+			config = loadConfig(configPath);
+		} catch (error) {
+			return denyCodexCall(guard.codexRefusal(`Orrery's config could not be read (${errorText(error)}), so no call can be checked; nothing was run. Fix the config file.`));
+		}
+		const { codexPid } = await import("../codex/host.ts");
+		// The file the config came from, as loadConfig found it: the guard keeps it read-only, wherever it is.
+		const configFile = resolvePath(configPath ?? defaultConfigPath());
+		const refusal = guard.runCodexGuard(stdin, { config, env: process.env, codexPid: codexPid(), configFile, deadline: CODEX_GUARD_DEADLINE_MS });
+		return refusal === undefined ? 0 : denyCodexCall(refusal);
+	} catch (error) {
+		return denyCodexCall(`Orrery guard: this call could not be checked (${errorText(error).replace(/\.+$/, "")}); nothing was run`);
+	}
+}
+
+/**
+ * `orrery codex-hook <event>`: the hooks `orrery agent --tool codex` gives Codex (src/codex/launch.ts). pre-tool-use is
+ * the guard (codexGuardHook). The others record (src/codex/hooks.ts) and never fail the session: exit 0 (a 2 would block
+ * the prompt, or keep a turn going), only their JSON answer on stdout, and an error in one stderr line, never with
+ * message contents. A config that cannot be read is said at SessionStart; the session then runs as plain Codex.
+ */
+async function codexHook(event: string | undefined, configPath: string | undefined): Promise<number> {
+	if (event === "pre-tool-use") return codexGuardHook(configPath);
+	try {
+		const stdin = (await readStdin(Number.POSITIVE_INFINITY)) ?? "";
+		const hooks = await import("../codex/hooks.ts");
+		let config: HarnessConfig;
+		try {
+			config = loadConfig(configPath);
+		} catch (error) {
+			if (event === "session-start") process.stdout.write(hooks.configNotice(errorText(error)));
+			return 0;
+		}
+		const [{ codexPid }, { spawnHolder }] = await Promise.all([import("../codex/host.ts"), import("../claude/hooks.ts")]);
+		const pid = codexPid();
+		const startHolder = (agent: AgentConfig, session: string, nonce: string, since: number) => spawnHolder(agent, session, nonce, pid, since, configPath, "codex");
+		process.stdout.write(await hooks.runCodexHook(event ?? "", stdin, { config, env: process.env, codexPid: pid, startHolder, updateNotices: true }));
+	} catch (error) {
+		process.stderr.write(`Orrery: ${event ?? "codex-hook"}: ${errorText(error)}\n`);
+	}
+	return 0;
+}
+
+/**
  * `orrery claude-mod view --cwd DIR [--session ID] [--agent NAME [--agent-token T]] [--wait-ms N [--spool-only]]`: the
  * Orrery mod's one call (src/claude/mod-view.ts). --agent and --agent-token are ORRERY_AGENT and its token as the mod
  * read them from Claude Code's environment.
@@ -812,9 +897,19 @@ async function claudeModCommand(
 	return "error" in reply ? 1 : 0;
 }
 
+// Codex's guard refuses on anything that goes wrong, since Codex lets a call through when its hook fails (src/codex/guard-exit.ts).
+const codexGuardExit = isCodexGuard(process.argv.slice(2)) ? armCodexGuard() : undefined;
+
 main(process.argv.slice(2)).then(
-	(code) => exitWhenFlushed(code),
+	(code) => {
+		codexGuardExit?.disarm();
+		exitWhenFlushed(code);
+	},
 	(error: unknown) => {
+		if (codexGuardExit !== undefined) {
+			codexGuardExit.refuse(`this call could not be checked (${errorText(error).replace(/\.+$/, "")}); nothing was run`);
+			return;
+		}
 		process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
 		exitWhenFlushed(1);
 	},

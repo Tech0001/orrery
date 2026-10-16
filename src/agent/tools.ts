@@ -1,6 +1,7 @@
 /**
  * pi, Claude Code, Codex and OMP as orrery sees them (spec 2026-10-08-orrery-tui-design §3.4, §4.6): found on PATH, their
- * version, whether orrery's side is installed, and the steps that install it. Node only.
+ * version, whether orrery's side is installed (Codex's comes with each launch: the last hook check is said), and the
+ * steps that install it. Node only.
  */
 
 import { execFile, spawnSync } from "node:child_process";
@@ -9,11 +10,13 @@ import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { ENTRY_TAILS, endsWithSegments, entries, oneLineTarget, type Style } from "../install/layout.ts";
 import type { AgentTool } from "./config.ts";
+import { codexCheckDetail } from "../codex/check.ts";
 import { realTarget } from "./guard-paths.ts";
-import { runningRoot, wiringRoot } from "./running.ts";
+import { runningRoot, versionNumber, wiringRoot } from "./running.ts";
 import { safeText } from "./source-labels.ts";
 
-export type Wiring = "installed" | "missing" | "other" | "update available" | "unknown" | "none";
+/** "memory": Orrery's side comes with each launch, nothing is installed (Codex: src/codex/launch.ts). */
+export type Wiring = "installed" | "missing" | "other" | "update available" | "unknown" | "memory" | "none";
 
 export interface ToolCheck {
 	readonly id: AgentTool | "ori" | "wrangler";
@@ -302,6 +305,21 @@ function claudeWiring(root: string, path: string, run: Runner): Pick<ToolCheck, 
 	return { wiring: "installed", detail: entry.enabled === false ? "installed but turned off in Claude Code" : `plugin ${safeText(String(entry.version ?? ""))}`.trim() };
 }
 
+/** Codex's version number from its version line ("codex-cli 0.162.1" → "0.162.1"); undefined when there is none. */
+export function codexVersion(line: string | undefined): string | undefined {
+	const number = toolVersionNumber(line);
+	return /^\d+\.\d+\.\d+/.test(number) ? number : undefined;
+}
+
+/** This Orrery's version, as the Codex hook check keeps it; "unknown" for a binary copied out of its release. */
+export function orreryVersion(): string {
+	try {
+		return versionNumber();
+	} catch {
+		return "unknown";
+	}
+}
+
 /** Ignore wrapper announcements and trailing chatter; the tool's last version line wins. */
 function versionLine(stdout: string): string | undefined {
 	return stdout.split("\n").map((line) => safeText(line).trim()).findLast((line) => /^(?:[A-Za-z][A-Za-z -]*[ /])?v?\d+\.\d+\.\d+\b/.test(line));
@@ -319,7 +337,7 @@ export function checkTools(options: { root?: string; env?: NodeJS.ProcessEnv; ru
 		const path = findOnPath(BINARIES[id], env);
 		const version = path === undefined ? undefined : versionLine(run(path, ["--version"]).stdout);
 		const found = { id, label: LABELS[id], ...(path === undefined ? {} : { path }), ...(version === undefined ? {} : { version }) };
-		if (id === "codex") return { ...found, wiring: "none" as const, detail: "no memory yet" };
+		if (id === "codex") return { ...found, wiring: "memory" as const, detail: codexCheckDetail(env, codexVersion(version), orreryVersion()) };
 		if (id === "pi") return { ...found, ...piWiring(root, env) };
 		if (id === "omp") return { ...found, ...ompWiring(root, env) };
 		if (path === undefined) return { ...found, wiring: "missing" as const, detail: "Claude Code is not on PATH" };

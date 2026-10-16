@@ -68,6 +68,18 @@ export function seed(agent: AgentConfig, texts: readonly string[]): void {
 	}
 }
 
+/**
+ * A status.json as a running `tool` (pi, OMP, or a recorder's MemoryAgent) writes it: this process's pid, written now,
+ * unless `extra` says otherwise.
+ */
+export function statusOf(tool: string, extra: object = {}): object {
+	return {
+		agent: "Test", pid: process.pid, open: true, busy: false, model: tool, thinking: tool, memory: {},
+		compactor: { stopped: false, failing: 0, model: "faux/faux-compactor", thinking: "low", source: "config" },
+		trouble: null, lastError: null, updatedAt: new Date().toISOString(), ...extra,
+	};
+}
+
 /** The agent's memory as "kind: text" lines, read-only. */
 export function messages(agent: AgentConfig): string[] {
 	const store = MemoryStore.openReadOnly(join(agent.dir, "memory.sqlite"));

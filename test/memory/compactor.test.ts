@@ -57,6 +57,17 @@ describe("memoryConfig", () => {
 });
 
 describe("Compactor", () => {
+	it("counts the summaries a model wrote, not the parts short enough to keep as they are", async () => {
+		const compactor = start();
+		view.append("user", "short");
+		view.append("talk", "short too");
+		await compactor.drain();
+		expect(compactor.summarized).toBe(0);
+		view.append("user", `A long message ${"detail ".repeat(200)}`);
+		await compactor.drain();
+		expect(compactor.summarized).toBeGreaterThan(0);
+	});
+
 	it("keeps each summary call's context within the compaction view's ceiling (contextBytes)", async () => {
 		const contexts: string[] = [];
 		const recorder: Summarizer = {

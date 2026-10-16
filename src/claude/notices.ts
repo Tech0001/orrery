@@ -1,6 +1,6 @@
 /**
- * Notices for Claude Code's hooks, shown once per change per session through a hook's systemMessage, which reaches the
- * user, not the model:
+ * Notices for Claude Code's and Codex's hooks, shown once per change per session through a hook's systemMessage, which
+ * reaches the user, not the model:
  * - summary trouble, read from the agent's status.json (written in plain words by the holder);
  * - updates (spec 2026-10-15-update-notices): a newer release, from the daily check's cache, and an Orrery updated under
  *   the session, whose recorder (holder.json) runs another build than the installed one. Read from files only: the
@@ -16,22 +16,33 @@ import { noticeKey, noticeText, type TroubleState } from "../agent/notices.ts";
 import { writePrivate } from "../agent/private-file.ts";
 import { updateNotices } from "../agent/update-notices.ts";
 
-function readTrouble(agentDir: string): { trouble: TroubleState | null } | undefined {
+/**
+ * status.json's summary state: its trouble, and whether a summary has worked for the recorder that wrote it (false only
+ * when it says so: a file from before the field counts as having worked, as it always did).
+ */
+function readTrouble(agentDir: string): { trouble: TroubleState | null; summarized: boolean } | undefined {
 	try {
-		const status = JSON.parse(readFileSync(join(agentDir, "status.json"), "utf8")) as { trouble?: unknown };
+		const status = JSON.parse(readFileSync(join(agentDir, "status.json"), "utf8")) as { trouble?: unknown; summarized?: unknown };
+		const summarized = status.summarized !== false;
 		const t = status.trouble as Partial<TroubleState> | null | undefined;
-		if (t === null || t === undefined) return { trouble: null };
-		if ((t.state === "failing" || t.state === "stopped") && typeof t.plain === "string") return { trouble: { state: t.state, plain: t.plain } };
-		return { trouble: null };
+		if (t === null || t === undefined) return { trouble: null, summarized };
+		if ((t.state === "failing" || t.state === "stopped") && typeof t.plain === "string") return { trouble: { state: t.state, plain: t.plain }, summarized };
+		return { trouble: null, summarized };
 	} catch {
 		return undefined;
 	}
 }
 
-/** The notice for `session`, if the agent's summary state changed since that session last heard. Remembers what it said. */
-export function summaryNotice(agent: AgentConfig, session: string): string | undefined {
+/**
+ * The notice for `session`, if the agent's summary state changed since that session last heard. Remembers what it said.
+ * `command`: how this session switches the summary model (Claude Code's command; Codex has the CLI's).
+ */
+export function summaryNotice(agent: AgentConfig, session: string, command = "/orrery:compactor"): string | undefined {
 	const status = readTrouble(agent.dir);
 	if (status === undefined) return undefined;
+	// No trouble from a recorder that has had no summary work yet (a resumed session's new one) is no news either way:
+	// nothing is said, and what the session heard stands.
+	if (status.trouble === null && !status.summarized) return undefined;
 	const file = join(agent.dir, "claude", "notice.json");
 	let previous: string | undefined;
 	try {
@@ -41,7 +52,7 @@ export function summaryNotice(agent: AgentConfig, session: string): string | und
 		previous = undefined;
 	}
 	const key = noticeKey(status.trouble);
-	const message = noticeText(agent.name, status.trouble, previous, "/orrery:compactor");
+	const message = noticeText(agent.name, status.trouble, previous, command);
 	if (key !== previous) writePrivate(file, JSON.stringify({ session, key }));
 	return message;
 }

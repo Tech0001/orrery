@@ -50,7 +50,7 @@ describe("the writer checkout door", () => {
 	});
 	it("names another live holder on this machine without presenting it as another machine", async () => {
 		await f.storage.take("Test", { ...remotes.holderFor(f.config), pid: process.ppid });
-		await expect(open()).rejects.toThrow(/open in another pi or Claude Code on this machine \(last seen/);
+		await expect(open()).rejects.toThrow(/open in another pi, OMP, Claude Code or Codex session on this machine \(last seen/);
 	});
 	it("returns immediately for a local agent without secrets, device identity or storage", async () => {
 		removeRemoteSecret(f.config, "home");

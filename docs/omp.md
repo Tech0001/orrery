@@ -78,8 +78,8 @@ Everything in [pi.md](pi.md)'s Daily use holds, with these differences:
 
 ## One writer
 
-An agent is open in one tool at a time. A second pi, OMP or Claude Code session on the same agent runs without memory and
-says so. The TUI shows an agent open in OMP as open in OMP.
+An agent is open in one tool at a time. A second pi, OMP, Claude Code or Codex session on the same agent runs without
+memory (read-only in Claude Code and Codex) and says so. The TUI shows an agent open in OMP as open in OMP.
 
 ## The guard
 
@@ -118,6 +118,10 @@ where a shell's `export HOME` does not reach. These shell-text rules are a seatb
 **A search of a folder can still read a `.env` inside it**, or another of those secret files, or a file a protected
 name covers; and a command that has a protected name as a word is refused even when it means something else (`git
 commit -m "ignore .env"`).
+Shell text that runs Orrery's hook plumbing is refused in `bash` and `eval`: the hook commands (`claude-hook`,
+`codex-hook`) named anywhere, or Orrery's program with the word `holder`, so an agent cannot feed a hook made-up input
+and put words in your mouth in its memory. The cost: a command that only names them is refused too, such as a `grep`
+for them or a commit message that mentions one; OMP's own search tools are not read this way.
 `bash` runs in the folder its `cwd` names, so that folder is judged as a read of it: a credential folder, Orrery's
 home or a protected folder as `cwd` is refused. A relative name in the command is then not seen, as after a `cd`.
 Tools from OMP plugins are not checked.

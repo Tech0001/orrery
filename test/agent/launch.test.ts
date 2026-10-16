@@ -3,7 +3,9 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { agentMode, writeSetupMarker } from "../../src/claude/view-file.ts";
 import { parseConfig } from "../../src/agent/config.ts";
-import { applyFix, exitText, launchLabel, launchPlan, runAgent, runTool } from "../../src/agent/launch.ts";
+import { applyFix, checkCodexHooks, exitText, launchLabel, launchPlan, runAgent, runTool, withoutOrrery } from "../../src/agent/launch.ts";
+import { cutNotice, writeInstructions } from "../../src/agent/instructions.ts";
+import { codexLaunch } from "../../src/codex/launch.ts";
 import { claimToken } from "../../src/agent/pick.ts";
 import { agentOverview } from "../../src/agent/overview.ts";
 import { checkTools, ompExtensionFile, orreryRoot, piExtensionFile } from "../../src/agent/tools.ts";
@@ -38,7 +40,7 @@ describe("launchPlan and runTool", () => {
 		const { config, row, tools, env, ws, out } = setup("codex");
 		const plan = launchPlan(config, row, tools);
 		expect(plan.blocked).toBeUndefined();
-		expect(plan.steps).toEqual([{ text: "Codex has no Orrery memory yet: this session won't be recorded.", confirm: false }]);
+		expect(plan.steps).toEqual([]);
 		const exit = await runTool(plan, { env });
 		expect(readFileSync(out, "utf8").trim()).toBe(realpathSync(ws)); // the shell reports the physical path (macOS tmp is /private/var behind /var)
 		expect(exit).toEqual({ code: 3, signal: null });
@@ -87,7 +89,7 @@ describe("launchPlan and runTool", () => {
 		const { folder: _, ...bare } = row;
 		const plan = launchPlan(config, bare, tools);
 		expect(plan.cwd).toBe(process.cwd());
-		expect(plan.steps).toEqual([{ text: "Codex has no Orrery memory yet: this session won't be recorded.", confirm: false }]);
+		expect(plan.steps).toEqual([]);
 	});
 
 	it("blocks when the tool is not on PATH, and offers to create a missing folder", () => {
@@ -104,7 +106,15 @@ describe("launchPlan and runTool", () => {
 	it("warns that a second session won't record when the agent is open", () => {
 		const { config, row, tools } = setup("codex");
 		const open = { ...row, state: "open" as const, openIn: "pi" as const };
-		expect(launchPlan(config, open, tools).steps[0]).toEqual({ text: "A is already open in pi. A second session won't record. Launch anyway?", confirm: true });
+		expect(launchPlan(config, open, tools).steps[0]).toEqual({ text: "A is already open in pi. A second session won't record. Launch anyway?", confirm: true, asAgent: true });
+	});
+
+	it("plain Codex (a yes to starting without Orrery) opens no agent: no second-session question, but the folder is still made", () => {
+		const { config, row, tools } = setup("codex");
+		const gone = { ...row, state: "open" as const, openIn: "claude-code" as const, folder: join(row.folder as string, "not-yet") };
+		const plan = launchPlan(config, gone, tools);
+		expect(plan.steps.map((step) => step.text)).toEqual([`The folder ${gone.folder} does not exist. Create it?`, "A is already open in Claude Code. A second session won't record. Launch anyway?"]);
+		expect(withoutOrrery(plan).steps).toEqual([{ text: `The folder ${gone.folder} does not exist. Create it?`, confirm: true, fix: "create-folder" }]);
 	});
 
 	it("gives the signal when a tool cannot start, and passes the env it is given", async () => {
@@ -140,7 +150,7 @@ describe("launchPlan and runTool", () => {
 		expect(launchPlan(config, row, noTools).blocked).toBe('OMP is not on PATH (looked for "omp"). Get it at https://omp.sh, or change the agent\'s tool with C.');
 		const codex = setup("codex");
 		const open = { ...codex.row, state: "open" as const, openIn: "omp" as const };
-		expect(launchPlan(codex.config, open, codex.tools).steps[0]).toEqual({ text: "A is already open in OMP. A second session won't record. Launch anyway?", confirm: true });
+		expect(launchPlan(codex.config, open, codex.tools).steps[0]).toEqual({ text: "A is already open in OMP. A second session won't record. Launch anyway?", confirm: true, asAgent: true });
 	});
 });
 
@@ -156,8 +166,10 @@ describe("opening an agent in a folder (orrery agent, the TUI)", () => {
 		const { config, row, tools, env, out } = setup("codex");
 		writeFileSync(join(dirname(out), "bin", "codex"), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.0; exit 0; fi\nprintf '%s|%s|%s|%s\\n' "$ORRERY_AGENT" "$ORRERY_AGENT_TOKEN" "$(pwd)" "$*" > ${JSON.stringify(out)}\n`, { mode: 0o755 });
 		const elsewhere = elsewhereDir();
-		const plan = launchPlan(config, row, tools, { cwd: elsewhere, args: ["--model", "m"] });
+		const plan = launchPlan(config, row, tools, { cwd: elsewhere, args: ["--model", "m"], orrery: ["/opt/orrery/bin/orrery"] });
 		expect(plan.cwd).toBe(elsewhere);
+		// Orrery's flags for Codex come first, the person's arguments last.
+		expect(plan.args.slice(-2)).toEqual(["--model", "m"]);
 		expect(plan.agentDir).toBe(config.agents.get("A")!.dir);
 		const token = plan.env.ORRERY_AGENT_TOKEN as string;
 		expect(token).toMatch(/^[0-9a-f]{32}$/);
@@ -166,9 +178,12 @@ describe("opening an agent in a folder (orrery agent, the TUI)", () => {
 		// What the tool's extension does at its start: it claims the token.
 		expect(claimToken(plan.agentDir, token, 999_999)).toBe(true);
 		expect(readdirSync(join(plan.agentDir, "claims"))).toEqual([token]);
-		expect(await runAgent(plan, (p) => runTool(p, { env }))).toEqual({ code: 0, signal: null });
+		// It says which process had claimed the token (the tool, as the agent) before it removes the claim.
+		expect(await runAgent(plan, (p) => runTool(p, { env }))).toEqual({ code: 0, signal: null, claimedBy: 999_999 });
 		const [agent, seen, cwd, args] = readFileSync(out, "utf8").trim().split("|");
-		expect([agent, seen, realpathSync(cwd as string), args]).toEqual(["A", token, realpathSync(elsewhere), "--model m"]);
+		expect([agent, seen, realpathSync(cwd as string)]).toEqual(["A", token, realpathSync(elsewhere)]);
+		expect(args?.startsWith("--no-daemon -c hooks.SessionStart=")).toBe(true);
+		expect(args?.endsWith(" --model m")).toBe(true);
 		expect(readdirSync(join(plan.agentDir, "claims"))).toEqual([]);
 	});
 
@@ -187,7 +202,9 @@ describe("opening an agent in a folder (orrery agent, the TUI)", () => {
 		expect(plan.tool).toBe("omp");
 		expect(plan.args).toEqual(["omp", "--model", "vendor/model", "--resume"]);
 		const direct = setup("pi");
-		expect(launchPlan(direct.config, direct.row, direct.tools, { tool: "codex", args: ["-x"] })).toMatchObject({ tool: "codex", command: join(direct.env.PATH, "codex"), args: ["-x"] });
+		const codex = launchPlan(direct.config, direct.row, direct.tools, { tool: "codex", args: ["-x"] });
+		expect(codex).toMatchObject({ tool: "codex", command: join(direct.env.PATH, "codex"), codex: { plainArgs: ["-x"] } });
+		expect([codex.args[0], codex.args.at(-1)]).toEqual(["--no-daemon", "-x"]);
 	});
 
 	it("offers to create the folder it opens in, and creates that folder", () => {
@@ -252,11 +269,14 @@ describe("Ori launch plans", () => {
 			const { config, row, tools, env, ws } = setup(tool, undefined, `launcher = "ori"\n${model ? `ori_model = "${model}"\n` : ""}`);
 			const plan = launchPlan(config, row, tools, { env });
 			expect(plan.command).toBe(join(env.PATH, "ori"));
-			expect(plan.args).toEqual([tool === "claude-code" ? "claude" : tool, ...(model ? ["--model", model] : [])]);
+			const ori = [tool === "claude-code" ? "claude" : tool, ...(model ? ["--model", model] : [])];
+			// Codex gets Orrery's flags after Ori's own; the hook check asks the codex on PATH.
+			expect(plan.args.slice(0, ori.length)).toEqual(ori);
+			if (tool === "codex") expect(plan.codex).toMatchObject({ path: join(env.PATH, "codex"), plainArgs: ori });
+			else expect(plan.args).toEqual(ori);
 			expect(plan.cwd).toBe(ws);
 			expect(plan.steps.at(-1)?.text).toBe(`Launching ${tool === "claude-code" ? "Claude Code" : tool === "omp" ? "OMP" : tool === "codex" ? "Codex" : tool} through Ori in ${ws}`);
 			if (tool === "claude-code") expect(plan.steps.some((s) => s.fix === "claude-setup")).toBe(true);
-			if (tool === "codex") expect(plan.steps[0].text).toContain("no Orrery memory yet");
 		}
 	});
 
@@ -282,4 +302,105 @@ it("warns before Ori launches OMP and names Ori when it fails", () => {
 	const plan = launchPlan(config, row, tools, { env });
 	expect(plan.steps).toContainEqual({ text: expect.stringMatching(/Ori 0\.15\.7 can't start OMP/), confirm: false });
 	expect(exitText(launchLabel(plan), { code: 1, signal: null })).toContain("OMP through Ori");
+});
+
+describe("Codex launch plans", () => {
+	it("puts Orrery's flags before the person's arguments, says when the instructions were cut, and checks the hooks first", async () => {
+		const { config, row, tools, env } = setup("codex");
+		const agent = config.agents.get("A")!;
+		writeInstructions(agent.dir, `${"x".repeat(33 * 1024)}\n`);
+		const orrery = ["/opt/orrery/bin/orrery"];
+		const plan = launchPlan(config, row, tools, { env, args: ["resume", "--last"], orrery });
+		const launch = codexLaunch(agent, orrery);
+		expect(plan.command).toBe(join(env.PATH, "codex"));
+		// resume is a session subcommand: Orrery's flags go after it, where Codex applies them, with its own --no-daemon.
+		expect(plan.args).toEqual(["--no-daemon", "resume", "--no-daemon", ...launch.config, "--last"]);
+		expect(plan.steps).toEqual([{ text: cutNotice("A"), confirm: false }]);
+		expect(plan.codex).toEqual({ path: join(env.PATH, "codex"), config: launch.config, plainArgs: ["resume", "--last"], notices: [cutNotice("A")] });
+		expect(plan.env.ORRERY_AGENT).toBe("A");
+		// The fake answers --version with "1.0": no version number, so the check runs at every launch.
+		const asked: [string, readonly string[]][] = [];
+		const said: string[] = [];
+		const home = join(env.HOME, ".orrery");
+		const probe = async (path: string, flags: readonly string[]) => (asked.push([path, flags]), { ok: false as const, why: "Codex lists no Stop hook from Orrery" });
+		const gate = await checkCodexHooks(plan, { env: { ...env, ORRERY_HOME: home }, probe, onCheck: (text) => said.push(text) });
+		expect(asked).toEqual([[join(env.PATH, "codex"), launch.config]]);
+		expect(said).toEqual(["Checking that Orrery's hooks load in Codex…"]);
+		expect(gate).toEqual({ ok: false, text: "Orrery's hooks don't load in Codex (its version is unknown): Codex lists no Stop hook from Orrery. Without them a session has no memory and no guard." });
+		// A yes to starting without Orrery: plain Codex with the person's arguments, not as the agent.
+		const plain = withoutOrrery(plan);
+		expect(plain).toMatchObject({ command: join(env.PATH, "codex"), args: ["resume", "--last"], env: {}, unsetEnv: ["ORRERY_AGENT", "ORRERY_AGENT_TOKEN"], withoutOrrery: true });
+		expect(plain.codex).toBeUndefined();
+		// Plain Codex gets no instructions: the notice about cutting them is not said.
+		expect(plain.steps).toEqual([]);
+		expect(await runAgent(plain, async () => ({ code: 0, signal: null }))).toEqual({ code: 0, signal: null });
+		// An ORRERY_AGENT and token this process inherited are taken out too, not only left unset by the plan.
+		const seen: unknown[] = [];
+		const fake = ((_c: string, _a: string[], o: { env?: unknown }) => {
+			seen.push(o.env);
+			const h: Record<string, (...a: unknown[]) => void> = {};
+			setTimeout(() => h.exit?.(0, null), 0);
+			return { on: (n: string, f: (...a: unknown[]) => void) => { h[n] = f; } };
+		}) as never;
+		await runTool(plain, { env: { PATH: "/bin", ORRERY_AGENT: "Other", ORRERY_AGENT_TOKEN: "e".repeat(32), ORRERY_CONFIG: "/x.toml" }, spawn: fake });
+		expect(seen).toEqual([{ PATH: "/bin", ORRERY_CONFIG: "/x.toml" }]);
+	});
+
+	it("then checks, at every launch, that the shell Codex runs the hooks in starts without a word, with Codex's environment", async () => {
+		const { config, row, tools, env } = setup("codex");
+		const plan = launchPlan(config, row, tools, { env, orrery: ["/opt/orrery/bin/orrery"] });
+		const ok = async () => ({ ok: true as const });
+		const seen: [NodeJS.ProcessEnv, string][] = [];
+		const quiet = (shellEnv: NodeJS.ProcessEnv, cwd: string) => (seen.push([shellEnv, cwd]), { quiet: true as const });
+		expect(await checkCodexHooks(plan, { env: { ...env, ORRERY_AGENT: "Other" }, probe: ok, shellCheck: quiet })).toEqual({ ok: true });
+		expect(await checkCodexHooks(plan, { env, probe: ok, shellCheck: quiet })).toEqual({ ok: true });
+		expect(seen).toHaveLength(2);
+		// The shell gets what Codex's hooks get: the launch's variables over this process's.
+		expect(seen[0]?.[0]).toMatchObject({ PATH: env.PATH, ORRERY_AGENT: "A", ORRERY_AGENT_TOKEN: plan.env.ORRERY_AGENT_TOKEN });
+		expect(seen[0]?.[1]).toBe(plan.cwd);
+		const shell = { path: "/bin/bash", kind: "bash" as const };
+		const noisy = await checkCodexHooks(plan, { env, probe: ok, shellCheck: () => ({ quiet: false, shell, source: "$BASH_ENV (/home/u/env.sh)" }) });
+		expect(noisy).toEqual({
+			ok: false,
+			noisyShell: true,
+			question: "Start Codex anyway?",
+			text: "Codex runs Orrery's hooks through /bin/bash -c, which prints when it starts (most likely from $BASH_ENV (/home/u/env.sh)). Codex then can't read the hooks' answers, so A's memory won't load and its status won't show until that shell prints nothing when it isn't interactive; its turns are still recorded and the guard still works.",
+		});
+		// Hooks that don't load are said first; the shell is not asked.
+		const notLoaded = await checkCodexHooks(plan, { env, probe: async () => ({ ok: false as const, why: "x" }), shellCheck: () => { throw new Error("must not ask"); } });
+		expect(notLoaded).toMatchObject({ ok: false });
+		expect("noisyShell" in notLoaded).toBe(false);
+	});
+
+	it("refuses a session subcommand after other arguments, where Codex would not apply Orrery's flags, and says how to write it", () => {
+		const { config, row, tools, env } = setup("codex");
+		for (const [args, fixed] of [
+			[["-m", "gpt-x", "exec", "fix it"], "exec -m gpt-x 'fix it'"],
+			[["-c", "k=v", "resume", "--last"], "resume -c k=v --last"],
+			// The subcommand is the first word that is no option's value, wherever the same word comes again.
+			[["-p", "exec", "exec", "go"], "exec -p exec go"],
+		] as const) {
+			const plan = launchPlan(config, row, tools, { env, args: [...args] });
+			expect(plan.blocked).toBe(`Put Codex's subcommand first, or Codex won't apply Orrery's flags to the session (no memory, no guard): orrery agent A --tool codex -- ${fixed}`);
+			expect(plan.steps).toEqual([]);
+		}
+		// An option's value named like a subcommand is no subcommand: the TUI opens, with Orrery's flags first.
+		const folder = launchPlan(config, row, tools, { env, args: ["-C", "review"] });
+		expect(folder.blocked).toBeUndefined();
+		expect(folder.args.slice(-2)).toEqual(["-C", "review"]);
+		// Other tools take their arguments as they are.
+		const pi = setup("pi");
+		expect(launchPlan(pi.config, pi.row, pi.tools, { env: pi.env, args: ["-m", "x", "exec"] }).blocked).toBeUndefined();
+	});
+
+	it("leaves every other tool's plan alone: no check, nothing to take away", async () => {
+		for (const tool of ["pi", "omp", "claude-code"]) {
+			const { config, row, tools, env } = setup(tool);
+			const plan = launchPlan(config, row, tools, { env, args: ["-x"] });
+			expect(plan.codex).toBeUndefined();
+			expect(plan.args).toEqual(["-x"]);
+			expect(withoutOrrery(plan)).toBe(plan);
+			expect(await checkCodexHooks(plan, { probe: async () => { throw new Error("must not ask"); } })).toEqual({ ok: true });
+		}
+	});
 });

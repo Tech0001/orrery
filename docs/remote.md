@@ -103,8 +103,9 @@ encryption key, and the remote memory needs that code to be read again.
   the agent is open, nothing is lost: saves wait on this machine and go up when the remote is back.
 - **Each machine's config is its own** after `orrery agent pull`. A summary model chosen with `/compactor` travels with
   the memory, and so do the agent's instructions (below); other settings, such as the tool and default folder, don't.
-- **Claude Code can't ask questions at start.** When an agent's lock is stale on another machine, Claude Code opens it
-  read-only and tells you to run `orrery agent takeover <Name>`.
+- **Claude Code and Codex can't ask questions at start.** When an agent's lock is stale on another machine, the session
+  opens it read-only and tells you to run `orrery agent takeover <Name>`. `orrery agent` and the TUI ask before they
+  start the tool.
 - **OMP gives an extension 2 seconds at shutdown.** A final release that takes longer is cut off; the lock then frees
   itself after 3 minutes (this machine retakes it at once; another machine asks first). Check-out in OMP gives up after
   25 seconds and opens without memory.

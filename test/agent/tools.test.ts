@@ -1,7 +1,8 @@
 import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkTools, probeOri, shortHome, toolVersionNumber, installSteps, ompAgentDir, ompExtensionFile, ompExtensionText, orreryRoot, piExtensionFile, piExtensionText, pluginVersion, runInstall, runningRoot, wiringRoot, type Runner, type ToolCheck } from "../../src/agent/tools.ts";
+import { codexHookGate } from "../../src/codex/check.ts";
+import { checkTools, codexVersion, orreryVersion, probeOri, shortHome, toolVersionNumber, installSteps, ompAgentDir, ompExtensionFile, ompExtensionText, orreryRoot, piExtensionFile, piExtensionText, pluginVersion, runInstall, runningRoot, wiringRoot, type Runner, type ToolCheck } from "../../src/agent/tools.ts";
 import { tempDir } from "./support.ts";
 
 const dirs: string[] = [];
@@ -26,13 +27,23 @@ const CLAUDE = `if [ "$1" = "--version" ]; then echo "2.1.294 (Claude Code)"; el
 const root = orreryRoot();
 
 describe("checkTools", () => {
-	it("finds tools on PATH with their versions; Codex has no memory yet", () => {
+	it("finds tools on PATH with their versions; Codex's memory comes with each launch, and the last hook check is said", async () => {
 		const { env } = fakeBin({ pi: "echo 1.1.0", codex: "echo codex-cli 0.161.0" });
 		const [pi, claude, codex] = checkTools({ root, env });
 		expect(pi).toMatchObject({ id: "pi", label: "pi", version: "1.1.0", wiring: "missing" });
 		expect(claude).toMatchObject({ id: "claude-code", label: "Claude Code", wiring: "missing" });
 		expect(claude.path).toBeUndefined();
-		expect(codex).toMatchObject({ id: "codex", version: "codex-cli 0.161.0", wiring: "none", detail: "no memory yet" });
+		expect(codex).toMatchObject({ id: "codex", version: "codex-cli 0.161.0", wiring: "memory", detail: "hooks are checked at the first launch" });
+		await codexHookGate({ path: "/bin/codex", version: "0.161.0", config: [] }, { env, orrery: orreryVersion(), probe: async () => ({ ok: true }) });
+		expect(checkTools({ root, env })[2]).toMatchObject({ id: "codex", wiring: "memory", detail: "hooks checked with Codex 0.161.0" });
+		expect(installSteps(codex, root, env)).toEqual([]);
+	});
+
+	it("reads Codex's version number from its version line", () => {
+		expect(codexVersion("codex-cli 0.162.1")).toBe("0.162.1");
+		expect(codexVersion("codex-cli 0.163.0-alpha.2")).toBe("0.163.0-alpha.2");
+		expect(codexVersion(undefined)).toBeUndefined();
+		expect(codexVersion("codex-cli")).toBeUndefined();
 	});
 
 	it("installs the pi extension, then sees it installed; one pointing elsewhere is 'other'", () => {

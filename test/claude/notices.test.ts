@@ -9,9 +9,9 @@ import { cleanupDirs, testAgent } from "./support.ts";
 afterEach(cleanupDirs);
 afterEach(cleanupFakes);
 
-function status(dir: string, trouble: object | null) {
+function status(dir: string, trouble: object | null, summarized?: boolean) {
 	mkdirSync(dir, { recursive: true });
-	writeFileSync(join(dir, "status.json"), JSON.stringify({ trouble }));
+	writeFileSync(join(dir, "status.json"), JSON.stringify({ trouble, ...(summarized === undefined ? {} : { summarized }) }));
 }
 
 describe("summaryNotice", () => {
@@ -28,6 +28,26 @@ describe("summaryNotice", () => {
 		expect(statSync(join(t.agent.dir, "claude")).mode & 0o777).toBe(0o700);
 		status(t.agent.dir, null);
 		expect(summaryNotice(t.agent, "s2")).toBe("Orrery: Test's summaries are working again.");
+	});
+
+	it("hears no recovery from a recorder no summary has worked for yet (a resume, a restart): unknown is not working", () => {
+		const t = testAgent();
+		status(t.agent.dir, { state: "failing", plain: "no key" }, false);
+		expect(summaryNotice(t.agent, "s1")).toMatch(/are failing: no key\./);
+		// A new recorder for the same session: nothing failed yet, but nothing worked either.
+		status(t.agent.dir, null, false);
+		expect(summaryNotice(t.agent, "s1")).toBeUndefined();
+		// It fails as before: the session heard that already.
+		status(t.agent.dir, { state: "failing", plain: "no key" }, false);
+		expect(summaryNotice(t.agent, "s1")).toBeUndefined();
+		// A summary works: now that is news.
+		status(t.agent.dir, null, true);
+		expect(summaryNotice(t.agent, "s1")).toBe("Orrery: Test's summaries are working again.");
+		// A session that heard nothing hears nothing from an unknown state, and a later failure is still news to it.
+		status(t.agent.dir, null, false);
+		expect(summaryNotice(t.agent, "s2")).toBeUndefined();
+		status(t.agent.dir, { state: "stopped", plain: "no key" }, false);
+		expect(summaryNotice(t.agent, "s2")).toMatch(/stopped: no key\./);
 	});
 
 	it("stays silent when only the reason changes", () => {

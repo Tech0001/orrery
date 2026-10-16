@@ -1,62 +1,76 @@
 /**
- * `orrery agent <Name> [--tool pi|omp|claude-code] [--yes] [-- <tool arguments>]` opens an agent in this folder, and
- * `orrery agent edit <Name>` opens its instructions in $EDITOR (spec 2026-10-13-orrery-agents-design §4, §5). The checks
- * are the TUI's (src/agent/launch.ts): the tool is installed and wired, the agent is not open on another machine or is
- * taken over, and Claude Code opens outside the agent's folder only through the Orrery mod.
+ * `orrery agent <Name> [--tool pi|omp|claude-code|codex] [--yes] [-- <tool arguments>]` opens an agent in this folder,
+ * and `orrery agent edit <Name>` opens its instructions in $EDITOR (spec 2026-10-13-orrery-agents-design §4, §5). The
+ * checks are the TUI's (src/agent/launch.ts): the tool is installed and wired, the agent is not open on another machine
+ * or is taken over, Claude Code opens outside the agent's folder only through the Orrery mod, and Orrery's hooks load in
+ * the Codex installed (src/codex/check.ts; only a person at a terminal may start Codex without them).
  */
 
 import { resolve } from "node:path";
 import { findAgent, type AgentTool, loadConfig } from "../agent/config.ts";
 import { editInstructionsFile, runEditor } from "../agent/editor.ts";
-import { applyFix, exitText, launchLabel, launchPlan, type LaunchPlan, remoteGate, runAgent, runTool, type ToolExit } from "../agent/launch.ts";
+import { applyFix, checkCodexHooks, exitText, launchLabel, launchPlan, type LaunchPlan, remoteGate, runAgent, runTool, type ToolExit, withoutOrrery } from "../agent/launch.ts";
 import { type AgentRow, agentOverview, OverviewCache, TOOL_LABELS } from "../agent/overview.ts";
 import { checkTools } from "../agent/tools.ts";
+import { type CodexGate, WITHOUT_ORRERY_QUESTION, WITHOUT_ORRERY_SAID } from "../codex/check.ts";
+import { codexResumeLine } from "../codex/resume.ts";
 
 export interface AgentIo {
 	say(line: string): void;
 	/** A yes/no question on the terminal (`--yes` answers yes). */
 	confirm(question: string): Promise<boolean>;
+	/**
+	 * A question only a person answers, default no (`--yes` does not answer it): starting Codex without Orrery's memory
+	 * and guard. Absent without a terminal.
+	 */
+	askPerson?(question: string): Promise<boolean>;
 }
 
-/** The tools an agent opens in: those with Orrery's memory. */
-const OPENED_IN: readonly AgentTool[] = ["pi", "omp", "claude-code"];
-
-function codexRefusal(name: string): string {
-	return `Codex has no Orrery memory yet: open ${name} in pi, OMP or Claude Code (--tool).`;
-}
+/** The tools an agent opens in. */
+const OPENED_IN: readonly AgentTool[] = ["pi", "omp", "claude-code", "codex"];
 
 export async function openAgentCommand(
 	configPath: string | undefined,
 	name: string,
 	options: { readonly tool?: string; readonly args: readonly string[]; readonly cwd: string },
 	io: AgentIo,
-	deps: { readonly takeover: (name: string) => Promise<string>; readonly run?: (plan: LaunchPlan) => Promise<ToolExit> },
+	deps: {
+		readonly takeover: (name: string) => Promise<string>;
+		readonly run?: (plan: LaunchPlan) => Promise<ToolExit>;
+		readonly codexGate?: (plan: LaunchPlan) => Promise<CodexGate>;
+		/** Where the agents' rows and remotes are read (tests give one with their own storage). */
+		readonly cache?: OverviewCache;
+	},
 ): Promise<number> {
 	const config = loadConfig(configPath);
 	const agent = findAgent(config, name);
-	if (options.tool !== undefined && !OPENED_IN.includes(options.tool as AgentTool)) {
-		throw new Error(options.tool === "codex" ? codexRefusal(agent.name) : `--tool takes pi, omp or claude-code (not ${options.tool}).`);
-	}
-	const cache = new OverviewCache();
+	if (options.tool !== undefined && !OPENED_IN.includes(options.tool as AgentTool)) throw new Error(`--tool takes pi, omp, claude-code or codex (not ${options.tool}).`);
+	const cache = deps.cache ?? new OverviewCache();
 	const row = agentOverview(config, { cache }).find((r) => r.name === agent.name);
 	if (row === undefined) throw new Error(`No agent named ${agent.name}.`);
 	// Without --tool, the agent's own (the TUI's guess when the config names none).
 	const tool = (options.tool as AgentTool | undefined) ?? row.tool;
-	if (!OPENED_IN.includes(tool)) throw new Error(codexRefusal(agent.name));
 	const gate = await remoteGate(config, row, { refreshRemote: (c, n) => cache.refreshRemote(c, n), overview: (c) => agentOverview(c, { cache }), say: io.say });
 	if (!gate.go) throw new Error(gate.text);
 	const tools = checkTools();
 	const changeTool = `open ${agent.name} in another tool: --tool for this session, orrery agent set ${agent.name} --tool T for good`;
 	const plan = launchPlan(config, gate.row, tools, { cwd: options.cwd, tool, args: options.args, changeTool });
 	if (plan.blocked !== undefined) throw new Error(plan.blocked);
-	if (gate.takeover !== undefined) {
+	// Codex's hook check comes first: a no to it must leave no lock taken over and no step done.
+	const launching = await codexHooksOrPlain(plan, agent.name, io, deps.codexGate ?? ((p) => checkCodexHooks(p, { onCheck: (text) => io.say(text) })));
+	if (launching === undefined) {
+		io.say("Not opened.");
+		return 1;
+	}
+	// Plain Codex opens no agent: it takes no lock over (nor asks about a second session, withoutOrrery).
+	if (gate.takeover !== undefined && launching.withoutOrrery !== true) {
 		if (!(await io.confirm(gate.takeover))) {
 			io.say("Not opened.");
 			return 1;
 		}
 		io.say((await deps.takeover(agent.name)).trimEnd());
 	}
-	for (const step of plan.steps) {
+	for (const step of launching.steps) {
 		if (!step.confirm) {
 			io.say(step.text);
 			continue;
@@ -68,10 +82,36 @@ export async function openAgentCommand(
 		if (step.fix !== undefined) io.say(applyFix(step.fix, config, gate.row, tools, { cwd: plan.cwd }));
 	}
 	const run = deps.run ?? ((p: LaunchPlan) => runTool(p, configPath === undefined ? {} : { env: { ...process.env, ORRERY_CONFIG: resolve(configPath) } }));
-	const exit = await runAgent(plan, run);
+	const exit = await runAgent(launching, run);
 	const text = exitText(launchLabel(plan), exit);
 	if (text !== undefined) io.say(text);
+	// Codex's own "codex resume <id>" reopens the chat as plain Codex: the way to resume it as the agent (not after plain Codex).
+	if (launching.codex !== undefined) {
+		const resume = codexResumeLine(agent, exit.claimedBy);
+		if (resume !== undefined) io.say(resume);
+	}
 	return exit.code ?? 1;
+}
+
+/**
+ * The plan to run after the Codex checks: as it is when they pass; when the hooks don't load, plain Codex if the person
+ * says yes; when the hooks' shell prints, the plan as it is if they say yes (undefined on no). Without a terminal it
+ * refuses with what the check said.
+ */
+async function codexHooksOrPlain(plan: LaunchPlan, name: string, io: AgentIo, gate: (plan: LaunchPlan) => Promise<CodexGate>): Promise<LaunchPlan | undefined> {
+	if (plan.codex === undefined) return plan;
+	const checked = await gate(plan);
+	if (checked.ok) return plan;
+	const noisy = "noisyShell" in checked;
+	if (io.askPerson === undefined) {
+		const choice = noisy ? "start Codex anyway" : "start Codex without them";
+		throw new Error(`${checked.text} ${name} was not opened: only a person at a terminal can choose to ${choice} (run orrery agent ${name} there).`);
+	}
+	io.say(checked.text);
+	if (noisy) return (await io.askPerson(checked.question)) ? plan : undefined;
+	if (!(await io.askPerson(WITHOUT_ORRERY_QUESTION))) return undefined;
+	io.say(WITHOUT_ORRERY_SAID);
+	return withoutOrrery(plan);
 }
 
 /**

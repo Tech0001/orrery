@@ -45,8 +45,11 @@ export interface Where {
 	readonly takeover?: boolean;
 }
 
+/** Whether `token` has the form newToken gives (32 lowercase hex digits). */
+export const tokenForm = (token: string): boolean => TOKEN.test(token);
+
 /** The agent `name` names: an exact match, else the one match ignoring case. */
-function agentNamed(config: HarnessConfig, name: string): AgentConfig | undefined {
+export function agentNamed(config: HarnessConfig, name: string): AgentConfig | undefined {
 	const exact = config.agents.get(name);
 	if (exact !== undefined) return exact;
 	const matches = [...config.agents.values()].filter((agent) => agent.name.toLowerCase() === name.toLowerCase());
@@ -157,6 +160,11 @@ export function claimToken(agentDir: string, token: string, owner: number, alive
 			// a stray one: a later prune takes it
 		}
 	}
+}
+
+/** The pid that claimed `token` for the agent, or undefined when none has (or the token is no token). */
+export function claimedBy(agentDir: string, token: string): number | undefined {
+	return TOKEN.test(token) ? claimant(join(agentDir, "claims", token)) : undefined;
 }
 
 /** Removes a claim its launcher made, once its tool has exited. */

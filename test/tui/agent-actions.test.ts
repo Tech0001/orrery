@@ -23,7 +23,7 @@ afterEach(() => {
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-const tool = (id: ToolCheck["id"], fields: Partial<ToolCheck> = {}): ToolCheck => ({ id, label: { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", ori: "Ori", wrangler: "wrangler" }[id], path: `/bin/${id}`, version: "1", wiring: id === "codex" ? "none" : "installed", detail: "", ...fields });
+const tool = (id: ToolCheck["id"], fields: Partial<ToolCheck> = {}): ToolCheck => ({ id, label: { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", ori: "Ori", wrangler: "wrangler" }[id], path: `/bin/${id}`, version: id === "codex" ? "codex-cli 0.162.1" : "1", wiring: id === "codex" ? "memory" : "installed", detail: "", ...fields });
 
 /** Summary sources with an Anthropic key saved, in a temp folder (offline: listing models makes no call). */
 async function anthropicSources() {
@@ -35,14 +35,102 @@ async function anthropicSources() {
 }
 
 describe("L launch", () => {
-	it("says Codex records nothing, launches, and reports the way back", async () => {
-		const deps = fakeDeps({ tools: () => [tool("pi"), tool("claude-code"), tool("codex")] }, [row({ name: "Alpha", tool: "codex", folder: "/" })]);
+	it("opens Codex with Orrery's hooks, memory tools and instructions once the hook check passes, and reports the way back", async () => {
+		const plans: LaunchPlan[] = [];
+		const checked: LaunchPlan[] = [];
+		const deps = fakeDeps(
+			{ tools: () => [tool("pi"), tool("claude-code"), tool("codex")], codexCheck: async (plan) => (checked.push(plan), { ok: true }), launch: async (plan) => (plans.push(plan), { code: 0, signal: null }) },
+			[row({ name: "Alpha", tool: "codex", folder: "/" })],
+		);
 		const app = makeApp(deps, [agentsPage]);
 		keys(app, "L");
 		await answer(app, "Open Alpha where?", DOWN, ENTER);
-		await answer(app, "Codex", ENTER);
 		await app.idle();
-		expect(deps.launched).toEqual(["Alpha"]);
+		expect(checked).toHaveLength(1);
+		expect(plans).toHaveLength(1);
+		const plan = plans[0] as LaunchPlan;
+		expect(plan).toMatchObject({ tool: "codex", command: "/bin/codex", env: { ORRERY_AGENT: "Alpha" }, codex: { path: "/bin/codex", version: "0.162.1" } });
+		expect(plan.args[0]).toBe("--no-daemon");
+		expect(plan.args.some((arg) => arg.startsWith("hooks.state="))).toBe(true);
+		expect(plan.args.some((arg) => arg.startsWith("mcp_servers.orrery="))).toBe(true);
+		expect(screen(app)).toContain("Back from Codex (Alpha).");
+	});
+
+	it("asks about Codex's hooks before any launch step: a no makes no folder", async () => {
+		const here = tempDir("orrery-tui-here-");
+		dirs.push(here);
+		const missing = join(here, "not-yet");
+		const fixes: string[] = [];
+		const config = parseConfig(`data_dir = "/d"\n[agents.Alpha]\nfolder = ${JSON.stringify(missing)}\ntool = "codex"\ncompactor_model = "openai/gpt-6.1-sol"\n`, "/d");
+		const deps = fakeDeps(
+			{ cwd: here, loadConfig: () => config, tools: () => [tool("pi"), tool("codex")], codexCheck: async () => ({ ok: false, text: "Orrery's hooks don't load in Codex 0.163.0: x." }), applyFix: (fix) => (fixes.push(fix), "fixed") },
+			[row({ name: "Alpha", tool: "codex", folder: missing })],
+		);
+		const app = makeApp(deps, [agentsPage]);
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		// The hook question comes first, before "does not exist. Create it?".
+		await answer(app, "Orrery's hooks don't load", "n");
+		await app.idle();
+		expect(fixes).toEqual([]);
+		expect(deps.launched).toEqual([]);
+		expect(screen(app)).toContain("Not launched.");
+	});
+
+	it("when Orrery's hooks don't load in Codex: says so and asks, default no; yes starts plain Codex, unrecorded", async () => {
+		const plans: LaunchPlan[] = [];
+		const text = "Orrery's hooks don't load in Codex 0.163.0: Codex lists no Stop hook from Orrery. Without them a session has no memory and no guard.";
+		const deps = fakeDeps(
+			{ tools: () => [tool("pi"), tool("claude-code"), tool("codex")], codexCheck: async () => ({ ok: false, text }), launch: async (plan) => (plans.push(plan), { code: 0, signal: null }) },
+			[row({ name: "Alpha", tool: "codex", folder: "/" })],
+		);
+		const app = makeApp(deps, [agentsPage]);
+		for (const no of ["n", "\x1b"]) {
+			keys(app, "L");
+			await answer(app, "Open Alpha where?", DOWN, ENTER);
+			await answer(app, "Orrery's hooks don't load in Codex 0.163.0");
+			expect(screen(app)).toContain("Start Codex without Orrery anyway? The session won't be recorded and the guard will be off.");
+			keys(app, no);
+			await app.idle();
+			expect(plans).toEqual([]);
+			expect(screen(app)).toContain("Not launched.");
+		}
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "Orrery's hooks don't load", "y");
+		await app.idle();
+		expect(plans).toHaveLength(1);
+		// Plain Codex: none of Orrery's flags, and not as the agent.
+		expect(plans[0]).toMatchObject({ command: "/bin/codex", args: [], env: {}, withoutOrrery: true });
+		expect(plans[0]?.codex).toBeUndefined();
+		expect(screen(app)).toContain("Back from Codex (Alpha), started without Orrery: that session was not recorded.");
+	});
+
+	it("when the hooks' shell prints at startup: says so and asks, default no; yes opens Codex as the agent all the same", async () => {
+		const plans: LaunchPlan[] = [];
+		const text = "Codex runs Orrery's hooks through /bin/zsh -c, which prints when it starts (most likely from /home/u/.zshenv).";
+		const deps = fakeDeps(
+			{ tools: () => [tool("pi"), tool("claude-code"), tool("codex")], codexCheck: async () => ({ ok: false, text, noisyShell: true, question: "Start Codex anyway?" }), launch: async (plan) => (plans.push(plan), { code: 0, signal: null }) },
+			[row({ name: "Alpha", tool: "codex", folder: "/" })],
+		);
+		const app = makeApp(deps, [agentsPage]);
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "Codex runs Orrery's hooks through /bin/zsh");
+		expect(screen(app)).toContain("Start Codex anyway?");
+		expect(screen(app)).not.toContain("without Orrery");
+		keys(app, "n");
+		await app.idle();
+		expect(plans).toEqual([]);
+		expect(screen(app)).toContain("Not launched.");
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "Codex runs Orrery's hooks", "y");
+		await app.idle();
+		expect(plans).toHaveLength(1);
+		// As the agent, with Orrery's flags.
+		expect(plans[0]).toMatchObject({ command: "/bin/codex", env: { ORRERY_AGENT: "Alpha" }, codex: { path: "/bin/codex" } });
+		expect(plans[0]?.withoutOrrery).toBeUndefined();
 		expect(screen(app)).toContain("Back from Codex (Alpha).");
 	});
 
@@ -55,6 +143,22 @@ describe("L launch", () => {
 		await app.idle();
 		expect(deps.launched).toEqual([]);
 		expect(screen(app)).toContain("Not launched.");
+	});
+
+	it("starts plain Codex on an open agent without asking about a second session: it opens no agent", async () => {
+		const plans: LaunchPlan[] = [];
+		const deps = fakeDeps(
+			{ tools: () => [tool("pi"), tool("codex")], codexCheck: async () => ({ ok: false, text: "Orrery's hooks don't load in Codex 0.163.0: x." }), launch: async (plan) => (plans.push(plan), { code: 0, signal: null }) },
+			[row({ name: "Alpha", tool: "codex", folder: "/", state: "open", openIn: "pi" })],
+		);
+		const app = makeApp(deps, [agentsPage]);
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "Orrery's hooks don't load", "y");
+		await app.idle();
+		expect(plans).toHaveLength(1);
+		expect(plans[0]).toMatchObject({ withoutOrrery: true, steps: [] });
+		expect(screen(app)).toContain("Back from Codex (Alpha), started without Orrery: that session was not recorded.");
 	});
 
 	it("reports a tool that exits with an error, and one that is not on PATH", async () => {

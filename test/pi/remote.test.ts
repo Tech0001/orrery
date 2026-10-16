@@ -293,5 +293,5 @@ it("describes a remote agent held locally without naming this machine as a remot
 	const second = hostFor("pi");
 	await second.run.emit("session_start");
 	expect(second.agent()).toBeUndefined();
-	expect(second.run.notices).toEqual([{ message: expect.stringContaining("open in another pi or Claude Code on this machine"), type: "warning" }]);
+	expect(second.run.notices).toEqual([{ message: "Test is open in another pi session on this machine; this pi runs without memory.", type: "warning" }]);
 });

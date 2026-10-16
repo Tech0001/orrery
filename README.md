@@ -20,8 +20,8 @@ from pi to Claude Code, open the agent in another project or carry on from anoth
 
 ## What you can do
 
-- **Keep one agent across tools.** pi, OMP (oh-my-pi) and Claude Code all read and record the same agent's memory.
-  OpenRouter's Ori can launch it too. Codex can be launched but has no memory yet.
+- **Keep one agent across tools.** pi, OMP (oh-my-pi), Claude Code and Codex all read and record the same agent's
+  memory. OpenRouter's Ori can launch it too.
 - **Open any agent anywhere.** `orrery agent Atlas` starts Atlas's tool in the folder you are in, with its
   instructions and memory. The folder's own `AGENTS.md` or `CLAUDE.md` still applies as that project's rules.
 - **Turn existing chats into an agent.** Pick one or more of your Claude Code or Codex chats from a list and they
@@ -51,7 +51,7 @@ from pi to Claude Code, open the agent in another project or carry on from anoth
 
 You need:
 - Linux or macOS, x64 or arm64. On Windows, use WSL. Alpine and other musl Linux is not supported yet.
-- At least one coding tool: pi, OMP or Claude Code, installed on its own.
+- At least one coding tool: pi, OMP, Claude Code or Codex, installed on its own.
 - A way to make summaries: a ChatGPT or OpenRouter account, an API key, or a local model server (see
   [Summaries](#summaries)).
 
@@ -122,7 +122,7 @@ gather a whole project's Claude Code and Codex history; see `orrery help import`
 (or `["*"]` for all) lets it use the `agents` and `agent_memory` tools to look into those agents' memory, read-only.
 
 **One session at a time.** An agent records from one session. A second session on the same agent runs without its
-memory in pi and OMP, and read-only in Claude Code.
+memory in pi and OMP, and read-only in Claude Code and Codex.
 
 **Archiving.** **A** on a closed agent's page takes it out of the list; its memory stays on disk.
 
@@ -166,12 +166,14 @@ the one in that environment variable.
 | OMP (oh-my-pi) | The same, through OMP's own extension entry; `/orrery` and `/compactor` | [docs/omp.md](docs/omp.md) |
 | Claude Code | A plugin with hooks and memory tools, plus an optional mod for the system prompt and compaction | [docs/claude-code.md](docs/claude-code.md) |
 | Ori | Launches the agent with an OpenRouter model; Orrery keeps the memory | [docs/ori.md](docs/ori.md) |
-| Codex | Launch only, no memory yet | |
+| Codex | Memory, recording, the memory tools and the guard, on Codex's command line at each `orrery agent` launch | [docs/codex.md](docs/codex.md) |
 
 Connect a tool with **I** on the **Tools** page, or `orrery tools install pi`. Each guide lists the versions tested
 and the known limits. Claude Code needs one more step per agent before it records, described in its guide:
 `orrery claude-setup Atlas` loads the memory in the agent's default folder, and `--mod` loads it through the mod,
-which also lets Claude Code open the agent in any folder.
+which also lets Claude Code open the agent in any folder. Codex needs nothing installed: open its agents with
+`orrery agent Atlas --tool codex` (or set the agent's tool to `codex`), which brings Orrery's hooks, memory tools and
+instructions on Codex's command line and writes nothing to `~/.codex`. A plain `codex` is not an agent's session.
 
 The Claude Code desktop app works too: after `orrery claude-setup <Name>`, start a session in the agent's folder, and
 the app's Claude Code records it and loads the memory (tested with the Linux app). Claude Code on the web runs in the
@@ -203,7 +205,9 @@ Leave these to the person, in their own terminal:
 
 Orrery's own files are off-limits to agents: your tools are refused anywhere in `~/.orrery`, except that file tools may
 read the config and the installed program, and shell commands that name `.orrery` are refused. Ask the CLI instead.
-Your own memory has its own tools: `zoom`, `date` and `search` (`memory_search` in OMP).
+Shell commands that name Orrery's hook plumbing (`codex-hook`, `claude-hook`, or `orrery` with `holder`) are refused
+too, even in a `grep` or a commit message: leave those to the person. Your own memory has its own tools: `zoom`, `date`
+and `search` (`memory_search` in OMP; in Codex, from the `orrery` MCP server).
 
 ## Memory that follows you
 
@@ -234,14 +238,14 @@ orrery install --rollback  # go back to the previous version
 orrery uninstall           # remove the program; memory, config and logins stay
 ```
 
-Agents that are open keep their version until they restart. The Agents page says when one is waiting, and the pi, OMP
-or Claude Code session says once: "Orrery was updated to 0.6.2; restart this session to use it." Orrery checks for a
-new release at most once a day, shared by the TUI and every agent's session (pi, OMP, and Claude Code's recorder); the
-TUI header and each session then say once that it is out. A session never waits on the check: it shows what the last
-one found, and a newer answer when it comes. The check is one request to `github.com`, which sees your IP address;
-`check = false` under `[updates]` in `config.toml` turns it off, and the release notice with it (the restart notice
-needs no request and stays). Notices reach you, never the model. `orrery uninstall --purge` also deletes `~/.orrery`,
-after you type `delete`.
+Agents that are open keep their version until they restart. The Agents page says when one is waiting, and the pi, OMP,
+Claude Code or Codex session says once: "Orrery was updated to 0.6.2; restart this session to use it." Orrery checks for
+a new release at most once a day, shared by the TUI and every agent's session (pi, OMP, and the recorder of Claude Code
+and Codex sessions); the TUI header and each session then say once that it is out. A session never waits on the
+check: it shows what the last one found, and a newer answer when it comes. The check is one request to `github.com`,
+which sees your IP address; `check = false` under `[updates]` in `config.toml` turns it off, and the release notice with
+it (the restart notice needs no request and stays). Notices reach you, never the model. `orrery uninstall --purge` also
+deletes `~/.orrery`, after you type `delete`.
 
 The install script also takes `--yes` (answer every question yes; with no terminal and no `--yes`, it skips the
 questions, lists them and exits non-zero), `ORRERY_VERSION` (a specific release) and `ORRERY_HOME` (somewhere other
@@ -266,7 +270,7 @@ refused, and Orrery's own config and program are read-only to agents. Out of the
   `~/.pypirc`, `~/.cargo/credentials`, `~/.gem/credentials`, `~/.config/gcloud`, `~/.azure`,
   `~/.terraform.d/credentials.tfrc.json`, wrangler's login (`~/.wrangler`, `~/.config/.wrangler`, and
   `~/Library/Preferences/.wrangler` on macOS), Hugging Face's tokens, `~/.password-store`, the 1Password CLI's
-  `~/.config/op`, and the logins of pi, OMP and Orrery (Claude Code's too, in its sessions).
+  `~/.config/op`, and the logins of pi, OMP, Codex and Orrery (Claude Code's too, in its sessions).
 - **Secret files in any folder:** `.env` and `.env.<anything>`, `.dev.vars` and `.dev.vars.<anything>` (Cloudflare
   Workers), `.secrets`, `secrets.toml`, `master.key` and `.htpasswd`. The shared templates stay open: `.env.example`,
   `.env.sample`, `.env.template` and `.env.dist`, and the same for `.dev.vars`.
@@ -311,8 +315,13 @@ of the file reads cleanly; if it does not (the TOML is broken around it, or an e
 tool call until the config is fixed, as Claude Code does for any config it cannot read. A `[guard] protect` that lists
 nothing, as a new config has it, counts as no entries even when the TOML is broken elsewhere.
 
+**Agents can't run Orrery's hook plumbing.** Shell text that names the hook commands (`codex-hook`, `claude-hook`) or
+Orrery's program with `holder` is refused, so an agent cannot feed a hook made-up input and put words in your mouth in
+its memory. The cost: an agent's `grep` for those names, or a commit message that mentions one, is refused too.
+
 **It is a guard, not a sandbox.** It checks file paths and the text of shell commands, so a determined program can get
-around it; the [architecture guide](docs/architecture.md#the-credential-guard) lists the known limits.
+around it; the [architecture guide](docs/architecture.md#the-credential-guard) lists the known limits, and
+[Codex's guide](docs/codex.md#its-limits-in-codex) the ones that are Codex's own.
 
 Logins are kept in private files (mode 0600), never in the config. Your agents' memory on disk is not encrypted;
 copies sent to a remote are. Model providers see whatever context is sent to them, memory included.
@@ -328,9 +337,9 @@ npm run test:bun-suite  # the full suite on Bun
 npm run demo            # the TUI with five fictional agents: no model calls, nothing of yours touched
 ```
 
-The suite has more than 2,000 tests and uses synthetic data only. Tests against real pi, OMP and Ori run when those
-programs are installed; CI runs the suite on Node 22.19 and 24 and on macOS. [CONTRIBUTING.md](CONTRIBUTING.md) covers
-bug reports, pull requests and the real-tool tests; [SECURITY.md](SECURITY.md) says how to report a security problem
+The suite has more than 2,000 tests and uses synthetic data only. Tests against real pi, OMP, Ori and Codex run when
+those programs are installed; CI runs the suite on Node 22.19 and 24 and on macOS. [CONTRIBUTING.md](CONTRIBUTING.md)
+covers bug reports, pull requests and the real-tool tests; [SECURITY.md](SECURITY.md) says how to report a security problem
 privately.
 
 ## Credits

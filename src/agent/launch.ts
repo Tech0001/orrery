@@ -2,7 +2,8 @@
  * Opening an agent in its tool (spec 2026-10-08-orrery-tui-design §4.5; spec 2026-10-13-orrery-agents-design §4): what
  * runs and where, what to ask first, fixing what can be fixed, and running the tool with the terminal attached, as the
  * agent (ORRERY_AGENT and a fresh ORRERY_AGENT_TOKEN, src/agent/pick.ts). `orrery agent` and the TUI's Enter and L use
- * it. Node only.
+ * it. Codex gets Orrery's hooks, memory tools and instructions on its command line (src/codex/launch.ts), after the hook
+ * check (src/codex/check.ts). Node only.
  */
 
 import { spawn } from "node:child_process";
@@ -10,11 +11,14 @@ import { existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { claudeSetup, claudeSetupMod, modSetupReport, setupReport } from "../claude/setup.ts";
 import { agentMode, markedHere, readSetupMarker } from "../claude/view-file.ts";
+import { type CodexGate, codexHookGate, type probeHooks } from "../codex/check.ts";
+import { codexArgs, codexLaunch, misplacedSubcommand, orreryCommand, subcommandFirst } from "../codex/launch.ts";
+import { checkHookShell, NOISY_SHELL_QUESTION, noisyShellText, type ShellCheck } from "../codex/shell.ts";
 import { buildRunning, readBuild } from "./build.ts";
 import { findAgent, type HarnessConfig, insideFolder, type AgentConfig, type AgentLauncher, type AgentTool } from "./config.ts";
 import { type AgentRow, TOOL_LABELS } from "./overview.ts";
-import { AGENT_ENV, newToken, releaseClaim, TOKEN_ENV, workArea } from "./pick.ts";
-import { BINARIES, findOnPath, installSteps, wiringRoot, type Runner, realRunner, runInstall, type ToolCheck } from "./tools.ts";
+import { AGENT_ENV, claimedBy, newToken, releaseClaim, TOKEN_ENV, workArea } from "./pick.ts";
+import { BINARIES, codexVersion, findOnPath, installSteps, orreryVersion, wiringRoot, type Runner, realRunner, runInstall, type ToolCheck } from "./tools.ts";
 
 const HINTS: Record<AgentTool, string> = { pi: "Get it at https://pi.dev", "claude-code": "Get it at https://claude.com/claude-code", codex: "Get it at https://github.com/openai/codex", omp: "Get it at https://omp.sh" };
 
@@ -26,6 +30,8 @@ export interface LaunchStep {
 	readonly confirm: boolean;
 	/** What a yes does before launching. */
 	readonly fix?: LaunchFix;
+	/** A question about opening the agent itself (it is open elsewhere): plain Codex (withoutOrrery), which opens no agent, skips it. */
+	readonly asAgent?: true;
 }
 
 export interface LaunchPlan {
@@ -37,6 +43,8 @@ export interface LaunchPlan {
 	readonly cwd: string;
 	/** Added to the tool's environment: ORRERY_AGENT and ORRERY_AGENT_TOKEN (src/agent/pick.ts). */
 	readonly env: Readonly<Record<string, string>>;
+	/** Taken out of the tool's environment, even when this process inherited them (withoutOrrery). */
+	readonly unsetEnv?: readonly string[];
 	/** The agent's data folder in Orrery's home, where the tool's extension claims the token, and runAgent removes the claim. */
 	readonly agentDir: string;
 	readonly steps: readonly LaunchStep[];
@@ -44,6 +52,13 @@ export interface LaunchPlan {
 	readonly blocked?: string;
 	/** Blocked only because Claude Code opens this agent here through the Orrery mod alone: claude-setup-mod opens it. */
 	readonly needsMod?: true;
+	/**
+	 * Codex with Orrery: the Codex the hook check asks (on PATH, also under Ori), its version number, Orrery's `-c` flags,
+	 * the arguments Codex would get without Orrery, and the steps' notices about Orrery's flags (withoutOrrery drops both).
+	 */
+	readonly codex?: { readonly path: string; readonly version?: string; readonly config: readonly string[]; readonly plainArgs: readonly string[]; readonly notices: readonly string[] };
+	/** Codex started without Orrery's flags, after the person said yes (withoutOrrery): not recorded, no guard. */
+	readonly withoutOrrery?: true;
 }
 
 export interface LaunchOptions {
@@ -58,6 +73,8 @@ export interface LaunchOptions {
 	readonly args?: readonly string[];
 	/** How the person picks another tool where they are, ending the not-on-PATH text (default: the TUI's C). */
 	readonly changeTool?: string;
+	/** The command words that run this Orrery's CLI, for Codex's hooks and MCP server (default orreryCommand; tests). */
+	readonly orrery?: readonly string[];
 }
 
 /** "<what>. Installing it will:\n  <step>\n  <step>\nInstall it now?": an install question that lists what a yes does first (spec §4.6). */
@@ -116,10 +133,15 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 	const inFolder = agent.folder !== undefined && workArea(agent, cwd) === agent.folder;
 	const refused = tool === "claude-code" ? claudeCodeRefusal(config, agent, cwd, inFolder) : undefined;
 	if (refused !== undefined) return { ...base, steps: [], blocked: refused.text, ...(refused.needsMod === true ? { needsMod: true as const } : {}) };
+	// Codex would not apply Orrery's flags to a session subcommand they can't follow: no memory, no guard.
+	const misplaced = tool === "codex" ? misplacedSubcommand(base.args) : undefined;
+	if (misplaced !== undefined) {
+		return { ...base, steps: [], blocked: `Put Codex's subcommand first, or Codex won't apply Orrery's flags to the session (no memory, no guard): ${subcommandFirst(agent.name, base.args)}` };
+	}
 	const steps: LaunchStep[] = [];
 	if (!existsSync(cwd)) steps.push({ text: `The folder ${cwd} does not exist. Create it?`, confirm: true, fix: "create-folder" });
 	if ((row.state === "open" || row.state === "working") && row.openIn !== undefined) {
-		steps.push({ text: `${row.name} is already open in ${TOOL_LABELS[row.openIn]}. A second session won't record. Launch anyway?`, confirm: true });
+		steps.push({ text: `${row.name} is already open in ${TOOL_LABELS[row.openIn]}. A second session won't record. Launch anyway?`, confirm: true, asAgent: true });
 	}
 	// "update available" for pi or OMP: the file names Orrery's entry of the other install shape, which app/current lacks.
 	const stale = (label: string) => (check.wiring === "missing" ? `Orrery's ${label} extension is not installed` : `Orrery's ${label} extension names the other install shape's entry`);
@@ -135,13 +157,58 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 		// Outside its folder only the mod opens it (claudeCodeRefusal), and the mod needs no file in any folder.
 		if (inFolder && !markedHere(agent)) steps.push({ text: `Claude Code does not load ${row.name}'s memory in this folder yet. Set it up now (orrery claude-setup)?`, confirm: true, fix: "claude-setup" });
 	}
-	if (tool === "codex") steps.push({ text: "Codex has no Orrery memory yet: this session won't be recorded.", confirm: false });
+	// Codex: Orrery's hooks, memory tools and instructions go on its command line, before the person's arguments.
+	const codex = tool === "codex" ? codexLaunch(agent, options.orrery ?? orreryCommand(options.env ?? process.env)) : undefined;
+	for (const notice of codex?.notices ?? []) steps.push({ text: notice, confirm: false });
+	// The tool's arguments: for Codex, Orrery's flags where Codex reads them (codexArgs), around the person's.
+	const toolArgs = codex === undefined ? base.args : codexArgs(codex, base.args);
+	const version = codexVersion(check.version);
+	const codexPlan = (prefix: readonly string[]) => (codex === undefined ? {} : { codex: { path: check.path as string, ...(version === undefined ? {} : { version }), config: codex.config, plainArgs: [...prefix, ...base.args], notices: codex.notices } });
 	if (ori !== undefined) {
 		if (tool === "omp") steps.push({ text: 'Ori 0.15.7 can\'t start OMP: its model registration fails before startup. See docs/ori.md, or set launcher = "direct".', confirm: false });
 		steps.push({ text: `Launching ${label} through Ori in ${cwd}`, confirm: false });
-		return { ...base, command: ori, args: [BINARIES[tool], ...(agent.oriModel === undefined ? [] : ["--model", agent.oriModel]), ...base.args], steps };
+		const prefix = [BINARIES[tool], ...(agent.oriModel === undefined ? [] : ["--model", agent.oriModel])];
+		return { ...base, command: ori, args: [...prefix, ...toolArgs], steps, ...codexPlan(prefix) };
 	}
-	return { ...base, command: check.path, steps };
+	return { ...base, command: check.path, args: toolArgs, steps, ...codexPlan([]) };
+}
+
+/**
+ * The checks before a Codex launch: ok at once for any other plan. First the hook check (src/codex/check.ts; at once
+ * for a Codex this Orrery verified before), `onCheck` hearing when Codex is asked (it may take a few seconds). Then,
+ * at every launch since a startup file may change any day, the shell Codex runs the hooks in must start without a
+ * word (src/codex/shell.ts), run with the environment Codex will have (`env` and the plan's variables).
+ */
+export async function checkCodexHooks(
+	plan: LaunchPlan,
+	options: { readonly env?: NodeJS.ProcessEnv; readonly probe?: typeof probeHooks; readonly onCheck?: (text: string) => void; readonly shellCheck?: (env: NodeJS.ProcessEnv, cwd: string) => ShellCheck } = {},
+): Promise<CodexGate> {
+	if (plan.codex === undefined) return { ok: true };
+	const { path, version, config } = plan.codex;
+	const hooks = await codexHookGate({ path, ...(version === undefined ? {} : { version }), config }, {
+		orrery: orreryVersion(),
+		...(options.env === undefined ? {} : { env: options.env }),
+		...(options.probe === undefined ? {} : { probe: options.probe }),
+		...(options.onCheck === undefined ? {} : { onCheck: () => options.onCheck?.(`Checking that Orrery's hooks load in Codex${version === undefined ? "" : ` ${version}`}…`) }),
+	});
+	if (!hooks.ok) return hooks;
+	const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env), ...plan.env };
+	for (const name of plan.unsetEnv ?? []) delete env[name];
+	const shell = (options.shellCheck ?? checkHookShell)(env, plan.cwd);
+	return shell.quiet ? { ok: true } : { ok: false, text: noisyShellText(plan.agent, shell), noisyShell: true, question: NOISY_SHELL_QUESTION };
+}
+
+/**
+ * The plan as plain Codex, after the person said yes to starting without Orrery: none of Orrery's flags, and no
+ * ORRERY_AGENT or token, not even ones this process inherited (a session that records nothing must not hand an agent
+ * to a tool it starts). It opens no agent, so it asks nothing about the agent (asAgent: a second session) and says
+ * nothing about Orrery's flags; its callers skip a remote takeover too.
+ */
+export function withoutOrrery(plan: LaunchPlan): LaunchPlan {
+	if (plan.codex === undefined) return plan;
+	const { codex, ...rest } = plan;
+	const steps = plan.steps.filter((step) => step.asAgent !== true && (step.confirm || !codex.notices.includes(step.text)));
+	return { ...rest, args: [...codex.plainArgs], env: {}, unsetEnv: [AGENT_ENV, TOKEN_ENV], steps, withoutOrrery: true };
 }
 
 /**
@@ -169,8 +236,8 @@ export interface ToolExit {
 }
 
 /**
- * Runs the tool in the plan's folder with this terminal attached, the plan's variables over `env`'s; Ctrl-C goes to the
- * tool, not to orrery.
+ * Runs the tool in the plan's folder with this terminal attached, the plan's variables over `env`'s (less unsetEnv);
+ * Ctrl-C goes to the tool, not to orrery.
  */
 export function runTool(plan: LaunchPlan, options: { spawn?: typeof spawn; env?: NodeJS.ProcessEnv } = {}): Promise<ToolExit> {
 	if (plan.command === undefined) return Promise.reject(new Error(plan.blocked ?? "Nothing to run."));
@@ -179,7 +246,9 @@ export function runTool(plan: LaunchPlan, options: { spawn?: typeof spawn; env?:
 	return new Promise((done, fail) => {
 		let child: ReturnType<typeof spawn>;
 		try {
-			child = (options.spawn ?? spawn)(plan.command as string, [...plan.args], { cwd: plan.cwd, stdio: "inherit", env: { ...(options.env ?? process.env), ...plan.env } });
+			const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env), ...plan.env };
+			for (const name of plan.unsetEnv ?? []) delete env[name];
+			child = (options.spawn ?? spawn)(plan.command as string, [...plan.args], { cwd: plan.cwd, stdio: "inherit", env });
 		} catch (error) {
 			process.off("SIGINT", ignore);
 			fail(error);
@@ -196,12 +265,18 @@ export function runTool(plan: LaunchPlan, options: { spawn?: typeof spawn; env?:
 	});
 }
 
-/** Runs the plan's tool, then removes the claim its token made (src/agent/pick.ts), however the tool ended. */
-export async function runAgent(plan: LaunchPlan, run: (plan: LaunchPlan) => Promise<ToolExit>): Promise<ToolExit> {
+/**
+ * Runs the plan's tool, then removes the claim its token made (src/agent/pick.ts), however the tool ended. Says which
+ * process had claimed it (`claimedBy`: the tool's own process, as the agent), when one had.
+ */
+export async function runAgent(plan: LaunchPlan, run: (plan: LaunchPlan) => Promise<ToolExit>): Promise<ToolExit & { readonly claimedBy?: number }> {
+	const token = plan.env[TOKEN_ENV] ?? "";
 	try {
-		return await run(plan);
+		const exit = await run(plan);
+		const by = claimedBy(plan.agentDir, token);
+		return by === undefined ? exit : { ...exit, claimedBy: by };
 	} finally {
-		releaseClaim(plan.agentDir, plan.env[TOKEN_ENV] ?? "");
+		releaseClaim(plan.agentDir, token);
 	}
 }
 

@@ -113,6 +113,30 @@ function summarizing(agent: AgentConfig, now: number): boolean {
 	return (status.trouble === null || status.trouble === undefined) && status.compactor.stopped === false;
 }
 
+/**
+ * Waits up to `waitMs` for the view to be worth reading: `session`'s own holder has taken in what was spooled, and the
+ * summaries have settled, unless nothing summarizes without trouble now (or `spoolOnly`). Used before a compaction's view,
+ * by the mod and by Codex's SessionStart (src/codex/hooks.ts).
+ */
+export async function settleView(
+	agent: AgentConfig,
+	session: string | undefined,
+	options: { readonly waitMs: number; readonly spoolOnly?: boolean; readonly now?: () => number; readonly sleep?: (ms: number) => Promise<void> },
+): Promise<void> {
+	if (options.waitMs <= 0) return;
+	const now = options.now ?? Date.now;
+	const sleep = options.sleep ?? ((ms: number) => sleepFor(ms));
+	const deadline = now() + options.waitMs;
+	for (;;) {
+		// Only this session's own holder takes its events in. No `after`: pendingEvents then removes nothing.
+		const spoolBusy = session !== undefined && ownHolder(agent, session, now()) && pendingEvents(agent.dir, session).length > 0;
+		const settled = () => withStore(agent, (store) => new MemoryView(store, agent.memory.viewBytes).settled);
+		if (!spoolBusy && (options.spoolOnly === true || !summarizing(agent, now()) || settled())) return;
+		if (now() >= deadline) return;
+		await sleep(POLL_MS);
+	}
+}
+
 /** Only public, validated fields cross into the mod; status files are not trusted JSON schemas. */
 function remoteStatus(value: unknown, remote: string): RemoteStatus | undefined {
 	if (value === null || typeof value !== "object") return undefined;
@@ -182,19 +206,7 @@ export async function modView(config: HarnessConfig | undefined, options: ModVie
 		}
 		const recording = (): { recording?: boolean; sessionMode?: SessionMode["mode"] } => (session === undefined ? {} : { recording: recorded(agent, session, now()), ...sessionMode() });
 		if (!exists) return { lane: agent.name, mode, compactAt: agent.compactAt, messages: 0, section: null, instructions, ...recording(), ...remote() };
-		const waitMs = options.waitMs ?? 0;
-		if (waitMs > 0) {
-			const sleep = options.sleep ?? ((ms: number) => sleepFor(ms));
-			const deadline = now() + waitMs;
-			for (;;) {
-				// Only this session's own holder takes its events in. No `after`: pendingEvents then removes nothing.
-				const spoolBusy = session !== undefined && ownHolder(agent, session, now()) && pendingEvents(agent.dir, session).length > 0;
-				const settled = () => withStore(agent, (store) => new MemoryView(store, agent.memory.viewBytes).settled);
-				if (!spoolBusy && (options.spoolOnly === true || !summarizing(agent, now()) || settled())) break;
-				if (now() >= deadline) break;
-				await sleep(POLL_MS);
-			}
-		}
+		await settleView(agent, session, { waitMs: options.waitMs ?? 0, spoolOnly: options.spoolOnly === true, now, ...(options.sleep === undefined ? {} : { sleep: options.sleep }) });
 		// After the wait: events still spooled now are not in the view.
 		const said = recording();
 		return withStore(agent, (store) => {
