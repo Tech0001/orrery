@@ -434,7 +434,7 @@ describe("the PreToolUse hook (runCodexGuard)", () => {
 		const { t, ctx } = agentWorld();
 		const cwd = join(t.folder, "sub");
 		expect(runCodexGuard(call("apply_patch", { command: patch("*** Add File: ../top.ts", "+x") }, cwd), ctx())).toBeUndefined();
-		expect(runCodexGuard(call("apply_patch", { command: patch("*** Add File: /etc/x", "+x") }, cwd), ctx())).toMatch(/^Orrery guard: \/etc\/x is outside this agent's folder and allowed roots$/);
+		expect(runCodexGuard(call("apply_patch", { command: patch("*** Add File: /etc/x", "+x") }, cwd), ctx())).toMatch(/^Orrery guard: (\/private)?\/etc\/x is outside this agent's folder and allowed roots$/);
 		expect(runCodexGuard(call("Bash", { command: "cat ~/.ssh/id_rsa" }, cwd, { agent_id: "a1", agent_type: "worker" }), ctx())).toBe(
 			"Orrery guard: This command touches sensitive files (keys, credentials or Orrery's private data)",
 		);
