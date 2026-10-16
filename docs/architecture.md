@@ -304,10 +304,13 @@ and through links), in shell text, and as the root of a search that holds a prot
 setting. Two things differ from the built-in credentials: a protected name is not checked against a search's root
 (which folders hold one is not known without listing them), and neither a protected name nor `.env` is checked in an
 OMP edit's text, only in its targets, so an edit may add `.env` to a `.gitignore`. A pi or OMP session that starts
-while the config cannot be read reads `[guard] protect` from its text on its own: when the TOML parses, it keeps the
-valid entries; when the text has no `[guard]` table, the built-in rules apply alone; otherwise (the TOML does not parse
-and has a `[guard]` table, `[guard]` itself is malformed, or the file cannot be read at all) it refuses every tool call
-and says why, as Claude Code does.
+while the config cannot be read reads `[guard] protect` from its text on its own: when the TOML parses and `[guard]`
+reads cleanly, it keeps its entries; when the text has no `[guard]` table, the built-in rules apply alone; otherwise
+(the TOML does not parse and has a `[guard]` table or a `protect` key, `[guard]` is malformed, an entry is refused, or
+the file cannot be read at all) it refuses every tool call and says why, as Claude Code does. Names and paths are
+compared ignoring case and Unicode normal form (NFC), as macOS file systems compare them. The table must be spelled
+`[guard]`: a `protect` key anywhere else and a `[Guard]` in another case are config errors, but a misspelt table name
+is not noticed (an unknown table stays allowed, so an older Orrery can read a newer config).
 Shared rules handle normalization and symlinks; adapters map each host's arguments to those rules.
 Host-specific checks cover multi-file edits and known credential locations.
 Some ambiguous OMP edit or glob forms are refused because their targets cannot be judged reliably.

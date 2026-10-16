@@ -99,8 +99,8 @@ A project's `.env` and `.env.<anything>` files are blocked like credentials (`.e
 `.env.template` and `.env.dist` stay open), and so is everything the config's `[guard] protect` lists: a path (`/…` or `~/…`, a file
 or a folder) or a name (every file or folder so named); see the [README](../README.md#safety). An edit's text may name
 `.env` or a protected name, so an edit can add `.env` to a `.gitignore`; an edit that targets one is refused. A config
-that cannot be read is handled as in pi: OMP keeps the `[guard] protect` entries it can still read from the file, and
-refuses every tool call if its `[guard]` table cannot be read.
+that cannot be read is handled as in pi: OMP keeps its `[guard] protect` when that part reads cleanly, and refuses
+every tool call when it does not.
 
 It is a credential guard, not a sandbox. `bash` and `eval` get only a check of their text for ssh keys and credential
 stores. The check also refuses commands that name Orrery's home (`.orrery`), except the agent's own `view.md` by its

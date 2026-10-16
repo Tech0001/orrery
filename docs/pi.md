@@ -240,9 +240,9 @@ still applies to it. Close the first one, or work in it.
 
 - No memory without a good config. A malformed config file shows a warning ("running without memory"), and pi runs
   with the default guard on: its folder is the only place it may write, credentials and `.env` files stay out, and so
-  do the `[guard] protect` entries pi can still read from the file (when it parses as TOML). If it has a `[guard]`
-  table pi cannot read, or cannot be read at all, every tool call is refused until it is fixed, and the warning says
-  so. With no config file at all, pi runs as usual.
+  does what its `[guard] protect` lists, when the file parses as TOML and that part reads cleanly. If it has a
+  `[guard]` table pi cannot read (broken TOML around it, a refused entry), or cannot be read at all, every tool call is
+  refused until it is fixed, and the warning says so. With no config file at all, pi runs as usual.
 - pi's own compaction is cancelled for agents. The memory view replaces it. The one exception is overflow recovery:
   if the model's window overflows, pi may compact once to recover.
 - The path guard judges a path the way pi's tools resolve it (`~`, a leading `@`, `file://`, relative to pi's cwd)
