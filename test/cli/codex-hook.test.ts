@@ -68,16 +68,19 @@ describe("orrery codex-hook pre-tool-use (the guard)", () => {
 		expect(r.stderr).toMatch(/^Orrery guard: this call could not be checked \(.+\); nothing was run$/);
 	});
 
-	it("answers within its deadline on the slowest input it reads, well inside the 10 s Codex gives it", () => {
+	it("answers within its deadline on the slowest input it reads, well inside the 10 s Codex gives it, and never lets through what it has not judged", () => {
 		const { t, env } = guarded();
-		// 15 command lines of 64 KB of brace groups at the readings' cap, in short words: the slowest to read, about 1 MB.
+		// 15 command lines of 64 KB of brace groups at the readings' cap, in short words: the slowest to read, about 1 MB;
+		// and one that reads a protected file, among them. A guard that finishes refuses it; one that runs out of time refuses.
 		const group = `{${Array.from({ length: 63 }, () => "a").join(",")},b} `;
 		const slow = group.repeat(Math.floor((64 * 1024 - 8) / group.length));
+		const steps = Array.from({ length: 15 }, () => ({ cmd: slow }));
+		steps.splice(7, 0, { cmd: "cat protected.txt" });
 		const started = performance.now();
-		const r = hook("pre-tool-use", call(t.folder, "mcp__box__batch", { steps: Array.from({ length: 15 }, () => ({ cmd: slow })) }), env);
+		const r = hook("pre-tool-use", call(t.folder, "mcp__box__batch", { steps }), env);
 		const took = performance.now() - started;
 		expect([r.status, r.stdout]).toEqual([2, ""]);
-		expect(r.stderr).toMatch(/than the guard can check in time; nothing was run$/);
+		expect(r.stderr).toMatch(/than the guard can check in time; nothing was run$|^Orrery guard: This command touches protected\.txt/);
 		expect(took).toBeLessThan(6000);
 	}, 30_000);
 
