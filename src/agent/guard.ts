@@ -2,8 +2,9 @@
  * A seatbelt, not a sandbox (spec §6).
  *
  * - write/edit must land inside the folder and allowed roots, and never in Orrery's config or installed program.
- * - No file tool may touch ssh keys or credential stores, .env files, what the config's [guard] protect names, or
- *   another agent's memory view (GuardOptions.foreignViews).
+ * - No file tool may touch ssh keys or credential stores (tool logins under home such as ~/.npmrc among them), .env
+ *   files and the other built-in secret names, what the config's [guard] protect names, or another agent's memory view
+ *   (GuardOptions.foreignViews).
  * - File paths are checked inside the tools themselves, resolved exactly the way pi's tools resolve them (`@`
  *   prefix, `~`, `file://`, relative to cwd) and then through symlinks, so the check and the write see the same file.
  *
@@ -19,6 +20,7 @@
  *   such a link points (src/agent/guard-paths.ts realTarget).
  */
 
+import { homedir } from "node:os";
 import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { defineExtension, hook, type ToolRegistration, ToolTask, wrapTool } from "@earendil-works/pi-durable";
@@ -36,6 +38,7 @@ import {
 	PROTECTED_FILE,
 	pathProtected,
 	protection,
+	secretPath,
 	sensitive,
 	viewRules,
 	within,
@@ -50,6 +53,13 @@ export { checkToolCall, type GuardOptions };
 export interface DurableGuardOptions extends GuardOptions {
 	readonly credentials?: readonly string[];
 	readonly orreryData?: string;
+	/** The home "~/" in [guard] protect and the built-in home secrets are under; default: the OS's. */
+	readonly home?: string;
+}
+
+/** The pre-check on every tool call (checkToolCall), [guard] protect and the built-in home secrets from options.home. */
+export function durablePreCheck(call: { readonly name: string; readonly arguments: Readonly<Record<string, unknown>> }, options: DurableGuardOptions): string | undefined {
+	return checkToolCall(call, options, undefined, undefined, protection(options.protect, options.home ?? homedir()));
 }
 
 // Mirrors pi-durable's normalizeToolPath (tools/path-utils): unicode spaces become spaces, a leading "@" is dropped.
@@ -113,9 +123,13 @@ export async function checkResolvedPath(
 	if (sensitive(target, views.path(target)) || sensitive(real, views.path(real))) return refused;
 	const lower = real.toLowerCase();
 	for (const credential of options.credentials ?? []) if (within(lower, (await realPath(env, credential, context)).toLowerCase())) return refused;
-	// [guard] protect ("~" is the OS's home here): inside a path entry, where it is or where it really is, or with a part
-	// a name entry names.
-	const protect = protection(options.protect);
+	// The built-in home secrets (~/.npmrc, ~/.azure and the like): where they are, as written, and where they really are.
+	const protect = protection(options.protect, options.home ?? homedir());
+	if (secretPath(target, protect) || secretPath(real, protect)) return refused;
+	const secrets = await Promise.all(protect.secrets.map((secret) => realPath(env, secret, context)));
+	if (secrets.some((secret) => within(lower, secret.toLowerCase()))) return refused;
+	// [guard] protect ("~" is options.home, by default the OS's): inside a path entry, where it is or where it really is,
+	// or with a part a name entry names.
 	for (const entry of protect.paths) if (within(foldName(real), foldName(await realPath(env, entry.path, context)))) return PROTECTED_FILE(real);
 	if (pathProtected(target, protect) !== undefined || pathProtected(real, protect) !== undefined) return PROTECTED_FILE(real);
 	// Another agent's view file, as given and where it really is.
@@ -155,7 +169,7 @@ export function guardExtension(options: DurableGuardOptions) {
 		hooks: [
 			hook(ToolTask, {
 				beforeTool: (call) => {
-					const reason = checkToolCall({ name: call.name, arguments: call.arguments }, options);
+					const reason = durablePreCheck({ name: call.name, arguments: call.arguments }, options);
 					return reason === undefined ? undefined : { block: reason };
 				},
 			}),
