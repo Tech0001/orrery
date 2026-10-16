@@ -235,16 +235,39 @@ export function codexArgs(launch: CodexLaunch, args: readonly string[]): string[
 }
 
 /**
- * A session subcommand that comes after other arguments (`-m M exec …`, `-c k=v resume`), or undefined. Orrery's flags
+ * Codex 0.162.1's top-level options that take a value (`codex --help`): the word after one is its value, never a
+ * subcommand. Their `--name=value` and `-Xvalue` forms are one word.
+ */
+const VALUE_OPTIONS: ReadonlySet<string> = new Set([
+	"-c", "--config", "--enable", "--disable", "--remote", "--remote-auth-token-env", "-i", "--image", "-m", "--model",
+	"--local-provider", "-p", "--profile", "-s", "--sandbox", "-C", "--cd", "--add-dir", "-a", "--ask-for-approval",
+]);
+
+/**
+ * Where in `args` Codex would read its subcommand: the first word that is neither a top-level option nor an option's
+ * value; undefined when there is none, or it comes after "--" (then it is a prompt).
+ */
+function subcommandAt(args: readonly string[]): number | undefined {
+	for (let at = 0; at < args.length; at++) {
+		const word = args[at] as string;
+		if (word === "--") return undefined;
+		if (!word.startsWith("-") || word === "-") return at;
+		if (VALUE_OPTIONS.has(word)) at++;
+	}
+	return undefined;
+}
+
+/**
+ * A session subcommand that comes after Codex's options (`-m M exec …`, `-c k=v resume`), or undefined. Orrery's flags
  * would then go before it, where Codex does not apply them: the launch is refused (src/agent/launch.ts), never guessed at.
  */
 export function misplacedSubcommand(args: readonly string[]): string | undefined {
-	if (args[0] !== undefined && SESSION_SUBCOMMANDS.has(args[0])) return undefined;
-	return args.slice(1).find((word) => SESSION_SUBCOMMANDS.has(word));
+	const at = subcommandAt(args);
+	return at !== undefined && at > 0 && SESSION_SUBCOMMANDS.has(args[at] as string) ? args[at] : undefined;
 }
 
-/** What to run instead of `args` with the session subcommand `sub` misplaced: the subcommand first, the rest as they were. */
-export function subcommandFirst(name: string, args: readonly string[], sub: string): string {
-	const at = args.indexOf(sub);
-	return `orrery agent ${shellWords([name])} --tool codex -- ${shellWords([sub, ...args.slice(0, at), ...args.slice(at + 1)])}`;
+/** What to run instead of `args`, whose session subcommand comes after options (misplacedSubcommand): that subcommand first. */
+export function subcommandFirst(name: string, args: readonly string[]): string {
+	const at = subcommandAt(args) ?? 0;
+	return `orrery agent ${shellWords([name])} --tool codex -- ${shellWords([args[at] as string, ...args.slice(0, at), ...args.slice(at + 1)])}`;
 }

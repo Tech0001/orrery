@@ -136,7 +136,7 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 	// Codex would not apply Orrery's flags to a session subcommand they can't follow: no memory, no guard.
 	const misplaced = tool === "codex" ? misplacedSubcommand(base.args) : undefined;
 	if (misplaced !== undefined) {
-		return { ...base, steps: [], blocked: `Put Codex's subcommand first, or Codex won't apply Orrery's flags to the session (no memory, no guard): ${subcommandFirst(agent.name, base.args, misplaced)}` };
+		return { ...base, steps: [], blocked: `Put Codex's subcommand first, or Codex won't apply Orrery's flags to the session (no memory, no guard): ${subcommandFirst(agent.name, base.args)}` };
 	}
 	const steps: LaunchStep[] = [];
 	if (!existsSync(cwd)) steps.push({ text: `The folder ${cwd} does not exist. Create it?`, confirm: true, fix: "create-folder" });

@@ -133,13 +133,21 @@ describe("codexLaunch", () => {
 		}
 	});
 
-	it("finds a session subcommand that comes after other arguments, where Orrery's flags can't follow it", () => {
+	it("finds a session subcommand that comes after Codex's options, where Orrery's flags can't follow it", () => {
 		expect(misplacedSubcommand(["-m", "gpt-x", "exec", "go"])).toBe("exec");
 		expect(misplacedSubcommand(["-c", "k=v", "resume", "--last"])).toBe("resume");
 		expect(misplacedSubcommand(["-p", "work", "e", "go"])).toBe("e");
 		expect(misplacedSubcommand(["-s", "read-only", "review"])).toBe("review");
 		expect(misplacedSubcommand(["--no-alt-screen", "fork", "--last"])).toBe("fork");
-		for (const args of [[], ["fix the tests"], ["exec", "resume", "--last"], ["resume", "--last"], ["debug", "prompt-input"], ["review my exec code"]]) {
+		expect(misplacedSubcommand(["--model=gpt-x", "--search", "exec"])).toBe("exec");
+		expect(misplacedSubcommand(["-mgpt-x", "exec"])).toBe("exec");
+		expect(misplacedSubcommand(["-i", "a.png", "-C", "/work", "--add-dir", "/data", "--enable", "x", "exec"])).toBe("exec");
+		// An option's value is not a subcommand: a folder, profile or model may be named so.
+		for (const args of [["-C", "review"], ["-p", "exec"], ["-m", "exec", "go"], ["--add-dir", "resume"], ["--cd", "fork"], ["-a", "review", "go"], ["--remote", "e"], ["--local-provider", "exec"], ["--remote-auth-token-env", "exec"], ["--disable", "fork"], ["--image", "exec"], ["--sandbox", "review"], ["--profile", "exec"], ["--config", "exec"]]) {
+			expect(misplacedSubcommand(args), JSON.stringify(args)).toBeUndefined();
+		}
+		// Only the first word that is no option decides: a prompt, or anything after "--", is no subcommand.
+		for (const args of [[], ["fix the tests"], ["fix", "exec"], ["--", "exec"], ["-m", "M", "--", "resume"], ["exec", "resume", "--last"], ["resume", "--last"], ["debug", "prompt-input"], ["review my exec code"]]) {
 			expect(misplacedSubcommand(args), JSON.stringify(args)).toBeUndefined();
 		}
 	});

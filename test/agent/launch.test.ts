@@ -377,11 +377,17 @@ describe("Codex launch plans", () => {
 		for (const [args, fixed] of [
 			[["-m", "gpt-x", "exec", "fix it"], "exec -m gpt-x 'fix it'"],
 			[["-c", "k=v", "resume", "--last"], "resume -c k=v --last"],
+			// The subcommand is the first word that is no option's value, wherever the same word comes again.
+			[["-p", "exec", "exec", "go"], "exec -p exec go"],
 		] as const) {
 			const plan = launchPlan(config, row, tools, { env, args: [...args] });
 			expect(plan.blocked).toBe(`Put Codex's subcommand first, or Codex won't apply Orrery's flags to the session (no memory, no guard): orrery agent A --tool codex -- ${fixed}`);
 			expect(plan.steps).toEqual([]);
 		}
+		// An option's value named like a subcommand is no subcommand: the TUI opens, with Orrery's flags first.
+		const folder = launchPlan(config, row, tools, { env, args: ["-C", "review"] });
+		expect(folder.blocked).toBeUndefined();
+		expect(folder.args.slice(-2)).toEqual(["-C", "review"]);
 		// Other tools take their arguments as they are.
 		const pi = setup("pi");
 		expect(launchPlan(pi.config, pi.row, pi.tools, { env: pi.env, args: ["-m", "x", "exec"] }).blocked).toBeUndefined();
