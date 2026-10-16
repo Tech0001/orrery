@@ -256,9 +256,9 @@ the trade-offs.
 
 Orrery guards credentials: an agent's tool calls that would read key files, your logins or another agent's memory are
 refused, and Orrery's own config and program are read-only to agents. A project's `.env` and `.env.<anything>` files
-are protected too: agents can neither read nor edit them, so you edit them yourself. `.env.example`, `.env.sample` and
-`.env.template` stay open. An agent's file edits also stay inside the folder it was opened in; `allowed_roots =
-["/abs/path"]` in its `[agents.<Name>]` section adds more.
+are protected too: agents can neither read nor edit them, so you edit them yourself. `.env.example`, `.env.sample`,
+`.env.template` and `.env.dist` stay open. An agent's file edits also stay inside the folder it was opened in;
+`allowed_roots = ["/abs/path"]` in its `[agents.<Name>]` section adds more.
 
 To protect more files and folders, for every agent and in every tool, list them in `config.toml`:
 
@@ -271,6 +271,14 @@ An entry that starts with `/` or `~/` is a path: that file, or that folder and e
 is a name: every file or folder with exactly that name, in any folder. Letter case is ignored. Globs (`*.pem`) and
 relative paths (`keys/prod.pem`) are not supported: such an entry is a config error. Agents cannot change the list,
 since the config is read-only to them. A refusal says which entry it came from.
+
+**A search of a folder can still read a `.env` inside it.** The same goes for a file a name entry protects: the guard
+refuses tools that name the file, but a grep of the folder that holds it reads it too. A path entry does not have this
+gap: a search of a folder that holds it is refused.
+
+If `config.toml` cannot be read, pi and OMP sessions keep the built-in rules and the `[guard] protect` entries they can
+still read from it; if its `[guard]` table cannot be read at all, they refuse every tool call until the config is
+fixed, as Claude Code does for any config it cannot read.
 
 **It is a guard, not a sandbox.** It checks file paths and the text of shell commands, so a determined program can get
 around it; the [architecture guide](docs/architecture.md#the-credential-guard) lists the known limits.
