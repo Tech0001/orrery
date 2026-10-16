@@ -5,7 +5,10 @@
  *
  * Another agent's memory view (agentViews) is kept from every tool that reads, writes or searches file contents. Orrery's
  * config (the file in use, GuardOptions.configFile, and any .orrery/config.toml) and its installed program (.orrery/app)
- * are read-only: file tools may read them, no tool may write them, and shell text may not name them. Known limits:
+ * are read-only: file tools may read them, no tool may write them, and shell text may not name them. The config's
+ * [guard] protect (GuardOptions.protect) and any .env file (but the shared examples) are kept as credentials are, with
+ * two differences: a protect name entry is not judged against a search's root, and neither it nor .env is judged in an
+ * OMP edit's text, only in its targets (spec 2026-10-15-guard-protect). Known limits:
  * - A hard link is another name for the same file, and the guard does not count links: one to another agent's view (the
  *   copy goes stale once Orrery replaces the view on its next write), to the config file in use, or to a file of the
  *   installed program (app/), made before the guard ran or by a spelling it cannot see, reads or writes the file
@@ -19,7 +22,10 @@
  *   absolute path is open in shell text, and the link made before the read leads it to another agent's view (a file
  *   tool follows the link and is refused). So does a config file in use at a custom path (ORRERY_CONFIG) when it is
  *   named by a relative path, through a link, or by a variable: only its exact path spellings are known
- *   (configSpellings).
+ *   (configSpellings). The same holds for a [guard] protect path entry, and a command over a folder that holds one
+ *   (`tar czf x <its folder>`, `grep -r`) is not refused either.
+ * - A content search (grep) of a folder that holds a .env file or a [guard] protect name reads it: which folders hold one
+ *   is not known without listing them.
  * - A deleted config is no config: Claude Code then runs plain, and so do pi and OMP sessions started after it. Deleting
  *   it takes a spelling the guard cannot see (its name and its path are refused in commands; no file tool deletes).
  * - A pi or OMP session that starts while the config cannot be read (src/pi/index.ts unreadableGuard) knows no agent, so
@@ -39,11 +45,17 @@ import {
 	CONFIG_READ_ONLY,
 	checkToolCall,
 	configSpellings,
+	credentialNamed,
 	type GuardOptions,
 	inOrreryHome,
 	orreryAppNamed,
 	orreryConfigNamed,
+	PROTECTED_BY,
+	PROTECTED_FILE,
+	pathProtected,
+	protection,
 	sensitive,
+	textProtected,
 	viewRules,
 	within,
 } from "./guard-rules.ts";
@@ -488,16 +500,20 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	const home = options.home ?? homedir();
 	const search = SEARCHES.has(toolName);
 	const views = viewsOf(options, home);
+	// [guard] protect: its path entries from this home, and where they really are.
+	const protect = protection(options.protect, home, realTarget);
 	// The arguments that name files: grep's glob and find's pattern (a file-name glob). grep's pattern is the text it
 	// searches for, so code that mentions auth.json can still be searched. A glob opens no view file: a path does.
 	const nameKey = toolName === "grep" ? "glob" : toolName === "find" ? "pattern" : undefined;
 	const names = nameKey === undefined ? undefined : input[nameKey];
 	if (typeof names === "string" && sensitive(names, views.path())) return `${toolName} ${nameKey} "${names}" names sensitive files (keys, credentials or Orrery's private data).`;
+	const namedEntry = typeof names === "string" ? textProtected(names, protect) : undefined;
+	if (namedEntry !== undefined) return `${toolName} ${nameKey} "${names}" names ${namedEntry}, ${PROTECTED_BY}.`;
 	// The config file in use, as given and where it really is: named in no command, written by no tool.
 	const config = configSpellings({ ...options, home }, options.configFile === undefined ? undefined : realTarget(options.configFile));
 	const given = typeof input.path === "string" && input.path !== "" ? input.path : undefined;
 	const raw = given ?? (search ? "." : undefined);
-	if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, options, views, config);
+	if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, options, views, config, protect);
 	// All three forms: what the model wrote, where the tool resolves it, and where it really lands.
 	const resolved = (options.resolvePath ?? piToolPath)(raw, options.cwd, home);
 	const named = views.path(resolved);
@@ -525,11 +541,17 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	if (realData !== undefined && inOrreryHome(where, realData) && !(search && where === data)) return SENSITIVE_FILE(raw);
 	if (writes && realData !== undefined && where === fold(join(realData, "config.toml"))) return CONFIG_READ_ONLY(raw);
 	if (writes && realData !== undefined && within(where, fold(join(realData, "app")))) return APP_READ_ONLY(raw);
+	// [guard] protect: a path inside a path entry, or with a part a name entry names, in any of its three forms.
+	if ([raw, resolved, target].some((path) => pathProtected(path, protect) !== undefined)) return PROTECTED_FILE(raw);
 	// A search reads everything under its root, hidden files too, whatever its glob: judge the root, not the glob's
 	// spelling. Home and above hold the credentials; /proc holds every process's environment.
 	if (search && (credentials.some((location) => within(location, where)) || (data !== undefined && within(data, where)) || within(where, "/proc"))) {
 		return `${toolName} on ${target} would search credential files (~/.ssh, ~/.pi and the like, or /proc); search a narrower folder.`;
 	}
+	// So does a root that holds a path entry, as written or where it really is. A name entry is not judged here: which
+	// folders hold one is not known without listing them.
+	const held = search ? protect.paths.find((entry) => within(fold(entry.path), where) || within(fold(entry.real), where)) : undefined;
+	if (held !== undefined) return `${toolName} on ${target} would search ${held.entry}, ${PROTECTED_BY}; search a narrower folder.`;
 	// A content search whose root holds another agent's view file: one that is there, or whose agent is set up the file
 	// way (it is written soon). An agent that never uses Claude Code's file mode has none to keep a folder's searches from,
 	// and a listing reads names only.
@@ -581,9 +603,11 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 	if (toolName === "eval") return guardToolCall("bash", { command: typeof input.code === "string" ? input.code : "" }, omp);
 	// Names in a search path or an ast_edit target are read like a command's words, "~/" from the guard's home included
 	// (named); an edit's text is read as a command's (inText).
-	const rules = viewsOf(omp, omp.home ?? homedir());
+	const home = omp.home ?? homedir();
+	const rules = viewsOf(omp, home);
 	const named = rules.tool;
 	const inText = rules.command;
+	const protect = protection(omp.protect, home, realTarget);
 	const judge = (tool: string, args: Readonly<Record<string, unknown>>) =>
 		typeof args.path === "string" && unreadableFileUrl(args.path) ? `${args.path}: Orrery cannot read this file:// URL; use a plain path.` : guardToolCall(tool, args, omp);
 	// A write target: as written, and the path inside a [path#TAG] header; with `selectors`, each also cut before a ":" or
@@ -600,12 +624,18 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 		const path = part.replace(/\\/g, "/"); // OMP reads either slash in these (tools/path-utils.ts:559)
 		if (escapingGlob(path)) return `${toolName} path "${part}": brace or parent patterns are not allowed in OMP paths.`;
 		if (sensitive(part, named) || sensitive(path, named)) return tool === "edit" ? SENSITIVE_FILE(part) : `${toolName} path "${part}" names sensitive files (keys, credentials or Orrery's private data).`;
+		const entry = textProtected(part, protect) ?? textProtected(path, protect);
+		if (entry !== undefined) return tool === "edit" ? PROTECTED_FILE(part) : `${toolName} path "${part}" names ${entry}, ${PROTECTED_BY}.`;
 		return firstRefusal([...new Set([globBase(path), path, part])], (form) => judge(tool, { path: form }));
 	};
 	if (toolName === "edit") {
 		const text = [input.input, input._input].filter((value): value is string => typeof value === "string").join("\n");
-		// Like a bash command: an edit whose text names a credential file is refused, its content included.
-		if (sensitive(text, inText)) return "This edit touches sensitive files (keys, credentials or Orrery's private data).";
+		// Like a bash command: an edit whose text names a credential file, or a [guard] protect path entry, is refused, its
+		// content included. Not .env or a protect name entry, which a .gitignore line or code that loads it names as text
+		// (spec 2026-10-15-guard-protect): the edit's targets are judged as paths below, by those rules too.
+		if (credentialNamed(text, inText)) return "This edit touches sensitive files (keys, credentials or Orrery's private data).";
+		const entry = textProtected(text, protect, false);
+		if (entry !== undefined) return `This edit touches ${entry}, ${PROTECTED_BY}.`;
 		const read = readEditText(text);
 		if (read.unreadable) return EDIT_UNREADABLE;
 		const renames = Array.isArray(input.edits) ? strings(input.edits.map((entry: unknown) => (entry as { rename?: unknown } | null)?.rename)) : [];

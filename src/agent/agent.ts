@@ -202,7 +202,14 @@ export class Agent {
 			registry.install(CodingTools);
 			registry.install(memoryExtension({ view, instructions: () => instructions }));
 			registry.install(
-				guardExtension({ folder, allowedRoots: config.allowedRoots, credentials: [options.config.credentialsPath], orreryData: options.config.dataDir, ...agentViews(options.config, config) }),
+				guardExtension({
+					folder,
+					allowedRoots: config.allowedRoots,
+					credentials: [options.config.credentialsPath],
+					orreryData: options.config.dataDir,
+					protect: options.config.guard.protect,
+					...agentViews(options.config, config),
+				}),
 			);
 			const storage = await openNodeSqliteStorage(join(config.dir, "session.sqlite"));
 			const harness = await Harness.open(

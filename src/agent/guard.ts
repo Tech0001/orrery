@@ -2,7 +2,8 @@
  * A seatbelt, not a sandbox (spec §6).
  *
  * - write/edit must land inside the folder and allowed roots, and never in Orrery's config or installed program.
- * - No file tool may touch ssh keys or credential stores, or another agent's memory view (GuardOptions.foreignViews).
+ * - No file tool may touch ssh keys or credential stores, .env files, what the config's [guard] protect names, or
+ *   another agent's memory view (GuardOptions.foreignViews).
  * - File paths are checked inside the tools themselves, resolved exactly the way pi's tools resolve them (`@`
  *   prefix, `~`, `file://`, relative to cwd) and then through symlinks, so the check and the write see the same file.
  *
@@ -31,6 +32,9 @@ import {
 	inOrreryHome,
 	orreryAppNamed,
 	orreryConfigNamed,
+	PROTECTED_FILE,
+	pathProtected,
+	protection,
 	sensitive,
 	viewRules,
 	within,
@@ -38,7 +42,10 @@ import {
 
 export { checkToolCall, type GuardOptions };
 
-/** The durable harness's guard: the agent's roots, plus orrery's credentials file and home (data_dir) when known. */
+/**
+ * The durable harness's guard: the agent's roots, plus orrery's credentials file and home (data_dir) when known, and
+ * the config's [guard] protect (GuardOptions.protect).
+ */
 export interface DurableGuardOptions extends GuardOptions {
 	readonly credentials?: readonly string[];
 	readonly orreryData?: string;
@@ -105,6 +112,11 @@ export async function checkResolvedPath(
 	if (sensitive(target, views.path(target)) || sensitive(real, views.path(real))) return refused;
 	const lower = real.toLowerCase();
 	for (const credential of options.credentials ?? []) if (within(lower, (await realPath(env, credential, context)).toLowerCase())) return refused;
+	// [guard] protect ("~" is the OS's home here): inside a path entry, where it is or where it really is, or with a part
+	// a name entry names.
+	const protect = protection(options.protect);
+	for (const entry of protect.paths) if (within(lower, (await realPath(env, entry.path, context)).toLowerCase())) return PROTECTED_FILE(real);
+	if (pathProtected(target, protect) !== undefined || pathProtected(real, protect) !== undefined) return PROTECTED_FILE(real);
 	// Another agent's view file, as given and where it really is.
 	for (const view of options.foreignViews) {
 		if (within(lower, view.toLowerCase()) || within(lower, (await realPath(env, view, context)).toLowerCase())) return `${real} is another agent's memory view.`;

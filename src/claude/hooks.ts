@@ -383,6 +383,7 @@ export function preToolUse(input: HookInput, ctx: HookContext): object | undefin
 			credentials: [ctx.config.credentialsPath, ...movedAgentDirCredentials(ctx.env, home), ...movedConfigDirCredentials(ctx.env), ...ompCredentials(ctx.env, home)],
 			orreryData: ctx.config.dataDir,
 			home,
+			protect: ctx.config.guard.protect,
 			...agentViews(ctx.config, pick.kind === "agent" ? pick.agent : undefined),
 			...(ctx.configFile === undefined ? {} : { configFile: ctx.configFile }),
 		});

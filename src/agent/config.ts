@@ -97,6 +97,11 @@ export interface HarnessConfig {
 	readonly hosts: ReadonlyMap<string, HostConfig>;
 	readonly agents: ReadonlyMap<string, AgentConfig>;
 	readonly updates: { readonly check: boolean };
+	/**
+	 * [guard] protect (spec 2026-10-15-guard-protect): files and folders every agent's guard keeps out, as the config
+	 * writes them (protectEntries): a path ("/…" or "~/…", "~" read by each guard) or a name (no "/").
+	 */
+	readonly guard: { readonly protect: readonly string[] };
 }
 
 type Table = Record<string, unknown>;
@@ -262,6 +267,35 @@ function memoryOverrides(t: Table, where: string): MemoryConfig {
 	}
 }
 
+/**
+ * [guard] protect: each entry a path ("/…" or "~/…": that file, or that folder and everything in it) or a name (no "/":
+ * every file or folder so named). An entry that would protect less than it says, or everything, is refused: a relative
+ * path with a "/", "~" or "/" alone, ".." in a path, "." or ".." as a name, spaces at an end, and globs or braces, which
+ * are not read as patterns (taken literally they would mislead).
+ */
+function protectEntries(raw: unknown): string[] {
+	if (raw === undefined) return [];
+	if (!Array.isArray(raw) || raw.some((entry) => typeof entry !== "string")) throw new ConfigError("guard.protect must be an array of strings");
+	for (const entry of raw as string[]) {
+		const problem = protectProblem(entry);
+		if (problem !== undefined) throw new ConfigError(`guard.protect entry ${JSON.stringify(entry)} ${problem}`);
+	}
+	return raw as string[];
+}
+
+function protectProblem(entry: string): string | undefined {
+	if (entry.trim() === "") return "is empty";
+	if (entry.trim() !== entry) return "has a space at an end";
+	if (/\p{Cc}/u.test(entry)) return "has control characters";
+	if (/[*?[\]{}]/.test(entry)) return "has a glob or brace character (* ? [ ] { }): name the file or folder itself";
+	if (entry === "~") return "would protect everything in your home folder";
+	if (!entry.includes("/")) return entry === "." || entry === ".." ? "is not a name" : undefined;
+	if (!entry.startsWith("/") && !entry.startsWith("~/")) return "must start with / or ~/ (a path), or have no / (a name)";
+	if (entry.split("/").includes("..")) return 'has ".." in it: write the path it leads to';
+	if (posix.normalize(`/${entry.slice(entry.startsWith("~/") ? 2 : 1)}`) === "/") return "would protect everything";
+	return undefined;
+}
+
 export function parseConfig(text: string, configDir: string): HarnessConfig {
 	let root: Table;
 	try {
@@ -276,6 +310,7 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 	const remotes = parseRemotes(root.remotes, hosts);
 	const updates = table(root.updates, "updates");
 	if (updates.check !== undefined && typeof updates.check !== "boolean") throw new ConfigError("updates.check must be true or false");
+	const protect = protectEntries(table(root.guard, "guard").protect);
 	const agents = new Map<string, AgentConfig>();
 	for (const [name, value] of Object.entries(table(root.agents, "agents"))) {
 		const where = `agents.${name}`;
@@ -353,6 +388,7 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 		hosts,
 		agents,
 		updates: { check: updates.check !== false },
+		guard: { protect },
 	};
 }
 

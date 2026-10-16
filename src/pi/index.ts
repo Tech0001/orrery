@@ -145,13 +145,18 @@ interface Guarded {
 	readonly ownView?: string;
 	/** The config file the session read (or could not read): read-only, and named in no command. */
 	readonly configFile?: string;
+	/** The config's [guard] protect: more files and folders no tool may touch (none when the config cannot be read). */
+	readonly protect: readonly string[];
 }
 
 /** The file each config the extension read came from (orreryConfig); none for a config passed in (OrreryOptions.config). */
 const configFiles = new WeakMap<HarnessConfig, string>();
 
-/** What every guard keeps out: orrery's credentials, pi's in a moved agent dir, OMP's stores (in every tool), and the config's file from writes. */
-function guardBase(config: HarnessConfig, options: OrreryOptions): Pick<Guarded, "credentials" | "orreryData" | "home" | "configFile"> {
+/**
+ * What every guard keeps out: orrery's credentials, pi's in a moved agent dir, OMP's stores (in every tool), the
+ * config's [guard] protect, and the config's file from writes.
+ */
+function guardBase(config: HarnessConfig, options: OrreryOptions): Pick<Guarded, "credentials" | "orreryData" | "home" | "configFile" | "protect"> {
 	const env = options.env ?? process.env;
 	const home = options.home ?? homedir();
 	const configFile = configFiles.get(config);
@@ -159,6 +164,7 @@ function guardBase(config: HarnessConfig, options: OrreryOptions): Pick<Guarded,
 		home,
 		orreryData: config.dataDir,
 		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)],
+		protect: config.guard.protect,
 		...(configFile === undefined ? {} : { configFile }),
 	};
 }
@@ -179,7 +185,8 @@ function unreadableGuard(file: string, cwd: string, options: OrreryOptions): Gua
 		data = join(home, ".orrery"); // a relative ORRERY_HOME: the default home
 	}
 	const credentials = [join(data, "credentials.json"), join(dirname(resolve(file)), "credentials.json"), ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)];
-	return { by: "unreadable", workArea: workArea({}, cwd), allowedRoots: [], home, orreryData: data, credentials, foreignViews: [], fileModeViews: [], configFile: file };
+	// The config's [guard] protect is not known either; .env and the other built-in rules still apply.
+	return { by: "unreadable", workArea: workArea({}, cwd), allowedRoots: [], home, orreryData: data, credentials, foreignViews: [], fileModeViews: [], configFile: file, protect: [] };
 }
 
 /** The guard for `agent` in `cwd`: no other agent's view. */
@@ -918,8 +925,8 @@ function guard(pi: ExtensionAPI, state: OrreryState, host: "pi" | "omp"): void {
 	const judge = host === "omp" ? guardOmpToolCall : guardToolCall;
 	pi.on("tool_call", (event, ctx) => {
 		if (state.guarded === undefined) return;
-		const { workArea: area, allowedRoots, credentials, orreryData, home, foreignViews, fileModeViews, ownView, configFile } = state.guarded;
-		const options = { folder: area, allowedRoots, cwd: ctx.cwd, credentials, orreryData, home, foreignViews, fileModeViews, ownView, configFile };
+		const { workArea: area, allowedRoots, credentials, orreryData, home, foreignViews, fileModeViews, ownView, configFile, protect } = state.guarded;
+		const options = { folder: area, allowedRoots, cwd: ctx.cwd, credentials, orreryData, home, foreignViews, fileModeViews, ownView, configFile, protect };
 		const reason = judge(event.toolName, event.input as Record<string, unknown>, options);
 		return reason === undefined ? undefined : { block: true, reason };
 	});

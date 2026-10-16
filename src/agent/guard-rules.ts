@@ -1,5 +1,6 @@
 /** The agent guard's pure rules (spec §6): which tool calls and paths are refused. No pi-durable here. */
 
+import { homedir } from "node:os";
 import { posix } from "node:path";
 
 export interface GuardOptions {
@@ -25,6 +26,11 @@ export interface GuardOptions {
 	 * it, and shell text may not name it by its path (configSpellings). ~/.orrery/config.toml is kept so by name too.
 	 */
 	readonly configFile?: string;
+	/**
+	 * [guard] protect from Orrery's config (HarnessConfig.guard, spec 2026-10-15-guard-protect), as the config writes it:
+	 * more files and folders no tool reads, writes or names (protection).
+	 */
+	readonly protect?: readonly string[];
 }
 
 const SENSITIVE = [
@@ -52,28 +58,141 @@ const SENSITIVE = [
 	/\.omp\/(?:profiles\/[^/\s"']+\/)?(?:agent\/)?(?:\.env|secrets\.ya?ml)\b/,
 ];
 
+// Where a protected name stands as a path segment or a word of its own in a reading (ENV_FILE, Protection.named). Before
+// it: the text's start, a blank, a quote, "=", ":", "/", "~", a shell operator or redirection, a backquote, a brace or a
+// comma (a group past the brace readings' caps), or "*" (a glob that matches the bare name too). After it: the text's
+// end, a blank, a quote, "/", ":", a shell operator, a backquote, a comma or closing brace, or a glob character. A path
+// entry's spelling ends the same way (Protection.spelled), so ~/finance never stands for ~/finance-old.
+const NAME_START = "(?:^|[\\s\"'=:/~<>;|&()`{,*])";
+const NAME_END = "(?=$|[\\s\"'/:;|&()<>`,}*?\\[])";
+
+/**
+ * The built-in .env rule (spec 2026-10-15-guard-protect): .env and .env.<anything> standing as a name, but not the
+ * examples meant to be shared (.env.example, .env.sample, .env.template, each followed by a plain end, not a glob). As a
+ * name, so process.env, import.meta.env, prod.env and .envrc never match. What follows ".env." holds no character a name
+ * starts or ends at, so a try reads no further than the next place a name may start: the text is read in linear time.
+ */
+const ENV_FILE = new RegExp(
+	`${NAME_START}\\.env(?!\\.(?:example|sample|template)(?=$|[\\s"'/:;|&()<>\`,}]))(?:\\.[^\\s"'=:/~<>;|&()\`{,*}?\\[]*)?${NAME_END}`,
+);
+
 /**
  * Case-insensitive: on a case-insensitive file system (macOS) ~/.SSH is ~/.ssh. The text is judged as written and as the
- * shell reads it (readings), each by the credential patterns and by Orrery's own names. `views`: which agent view file the
- * text may name (viewRules); by default none.
+ * shell reads it (readings), each by the credential patterns, the built-in .env rule and Orrery's own names. `views`:
+ * which agent view file the text may name (viewRules); by default none.
  */
 export function sensitive(text: string, views: ViewRule = NO_VIEW): boolean {
-	return flagged(text, views, false);
+	return flagged(readings(text.toLowerCase()), views, false);
 }
 
 /**
- * sensitive for shell text (a command line, code to run): Orrery's config is refused by name too, since a command could
- * rewrite it (an agent's view and the guard's rules come from it), and so is the config file in use by any of `config`,
- * its spellings (configSpellings). File tools may still read it.
+ * sensitive without the built-in .env rule: for an OMP edit's whole text, whose content may name .env as text (a line of
+ * a .gitignore, code that loads it). The edit's targets are still judged as paths, .env included.
  */
-export function shellSensitive(command: string, views: ViewRule = NO_VIEW, config: readonly string[] = []): boolean {
-	return flagged(command, views, true, config);
+export function credentialNamed(text: string, views: ViewRule = NO_VIEW): boolean {
+	return flagged(readings(text.toLowerCase()), views, false, [], false);
 }
 
-function flagged(text: string, views: ViewRule, shell: boolean, config: readonly string[] = []): boolean {
-	return readings(text.toLowerCase()).some(
-		(form) => SENSITIVE.some((pattern) => pattern.test(form)) || orreryNamed(form, views, shell) || config.some((spelling) => form.includes(spelling)),
+/**
+ * Whether readings `forms` name a sensitive file. For `shell` text (a command line, code to run) Orrery's config is
+ * refused by name too, since a command could rewrite it (an agent's view and the guard's rules come from it), and so is
+ * the config file in use by any of `config`, its spellings (configSpellings); file tools may still read it. `env`: the
+ * built-in .env rule.
+ */
+function flagged(forms: readonly string[], views: ViewRule, shell: boolean, config: readonly string[] = [], env = true): boolean {
+	return forms.some(
+		(form) =>
+			SENSITIVE.some((pattern) => pattern.test(form)) ||
+			(env && ENV_FILE.test(form)) ||
+			orreryNamed(form, views, shell) ||
+			config.some((spelling) => form.includes(spelling)),
 	);
+}
+
+/** What a refusal for a [guard] protect entry says: the entry is the user's, not a built-in rule, so it names the setting. */
+export const PROTECTED_BY = "protected by [guard] protect in Orrery's config";
+export const PROTECTED_FILE = (path: string) => `${path} is ${PROTECTED_BY}.`;
+
+/** [guard] protect as the guard matches it (protection). */
+export interface Protection {
+	/** Each path entry as the config writes it, where it is ("~/" from the guard's home), and where it really is. */
+	readonly paths: readonly { readonly entry: string; readonly path: string; readonly real: string }[];
+	/** Each name entry by its lower-case name, to the entry as the config writes it. */
+	readonly names: ReadonlyMap<string, string>;
+	/** Each spelling shell text may name a path entry by (configSpellings), to its entry. */
+	readonly spellings: ReadonlyMap<string, string>;
+	/** One pattern for every spelling, and one for every name, so a long text is read once for all of them; none for none. */
+	readonly spelled?: RegExp;
+	readonly named?: RegExp;
+}
+
+const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * [guard] protect `entries` (GuardOptions.protect) for matching: a path entry from `home`, and where it really is by
+ * `real` (a link followed; by default as written); a name entry folded to lower case, as the other rules fold. Made per
+ * tool call, as configSpellings is.
+ */
+export function protection(entries: readonly string[] = [], home: string = homedir(), real: (path: string) => string = (path) => path): Protection {
+	const paths: { entry: string; path: string; real: string }[] = [];
+	const names = new Map<string, string>();
+	const spellings = new Map<string, string>();
+	for (const entry of entries) {
+		if (!entry.includes("/")) {
+			names.set(entry.toLowerCase(), entry);
+			continue;
+		}
+		const path = (entry.startsWith("~/") ? posix.join(home, entry.slice(2)) : posix.normalize(entry)).replace(/(.)\/+$/, "$1");
+		const where = { entry, path, real: real(path) };
+		paths.push(where);
+		for (const spelling of configSpellings({ configFile: path, home }, where.real)) if (!spellings.has(spelling)) spellings.set(spelling, entry);
+	}
+	return {
+		paths,
+		names,
+		spellings,
+		...(spellings.size === 0 ? {} : { spelled: new RegExp(`(?:${[...spellings.keys()].map(literal).join("|")})${NAME_END}`) }),
+		...(names.size === 0 ? {} : { named: new RegExp(`${NAME_START}(${[...names.keys()].map(literal).join("|")})${NAME_END}`) }),
+	};
+}
+
+/**
+ * The [guard] protect entry readings `forms` name, or undefined: a path entry by any of its spellings, then (`names`) a
+ * name entry as a path segment, the way .ssh is named.
+ */
+function protectedIn(forms: readonly string[], protect: Protection, names = true): string | undefined {
+	for (const form of forms) {
+		const spelled = protect.spelled?.exec(form);
+		if (spelled) return protect.spellings.get(spelled[0]);
+		const named = names ? protect.named?.exec(form) : undefined;
+		if (named) return protect.names.get(named[1]);
+	}
+	return undefined;
+}
+
+/**
+ * The [guard] protect entry `text` (a glob, an OMP edit's whole text) names, read as shell text is (readings), or
+ * undefined. `names` false: path entries only, for an OMP edit's text, whose content may name a file as text.
+ */
+export function textProtected(text: string, protect: Protection, names = true): string | undefined {
+	if (protect.spelled === undefined && (!names || protect.named === undefined)) return undefined;
+	return protectedIn(readings(text.toLowerCase()), protect, names);
+}
+
+/**
+ * The [guard] protect entry a path (one spelling of it: as written, as the tool resolves it, or real) falls under, or
+ * undefined: inside a path entry, where it is, where it really is, or as the config writes it (a "~/" path as written);
+ * or with a part a name entry names (the file, or a folder on the way). Folded, as the other path rules are.
+ */
+export function pathProtected(path: string, protect: Protection): string | undefined {
+	const folded = posix.normalize(path).toLowerCase();
+	for (const { entry, path: at, real } of protect.paths) if ([at, real, entry].some((root) => within(folded, root.toLowerCase()))) return entry;
+	if (protect.names.size === 0) return undefined;
+	for (const part of folded.split("/")) {
+		const entry = protect.names.get(part);
+		if (entry !== undefined) return entry;
+	}
+	return undefined;
 }
 
 /**
@@ -295,23 +414,29 @@ export function within(path: string, root: string): boolean {
 
 /**
  * A cheap pre-filter on the raw arguments; the authoritative file check is checkResolvedPath. `views`: viewRules;
- * `config`: configSpellings.
+ * `config`: configSpellings; `protect`: protection, "~" from the OS's home by default.
  */
 export function checkToolCall(
 	call: { readonly name: string; readonly arguments: Readonly<Record<string, unknown>> },
 	options: GuardOptions,
 	views: ViewRules = viewRules(options),
 	config: readonly string[] = configSpellings(options),
+	protect: Protection = protection(options.protect),
 ): string | undefined {
 	const command = call.arguments.command;
-	if (call.name === "bash" && typeof command === "string" && shellSensitive(command, views.command, config)) {
-		return "This command touches sensitive files (keys, credentials or Orrery's private data).";
+	if (call.name === "bash" && typeof command === "string") {
+		// Shell text's readings, made once: sensitive by flagged's rules for shell text, then the [guard] protect entries.
+		const forms = readings(command.toLowerCase());
+		if (flagged(forms, views.command, true, config)) return "This command touches sensitive files (keys, credentials or Orrery's private data).";
+		const entry = protectedIn(forms, protect);
+		if (entry !== undefined) return `This command touches ${entry}, ${PROTECTED_BY}.`;
 	}
 	const raw = call.arguments.path;
 	if (typeof raw !== "string") return undefined;
 	const path = posix.normalize(posix.isAbsolute(raw) ? raw : posix.join(options.cwd ?? options.folder, raw));
 	const named = views.path(path);
 	if (sensitive(raw, named) || sensitive(path, named)) return `${path} is a sensitive file (keys, credentials or Orrery's private data).`;
+	if (pathProtected(raw, protect) !== undefined || pathProtected(path, protect) !== undefined) return PROTECTED_FILE(path);
 	const writes = call.name === "write" || call.name === "edit";
 	if (writes && (orreryConfigNamed(path) || config.includes(path.toLowerCase()))) return CONFIG_READ_ONLY(path);
 	if (writes && orreryAppNamed(path)) return APP_READ_ONLY(path);
