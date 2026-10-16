@@ -1,27 +1,31 @@
 /**
  * The agent guard on Codex's tool calls (spec 2026-10-16-codex-design, "Guard"), as `orrery codex-hook pre-tool-use`.
  * Codex 0.162.1 hands its PreToolUse hook every tool call a model makes, a code cell's calls each on their own (the cell
- * itself never arrives), its subagents' too, and the guard judges each with the rules every other gate applies
- * (src/agent/guard-rules.ts, guard-paths.ts), mapped through Claude Code's guard (src/claude/guard.ts):
- * - `Bash` (exec_command; its input is only `{command}`) is judged by its command, as every gate judges shell text;
- * - `apply_patch` (its input is the whole patch as `{command}`) writes every `*** Add File:`, `*** Update File:`,
- *   `*** Delete File:` and `*** Move to:` target, read as Codex's parser reads them (readPatch, checked against the
- *   installed Codex) and placed as Codex places them (codexToolPath: joined onto the session's cwd, which is Codex's
- *   for this tool; ".." taken lexically, as Codex does; "~" a name, not home; links followed by realTarget; names
- *   matched in any case); what a patch writes is never judged; a patch the guard cannot read is refused, and so is one
- *   for another environment;
- * - a shell command that names apply_patch as a word (Codex applies `apply_patch <<'EOF'` itself, and puts the program
- *   on the shell's PATH, so any form runs) must be one of the forms the guard reads (shellPatch: Codex's own heredoc,
- *   with a `cd <dir> &&` before it or not, and nothing after it; or one single-quoted argument), its patch read by
- *   readPatch and each target a write, a relative one judged from the cwd and from the cd's folder (patchBases). Any
- *   other command that names it is refused: a patch from a file or a pipe, a second command, a heredoc that ends early,
- *   a path the shell could change, a cd the guard cannot place, and a command that only mentions it
- *   (`grep apply_patch`);
- * - `view_image` reads its path, resolved as Codex resolves it;
- * - everything else, MCP tools (`mcp__<server>__<tool>`) and `spawn_agent` among them, by Claude Code's heuristics:
- *   every command line and every path or file: URI it names. spawn_agent's message is words for the new agent, which
+ * itself never arrives), its subagents' too: exec_command as `Bash` with `{command}`, apply_patch with the whole patch as
+ * `{command}`, MCP tools as `mcp__<server>__<tool>` with their arguments, and every other function tool by its name with
+ * its JSON arguments (view_image, spawn_agent and the other agent tools, update_plan, request_permissions, the MCP
+ * resource tools…); write_stdin and code mode's cells give it nothing. The guard judges each with the rules every other
+ * gate applies (src/agent/guard-rules.ts, guard-paths.ts), mapped through Claude Code's guard (src/claude/guard.ts),
+ * first by what the tool is, then by what the call carries, whatever the tool is named:
+ * - apply_patch writes every `*** Add File:`, `*** Update File:`, `*** Delete File:` and `*** Move to:` target, read as
+ *   Codex's parser reads them (readPatch, checked against the installed Codex) and placed as Codex places them
+ *   (codexToolPath: joined onto the session's cwd, which is Codex's for this tool; ".." taken lexically, as Codex does;
+ *   "~" a name, not home; links followed by realTarget; names matched in any case); what a patch writes is never judged;
+ *   a patch the guard cannot read is refused, and so is one for another environment;
+ * - view_image reads its path, placed as Codex places it;
+ * - every tool, Bash and MCP tools among them, by Claude Code's heuristics: every command line (command, cmd, script,
+ *   shell, args, argv) and every path or file: URI it names. spawn_agent's message is words for the new agent, which
  *   runs its own tools through this hook; a file its input hands that agent (an image, a skill) is a read;
- * - an input that is no JSON object is refused.
+ * - by content (byContent), in any tool: a string under input or code is shell text too; a command line that names
+ *   apply_patch as a word (Codex applies `apply_patch <<'EOF'` itself, and puts the program on the shell's PATH, so any
+ *   form runs) must be one of the forms the guard reads (shellPatch: Codex's own heredoc, with a `cd <dir> &&` before it
+ *   or not and nothing after it; or one single-quoted argument; or ["apply_patch", patch] as a list), each target a write,
+ *   a relative one judged from the cwd and the cd's folder (patchBases), and any other command that names it is refused
+ *   (a patch from a file or a pipe, a second command, a heredoc that ends early, a path the shell could change, a cd the
+ *   guard cannot place, and a command that only mentions it, `grep apply_patch`); and patch text in any string is read
+ *   (patchText) and each target judged as a write, a patch that does not read or a hunk header outside one refused;
+ * - an input that is no JSON object is refused, and so is a call the guard cannot judge in its time (2 s, shared by all
+ *   its checks).
  * The session's agent is the one ORRERY_AGENT names, with its token claimed by this Codex (src/codex/pick.ts): its
  * folder (or the folder Codex runs in, outside it) and allowed roots. Orrery's hooks come only with Orrery's launch, so
  * a session that is not the agent's (a token another process holds, none at all) keeps the guard with no agent's rules:
@@ -29,9 +33,9 @@
  * Limits, as Codex gives them: exec_command's `workdir` never reaches the hook, so a relative name in a command, and a
  * relative target of a patch a command carries, is judged from the session's folder and the command's cds (name rules
  * hold, path rules can be sidestepped; refusing every relative target would refuse ordinary patches); `write_stdin` into
- * a running command is never judged (the launch turns its terminal off); hosted web_search is no tool call here; an MCP
- * server's shell is judged by its command's names only; and a hook that crashes or times out lets the call through, so
- * the guard answers in its own time budget and refuses what it cannot judge.
+ * a running command is never judged (the launch turns its terminal off); hosted web_search is no tool call here; and a
+ * hook that crashes or times out lets the call through, so the guard answers in its own time budget and refuses what it
+ * cannot judge.
  */
 
 import { homedir } from "node:os";
@@ -78,9 +82,10 @@ type Hunks = { readonly targets: string[]; readonly next: number } | { readonly 
  * line trimmed (Rust's trim: U+0085 too, not U+FEFF) outside an update hunk, and only at its first column inside one, as
  * is `*** Move to:` (Codex moves only on one right after the header and refuses the patch for one elsewhere; every one
  * counts here, and no content line starts at the first column with "*"); the path is all that follows the marker's one
- * space. Line `last` ends the patch trimmed in any hunk, as Codex's parser reads its last line apart.
+ * space. Line `last`, when given, ends the patch trimmed in any hunk, as Codex's parser reads its last line apart.
+ * `quoted`: the patch sits in other text, and its end line may carry the quote that closes it.
  */
-function readHunks(lines: readonly string[], from: number, last: number): Hunks {
+function readHunks(lines: readonly string[], from: number, last?: number, quoted = false): Hunks {
 	const targets: string[] = [];
 	let mode: "start" | "add" | "delete" | "update" = "start";
 	for (let at = from; at < lines.length; at++) {
@@ -88,7 +93,7 @@ function readHunks(lines: readonly string[], from: number, last: number): Hunks 
 		const trimmed = rustTrim(line);
 		const header: string = mode === "update" ? line.replace(RUST_TRIM_END, "") : trimmed;
 		if (mode === "start" && header.startsWith(ENVIRONMENT)) return { unreadable: "it picks another environment, whose files the guard cannot see" };
-		if (header === END || (at === last && trimmed === END)) return { targets, next: at + 1 };
+		if (header === END || (at === last && trimmed === END) || (quoted && /^\*\*\* End Patch["']/.test(trimmed))) return { targets, next: at + 1 };
 		const marker: string | undefined = HEADERS.find((prefix) => header.startsWith(prefix));
 		if (marker !== undefined) {
 			targets.push(header.slice(marker.length));
@@ -182,6 +187,7 @@ const SHELL_PATCH_UNREADABLE = (why: string) => `This command runs apply_patch w
 /** Each of `targets` judged as a write, from each of `bases`, within the guard's time; the first refusal. */
 function judgeWrites(targets: readonly string[], bases: readonly string[], options: ClaudeGuardOptions): string | undefined {
 	const deadline = performance.now() + (options.judgeMs ?? JUDGE_MS);
+	if (targets.length > 0 && deadline <= performance.now()) return "this patch names more files than the guard can check in time; nothing was changed.";
 	for (const target of new Set(targets)) {
 		for (const cwd of isAbsolute(target) ? [options.cwd] : bases) {
 			const left = deadline - performance.now();
@@ -193,29 +199,126 @@ function judgeWrites(targets: readonly string[], bases: readonly string[], optio
 	return undefined;
 }
 
-/** Why a Codex tool call is refused, or undefined to let it through (module doc). */
-export function codexGuard(toolName: string, input: unknown, options: ClaudeGuardOptions): string | undefined {
-	if (typeof input !== "object" || input === null || Array.isArray(input)) return CALL_UNREADABLE;
-	const args = input as Readonly<Record<string, unknown>>;
-	if (toolName === "apply_patch") {
-		if (typeof args.command !== "string") return PATCH_UNREADABLE("it is no text");
-		const read = readPatch(args.command);
-		if ("unreadable" in read) return PATCH_UNREADABLE(read.unreadable);
-		return judgeWrites(read.targets, [options.cwd], options);
-	}
-	if (toolName === "view_image") return claudeGuard("view_image", args, { ...options, resolvePath: (raw, cwd) => codexToolPath(raw, cwd) });
-	const reason = claudeGuard(toolName, args, options);
-	if (reason !== undefined || toolName !== "Bash" || typeof args.command !== "string") return reason;
-	// A shell command that names apply_patch: it must be a form the guard reads, and each target is a write.
-	if (!inAnyReading(args.command, (form) => APPLY_PATCH_WORD.test(form))) return undefined;
-	const carried = shellPatch(args.command);
+/**
+ * A command line in a shell command that names apply_patch: it must be a form the guard reads (shellPatch), and each
+ * target is a write from its bases (patchBases); undefined when it does not name the program.
+ */
+function shellCommandPatch(command: string, options: ClaudeGuardOptions): string | undefined {
+	if (!inAnyReading(command, (form) => APPLY_PATCH_WORD.test(form))) return undefined;
+	const carried = shellPatch(command);
 	if (carried === undefined) return SHELL_PATCH_UNREADABLE("the command is not one apply_patch <<'EOF' … EOF, with a cd && before it or not");
 	const read = readPatch(carried.patch);
 	if ("unreadable" in read) return SHELL_PATCH_UNREADABLE(read.unreadable);
 	if (carried.expands && read.targets.some((target) => /[$`\\]/.test(target))) return SHELL_PATCH_UNREADABLE("a path holds what the shell would change");
 	const bases = patchBases(carried.cd, options.cwd, options.home ?? homedir());
 	if (bases === undefined) return SHELL_PATCH_UNREADABLE("its cd goes where the guard cannot tell");
-	return judgeWrites(read.targets, bases, options);
+	return judgeWrites(read.targets, bases, options) ?? "";
+}
+
+/** A line that opens or belongs to a patch: "*** Begin Patch" at its end, or a hunk header (trimmed) at its start. */
+const PATCH_LINE = /\*\*\* Begin Patch[ \t\r]*$|^[ \t]*\*\*\* (?:Add File|Update File|Delete File|Move to): /m;
+
+/**
+ * The patch text a string holds anywhere, as some tool may apply it: each patch from a line that ends with
+ * "*** Begin Patch" through its end (readHunks; the end line may carry the quote that closes it), each target a write
+ * from the session's cwd. Refused when one does not read, or a hunk header stands outside every patch.
+ */
+function patchText(text: string, options: ClaudeGuardOptions): string | undefined {
+	const lines = text.split("\n");
+	const targets: string[] = [];
+	for (let at = 0; at < lines.length; at++) {
+		const line = (lines[at] as string).replace(/\r$/, "").replace(RUST_TRIM_END, "");
+		if (line.endsWith(BEGIN)) {
+			const read = readHunks(lines, at + 1, undefined, true);
+			if ("unreadable" in read) return PATCH_UNREADABLE(read.unreadable);
+			targets.push(...read.targets);
+			at = read.next - 1;
+		} else if ([...HEADERS, MOVE_TO].some((marker) => rustTrim(line).startsWith(marker))) {
+			return PATCH_UNREADABLE("a hunk header stands outside *** Begin Patch and *** End Patch");
+		}
+	}
+	return judgeWrites(targets, [options.cwd], options);
+}
+
+/**
+ * A key whose string, or list of strings, is a command line or code to run, in any tool: Claude Code's guard reads
+ * command, cmd, script and shell (and args and argv lists) as shell text; input (a freeform tool's) and code are read
+ * so here too.
+ */
+const COMMAND_KEY = /^(command|cmd|script|shell|input|code|args|argv)$/i;
+const SHELL_TEXT_HERE = /^(input|code)$/i;
+
+/** Each string in a tool's input, at any depth, with its key and whether it is a command line (COMMAND_KEY), and each command list. */
+function inputStrings(input: Readonly<Record<string, unknown>>): { readonly strings: { key: string; text: string; command: boolean }[]; readonly lists: string[][] } {
+	const strings: { key: string; text: string; command: boolean }[] = [];
+	const lists: string[][] = [];
+	const stack: { key: string; value: unknown; command: boolean }[] = Object.entries(input).map(([key, value]) => ({ key, value, command: COMMAND_KEY.test(key) }));
+	for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
+		const { key, value } = next;
+		if (typeof value === "string") strings.push({ key, text: value, command: next.command });
+		else if (typeof value === "object" && value !== null) {
+			if (Array.isArray(value) && next.command) lists.push(value.filter((item): item is string => typeof item === "string"));
+			for (const [inner, item] of Object.entries(value)) stack.push({ key: Array.isArray(value) ? key : inner, value: item, command: next.command || (!Array.isArray(value) && COMMAND_KEY.test(inner)) });
+		}
+	}
+	return { strings, lists };
+}
+
+/**
+ * The guard by what a call carries, whatever the tool is named (MCP and dynamic tools may run commands or apply patches
+ * under any name): a string under input or code is shell text too; a command line that names apply_patch must be a form
+ * the guard reads, or the program's name and one patch as a list (["apply_patch", patch]); and any patch text, in any
+ * string, is read and each target judged as a write. `timed`: the guard's options with what is left of the call's
+ * time; `skip`: the string the tool's own rule has judged already.
+ */
+function byContent(input: Readonly<Record<string, unknown>>, timed: () => ClaudeGuardOptions, skip?: string): string | undefined {
+	const { strings, lists } = inputStrings(input);
+	// The strings a rule below has judged whole.
+	const judged = new Set(skip === undefined ? [] : [skip]);
+	for (const list of lists) {
+		if (list.length === 2 && /^(?:apply_patch|applypatch)$/i.test(list[0] as string)) {
+			const read = readPatch(list[1] as string);
+			if ("unreadable" in read) return PATCH_UNREADABLE(read.unreadable);
+			const reason = judgeWrites(read.targets, [timed().cwd], timed());
+			if (reason !== undefined) return reason;
+			for (const item of list) judged.add(item);
+		}
+	}
+	for (const { key, text, command } of strings) {
+		if (judged.has(text)) continue;
+		if (command && SHELL_TEXT_HERE.test(key)) {
+			const reason = claudeGuard("Bash", { command: text }, timed());
+			if (reason !== undefined) return reason;
+		}
+		const shell = command ? shellCommandPatch(text, timed()) : undefined;
+		if (shell === "") continue;
+		if (shell !== undefined) return shell;
+		if (PATCH_LINE.test(text)) {
+			const reason = patchText(text, timed());
+			if (reason !== undefined) return reason;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Why a Codex tool call is refused, or undefined to let it through (module doc). Every check shares the call's time
+ * (`judgeMs`, default 2 s): one that has none left refuses, so the hook answers before Codex's timeout lets the call
+ * through.
+ */
+export function codexGuard(toolName: string, input: unknown, options: ClaudeGuardOptions): string | undefined {
+	if (typeof input !== "object" || input === null || Array.isArray(input)) return CALL_UNREADABLE;
+	const args = input as Readonly<Record<string, unknown>>;
+	const deadline = performance.now() + (options.judgeMs ?? JUDGE_MS);
+	const timed = (): ClaudeGuardOptions => ({ ...options, judgeMs: deadline - performance.now() });
+	if (toolName === "apply_patch") {
+		if (typeof args.command !== "string") return PATCH_UNREADABLE("it is no text");
+		const read = readPatch(args.command);
+		if ("unreadable" in read) return PATCH_UNREADABLE(read.unreadable);
+		return judgeWrites(read.targets, [options.cwd], timed()) ?? byContent(args, timed, args.command);
+	}
+	const reason = toolName === "view_image" ? claudeGuard("view_image", args, { ...timed(), resolvePath: (raw, cwd) => codexToolPath(raw, cwd) }) : claudeGuard(toolName, args, timed());
+	return reason ?? byContent(args, timed);
 }
 
 /** A refusal as Codex shows it: "Orrery guard: " first, and no final period, since Codex adds its own. */

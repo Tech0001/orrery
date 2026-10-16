@@ -807,8 +807,9 @@ describe("[guard] protect and .env: one table through every gate", () => {
 
 	/**
 	 * Codex (src/codex/guard.ts): a patch's every target form (Add, Update, Delete, Move to, and a move away from the
-	 * file, and one sent through the shell), view_image, an MCP tool, spawn_agent handing over an image, its shell and an
-	 * MCP shell. It has no glob tool. A code cell's calls reach the hook one by one, as these do.
+	 * file, one sent through the shell and one under another tool's name), view_image, an MCP tool, spawn_agent handing
+	 * over an image, its shell, an MCP shell and shells under other names. It has no glob tool. A code cell's calls reach
+	 * the hook one by one, as these do.
 	 */
 	const codex: Gate = async (t, c) => {
 		const out: (string | undefined)[] = [];
@@ -825,13 +826,17 @@ describe("[guard] protect and .env: one table through every gate", () => {
 				patch(`*** Delete File: ${c.path}`);
 				patch("*** Update File: src/a.ts", `*** Move to: ${c.path}`, "@@", "-a", "+b");
 				patch(`*** Update File: ${c.path}`, "*** Move to: src/moved.ts", "@@", "-a", "+b");
-				// The same patch sent through the shell, which Codex applies itself.
+				// The same patch sent through the shell, which Codex applies itself, and under another tool's name.
 				call("Bash", { command: `apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch\nEOF` });
+				call("mcp__box__apply", { diff: `*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch` });
 			}
 		}
 		if (c.command !== undefined) {
 			call("Bash", { command: c.command });
 			call("mcp__shell__run", { command: c.command });
+			// A shell under another name, and code a tool runs.
+			call("mcp__box__exec_command", { cmd: c.command });
+			call("mcp__box__run", { input: c.command });
 		}
 		return out;
 	};

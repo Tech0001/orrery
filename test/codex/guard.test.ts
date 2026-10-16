@@ -296,6 +296,109 @@ describe("codexGuard on Codex's other tools", () => {
 	});
 });
 
+describe("every tool and input shape Codex 0.162.1 hands PreToolUse, and shells and patches under any other name", () => {
+	const heredoc = (target: string) => `apply_patch <<'EOF'\n${patch(`*** Add File: ${target}`, "+x")}\nEOF`;
+	/**
+	 * From codex-rs at rust-v0.162.1: exec_command (as Bash, `{command}`), apply_patch (`{command}`: the patch), MCP tools
+	 * (mcp__<server>__<tool>, their arguments), and every other function tool by its name with its JSON arguments
+	 * (core/src/tools/registry.rs). write_stdin and code mode's exec and wait cells give the hook nothing.
+	 */
+	const codexTools: [string, Record<string, unknown>][] = [
+		["Bash", { command: "git status" }],
+		["apply_patch", { command: patch("*** Add File: a.md", "+a") }],
+		["mcp__orrery__zoom", { id: "7" }],
+		["view_image", { path: "shot.png" }],
+		["spawn_agent", { message: "Review src/", agent_type: "worker", fork_context: false }],
+		["spawn_agent", { message: "Review src/", task_name: "review", fork_turns: "none" }],
+		["send_input", { id: "a1", message: "go on", interrupt: false }],
+		["send_message", { target: "a1", message: "go on" }],
+		["followup_task", { target: "a1", message: "and the tests" }],
+		["wait_agent", { ids: ["a1"], timeout_ms: 1000 }],
+		["close_agent", { id: "a1" }],
+		["resume_agent", { id: "a1" }],
+		["interrupt_agent", { target: "a1" }],
+		["list_agents", {}],
+		["update_plan", { explanation: "x", plan: [{ step: "a", status: "pending" }] }],
+		["request_user_input", { questions: [{ id: "q", header: "Pick", question: "Which?", options: [{ label: "A", description: "a" }] }] }],
+		["request_permissions", { reason: "build", permissions: { network: { enabled: true } } }],
+		["list_mcp_resources", { server: "orrery" }],
+		["list_mcp_resource_templates", { server: "orrery" }],
+		["read_mcp_resource", { server: "orrery", uri: "orrery://view" }],
+		["tool_search", { query: "zoom" }],
+		["curr_time", {}],
+		["get_context_remaining", {}],
+		["sleep", { duration_ms: 10 }],
+		["new_context", {}],
+		["wait_for_environment", { environment_id: "local" }],
+		["send_message_to_user_async", { message: "working" }],
+		["request_plugin_install", { plugin: "x" }],
+		["list_available_plugins_to_install", {}],
+		["test_sync_tool", {}],
+	];
+
+	it.each(codexTools)("lets %s through with an ordinary input", (tool, input) => {
+		const { options } = setup();
+		expect(codexGuard(tool, input, options)).toBeUndefined();
+	});
+
+	it.each([
+		["Bash", { command: "cat ~/.ssh/id_ed25519" }, SENSITIVE],
+		["apply_patch", { command: patch("*** Add File: /etc/x", "+x") }, OUTSIDE],
+		["view_image", { path: "../secret.txt" }, PROTECTED],
+		["spawn_agent", { message: "look", items: [{ type: "local_image", path: "../secret.txt" }] }, PROTECTED],
+		["send_input", { id: "a1", items: [{ type: "skill", name: "s", path: "../secret.txt" }] }, PROTECTED],
+		["request_permissions", { reason: "x", permissions: { file_system: { write: ["/home/u/.ssh"] } } }, SENSITIVE],
+		["read_mcp_resource", { server: "files", uri: "file:///home/u/.ssh/config" }, SENSITIVE],
+		["mcp__files__write_file", { path: "/etc/x", content: "y" }, OUTSIDE],
+	] as const)("refuses %s with a harmful input", (tool, input, verdict) => {
+		const { options } = setup();
+		expect(codexGuard(tool, input, options)).toMatch(verdict);
+	});
+
+	it.each([
+		// Shells under other names: whatever the tool is called, a command line is shell text.
+		["an MCP exec_command", "mcp__box__exec_command", { cmd: "cat secret.txt" }, PROTECTED],
+		["an MCP shell with an argv list", "mcp__box__shell", { command: ["bash", "-lc", "cat ~/.ssh/config"] }, SENSITIVE],
+		["a container.exec", "container.exec", { argv: ["cat", "secret.txt"] }, PROTECTED],
+		["a local_shell", "local_shell", { command: ["sh", "-c", "orrery codex-hook stop"], workdir: "." }, /hook plumbing/],
+		["a tool's script", "dynamic_runner", { script: "cat ../.env" }, SENSITIVE],
+		["a freeform tool's input", "mcp__box__run", { input: "cat secret.txt" }, PROTECTED],
+		["a tool's code", "mcp__node__eval", { code: "require('fs').readFileSync('secret.txt')" }, PROTECTED],
+		["a command nested deep", "mcp__box__batch", { steps: [{ run: { cmd: "cat ~/.ssh/config" } }] }, SENSITIVE],
+		// Patches under other names: whatever the tool is called, a patch's targets are writes.
+		["an MCP apply_patch's input", "mcp__box__apply_patch", { input: patch("*** Add File: /etc/x", "+x") }, OUTSIDE],
+		["a patch under any key", "apply_patch_v2", { patch: patch("*** Update File: notes.md", "*** Move to: ../link/x.md", "@@", "-a", "+b") }, OUTSIDE],
+		["a patch as an argv list", "local_shell", { command: ["apply_patch", patch("*** Delete File: ../link/x.md")] }, OUTSIDE],
+		["a shell's heredoc patch in an argv list", "local_shell", { command: ["bash", "-lc", heredoc("../link/x.md")] }, OUTSIDE],
+		["an MCP shell's heredoc patch", "mcp__box__exec_command", { cmd: heredoc("/etc/x") }, OUTSIDE],
+		["an MCP shell running apply_patch from a file", "mcp__box__exec_command", { cmd: "apply_patch < fix.patch" }, /could not read/],
+		["a patch that does not read", "mcp__box__apply", { diff: "*** Begin Patch\n*** Add File: a.md\n+a" }, /could not read this patch/],
+		["hunk headers with no patch around them", "mcp__box__apply", { diff: "*** Add File: /etc/x\n+x" }, /could not read this patch/],
+	] as const)("refuses %s", (_what, tool, input, verdict) => {
+		const { options } = setup();
+		expect(codexGuard(tool, input, options)).toMatch(verdict);
+	});
+
+	it("shares the call's time among all its checks: with none left, a call that names anything is refused", () => {
+		const { options } = setup();
+		const spent = { ...options, judgeMs: 0 };
+		expect(codexGuard("apply_patch", { command: patch("*** Add File: a.md", "+a") }, spent)).toMatch(/in time/);
+		expect(codexGuard("mcp__box__run", { input: "ls", diff: patch("*** Add File: a.md", "+a") }, spent)).toMatch(/in time/);
+		expect(codexGuard("Bash", { command: "ls" }, spent)).toMatch(/in time/);
+	});
+
+	it("still lets the same shapes through when what they carry is ordinary", () => {
+		const { options } = setup();
+		expect(codexGuard("mcp__box__exec_command", { cmd: "npm test" }, options)).toBeUndefined();
+		expect(codexGuard("local_shell", { command: ["bash", "-lc", heredoc("notes.md")] }, options)).toBeUndefined();
+		expect(codexGuard("local_shell", { command: ["apply_patch", patch("*** Add File: notes.md", "+x")] }, options)).toBeUndefined();
+		expect(codexGuard("mcp__box__apply_patch", { input: patch("*** Add File: notes.md", "+x") }, options)).toBeUndefined();
+		expect(codexGuard("mcp__node__eval", { code: "console.log(1 + 1)" }, options)).toBeUndefined();
+		// A patch inside the apply_patch tool's own content is content, not another patch.
+		expect(codexGuard("apply_patch", { command: patch("*** Add File: guard.test.ts", "+const p = `", "+*** Begin Patch", "+*** Add File: /etc/x", "+*** End Patch`;") }, options)).toBeUndefined();
+	});
+});
+
 describe("codexRefusal", () => {
 	it("says the guard refused, and leaves the final period to Codex", () => {
 		expect(codexRefusal("This command touches sensitive files (keys, credentials or Orrery's private data).")).toBe(
