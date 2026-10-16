@@ -292,10 +292,11 @@ const GUARD_TABLE = /^[ \t]*(?:\[{1,2}[ \t]*["']?guard["']?[ \t]*[\].]|["']?guar
 /**
  * [guard] protect read from a config's text on its own, for a pi or OMP session whose config does not load (spec
  * 2026-10-15-guard-protect): its entries when the TOML parses and [guard] reads cleanly (guardProtect; another key may be
- * what is wrong); none when the text has no [guard] table; and undefined, unknown, when the text could not be read
- * (`text` undefined), when it does not parse and may hold [guard] protect (GUARD_TABLE), or when guardProtect refuses
- * it, an entry included, as the config parser and Claude Code refuse it. A guard that cannot know the entries refuses
- * every tool call (src/pi/index.ts unreadableGuard). A byte-order mark before the text is not part of it.
+ * what is wrong); none when the text has no [guard] table, or when its one [guard] table holds no entry (emptyGuard: the
+ * preset every config has from 0.6.5, spec 2026-10-16-guard-presets); and undefined, unknown, when the text could not be
+ * read (`text` undefined), when it does not parse and may hold [guard] protect (GUARD_TABLE), or when guardProtect
+ * refuses it, an entry included, as the config parser and Claude Code refuse it. A guard that cannot know the entries
+ * refuses every tool call (src/pi/index.ts unreadableGuard). A byte-order mark before the text is not part of it.
  */
 export function protectInText(text: string | undefined): readonly string[] | undefined {
 	if (text === undefined) return undefined;
@@ -304,12 +305,38 @@ export function protectInText(text: string | undefined): readonly string[] | und
 	try {
 		root = parse(body) as Table;
 	} catch {
-		return GUARD_TABLE.test(body) ? undefined : [];
+		return !GUARD_TABLE.test(body) || emptyGuard(body) ? [] : undefined;
 	}
 	try {
 		return guardProtect(root);
 	} catch {
 		return undefined;
+	}
+}
+
+/** A plain [guard] header line, as Orrery writes it (a comment after it allowed). */
+const GUARD_HEADER = /^[ \t]*\[[ \t]*guard[ \t]*\][ \t]*(?:#.*)?\r?$/;
+
+/**
+ * Whether a config text that does not parse holds [guard] protect only in one plain [guard] table that holds no entry:
+ * every line that may hold [guard] protect (GUARD_TABLE) is that header or inside its table (up to the next line that
+ * starts with "["), and that table, read on its own, is a [guard] guardProtect reads as empty. A table that does not
+ * read on its own (the broken part may be in it) or holds an entry, a second header, a dotted or inline guard, or a
+ * protect key anywhere else, and the text stays unknown.
+ */
+function emptyGuard(body: string): boolean {
+	const lines = body.split("\n");
+	const headers = lines.flatMap((line, at) => (GUARD_HEADER.test(line) ? [at] : []));
+	if (headers.length !== 1) return false;
+	const start = headers[0];
+	let end = start + 1;
+	while (end < lines.length && !/^[ \t]*\[/.test(lines[end])) end++;
+	const guardLine = new RegExp(GUARD_TABLE.source, "i");
+	if (lines.some((line, at) => (at < start || at >= end) && guardLine.test(line))) return false;
+	try {
+		return guardProtect({ guard: parse(lines.slice(start + 1, end).join("\n")) }).length === 0;
+	} catch {
+		return false;
 	}
 }
 

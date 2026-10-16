@@ -4,6 +4,18 @@
 [updates]
 # check = false   # no daily check for a new release
 
+# The guard: files and folders no agent may read or change, on top of what Orrery always protects (SSH and
+# cloud keys, tool logins, .env, .dev.vars and the like). A path, starting with / or ~/, protects that file, or
+# that folder and everything in it. A name, with no slash, protects every file or folder with exactly that name,
+# in any folder. No wildcards. Uncomment a line or add your own:
+[guard]
+protect = [
+  # ".envrc",
+  # "terraform.tfvars",
+  # "secrets.yml",
+  # "~/finance",
+]
+
 [agents.Atlas]
 folder = "/home/alex/code/agent-Atlas"
 tool = "pi"                            # pi, omp, claude-code or codex: what the TUI launches

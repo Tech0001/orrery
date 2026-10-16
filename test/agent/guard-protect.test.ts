@@ -5,6 +5,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { afterEach, describe, expect, it } from "vitest";
 import { Agent } from "../../src/agent/agent.ts";
 import { ConfigError, type HarnessConfig, parseConfig } from "../../src/agent/config.ts";
+import { newConfigText } from "../../src/agent/config-edit.ts";
 import { checkResolvedPath, durablePreCheck } from "../../src/agent/guard.ts";
 import { guardOmpToolCall, guardToolCall } from "../../src/agent/guard-paths.ts";
 import { checkToolCall } from "../../src/agent/guard-rules.ts";
@@ -910,6 +911,15 @@ describe("a pi or OMP session whose config cannot be read", () => {
 		expect(await s.tool("read", { path: "src/a.ts" })).toBeUndefined();
 		expect(await s.tool("read", { path: "secrets.yml" })).toBeUndefined();
 		expect(await s.tool("read", { path: ".env" })).toEqual({ block: true, reason: expect.stringMatching(SENSITIVE) });
+	});
+
+	it.each(["pi", "omp"] as const)("%s keeps the built-in rules alone when the broken config's [guard] is the preset, with no entry", async (host) => {
+		const t = protectWorld();
+		const s = await session(t, `${newConfigText()}\n[agents.Atlas\n`, host);
+		expect(s.notices).toEqual([{ type: "warning", message: expect.stringMatching(/; running without memory$/) }]);
+		expect(await s.tool("read", { path: "src/a.ts" })).toBeUndefined();
+		expect(await s.tool("bash", { command: "ls" })).toBeUndefined();
+		expect(await s.tool("read", { path: ".dev.vars" })).toEqual({ block: true, reason: expect.stringMatching(SENSITIVE) });
 	});
 
 	it.each(["pi", "omp"] as const)("%s reads [guard] protect on its own when the TOML parses but another key is bad, keeping the valid entries", async (host) => {

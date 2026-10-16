@@ -234,10 +234,69 @@ export function archiveAgent(text: string, configDir: string, agent: string, day
 	return checked(text, out, configDir, agent, () => undefined);
 }
 
-/** A new config's first lines: what the file is, and data_dir only when memory lives somewhere other than beside it. */
+/**
+ * The [guard] block every new config has, and an older one gets once from setup (spec 2026-10-16-guard-presets,
+ * addGuardPreset): an empty protect list, with commented examples of each kind of entry the config takes (config.ts
+ * protectProblem). No final newline.
+ */
+export const GUARD_PRESET = [
+	"# The guard: files and folders no agent may read or change, on top of what Orrery always protects (SSH and",
+	"# cloud keys, tool logins, .env, .dev.vars and the like). A path, starting with / or ~/, protects that file, or",
+	"# that folder and everything in it. A name, with no slash, protects every file or folder with exactly that name,",
+	"# in any folder. No wildcards. Uncomment a line or add your own:",
+	"[guard]",
+	"protect = [",
+	'  # ".envrc",',
+	'  # "terraform.tfvars",',
+	'  # "secrets.yml",',
+	'  # "~/finance",',
+	"]",
+].join("\n");
+
+/**
+ * A new config's first lines: what the file is, data_dir only when memory lives somewhere other than beside it, and the
+ * [guard] preset.
+ */
 export function newConfigText(dataDir?: string): string {
 	const head = "# Orrery's config: one [agents.<Name>] block per agent. Memory lives beside this file unless you point it elsewhere.\n# The Orrery TUI (run `orrery`) edits this file in place and keeps your comments.\n";
-	return dataDir === undefined ? head : `${head}data_dir = ${tomlValue(dataDir)}\n`;
+	return `${dataDir === undefined ? head : `${head}data_dir = ${tomlValue(dataDir)}\n`}\n${GUARD_PRESET}\n`;
+}
+
+/**
+ * The config with the [guard] preset added (GUARD_PRESET), or undefined when it has a [guard] table already. Every other
+ * line stays byte for byte. The block goes before the first table, above the comment lines right over it, so a table
+ * keeps its comment; else (no table, or none that the block can go before without changing a value) at the end. Checked
+ * as the other edits are: the result must parse, and differ from the old config by the empty [guard] table alone. A
+ * config Orrery cannot read throws its ConfigError.
+ */
+export function addGuardPreset(text: string, configDir: string): string | undefined {
+	parseConfig(text, configDir);
+	const old = parse(text) as Table;
+	if (old.guard !== undefined) return undefined;
+	const eol = text.includes("\r\n") ? "\r\n" : "\n";
+	const cr = eol === "\r\n" ? "\r" : "";
+	const block = GUARD_PRESET.split("\n").map((line) => `${line}${cr}`);
+	const want = JSON.stringify(canonical({ ...old, guard: { protect: [] } }));
+	const fits = (next: string) => {
+		try {
+			return JSON.stringify(canonical(parse(next))) === want && parseConfig(next, configDir).guard.protect.length === 0;
+		} catch {
+			return false;
+		}
+	};
+	const lines = text.split("\n");
+	for (let header = 0; header < lines.length; header++) {
+		if (!/^[ \t]*\[/.test(lines[header])) continue;
+		let at = header;
+		while (at > 0 && /^[ \t]*#/.test(lines[at - 1])) at--;
+		const gap = at > 0 && lines[at - 1].trim() !== "" ? [cr] : [];
+		const next = [...lines.slice(0, at), ...gap, ...block, cr, ...lines.slice(at)].join("\n");
+		if (fits(next)) return next;
+	}
+	const sep = text === "" ? "" : text.endsWith("\n") ? eol : eol + eol;
+	const next = `${text}${sep}${GUARD_PRESET.split("\n").join(eol)}${eol}`;
+	if (fits(next)) return next;
+	throw new ConfigError("Orrery couldn't place the [guard] block safely; the config is unchanged.");
 }
 
 /** Writes the config atomically (a temporary file, then rename), keeping its mode, and keeps the old text as config.toml.bak. */
