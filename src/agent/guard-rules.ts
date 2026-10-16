@@ -157,6 +157,21 @@ const HOOK_COMMAND = new RegExp(`${PLUMBING_START}(?:codex|claude)-hook${PLUMBIN
 const ORRERY_PROGRAM = new RegExp(`${PLUMBING_START}(?:orrery(?:\\.exe)?|cli/main\\.[cm]?[jt]s)(?=$|[\\s"';|&()<>\`{}$\\\\])`);
 const HOLDER_WORD = new RegExp(`(?:^|[\\s"'<>;|&()\`{},]|${ESCAPE_BEFORE})holder${PLUMBING_END}`);
 
+/**
+ * A pattern for `names` standing as words in a reading of shell text, with the hook plumbing's edges (PLUMBING_START,
+ * PLUMBING_END): a path's last part, quotes, an escape or an expansion that may be empty around it. Lower case, as the
+ * readings are.
+ */
+export function shellWord(names: readonly string[]): RegExp {
+	return new RegExp(`${PLUMBING_START}(?:${names.map(literal).join("|")})${PLUMBING_END}`);
+}
+
+/** Whether any reading of shell text (readings: its forms and brace pieces) passes `test`. */
+export function inAnyReading(text: string, test: (form: string) => boolean): boolean {
+	const reading = readings(text);
+	return reading.forms.some(test) || reading.pieces.some(test);
+}
+
 /** Whether a reading runs Orrery's hook plumbing (HOOK_COMMAND; ORRERY_PROGRAM with HOLDER_WORD). Linear. */
 function runsPlumbing(form: string): boolean {
 	return HOOK_COMMAND.test(form) || (form.includes("holder") && ORRERY_PROGRAM.test(form) && HOLDER_WORD.test(form));

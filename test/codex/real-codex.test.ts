@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir, userInfo } from "node:os";
@@ -163,6 +163,29 @@ describe.skipIf(codex === null)("Orrery's Codex launch against the installed Cod
 			}
 		}
 	}, 180_000);
+
+	it("judges a patch sent through the shell by its targets: Codex applies the heredoc itself, past any name in the text", async () => {
+		const orrery = [cliCommand([]).cmd, ...cliCommand([]).args];
+		const a = guardedAtlas("shell-patch", orrery);
+		// Outside the agent's folder and its allowed root (the folder's parent, the scratch home).
+		const outside = mkdtempSync(join(scratch, "outside-"));
+		symlinkSync(outside, join(a.work, "out"));
+		const heredoc = (target: string) => `apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: ${target}\n+hello\n*** End Patch\nEOF`;
+		const calls: Answer[] = [{ shell: heredoc("out/x.md") }, { shell: heredoc("notes.md") }];
+		const model = await scriptedModel((n) => calls[n - 1] ?? { reply: "done" });
+		try {
+			const run = await runCodex(["exec", ...a.launch.config, ...fakeFlags(model.port, a.catalog), "-C", a.work, "run it"], a.env);
+			expect(run.status, run.stderr).toBe(0);
+			const outputs = callOutputs(model.requests);
+			expect(outputs.get("call_1")).toBe(`Command blocked by PreToolUse hook: Orrery guard: ${join(realpathSync(outside), "x.md")} is outside this agent's folder and allowed roots. Command: ${heredoc("out/x.md")}`);
+			expect(existsSync(join(outside, "x.md"))).toBe(false);
+			// Codex took the second heredoc for a patch and applied it itself.
+			expect(readFileSync(join(a.work, "notes.md"), "utf8")).toBe("hello\n");
+			await waitUntil(() => readHolder(a.agentDir) === undefined, 30_000);
+		} finally {
+			model.close();
+		}
+	}, 120_000);
 
 	it("guards each call a code cell makes: Codex hands the hook the cell's calls one by one, never the cell", async () => {
 		const orrery = [cliCommand([]).cmd, ...cliCommand([]).args];

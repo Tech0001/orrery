@@ -146,6 +146,111 @@ describe("codexGuard on apply_patch: every target is a write", () => {
 	});
 });
 
+describe("codexGuard places a patch's targets as Codex does", () => {
+	it("joins a relative target onto the cwd and keeps an absolute one, '..' taken as written, as Codex's PathUri join does", () => {
+		const { folder, options } = setup();
+		const call = (path: string) => codexGuard("apply_patch", { command: patch(`*** Add File: ${path}`, "+x") }, options);
+		// ws/link leads out of the folder, but "link/.." is the folder itself, written or joined.
+		expect(call("../link/../top.ts")).toBeUndefined();
+		expect(call(`${folder}/link/../top.ts`)).toBeUndefined();
+		expect(call("../link/x.ts")).toMatch(OUTSIDE);
+		expect(call("//etc///orrery-x")).toMatch(OUTSIDE);
+	});
+
+	it("takes '~' as a name, as Codex does: a folder named ~ in the cwd, never home", () => {
+		const { root, options } = setup();
+		// The cwd's "~" is a link to home's .ssh: Codex writes there.
+		expect(codexGuard("apply_patch", { command: patch("*** Add File: ~/notes.txt", "+x") }, options)).toMatch(SENSITIVE);
+		// Without one, ~/notes.txt is a file in the cwd's own new folder "~": inside the agent's folder.
+		const plain = { ...options, cwd: join(root, "ws") };
+		expect(codexGuard("apply_patch", { command: patch("*** Add File: ~/notes.txt", "+x") }, plain)).toBeUndefined();
+		// Named as home's credentials it is still refused by name.
+		expect(codexGuard("apply_patch", { command: patch("*** Add File: ~/.ssh/authorized_keys", "+x") }, plain)).toMatch(SENSITIVE);
+	});
+
+	it("matches a protected name in any letter case, as a case-insensitive file system opens it", () => {
+		const { options } = setup();
+		expect(codexGuard("apply_patch", { command: patch("*** Update File: ../SECRET.TXT", "@@", "+x") }, options)).toMatch(PROTECTED);
+		expect(codexGuard("apply_patch", { command: patch("*** Add File: ../.ENV", "+x") }, options)).toMatch(SENSITIVE);
+	});
+});
+
+describe("codexGuard on a shell command that runs apply_patch (Codex applies a heredoc itself, and puts the program on the shell's PATH)", () => {
+	const heredoc = (...lines: string[]) => `apply_patch <<'EOF'\n${patch(...lines)}\nEOF`;
+	const CANNOT = /runs apply_patch with a patch Orrery could not read/;
+
+	it("judges every target of Codex's own heredoc form as a write", () => {
+		const { options } = setup();
+		const bash = (command: string) => codexGuard("Bash", { command }, options);
+		expect(bash(heredoc("*** Add File: notes.md", "+hello"))).toBeUndefined();
+		expect(bash(heredoc("*** Add File: /etc/orrery-x", "+x"))).toMatch(OUTSIDE);
+		// Through a link out of the folder: no name in the text says so, the target's real place does.
+		expect(bash(heredoc("*** Add File: ../link/x.ts", "+x"))).toMatch(OUTSIDE);
+		expect(bash(heredoc("*** Update File: a.ts", "*** Move to: ../link/b.ts", "@@", "-a", "+b"))).toMatch(OUTSIDE);
+		expect(bash(`applypatch <<EOF\n${patch("*** Delete File: ../link/old.ts")}\nEOF`)).toMatch(OUTSIDE);
+		expect(bash(`  apply_patch << "PATCH"\n${patch("*** Add File: ../link/x.ts", "+x")}\nPATCH\n\n`)).toMatch(OUTSIDE);
+		expect(bash(heredoc("*** Add File: notes.md", "+hello").replaceAll("\n", "\r\n"))).toBeUndefined();
+		// The heredoc wrapper Codex reads leniently, inside the shell's own heredoc.
+		expect(bash(`apply_patch <<'X'\n<<'EOF'\n${patch("*** Add File: ../link/x.ts", "+x")}\nEOF\nX`)).toMatch(OUTSIDE);
+	});
+
+	it("reads the patch as one single-quoted argument, and judges it the same", () => {
+		const { options } = setup();
+		const bash = (command: string) => codexGuard("Bash", { command }, options);
+		expect(bash(`apply_patch '${patch("*** Add File: notes.md", "+hello")}'`)).toBeUndefined();
+		expect(bash(`apply_patch '${patch("*** Add File: ../link/x.ts", "+x")}'`)).toMatch(OUTSIDE);
+	});
+
+	it("judges relative targets from the cwd and from the folder a cd && before it goes to, as Codex and the shell read it", () => {
+		const { home, options } = setup();
+		const bash = (command: string) => codexGuard("Bash", { command }, options);
+		expect(bash(`cd ../link && ${heredoc("*** Add File: x.ts", "+x")}`)).toMatch(OUTSIDE);
+		expect(bash(`cd .. && ${heredoc("*** Add File: top.ts", "+x")}`)).toBeUndefined();
+		expect(bash(`cd '../link' && ${heredoc("*** Add File: x.ts", "+x")}`)).toMatch(OUTSIDE);
+		expect(bash(`cd "../link" && apply_patch '${patch("*** Add File: x.ts", "+x")}'`)).toMatch(OUTSIDE);
+		// "~" is home to a shell, and a folder named "~" to Codex: both are judged.
+		expect(bash(`cd ~ && ${heredoc("*** Add File: .bashrc", "+x")}`)).toMatch(SENSITIVE);
+		expect(bash(`cd ${join(home, ".ssh")} && ${heredoc("*** Add File: config", "+x")}`)).toMatch(SENSITIVE);
+	});
+
+	it.each([
+		["a patch from a file", "apply_patch < fix.patch"],
+		["a patch from a pipe", "cat fix.patch | apply_patch"],
+		["a patch from a substitution", 'apply_patch "$(cat fix.patch)"'],
+		["a patch as a double-quoted argument, which a shell changes", `apply_patch "${patch("*** Add File: x.md", "+a")}"`],
+		["a patch as a $'…' argument", "apply_patch $'*** Begin Patch\\n*** Add File: ../link/x\\n+x\\n*** End Patch'"],
+		["the program by a path", "/tmp/bin/apply_patch < fix.patch"],
+		["the program's name split by quotes", "appl''y_patch < fix.patch"],
+		["the program's name by an escape", "$'\\x61pply_patch' < fix.patch"],
+		["the program's name in a brace group", "{apply_patch,x} < fix.patch"],
+		["the program's name in capitals, not a form", "APPLY_PATCH < fix.patch"],
+		["a second command after the heredoc", `${heredoc("*** Add File: a.md", "+a")}\napply_patch < evil.patch`],
+		["a heredoc whose end word comes early", `apply_patch <<'EOF'\n${patch("*** Add File: a.md", "+a")}\nEOF\nrm -f x\nEOF`],
+		["two heredocs", `${heredoc("*** Add File: a.md", "+a")} && ${heredoc("*** Add File: b.md", "+b")}`],
+		["another command before it", `echo hi; ${heredoc("*** Add File: a.md", "+a")}`],
+		["a bare cd before it", `cd && ${heredoc("*** Add File: a.md", "+a")}`],
+		["a cd to a variable", `cd "$DIR" && ${heredoc("*** Add File: x.md", "+a")}`],
+		["a cd back", `cd - && ${heredoc("*** Add File: x.md", "+a")}`],
+		["a cd to a glob", `cd ../li* && ${heredoc("*** Add File: x.md", "+a")}`],
+		["a patch without its end", "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: a.md\n+a\nEOF"],
+		["a path its shell would expand", `apply_patch <<EOF\n${patch("*** Add File: $DIR/x.md", "+a")}\nEOF`],
+		["a command that only names the program", "grep -rn apply_patch src"],
+	])("refuses %s", (_what, command) => {
+		const { options } = setup();
+		expect(codexGuard("Bash", { command }, options)).toMatch(CANNOT);
+	});
+
+	it("leaves a command that holds the name only inside a longer word, and judges no content of a patch", () => {
+		const { options } = setup();
+		const bash = (command: string) => codexGuard("Bash", { command }, options);
+		expect(bash("rg -n apply_patch_spec src && cat src/apply_patch.rs")).toBeUndefined();
+		expect(bash(heredoc("*** Update File: deploy.sh", "@@", " cd $DIR", "-make", "+make all"))).toBeUndefined();
+		expect(bash(heredoc("*** Add File: notes.md", "+*** Begin Patch", "+*** End Patch"))).toBeUndefined();
+		// In a quoted heredoc the shell changes nothing: a $ in a path is a name.
+		expect(bash(heredoc("*** Add File: price$.md", "+a"))).toBeUndefined();
+	});
+});
+
 describe("codexGuard on Codex's other tools", () => {
 	it("judges view_image's path as a read, opened where Codex opens it", () => {
 		const { folder, options } = setup();
