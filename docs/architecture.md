@@ -296,6 +296,15 @@ view: it is refused to every other agent's file tools and content searches (grep
 listings (ls, find, glob) may list its folder. Which agent a session is comes from the same choice that picks its
 memory (`ORRERY_AGENT` with its claimed token, else the folder), so a tool an agent starts itself is not that agent. In
 Claude Code, a config that is there but cannot be read refuses every tool call.
+A project's `.env` and `.env.<anything>` files are refused like credentials, except `.env.example`, `.env.sample` and
+`.env.template`; `process.env`, `prod.env` and `.envrc` are not `.env` files. `[guard] protect` in the config adds the
+user's own files and folders, for every agent: a path (`/…` or `~/…`) covers that file or folder, and a name (no `/`)
+covers every file or folder so named. They are refused to file tools (by the path as written, as the tool resolves it,
+and through links), in shell text, and as the root of a search that holds a protected path; the refusal names the
+setting. Two things differ from the built-in credentials: a protected name is not checked against a search's root
+(which folders hold one is not known without listing them), and neither a protected name nor `.env` is checked in an
+OMP edit's text, only in its targets, so an edit may add `.env` to a `.gitignore`. A pi or OMP session that starts
+while the config cannot be read keeps the built-in rules, `.env` included, but does not know `[guard] protect`.
 Shared rules handle normalization and symlinks; adapters map each host's arguments to those rules.
 Host-specific checks cover multi-file edits and known credential locations.
 Some ambiguous OMP edit or glob forms are refused because their targets cannot be judged reliably.
@@ -304,6 +313,10 @@ The rules are tested against concrete tool shapes and need review when upstream 
 This is a credential guard, not a sandbox.
 Shell and evaluation tools receive text checks, not an operating-system isolation boundary.
 The shell-text rules are a seatbelt. Known limits include variables, `eval`, `cd`, escape codes, brace names split across words, commands that change folder with their own flag (`git -C`, `tar -C`), a swap of the session's own folder in the same command, a shell search of an agent's whole folder, and hard links to a protected file.
+For `.env` and `[guard] protect` these hold too, and also: a glob that does not spell the name (`.en?`), a command over
+a folder that holds a protected path (`tar`, `grep -r`), and a content search (grep) of a folder that holds a `.env` file
+or a protected name get through. The other way round, a command that has a protected name as a word is refused even
+when it means something else, such as `git commit -m "ignore .env"` or `python -m venv .env`.
 Generated code can reach files through mechanisms the guard cannot see.
 Unknown plugin tools and hook failures can also fall outside the protection offered by a host integration.
 Do not use it as the security boundary for untrusted code or a hostile agent.

@@ -255,10 +255,25 @@ the trade-offs.
 ## Safety
 
 Orrery guards credentials: an agent's tool calls that would read key files, your logins or another agent's memory are
-refused, and Orrery's own config and program are read-only to agents. An agent's file edits also stay inside the
-folder it was opened in; `allowed_roots = ["/abs/path"]` in its `[agents.<Name>]` section adds more. **It is a guard, not a sandbox.** It checks
-file paths and the text of shell commands, so a determined program can get around it; the
-[architecture guide](docs/architecture.md#the-credential-guard) lists the known limits.
+refused, and Orrery's own config and program are read-only to agents. A project's `.env` and `.env.<anything>` files
+are protected too: agents can neither read nor edit them, so you edit them yourself. `.env.example`, `.env.sample` and
+`.env.template` stay open. An agent's file edits also stay inside the folder it was opened in; `allowed_roots =
+["/abs/path"]` in its `[agents.<Name>]` section adds more.
+
+To protect more files and folders, for every agent and in every tool, list them in `config.toml`:
+
+```toml
+[guard]
+protect = ["~/finance", "/srv/keys/prod.pem", "secrets.yml"]
+```
+
+An entry that starts with `/` or `~/` is a path: that file, or that folder and everything in it. An entry with no `/`
+is a name: every file or folder with exactly that name, in any folder. Letter case is ignored. Globs (`*.pem`) and
+relative paths (`keys/prod.pem`) are not supported: such an entry is a config error. Agents cannot change the list,
+since the config is read-only to them. A refusal says which entry it came from.
+
+**It is a guard, not a sandbox.** It checks file paths and the text of shell commands, so a determined program can get
+around it; the [architecture guide](docs/architecture.md#the-credential-guard) lists the known limits.
 
 Logins are kept in private files (mode 0600), never in the config. Your agents' memory on disk is not encrypted;
 copies sent to a remote are. Model providers see whatever context is sent to them, memory included.
