@@ -76,6 +76,20 @@ Two cases are refused, with the reason and the fix:
   session there, and Claude Code loads the files of every ancestor folder too. Two agents would share one prompt, so
   `orrery agent` refuses and says to open the agent in another folder. The plugin refuses such a session as well.
 
+### The desktop app
+
+The Claude Code desktop app runs its own copy of Claude Code on your machine, with the same plugins, so an agent
+set up the file way works there: run `orrery claude-setup <Name>` once, then start a session in the agent's default
+folder. The app's sessions record into the agent and load its memory like terminal ones. Checked with the Linux app
+and the Claude Code it bundles (2.1.299): a session recorded, and a new session recalled it after the first chat
+was deleted.
+
+- `orrery agent <Name>` starts Claude Code in a terminal, not in the app, so an agent without a default folder
+  can't be opened from the app.
+- Orrery's status line and its notices did not show in the app.
+- The mod (`--mod`) is not yet checked in the app.
+- Claude Code on the web runs in the cloud and can't reach the memory on your machine.
+
 ## Set up an agent, once
 
 Opening a Claude Code agent from the TUI (`L`) offers this setup the first time.

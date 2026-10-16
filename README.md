@@ -173,6 +173,10 @@ and the known limits. Claude Code needs one more step per agent before it record
 `orrery claude-setup Atlas` loads the memory in the agent's default folder, and `--mod` loads it through the mod,
 which also lets Claude Code open the agent in any folder.
 
+The Claude Code desktop app works too: after `orrery claude-setup <Name>`, start a session in the agent's folder, and
+the app's Claude Code records it and loads the memory (tested with the Linux app). Claude Code on the web runs in the
+cloud and can't reach the memory on your machine.
+
 ## If you are an agent helping someone with Orrery
 
 The TUI is for people; you have the command line. `orrery help all` lists every command and option. Start here:
