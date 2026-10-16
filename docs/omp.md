@@ -95,18 +95,30 @@ refused to them: run those in your own terminal. Only an agent's own sessions re
 file tools and content searches are refused it. Writes go to the folder the agent was opened in and its
 `allowed_roots`.
 
+A project's `.env` and `.env.<anything>` files are blocked like credentials (`.env.example`, `.env.sample`,
+`.env.template` and `.env.dist` stay open), and so is everything the config's `[guard] protect` lists: a path (`/…` or `~/…`, a file
+or a folder) or a name (every file or folder so named); see the [README](../README.md#safety). An edit's text may name
+`.env` or a protected name, so an edit can add `.env` to a `.gitignore`; an edit that targets one is refused. A config
+that cannot be read is handled as in pi: OMP keeps its `[guard] protect` when that part reads cleanly, and refuses
+every tool call when it does not.
+
 It is a credential guard, not a sandbox. `bash` and `eval` get only a check of their text for ssh keys and credential
 stores. The check also refuses commands that name Orrery's home (`.orrery`), except the agent's own `view.md` by its
 full path; a search or `ast_edit` root may name that file from `~/` too, since OMP expands `~` in its own process,
 where a shell's `export HOME` does not reach. These shell-text rules are a seatbelt. Known limits include variables, `eval`, `cd`, escape codes, brace names split across words, commands that change folder with their own flag (`git -C`, `tar -C`), a swap of the session's own folder in the same command, a shell search of an agent's whole folder, and hard links to a protected file. The code they run can reach any file.
+**A search of a folder can still read a `.env` inside it**, or a file a protected name covers; and a command that has a
+protected name as a word is refused even when it means something else (`git commit -m "ignore .env"`).
+`bash` runs in the folder its `cwd` names, so that folder is judged as a read of it: a credential folder, Orrery's
+home or a protected folder as `cwd` is refused. A relative name in the command is then not seen, as after a `cd`.
 Tools from OMP plugins are not checked.
 
 Where OMP's own parsers may read more than the guard can, the guard refuses rather than guesses. In an agent's OMP
 session these calls are refused, and the model has to rephrase them:
 
-- an edit whose text names a credential file anywhere, its content included;
+- an edit whose text names a credential file or a `[guard] protect` path anywhere, its content included;
 - an edit with a line that looks like a target (a `[path#TAG]` header, `MV`, a `*** … File:` line) but does not read
-  cleanly as one;
+  cleanly as one. Two forms OMP itself accepts are refused this way too: sloppy mode's bare `*** Edit File:` line (which
+  goes on with the previous file) and a quoted path followed by ` all`;
 - a `file://` path the guard cannot read as a file;
 - a search or ast_edit glob with braces (`{a,b}`), or with `..` after a wildcard.
 
@@ -142,6 +154,9 @@ with the last version checked (18.10.2) before upgrading.
   the agent's folder: only their names are checked for credential files, not where they lead.
 - An edit to a file that does not exist can be moved by OMP, by its `#TAG`, onto a file of the same name the agent read
   in OMP's session scratch space (`local://`). The guard judges the path as written.
+- When an edit's target does not exist, OMP may also write the one file of that name it finds deeper under its folder,
+  or one read earlier in the session with the same `#TAG`. The guard's name rules (`.env`, a `[guard] protect` name)
+  still apply, since the name is the same; its path rules judge the path as written, not the file OMP finds.
 - In `read`, the guard splits a list of paths at commas and spaces even inside braces (`{a,b}`), which OMP keeps
   whole. Each piece is judged on its own.
 

@@ -312,6 +312,11 @@ searches are refused it, by their path or a symbolic link to it (a hard link is 
 `allowed_roots`. Setup commands that name the installed app folder (the plugin install above, for one) are refused to
 agents, so run them in your own terminal.
 
+A project's `.env` and `.env.<anything>` files are refused the same way, so agents neither read nor edit them
+(`.env.example`, `.env.sample`, `.env.template` and `.env.dist` stay open). So is everything `[guard] protect` lists in the config:
+a path (`/…` or `~/…`, a file or a folder) or a name (every file or folder so named); see the
+[README](../README.md#safety). Its refusals say `protected by [guard] protect in Orrery's config`.
+
 Claude Code's own per-user state stays writable, and only this:
 
 - this project's folder under `~/.claude/projects/` (auto memory);
@@ -320,6 +325,10 @@ Claude Code's own per-user state stays writable, and only this:
 
 The guard runs before every tool. A hook that crashes does not block. It is a seatbelt, not a sandbox. Its known limits:
 
+- **A search of a folder can still read a `.env` inside it**, or a file a protected name covers: only a protected path
+  is checked against a Grep's folder. A command over a folder that holds a protected path (`tar`, `grep -r`) is not
+  refused either, and a command that has a protected name as a word is refused even when it means something else
+  (`git commit -m "ignore .env"`).
 - The shell-text rules read a command's text, not what it does. Shell commands that name an `.orrery` folder or a
   custom `ORRERY_CONFIG` file by a path the guard can read are refused, but known limits include variables, `eval`, `cd`, escape codes, brace names split across words, commands that change folder with their own flag (`git -C`, `tar -C`), a swap of the session's own folder in the same command, a shell search of an agent's whole folder, and hard links to a protected file, and a relative path or a link to the config.
 - Tools the guard does not know are judged by heuristics: path-like keys (`path`, `file`, `dir`, `source`, …),

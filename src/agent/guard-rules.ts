@@ -1,5 +1,6 @@
 /** The agent guard's pure rules (spec §6): which tool calls and paths are refused. No pi-durable here. */
 
+import { homedir } from "node:os";
 import { posix } from "node:path";
 
 export interface GuardOptions {
@@ -25,6 +26,11 @@ export interface GuardOptions {
 	 * it, and shell text may not name it by its path (configSpellings). ~/.orrery/config.toml is kept so by name too.
 	 */
 	readonly configFile?: string;
+	/**
+	 * [guard] protect from Orrery's config (HarnessConfig.guard, spec 2026-10-15-guard-protect), as the config writes it:
+	 * more files and folders no tool reads, writes or names (protection).
+	 */
+	readonly protect?: readonly string[];
 }
 
 const SENSITIVE = [
@@ -52,28 +58,187 @@ const SENSITIVE = [
 	/\.omp\/(?:profiles\/[^/\s"']+\/)?(?:agent\/)?(?:\.env|secrets\.ya?ml)\b/,
 ];
 
+// Where a protected name stands as a path segment or a word of its own in a reading (ENV_FILE, Protection.named). Before
+// it: the text's start, a blank, a quote, "=", ":", "/", "~", a shell operator or redirection, a backquote, a brace or a
+// comma (a group past the brace readings' caps), "*" (a glob that matches the bare name too), "@" (curl's and httpie's
+// "send this file", @.env), or short options the name is glued to (curl -T.env, curl -sT.env). After it: the text's
+// end, a blank, a quote, "/", ":", a shell operator, a backquote, a comma or closing brace, or a glob character. A path
+// entry's spelling ends the same way (Protection.spelled), so ~/finance never stands for ~/finance-old.
+const NAME_START = "(?:^|[\\s\"'=:/~<>;|&()`{,*@]|(?:^|[\\s\"'])-[a-z]+)";
+const NAME_END = "(?=$|[\\s\"'/:;|&()<>`,}*?\\[])";
+
+/**
+ * The built-in .env rule (spec 2026-10-15-guard-protect): .env and .env.<anything> standing as a name, but not the
+ * templates meant to be shared (.env.example, .env.sample, .env.template, .env.dist, each followed by a plain end, not a
+ * glob). As a name, so process.env, import.meta.env, prod.env and .envrc never match; nor does *.env, since a shell's
+ * "*" does not match a leading dot (NAME_START without "*"). A brace group right after it ends it too: .env.lo{…} is a
+ * .env file whatever the group holds. What follows ".env." holds no character a name starts or ends at, so a try reads
+ * no further than the next place a name may start: the text is read in linear time.
+ */
+const ENV_FILE = new RegExp(
+	`(?:^|[\\s"'=:/~<>;|&()\`{,@]|(?:^|[\\s"'])-[a-z]+)\\.env(?!\\.(?:example|sample|template|dist)(?=$|[\\s"'/:;|&()<>\`,}]))(?:\\.[^\\s"'=:/~<>;|&()\`{,*}?\\[@]*)?(?=$|[\\s"'/:;|&()<>\`,}*?\\[{])`,
+);
+
+/**
+ * How far around a brace group the readings look (Reading.pieces) for the built-in rules: room for the longest fixed
+ * name they look for (.pi/agent/models.json, .env.template) and its edges.
+ */
+const ENV_REACH = 32;
+
 /**
  * Case-insensitive: on a case-insensitive file system (macOS) ~/.SSH is ~/.ssh. The text is judged as written and as the
- * shell reads it (readings), each by the credential patterns and by Orrery's own names. `views`: which agent view file the
- * text may name (viewRules); by default none.
+ * shell reads it (readings), each by the credential patterns, the built-in .env rule and Orrery's own names. `views`:
+ * which agent view file the text may name (viewRules); by default none.
  */
 export function sensitive(text: string, views: ViewRule = NO_VIEW): boolean {
-	return flagged(text, views, false);
+	return flagged(readings(text), views, false);
 }
 
 /**
- * sensitive for shell text (a command line, code to run): Orrery's config is refused by name too, since a command could
- * rewrite it (an agent's view and the guard's rules come from it), and so is the config file in use by any of `config`,
- * its spellings (configSpellings). File tools may still read it.
+ * Why an OMP edit's whole text is refused, or undefined: a credential file it names, by sensitive's rules but the .env
+ * rule, then a [guard] protect path entry. Not .env or a protect name, which its content may name as text (a line of a
+ * .gitignore, code that loads it): the edit's targets are still judged as paths, by every rule. Its readings are made
+ * once for both, as checkToolCall makes a command's.
  */
-export function shellSensitive(command: string, views: ViewRule = NO_VIEW, config: readonly string[] = []): boolean {
-	return flagged(command, views, true, config);
+export function editTextRefusal(text: string, views: ViewRule, protect: Protection): string | undefined {
+	const reading = readings(text, protect.reach);
+	if (flagged(reading, views, false, [], false)) return "This edit touches sensitive files (keys, credentials or Orrery's private data).";
+	const entry = protect.spelled === undefined ? undefined : protectedIn(reading, protect, false);
+	return entry === undefined ? undefined : `This edit touches ${entry}, ${PROTECTED_BY}.`;
 }
 
-function flagged(text: string, views: ViewRule, shell: boolean, config: readonly string[] = []): boolean {
-	return readings(text.toLowerCase()).some(
-		(form) => SENSITIVE.some((pattern) => pattern.test(form)) || orreryNamed(form, views, shell) || config.some((spelling) => form.includes(spelling)),
+/**
+ * Whether a text's readings name a sensitive file. For `shell` text (a command line, code to run) Orrery's config is
+ * refused by name too, since a command could rewrite it (an agent's view and the guard's rules come from it), and so is
+ * the config file in use by any of `config`, its spellings (configSpellings); file tools may still read it. `env`: the
+ * built-in .env rule. The credential patterns and the .env rule also read the pieces of brace groups the readings could
+ * not expand (Reading.pieces), as [guard] protect does; Orrery's own names have their own rule for those (readings).
+ */
+function flagged(reading: Reading, views: ViewRule, shell: boolean, config: readonly string[] = [], env = true): boolean {
+	return (
+		reading.forms.some(
+			(form) =>
+				SENSITIVE.some((pattern) => pattern.test(form)) ||
+				(env && ENV_FILE.test(form)) ||
+				orreryNamed(form, views, shell) ||
+				config.some((spelling) => form.includes(spelling)),
+		) || reading.pieces.some((piece) => SENSITIVE.some((pattern) => pattern.test(piece)) || (env && ENV_FILE.test(piece)))
 	);
+}
+
+/** What a refusal for a [guard] protect entry says: the entry is the user's, not a built-in rule, so it names the setting. */
+export const PROTECTED_BY = "protected by [guard] protect in Orrery's config";
+export const PROTECTED_FILE = (path: string) => `${path} is ${PROTECTED_BY}.`;
+
+/** [guard] protect as the guard matches it (protection). */
+export interface Protection {
+	/** Each path entry as the config writes it, where it is ("~/" from the guard's home), and where it really is. */
+	readonly paths: readonly { readonly entry: string; readonly path: string; readonly real: string }[];
+	/** Each name entry by its lower-case name, to the entry as the config writes it. */
+	readonly names: ReadonlyMap<string, string>;
+	/**
+	 * One pattern for every path entry's spellings, with a group per entry in `paths` order, and one for every name, so a
+	 * long text is read once for all of them; none for none.
+	 */
+	readonly spelled?: RegExp;
+	readonly named?: RegExp;
+	/** How far around a brace group the readings look (Reading.pieces) to hold any spelling or name whole. */
+	readonly reach: number;
+}
+
+const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * A name or path folded for [guard] protect: lower case, and composed (NFC), since macOS file systems take "café" and
+ * "cafe" with a combining accent for one name. Only the protect rules fold this way; the built-in patterns are ASCII.
+ */
+export const foldName = (text: string) => text.toLowerCase().normalize("NFC");
+
+/** Room for the home part of "~user/…" or "${HOME…}/…" in a piece (Protection.reach). */
+const HOME_REACH = 32;
+
+/**
+ * [guard] protect `entries` (GuardOptions.protect) for matching: a path entry from `home`, and where it really is by
+ * `real` (a link followed; by default as written); a name entry folded to lower case, as the other rules fold. Made per
+ * tool call, as configSpellings is. A path entry under home is spelt by configSpellings, and also from "~" with a user
+ * name ("~alex/…") and from a ${HOME…} expansion ("${HOME%/}/…"), as the shell may spell home.
+ */
+export function protection(entries: readonly string[] = [], home: string = homedir(), real: (path: string) => string = (path) => path): Protection {
+	const paths: { entry: string; path: string; real: string }[] = [];
+	const names = new Map<string, string>();
+	const spellings: string[] = [];
+	const base = posix.normalize(home).replace(/\/+$/, "");
+	let reach = ENV_REACH;
+	for (const entry of entries) {
+		if (!entry.includes("/")) {
+			names.set(foldName(entry), entry);
+			reach = Math.max(reach, entry.length + 2);
+			continue;
+		}
+		const path = (entry.startsWith("~/") ? posix.join(home, entry.slice(2)) : posix.normalize(entry)).replace(/(.)\/+$/, "$1");
+		const where = { entry, path, real: real(path) };
+		paths.push(where);
+		const literals = configSpellings({ configFile: path, home }, where.real).map(foldName);
+		const fromHome = base === "" ? [] : [path, where.real].filter((at) => at.startsWith(`${base}/`)).map((at) => literal(foldName(at.slice(base.length))));
+		// Each home-part run stops at the next "~" or "$", so the text is read in linear time.
+		const patterns = [...literals.map(literal), ...fromHome.flatMap((rest) => [`~[^\\s"'/;|&()<>\`~]*${rest}`, `\\$\\{home[^}\\s$]*\\}${rest}`])];
+		spellings.push(`(${patterns.join("|")})`);
+		reach = Math.max(reach, ...literals.map((spelling) => spelling.length + HOME_REACH));
+	}
+	return {
+		paths,
+		names,
+		reach,
+		...(spellings.length === 0 ? {} : { spelled: new RegExp(`(?:${spellings.join("|")})${NAME_END}`) }),
+		...(names.size === 0 ? {} : { named: new RegExp(`${NAME_START}(${[...names.keys()].map(literal).join("|")})${NAME_END}`) }),
+	};
+}
+
+/**
+ * The [guard] protect entry a text's readings name, or undefined: a path entry by any of its spellings, then (`names`) a
+ * name entry as a path segment, the way .ssh is named. The pieces of brace groups the readings could not expand are read
+ * too, so a name a group splits past the caps is still found.
+ */
+function protectedIn(reading: Reading, protect: Protection, names = true): string | undefined {
+	for (const forms of [reading.forms, reading.pieces]) {
+		// Each reading as it is and composed (foldName): the entries are composed.
+		for (const form of forms.flatMap((text) => {
+			const composed = text.normalize("NFC");
+			return composed === text ? [text] : [text, composed];
+		})) {
+			const spelled = protect.spelled?.exec(form);
+			// The entry whose group matched; the first entry if none can be told (never a match let through).
+			if (spelled) return protect.paths[Math.max(0, spelled.findIndex((group, at) => at > 0 && group !== undefined) - 1)].entry;
+			const named = names ? protect.named?.exec(form) : undefined;
+			if (named) return protect.names.get(named[1]) ?? named[1];
+		}
+	}
+	return undefined;
+}
+
+/**
+ * The [guard] protect entry `text` (a glob, an OMP edit's whole text) names, read as shell text is (readings), or
+ * undefined. `names` false: path entries only, for an OMP edit's text, whose content may name a file as text.
+ */
+export function textProtected(text: string, protect: Protection, names = true): string | undefined {
+	if (protect.spelled === undefined && (!names || protect.named === undefined)) return undefined;
+	return protectedIn(readings(text, protect.reach), protect, names);
+}
+
+/**
+ * The [guard] protect entry a path (one spelling of it: as written, as the tool resolves it, or real) falls under, or
+ * undefined: inside a path entry, where it is, where it really is, or as the config writes it (a "~/" path as written);
+ * with a part a name entry names (the file, or a folder on the way); or named in it as shell text would name it
+ * (textProtected), as sensitive reads a path for the built-in rules. Folded by foldName.
+ */
+export function pathProtected(path: string, protect: Protection): string | undefined {
+	const folded = foldName(posix.normalize(path));
+	for (const { entry, path: at, real } of protect.paths) if ([at, real, entry].some((root) => within(folded, foldName(root)))) return entry;
+	for (const part of protect.names.size === 0 ? [] : folded.split("/")) {
+		const entry = protect.names.get(part);
+		if (entry !== undefined) return entry;
+	}
+	return textProtected(path, protect);
 }
 
 /**
@@ -94,38 +259,136 @@ export function configSpellings(options: Pick<GuardOptions, "configFile"> & { re
 	return [...spellings];
 }
 
+/** A text as a shell may read it (readings). */
+interface Reading {
+	/** The whole text, read each way. */
+	readonly forms: readonly string[];
+	/**
+	 * Each brace group the forms could not read alternative by alternative (one past MAX_ALTERNATIVES, or any in a word
+	 * past MAX_BRACE_WORD), read as each of its alternatives with up to the readings' reach of text on either side: so a
+	 * name or path such a group splits is still spelt whole somewhere. For the .env and [guard] protect rules.
+	 */
+	readonly pieces: readonly string[];
+}
+
 /**
  * The ways a shell (or a path tool) may read a text: as written; with line continuations, quotes, backslashes and empty
- * substitutions gone (bash joins "~/.orr''ery" and "~/.orr$()ery"); with "//", "./" and "x/.." collapsed; and, for those
- * two, with each brace group {p,q,...} read as each of its alternatives in turn.
+ * substitutions gone (bash joins "~/.orr''ery" and "~/.orr$()ery"); with "//", "./" and "x/.." collapsed; for those two,
+ * with each brace group {p,q,...} read as each of its alternatives in turn; and, when it has $'…' with an escape, with
+ * those escapes read as bash reads them ($'\x2eenv' is .env). `reach`: how much text a piece holds on either side of its
+ * group (Reading.pieces).
  */
-function readings(lower: string): string[] {
-	let bare = lower.replace(/\\\n/g, "").replace(/\$(?=['"])/g, "");
+function readings(text: string, reach = ENV_REACH): Reading {
+	const lower = text.toLowerCase();
+	const forms = [lower, ...bareForms(lower)];
+	const fulls = forms.slice(1, 3);
+	// $'…' decoded in the case it is written in (\U takes eight digits, \u four), then read like the rest. Brace groups are
+	// read again only in the words that hold one (decodedWords): elsewhere the decoded text is the text, already read.
+	if (/\$'[^']*\\/.test(text)) {
+		const decoded = text.replace(ANSI_C, (_quoted, body: string) => ansiC(body)).toLowerCase();
+		forms.push(decoded, ...bareForms(decoded));
+		fulls.push(...bareForms(decodedWords(text).join(" ").toLowerCase()));
+	}
+	const pieces = new Set<string>();
+	for (const full of fulls) {
+		// Brace readings cost work per group, so they apply to words of at most MAX_BRACE_WORD characters. A longer word with
+		// a brace group is refused if it spells "orr" anywhere (the bare name stands for it); otherwise it gets no reading.
+		let base = full;
+		if (full.length > MAX_BRACE_WORD) {
+			for (const word of full.match(LONG_WORD) ?? []) {
+				if (!BRACE_ONE.test(word)) continue;
+				if (word.includes("orr")) forms.push("/.orrery");
+				const padded = ` ${word} `;
+				for (const group of padded.matchAll(BRACE)) piecesOf(padded, group.index, group[0], reach, pieces);
+			}
+			base = full.replace(LONG_WORD, " ");
+		}
+		let widest = 0;
+		for (const group of base.matchAll(BRACE)) {
+			const alternatives = group[1].split(",").length;
+			widest = Math.max(widest, alternatives);
+			if (alternatives > MAX_ALTERNATIVES) piecesOf(base, group.index, group[0], reach, pieces);
+		}
+		// Past the cap, a brace body that spells orrery is refused outright (the bare name stands for it).
+		if (widest > MAX_ALTERNATIVES && /\{[^{}]*orrery/.test(base)) forms.push("/.orrery");
+		for (let pick = 0; pick < Math.min(widest, MAX_ALTERNATIVES); pick++) forms.push(braces(base, pick));
+	}
+	return { forms: [...new Set(forms)], pieces: [...pieces] };
+}
+
+/** A text with line continuations, quotes, backslashes and empty substitutions gone, then that with its paths collapsed. */
+function bareForms(text: string): [string, string] {
+	let bare = text.replace(/\\\n/g, "").replace(/\$(?=['"])/g, "");
 	for (let pass = 0; pass < 4; pass++) {
 		const next = bare.replace(/\$\(\)|``/g, "");
 		if (next === bare) break;
 		bare = next;
 	}
 	bare = bare.replace(/[\\'"]/g, "");
-	const collapsed = bare.replace(/[^\s;|&()<>`]+/g, collapse);
-	const forms = [lower, bare, collapsed];
-	for (const full of [bare, collapsed]) {
-		// Brace readings cost work per group, so they apply to words of at most MAX_BRACE_WORD characters. A longer word with
-		// a brace group is refused if it spells "orr" anywhere (the bare name stands for it); otherwise it gets no reading.
-		let base = full;
-		if (full.length > MAX_BRACE_WORD) {
-			for (const word of full.match(LONG_WORD) ?? []) {
-				if (word.includes("orr") && BRACE_ONE.test(word)) forms.push("/.orrery");
-			}
-			base = full.replace(LONG_WORD, " ");
-		}
-		let widest = 0;
-		for (const group of base.matchAll(BRACE)) widest = Math.max(widest, group[1].split(",").length);
-		// Past the cap, a brace body that spells orrery is refused outright (the bare name stands for it).
-		if (widest > MAX_ALTERNATIVES && /\{[^{}]*orrery/.test(base)) forms.push("/.orrery");
-		for (let pick = 0; pick < Math.min(widest, MAX_ALTERNATIVES); pick++) forms.push(braces(base, pick));
+	return [bare, bare.replace(/[^\s;|&()<>`]+/g, collapse)];
+}
+
+/**
+ * Each alternative of brace group `group`, at `at` in `text`, with up to `reach` characters of `text` on either side,
+ * into `pieces`, and each also with its paths collapsed. An end cut short gets a letter, never a word edge, so a cut
+ * makes no name start or end where the text has none. Linear: each piece is at most its alternative and twice `reach`.
+ */
+function piecesOf(text: string, at: number, group: string, reach: number, pieces: Set<string>): void {
+	const end = at + group.length;
+	const before = `${at > reach ? "x" : ""}${text.slice(Math.max(0, at - reach), at)}`;
+	const after = `${text.slice(end, end + reach)}${end + reach < text.length ? "x" : ""}`;
+	for (const alternative of group.slice(1, -1).split(",")) {
+		const piece = `${before}${alternative}${after}`;
+		pieces.add(piece);
+		if (/\/\.|\/\//.test(piece)) pieces.add(piece.replace(/[^\s;|&()<>`]+/g, collapse));
 	}
-	return [...new Set(forms)];
+}
+
+/** bash's ANSI-C quoting, $'…', its body in group 1. */
+const ANSI_C = /\$'((?:[^'\\]|\\[^])*)'/g;
+
+/** The single-letter escapes of $'…'. */
+const ANSI_LETTERS: Readonly<Record<string, string>> = { a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v" };
+
+/**
+ * A $'…' body as bash reads it, in the case it is written in: \xHH, \NNN (octal), \uHHHH, \UHHHHHHHH, \cX and the
+ * letter escapes decoded; any other escaped character stands for itself. A code point past Unicode stands for nothing.
+ */
+function ansiC(body: string): string {
+	return body.replace(/\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8}|[0-7]{1,3}|c[^]|[^])/g, (_escape, code: string) => {
+		if (/^[xuU][0-9a-fA-F]/.test(code)) {
+			const point = Number.parseInt(code.slice(1), 16);
+			return point <= 0x10ffff ? String.fromCodePoint(point) : "";
+		}
+		if (/^[0-7]/.test(code)) return String.fromCharCode(Number.parseInt(code, 8) & 0xff);
+		if (code.length === 2 && code[0] === "c") return String.fromCharCode(code.charCodeAt(1) & 0x1f);
+		return ANSI_LETTERS[code] ?? code;
+	});
+}
+
+/** A $'…' starting at lastIndex, to step over one whole while a word is read. */
+const ANSI_C_AT = /\$'(?:[^'\\]|\\[^])*'/y;
+
+/**
+ * Each word of `text` that holds a $'…', whole (from one word edge to the next, a $'…' stepped over whole even with a
+ * blank inside it), with its escapes decoded: what readings reads brace groups in again. Linear: each character of the
+ * text is looked at once.
+ */
+function decodedWords(text: string): string[] {
+	const words: string[] = [];
+	let end = 0;
+	for (const quoted of text.matchAll(ANSI_C)) {
+		if (quoted.index < end) continue;
+		let start = quoted.index;
+		while (start > end && !WORD_EDGE.test(text[start - 1])) start--;
+		end = quoted.index + quoted[0].length;
+		while (end < text.length && !WORD_EDGE.test(text[end])) {
+			ANSI_C_AT.lastIndex = end;
+			end = text.startsWith("$'", end) && ANSI_C_AT.test(text) ? ANSI_C_AT.lastIndex : end + 1;
+		}
+		words.push(text.slice(start, end).replace(ANSI_C, (_quoted, body: string) => ansiC(body)));
+	}
+	return words;
 }
 
 /** One word as a path with "//" and "/." joined and "x/.." removed (a stack, so any depth, in linear time). */
@@ -295,23 +558,29 @@ export function within(path: string, root: string): boolean {
 
 /**
  * A cheap pre-filter on the raw arguments; the authoritative file check is checkResolvedPath. `views`: viewRules;
- * `config`: configSpellings.
+ * `config`: configSpellings; `protect`: protection, "~" from the OS's home by default.
  */
 export function checkToolCall(
 	call: { readonly name: string; readonly arguments: Readonly<Record<string, unknown>> },
 	options: GuardOptions,
 	views: ViewRules = viewRules(options),
 	config: readonly string[] = configSpellings(options),
+	protect: Protection = protection(options.protect),
 ): string | undefined {
 	const command = call.arguments.command;
-	if (call.name === "bash" && typeof command === "string" && shellSensitive(command, views.command, config)) {
-		return "This command touches sensitive files (keys, credentials or Orrery's private data).";
+	if (call.name === "bash" && typeof command === "string") {
+		// Shell text's readings, made once: sensitive by flagged's rules for shell text, then the [guard] protect entries.
+		const reading = readings(command, protect.reach);
+		if (flagged(reading, views.command, true, config)) return "This command touches sensitive files (keys, credentials or Orrery's private data).";
+		const entry = protectedIn(reading, protect);
+		if (entry !== undefined) return `This command touches ${entry}, ${PROTECTED_BY}.`;
 	}
 	const raw = call.arguments.path;
 	if (typeof raw !== "string") return undefined;
 	const path = posix.normalize(posix.isAbsolute(raw) ? raw : posix.join(options.cwd ?? options.folder, raw));
 	const named = views.path(path);
 	if (sensitive(raw, named) || sensitive(path, named)) return `${path} is a sensitive file (keys, credentials or Orrery's private data).`;
+	if (pathProtected(raw, protect) !== undefined || pathProtected(path, protect) !== undefined) return PROTECTED_FILE(path);
 	const writes = call.name === "write" || call.name === "edit";
 	if (writes && (orreryConfigNamed(path) || config.includes(path.toLowerCase()))) return CONFIG_READ_ONLY(path);
 	if (writes && orreryAppNamed(path)) return APP_READ_ONLY(path);

@@ -239,8 +239,10 @@ still applies to it. Close the first one, or work in it.
 ## Limits
 
 - No memory without a good config. A malformed config file shows a warning ("running without memory"), and pi runs
-  with the default guard on: its folder is the only place it may write, and credentials stay out. With no config file
-  at all, pi runs as usual.
+  with the default guard on: its folder is the only place it may write, credentials and `.env` files stay out, and so
+  does what its `[guard] protect` lists, when the file parses as TOML and that part reads cleanly. If it has a
+  `[guard]` table pi cannot read (broken TOML around it, a refused entry), or cannot be read at all, every tool call is
+  refused until it is fixed, and the warning says so. With no config file at all, pi runs as usual.
 - pi's own compaction is cancelled for agents. The memory view replaces it. The one exception is overflow recovery:
   if the model's window overflows, pi may compact once to recover.
 - The path guard judges a path the way pi's tools resolve it (`~`, a leading `@`, `file://`, relative to pi's cwd)
@@ -254,6 +256,12 @@ still applies to it. Close the first one, or work in it.
 - Credential files: the guard blocks ssh keys and credential stores, `~/.pi/agent/models.json` and `/proc/*/environ`.
   It refuses a grep, find or ls rooted at home or above, at a folder that holds credentials (like `~/.pi` or Orrery's
   data folder), or in `/proc`. Search a narrower folder instead. Reads elsewhere are allowed: agents read other repos.
+- `.env` files and `[guard] protect`: a project's `.env` and `.env.<anything>` (but `.env.example`, `.env.sample`,
+  `.env.template` and `.env.dist`) are kept out like credentials, so agents neither read nor edit them. `[guard]
+  protect` in the config adds your own paths (`/…` or `~/…`) and names (every file or folder so named); see the
+  [README](../README.md#safety). **A search of a folder can still read a `.env` inside it**, or a file a protected name
+  covers: only a protected path is checked against a search's folder. A bash command that has a protected name as a
+  word is refused even when it means something else (`git commit -m "ignore .env"`).
 - The guard knows pi's built-in tools only. Tools added by other pi packages (for example context-mode's
   `ctx_execute`) are not checked.
 - A message does not wait for summaries longer than 60 seconds, and not at all while they are failing or stopped.
