@@ -68,18 +68,21 @@ const NAME_END = "(?=$|[\\s\"'/:;|&()<>`,}*?\\[])";
 
 /**
  * The built-in .env rule (spec 2026-10-15-guard-protect): .env and .env.<anything> standing as a name, but not the
- * examples meant to be shared (.env.example, .env.sample, .env.template, each followed by a plain end, not a glob). As a
- * name, so process.env, import.meta.env, prod.env and .envrc never match; nor does *.env, since a shell's "*" does not
+ * templates meant to be shared (.env.example, .env.sample, .env.template, .env.dist, each followed by a plain end, not a
+ * glob). As a name, so process.env, import.meta.env, prod.env and .envrc never match; nor does *.env, since a shell's "*" does not
  * match a leading dot (NAME_START without "*"). A brace group right after it ends it too: .env.lo{…} is a .env file
  * whatever the group holds. What follows ".env." holds no character a name starts or ends at, so a try reads no further
  * than the next place a name may start: the text is read in linear time.
  */
 const ENV_FILE = new RegExp(
-	`(?:^|[\\s"'=:/~<>;|&()\`{,])\\.env(?!\\.(?:example|sample|template)(?=$|[\\s"'/:;|&()<>\`,}]))(?:\\.[^\\s"'=:/~<>;|&()\`{,*}?\\[]*)?(?=$|[\\s"'/:;|&()<>\`,}*?\\[{])`,
+	`(?:^|[\\s"'=:/~<>;|&()\`{,])\\.env(?!\\.(?:example|sample|template|dist)(?=$|[\\s"'/:;|&()<>\`,}]))(?:\\.[^\\s"'=:/~<>;|&()\`{,*}?\\[]*)?(?=$|[\\s"'/:;|&()<>\`,}*?\\[{])`,
 );
 
-/** How far around a brace group the readings look (Reading.pieces) for the .env rule: ".env.template" and its edges. */
-const ENV_REACH = 16;
+/**
+ * How far around a brace group the readings look (Reading.pieces) for the built-in rules: room for the longest fixed
+ * name they look for (.pi/agent/models.json, .env.template) and its edges.
+ */
+const ENV_REACH = 32;
 
 /**
  * Case-insensitive: on a case-insensitive file system (macOS) ~/.SSH is ~/.ssh. The text is judged as written and as the
@@ -102,7 +105,8 @@ export function credentialNamed(text: string, views: ViewRule = NO_VIEW): boolea
  * Whether a text's readings name a sensitive file. For `shell` text (a command line, code to run) Orrery's config is
  * refused by name too, since a command could rewrite it (an agent's view and the guard's rules come from it), and so is
  * the config file in use by any of `config`, its spellings (configSpellings); file tools may still read it. `env`: the
- * built-in .env rule, which also reads the pieces of brace groups the readings could not expand.
+ * built-in .env rule. The credential patterns and the .env rule also read the pieces of brace groups the readings could
+ * not expand (Reading.pieces), as [guard] protect does; Orrery's own names have their own rule for those (readings).
  */
 function flagged(reading: Reading, views: ViewRule, shell: boolean, config: readonly string[] = [], env = true): boolean {
 	return (
@@ -112,8 +116,7 @@ function flagged(reading: Reading, views: ViewRule, shell: boolean, config: read
 				(env && ENV_FILE.test(form)) ||
 				orreryNamed(form, views, shell) ||
 				config.some((spelling) => form.includes(spelling)),
-		) ||
-		(env && reading.pieces.some((piece) => ENV_FILE.test(piece)))
+		) || reading.pieces.some((piece) => SENSITIVE.some((pattern) => pattern.test(piece)) || (env && ENV_FILE.test(piece)))
 	);
 }
 
@@ -209,17 +212,17 @@ export function textProtected(text: string, protect: Protection, names = true): 
 /**
  * The [guard] protect entry a path (one spelling of it: as written, as the tool resolves it, or real) falls under, or
  * undefined: inside a path entry, where it is, where it really is, or as the config writes it (a "~/" path as written);
- * or with a part a name entry names (the file, or a folder on the way). Folded, as the other path rules are.
+ * with a part a name entry names (the file, or a folder on the way); or named in it as shell text would name it
+ * (textProtected), as sensitive reads a path for the built-in rules. Folded, as the other path rules are.
  */
 export function pathProtected(path: string, protect: Protection): string | undefined {
 	const folded = posix.normalize(path).toLowerCase();
 	for (const { entry, path: at, real } of protect.paths) if ([at, real, entry].some((root) => within(folded, root.toLowerCase()))) return entry;
-	if (protect.names.size === 0) return undefined;
-	for (const part of folded.split("/")) {
+	for (const part of protect.names.size === 0 ? [] : folded.split("/")) {
 		const entry = protect.names.get(part);
 		if (entry !== undefined) return entry;
 	}
-	return undefined;
+	return textProtected(path, protect);
 }
 
 /**

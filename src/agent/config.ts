@@ -283,6 +283,33 @@ function protectEntries(raw: unknown): string[] {
 	return raw as string[];
 }
 
+/** A [guard] table in a config's text, as a header, a dotted key or an inline table (a line that starts it). */
+const GUARD_TABLE = /^[ \t]*(?:\[[ \t]*["']?guard["']?[ \t]*[\].]|["']?guard["']?[ \t]*[.=])/m;
+
+/**
+ * [guard] protect read from a config's text on its own, for a pi or OMP session whose config does not load (spec
+ * 2026-10-15-guard-protect): when the TOML parses, its entries the parser accepts (another key may be what is wrong);
+ * none when the text has no [guard] table; and undefined, unknown, when the text could not be read (`text` undefined),
+ * when it does not parse and has a [guard] table, or when [guard] itself is malformed. A guard that cannot know the
+ * entries refuses every tool call (src/pi/index.ts unreadableGuard).
+ */
+export function protectInText(text: string | undefined): readonly string[] | undefined {
+	if (text === undefined) return undefined;
+	let root: Table;
+	try {
+		root = parse(text) as Table;
+	} catch {
+		return GUARD_TABLE.test(text) ? undefined : [];
+	}
+	const guard = root.guard;
+	if (guard === undefined) return [];
+	if (typeof guard !== "object" || guard === null || Array.isArray(guard) || Object.keys(guard).some((key) => key !== "protect")) return undefined;
+	const entries = (guard as Table).protect;
+	if (entries === undefined) return [];
+	if (!Array.isArray(entries) || entries.some((entry) => typeof entry !== "string")) return undefined;
+	return (entries as string[]).filter((entry) => protectProblem(entry) === undefined);
+}
+
 function protectProblem(entry: string): string | undefined {
 	if (entry.trim() === "") return "is empty";
 	if (entry.trim() !== entry) return "has a space at an end";

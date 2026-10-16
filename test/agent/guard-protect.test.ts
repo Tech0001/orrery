@@ -287,7 +287,7 @@ describe(".env built in", () => {
 
 	it("leaves the shared examples, .envrc and files that only end in .env", () => {
 		const t = protectWorld();
-		for (const path of [".env.example", ".env.sample", ".env.template", ".envrc", "prod.env", ".gitignore"]) expect([path, guardToolCall("read", { path }, plain(t))]).toEqual([path, undefined]);
+		for (const path of [".env.example", ".env.sample", ".env.template", ".env.dist", ".envrc", "prod.env", ".gitignore"]) expect([path, guardToolCall("read", { path }, plain(t))]).toEqual([path, undefined]);
 	});
 
 	it.each([
@@ -312,6 +312,7 @@ describe(".env built in", () => {
 		"cat .env.example",
 		"cp .env.example .env.sample",
 		"cat .env.template",
+		"cp .env.dist .env.example",
 		"cat .envrc",
 		"cat prod.env",
 		"node -e 'console.log(process.env.HOME)'",
@@ -478,6 +479,265 @@ describe("[guard] protect and .env in orrery run", () => {
 		} finally {
 			await agent.close();
 		}
+	});
+});
+
+describe("[guard] protect and .env: one table through every gate", () => {
+	/**
+	 * A case: an absolute path file tools may be given, a command that names it, a glob that names it, and whether every
+	 * gate refuses it. `home`: the case spells the guard's home ("~", $HOME), which the durable guard reads as the OS's.
+	 */
+	interface Case {
+		readonly name: string;
+		readonly refused: boolean;
+		readonly path?: string;
+		readonly command?: string;
+		readonly glob?: string;
+		readonly home?: boolean;
+	}
+
+	function table(t: World): Case[] {
+		const many = Array.from({ length: 70 }, (_, i) => `d${i}`).join(",");
+		return [
+			{ name: "path entry, a file", refused: true, path: join(t.keys, "prod.pem"), command: `cat ${join(t.keys, "prod.pem")}` },
+			{ name: "path entry, in a folder", refused: true, path: join(t.home, "finance", "q3.csv"), command: `cat ${join(t.home, "finance", "q3.csv")}` },
+			{ name: "path entry from ~", refused: true, home: true, path: "~/finance/q3.csv", command: "cat ~/finance/q3.csv" },
+			{ name: "path entry from $HOME", refused: true, home: true, command: "cat $HOME/finance/q3.csv" },
+			{ name: "path entry from ${HOME}", refused: true, home: true, command: 'cat "${HOME}/finance/q3.csv"' },
+			{ name: "path entry, another case", refused: true, path: join(t.keys, "PROD.pem"), command: `cat ${join(t.keys, "PROD.pem")}` },
+			{ name: "name entry", refused: true, path: join(t.atlas, "secrets.yml"), command: "cat secrets.yml", glob: "**/secrets.yml" },
+			{ name: "name entry, a folder", refused: true, path: join(t.atlas, "vault", "token.txt"), command: "cat vault/token.txt", glob: "vault/**" },
+			{ name: ".env", refused: true, path: join(t.atlas, ".env"), command: "cat .env", glob: "**/.env" },
+			{ name: ".env.local", refused: true, path: join(t.atlas, ".env.local"), command: "cat .env.local", glob: ".env.local" },
+			{ name: "link to a path entry", refused: true, path: join(t.atlas, "link.csv") },
+			{ name: "link to a name entry", refused: true, path: join(t.atlas, "notes.yml") },
+			{ name: "link to .env", refused: true, path: join(t.atlas, "settings.txt") },
+			{ name: "brace-split name", refused: true, command: "cat secr{ets,x}.yml" },
+			{ name: "brace-split .env", refused: true, command: "cat .e{n,x}v" },
+			{ name: "brace-split name past the cap", refused: true, command: `cat secrets.{${many},yml}` },
+			{ name: "brace-split path entry", refused: true, command: `cat ${t.keys}/prod.{pem,x}` },
+			{ name: "brace-split name given as a path", refused: true, path: join(t.atlas, "secr{ets,x}.yml") },
+			{ name: "$'…' escape", refused: true, command: "cat $'\\x2eenv'" },
+			{ name: "home by a user's name", refused: true, home: true, command: "cat ~u/finance/q3.csv" },
+			{ name: "home by an expansion", refused: true, home: true, command: "cat ${HOME%/}/finance/q3.csv" },
+			{ name: ".env.example", refused: false, path: join(t.atlas, ".env.example"), command: "cat .env.example", glob: "**/.env.example" },
+			{ name: ".env.dist", refused: false, path: join(t.atlas, ".env.dist"), command: "cat .env.dist", glob: "**/.env.dist" },
+			{ name: "a plain file", refused: false, path: join(t.atlas, "src", "a.ts"), command: "cat src/a.ts", glob: "**/*.ts" },
+			{ name: "beside a path entry", refused: false, path: join(t.home, "finance-old", "x.csv"), command: `cat ${join(t.home, "finance-old", "x.csv")}` },
+			{ name: "beside a name entry", refused: false, path: join(t.atlas, "secrets.yml.bak"), command: "cat secrets.yml.bak", glob: "**/secrets.yml.bak" },
+		];
+	}
+
+	/** Each gate's verdicts on a case, one per way it is called; an empty list where the gate takes no such input. */
+	type Gate = (t: World, c: Case) => Promise<(string | undefined)[]>;
+
+	const pi: Gate = async (t, c) => {
+		const out: (string | undefined)[] = [];
+		const call = (tool: string, input: Record<string, unknown>) => out.push(guardToolCall(tool, input, t.options));
+		if (c.path !== undefined) {
+			call("read", { path: c.path });
+			call("grep", { pattern: "x", path: c.path });
+			if (c.refused) {
+				call("write", { path: c.path, content: "x" });
+				call("edit", { path: c.path, edits: [] });
+			}
+		}
+		if (c.command !== undefined) call("bash", { command: c.command });
+		if (c.glob !== undefined) {
+			call("grep", { pattern: "x", path: t.atlas, glob: c.glob });
+			call("find", { pattern: c.glob, path: t.atlas });
+		}
+		return out;
+	};
+
+	const omp: Gate = async (t, c) => {
+		const out: (string | undefined)[] = [];
+		const call = (tool: string, input: Record<string, unknown>) => out.push(guardOmpToolCall(tool, input, t.options));
+		if (c.path !== undefined) {
+			call("read", { path: c.path });
+			call("read", { path: `${c.path}:1-5` });
+			call("grep", { pattern: "x", path: c.path });
+			call("glob", { path: c.path });
+			call("find", { query: "x", grep_keywords: [], path: c.path });
+			call("ast_grep", { pat: "x", path: c.path });
+			if (c.refused) {
+				call("write", { path: c.path, content: "x" });
+				call("edit", { path: c.path, input: "PUT 1\n+x\n" });
+				call("edit", { input: `[${c.path}#1a2b]\nPUT 1\n+x\n` });
+				call("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [c.path] });
+			}
+		}
+		if (c.command !== undefined) {
+			call("bash", { command: c.command });
+			call("eval", { language: "sh", code: c.command });
+		}
+		if (c.glob !== undefined) {
+			call("glob", { path: c.glob });
+			call("grep", { pattern: "x", path: c.glob });
+		}
+		return out;
+	};
+
+	const claude: Gate = async (t, c) => {
+		const out: (string | undefined)[] = [];
+		const call = (tool: string, input: Record<string, unknown>) => out.push(claudeGuard(tool, input, t.options));
+		if (c.path !== undefined) {
+			call("Read", { file_path: c.path });
+			call("Grep", { pattern: "x", path: c.path });
+			call("Glob", { pattern: "*", path: c.path });
+			call("mcp__files__read_file", { path: c.path });
+			if (c.refused) {
+				call("Write", { file_path: c.path, content: "x" });
+				call("Edit", { file_path: c.path, old_string: "a", new_string: "b" });
+				call("MultiEdit", { file_path: c.path, edits: [] });
+				call("NotebookEdit", { notebook_path: c.path, new_source: "x" });
+			}
+		}
+		if (c.command !== undefined) {
+			call("Bash", { command: c.command });
+			call("mcp__shell__run", { command: c.command });
+		}
+		if (c.glob !== undefined) {
+			call("Glob", { pattern: c.glob });
+			call("Grep", { pattern: "x", glob: c.glob });
+		}
+		return out;
+	};
+
+	/**
+	 * orrery run: its pre-check on every call (checkToolCall), then the file tools' own resolved check (checkResolvedPath),
+	 * as the durable harness runs them. Its "~" is the OS's home, so it takes the folder entry by its absolute path and
+	 * skips the cases that spell the guard's scratch home.
+	 */
+	const durable: Gate = async (t, c) => {
+		if (c.home === true) return [];
+		const options = { folder: t.atlas, allowedRoots: [join(t.root, "projects")], cwd: t.atlas, foreignViews: [] as string[], protect: [join(t.home, "finance"), ...t.protect.slice(1)] };
+		const env = new NodeExecutionEnv({ cwd: t.atlas });
+		const out: (string | undefined)[] = [];
+		const file = async (tool: string, mode: "read" | "write") => {
+			const path = c.path as string;
+			out.push(checkToolCall({ name: tool, arguments: { path } }, options) ?? (await checkResolvedPath(env, path, mode, options, ctx)));
+		};
+		if (c.path !== undefined) {
+			await file("read", "read");
+			if (c.refused) {
+				await file("write", "write");
+				await file("edit", "write");
+			}
+		}
+		if (c.command !== undefined) out.push(checkToolCall({ name: "bash", arguments: { command: c.command } }, options));
+		return out;
+	};
+
+	it("gets the same verdict from pi, OMP, Claude Code and orrery run for every case", async () => {
+		const t = protectWorld();
+		writeFileSync(join(t.atlas, ".env.dist"), "KEY=");
+		const disagree: string[] = [];
+		for (const c of table(t)) {
+			for (const [gate, judge] of Object.entries({ pi, omp, claude, durable })) {
+				const verdicts = await judge(t, c);
+				verdicts.forEach((verdict, at) => {
+					if ((verdict !== undefined) !== c.refused) disagree.push(`${gate} #${at} on ${c.name}: ${verdict ?? "allowed"}`);
+				});
+			}
+		}
+		expect(disagree).toEqual([]);
+	});
+});
+
+describe("the built-in rules through the reworked readings", () => {
+	it("keeps every refusal 0.6.3 made past the brace caps and in $'…', and refuses more", () => {
+		const t = protectWorld();
+		const plain = { ...t.options, protect: [] as string[] };
+		const many = Array.from({ length: 70 }, (_, i) => `d${i}`).join(",");
+		const pad = "y".repeat(5000);
+		for (const command of [
+			`cat ${pad}{a,b}/.orrery/x`,
+			`cat ~/{${many},.orrery}/agents`,
+			`cat ${pad}{a,b}/.ssh/x`,
+			"cat $'.orrery'/remotes.json",
+			// refused now, not by 0.6.3: the credential patterns read a group past the cap, and bash's escapes
+			`cat ~/{${many},.ssh}/config`,
+			`cat ~/.pi/agent/mo{${many},dels}.json`,
+			"cat ~/$'\\x2e'orrery/remotes.json",
+			"cat ~/$'\\x2essh'/config",
+		]) {
+			expect([command.slice(0, 50), guardToolCall("bash", { command }, plain)]).toEqual([command.slice(0, 50), expect.stringMatching(SENSITIVE)]);
+		}
+		// An OMP edit's whole text is still judged by the credential patterns, .env aside.
+		const edit = (body: string) => guardOmpToolCall("edit", { input: `[src/a.ts#1a2b]\nPUT 1\n+${body}\n`, path: "src/a.ts" }, plain);
+		expect(edit("see id_rsa and ~/.ssh/config")).toMatch(SENSITIVE);
+		expect(edit("load .env")).toBeUndefined();
+	});
+});
+
+describe("a pi or OMP session whose config cannot be read", () => {
+	/** Orrery's pi (or OMP) entry in a fake host in Atlas's folder, started with ORRERY_CONFIG naming a file holding `text`. */
+	async function session(t: World, text: string | undefined, host: "pi" | "omp") {
+		const file = join(t.root, "broken.toml");
+		if (text === undefined) mkdirSync(file);
+		else writeFileSync(file, text);
+		const saved = process.env.ORRERY_CONFIG;
+		process.env.ORRERY_CONFIG = file;
+		try {
+			const options = { host, summarySources: async (cfg: HarnessConfig) => summarySourcesFor(cfg), ...scratchHome(t.root) };
+			const made = track(fakeOmp(t.atlas, [createOrrery(options)], { omp: host === "omp" }));
+			await made.emit("session_start");
+			const tool = async (toolName: string, input: object) => (await made.emit("tool_call", { toolName, toolCallId: "t1", input }))[0];
+			return { notices: made.notices, tool };
+		} finally {
+			if (saved === undefined) delete process.env.ORRERY_CONFIG;
+			else process.env.ORRERY_CONFIG = saved;
+		}
+	}
+	const UNKNOWN = { block: true, reason: expect.stringMatching(/config cannot be read.*\[guard\] protect/) };
+
+	it.each(["pi", "omp"] as const)("%s refuses every tool call when the broken config has a [guard] table, and says why", async (host) => {
+		const t = protectWorld();
+		const s = await session(t, '[guard]\nprotect = ["secrets.yml"]\n[agents.Atlas\n', host);
+		expect(s.notices).toEqual([{ type: "warning", message: expect.stringMatching(/cannot read \[guard\] protect/) }]);
+		for (const [tool, input] of [
+			["read", { path: "src/a.ts" }],
+			["write", { path: "src/b.ts", content: "x" }],
+			["bash", { command: "ls" }],
+			["grep", { pattern: "x" }],
+		] as const) {
+			expect([tool, await s.tool(tool, input)]).toEqual([tool, UNKNOWN]);
+		}
+	});
+
+	it.each(["pi", "omp"] as const)("%s keeps the built-in rules alone when the broken config has no [guard] table", async (host) => {
+		const t = protectWorld();
+		const s = await session(t, "[agents.Atlas\n", host);
+		expect(s.notices).toEqual([{ type: "warning", message: expect.stringMatching(/; running without memory$/) }]);
+		expect(await s.tool("read", { path: "src/a.ts" })).toBeUndefined();
+		expect(await s.tool("read", { path: "secrets.yml" })).toBeUndefined();
+		expect(await s.tool("read", { path: ".env" })).toEqual({ block: true, reason: expect.stringMatching(SENSITIVE) });
+	});
+
+	it.each(["pi", "omp"] as const)("%s reads [guard] protect on its own when the TOML parses but another key is bad, keeping the valid entries", async (host) => {
+		const t = protectWorld();
+		const s = await session(t, `[guard]\nprotect = ["secrets.yml", "*.pem", "vault"]\n\n[agents.Atlas]\nfolder = ${JSON.stringify(t.atlas)}\ntool = "nope"\ncompactor_model = "a/b"\n`, host);
+		expect(s.notices).toEqual([{ type: "warning", message: expect.stringMatching(/; running without memory$/) }]);
+		expect(await s.tool("read", { path: "secrets.yml" })).toEqual({ block: true, reason: expect.stringMatching(PROTECTED) });
+		expect(await s.tool("read", { path: "vault/token.txt" })).toEqual({ block: true, reason: expect.stringMatching(PROTECTED) });
+		expect(await s.tool("read", { path: "src/a.ts" })).toBeUndefined();
+	});
+
+	it.each([
+		["a [guard] that is not a table", 'guard = "secrets.yml"\n'],
+		["a protect that is not a list of strings", '[guard]\nprotect = "secrets.yml"\n'],
+		["a key [guard] does not have", '[guard]\nprotects = ["secrets.yml"]\n'],
+	])("refuses every tool call for %s, which leaves [guard] protect unknown", async (_what, text) => {
+		const t = protectWorld();
+		const s = await session(t, text, "pi");
+		expect(await s.tool("read", { path: "src/a.ts" })).toEqual(UNKNOWN);
+	});
+
+	it("refuses every tool call when the config is there but cannot be read at all", async () => {
+		const t = protectWorld();
+		const s = await session(t, undefined, "pi");
+		expect(await s.tool("read", { path: "src/a.ts" })).toEqual(UNKNOWN);
 	});
 });
 
