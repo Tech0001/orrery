@@ -74,4 +74,34 @@ describe("whether that shell prints when it starts", () => {
 	it("counts a shell that cannot start as quiet: the check never stands in the way of what it cannot see", () => {
 		expect(checkHookShell({}, scratch, { shell: { path: join(scratch, "no-such-shell"), kind: "bash" } })).toEqual({ quiet: true });
 	});
+
+	it.skipIf(bash === undefined)("counts output over its buffer as printing, even when it is all blank space", () => {
+		const shell = { path: bash as string, kind: "bash" as const };
+		const env = { PATH: process.env.PATH ?? "", HOME: scratch };
+		for (const [name, fill] of [
+			["flood-text", "x"],
+			["flood-blank", " "],
+		] as const) {
+			const flood = join(scratch, name);
+			writeFileSync(flood, `head -c 3000000 /dev/zero | tr '\\0' '${fill}'\n`);
+			expect([name, checkHookShell({ ...env, BASH_ENV: flood }, scratch, { shell })]).toEqual([name, { quiet: false, shell, source: `$BASH_ENV (${flood})` }]);
+		}
+	});
+
+	it.skipIf(bash === undefined)("kills a shell that runs past its time with SIGKILL, which a shell cannot ignore, and judges what it printed by then", () => {
+		const shell = { path: bash as string, kind: "bash" as const };
+		const env = { PATH: process.env.PATH ?? "", HOME: scratch };
+		// A startup file that ignores SIGTERM and never ends: under SIGTERM the check would wait for it forever.
+		const stuck = join(scratch, "stuck-env");
+		writeFileSync(stuck, "trap '' TERM\nwhile :; do :; done\n");
+		let started = performance.now();
+		expect(checkHookShell({ ...env, BASH_ENV: stuck }, scratch, { shell, timeoutMs: 300 })).toEqual({ quiet: true });
+		expect(performance.now() - started).toBeLessThan(5000);
+		// One that printed first: what came out before the time ran out is printing all the same.
+		const chatty = join(scratch, "chatty-stuck-env");
+		writeFileSync(chatty, "echo 'Welcome back!'\ntrap '' TERM\nwhile :; do :; done\n");
+		started = performance.now();
+		expect(checkHookShell({ ...env, BASH_ENV: chatty }, scratch, { shell, timeoutMs: 300 })).toEqual({ quiet: false, shell, source: `$BASH_ENV (${chatty})` });
+		expect(performance.now() - started).toBeLessThan(5000);
+	});
 });

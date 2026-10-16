@@ -91,18 +91,32 @@ export type ShellCheck = { readonly quiet: true } | { readonly quiet: false; rea
 /** The longest the shell may take to start (a slow one is let be: its hooks only take longer). */
 const SHELL_MS = 5_000;
 
+/** The most output the check keeps: more than this is printing, whatever it is. */
+const SHELL_OUTPUT_MAX = 1024 * 1024;
+
 /**
  * Starts the hooks' shell as Codex starts a hook (`-c`, Codex's environment, in the session's folder) with a command
- * that prints nothing, and says whether anything but blank space came out. Its input is no socket, as Codex's pipe is
- * none: bash given a socket for input takes itself for a remote shell and reads ~/.bashrc in place of $BASH_ENV (Node's
- * own pipes are sockets). PowerShell is run with -NoProfile, which reads nothing. A shell that cannot start, or takes
- * too long, counts as quiet: the check never stands in the way of what it cannot see.
+ * that prints nothing, and says whether anything but blank space came out, or more than SHELL_OUTPUT_MAX of anything.
+ * Its input is no socket, as Codex's pipe is none: bash given a socket for input takes itself for a remote shell and
+ * reads ~/.bashrc in place of $BASH_ENV (Node's own pipes are sockets). PowerShell is run with -NoProfile, which reads
+ * nothing. A shell still running after `timeoutMs` (default 5 s) is killed with SIGKILL, which a startup file cannot
+ * trap, and judged by what it printed by then. A shell that cannot start, or prints nothing before its time runs out,
+ * counts as quiet: the check never stands in the way of what it cannot see.
  */
-export function checkHookShell(env: NodeJS.ProcessEnv, cwd: string, options: { readonly shell?: HookShell } = {}): ShellCheck {
+export function checkHookShell(env: NodeJS.ProcessEnv, cwd: string, options: { readonly shell?: HookShell; readonly timeoutMs?: number } = {}): ShellCheck {
 	const shell = options.shell ?? hookShell(env);
 	if (shell.kind === "pwsh") return { quiet: true };
-	const run = spawnSync(shell.path, ["-c", ":"], { env, cwd: existsSync(cwd) ? cwd : homedir(), stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: SHELL_MS, maxBuffer: 1024 * 1024 });
-	if (run.error !== undefined || (run.stdout ?? "").trim() === "") return { quiet: true };
+	const run = spawnSync(shell.path, ["-c", ":"], {
+		env,
+		cwd: existsSync(cwd) ? cwd : homedir(),
+		stdio: ["ignore", "pipe", "pipe"],
+		encoding: "utf8",
+		timeout: options.timeoutMs ?? SHELL_MS,
+		killSignal: "SIGKILL",
+		maxBuffer: SHELL_OUTPUT_MAX,
+	});
+	const flooded = (run.error as NodeJS.ErrnoException | undefined)?.code === "ENOBUFS";
+	if (!flooded && (run.stdout ?? "").trim() === "") return { quiet: true };
 	return { quiet: false, shell, source: likelySource(shell, env) };
 }
 
