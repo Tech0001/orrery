@@ -161,6 +161,24 @@ describe("offering the [guard] preset", () => {
 		}
 		expect(readFileSync(t.config, "utf8")).toBe(OLD);
 	});
+
+	it("leaves a writable config in a folder it may not write alone, saying nothing, and offers it once the folder is writable", () => {
+		const t = scratch();
+		const folder = join(tempDir("orrery-preset-locked-"), "conf");
+		mkdirSync(folder);
+		const config = join(folder, "config.toml");
+		writeFileSync(config, OLD, { mode: 0o600 });
+		const env = { ...t.env, ORRERY_CONFIG: config };
+		chmodSync(folder, 0o555);
+		try {
+			expect(offerGuardPreset(env)).toBeUndefined();
+			expect(offerGuardPreset(env)).toBeUndefined();
+		} finally {
+			chmodSync(folder, 0o755);
+		}
+		expect(readFileSync(config, "utf8")).toBe(OLD);
+		expect(offerGuardPreset(env)).toMatch(/added a \[guard\] example/);
+	});
 });
 
 describe("setup", () => {

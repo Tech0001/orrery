@@ -1,9 +1,9 @@
-import { chmodSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfigError, parseConfig } from "../../src/agent/config.ts";
-import { addAgent, addRemote, removeRemote, archiveAgent, editConfigFile, newConfigText, saveConfigText, setAgentKey } from "../../src/agent/config-edit.ts";
+import { addAgent, addRemote, removeRemote, archiveAgent, configWritable, editConfigFile, newConfigText, saveConfigText, setAgentKey } from "../../src/agent/config-edit.ts";
 import { tempDir } from "./support.ts";
 
 const dirs: string[] = [];
@@ -249,6 +249,52 @@ describe("saving", () => {
 		const config = editConfigFile(path, (text, configDir) => setAgentKey(text, configDir, "Beta", "tool", "pi"));
 		expect(config.agents.get("Alpha")?.compactor.jobs).toBe(6);
 		expect(config.agents.get("Beta")?.tool).toBe("pi");
+	});
+
+	it("replaces a link planted at .bak instead of writing through it, and never follows a file at its temporary name", () => {
+		const dir = tempDir("orrery-edit-");
+		dirs.push(dir);
+		const path = join(dir, "config.toml");
+		const victim = join(dir, "victim.txt");
+		const other = join(dir, "other.txt");
+		writeFileSync(path, BASE);
+		writeFileSync(victim, "keep me");
+		writeFileSync(other, "keep me too");
+		symlinkSync(victim, `${path}.bak`);
+		// The name 0.6.4 used for its temporary file, taken by a link before the save.
+		symlinkSync(other, `${path}.tmp-${process.pid}`);
+		saveConfigText(path, `${BASE}# changed\n`);
+		expect(readFileSync(victim, "utf8")).toBe("keep me");
+		expect(readFileSync(other, "utf8")).toBe("keep me too");
+		expect(lstatSync(`${path}.bak`).isSymbolicLink()).toBe(false);
+		expect(readFileSync(`${path}.bak`, "utf8")).toBe(BASE);
+		expect(readFileSync(path, "utf8")).toBe(`${BASE}# changed\n`);
+		expect(readlinkSync(`${path}.tmp-${process.pid}`)).toBe(other);
+		expect(readdirSync(dir).filter((name) => name.includes(".tmp") && name !== `config.toml.tmp-${process.pid}`)).toEqual([]);
+	});
+
+	it("is writable only when the config's folder is too, where the config really is", () => {
+		const dir = tempDir("orrery-edit-");
+		dirs.push(dir);
+		const locked = join(dir, "locked");
+		mkdirSync(locked);
+		const path = join(locked, "config.toml");
+		writeFileSync(path, BASE, { mode: 0o600 });
+		expect(configWritable(path)).toBe(true);
+		chmodSync(locked, 0o555);
+		try {
+			expect(configWritable(path)).toBe(false);
+			// A link to it from a folder that is writable: the folder that counts is the one the file is in.
+			const link = join(dir, "linked.toml");
+			symlinkSync(path, link);
+			expect(configWritable(link)).toBe(false);
+		} finally {
+			chmodSync(locked, 0o755);
+		}
+		chmodSync(path, 0o400);
+		expect(configWritable(path)).toBe(false);
+		// A config not there yet: the nearest folder that is.
+		expect(configWritable(join(dir, "new", "config.toml"))).toBe(true);
 	});
 
 	it("creates a missing config (folder 0700, file 0600)", () => {

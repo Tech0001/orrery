@@ -5,7 +5,8 @@
  * the old one by exactly the change.
  */
 
-import { accessSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse } from "smol-toml";
 import { ConfigError, type HarnessConfig, agentNameProblem, type AgentTool, type AgentLauncher, parseConfig, type ThinkingLevel } from "./config.ts";
@@ -305,21 +306,38 @@ export function addGuardPreset(text: string, configDir: string): string | undefi
 	throw new ConfigError("Orrery couldn't place the [guard] block safely; the config is unchanged.");
 }
 
-/** Writes the config atomically (a temporary file, then rename), keeping its mode, and keeps the old text as config.toml.bak. */
+/**
+ * Puts `data` at `path` in one rename, from a temporary file of its own beside it: created fresh (wx), under a name no
+ * one can take first, so nothing already there (a link planted at that name, or at `path`) is written through. A link
+ * at `path` is replaced, never followed.
+ */
+function replaceFile(path: string, data: string | Uint8Array, mode: number): void {
+	const temp = `${path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+	writeFileSync(temp, data, { mode, flag: "wx" });
+	try {
+		chmodSync(temp, mode);
+		renameSync(temp, path);
+	} catch (error) {
+		rmSync(temp, { force: true });
+		throw error;
+	}
+}
+
+/**
+ * Writes the config atomically (a fresh temporary file, then rename), keeping its mode, and keeps the old text as
+ * config.toml.bak, written the same way: setup writes the config on its own (src/install/guard-preset.ts), so neither
+ * file follows a link someone left at its name.
+ */
 export function saveConfigText(path: string, next: string): void {
 	const target = existsSync(path) ? realpathSync(path) : path;
 	let mode = 0o600;
 	if (existsSync(target)) {
 		mode = statSync(target).mode & 0o777;
-		copyFileSync(target, `${target}.bak`);
-		chmodSync(`${target}.bak`, mode);
+		replaceFile(`${target}.bak`, readFileSync(target), mode);
 	} else {
 		mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
 	}
-	const temp = `${target}.tmp-${process.pid}`;
-	writeFileSync(temp, next, { mode });
-	chmodSync(temp, mode);
-	renameSync(temp, target);
+	replaceFile(target, next, mode);
 }
 
 /** Re-reads the config, applies `edit`, checks and saves the result; returns the new config. A missing file starts from newConfigText(). */
@@ -336,16 +354,26 @@ export function readOnlyConfigText(path: string): string {
 	return `The config can't be written here (${path}); edit it by hand.`;
 }
 
-/** Whether the TUI may write this config (the file, or its folder when the file does not exist yet). */
+/**
+ * Whether Orrery may write this config: the file and its folder (saveConfigText writes .bak and a temporary file beside
+ * it), where the file really is; or, when the file does not exist yet, the nearest folder that does.
+ */
 export function configWritable(path: string): boolean {
+	const writable = (at: string) => {
+		try {
+			accessSync(at, constants.W_OK);
+			return true;
+		} catch {
+			return false;
+		}
+	};
 	let at = resolve(path);
-	while (!existsSync(at)) at = dirname(at);
-	try {
-		accessSync(at, constants.W_OK);
-		return true;
-	} catch {
-		return false;
+	if (existsSync(at)) {
+		const target = realpathSync(at);
+		return writable(target) && writable(dirname(target));
 	}
+	while (!existsSync(at)) at = dirname(at);
+	return writable(at);
 }
 
 /** Where a new config goes: $ORRERY_CONFIG, else <home>/config.toml. */
