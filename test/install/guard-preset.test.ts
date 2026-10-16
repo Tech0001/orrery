@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/agent/config.ts";
@@ -39,7 +39,7 @@ describe("offering the [guard] preset", () => {
 		writeFileSync(t.config, OLD, { mode: 0o640 });
 		chmodSync(t.config, 0o640);
 		const line = offerGuardPreset(t.env);
-		expect(line).toBe(`config: added a [guard] example to ${t.config}, where you can list more files and folders to keep from agents (the old file is ${t.config}.bak)`);
+		expect(line).toBe(`config: added a [guard] example to ${t.config}, where you can list more files and folders to keep from agents (the old file is ${realpathSync(t.config)}.bak)`);
 		const next = readFileSync(t.config, "utf8");
 		expect(next).toContain(GUARD_PRESET);
 		expect(withoutPreset(next)).toBe(OLD);
