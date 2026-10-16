@@ -45,7 +45,8 @@ import {
 	CONFIG_READ_ONLY,
 	checkToolCall,
 	configSpellings,
-	credentialNamed,
+	editTextRefusal,
+	foldName,
 	type GuardOptions,
 	inOrreryHome,
 	orreryAppNamed,
@@ -550,7 +551,7 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	}
 	// So does a root that holds a path entry, as written or where it really is. A name entry is not judged here: which
 	// folders hold one is not known without listing them.
-	const held = search ? protect.paths.find((entry) => within(fold(entry.path), where) || within(fold(entry.real), where)) : undefined;
+	const held = search ? protect.paths.find((entry) => [entry.path, entry.real].some((at) => within(foldName(at), foldName(target)))) : undefined;
 	if (held !== undefined) return `${toolName} on ${target} would search ${held.entry}, ${PROTECTED_BY}; search a narrower folder.`;
 	// A content search whose root holds another agent's view file: one that is there, or whose agent is set up the file
 	// way (it is written soon). An agent that never uses Claude Code's file mode has none to keep a folder's searches from,
@@ -559,11 +560,14 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	if (search && !LISTINGS.has(toolName) && foreign.some((view) => within(fold(view), where) && (setUp.has(fold(view)) || present(view)))) {
 		return `${toolName} on ${target} would search another agent's memory view; search a narrower folder.`;
 	}
+	// The rest, on the real path: the roots, and a command the call may carry beside its path (bash with an extra path
+	// key), judged with every rule its own call would get, [guard] protect included.
 	return checkToolCall(
 		{ name: toolName, arguments: { ...input, path: target } },
 		{ folder: realRoot(options.folder), allowedRoots: options.allowedRoots.map(realRoot), cwd: realRoot(options.cwd), foreignViews: options.foreignViews },
 		views,
 		config,
+		protect,
 	);
 }
 
@@ -633,9 +637,8 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 		// Like a bash command: an edit whose text names a credential file, or a [guard] protect path entry, is refused, its
 		// content included. Not .env or a protect name entry, which a .gitignore line or code that loads it names as text
 		// (spec 2026-10-15-guard-protect): the edit's targets are judged as paths below, by those rules too.
-		if (credentialNamed(text, inText)) return "This edit touches sensitive files (keys, credentials or Orrery's private data).";
-		const entry = textProtected(text, protect, false);
-		if (entry !== undefined) return `This edit touches ${entry}, ${PROTECTED_BY}.`;
+		const refusal = editTextRefusal(text, inText, protect);
+		if (refusal !== undefined) return refusal;
 		const read = readEditText(text);
 		if (read.unreadable) return EDIT_UNREADABLE;
 		const renames = Array.isArray(input.edits) ? strings(input.edits.map((entry: unknown) => (entry as { rename?: unknown } | null)?.rename)) : [];

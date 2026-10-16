@@ -28,6 +28,7 @@ import {
 	APP_READ_ONLY,
 	CONFIG_READ_ONLY,
 	checkToolCall,
+	foldName,
 	type GuardOptions,
 	inOrreryHome,
 	orreryAppNamed,
@@ -115,7 +116,7 @@ export async function checkResolvedPath(
 	// [guard] protect ("~" is the OS's home here): inside a path entry, where it is or where it really is, or with a part
 	// a name entry names.
 	const protect = protection(options.protect);
-	for (const entry of protect.paths) if (within(lower, (await realPath(env, entry.path, context)).toLowerCase())) return PROTECTED_FILE(real);
+	for (const entry of protect.paths) if (within(foldName(real), foldName(await realPath(env, entry.path, context)))) return PROTECTED_FILE(real);
 	if (pathProtected(target, protect) !== undefined || pathProtected(real, protect) !== undefined) return PROTECTED_FILE(real);
 	// Another agent's view file, as given and where it really is.
 	for (const view of options.foreignViews) {

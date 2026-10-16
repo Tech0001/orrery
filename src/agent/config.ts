@@ -283,31 +283,61 @@ function protectEntries(raw: unknown): string[] {
 	return raw as string[];
 }
 
-/** A [guard] table in a config's text, as a header, a dotted key or an inline table (a line that starts it). */
-const GUARD_TABLE = /^[ \t]*(?:\[[ \t]*["']?guard["']?[ \t]*[\].]|["']?guard["']?[ \t]*[.=])/m;
+/**
+ * A [guard] table in a config's text, whatever its case, as a header ([guard], [[guard]], [guard.x]), a dotted key or an
+ * inline table, or a protect key on any line: what a config that does not parse may hold for [guard] protect.
+ */
+const GUARD_TABLE = /^[ \t]*(?:\[{1,2}[ \t]*["']?guard["']?[ \t]*[\].]|["']?guard["']?[ \t]*[.=]|["']?protect["']?[ \t]*=)/im;
 
 /**
  * [guard] protect read from a config's text on its own, for a pi or OMP session whose config does not load (spec
- * 2026-10-15-guard-protect): when the TOML parses, its entries the parser accepts (another key may be what is wrong);
- * none when the text has no [guard] table; and undefined, unknown, when the text could not be read (`text` undefined),
- * when it does not parse and has a [guard] table, or when [guard] itself is malformed. A guard that cannot know the
- * entries refuses every tool call (src/pi/index.ts unreadableGuard).
+ * 2026-10-15-guard-protect): its entries when the TOML parses and [guard] reads cleanly (guardProtect; another key may be
+ * what is wrong); none when the text has no [guard] table; and undefined, unknown, when the text could not be read
+ * (`text` undefined), when it does not parse and may hold [guard] protect (GUARD_TABLE), or when guardProtect refuses
+ * it, an entry included, as the config parser and Claude Code refuse it. A guard that cannot know the entries refuses
+ * every tool call (src/pi/index.ts unreadableGuard). A byte-order mark before the text is not part of it.
  */
 export function protectInText(text: string | undefined): readonly string[] | undefined {
 	if (text === undefined) return undefined;
+	const body = text.replace(/^\uFEFF/, "");
 	let root: Table;
 	try {
-		root = parse(text) as Table;
+		root = parse(body) as Table;
 	} catch {
-		return GUARD_TABLE.test(text) ? undefined : [];
+		return GUARD_TABLE.test(body) ? undefined : [];
 	}
-	const guard = root.guard;
-	if (guard === undefined) return [];
-	if (typeof guard !== "object" || guard === null || Array.isArray(guard) || Object.keys(guard).some((key) => key !== "protect")) return undefined;
-	const entries = (guard as Table).protect;
-	if (entries === undefined) return [];
-	if (!Array.isArray(entries) || entries.some((entry) => typeof entry !== "string")) return undefined;
-	return (entries as string[]).filter((entry) => protectProblem(entry) === undefined);
+	try {
+		return guardProtect(root);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * [guard] protect from a parsed config, or a ConfigError for any form that would leave files open without a word: a
+ * [guard] spelt in another case ([Guard]), a protect key anywhere but in [guard] (at the top level, in an agent's table
+ * or any other), a key [guard] does not have, or an entry protectEntries refuses. A misspelt table name ([gaurd]) is not
+ * caught: an unknown top-level table stays allowed, so an older Orrery can still read a newer config.
+ */
+function guardProtect(root: Table): string[] {
+	for (const key of Object.keys(root)) if (key !== "guard" && key.toLowerCase() === "guard") throw new ConfigError(`[${key}] is not read: the table is spelled [guard]`);
+	misplacedProtect(root, "");
+	const guard = table(root.guard, "guard");
+	// A misspelt key would leave the files it names open with no word said: [guard] takes protect alone.
+	for (const key of Object.keys(guard)) if (key !== "protect") throw new ConfigError(`guard.${key} is not a setting; [guard] takes protect`);
+	return protectEntries(guard.protect);
+}
+
+/** A protect key in table `t` (dotted name `where`, "" at the top) or any table below it, but [guard]'s own. */
+function misplacedProtect(t: Table, where: string): void {
+	for (const [key, value] of Object.entries(t)) {
+		const at = where === "" ? key : `${where}.${key}`;
+		if (at === "guard") continue;
+		if (key.toLowerCase() === "protect") throw new ConfigError(`${at} is read only under [guard]: write [guard], then protect = [...]`);
+		for (const inner of Array.isArray(value) ? value : [value]) {
+			if (typeof inner === "object" && inner !== null && !Array.isArray(inner)) misplacedProtect(inner as Table, at);
+		}
+	}
 }
 
 function protectProblem(entry: string): string | undefined {
@@ -315,8 +345,10 @@ function protectProblem(entry: string): string | undefined {
 	if (entry.trim() !== entry) return "has a space at an end";
 	if (/\p{Cc}/u.test(entry)) return "has control characters";
 	if (/[*?[\]{}]/.test(entry)) return "has a glob or brace character (* ? [ ] { }): name the file or folder itself";
+	if (entry.includes("\\")) return "has a backslash: write a path with /";
+	if (/^[A-Za-z]:/.test(entry)) return "starts with a drive letter: write a path from / or ~/";
 	if (entry === "~") return "would protect everything in your home folder";
-	if (!entry.includes("/")) return entry === "." || entry === ".." ? "is not a name" : undefined;
+	if (!entry.includes("/")) return entry === "." || entry === ".." ? "is not a name" : entry.startsWith("~") ? "is a name, which cannot start with ~: write ~/… for a path in your home folder" : undefined;
 	if (!entry.startsWith("/") && !entry.startsWith("~/")) return "must start with / or ~/ (a path), or have no / (a name)";
 	if (entry.split("/").includes("..")) return 'has ".." in it: write the path it leads to';
 	if (posix.normalize(`/${entry.slice(entry.startsWith("~/") ? 2 : 1)}`) === "/") return "would protect everything";
@@ -337,10 +369,7 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 	const remotes = parseRemotes(root.remotes, hosts);
 	const updates = table(root.updates, "updates");
 	if (updates.check !== undefined && typeof updates.check !== "boolean") throw new ConfigError("updates.check must be true or false");
-	const guard = table(root.guard, "guard");
-	// A misspelt key would leave the files it names open with no word said: [guard] takes protect alone.
-	for (const key of Object.keys(guard)) if (key !== "protect") throw new ConfigError(`guard.${key} is not a setting; [guard] takes protect`);
-	const protect = protectEntries(guard.protect);
+	const protect = guardProtect(root);
 	const agents = new Map<string, AgentConfig>();
 	for (const [name, value] of Object.entries(table(root.agents, "agents"))) {
 		const where = `agents.${name}`;
