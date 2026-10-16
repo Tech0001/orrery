@@ -467,7 +467,7 @@ describe("the PreToolUse hook (runCodexGuard)", () => {
 
 	it("refuses what it cannot judge: input over 1 MB or unread, input that is no JSON object, a call with no cwd or tool, a failure", () => {
 		const { t, ctx } = agentWorld();
-		expect(runCodexGuard(undefined, ctx())).toBe("Orrery guard: this call's input is over 1 MB, too long to check; nothing was run");
+		expect(runCodexGuard(undefined, ctx())).toBe("Orrery guard: this call's input is too large for Orrery's guard to check (over 1 MB); nothing was run");
 		expect(runCodexGuard("not json", ctx())).toBe("Orrery guard: Orrery could not read this call; nothing was run");
 		expect(runCodexGuard("[1]", ctx())).toBe("Orrery guard: Orrery could not read this call; nothing was run");
 		expect(runCodexGuard(JSON.stringify({ tool_name: "Bash", tool_input: { command: "ls" } }), ctx())).toBe("Orrery guard: Orrery could not read this call; nothing was run");
@@ -478,5 +478,23 @@ describe("the PreToolUse hook (runCodexGuard)", () => {
 			},
 		});
 		expect(runCodexGuard(call("Bash", { command: "ls" }, t.folder), broken)).toBe("Orrery guard: this call could not be checked (disk gone); nothing was run");
+	});
+
+	it("refuses, never skips, what it has not judged by its deadline, and answers by then on the slowest input it reads", () => {
+		const { t, ctx } = agentWorld();
+		const OUT_OF_TIME = "Orrery guard: this call names more than the guard can check in time; nothing was run";
+		expect(runCodexGuard(call("Bash", { command: "ls" }, t.folder), ctx({ deadline: performance.now() - 1 }))).toBe(OUT_OF_TIME);
+		// The slowest command line to read every way: 64 KB of brace groups at the readings' cap, in short words.
+		const group = `{${Array.from({ length: 63 }, () => "a").join(",")},b} `;
+		const slow = group.repeat(Math.floor((64 * 1024 - 8) / group.length));
+		const steps = Array.from({ length: 15 }, () => ({ cmd: slow }));
+		const started = performance.now();
+		expect(runCodexGuard(call("mcp__box__batch", { steps }, t.folder), ctx({ deadline: started + 300 }))).toMatch(/^Orrery guard: this call (has more command lines|names more) than the guard can check in time; nothing was run$/);
+		// It stopped at the deadline, give or take one read.
+		expect(performance.now() - started).toBeLessThan(1500);
+		// A command line nested deeper than Claude Code's keys, over 64 KB, is refused unread.
+		expect(runCodexGuard(call("mcp__box__run", { command: { line: "x".repeat(70 * 1024) } }, t.folder), ctx())).toBe(
+			"Orrery guard: a command line is too long to check (over 64 KB); nothing was run",
+		);
 	});
 });

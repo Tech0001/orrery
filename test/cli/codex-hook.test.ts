@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -57,8 +57,46 @@ describe("orrery codex-hook pre-tool-use (the guard)", () => {
 		const garbled = hook("pre-tool-use", "not json", env);
 		expect([garbled.status, garbled.stdout, garbled.stderr]).toEqual([2, "", "Orrery guard: Orrery could not read this call; nothing was run"]);
 		const huge = hook("pre-tool-use", call(t.folder, "Bash", { command: `echo ${"x".repeat(1024 * 1024)}` }), env);
-		expect([huge.status, huge.stdout, huge.stderr]).toEqual([2, "", "Orrery guard: this call's input is over 1 MB, too long to check; nothing was run"]);
+		expect([huge.status, huge.stdout, huge.stderr]).toEqual([2, "", "Orrery guard: this call's input is too large for Orrery's guard to check (over 1 MB); nothing was run"]);
 	});
+
+	it("refuses when its own command line fails before the guard runs: an error anywhere is exit 2, never Codex's fail-open", () => {
+		const { t, env } = guarded();
+		const c = cliCommand(["codex-hook", "pre-tool-use", "--no-such-option"]);
+		const r = spawnSync(c.cmd, c.args, { input: JSON.stringify(call(t.folder, "Bash", { command: "ls" })), env: cleanEnv(env), encoding: "utf8", timeout: 20_000 });
+		expect([r.status, r.stdout]).toEqual([2, ""]);
+		expect(r.stderr).toMatch(/^Orrery guard: this call could not be checked \(.+\); nothing was run$/);
+	});
+
+	it("answers within its deadline on the slowest input it reads, well inside the 10 s Codex gives it", () => {
+		const { t, env } = guarded();
+		// 15 command lines of 64 KB of brace groups at the readings' cap, in short words: the slowest to read, about 1 MB.
+		const group = `{${Array.from({ length: 63 }, () => "a").join(",")},b} `;
+		const slow = group.repeat(Math.floor((64 * 1024 - 8) / group.length));
+		const started = performance.now();
+		const r = hook("pre-tool-use", call(t.folder, "mcp__box__batch", { steps: Array.from({ length: 15 }, () => ({ cmd: slow })) }), env);
+		const took = performance.now() - started;
+		expect([r.status, r.stdout]).toEqual([2, ""]);
+		expect(r.stderr).toMatch(/than the guard can check in time; nothing was run$/);
+		expect(took).toBeLessThan(6000);
+	}, 30_000);
+
+	it("refuses when it is still waiting at its watchdog's time (input that never ends), before Codex's timeout", async () => {
+		const { t, env } = guarded();
+		const c = cliCommand(["codex-hook", "pre-tool-use"]);
+		const child = spawn(c.cmd, c.args, { env: cleanEnv(env), stdio: ["pipe", "pipe", "pipe"] });
+		let stdout = "";
+		let stderr = "";
+		child.stdout.on("data", (chunk) => (stdout += chunk));
+		child.stderr.on("data", (chunk) => (stderr += chunk));
+		// Part of a call, and the input left open.
+		child.stdin.write(JSON.stringify(call(t.folder, "Bash", { command: "ls" })).slice(0, 40));
+		const started = performance.now();
+		const status = await new Promise<number | null>((done) => child.on("exit", done));
+		child.stdin.destroy();
+		expect([status, stdout, stderr]).toEqual([2, "", "Orrery guard: this call could not be checked in time; nothing was run"]);
+		expect(performance.now() - started).toBeLessThan(9000);
+	}, 30_000);
 
 	it("without a config, says so at SessionStart and nothing at the other events, and never fails the session", () => {
 		const env = { ORRERY_CONFIG: "/nonexistent/orrery/config.toml" };

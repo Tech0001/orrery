@@ -8,6 +8,7 @@ import { join, resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
 import type { ReaderTool } from "../agent/memory-tools.ts";
 import { defaultConfigPath, findAgent, type HarnessConfig, type AgentConfig, loadConfig } from "../agent/config.ts";
+import { armCodexGuard, CODEX_GUARD_DEADLINE_MS, isCodexGuard } from "../codex/guard-exit.ts";
 import { exitWhenFlushed } from "./exit.ts";
 import { allHelp, commandHelp, isCommand, shortHelp, UsageError } from "./help.ts";
 
@@ -811,7 +812,8 @@ function denyCodexCall(reason: string): number {
  * `orrery codex-hook pre-tool-use`, the guard (src/codex/guard.ts): a call it lets through gets exit 0 and nothing on
  * stdout, which Codex reads as no objection; a refusal is denyCodexCall's. Codex lets a call through when its hook
  * fails, so everything that keeps the guard from judging refuses: input over 1 MB (read to its end, not kept), a config
- * that cannot be read, any error.
+ * that cannot be read, any error, and a judgment not done by CODEX_GUARD_DEADLINE_MS after the process started; past
+ * that, a crash or a stall is refused by src/codex/guard-exit.ts.
  */
 async function codexGuardHook(configPath: string | undefined): Promise<number> {
 	try {
@@ -826,7 +828,7 @@ async function codexGuardHook(configPath: string | undefined): Promise<number> {
 		const { codexPid } = await import("../codex/host.ts");
 		// The file the config came from, as loadConfig found it: the guard keeps it read-only, wherever it is.
 		const configFile = resolvePath(configPath ?? defaultConfigPath());
-		const refusal = guard.runCodexGuard(stdin, { config, env: process.env, codexPid: codexPid(), configFile });
+		const refusal = guard.runCodexGuard(stdin, { config, env: process.env, codexPid: codexPid(), configFile, deadline: CODEX_GUARD_DEADLINE_MS });
 		return refusal === undefined ? 0 : denyCodexCall(refusal);
 	} catch (error) {
 		return denyCodexCall(`Orrery guard: this call could not be checked (${errorText(error).replace(/\.+$/, "")}); nothing was run`);
@@ -894,9 +896,19 @@ async function claudeModCommand(
 	return "error" in reply ? 1 : 0;
 }
 
+// Codex's guard refuses on anything that goes wrong, since Codex lets a call through when its hook fails (src/codex/guard-exit.ts).
+const codexGuardExit = isCodexGuard(process.argv.slice(2)) ? armCodexGuard() : undefined;
+
 main(process.argv.slice(2)).then(
-	(code) => exitWhenFlushed(code),
+	(code) => {
+		codexGuardExit?.disarm();
+		exitWhenFlushed(code);
+	},
 	(error: unknown) => {
+		if (codexGuardExit !== undefined) {
+			codexGuardExit.refuse(`this call could not be checked (${errorText(error).replace(/\.+$/, "")}); nothing was run`);
+			return;
+		}
 		process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
 		exitWhenFlushed(1);
 	},

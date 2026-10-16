@@ -24,8 +24,9 @@
  *   (a patch from a file or a pipe, a second command, a heredoc that ends early, a path the shell could change, a cd the
  *   guard cannot place, and a command that only mentions it, `grep apply_patch`); and patch text in any string is read
  *   (patchText) and each target judged as a write, a patch that does not read or a hunk header outside one refused;
- * - an input that is no JSON object is refused, and so is a call the guard cannot judge in its time (2 s, shared by all
- *   its checks).
+ * - an input that is no JSON object is refused, and so are an input over 1 MB and a command line over 64 KB, unread,
+ *   and a call the guard cannot judge in its time (2 s at most, shared by all its checks, and done by
+ *   CODEX_GUARD_DEADLINE_MS after the hook started; src/codex/guard-exit.ts refuses a crash or a stall).
  * The session's agent is the one ORRERY_AGENT names, with its token claimed by this Codex (src/codex/pick.ts): its
  * folder (or the folder Codex runs in, outside it) and allowed roots. Orrery's hooks come only with Orrery's launch, so
  * a session that is not the agent's (a token another process holds, none at all) keeps the guard with no agent's rules:
@@ -48,8 +49,16 @@ import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from 
 import { TOOL_INPUT_MAX } from "../claude/hooks.ts";
 import { codexAgent } from "./pick.ts";
 
-/** How long the guard may judge one call, in ms: a patch that names more than this allows is refused. */
+/** How long the guard may judge one call, in ms, at most (CodexGuardContext.deadline may leave it less). */
 const JUDGE_MS = 2000;
+
+/**
+ * The longest command line the guard reads, 64 KB, as Claude Code's guard: reading one every way (brace groups, $'…')
+ * takes up to about 0.2 s at this size, so no single read keeps the guard past its deadline for long.
+ */
+const CHECK_MAX = 64 * 1024;
+
+const OUT_OF_TIME = "this call names more than the guard can check in time; nothing was run.";
 
 /** The longest hook input the guard reads (1 MB, as Claude Code's): a longer one is refused unread. */
 export const CODEX_TOOL_INPUT_MAX = TOOL_INPUT_MAX;
@@ -276,6 +285,7 @@ function byContent(input: Readonly<Record<string, unknown>>, timed: () => Claude
 	// The strings a rule below has judged whole.
 	const judged = new Set(skip === undefined ? [] : [skip]);
 	for (const list of lists) {
+		if ((timed().judgeMs ?? 0) <= 0) return OUT_OF_TIME;
 		if (list.length === 2 && /^(?:apply_patch|applypatch)$/i.test(list[0] as string)) {
 			const read = readPatch(list[1] as string);
 			if ("unreadable" in read) return PATCH_UNREADABLE(read.unreadable);
@@ -286,6 +296,8 @@ function byContent(input: Readonly<Record<string, unknown>>, timed: () => Claude
 	}
 	for (const { key, text, command } of strings) {
 		if (judged.has(text)) continue;
+		if ((timed().judgeMs ?? 0) <= 0) return OUT_OF_TIME;
+		if (command && text.length > CHECK_MAX) return "a command line is too long to check (over 64 KB); nothing was run.";
 		if (command && SHELL_TEXT_HERE.test(key)) {
 			const reason = claudeGuard("Bash", { command: text }, timed());
 			if (reason !== undefined) return reason;
@@ -311,6 +323,7 @@ export function codexGuard(toolName: string, input: unknown, options: ClaudeGuar
 	const args = input as Readonly<Record<string, unknown>>;
 	const deadline = performance.now() + (options.judgeMs ?? JUDGE_MS);
 	const timed = (): ClaudeGuardOptions => ({ ...options, judgeMs: deadline - performance.now() });
+	if (deadline <= performance.now()) return OUT_OF_TIME;
 	if (toolName === "apply_patch") {
 		if (typeof args.command !== "string") return PATCH_UNREADABLE("it is no text");
 		const read = readPatch(args.command);
@@ -338,6 +351,11 @@ export interface CodexGuardContext {
 	readonly configFile?: string;
 	/** Whether a pid lives, for the token's claim (default processAlive); tests pass their own. */
 	readonly alive?: (pid: number) => boolean;
+	/**
+	 * When the judgment must be done, as performance.now() reads it (the hook passes CODEX_GUARD_DEADLINE_MS, which counts
+	 * from the process's start, src/codex/guard-exit.ts); default JUDGE_MS from now. The guard has at most JUDGE_MS.
+	 */
+	readonly deadline?: number;
 }
 
 /** The fields of Codex's PreToolUse input the guard reads; each is checked before use. */
@@ -365,7 +383,10 @@ export function runCodexGuard(stdin: string | undefined, ctx: CodexGuardContext)
 }
 
 function judgeCall(stdin: string | undefined, ctx: CodexGuardContext): string | undefined {
-	if (stdin === undefined) return "this call's input is over 1 MB, too long to check; nothing was run.";
+	if (stdin === undefined) return "this call's input is too large for Orrery's guard to check (over 1 MB); nothing was run.";
+	// Done by the context's deadline, and within JUDGE_MS of now.
+	const by = Math.min(performance.now() + JUDGE_MS, ctx.deadline ?? Number.POSITIVE_INFINITY);
+	if (by <= performance.now()) return OUT_OF_TIME;
 	let call: ToolCall;
 	try {
 		const parsed = JSON.parse(stdin) as unknown;
@@ -381,6 +402,7 @@ function judgeCall(stdin: string | undefined, ctx: CodexGuardContext): string | 
 	const agent = pick.kind === "agent" ? pick.agent : undefined;
 	const home = ctx.home ?? homedir();
 	return codexGuard(call.tool_name, call.tool_input, {
+		judgeMs: by - performance.now(),
 		folder: workArea(agent ?? {}, call.cwd),
 		allowedRoots: agent?.allowedRoots ?? [],
 		cwd: call.cwd,
