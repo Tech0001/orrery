@@ -35,6 +35,9 @@ function emptyHome(): NodeJS.ProcessEnv {
 	return cleanEnv({ HOME: home, ORRERY_HOME: join(home, ".orrery"), ORRERY_CONFIG: join(home, "missing.toml") });
 }
 
+/** What HOME holds after the runs, less what the runtime makes in any HOME (Bun's .bun, macOS's Library). */
+const made = (env: NodeJS.ProcessEnv) => readdirSync(env.HOME as string).filter((name) => name !== ".bun" && name !== "Library");
+
 function orrery(env: NodeJS.ProcessEnv, ...args: string[]) {
 	const c = cliCommand(args);
 	return spawnSync(c.cmd, c.args, { env, encoding: "utf8", timeout: 20_000 });
@@ -98,7 +101,7 @@ describe("orrery help", () => {
 		expect(orrery(env, "help", "status").stdout).toContain('An agent named "."');
 		expect(orrery(env, "help", "compact").stdout).not.toContain('An agent named "."');
 		// No config was read or written, no folder made.
-		expect(readdirSync(env.HOME as string)).toEqual([]);
+		expect(made(env)).toEqual([]);
 	});
 
 	it("an unknown command or help topic says so and prints the short page", () => {
@@ -137,6 +140,6 @@ describe("orrery help", () => {
 			expect(r.stdout).toContain("orrery help all");
 			expect(r.stdout).not.toContain("\x1b[");
 		}
-		expect(readdirSync(env.HOME as string)).toEqual([]);
+		expect(made(env)).toEqual([]);
 	});
 });
