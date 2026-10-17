@@ -28,7 +28,12 @@ const ctx = {
 		context: async () => [],
 	},
 	event: { subscribe: (options?: { signal?: AbortSignal }) => ({ async *[Symbol.asyncIterator]() { await new Promise((stop) => options?.signal?.addEventListener("abort", stop, { once: true })); } }) },
-	tool: { transform: async () => ({ dispose: async () => {} }) },
+	tool: {
+		transform: async () => ({ dispose: async () => {} }),
+		// The guard's hook (execute.before): the plugin fails to load without it.
+		hook: async () => ({ dispose: async () => {} }),
+	},
+	permission: { hook: async () => ({ dispose: async () => {} }) },
 };
 
 const { default: plugin } = (await import(process.argv[2] as string)) as { default: { setup(ctx: unknown): Promise<() => Promise<void>> } };
