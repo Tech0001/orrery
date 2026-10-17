@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { builtinModules } from "node:module";
 import { join } from "node:path";
@@ -83,6 +83,38 @@ describe.skipIf(!bunReady)("packed extensions", () => {
 		expect(registered("omp.js")).toBe(true);
 		expect(registered(join("opencode", "server.js"))).toBe(true);
 	});
+
+	it("OpenCode's server.js carries the OAuth flows it signs in with: a summary on the ChatGPT sign-in reaches OpenAI", async () => {
+		// Its plugin folder copied outside the repository, run by Bun as OpenCode runs plugins: a long prompt is recorded,
+		// and its summary goes to the agent's summary model through Orrery's own sign-in.
+		const base = mkdtempSync(join(tmpdir(), "orrery-opencode-oauth-"));
+		try {
+			const plugin = join(base, "plugin", "opencode");
+			const agent = join(base, "agent");
+			const home = join(base, "orrery-home");
+			for (const dir of [join(base, "plugin"), agent, join(home, "tokens")]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+			cpSync(join(await builtRelease(), "extensions", "opencode"), plugin, { recursive: true });
+			writeFileSync(join(base, "logins.json"), JSON.stringify({ openai: { type: "oauth", access: "test-access-token", refresh: "r", expires: Date.now() + 3_600_000 } }), { mode: 0o600 });
+			writeFileSync(
+				join(base, "config.toml"),
+				[`data_dir = ${JSON.stringify(join(base, "data"))}`, `credentials = ${JSON.stringify(join(base, "logins.json"))}`, "[updates]", "check = false", "[agents.Probe]", `folder = ${JSON.stringify(agent)}`, 'tool = "opencode"', 'compactor_model = "openai/gpt-5.4-mini"', 'compactor_thinking = "off"', ""].join("\n"),
+			);
+			const tokenFile = join(home, "tokens", "opencode-1-aaaaaaaaaaaa");
+			writeFileSync(tokenFile, "0123456789abcdef0123456789abcdef", { mode: 0o600 });
+			writeFileSync(join(base, "prompt.txt"), `${"A long message for a summary. ".repeat(2000)}\n`);
+			const r = spawnSync("bun", [join(REPO, "test", "release", "opencode-host.ts"), join(plugin, "server.js"), join(base, "prompt.txt")], {
+				cwd: agent,
+				encoding: "utf8",
+				env: { PATH: process.env.PATH ?? "", HOME: join(base, "home"), ORRERY_HOME: home, ORRERY_CONFIG: join(base, "config.toml"), OPENCODE_HOST_OPTIONS: JSON.stringify({ agent: "Probe", tokenFile }) },
+			});
+			expect(r.status, r.stderr).toBe(0);
+			const { requests } = JSON.parse(r.stdout.trim().split("\n").at(-1) as string) as { requests: { url: string; authorization: string | null }[] };
+			expect(requests[0]).toEqual({ url: "https://api.openai.com/v1/responses", authorization: "Bearer test-access-token" });
+			expect(r.stderr).not.toContain("OAuth");
+		} finally {
+			rmSync(base, { recursive: true, force: true });
+		}
+	}, 60_000);
 
 	it("omp.js carries the OAuth flows it signs in with: a summary call on the ChatGPT sign-in reaches OpenAI", async () => {
 		// pi-ai imports its OAuth flows by a file path that exists only in node_modules, not beside a packed omp.js.
