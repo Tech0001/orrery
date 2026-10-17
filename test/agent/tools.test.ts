@@ -55,9 +55,11 @@ describe("checkTools", () => {
 		const lines = readFileSync(join(seen, "env.txt"), "utf8").trim().split("\n");
 		const seenEnv = Object.fromEntries(lines.map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
 		const scratch = dirname(seenEnv.HOME as string);
-		expect(basename(scratch)).toMatch(/^orrery-opencode-/);
+		// In Orrery's home (the default one under HOME here), not in a shared temporary folder; no config above it is read.
+		expect(dirname(scratch)).toBe(join(env.HOME, ".orrery", "scratch"));
+		expect(basename(scratch)).toMatch(/^opencode-/);
 		for (const key of ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TMPDIR"]) expect(dirname(seenEnv[key] as string), key).toBe(scratch);
-		expect([seenEnv.OPENCODE_CONFIG, seenEnv.ORRERY_AGENT]).toEqual([undefined, undefined]);
+		expect([seenEnv.OPENCODE_CONFIG, seenEnv.ORRERY_AGENT, seenEnv.OPENCODE_DISABLE_PROJECT_CONFIG]).toEqual([undefined, undefined, "1"]);
 		expect(readFileSync(join(seen, "cwd.txt"), "utf8").trim().startsWith(realpathSync(dirname(scratch)))).toBe(true);
 		expect(() => lstatSync(scratch)).toThrow();
 		expect(installSteps(opencode as ToolCheck, root, env)).toEqual([]);

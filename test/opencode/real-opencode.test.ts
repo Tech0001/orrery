@@ -95,6 +95,35 @@ function serveOnce(content: string, folder: string): Promise<{ readonly state: u
 	});
 }
 
+/**
+ * A private `opencode serve --stdio --port 0` in `cwd`, given `content` and `env`, asked for the plugins of `cwd` (that
+ * loads them) every 100 ms until `done()` or 20 s.
+ */
+function serveUntil(content: string, cwd: string, env: NodeJS.ProcessEnv, done: () => boolean): Promise<void> {
+	const password = "test-password-2";
+	return new Promise((settle) => {
+		const child = spawn(opencode as string, ["serve", "--stdio", "--port", "0"], { cwd, env: { ...env, OPENCODE_PASSWORD: password, OPENCODE_CONFIG_CONTENT: content }, stdio: ["pipe", "pipe", "ignore"] });
+		const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+		child.on("exit", () => {
+			clearTimeout(timer);
+			settle();
+		});
+		let out = "";
+		child.stdout.on("data", async (chunk) => {
+			if (out.includes("\n")) return;
+			out += chunk;
+			if (!out.includes("\n")) return;
+			const { url } = JSON.parse(out.slice(0, out.indexOf("\n"))) as { url: string };
+			const started = Date.now();
+			while (!done() && Date.now() - started < 20_000) {
+				await fetch(`${url}/api/plugin?location%5Bdirectory%5D=${encodeURIComponent(cwd)}`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` } }).catch(() => undefined);
+				await new Promise((wait) => setTimeout(wait, 100));
+			}
+			child.stdin.end();
+		});
+	});
+}
+
 describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Orrery's plugin in the installed OpenCode (scratch homes, no model)", () => {
 	afterAll(removeBuiltRelease);
 
@@ -119,6 +148,33 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Or
 		expect(skipped).toEqual({ ok: false, why: "OpenCode loaded its plugins without Orrery's (a policy or a config may leave it out)" });
 	}, 60_000);
 
+	it("reads no opencode.json or .opencode/plugins/ in a folder above its scratch folder: only Orrery's plugin loads", async () => {
+		// What another user could plant in a shared folder above the check's: a config naming a plugin, and a plugin
+		// OpenCode finds by itself. Each writes a mark when it loads.
+		const base = mkdtempSync(join(scratch, "planted-"));
+		const marks = join(base, "marks");
+		mkdirSync(marks);
+		const planted = (name: string) => `import { writeFileSync } from "node:fs";\nexport default { id: "planted.${name}", setup() { writeFileSync(${JSON.stringify(join(marks, name))}, "loaded"); } };\n`;
+		mkdirSync(join(base, "planted-a"));
+		writeFileSync(join(base, "planted-a", "server.js"), planted("a"));
+		writeFileSync(join(base, "opencode.json"), JSON.stringify({ plugins: [join(base, "planted-a")] }));
+		mkdirSync(join(base, ".opencode", "plugins"), { recursive: true });
+		writeFileSync(join(base, ".opencode", "plugins", "planted-b.js"), planted("b"));
+		const folder = await pluginCopy();
+		const content = configContent(folder, { agent: "Probe", tokenFile: join(scratch, "t") });
+		// Without Orrery's settings, a server in a folder below them loads both: the plants work.
+		const below = join(base, "below");
+		mkdirSync(below);
+		await serveUntil(content, below, isolated("planted-control"), () => readdirSync(marks).length === 2);
+		expect(readdirSync(marks).sort()).toEqual(["a", "b"]);
+		for (const mark of readdirSync(marks)) rmSync(join(marks, mark));
+		// Orrery's check runs below them too (Orrery's home is there): its plugin loads, theirs don't.
+		const env = { ...isolated("planted"), ORRERY_HOME: join(base, "orrery") };
+		expect(await probePlugin(opencode as string, content, folder, { env })).toEqual({ ok: true });
+		expect(readdirSync(join(base, "orrery", "scratch"))).toEqual([]);
+		expect(readdirSync(marks)).toEqual([]);
+	}, 60_000);
+
 	it("keeps a passing check for this OpenCode version in Orrery's home", async () => {
 		const folder = await pluginCopy();
 		const env = { ...isolated("gate"), ORRERY_HOME: join(scratch, "gate-orrery") };
@@ -129,11 +185,13 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Or
 	}, 60_000);
 
 	it("asks OpenCode's version in a scratch home: the folders the environment names get nothing", () => {
-		const env = isolated("version-probe");
+		// Orrery's home is elsewhere: its scratch folder is made there.
+		const env: NodeJS.ProcessEnv = { ...isolated("version-probe"), ORRERY_HOME: join(mkdtempSync(join(scratch, "version-orrery-")), "home") };
 		const asked = opencodeVersionOutput(opencode as string, env);
 		expect(asked.status).toBe(0);
 		expect(asked.stdout).toContain(version);
-		// OpenCode writes a log line even for --version; it went to Orrery's scratch home, not to these.
+		expect(readdirSync(join(env.ORRERY_HOME as string, "scratch"))).toEqual([]);
+		// OpenCode writes a log line even for --version; it went to the scratch folder, not to these.
 		for (const key of ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "HOME"] as const) expect(readdirSync(env[key] as string), key).toEqual([]);
 	});
 });

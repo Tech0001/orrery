@@ -1,5 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { opencodeCheckDetail, opencodePluginGate, probePlugin, readOpenCodeCheck } from "../../src/opencode/check.ts";
@@ -39,10 +38,15 @@ describe("probePlugin", () => {
 		expect(run?.env.OPENCODE_CONFIG).toBeUndefined();
 		expect(Object.keys(run?.env ?? {}).filter((key) => key.startsWith("ORRERY_"))).toEqual([]);
 		expect([run?.env.OPENCODE_DISABLE_AUTOUPDATE, run?.env.OPENCODE_DISABLE_MODELS_FETCH]).toEqual(["1", "1"]);
+		// No opencode.json or .opencode/ in a folder above the scratch one is read (another user's, in a shared /tmp).
+		expect(run?.env.OPENCODE_DISABLE_PROJECT_CONFIG).toBe("1");
+		// The scratch folder is in a 0700 folder of Orrery's home, not in the system's temporary folder.
+		const parent = join(s.env.ORRERY_HOME, "scratch");
 		for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TMPDIR"]) {
-			expect(run?.env[key]?.startsWith(join(tmpdir(), "orrery-opencode-")), key).toBe(true);
+			expect(run?.env[key]?.startsWith(join(parent, "opencode-")), key).toBe(true);
 		}
-		expect(run?.cwd.startsWith(join(tmpdir(), "orrery-opencode-"))).toBe(true);
+		expect(run?.cwd.startsWith(join(parent, "opencode-"))).toBe(true);
+		expect(statSync(parent).mode & 0o777).toBe(0o700);
 		// The lease ended through stdin, and the scratch folder is gone, with the handlers that would remove it on a signal.
 		expect(s.fake.ended()).toHaveLength(1);
 		expect(existsSync(dirname(run?.env.HOME as string))).toBe(false);
@@ -77,6 +81,18 @@ describe("probePlugin", () => {
 	});
 });
 
+describe("the check's scratch folder", () => {
+	it("is never made through a link put in place of Orrery's scratch folder: the check cannot run, and nothing lands elsewhere", async () => {
+		const s = scene();
+		mkdirSync(s.env.ORRERY_HOME, { recursive: true });
+		mkdirSync(join(s.dir, "elsewhere"));
+		symlinkSync(join(s.dir, "elsewhere"), join(s.env.ORRERY_HOME, "scratch"));
+		expect(await probePlugin(s.fake.path, s.content, s.folder, { env: s.env })).toMatchObject({ ok: false, why: expect.stringMatching(/^no scratch folder for the check \(.*is not a real folder of this user's/) });
+		expect(readdirSync(join(s.dir, "elsewhere"))).toEqual([]);
+		expect(s.fake.runs()).toEqual([]);
+	});
+});
+
 describe("scratchEnv", () => {
 	it("keeps mise's own folders where they really are, so a mise shim still finds OpenCode", () => {
 		const env = scratchEnv({ HOME: "/home/u", PATH: "/bin", XDG_DATA_HOME: "/home/u/data", OPENCODE_PASSWORD: "theirs", ORRERY_AGENT: "Atlas" }, "/s");
@@ -92,6 +108,7 @@ describe("scratchEnv", () => {
 			TMPDIR: "/s/tmp",
 			OPENCODE_DISABLE_AUTOUPDATE: "1",
 			OPENCODE_DISABLE_MODELS_FETCH: "1",
+			OPENCODE_DISABLE_PROJECT_CONFIG: "1",
 		});
 		expect(scratchEnv({ HOME: "/home/u", MISE_DATA_DIR: "/m/data", MISE_CONFIG_DIR: "/m/config" }, "/s")).toMatchObject({ MISE_DATA_DIR: "/m/data", MISE_CONFIG_DIR: "/m/config" });
 	});
