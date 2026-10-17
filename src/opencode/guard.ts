@@ -350,7 +350,9 @@ class Judge {
 	}
 
 	/** A path the call opens as `use`, placed as OpenCode places it; OpenCode's login by its path too. */
-	path(use: "read" | "write", raw: string, place?: (raw: string, cwd: string) => string): string | undefined {
+	path(use: "read" | "write", given: string, place?: (raw: string, cwd: string) => string): string | undefined {
+		// An empty path is the session's folder to OpenCode (it resolves it from there); Claude Code's guard skips it.
+		const raw = given === "" ? "." : given;
 		const reason = this.claude(use === "write" ? "Write" : "Read", { file_path: raw }, place);
 		if (reason !== undefined) return reason;
 		const home = this.#options.openCodeHome ?? this.#options.home ?? homedir();
@@ -439,55 +441,85 @@ export function openCodeGuard(tool: string, input: unknown, options: OpenCodeGua
 	if (size > OPENCODE_TOOL_INPUT_MAX) return CALL_TOO_LARGE;
 	const judge = new Judge(options);
 	if (judge.outOfTime) return OUT_OF_TIME;
-	// A Code Mode program may call a tool with no input, or with a value that is no object: judged by what it holds.
-	const args: Readonly<Record<string, unknown>> =
-		input === undefined || input === null ? {} : typeof input === "object" && !Array.isArray(input) ? (input as Record<string, unknown>) : { input };
-	const text = (key: string) => (typeof args[key] === "string" ? (args[key] as string) : undefined);
+	const shape = SHAPES[tool];
+	// Any other tool goes by what it carries. A Code Mode program may call one with no input, or with a value that is no
+	// object: judged by what it holds.
+	if (shape === undefined) {
+		const args = input === undefined || input === null ? {} : typeof input === "object" && !Array.isArray(input) ? (input as Record<string, unknown>) : { input };
+		return judge.content(tool, args);
+	}
+	// A built-in tool's input as its schema has it, or OpenCode would not run it either; what else it carries (OpenCode
+	// drops it, or a plugin renamed another tool to this name) goes by content.
+	if (typeof input !== "object" || input === null || Array.isArray(input)) return CALL_UNREADABLE;
+	const args = input as Readonly<Record<string, unknown>>;
+	if (shape.required.some((key) => args[key] === undefined) || shape.strings.some((key) => args[key] !== undefined && typeof args[key] !== "string")) return CALL_UNREADABLE;
+	const extra = Object.fromEntries(Object.entries(args).filter(([key]) => !shape.keys.includes(key)));
+	const text = (key: string) => args[key] as string | undefined;
+	const reason = byTool(tool, text, judge, sessionID);
+	return reason ?? (Object.keys(extra).length === 0 ? undefined : judge.content(tool, extra));
+}
+
+const CALL_UNREADABLE = "Orrery could not read this call (its input is not what the tool takes); nothing was run.";
+
+/**
+ * OpenCode 2.0.30's built-in tools the guard judges by name, by their input schemas (tool/plugin/*.ts): the fields
+ * OpenCode needs to run the tool, those that must be text, and every field the tool takes.
+ */
+const SHAPES: Readonly<Record<string, { readonly required: readonly string[]; readonly strings: readonly string[]; readonly keys: readonly string[] }>> = {
+	shell: { required: ["command"], strings: ["command", "workdir"], keys: ["command", "workdir", "timeout", "background"] },
+	read: { required: ["path"], strings: ["path"], keys: ["path", "offset", "limit"] },
+	write: { required: ["path", "content"], strings: ["path", "content"], keys: ["path", "content"] },
+	edit: { required: ["path", "oldString", "newString"], strings: ["path", "oldString", "newString"], keys: ["path", "oldString", "newString", "replaceAll"] },
+	patch: { required: ["patchText"], strings: ["patchText"], keys: ["patchText"] },
+	glob: { required: ["pattern"], strings: ["pattern", "path"], keys: ["pattern", "path", "hidden", "limit"] },
+	grep: { required: ["pattern"], strings: ["pattern", "path", "include"], keys: ["pattern", "path", "include", "literal", "caseSensitive", "limit"] },
+	webfetch: { required: ["url"], strings: ["url", "format"], keys: ["url", "format", "timeout"] },
+	websearch: { required: ["query"], strings: ["query"], keys: ["query"] },
+	opencode_session_move: { required: ["directory"], strings: ["directory", "sessionID"], keys: ["sessionID", "directory"] },
+};
+
+/** A built-in tool's own rule (module doc), its input read as its schema has it (`text`: a text field, or undefined). */
+function byTool(tool: string, text: (key: string) => string | undefined, judge: Judge, sessionID: string | undefined): string | undefined {
 	switch (tool) {
-		case "shell": {
-			const command = text("command");
-			return (command === undefined ? undefined : judge.shell(command)) ?? judge.path("read", text("workdir") ?? ".");
-		}
-		case "read": {
-			const path = text("path");
-			return path === undefined ? undefined : judge.read(path);
-		}
+		case "shell":
+			return judge.shell(text("command") as string) ?? judge.path("read", text("workdir") ?? ".");
+		case "read":
+			return judge.read(text("path") as string);
 		case "write":
-		case "edit": {
-			const path = text("path");
-			return path === undefined ? undefined : judge.path("write", path);
-		}
+		case "edit":
+			return judge.path("write", text("path") as string);
 		case "patch": {
-			const patch = text("patchText");
-			if (patch === undefined || patch === "") return undefined;
+			const patch = text("patchText") as string;
+			if (patch === "") return undefined;
 			if (patch.length > CHECK_MAX) return "this patch is too long to check (over 64 KB); nothing was changed.";
 			const read = readPatch(patch);
 			if ("unreadable" in read) return PATCH_UNREADABLE(read.unreadable);
 			return judge.writes([...read.targets, ...headerTargets(patch)]);
 		}
 		case "glob": {
-			const root = searchRoot(args.path, true);
-			const pattern = text("pattern");
+			const root = searchRoot(text("path"), true);
+			const pattern = text("pattern") as string;
 			// Claude Code's Glob judges an absolute pattern's folder; OpenCode's searches the root whatever the pattern.
-			return judge.claude("Glob", { ...(pattern === undefined ? {} : { pattern }), path: root }) ?? (pattern !== undefined && !isAbsolute(pattern) ? undefined : judge.claude("LS", { path: root }));
+			return judge.claude("Glob", { pattern, path: root }) ?? (isAbsolute(pattern) ? judge.claude("LS", { path: root }) : undefined);
 		}
-		case "grep":
-			return judge.claude("Grep", { pattern: args.pattern, ...(text("include") === undefined ? {} : { glob: text("include") }), path: searchRoot(args.path, false) });
+		case "grep": {
+			const include = text("include");
+			return judge.claude("Grep", { pattern: text("pattern"), ...(include === undefined ? {} : { glob: include }), path: searchRoot(text("path"), false) });
+		}
 		case "webfetch": {
-			const url = text("url");
-			return url !== undefined && /^\s*file:/i.test(url) ? judge.claude("webfetch", { url }) : undefined;
+			const url = text("url") as string;
+			return /^\s*file:/i.test(url) ? judge.claude("webfetch", { url }) : undefined;
 		}
-		case "websearch":
-			return undefined;
 		case "opencode_session_move": {
-			const directory = text("directory")?.trim();
-			if (directory === undefined) return undefined;
+			// OpenCode trims the folder, takes "~" from home and the rest from the moved session's folder (session/move.ts).
+			const directory = (text("directory") as string).trim();
 			const fromHome = directory === "~" || directory.startsWith("~/");
-			if (typeof args.sessionID === "string" && args.sessionID !== sessionID && !isAbsolute(directory) && !fromHome) return OTHER_SESSION;
+			const other = text("sessionID");
+			if (other !== undefined && other !== sessionID && !isAbsolute(directory) && !fromHome) return OTHER_SESSION;
 			return judge.path("read", directory);
 		}
 		default:
-			return judge.content(tool, args);
+			return undefined;
 	}
 }
 
@@ -504,7 +536,7 @@ export function openCodePermission(action: string, resources: readonly unknown[]
 	// A resource is placed as OpenCode wrote it: relative to the session's folder (a "~" there is a name), or absolute.
 	const literal = (raw: string, cwd: string) => resolve(cwd, raw);
 	for (const resource of resources) {
-		if (typeof resource !== "string" || resource === "") continue;
+		if (typeof resource !== "string") return "Orrery could not read what this tool asks leave for; nothing was run.";
 		const reason = judge.path(action === "read" ? "read" : "write", resource, literal);
 		if (reason !== undefined) return reason;
 	}

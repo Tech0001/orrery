@@ -22,7 +22,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { compactorCommand } from "../agent/agent-commands.ts";
 import { type AgentConfig, defaultConfigPath, type HarnessConfig, loadConfig } from "../agent/config.ts";
 import { openElsewhere, openYielding } from "../agent/handover.ts";
@@ -155,14 +155,17 @@ class OrreryInOpenCode {
 
 	/** The guard on this folder's tool calls (src/opencode/guard.ts): its rules are set by start. */
 	readonly #guard: OpenCodeGuardHook;
-	/** The folder this plugin serves: OpenCode's location for it. */
-	readonly #directory: string;
+	/**
+	 * The folder this plugin serves: OpenCode's location for it, which OpenCode's tools place a relative path from (and a
+	 * session moved elsewhere runs in another location, with a plugin of its own). Undefined when OpenCode gave none.
+	 */
+	readonly #directory: string | undefined;
 
 	constructor(ctx: OpenCodeContext, options: OpenCodePluginOptions) {
 		this.#ctx = ctx;
 		this.#options = options;
 		this.#guard = new OpenCodeGuardHook(options.guardMs === undefined ? {} : { ms: options.guardMs });
-		this.#directory = typeof ctx.location?.directory === "string" ? ctx.location.directory : process.cwd();
+		this.#directory = typeof ctx.location?.directory === "string" && isAbsolute(ctx.location.directory) ? ctx.location.directory : undefined;
 	}
 
 	/**
@@ -191,6 +194,11 @@ class OrreryInOpenCode {
 
 	/** The guard's rules for `agent` (or no agent's), from `config`; rules that can't be made refuse every call. */
 	#guardRules(config: HarnessConfig, agent: AgentConfig | undefined, env: NodeJS.ProcessEnv): void {
+		// Without the folder OpenCode places paths from, no path can be judged where it lands.
+		if (this.#directory === undefined) {
+			this.#guard.decide({ blind: "OpenCode did not say which folder this session works in, so no call can be checked; nothing was run." });
+			return;
+		}
 		try {
 			const configFile = this.#options.config === undefined ? resolve(defaultConfigPath(env)) : undefined;
 			this.#guard.decide({ options: openCodeGuardOptions(config, agent, this.#directory, { env, ...(configFile === undefined ? {} : { configFile }) }) });
@@ -250,7 +258,7 @@ class OrreryInOpenCode {
 			this.#refuse(`Orrery: the launch token for ${safeText(options.agent)} could not be read (${safeText(errorText(error))}); this session runs without memory.`);
 			return;
 		}
-		const pick = pickAgent(config, { env: { [AGENT_ENV]: options.agent, [TOKEN_ENV]: token }, cwd: this.#directory, owner: this.#options.owner ?? process.pid });
+		const pick = pickAgent(config, { env: { [AGENT_ENV]: options.agent, [TOKEN_ENV]: token }, cwd: this.#directory ?? process.cwd(), owner: this.#options.owner ?? process.pid });
 		// The launch's agent, by its token, or no agent's: the guard runs either way.
 		this.#guardRules(config, pick.kind === "agent" && pick.by === "env" ? pick.agent : undefined, env);
 		if (pick.kind === "unknown" || pick.kind === "bad-token") {

@@ -290,6 +290,145 @@ describe("openCodeGuard judges each tool with the shared rules", () => {
 	});
 });
 
+describe("openCodeGuard lets nothing through by its shape (security review: authorization)", () => {
+	const UNREADABLE = "Orrery could not read this call (its input is not what the tool takes); nothing was run.";
+
+	it.each([
+		["shell", "cat a.ts"],
+		["shell", ["cat", "~/.ssh/id_ed25519"]],
+		["read", undefined],
+		["write", null],
+		["patch", "*** Begin Patch\n*** Add File: ~/.ssh/x\n+x\n*** End Patch"],
+	])("refuses a built-in tool's input that is no object (%s, %j)", (tool, input) => {
+		expect(openCodeGuard(tool, input, world().options)).toBe(UNREADABLE);
+	});
+
+	it.each([
+		["shell", {}],
+		["shell", { command: ["cat", "~/.ssh/id_ed25519"] }],
+		["shell", { command: "ls", workdir: ["~/.ssh"] }],
+		["read", { path: ["~/.ssh/id_ed25519"] }],
+		["read", { file_path: "~/.ssh/id_ed25519" }],
+		["write", { path: { toString: "~/.ssh/x" }, content: "x" }],
+		["write", { path: "a.ts" }],
+		["edit", { path: "a.ts", oldString: "a" }],
+		["patch", { patchText: ["*** Begin Patch", "*** Add File: ~/.ssh/x", "+x", "*** End Patch"] }],
+		["glob", { path: "~" }],
+		["grep", { pattern: "x", path: 7 }],
+		["webfetch", { url: { href: "file:///etc/passwd" } }],
+		["opencode_session_move", { directory: ["~/.ssh"] }],
+		// Another tool renamed to a name the guard lets through: what it takes is not a web call's.
+		["websearch", { path: join("..", "outside", "x"), content: "x" }],
+		["webfetch", { command: "cat ~/.ssh/id_ed25519" }],
+	])("refuses %s with a missing field or one that is not text: %j", (tool, input) => {
+		expect(openCodeGuard(tool, input, world().options)).toBe(UNREADABLE);
+	});
+
+	it("judges what a built-in tool's input carries beside its schema by content (OpenCode drops it, but a renamed tool may not)", () => {
+		const t = world();
+		expect(openCodeGuard("write", { path: "a.ts", content: "x", command: "cat ~/.ssh/id_ed25519" }, t.options)).toMatch(SENSITIVE);
+		expect(openCodeGuard("read", { path: "a.ts", file_path: "~/finance/q3.csv" }, t.options)).toMatch(PROTECTED);
+		expect(openCodeGuard("websearch", { query: "x", target: join(t.root, "outside", "x") }, t.options)).toMatch(OUTSIDE);
+		expect(openCodeGuard("shell", { command: "ls", script: "orrery codex-hook stop" }, t.options)).toMatch(/hook plumbing/);
+		expect(openCodeGuard("patch", { patchText: "", diff: patch("*** Add File: ~/.ssh/x", "+x") }, t.options)).toMatch(SENSITIVE);
+		// What the schema takes is judged as the tool uses it: an edit's text is not a path.
+		expect(openCodeGuard("edit", { path: "a.ts", oldString: "~/.ssh/id_ed25519", newString: "x", replaceAll: true }, t.options)).toBeUndefined();
+	});
+
+	it("judges any other tool by what it carries, at any depth, never letting it through by default", () => {
+		const t = world();
+		const call = (tool: string, input: unknown) => openCodeGuard(tool, input, t.options);
+		expect(call("mystery", { target: join(t.root, "outside", "x") })).toMatch(OUTSIDE);
+		expect(call("mystery", { a: { b: [{ path: "~/.ssh/id_ed25519" }] } })).toMatch(SENSITIVE);
+		expect(call("mystery", { steps: [{ run: { code: "cat ~/finance/q3.csv" } }] })).toMatch(PROTECTED);
+		expect(call("mystery", { argv: ["cat", "~/.ssh/id_ed25519"] })).toMatch(SENSITIVE);
+		expect(call("mystery", { note: "see ~/.ssh/id_ed25519" })).toBeUndefined();
+		expect(call("mystery", "~/.ssh/id_ed25519")).toMatch(SENSITIVE);
+		expect(call("mystery", 42)).toBeUndefined();
+		expect(call("", { path: "a.ts" })).toBeUndefined();
+	});
+
+	it("needs no session from the hook: a session_move that names a session is another's unless the hook says it is this one", () => {
+		const t = world();
+		expect(openCodeGuard("opencode_session_move", { sessionID: "ses_a", directory: "../vault" }, t.options)).toMatch(/another session/);
+		expect(openCodeGuard("opencode_session_move", { directory: "../vault" }, t.options)).toBeUndefined();
+		expect(openCodeGuard("opencode_session_move", { directory: "~" }, t.options)).toBeUndefined();
+	});
+
+	it("refuses a permission whose resources it can't read", () => {
+		const t = world();
+		expect(openCodePermission("read", ["a.ts", 7], t.options)).toBe("Orrery could not read what this tool asks leave for; nothing was run.");
+		expect(openCodePermission("edit", [""], t.options)).toBeUndefined();
+	});
+});
+
+describe("openCodeGuard places every path where OpenCode 2.0.30 does (security review: parser and placement)", () => {
+	it("patch: every header and whitespace form OpenCode reads, several files, moves, absolute, relative and ~ targets, each judged where it lands", () => {
+		const t = world();
+		const call = (text: string) => openCodeGuard("patch", { patchText: text }, t.options);
+		const forms = (target: string) => [
+			patch(`*** Add File: ${target}`, "+x"),
+			patch(`\t *** Add File: ${target}  `, "+x"),
+			patch("*** Add File: a.txt", "+x", `*** Delete File: ${target}`),
+			patch("*** Update File: a.ts", "@@", "-a", "+b", `*** Update File: ${target}`, "@@", "-a", "+b"),
+			patch("*** Update File: a.ts", "*** End of File", `*** Move to: ${target}   `, "@@", "-a", "+b"),
+			patch(`*** Update File: ${target}`, "*** Move to: b.ts", "@@", "-a", "+b"),
+			`  ${patch(`*** Add File: ${target}`, "+x").replaceAll("\n", "\r\n")}  \r\n`,
+			`cat <<'PATCH'\n${patch(`*** Add File: ${target}`, "+x")}\nPATCH`,
+			`<<"EOF"\n${patch(`*** Add File: ${target}`, "+x")}\nEOF`,
+			patch("*** Environment ID: env-1", `*** Add File: ${target}`, "+x"),
+		];
+		for (const target of ["~/.ssh/config", join(t.home, ".ssh", "config"), "../secret.txt", "./x/../../secret.txt", join(t.home, "finance", "new.csv"), "~/finance/new.csv"]) {
+			for (const [at, text] of forms(target).entries()) expect(call(text), `${target} #${at}`).toMatch(/sensitive|protected/);
+		}
+		for (const [at, text] of forms("new/file.ts").entries()) expect(call(text), `#${at}`).toBeUndefined();
+		// ~ is OpenCode's home; "~x" and " ~/" are names in the session's folder.
+		expect(call(patch("*** Add File: ~/notes.md", "+x"))).toMatch(/outside this agent's folder/);
+		expect(call(patch("*** Add File: ~notes.md", "+x"))).toBeUndefined();
+		// What OpenCode reads differently is refused unread: an Environment ID line with no id is no header to it.
+		expect(call(patch("*** Environment ID:", "*** Add File: a.txt", "+x"))).toMatch(/could not read this patch/);
+		expect(call(patch("*** Add File: a.txt", "+x", "*** Copy File: b.txt"))).toMatch(/could not read this patch/);
+	});
+
+	it("shell: the command as written, its workdir from the session's folder (~ from home), the session's folder without one", () => {
+		const t = world();
+		const call = (input: object, cwd = t.cwd) => openCodeGuard("shell", input, { ...t.options, cwd });
+		expect(call({ command: "cat q3.csv", workdir: "~/finance" })).toMatch(PROTECTED);
+		expect(call({ command: "cat q3.csv", workdir: "../../home/finance" }, join(t.root, "ws", "sub"))).toMatch(PROTECTED);
+		expect(call({ command: "cat q3.csv", workdir: "finance" }, t.home)).toMatch(PROTECTED);
+		expect(call({ command: "cat q3.csv" }, join(t.home, "finance"))).toMatch(PROTECTED);
+		expect(call({ command: "cat q3.csv", workdir: "" }, join(t.home, "finance"))).toMatch(PROTECTED);
+		expect(call({ command: "ls", workdir: "~" })).toBeUndefined();
+	});
+
+	it("read, write, edit, glob and grep: relative to the session's folder (the location OpenCode runs the session in), ~ from home, links followed", () => {
+		const t = world();
+		const at = (cwd: string) => ({ ...t.options, cwd });
+		for (const [tool, input] of [
+			["read", { path: "q3.csv" }],
+			["write", { path: "q3.csv", content: "x" }],
+			["edit", { path: "q3.csv", oldString: "a", newString: "b" }],
+			["grep", { pattern: "x", path: "q3.csv" }],
+			["glob", { pattern: "*", path: "." }],
+		] as const) {
+			// The same call from the agent's folder, and from a session moved into the protected folder.
+			expect(openCodeGuard(tool, input, at(t.cwd)), `${tool} in sub`).toBeUndefined();
+			expect(openCodeGuard(tool, input, at(join(t.home, "finance"))), `${tool} in finance`).toMatch(PROTECTED);
+		}
+		expect(openCodeGuard("read", { path: "~/finance/q3.csv" }, t.options)).toMatch(PROTECTED);
+		expect(openCodeGuard("read", { path: "../sub/a.ts" }, t.options)).toBeUndefined();
+		expect(openCodeGuard("read", { path: "../sub/../../home/finance/q3.csv" }, t.options)).toMatch(PROTECTED);
+		expect(openCodeGuard("read", { path: "" }, at(join(t.home, "finance")))).toMatch(PROTECTED);
+		// A file: URL is no URL to OpenCode's file tools (a name in the session's folder), but the guard reads it as one too.
+		expect(openCodeGuard("read", { path: `file://${t.home}/finance/q3.csv` }, t.options)).toMatch(PROTECTED);
+		// A link in the session's folder to the protected folder.
+		symlinkSync(join(t.home, "finance"), join(t.cwd, "fin"));
+		expect(openCodeGuard("read", { path: "fin/q3.csv" }, t.options)).toMatch(PROTECTED);
+		expect(openCodeGuard("write", { path: "fin/new.csv", content: "x" }, t.options)).toMatch(PROTECTED);
+		expect(openCodeGuard("grep", { pattern: "x", path: "fin" }, t.options)).toMatch(PROTECTED);
+	});
+});
+
 describe("openCodePermission, the second layer: what a tool asks leave for, as OpenCode placed it", () => {
 	it("judges a read's and an edit's resources (relative to the session's folder, or absolute); other actions are the first hook's", () => {
 		const t = world();

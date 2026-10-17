@@ -609,6 +609,29 @@ describe("Orrery's OpenCode plugin: the guard", () => {
 		expect(await host.call("read", { path: "~/.ssh/id_ed25519" })).toMatch(SENSITIVE);
 	});
 
+	it("places a relative path from its own location: a session moved to another folder runs there, with that folder's plugin", async () => {
+		const s = scene();
+		const vault = join(s.dir, "vault");
+		mkdirSync(vault);
+		writeFileSync(join(vault, "secret.txt"), "s");
+		const config = parseConfig(`data_dir = ${JSON.stringify(join(s.dir, "data"))}\n[guard]\nprotect = [${JSON.stringify(vault)}]\n[agents.Atlas]\nfolder = ${JSON.stringify(s.ws)}\ncompactor_model = "faux-compactor/faux-1"\n`, s.dir);
+		const inFolder = hostFor(s);
+		await start(s, inFolder, { config, summarySources: fauxSources(config) });
+		// OpenCode makes one plugin per folder: the moved session's calls come to the plugin of the folder it moved to.
+		const moved = hostFor(s, vault);
+		await start(s, moved, { config, summarySources: fauxSources(config) });
+		for (const session of ["ses_a", "ses_resumed_elsewhere"]) {
+			expect(await inFolder.call("read", { path: "secret.txt" }, session)).toBeUndefined();
+			expect(await moved.call("read", { path: "secret.txt" }, session)).toMatch(/protected by \[guard\] protect/);
+			expect(await moved.call("shell", { command: "cat secret.txt" }, session)).toMatch(/protected by \[guard\] protect/);
+		}
+		// Without the folder OpenCode places paths from, nothing can be judged.
+		const nowhere = new FakeHost({ agent: "Atlas", tokenFile: s.tokenFile }, s.ws);
+		(nowhere as unknown as { location: unknown }).location = {};
+		await start(s, nowhere, { config, summarySources: fauxSources(config) });
+		expect(await nowhere.call("websearch", { query: "x" })).toBe("Orrery guard: OpenCode did not say which folder this session works in, so no call can be checked; nothing was run.");
+	});
+
 	it("answers a call it can't judge in its time with a refusal (OpenCode would wait on the hook forever)", async () => {
 		const s = scene();
 		const host = hostFor(s);

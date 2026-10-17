@@ -402,4 +402,33 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Or
 			await world.model.close();
 		}
 	}, 180_000);
+
+	it("places a moved session's relative paths from the folder it moved to", async () => {
+		const world = await agentWorld({ protect: (base) => [join(base, "other", "secret.txt"), join(base, "other", "inner")] });
+		const other = join(world.base, "other");
+		mkdirSync(join(other, "inner"), { recursive: true });
+		writeFileSync(join(other, "secret.txt"), "the secret");
+		writeFileSync(join(other, "note.txt"), "a note from the other folder");
+		/** One run (in `session`, or a new one) in which the model calls `tool`: the session, and what the tool gave back. */
+		const toolRun = async (tool: string, args: object, session?: string): Promise<{ session: string; result: string; stdout: string }> => {
+			const before = world.model.requests.length;
+			const run = await opencodeRun(["run", "--standalone", "--format", "json", ...(session === undefined ? [] : ["-s", session]), `TOOL64 ${tool} ${Buffer.from(JSON.stringify(args)).toString("base64")}`], world.ws, world.env);
+			expect(run.status, run.stderr).toBe(0);
+			const answered = world.model.requests.slice(before).find((request) => request.body.messages?.at(-1)?.role === "tool");
+			return { session: sessionIn(run.stdout) as string, result: answered === undefined ? "" : (conversationOf(answered).at(-1) ?? ""), stdout: run.stdout };
+		};
+		try {
+			const moved = await toolRun("execute", { code: `return await tools.opencode.session_move({ directory: ${JSON.stringify(other)} })` });
+			// The move is the step's end (OpenCode moves the session at its next boundary): it went through.
+			expect(moved.stdout).toContain('"tool":"opencode.session_move","status":"completed"');
+			expect(moved.stdout).not.toContain("Orrery guard");
+			// The session works in the other folder now: a relative path is that folder's, for OpenCode and the guard alike.
+			expect((await toolRun("read", { path: "note.txt" }, moved.session)).result).toContain("a note from the other folder");
+			expect((await toolRun("read", { path: "secret.txt" }, moved.session)).result).toMatch(/Orrery guard: .*secret\.txt is protected by \[guard\] protect in Orrery's config/);
+			expect((await toolRun("shell", { command: "ls", workdir: "inner" }, moved.session)).result).toMatch(/Orrery guard: .*inner is protected by \[guard\] protect/);
+			// (A shell's own text naming a file by a relative name is a seatbelt limit of every gate: `cat secret.txt` there.)
+		} finally {
+			await world.model.close();
+		}
+	}, 180_000);
 });
