@@ -172,6 +172,9 @@ describe("Orrery's OpenCode plugin: the system prompt", () => {
 		const memory = first[2] as string;
 		expect(memory.startsWith("# Memory\n\nEarlier conversation reaches you only through the view below.")).toBe(true);
 		expect(memory).toContain("An earlier answer.");
+		// The prompt the request answers is in its conversation, not in its memory section too.
+		expect(memory).not.toContain("Saffron-42");
+		expect(messages(s.atlas)).toContain("user: Remember Saffron-42.");
 		expect(memory.endsWith("</chat>")).toBe(true);
 		host.reply("ses_a", "Noted: Saffron-42.");
 		await waitUntil(() => messages(s.atlas).length === 4);

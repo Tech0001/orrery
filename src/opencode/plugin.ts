@@ -427,6 +427,9 @@ class OrreryInOpenCode {
 		this.#prompts.add(event.messageID);
 		// A session this agent's memory has from its start is its own (sessionKey); one resumed with turns memory never had is not.
 		const own = !this.#ownSession(memory, event.sessionID) && (await this.#fresh(event)) ? { [sessionKey(event.sessionID)]: "first prompt" } : {};
+		// The session's parts are made before its prompt goes in: the request it starts has the prompt in its conversation,
+		// not in its memory section too. One that fails is made again at the request, which says so.
+		if (!this.#parts.has(event.sessionID)) await this.#partsOf(event.sessionID).catch(() => {});
 		if (this.#recording() !== memory) return;
 		const text = typeof event.prompt?.text === "string" ? event.prompt.text : "";
 		if (text.trim() === "") {
