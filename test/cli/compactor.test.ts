@@ -81,6 +81,9 @@ describe("orrery compactor", () => {
 		try {
 			writeFileSync(join(t.agent.dir, "status.json"), JSON.stringify({ agent: "Test", pid: process.pid, busy: false, model: "faux-agent/faux-1", compactor: { stopped: false, failing: 0, model: "faux-compactor/faux-1", thinking: "off", source: "config" }, updatedAt: new Date().toISOString() }));
 			await expect(compactorCliCommand(t.config, "Test", ["reset"], { sources, waitMs: 300 })).rejects.toThrow("Test (open in pi) didn't answer within 0.3 s; the change was not applied.");
+			// OpenCode's plugin writes its status the same way, naming OpenCode.
+			writeFileSync(join(t.agent.dir, "status.json"), JSON.stringify({ agent: "Test", pid: process.pid, busy: false, model: "opencode", thinking: "opencode", compactor: { stopped: false, failing: 0, model: "faux-compactor/faux-1", thinking: "off", source: "config" }, updatedAt: new Date().toISOString() }));
+			await expect(compactorCliCommand(t.config, "Test", ["reset"], { sources, waitMs: 300 })).rejects.toThrow("Test (open in OpenCode) didn't answer within 0.3 s; the change was not applied.");
 			// A fresh holder.json with nobody consuming the spool.
 			writeHolder(t.agent.dir, { pid: process.pid, session: "s9", claudePid: 111, state: "recording", startedAt: Date.now(), updatedAt: Date.now() });
 			await expect(compactorCliCommand(t.config, "Test", ["reset"], { sources, waitMs: 300 })).rejects.toThrow(/^Test \(open in Claude Code\) didn't answer within 0\.3 s; the change was not applied\. See /);

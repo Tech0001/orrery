@@ -1,4 +1,4 @@
-/** An agent's open memory, in whichever tool holds it (pi, OMP, or Claude Code's holder): its store (the single writer), view, compactor and status file. */
+/** An agent's open memory, in whichever tool holds it (pi, OMP, OpenCode, or Claude Code's or Codex's holder): its store (the single writer), view, compactor and status file. */
 
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -22,8 +22,9 @@ type MemoryAgentOptions = { agent: AgentConfig; models: ModelSource; report(mess
 /** Another writer already holds the agent's store. */
 export class AgentHeld extends Error {
 	constructor(agent: string, host: Host = "pi") {
-		// In OMP the holder may be pi, OMP or Claude Code; pi keeps its words.
-		super(host === "omp" ? `${agent} is already open in another session; this OMP runs without memory.` : `${agent} is already open in another pi; this one runs without memory.`);
+		// In OMP and OpenCode the holder may be any tool; pi keeps its words.
+		const label = host === "omp" ? "OMP" : host === "opencode" ? "OpenCode" : undefined;
+		super(label !== undefined ? `${agent} is already open in another session; this ${label} runs without memory.` : `${agent} is already open in another pi; this one runs without memory.`);
 		this.name = "AgentHeld";
 	}
 }

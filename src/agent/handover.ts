@@ -79,17 +79,20 @@ export function holderFresh(holder: HolderState | undefined, now = Date.now()): 
 	return holder !== undefined && now - holder.updatedAt <= FRESH_MS;
 }
 
-/** A tool an agent can be open in, as status.json's `model` names it for pi, OMP and the recorders (memory-agent.ts). */
-export type HoldingTool = "pi" | "omp" | HolderHost;
+/**
+ * A tool an agent can be open in, as status.json's `model` names it for pi, OMP, OpenCode and the recorders
+ * (memory-agent.ts).
+ */
+export type HoldingTool = "pi" | "omp" | "opencode" | HolderHost;
 
-const HOLDING_LABELS: Record<HoldingTool, string> = { pi: "pi", omp: "OMP", ...HOST_LABELS };
+const HOLDING_LABELS: Record<HoldingTool, string> = { pi: "pi", omp: "OMP", opencode: "OpenCode", ...HOST_LABELS };
 
 /** A status.json this fresh is from a running session (pi and OMP write it every 5 s; as overview.ts's STATUS_FRESH_MS). */
 const STATUS_FRESH_MS = 30_000;
 
 /**
  * The tool that has the agent open now: a recorder's host while its heartbeat is fresh (Claude Code or Codex), else the
- * tool a fresh status.json of a live process names (pi or OMP); undefined when neither says.
+ * tool a fresh status.json of a live process names (pi, OMP or OpenCode); undefined when neither says.
  */
 export function holdingTool(agentDir: string, now = Date.now(), alive: (pid: number) => boolean = processAlive): HoldingTool | undefined {
 	const holder = readHolder(agentDir);
@@ -101,7 +104,7 @@ export function holdingTool(agentDir: string, now = Date.now(), alive: (pid: num
 
 /**
  * Where the agent is open, said to a session of `self` that can't have it: "open in Codex", "open in another Claude Code
- * session", or, when nothing says which tool, every tool it could be.
+ * session", or, when nothing says which tool, the tools it could be (an open OpenCode always says, in its status.json).
  */
 export function openElsewhere(agentDir: string, self: HoldingTool, now = Date.now()): string {
 	const tool = holdingTool(agentDir, now);

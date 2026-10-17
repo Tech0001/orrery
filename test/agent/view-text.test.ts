@@ -47,6 +47,17 @@ describe("memorySection", () => {
 		expect(text.endsWith(`\n\n${view.render()}`)).toBe(true);
 	});
 
+	it("opencode: refreshed at start and compaction, the plugin's own tools by their names, the view unfenced and last", () => {
+		const view = quotingView();
+		const text = memorySection(view, "opencode");
+		expect(text.startsWith("# Memory\n\nEarlier conversation reaches you only through the view below. It is refreshed when this session starts and each\ntime the conversation is compacted;")).toBe(true);
+		expect(text).toContain("so say in your final reply what\nyou did and learned that will matter later. zoom, date and search are the Orrery memory tools.\n\n");
+		expect(text).not.toContain("mcp__");
+		expect(text).toContain("search(query) finds messages anywhere in the full log");
+		expect(text).not.toContain("```text");
+		expect(text.endsWith(`\n\n${view.render()}`)).toBe(true);
+	});
+
 	it("gives pi the section it always had: no memory between turns, the rules, then the view as is", () => {
 		const view = quotingView();
 		const pi = memorySection(view);
