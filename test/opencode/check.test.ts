@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
+import type { SignalTarget } from "../../src/agent/signal-cleanup.ts";
 import { opencodeCheckDetail, opencodePluginGate, probePlugin, readOpenCodeCheck } from "../../src/opencode/check.ts";
 import { configContent } from "../../src/opencode/options.ts";
 import { scratchEnv } from "../../src/opencode/scratch.ts";
@@ -25,10 +27,18 @@ function scene(mode: Parameters<typeof fakeOpenCode>[1] = {}) {
 	return { dir, bin, folder, fake, content, env };
 }
 
+/** A process stand-in: listeners as Node keeps them, kill recorded. */
+function fakeProcess() {
+	const emitter = new EventEmitter();
+	const killed: string[] = [];
+	const target = Object.assign(emitter, { pid: 4242, kill: (_pid: number, signal?: string | number) => (killed.push(String(signal)), true) }) as unknown as SignalTarget & EventEmitter;
+	return { target, killed };
+}
+
 describe("probePlugin", () => {
 	it("starts a private server in a scratch home with the launch's config content, and finds the plugin active", async () => {
 		const s = scene();
-		const listeners = ["SIGTERM", "SIGHUP", "exit"].map((name) => process.listenerCount(name));
+		const listeners = ["SIGINT", "SIGTERM", "SIGHUP", "exit"].map((name) => process.listenerCount(name));
 		expect(await probePlugin(s.fake.path, s.content, s.folder, { env: s.env })).toEqual({ ok: true });
 		const [run] = s.fake.runs();
 		expect(run?.args).toEqual(["serve", "--stdio", "--port", "0"]);
@@ -50,7 +60,7 @@ describe("probePlugin", () => {
 		// The lease ended through stdin, and the scratch folder is gone, with the handlers that would remove it on a signal.
 		expect(s.fake.ended()).toHaveLength(1);
 		expect(existsSync(dirname(run?.env.HOME as string))).toBe(false);
-		expect(["SIGTERM", "SIGHUP", "exit"].map((name) => process.listenerCount(name))).toEqual(listeners);
+		expect(["SIGINT", "SIGTERM", "SIGHUP", "exit"].map((name) => process.listenerCount(name))).toEqual(listeners);
 	});
 
 	it("waits while OpenCode is still loading its plugins (an empty list)", async () => {
@@ -82,6 +92,22 @@ describe("probePlugin", () => {
 });
 
 describe("the check's scratch folder", () => {
+	it("goes when the check is stopped by Ctrl-C (SIGINT), SIGTERM or SIGHUP, which then stops the process as it would have", async () => {
+		for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+			const s = scene({ mode: "silent" });
+			const { target, killed } = fakeProcess();
+			const probe = probePlugin(s.fake.path, s.content, s.folder, { env: s.env, timeoutMs: 3_000, signals: target });
+			while (s.fake.runs().length === 0) await new Promise((wait) => setTimeout(wait, 20));
+			const folder = dirname(s.fake.runs()[0]?.env.HOME as string);
+			expect(existsSync(folder)).toBe(true);
+			target.emit(signal);
+			expect(existsSync(folder), signal).toBe(false);
+			expect(killed).toEqual([signal]);
+			await probe;
+			for (const name of ["SIGINT", "SIGTERM", "SIGHUP", "exit"]) expect(target.listenerCount(name)).toBe(0);
+		}
+	});
+
 	it("is never made through a link put in place of Orrery's scratch folder: the check cannot run, and nothing lands elsewhere", async () => {
 		const s = scene();
 		mkdirSync(s.env.ORRERY_HOME, { recursive: true });

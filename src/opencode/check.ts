@@ -15,7 +15,7 @@ import { realpathSync } from "node:fs";
 import { get } from "node:http";
 import { relative, isAbsolute } from "node:path";
 import { type LoadCheck, loadCheckDetail, readLoadCheck, versionedCheck } from "../agent/load-check.ts";
-import { cleanUpOnSignals } from "../agent/signal-cleanup.ts";
+import { cleanUpOnSignals, type SignalTarget } from "../agent/signal-cleanup.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { makeScratch, type Scratch } from "./scratch.ts";
 
@@ -99,10 +99,11 @@ function readyUrl(line: string): URL | undefined {
  * Whether the plugin in `folder` loads in the OpenCode at `opencode`, given `content` (OPENCODE_CONFIG_CONTENT): a
  * private `opencode serve --stdio --port 0` in a scratch home and folder (removed after), its first line read for its
  * address and its plugin list read every 100 ms. Ends the server's lease (stdin) once it has an answer or after
- * `timeoutMs`. Never throws, and always settles. The scratch folder goes even when this process is stopped meanwhile
- * (the server stops on its own when its stdin closes).
+ * `timeoutMs`. Never throws, and always settles. The scratch folder goes even when this process is stopped meanwhile,
+ * by a Ctrl-C too (the server stops on its own when its stdin closes). `signals`: the process whose signals count
+ * (default this one; tests give a stand-in).
  */
-export function probePlugin(opencode: string, content: string, folder: string, options: { readonly env?: NodeJS.ProcessEnv; readonly timeoutMs?: number } = {}): Promise<LoadCheck> {
+export function probePlugin(opencode: string, content: string, folder: string, options: { readonly env?: NodeJS.ProcessEnv; readonly timeoutMs?: number; readonly signals?: SignalTarget } = {}): Promise<LoadCheck> {
 	const timeoutMs = options.timeoutMs ?? PROBE_MS;
 	let scratch: Scratch;
 	try {
@@ -110,7 +111,7 @@ export function probePlugin(opencode: string, content: string, folder: string, o
 	} catch (error) {
 		return Promise.resolve({ ok: false, why: `no scratch folder for the check (${plain(errorText(error))})` });
 	}
-	const undo = cleanUpOnSignals(() => scratch.remove());
+	const undo = cleanUpOnSignals(() => scratch.remove(), options.signals, ["SIGINT", "SIGTERM", "SIGHUP"]);
 	const password = randomBytes(24).toString("base64url");
 	const query = `/api/plugin?location%5Bdirectory%5D=${encodeURIComponent(scratch.cwd)}`;
 	return new Promise<LoadCheck>((done) => {
