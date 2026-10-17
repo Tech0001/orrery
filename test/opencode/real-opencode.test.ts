@@ -209,15 +209,16 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Or
  * server (test/opencode/fake-model.ts): scratch homes, Orrery's config and home in the scratch folder too, and the
  * launch's token in a 0600 file, as `orrery agent <Name> --tool opencode` gives them.
  */
-async function agentWorld() {
+async function agentWorld(options: { readonly protect?: (base: string) => string[] } = {}) {
 	const base = mkdtempSync(join(scratch, "agent-"));
 	const ws = join(base, "ws");
 	const home = join(base, "orrery-home");
 	mkdirSync(ws);
 	mkdirSync(join(home, "tokens"), { recursive: true, mode: 0o700 });
+	const guard = options.protect === undefined ? [] : ["[guard]", `protect = ${JSON.stringify(options.protect(base))}`];
 	writeFileSync(
 		join(base, "config.toml"),
-		[`data_dir = ${JSON.stringify(join(base, "data"))}`, "[updates]", "check = false", "[agents.Atlas]", `folder = ${JSON.stringify(ws)}`, 'tool = "opencode"', 'compactor_model = "openai/gpt-5.4-mini"', 'compactor_thinking = "off"', ""].join("\n"),
+		[`data_dir = ${JSON.stringify(join(base, "data"))}`, "[updates]", "check = false", ...guard, "[agents.Atlas]", `folder = ${JSON.stringify(ws)}`, 'tool = "opencode"', 'compactor_model = "openai/gpt-5.4-mini"', 'compactor_thinking = "off"', ""].join("\n"),
 	);
 	const agentDir = join(base, "data", "agents", "Atlas");
 	mkdirSync(agentDir, { recursive: true });
@@ -229,7 +230,8 @@ async function agentWorld() {
 	const folder = await pluginCopy();
 	const content = JSON.stringify({
 		model: "fake/fake-model",
-		providers: { fake: { name: "Fake", package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: model.baseURL, apiKey: "fake-key" }, models: { "fake-model": { capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 1_000_000, output: 4096 } } } } },
+		// fake-model gets OpenCode's write and edit tools; a "gpt-" model gets its patch tool instead (tool/plugin/patch.ts).
+		providers: { fake: { name: "Fake", package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: model.baseURL, apiKey: "fake-key" }, models: Object.fromEntries(["fake-model", "gpt-5-fake"].map((id) => [id, { capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 1_000_000, output: 4096 } }])) } },
 		plugins: [...JSON.parse(configContent(folder, { agent: "Atlas", tokenFile })).plugins],
 	});
 	const env: NodeJS.ProcessEnv = { ...isolated("agent"), ORRERY_HOME: home, ORRERY_CONFIG: join(base, "config.toml"), OPENCODE_CONFIG_CONTENT: content };
@@ -358,4 +360,46 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("an
 		expect(readStatus(world.agentDir)).toMatchObject({ open: false });
 		MemoryStore.open(join(world.agentDir, "memory.sqlite")).close();
 	}, 120_000);
+});
+
+describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Orrery's guard in the installed OpenCode (packed plugin, fake model, scratch homes)", () => {
+	afterAll(removeBuiltRelease);
+
+	it("refuses a shell read, a write, an edit, a patch and a Code Mode call into a protected folder with Orrery's reason, and lets ordinary ones through", async () => {
+		const world = await agentWorld({ protect: (base) => [join(base, "vault")] });
+		const vault = join(world.base, "vault");
+		mkdirSync(vault);
+		writeFileSync(join(vault, "secret.txt"), "the secret");
+		/** One run in which the model calls `tool` with `args`: what the tool gave the model back. */
+		const toolResult = async (tool: string, args: object, model = "fake/fake-model"): Promise<string> => {
+			const before = world.model.requests.length;
+			const run = await opencodeRun(["run", "--standalone", "--format", "json", "-m", model, `TOOL64 ${tool} ${Buffer.from(JSON.stringify(args)).toString("base64")}`], world.ws, world.env);
+			expect(run.status, run.stderr).toBe(0);
+			const answered = world.model.requests.slice(before).find((request) => request.body.messages?.at(-1)?.role === "tool");
+			expect(answered, `${tool}: the model got no tool result`).toBeDefined();
+			return conversationOf(answered as FakeRequest).at(-1) ?? "";
+		};
+		const REFUSED = /Orrery guard: .*protected by \[guard\] protect in Orrery's config/;
+		try {
+			expect(await toolResult("shell", { command: `cat ${join(vault, "secret.txt")}` })).toMatch(REFUSED);
+			expect(await toolResult("shell", { command: "cat secret.txt", workdir: vault })).toMatch(REFUSED);
+			expect(await toolResult("write", { path: join(vault, "new.txt"), content: "x" })).toMatch(REFUSED);
+			expect(await toolResult("edit", { path: join(vault, "secret.txt"), oldString: "the", newString: "a" })).toMatch(REFUSED);
+			expect(await toolResult("patch", { patchText: `*** Begin Patch\n*** Add File: ${join(vault, "p.txt")}\n+x\n*** End Patch` }, "fake/gpt-5-fake")).toMatch(REFUSED);
+			// Code Mode: the program's text names no protected folder; the call it makes is judged on its own.
+			const code = `return await tools.opencode.session_move({ directory: ${JSON.stringify(`${world.base}/va`)} + "ult" })`;
+			expect(await toolResult("execute", { code })).toMatch(REFUSED);
+			expect(readdirSync(vault)).toEqual(["secret.txt"]);
+			expect(readFileSync(join(vault, "secret.txt"), "utf8")).toBe("the secret");
+			// Ordinary calls go through.
+			expect(await toolResult("shell", { command: "echo hello-from-shell" })).toContain("hello-from-shell");
+			expect(await toolResult("write", { path: "ok.txt", content: "fine" })).not.toContain("Orrery guard");
+			expect(readFileSync(join(world.ws, "ok.txt"), "utf8")).toBe("fine");
+			expect(await toolResult("patch", { patchText: "*** Begin Patch\n*** Add File: patched.txt\n+patched\n*** End Patch" }, "fake/gpt-5-fake")).not.toContain("Orrery guard");
+			expect(readFileSync(join(world.ws, "patched.txt"), "utf8")).toBe("patched\n");
+			expect(await toolResult("read", { path: "ok.txt" })).toContain("fine");
+		} finally {
+			await world.model.close();
+		}
+	}, 180_000);
 });

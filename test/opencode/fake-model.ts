@@ -4,6 +4,7 @@
  * directive per line:
  *   TEXT <words>             reply with these words
  *   TOOL <name> <json args>  reply with one call of that tool
+ *   TOOL64 <name> <base64>   the same, its JSON arguments in base64 (arguments with line breaks)
  * After a tool's result it replies "TOOLRESULT: <the result's start>"; with no directive, "fake reply <n>".
  */
 
@@ -83,6 +84,9 @@ export async function startFakeModel(): Promise<FakeModel> {
 				else if (trimmed.startsWith("TOOL ")) {
 					const [, name, ...rest] = trimmed.split(" ");
 					call = { name: name as string, arguments: rest.join(" ") || "{}" };
+				} else if (trimmed.startsWith("TOOL64 ")) {
+					const [, name, encoded] = trimmed.split(" ");
+					call = { name: name as string, arguments: Buffer.from(encoded ?? "", "base64").toString("utf8") || "{}" };
 				}
 			}
 			if (text === undefined && call === undefined) text = `fake reply ${n}`;
