@@ -508,7 +508,7 @@ class OrreryInOpenCode {
 			if (existsSync(file)) {
 				const store = MemoryStore.openReadOnly(file);
 				try {
-					parts.push(memorySection(new MemoryView(store, agent.memory.viewBytes), "opencode"));
+					parts.push(memorySection(new MemoryView(store, agent.memory.viewBytes), "opencode", { readOnly: true }));
 				} finally {
 					store.close();
 				}

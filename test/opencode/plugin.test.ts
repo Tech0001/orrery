@@ -10,7 +10,8 @@ import { claimedBy, newToken } from "../../src/agent/pick.ts";
 import { writeRequest } from "../../src/agent/settings-request.ts";
 import { readStatus } from "../../src/agent/status-file.ts";
 import type { SummarySources } from "../../src/agent/summary-sources.ts";
-import { MemoryStore } from "../../src/memory/index.ts";
+import { memorySection, OPENCODE_READ_ONLY } from "../../src/agent/view-text.ts";
+import { MemoryStore, MemoryView } from "../../src/memory/index.ts";
 import { type Feed, readFeed } from "../../src/opencode/feed.ts";
 import { COMPACTION_SUMMARY, openCodePlugin, type OpenCodePluginOptions, sessionTitle } from "../../src/opencode/plugin.ts";
 import { feedFileOf } from "../../src/opencode/token-file.ts";
@@ -321,6 +322,9 @@ describe("Orrery's OpenCode plugin: when it can't record", () => {
 			await host.prompt("ses_a", "Not recorded.");
 			const parts = await host.request("ses_a");
 			expect(parts[1]).toContain("Held answer.");
+			// The section says so: nothing here goes to memory, and a compaction is OpenCode's own.
+			expect(parts[1]).toContain(OPENCODE_READ_ONLY);
+			expect(parts[1]).toBe(memorySection(new MemoryView(holder.store, s.atlas.memory.viewBytes), "opencode", { readOnly: true }));
 			host.reply("ses_a", "Not recorded either.");
 			expect(await host.compaction("ses_a")).toBeUndefined();
 			expect((await host.tools.find((tool) => tool.name === "search")?.execute({ query: "Held" }, {}))?.content).toContain("Held answer.");

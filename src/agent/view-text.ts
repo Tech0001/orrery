@@ -53,6 +53,13 @@ time the conversation is compacted; what was said since then you see directly. M
 and your final reply of each turn, not tool calls, their results or your other text, so say in your final reply what
 you did and learned that will matter later. zoom, date and search are the Orrery memory tools.`;
 
+/**
+ * OpenCode, while another session has the agent (its memory is read, not recorded): the plugin makes the section once
+ * for the session and leaves compaction to OpenCode, so the intro's refresh and keeping do not hold.
+ */
+export const OPENCODE_READ_ONLY = `This session is read-only, though: another session has the agent, so nothing said here goes to memory, a
+compaction here is OpenCode's own summary, and the view below stays as it was when this session started.`;
+
 const RULES = `${VIEW_DOC}
 
 search(query) finds messages anywhere in the full log by keywords (all must appear) or /regex/, newest first, even when
@@ -66,13 +73,16 @@ messages disagree, the newer wins. For anything about current state, check the s
 before relying on memory; when memory and the source disagree, the source wins: say so in your reply, so the correction
 becomes the newest word in memory.`;
 
-/** The memory section for `host`: how memory works, then the view (fenced for the Claude Code file, plain for the rest). */
-export function memorySection(view: MemoryView, host: Host = "pi"): string {
+/**
+ * The memory section for `host`: how memory works, then the view (fenced for the Claude Code file, plain for the rest).
+ * `readOnly`: OpenCode's section for a session that is not recorded says so (OPENCODE_READ_ONLY); the others have no such form.
+ */
+export function memorySection(view: MemoryView, host: Host = "pi", options: { readonly readOnly?: boolean } = {}): string {
 	if (host === "pi") return `# Memory\n\n${PI_INTRO}\n\n${RULES}\n\n${view.render()}`;
 	if (host === "omp") return `# Memory\n\n${OMP_INTRO}\n\n${RULES}\n\n${view.render()}`;
 	if (host === "claude-mod") return `# Memory\n\n${CLAUDE_MOD_INTRO}\n\n${RULES}\n\n${view.render()}`;
 	if (host === "codex") return `# Memory\n\n${CODEX_INTRO}\n\n${RULES}\n\n${view.render()}`;
-	if (host === "opencode") return `# Memory\n\n${OPENCODE_INTRO}\n\n${RULES}\n\n${view.render()}`;
+	if (host === "opencode") return `# Memory\n\n${OPENCODE_INTRO}\n\n${options.readOnly === true ? `${OPENCODE_READ_ONLY}\n\n` : ""}${RULES}\n\n${view.render()}`;
 	return `# Memory\n\n${CLAUDE_INTRO}\n\n${RULES}\n\n${fenced(view.render())}`;
 }
 
