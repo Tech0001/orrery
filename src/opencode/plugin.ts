@@ -6,8 +6,8 @@
  * - Which agent: the one the launch's options name (src/opencode/options.ts), with the token from the token file (only
  *   one in Orrery's tokens folder: a project's opencode.json can name this plugin with options of its own) claimed for
  *   this OpenCode server's process (src/agent/pick.ts). A token another live process claimed (an OpenCode started from
- *   the model's shell inherits the launch's config) is refused: the session is the folder's agent's, as pi's would be,
- *   or no agent's.
+ *   the model's shell inherits the launch's config) is refused, and the session is no agent's, in an agent's folder
+ *   too: only the launch's token makes a session the agent's.
  * - Recording: the user's words at the prompt hook; at session.execution.succeeded, the run's final reply, read from
  *   the session's context (src/opencode/turns.ts). Subagent sessions (a parentID) are not memory.
  * - The context hook appends the agent's instructions, then the memory section, as the last system parts. They are the
@@ -187,10 +187,11 @@ class OrreryInOpenCode {
 			);
 			return;
 		}
-		// The launch's token is another live OpenCode's: this one was started from it, and is plain OpenCode here.
-		if (pick.kind === "none") return;
-		// Only the OpenCode the launch made speaks to its TUI; one started from it, in an agent's folder, has no TUI of its own here.
-		if (pick.by === "env") this.#feed = feed;
+		// The launch's token is another live OpenCode's: this one was started from it (from the model's shell, say), and is
+		// plain OpenCode, whatever folder it runs in. Only the launch's token makes a session the agent's: by its folder, a
+		// nested OpenCode in another agent's folder would become that agent's writer.
+		if (pick.kind === "none" || pick.by !== "env") return;
+		this.#feed = feed;
 		this.#config = config;
 		this.#agent = pick.agent;
 		this.#status();

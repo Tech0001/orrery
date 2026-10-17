@@ -307,13 +307,15 @@ describe("Orrery's OpenCode plugin: when it can't record", () => {
 		await start(s, nested, { owner: process.ppid, tui: 999 });
 		expect(nested.registered).toBe(false);
 		expect(claimedBy(s.atlas.dir, s.token)).toBe(process.pid);
-		// In the agent's folder: the folder's agent, as pi there would be; the first OpenCode has it, so it only reads.
+		// In an agent's folder too: only the launch's token makes a session the agent's, never the folder it runs in (a
+		// nested OpenCode in another agent's folder would otherwise become that agent's writer).
 		const inFolder = hostFor(s, s.ws);
 		await start(s, inFolder, { owner: process.ppid, tui: 999 });
-		expect(inFolder.registered).toBe(true);
-		inFolder.open("ses_nested");
-		await inFolder.prompt("ses_nested", "Nested words.");
-		expect(await inFolder.compaction("ses_nested")).toBeUndefined();
+		expect(inFolder.registered).toBe(false);
+		const birch = hostFor(s, join(s.dir, "birch"));
+		await start(s, birch, { owner: process.ppid, tui: 999 });
+		expect(birch.registered).toBe(false);
+		expect(existsSync(join(s.config.agents.get("Birch")?.dir as string, "memory.sqlite"))).toBe(false);
 		expect(messages(s.atlas)).toEqual([]);
 		expect(readFileSync(feedFileOf(s.tokenFile), "utf8")).toBe(before);
 	});
