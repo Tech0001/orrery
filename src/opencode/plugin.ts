@@ -22,7 +22,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { compactorCommand } from "../agent/agent-commands.ts";
 import { type AgentConfig, defaultConfigPath, type HarnessConfig, loadConfig } from "../agent/config.ts";
 import { openElsewhere, openYielding } from "../agent/handover.ts";
@@ -43,6 +43,7 @@ import { localIso, MemoryStore, MemoryView } from "../memory/index.ts";
 import { remoteOpenNotice } from "../remote/checkout.ts";
 import type { LockState, Storage } from "../remote/types.ts";
 import { FEED_NOTICES, type FeedLevel, type FeedNotice, writeFeed } from "./feed.ts";
+import { CONFIG_UNREADABLE, OpenCodeGuardHook, openCodeGuardOptions } from "./guard.ts";
 import type { CompactionEvent, ContextEvent, OpenCodeContext, OpenCodePlugin, PluginTool, PromptEvent, TitleEvent } from "./host.ts";
 import { PLUGIN_ID, readPluginOptions } from "./options.ts";
 import { feedFileOf, launchTokenFile, readTokenFile } from "./token-file.ts";
@@ -71,6 +72,8 @@ export interface OpenCodePluginOptions {
 	readonly updates?: { readonly env: NodeJS.ProcessEnv; readonly running?: () => string | undefined };
 	/** Says a line where a person running OpenCode with --print-logs sees it (default stderr). */
 	readonly log?: (line: string) => void;
+	/** How long the guard may take to answer a tool call (default GUARD_MS, 4 s); past it the call is refused. */
+	readonly guardMs?: number;
 }
 
 /** What a compaction of a recorded session is: memory has the conversation, and the view comes back with it. */
@@ -101,6 +104,8 @@ const KEPT_SESSIONS = 64;
 const MAX_DEPTH = 8;
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+/** An error's first line, without its final period: for a reason the model reads in one line. */
+const firstLine = (error: unknown) => (errorText(error).split("\n")[0] as string).trim().replace(/\.+$/, "");
 
 /** The summary trouble as notices see it (never the raw provider text). */
 function troubleState(memory: MemoryAgent): TroubleState | null {
@@ -148,45 +153,106 @@ class OrreryInOpenCode {
 	#trouble: string | undefined;
 	readonly #updatesShown = new Set<string>();
 
+	/** The guard on this folder's tool calls (src/opencode/guard.ts): its rules are set by start. */
+	readonly #guard: OpenCodeGuardHook;
+	/** The folder this plugin serves: OpenCode's location for it. */
+	readonly #directory: string;
+
 	constructor(ctx: OpenCodeContext, options: OpenCodePluginOptions) {
 		this.#ctx = ctx;
 		this.#options = options;
+		this.#guard = new OpenCodeGuardHook(options.guardMs === undefined ? {} : { ms: options.guardMs });
+		this.#directory = typeof ctx.location?.directory === "string" ? ctx.location.directory : process.cwd();
 	}
 
-	/** Reads the options, the config and the token, picks the agent, and, with one, registers the hooks and opens its memory. */
-	async start(): Promise<void> {
-		const options = readPluginOptions(this.#ctx.options);
-		if ("problem" in options) {
-			this.#log(`Orrery: loaded without an agent (${options.problem}).`);
-			return;
+	/**
+	 * The guard's hooks (src/opencode/guard.ts), registered before anything else, judging by the rules start sets: a call
+	 * that comes first waits for them. Throws when OpenCode won't take the tool hook, so the plugin fails to load (and the
+	 * launch's check says so) rather than run a session without its guard. The second layer (OpenCode's permission
+	 * check) is said in the log when it can't be added: every call is still judged.
+	 */
+	async guard(): Promise<void> {
+		await this.#ctx.tool.hook("execute.before", async (event) => {
+			const refusal = await this.#guard.beforeTool(event);
+			if (refusal !== undefined) throw new Error(refusal);
+		});
+		try {
+			if (this.#ctx.permission === undefined) throw new Error("this OpenCode has no permission hooks");
+			await this.#ctx.permission.hook("evaluate", (event) => this.#guard.onPermission(event));
+		} catch (error) {
+			this.#log(`Orrery: the guard's second layer (OpenCode's permission check) could not be added (${errorText(error)}); every tool call is still judged.`);
 		}
-		this.#log(`Orrery: loaded for ${options.agent}.`);
-		const env = this.#options.env ?? process.env;
-		// Only a launch's own token file: OpenCode's config (a project's opencode.json among it) names this one, and the
-		// feed is written beside it.
-		if (!launchTokenFile(options.tokenFile, env)) {
-			this.#log("Orrery: the plugin's token file is not one Orrery's launch wrote; this session runs without memory.");
-			return;
+	}
+
+	/** After start: rules it did not set (it failed before it could) refuse every call, saying why. */
+	settleGuard(why: string): void {
+		if (!this.#guard.decided) this.#guard.decide({ blind: `Orrery's plugin could not start (${why}), so no call can be checked; nothing was run.` });
+	}
+
+	/** The guard's rules for `agent` (or no agent's), from `config`; rules that can't be made refuse every call. */
+	#guardRules(config: HarnessConfig, agent: AgentConfig | undefined, env: NodeJS.ProcessEnv): void {
+		try {
+			const configFile = this.#options.config === undefined ? resolve(defaultConfigPath(env)) : undefined;
+			this.#guard.decide({ options: openCodeGuardOptions(config, agent, this.#directory, { env, ...(configFile === undefined ? {} : { configFile }) }) });
+		} catch (error) {
+			this.#guard.decide({ blind: `the guard's rules could not be made (${firstLine(error)}), so no call can be checked; nothing was run.` });
 		}
-		const feed = feedFileOf(options.tokenFile);
-		const directory = typeof this.#ctx.location?.directory === "string" ? this.#ctx.location.directory : process.cwd();
+	}
+
+	/** No agent's rules, from Orrery's config (or none that can be read: every call refused). */
+	#noAgent(env: NodeJS.ProcessEnv): void {
 		let config: HarnessConfig;
 		try {
 			config = this.#options.config ?? loadConfig(defaultConfigPath(env));
 		} catch (error) {
+			this.#guard.decide({ blind: CONFIG_UNREADABLE(firstLine(error)) });
+			return;
+		}
+		this.#guardRules(config, undefined, env);
+	}
+
+	/**
+	 * Reads the options, the config and the token, picks the agent, sets the guard's rules (the agent's, or no agent's),
+	 * and, with an agent, registers the memory's hooks and opens its memory.
+	 */
+	async start(): Promise<void> {
+		const env = this.#options.env ?? process.env;
+		const options = readPluginOptions(this.#ctx.options);
+		if ("problem" in options) {
+			this.#log(`Orrery: loaded without an agent (${options.problem}).`);
+			this.#noAgent(env);
+			return;
+		}
+		this.#log(`Orrery: loaded for ${options.agent}.`);
+		// Only a launch's own token file: OpenCode's config (a project's opencode.json among it) names this one, and the
+		// feed is written beside it.
+		if (!launchTokenFile(options.tokenFile, env)) {
+			this.#log("Orrery: the plugin's token file is not one Orrery's launch wrote; this session runs without memory.");
+			this.#noAgent(env);
+			return;
+		}
+		const feed = feedFileOf(options.tokenFile);
+		let config: HarnessConfig;
+		try {
+			config = this.#options.config ?? loadConfig(defaultConfigPath(env));
+		} catch (error) {
+			this.#guard.decide({ blind: CONFIG_UNREADABLE(firstLine(error)) });
 			this.#feed = feed;
-			this.#refuse(`Orrery: Orrery's config could not be read (${safeText(errorText(error))}); this session runs without memory.`);
+			this.#refuse(`Orrery: Orrery's config could not be read (${safeText(errorText(error))}); this session runs without memory, and its guard refuses every tool call.`);
 			return;
 		}
 		let token: string;
 		try {
 			token = readTokenFile(options.tokenFile);
 		} catch (error) {
+			this.#guardRules(config, undefined, env);
 			this.#feed = feed;
 			this.#refuse(`Orrery: the launch token for ${safeText(options.agent)} could not be read (${safeText(errorText(error))}); this session runs without memory.`);
 			return;
 		}
-		const pick = pickAgent(config, { env: { [AGENT_ENV]: options.agent, [TOKEN_ENV]: token }, cwd: directory, owner: this.#options.owner ?? process.pid });
+		const pick = pickAgent(config, { env: { [AGENT_ENV]: options.agent, [TOKEN_ENV]: token }, cwd: this.#directory, owner: this.#options.owner ?? process.pid });
+		// The launch's agent, by its token, or no agent's: the guard runs either way.
+		this.#guardRules(config, pick.kind === "agent" && pick.by === "env" ? pick.agent : undefined, env);
 		if (pick.kind === "unknown" || pick.kind === "bad-token") {
 			this.#feed = feed;
 			this.#refuse(
@@ -690,15 +756,22 @@ class OrreryInOpenCode {
 	}
 }
 
-/** Orrery's OpenCode plugin: `export default openCodePlugin(…)` in its server entry. Setup never throws. */
+/**
+ * Orrery's OpenCode plugin: `export default openCodePlugin(…)` in its server entry. Setup throws only when OpenCode won't
+ * take the guard's hook (the plugin then fails to load, and the launch's check says so); anything else that fails is
+ * said, and the guard refuses every call if its rules were not set.
+ */
 export function openCodePlugin(options: OpenCodePluginOptions = {}): OpenCodePlugin {
 	return {
 		id: PLUGIN_ID,
 		async setup(ctx: OpenCodeContext) {
 			const plugin = new OrreryInOpenCode(ctx, options);
+			await plugin.guard();
 			try {
 				await plugin.start();
+				plugin.settleGuard("it set no rules for its guard");
 			} catch (error) {
+				plugin.settleGuard(firstLine(error));
 				try {
 					(options.log ?? ((text: string) => process.stderr.write(`${text}\n`)))(`Orrery: the plugin could not start: ${errorText(error)}`);
 				} catch {

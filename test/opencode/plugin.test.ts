@@ -503,3 +503,117 @@ describe("Orrery's OpenCode plugin: its life in OpenCode's server", () => {
 		expect(noticesOf(s)).toEqual(["Orrery was updated to 0.9.0; restart this session to use it."]);
 	});
 });
+
+describe("Orrery's OpenCode plugin: the guard", () => {
+	const SENSITIVE = /^Orrery guard: .*sensitive/;
+	const OUTSIDE = /^Orrery guard: .*outside this agent's folder and allowed roots/;
+
+	it("judges every tool call by the launch's agent's rules, its folder and allowed roots, and every permission a tool asks for", async () => {
+		const s = scene();
+		const host = hostFor(s);
+		await start(s, host);
+		expect(host.guarded).toBe(true);
+		expect(await host.call("read", { path: "~/.ssh/id_ed25519" })).toMatch(SENSITIVE);
+		expect(await host.call("shell", { command: "cat .env" })).toMatch(SENSITIVE);
+		expect(await host.call("write", { path: "notes.md", content: "x" })).toBeUndefined();
+		// Outside its folder and allowed roots (by default the folder's parent).
+		expect(await host.call("write", { path: join(s.plain, "x.md"), content: "x" })).toBeUndefined();
+		expect(await host.call("write", { path: "/opt/elsewhere/x.md", content: "x" })).toMatch(OUTSIDE);
+		expect(await host.call("patch", { patchText: "*** Begin Patch\n*** Add File: /opt/elsewhere/x.md\n+x\n*** End Patch" })).toMatch(OUTSIDE);
+		expect(await host.call("shell", { command: "ls", workdir: s.ws })).toBeUndefined();
+		// Its own memory tools are judged like any tool, and let through.
+		expect(await host.call("search", { query: "Saffron" })).toBeUndefined();
+		// The second layer: what a tool asks leave for, as OpenCode placed it.
+		expect(await host.ask("edit", ["notes.md"])).toEqual({ effect: "allow" });
+		expect(await host.ask("edit", ["/opt/elsewhere/x.md"])).toEqual({ effect: "deny", message: expect.stringMatching(OUTSIDE) });
+		expect(await host.ask("read", [join(s.dir, "data", "agents", "Atlas", "memory.sqlite")], "ask")).toEqual({ effect: "deny", message: expect.stringMatching(SENSITIVE) });
+	});
+
+	it("keeps the guard, with no agent's rules (writes only where it runs), in a session that is no agent's", async () => {
+		const cases: [string, (s: ReturnType<typeof scene>) => { host: FakeHost; options?: OpenCodePluginOptions }][] = [
+			["no options", (s) => ({ host: new FakeHost({}, s.plain) })],
+			["a token file not the launch's", (s) => ({ host: new FakeHost({ agent: "Atlas", tokenFile: join(s.dir, "elsewhere-token") }, s.plain) })],
+			[
+				"a token it can't read",
+				(s) => {
+					rmSync(s.tokenFile);
+					return { host: hostFor(s, s.plain) };
+				},
+			],
+			["an agent the config doesn't have", (s) => ({ host: hostFor(s, s.plain, "Nobody") })],
+			["a token another live process holds", (s) => ({ host: hostFor(s, s.plain), options: { owner: process.ppid, tui: 999 } })],
+		];
+		for (const [what, make] of cases) {
+			const s = scene();
+			if (what === "a token another live process holds") await start(s, hostFor(s));
+			const { host, options } = make(s);
+			await start(s, host, options);
+			expect(host.guarded, what).toBe(true);
+			expect(host.registered, what).toBe(false);
+			expect(await host.call("read", { path: "~/.ssh/id_ed25519" }), what).toMatch(SENSITIVE);
+			expect(await host.call("write", { path: "x.md", content: "x" }), what).toBeUndefined();
+			expect(await host.call("write", { path: join(s.ws, "x.md"), content: "x" }), what).toMatch(OUTSIDE);
+			// Every agent's view is another's.
+			expect(await host.call("read", { path: join(s.ws, ".orrery", "view.md") }), what).toMatch(SENSITIVE);
+		}
+	});
+
+	it("refuses every call when Orrery's config can't be read, and says so", async () => {
+		const s = scene();
+		const broken = join(s.dir, "broken.toml");
+		writeFileSync(broken, "[agents.Atlas\n");
+		const host = hostFor(s);
+		await start(s, host, { config: undefined, env: { ...s.env, ORRERY_CONFIG: broken } });
+		expect(await host.call("websearch", { query: "x" })).toMatch(/^Orrery guard: Orrery's config could not be read \(.*\), so no call can be checked; nothing was run\. Fix the config file\.$/);
+		expect(await host.ask("read", ["a.ts"])).toMatchObject({ effect: "deny" });
+		expect(noticesOf(s)).toEqual([expect.stringMatching(/^Orrery: Orrery's config could not be read \(.*\); this session runs without memory, and its guard refuses every tool call\.$/)]);
+		// Without its options too.
+		const plain = new FakeHost({}, s.plain);
+		await start(s, plain, { config: undefined, env: { ...s.env, ORRERY_CONFIG: broken } });
+		expect(await plain.call("read", { path: "a.ts" })).toMatch(/Orrery's config could not be read/);
+	});
+
+	it("refuses every call when it fails before its rules are set, saying why", async () => {
+		const s = scene();
+		const config = Object.create(s.config, {
+			agents: {
+				get() {
+					throw new Error("a broken config");
+				},
+			},
+		}) as HarnessConfig;
+		const lines: string[] = [];
+		const host = hostFor(s);
+		await start(s, host, { config, log: (line) => lines.push(line) });
+		expect(lines.at(-1)).toBe("Orrery: the plugin could not start: a broken config");
+		expect(await host.call("read", { path: "a.ts" })).toBe("Orrery guard: Orrery's plugin could not start (a broken config), so no call can be checked; nothing was run.");
+	});
+
+	it("fails to load when OpenCode won't take its guard's hook, so no session runs with Orrery and without it", async () => {
+		const s = scene();
+		const host = hostFor(s);
+		host.missing = { toolHook: true };
+		const plugin = openCodePlugin({ config: s.config, env: s.env, owner: process.pid, tui: TUI, summarySources: fauxSources(s.config), log: () => {} });
+		await expect(plugin.setup(host)).rejects.toThrow("no tool hook execute.before");
+		expect(host.registered).toBe(false);
+		expect(existsSync(join(s.atlas.dir, "memory.sqlite"))).toBe(false);
+	});
+
+	it("says so when the second layer (OpenCode's permission check) can't be added, and judges every call all the same", async () => {
+		const s = scene();
+		const host = hostFor(s);
+		host.permission = undefined;
+		const lines: string[] = [];
+		await start(s, host, { log: (line) => lines.push(line) });
+		expect(lines).toContain("Orrery: the guard's second layer (OpenCode's permission check) could not be added (this OpenCode has no permission hooks); every tool call is still judged.");
+		expect(await host.call("read", { path: "~/.ssh/id_ed25519" })).toMatch(SENSITIVE);
+	});
+
+	it("answers a call it can't judge in its time with a refusal (OpenCode would wait on the hook forever)", async () => {
+		const s = scene();
+		const host = hostFor(s);
+		// A guard with no time at all: whatever the call, it is late.
+		await start(s, host, { guardMs: 0 });
+		expect(await host.call("read", { path: "a.ts" })).toBe("Orrery guard: this call could not be checked in time; nothing was run.");
+	});
+});

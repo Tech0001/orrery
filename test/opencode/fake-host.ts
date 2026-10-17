@@ -1,9 +1,11 @@
 /**
  * A stand-in for OpenCode 2.0.30's server plugin context (src/opencode/host.ts), as far as Orrery's plugin uses it: its
  * hooks run when a test says (a prompt, a model request, a compaction, a title), its sessions answer get and context
- * from what the test put there, its event stream yields what the test emits, and the tools the plugin adds are kept.
+ * from what the test put there, its event stream yields what the test emits, and the tools the plugin adds are kept. Its
+ * tool calls and permission checks go through the plugin's guard hooks (call, ask).
  */
 
+import type { PermissionEvent, ToolCallEvent } from "../../src/opencode/guard.ts";
 import type { CompactionEvent, ContextEvent, OpenCodeContext, PluginTool, PromptEvent, SessionHooks, TitleEvent } from "../../src/opencode/host.ts";
 
 type Hook = (event: never) => Promise<void> | void;
@@ -74,16 +76,61 @@ export class FakeHost implements OpenCodeContext {
 		},
 	};
 
+	/** The plugin's execute.before hooks (its guard), in the order registered. */
+	readonly toolHooks: ((event: ToolCallEvent) => Promise<void> | void)[] = [];
+	/** Its permission evaluate hooks (the guard's second layer). */
+	readonly permissionHooks: ((event: PermissionEvent) => Promise<void> | void)[] = [];
+	/** Makes ctx.tool.hook throw, as an OpenCode without it would. */
+	missing: { toolHook?: boolean } = {};
+
 	readonly tool = {
 		transform: async (callback: (editor: { add(tool: PluginTool): void }) => void) => {
 			callback({ add: (tool) => this.tools.push(tool) });
 			return { dispose: async () => {} };
 		},
+		hook: async (name: "execute.before", callback: (event: ToolCallEvent) => Promise<void> | void) => {
+			if (this.missing.toolHook || name !== "execute.before") throw new Error(`no tool hook ${name}`);
+			this.toolHooks.push(callback);
+			return { dispose: async () => {} };
+		},
 	};
 
-	/** Whether the plugin registered anything. */
+	/** OpenCode's permission hooks; a test may take them away (undefined), as an OpenCode without them would. */
+	permission: OpenCodeContext["permission"] = {
+		hook: async (name: "evaluate", callback: (event: PermissionEvent) => Promise<void> | void) => {
+			if (name !== "evaluate") throw new Error(`no permission hook ${name}`);
+			this.permissionHooks.push(callback);
+			return { dispose: async () => {} };
+		},
+	};
+
+	/** Whether the plugin registered its memory's hooks or tools (the guard's hooks are apart: guarded). */
 	get registered(): boolean {
 		return this.hooks.size > 0 || this.tools.length > 0;
+	}
+
+	/** Whether the guard's hook is there. */
+	get guarded(): boolean {
+		return this.toolHooks.length > 0;
+	}
+
+	/** A tool call as OpenCode makes one: what a hook threw (the model sees its message), or undefined when it runs. */
+	async call(tool: string, input: unknown, sessionID = "ses_call"): Promise<string | undefined> {
+		for (const hook of this.toolHooks) {
+			try {
+				await hook({ tool, sessionID, input, agent: "build", messageID: "msg_call", id: "call_1" } as ToolCallEvent);
+			} catch (error) {
+				return error instanceof Error ? error.message : String(error);
+			}
+		}
+		return undefined;
+	}
+
+	/** A tool asking leave for `resources`: the effect and message after the hooks (OpenCode's own rules said `effect`). */
+	async ask(action: string, resources: string[], effect = "allow"): Promise<{ effect: unknown; message?: unknown }> {
+		const event: PermissionEvent = { action, resources, effect };
+		for (const hook of this.permissionHooks) await hook(event);
+		return { effect: event.effect, ...(event.message === undefined ? {} : { message: event.message }) };
 	}
 
 	/** How many event streams the plugin opened. */

@@ -4,6 +4,8 @@
  * OpenCode hands over is checked before use.
  */
 
+import type { PermissionEvent, ToolCallEvent } from "./guard.ts";
+
 /** A system prompt part, as the context hook takes them. */
 export interface SystemPart {
 	readonly type: "text";
@@ -70,7 +72,20 @@ export interface OpenCodeContext {
 	};
 	/** The server's event stream: every session's, of every folder. */
 	readonly event: { subscribe(options?: { signal?: AbortSignal }): AsyncIterable<unknown> };
-	readonly tool: { transform(callback: (editor: ToolEditor) => void): Promise<unknown> };
+	readonly tool: {
+		transform(callback: (editor: ToolEditor) => void): Promise<unknown>;
+		/**
+		 * execute.before: before every tool call (built-in, plugin, MCP, Code Mode's execute and each tool a Code Mode
+		 * program calls), `{tool, sessionID, agent, messageID, id, input}`. A throw refuses the call; the model gets its
+		 * message.
+		 */
+		hook(name: "execute.before", callback: (event: ToolCallEvent) => Promise<void> | void): Promise<unknown>;
+	};
+	/**
+	 * OpenCode's permission checks: evaluate runs as a tool asks leave (`{action, resources, effect, message…}`); setting
+	 * effect "deny" with a message refuses it.
+	 */
+	readonly permission?: { hook(name: "evaluate", callback: (event: PermissionEvent) => Promise<void> | void): Promise<unknown> };
 }
 
 /** What OpenCode loads from a plugin's server entry. Cleanup runs when OpenCode stops, and before a reload's setup. */
