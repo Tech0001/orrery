@@ -196,6 +196,38 @@ describe("Orrery's OpenCode plugin: the system prompt", () => {
 		expect(noticesOf(s)).toEqual([]);
 	});
 
+	it("answers compaction from memory only for its own sessions: one made while it records, or whose first recorded prompt had nothing before it; a resumed one is OpenCode's to compact", async () => {
+		const s = scene();
+		const host = hostFor(s);
+		await start(s, host);
+		await opened(s);
+		// Made while it records (OpenCode says so on its event stream), whatever came before its first prompt.
+		host.open("ses_new");
+		host.sessions.get("ses_new")?.messages.push({ id: "msg_n0", type: "synthetic", text: "OpenCode's own note." });
+		await host.prompt("ses_new", "New words.");
+		// Made before it listened (no event seen), but nothing came before its first prompt.
+		host.sessions.set("ses_quiet", { messages: [] });
+		await host.prompt("ses_quiet", "Quiet words.");
+		// Resumed (`opencode -c`, `-s <id>`): a plain OpenCode session, or one made while another session had the agent.
+		host.sessions.set("ses_old", { messages: [{ id: "msg_o1", type: "user", text: "Words memory never had." }, { id: "msg_o2", type: "assistant", content: [{ type: "text", text: "Nor this." }] }] });
+		await host.prompt("ses_old", "Resumed words.");
+		await waitUntil(() => messages(s.atlas).length === 3);
+		expect(await host.compaction("ses_new")).toEqual({ summary: COMPACTION_SUMMARY });
+		expect(await host.compaction("ses_quiet")).toEqual({ summary: COMPACTION_SUMMARY });
+		expect(await host.compaction("ses_old")).toBeUndefined();
+		// Its sessions stay its own after a reload; the resumed one stays OpenCode's.
+		await cleanups.splice(0).at(-1)?.();
+		const again = hostFor(s);
+		await start(s, again);
+		await opened(s);
+		for (const id of ["ses_new", "ses_quiet", "ses_old"]) again.sessions.set(id, host.sessions.get(id) as { messages: unknown[] });
+		expect(await again.compaction("ses_new")).toEqual({ summary: COMPACTION_SUMMARY });
+		expect(await again.compaction("ses_quiet")).toEqual({ summary: COMPACTION_SUMMARY });
+		expect(await again.compaction("ses_old")).toBeUndefined();
+		await again.prompt("ses_old", "More resumed words.");
+		expect(await again.compaction("ses_old")).toBeUndefined();
+	});
+
 	it("gives the instructions alone when the memory could not be opened, and leaves compaction to OpenCode", async () => {
 		const s = scene();
 		mkdirSync(s.atlas.dir, { recursive: true });

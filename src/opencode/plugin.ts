@@ -86,6 +86,15 @@ type Memory =
 	/** The memory could not be opened, or was lost or closed. */
 	| { readonly kind: "off" };
 
+/**
+ * The memory meta key that marks a main session as the agent's own: OpenCode made it while this agent's memory opened
+ * or recorded, or nothing came before its first recorded prompt. Memory has such a session's turns from its start, so its
+ * compaction is answered from memory. Another session (`opencode -c` or `-s <id>` resumes any session of OpenCode's
+ * database: a plain one, another agent's, one made while the memory was read-only) has turns memory never had, and keeps
+ * OpenCode's own compaction.
+ */
+const sessionKey = (sessionID: string) => `opencode.session.${sessionID}`;
+
 /** The most sessions whose parts are kept; the oldest goes first, and makes its parts again if it asks. */
 const KEPT_SESSIONS = 64;
 /** The most parents followed up to a session's root. */
@@ -416,11 +425,40 @@ class OrreryInOpenCode {
 		const memory = this.#recording();
 		if (memory === undefined || this.#prompts.has(event.messageID)) return;
 		this.#prompts.add(event.messageID);
+		// A session this agent's memory has from its start is its own (sessionKey); one resumed with turns memory never had is not.
+		const own = !this.#ownSession(memory, event.sessionID) && (await this.#fresh(event)) ? { [sessionKey(event.sessionID)]: "first prompt" } : {};
+		if (this.#recording() !== memory) return;
 		const text = typeof event.prompt?.text === "string" ? event.prompt.text : "";
-		if (text.trim() === "") return;
-		memory.view.appendBatch([{ kind: "user", text, date: localIso() }]);
+		if (text.trim() === "") {
+			for (const [key, value] of Object.entries(own)) memory.store.setMeta(key, value);
+			return;
+		}
+		memory.view.appendBatch([{ kind: "user", text, date: localIso() }], own);
 		this.#busy.add(event.sessionID);
 		this.#status();
+	}
+
+	/** Whether the session is this agent's own: its memory has it from its start (sessionKey). */
+	#ownSession(memory: MemoryAgent, sessionID: string): boolean {
+		return memory.store.getMeta(sessionKey(sessionID)) !== undefined;
+	}
+
+	/** Whether nothing came before this prompt in its session (it may be there already); a session that can't be read is not. */
+	async #fresh(event: PromptEvent): Promise<boolean> {
+		try {
+			const answer = await this.#ctx.session.context({ sessionID: event.sessionID });
+			const list = Array.isArray(answer) ? answer : (answer as { data?: unknown } | null)?.data;
+			return Array.isArray(list) && list.every((message) => (message as { id?: unknown } | null)?.id === event.messageID);
+		} catch {
+			return false;
+		}
+	}
+
+	/** A main session OpenCode made while this agent's memory opens or records: once it records, the session is its own. */
+	async #onCreated(sessionID: string): Promise<void> {
+		await this.#opening;
+		const memory = this.#recording();
+		if (memory !== undefined && !this.#ownSession(memory, sessionID)) memory.store.setMeta(sessionKey(sessionID), "made");
 	}
 
 	async #onContext(event: ContextEvent): Promise<void> {
@@ -500,8 +538,9 @@ class OrreryInOpenCode {
 	async #onCompaction(event: CompactionEvent): Promise<void> {
 		if ((await this.#parentOf(event.sessionID)) !== null) return;
 		await this.#opening;
-		// Not recorded: OpenCode's own summary keeps what memory doesn't have.
-		if (this.#recording() === undefined) return;
+		// Not recorded, or not from its start (a resumed session): OpenCode's own summary keeps what memory doesn't have.
+		const memory = this.#recording();
+		if (memory === undefined || !this.#ownSession(memory, event.sessionID)) return;
 		event.result = { summary: COMPACTION_SUMMARY };
 		this.#parts.delete(event.sessionID);
 	}
@@ -528,19 +567,25 @@ class OrreryInOpenCode {
 		const sessionID = data?.sessionID;
 		if (typeof sessionID !== "string") return;
 		if (type === "session.created") {
-			if (!this.#parents.has(sessionID)) this.#parents.set(sessionID, Promise.resolve(typeof data?.parentID === "string" && data.parentID !== "" ? data.parentID : null));
+			const parent = typeof data?.parentID === "string" && data.parentID !== "" ? data.parentID : null;
+			if (!this.#parents.has(sessionID)) this.#parents.set(sessionID, Promise.resolve(parent));
+			if (parent === null) this.#track(this.#guarded("marking a new session as the agent's", () => this.#onCreated(sessionID)));
 		} else if (type === "session.execution.started") {
 			if (this.#ours.has(sessionID)) {
 				this.#busy.add(sessionID);
 				this.#status();
 			}
 		} else if (type === "session.execution.succeeded") {
-			const recording = this.#guarded("recording a reply", () => this.#onSucceeded(sessionID));
-			this.#pending.add(recording);
-			void recording.finally(() => this.#pending.delete(recording));
+			this.#track(this.#guarded("recording a reply", () => this.#onSucceeded(sessionID)));
 		} else if (type === "session.execution.failed" || type === "session.execution.interrupted") {
 			if (this.#busy.delete(sessionID)) this.#status();
 		}
+	}
+
+	/** Work the event stream started, which cleanup waits a little for. */
+	#track(work: Promise<void>): void {
+		this.#pending.add(work);
+		void work.finally(() => this.#pending.delete(work));
 	}
 
 	/** A run of one of this location's main sessions ended: its final reply goes to memory, once. */
