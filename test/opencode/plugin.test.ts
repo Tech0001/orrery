@@ -425,6 +425,21 @@ describe("Orrery's OpenCode plugin: its life in OpenCode's server", () => {
 		expect(claimedBy(s.atlas.dir, s.token)).toBe(process.pid);
 	});
 
+	it("records a prompt that comes while it is still registering its hooks: the memory is opening by then", async () => {
+		const s = scene();
+		const host = hostFor(s);
+		host.open("ses_early");
+		// The last registration step lets a prompt run to its end first, as OpenCode may while setup goes on.
+		const transform = host.tool.transform;
+		host.tool.transform = async (callback) => {
+			await host.prompt("ses_early", "Early words.");
+			return transform(callback);
+		};
+		await start(s, host);
+		await waitUntil(() => messages(s.atlas).length === 1);
+		expect(messages(s.atlas)).toEqual(["user: Early words."]);
+	});
+
 	it("takes a summary-model change made from outside (Orrery's TUI) on its next tick, and says so", async () => {
 		const s = scene();
 		const host = hostFor(s);

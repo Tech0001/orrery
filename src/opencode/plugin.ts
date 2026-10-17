@@ -195,8 +195,9 @@ class OrreryInOpenCode {
 		this.#config = config;
 		this.#agent = pick.agent;
 		this.#status();
-		await this.#register();
+		// Opening before the hooks are there: a hook that runs while the others are being registered waits for it.
 		this.#opening = this.#open();
+		await this.#register();
 		void this.#listen();
 		this.#timer = setInterval(() => this.#tick(), this.#options.tickMs ?? 5000);
 		this.#timer.unref?.();
