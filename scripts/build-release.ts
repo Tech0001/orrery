@@ -187,8 +187,11 @@ export async function buildRelease(options: { from: string; out: string; targets
 		compile(from, folder, target);
 		pack(from, folder, "src/pi/index.ts", "pi", [...PI_SUPPLIED, OMP_FALLBACK]);
 		pack(from, folder, "src/omp/index.ts", "omp", OMP_SUPPLIED);
-		// OpenCode loads a plugin folder (extensions/opencode), from its server.* file.
+		// OpenCode loads a plugin folder (extensions/opencode): its server.* in its server, its tui.* in its TUI. tui.tsx goes
+		// as it is (OpenCode compiles its JSX with its own Solid transform), with what it reads the plugin's status with.
 		pack(from, folder, "src/opencode/plugin/server.ts", "opencode/server", OPENCODE_SUPPLIED, "bun");
+		pack(from, folder, "src/opencode/plugin/tui-feed.ts", "opencode/tui-feed", OPENCODE_SUPPLIED, "bun");
+		cpSync(join(from, "src", "opencode", "plugin", "tui.tsx"), join(folder, "extensions", "opencode", "tui.tsx"));
 		cpSync(join(from, ".claude-plugin"), join(folder, ".claude-plugin"), { recursive: true });
 		cpSync(join(from, "claude-plugin"), join(folder, "claude-plugin"), { recursive: true, filter: (src) => basename(src) !== "tests" });
 		cpSync(join(from, "deploy", "workstation"), join(folder, "deploy", "workstation"), { recursive: true });

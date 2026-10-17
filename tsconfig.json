@@ -12,5 +12,6 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
-  "include": ["src", "test", "vitest.config.ts", "scripts"]
+  "include": ["src", "test", "vitest.config.ts", "scripts"],
+  "exclude": ["src/opencode/plugin/tui.tsx"]
 }

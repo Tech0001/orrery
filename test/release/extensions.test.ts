@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { builtinModules } from "node:module";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { OMP_SUPPLIED, OPENCODE_SUPPLIED } from "../../scripts/build-release.ts";
@@ -17,9 +18,15 @@ function bareImports(file: string): string[] {
 	const spec = `["']([^"'./\\n][^"'\\n]*)["']`;
 	const imports = new RegExp(`^[ \\t]*(?:import|export)\\b[^"'\`;]*?\\bfrom\\s*${spec}|^[ \\t]*import\\s*${spec}|(?:\\bimport|require)\\s*\\(\\s*${spec}\\s*\\)`, "gm");
 	for (const m of text.matchAll(imports)) found.add((m[1] ?? m[2] ?? m[3]) as string);
-	const builtin = (s: string) => s.startsWith("node:") || s.startsWith("bun:") || /^(assert|buffer|child_process|constants|crypto|events|fs|fs\/promises|http|https|module|net|os|path|process|querystring|stream|stream\/web|string_decoder|timers|tls|tty|url|util|worker_threads|zlib)$/.test(s);
+	const builtin = (s: string) => s.startsWith("node:") || s.startsWith("bun:") || builtinModules.includes(s);
 	return [...found].filter((s) => !builtin(s)).sort();
 }
+
+/**
+ * What Bun's runtime has its own of, so Bun's bundler leaves them to it for a Bun target (OpenCode's plugin): a
+ * provider's SDK imports them.
+ */
+const BUN_RUNTIME: readonly string[] = ["ws", "node-fetch"];
 
 /** src/agent/models.ts's OMP-only fallback to this repo's own pi-ai, as the source writes it. */
 const FALLBACK = 'import("../../node_modules/@earendil-works/pi-ai/dist/compat.js")';
@@ -50,14 +57,19 @@ describe.skipIf(!bunReady)("packed extensions", () => {
 
 	it("OpenCode's plugin folder holds server.js for Bun, importing nothing but builtins and what OpenCode supplies, with its map", async () => {
 		const folder = join(await builtRelease(), "extensions", "opencode");
-		// OpenCode loads a plugin folder's server.*, index.*, tui.* and rpc.*: only server.js is there to load.
-		expect(readdirSync(folder).sort()).toEqual(["server.js", "server.js.map"]);
-		const server = join(folder, "server.js");
-		const left = bareImports(server);
-		expect(left.every((s) => OPENCODE_SUPPLIED.some((host) => s === host || s.startsWith(`${host}/`))), left.join(", ")).toBe(true);
-		const text = readFileSync(server, "utf8");
-		expect(text.startsWith("// @bun\n")).toBe(true);
-		expect(text).toMatch(/\/\/# sourceMappingURL=server\.js\.map\s*$/);
+		// OpenCode loads a plugin folder's server.*, index.*, tui.* and rpc.*: server.js and tui.tsx are there to load.
+		expect(readdirSync(folder).sort()).toEqual(["server.js", "server.js.map", "tui-feed.js", "tui-feed.js.map", "tui.tsx"]);
+		for (const file of ["server.js", "tui-feed.js"]) {
+			const left = bareImports(join(folder, file));
+			expect(left.every((s) => BUN_RUNTIME.includes(s) || OPENCODE_SUPPLIED.some((host) => s === host || s.startsWith(`${host}/`))), left.join(", ")).toBe(true);
+			const text = readFileSync(join(folder, file), "utf8");
+			expect(text.startsWith("// @bun\n")).toBe(true);
+			expect(text).toMatch(new RegExp(`//# sourceMappingURL=${file.replace(".", "\\.")}\\.map\\s*$`));
+		}
+		// The TUI entry as it is in the source: OpenCode's TUI gives it "solid-js"; it reads the plugin's status with tui-feed.js.
+		const tui = readFileSync(join(folder, "tui.tsx"), "utf8");
+		expect(tui).toBe(readFileSync(join(REPO, "src", "opencode", "plugin", "tui.tsx"), "utf8"));
+		expect([...tui.matchAll(/^import .* from "([^"]+)";$/gm)].map((m) => m[1])).toEqual(["solid-js", "./tui-feed.js"]);
 	});
 
 	it("a packed pi-ai OAuth loader comes with its flows registered (it imports them by paths only node_modules has)", async () => {

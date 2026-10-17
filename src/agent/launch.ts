@@ -196,7 +196,9 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 	const codexPlan = (prefix: readonly string[]) => (codex === undefined ? {} : { codex: { path: check.path as string, ...(version === undefined ? {} : { version }), config: codex.config, plainArgs: [...prefix, ...base.args], notices: codex.notices } });
 	if (tool === "opencode") {
 		// The token goes to the plugin as a file, so neither it nor ORRERY_AGENT is in OpenCode's environment, not even
-		// inherited: a tool the model starts there (pi, another OpenCode) is not the agent.
+		// inherited: a tool the model starts there (pi, another OpenCode) is not the agent by this launch. Another OpenCode
+		// inherits OPENCODE_CONFIG_CONTENT, token file and all, but finds the token claimed by this one's server
+		// (src/opencode/plugin.ts).
 		const env = options.env ?? process.env;
 		const token = base.env[TOKEN_ENV] as string;
 		const tokenFile = tokenFilePath(env);

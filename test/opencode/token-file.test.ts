@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, sym
 import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SignalTarget } from "../../src/agent/signal-cleanup.ts";
-import { pruneTokenFiles, removeOnSignals, tokenFilePath, writeTokenFile } from "../../src/opencode/token-file.ts";
+import { feedFileOf, launchTokenFile, pruneTokenFiles, readTokenFile, removeOnSignals, removeTokenFile, tokenFilePath, writeTokenFile } from "../../src/opencode/token-file.ts";
 import { tempDir } from "../agent/support.ts";
 
 const dirs: string[] = [];
@@ -54,9 +54,10 @@ describe("the OpenCode token file", () => {
 	it("takes out the files of launchers that are gone, and nothing else", () => {
 		const folder = join(scratch(), "tokens");
 		mkdirSync(folder);
-		for (const name of ["opencode-111-aaaaaaaaaaaa", "opencode-222-bbbbbbbbbbbb", "notes.txt", "opencode-333-short"]) writeFileSync(join(folder, name), "x");
+		const names = ["opencode-111-aaaaaaaaaaaa", "opencode-111-aaaaaaaaaaaa.feed.json", "opencode-222-bbbbbbbbbbbb", "opencode-222-bbbbbbbbbbbb.feed.json", "notes.txt", "opencode-333-short", "opencode-111-aaaaaaaaaaaa.other"];
+		for (const name of names) writeFileSync(join(folder, name), "x");
 		pruneTokenFiles(folder, (pid) => pid === 222);
-		expect(readdirSync(folder).sort()).toEqual(["notes.txt", "opencode-222-bbbbbbbbbbbb", "opencode-333-short"]);
+		expect(readdirSync(folder).sort()).toEqual(["notes.txt", "opencode-111-aaaaaaaaaaaa.other", "opencode-222-bbbbbbbbbbbb", "opencode-222-bbbbbbbbbbbb.feed.json", "opencode-333-short"]);
 		pruneTokenFiles(join(folder, "none")); // a folder that is not there: nothing to do
 	});
 });
@@ -68,6 +69,42 @@ function fakeProcess() {
 	const target = Object.assign(emitter, { pid: 4242, kill: (_pid: number, signal?: string | number) => (killed.push(String(signal)), true) }) as unknown as SignalTarget & EventEmitter;
 	return { target, killed };
 }
+
+describe("the plugin's side", () => {
+	it("reads the token, trimmed; refuses a link at the file's name, a folder, and a file that is not there", () => {
+		const dir = scratch();
+		const file = join(dir, "opencode-1-aaaaaaaaaaaa");
+		writeFileSync(file, `${TOKEN}\n`);
+		expect(readTokenFile(file)).toBe(TOKEN);
+		symlinkSync(file, join(dir, "link"));
+		expect(() => readTokenFile(join(dir, "link"))).toThrow();
+		mkdirSync(join(dir, "folder"));
+		expect(() => readTokenFile(join(dir, "folder"))).toThrow();
+		expect(() => readTokenFile(join(dir, "none"))).toThrow();
+	});
+
+	it("takes as a launch's token file only one named as the launcher names it, in Orrery's tokens folder, a real folder", () => {
+		const home = join(scratch(), "orrery-home");
+		const env = { ORRERY_HOME: home };
+		const file = tokenFilePath(env);
+		expect(launchTokenFile(file, env)).toBe(false); // no tokens folder yet
+		writeTokenFile(file, TOKEN);
+		expect(launchTokenFile(file, env)).toBe(true);
+		expect(launchTokenFile(join(home, "tokens", "..", "tokens", basename(file)), env)).toBe(true);
+		for (const other of [join(home, basename(file)), join(home, "tokens", "token"), `${file}.feed.json`, join(home, "tokens", "sub", basename(file)), "relative/opencode-1-aaaaaaaaaaaa"]) expect(launchTokenFile(other, env), other).toBe(false);
+		expect(launchTokenFile(file, { ORRERY_HOME: "relative" })).toBe(false);
+	});
+
+	it("keeps its feed beside the token file, and the feed goes with it", () => {
+		const dir = scratch();
+		const file = join(dir, "opencode-1-aaaaaaaaaaaa");
+		expect(feedFileOf(file)).toBe(`${file}.feed.json`);
+		writeFileSync(file, TOKEN);
+		writeFileSync(feedFileOf(file), "{}");
+		removeTokenFile(file);
+		expect(readdirSync(dir)).toEqual([]);
+	});
+});
 
 describe("removeOnSignals", () => {
 	it("removes the file on SIGTERM or SIGHUP and then stops the process by the signal, as Node would without a handler", () => {
