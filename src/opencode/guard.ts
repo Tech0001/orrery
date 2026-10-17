@@ -23,12 +23,19 @@
  *   renamed) by what it carries: Claude Code's heuristics (command lines, paths, file: URIs, destinations, a tool named
  *   for writing), a string under input or code as shell text, and every patch header line in any string, each target a
  *   write.
+ * A built-in tool judged by name must carry the input its schema takes (OpenCode would not run it otherwise), and what
+ * else it carries goes by content, so a tool another plugin renamed to one of these names is judged by what it takes.
+ * Paths are placed from the folder of the plugin's location, which is the session's: OpenCode runs a session's tools in
+ * its location, and a session moved elsewhere (session_move) runs in the new folder's location, with a plugin and guard
+ * of its own. An empty path is that folder, as OpenCode resolves it.
  * OpenCode's own login store (its database, which holds provider keys and sign-ins, and the auth.json it had before) is
  * kept as Claude Code's login is in Claude Code's gate.
  * The guard is fail-closed: an input it cannot read, an input over 1 MB, a command line over 64 KB and a call it cannot
  * judge within its time are refused (OpenCode has no time limit on a hook: a hook that never answers holds the call).
  * Limits, beyond the shell-text limits every gate has: a plugin of the person's own that changes a call's input after
- * Orrery's hook has judged it (the second layer, openCodePermission, judges what the tools ask leave for); Code Mode's
+ * Orrery's hook has judged it (the second layer, openCodePermission, judges what read and edit ask leave for, as
+ * OpenCode placed it); OpenCode loads plugins and config from the session's folder (.opencode/, opencode.json), so an
+ * agent that writes one there runs code in OpenCode's server, as one that writes a script and runs it does; Code Mode's
  * fetch() (network only); a relative target in an MCP tool's patch text is judged from the session's folder.
  */
 
