@@ -29,7 +29,7 @@ describe("throwaway demo", () => {
 		const deps = demoDeps(demo, controls);
 		const config = deps.loadConfig();
 		expect(config.agents.size).toBe(5);
-		expect(new Set([...config.agents.values()].map((agent) => agent.tool))).toEqual(new Set(["pi", "claude-code", "omp", "codex"]));
+		expect(new Set([...config.agents.values()].map((agent) => agent.tool))).toEqual(new Set(["pi", "claude-code", "omp", "codex", "opencode"]));
 		for (const path of [demo.configPath, config.dataDir, config.credentialsPath, config.deviceIdPath, ...[...config.agents.values()].flatMap((agent) => [agent.dir, agent.folder ?? "(no folder)"])]) expect(path.startsWith(`${root}/`)).toBe(true);
 		const rows = deps.overview(config);
 		expect(new Set(rows.map((row) => row.state))).toEqual(new Set(["working", "open", "closed"]));

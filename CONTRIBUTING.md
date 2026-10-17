@@ -49,6 +49,7 @@ ORRERY_TEST_OMP=/path/to/omp npm test -- test/omp/real-omp.test.ts
 ORRERY_TEST_ORI=/path/to/ori ORRERY_TEST_PI=/path/to/pi ORRERY_TEST_OMP=/path/to/omp \
   npm test -- test/ori/real-ori.test.ts
 ORRERY_TEST_CODEX=/path/to/codex npm test -- test/codex/real-codex.test.ts
+ORRERY_TEST_OPENCODE=/path/to/opencode npm test -- test/opencode/real-opencode.test.ts
 ```
 
 These tests isolate agent homes and use fake model services. `ORRERY_TEST_ORI_STRICT=1` turns the named upstream

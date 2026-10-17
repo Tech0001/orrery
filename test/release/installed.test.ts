@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { installFrom, removeVersion } from "../../src/install/install.ts";
 import { cleanupScratch, scratchPath } from "../install/support.ts";
+import { fakeOpenCode } from "../opencode/fake-opencode.ts";
 import { bunReady, builtRelease, removeBuiltRelease } from "./support.ts";
 
 afterAll(removeBuiltRelease);
@@ -79,6 +80,18 @@ describe.skipIf(!bunReady)("the binary, installed", () => {
 		const wiring = Object.fromEntries((JSON.parse(tools.stdout).tools as { id: string; wiring: string }[]).map((t) => [t.id, t.wiring]));
 		expect(wiring).toMatchObject({ pi: "installed", omp: "installed", "claude-code": "installed" });
 		expect(orrery("--version").stdout).toBe(`orrery ${version}\n`);
+
+		// OpenCode opens with the plugin folder of app/current (OpenCode reads the version folder behind it at start).
+		const fake = fakeOpenCode(bin);
+		const folder = join(home, "Probe");
+		mkdirSync(folder);
+		writeFileSync(join(orreryHome, "config.toml"), `[agents.Probe]\nfolder = ${JSON.stringify(folder)}\ntool = "opencode"\ncompactor_model = "openai/gpt-6.1-sol"\n`, { flag: "a" });
+		const opened = spawnSync(join(current, "bin", "orrery"), ["agent", "Probe"], { env, cwd: folder, encoding: "utf8", timeout: 60_000 });
+		expect(opened.status, opened.stdout + opened.stderr).toBe(0);
+		const session = fake.runs().find((run) => run.args[0] === "--standalone");
+		const plugin = (JSON.parse(session?.env.OPENCODE_CONFIG_CONTENT as string) as { plugins: { package: string }[] }).plugins[0]?.package;
+		expect(plugin).toBe(join(current, "extensions", "opencode"));
+		expect(existsSync(join(plugin as string, "server.js"))).toBe(true);
 
 		const out = orrery("uninstall");
 		expect(out.status, out.stdout + out.stderr).toBe(0);

@@ -1,6 +1,7 @@
 /**
- * Page 4, Tools (spec §3.4): pi, Claude Code, Codex and OMP (found, version, orrery's side), Wrangler, and Orrery itself.
- * I installs or repairs Orrery extensions. Codex's side comes with each launch ("memory"), with the last hook check.
+ * Page 4, Tools (spec §3.4): pi, Claude Code, Codex, OMP and OpenCode (found, version, orrery's side), Wrangler, and
+ * Orrery itself. I installs or repairs Orrery extensions. Codex's and OpenCode's sides come with each launch ("memory"),
+ * with the last hook or plugin check.
  */
 
 import { join } from "node:path";
@@ -18,8 +19,8 @@ const COLUMNS: readonly Column[] = [
 	{ title: "Detail", width: 30, drop: 1, truncate: "middle" },
 ];
 
-/** What a tool whose Orrery side comes with each launch (Codex) needs. */
-const MEMORY_AT_LAUNCH = "Nothing to install: Orrery's hooks and memory tools come with each launch.";
+/** What comes with each launch of a tool whose Orrery side is not installed (Codex, OpenCode). */
+const atLaunch = (tool: ToolCheck) => (tool.id === "opencode" ? "Orrery's plugin comes with each launch" : "Orrery's hooks and memory tools come with each launch");
 
 /** Checks run processes (`pi --version` …): keep them for 30 s rather than every refresh. */
 const FRESH_MS = 30_000;
@@ -110,7 +111,7 @@ export const toolsPage: Page = {
 			return;
 		}
 		const steps = app.deps.installSteps(tool);
-		const plan = tool.wiring === "memory" ? MEMORY_AT_LAUNCH : steps.length === 0 ? "I does nothing here." : `I would:\n${steps.map((s) => `  ${s.describe}`).join("\n")}`;
+		const plan = tool.wiring === "memory" ? `Nothing to install: ${atLaunch(tool)}.` : steps.length === 0 ? "I does nothing here." : `I would:\n${steps.map((s) => `  ${s.describe}`).join("\n")}`;
 		void app.host.open(new MessageModal(tool.label, safeLines(`Found: ${tool.path ?? "not on PATH"}\nVersion: ${tool.version ?? "—"}\nOrrery: ${tool.wiring}\n${tool.detail}\n\n${plan}`)));
 	},
 	key(app, data) {
@@ -126,7 +127,7 @@ export const toolsPage: Page = {
 			return true;
 		}
 		if (tool.wiring === "memory") {
-			app.say(`Nothing to install for ${tool.label}: Orrery's hooks and memory tools come with each launch (${tool.detail}).`);
+			app.say(`Nothing to install for ${tool.label}: ${atLaunch(tool)} (${tool.detail}).`);
 			return true;
 		}
 		const steps = app.deps.installSteps(tool);

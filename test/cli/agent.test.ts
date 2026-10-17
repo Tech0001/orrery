@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +16,7 @@ import { hookShell } from "../../src/codex/shell.ts";
 import { cleanEnv, cliCommand, statusOf } from "../claude/support.ts";
 import { systemCommand } from "../install/support.ts";
 import { tempDir } from "../agent/support.ts";
+import { fakeOpenCode } from "../opencode/fake-opencode.ts";
 
 const SCRIPT = systemCommand("script");
 const hasScript = process.platform === "linux" && SCRIPT !== undefined && spawnSync(SCRIPT, ["--version"]).status === 0;
@@ -154,7 +155,7 @@ describe("orrery agent", () => {
 
 	it("names the tools --tool takes, and the configured agents for an unknown name", () => {
 		const s = scene();
-		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "claude").stderr).toContain("--tool takes pi, omp, claude-code or codex (not claude).");
+		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "claude").stderr).toContain("--tool takes pi, omp, claude-code, codex or opencode (not claude).");
 		expect(orrery(s.env, s.elsewhere, "agent", "Nobody").stderr).toContain("No agent named Nobody. Configured agents: Atlas");
 	});
 
@@ -358,6 +359,126 @@ describe("orrery agent", () => {
 		expect(yes.stdout).toContain("Starting Codex without Orrery: this session isn't recorded and the guard is off.");
 		// Plain Codex: the person's arguments only, and not as any agent.
 		expect(started(s.out)).toMatchObject({ agent: "", token: "", args: "-x" });
+	});
+
+	it("opens OpenCode with --standalone, the folder, Orrery's plugin and a token file, after the plugin check, once per version", () => {
+		const s = scene();
+		const fake = fakeOpenCode(join(s.dir, "bin"));
+		const home = s.env.ORRERY_HOME as string;
+		const inherited = { ...s.env, ORRERY_AGENT: "Other", ORRERY_AGENT_TOKEN: "e".repeat(32) };
+		const r = orrery(inherited, s.elsewhere, "agent", "Atlas", "--tool", "opencode", "--", "--continue");
+		expect(r.status, r.stderr).toBe(0);
+		expect(r.stdout).toContain("Checking that Orrery's plugin loads in OpenCode 2.0.30…");
+		const serve = fake.runs().filter((run) => run.args[0] === "serve");
+		const session = fake.runs().filter((run) => run.args[0] === "--standalone");
+		expect(serve).toHaveLength(1);
+		expect(session).toHaveLength(1);
+		const run = session[0]!;
+		expect([run.args.length, realpathSync(run.args[1] as string), run.args[2]]).toEqual([3, realpathSync(s.elsewhere), "--continue"]);
+		const content = JSON.parse(run.env.OPENCODE_CONFIG_CONTENT as string) as { plugins: { package: string; options: { agent: string; tokenFile: string } }[] };
+		const [plugin] = content.plugins;
+		// The plugin folder of the Orrery that runs: a release's extensions/opencode, a checkout's src/opencode/plugin.
+		expect(plugin?.package).toMatch(/[/](extensions[/]opencode|src[/]opencode[/]plugin)$/);
+		expect(plugin?.options.agent).toBe("Atlas");
+		expect(plugin?.options.tokenFile.startsWith(join(home, "tokens", "opencode-"))).toBe(true);
+		// The check was given the same config content.
+		expect(serve[0]?.env.OPENCODE_CONFIG_CONTENT).toBe(run.env.OPENCODE_CONFIG_CONTENT);
+		// The token is only in the file (0600, in a 0700 folder), never in OpenCode's environment; no agent variables either.
+		const file = run.tokenFile as { mode: number; folderMode: number; text: string };
+		expect([file.mode, file.folderMode]).toEqual([0o600, 0o700]);
+		expect(file.text).toMatch(/^[0-9a-f]{32}$/);
+		expect([run.env.ORRERY_AGENT, run.env.ORRERY_AGENT_TOKEN]).toEqual([undefined, undefined]);
+		expect(Object.values(run.env).some((value) => value.includes(file.text))).toBe(false);
+		// Once OpenCode exited, the file is gone.
+		expect(readdirSync(join(home, "tokens"))).toEqual([]);
+		expect(JSON.parse(readFileSync(join(home, "opencode-check.json"), "utf8"))).toMatchObject({ opencode: "2.0.30", ok: true });
+		// Verified: the next launch does not ask again. An agent whose tool is opencode opens it without --tool.
+		writeFileSync(s.config, readFileSync(s.config, "utf8").replace('tool = "pi"', 'tool = "opencode"'));
+		const again = orrery(s.env, s.elsewhere, "agent", "Atlas");
+		expect(again.status, again.stderr).toBe(0);
+		expect(again.stdout).not.toContain("Checking");
+		expect(fake.runs().filter((run) => run.args[0] === "serve")).toHaveLength(1);
+		expect(fake.runs().filter((run) => run.args[0] === "--standalone")).toHaveLength(2);
+	});
+
+	it("removes OpenCode's token file when orrery is stopped by SIGTERM while OpenCode runs, and dies by the signal", async () => {
+		const s = scene();
+		const fake = fakeOpenCode(join(s.dir, "bin"), { sessionMs: 30_000 });
+		const c = cliCommand(["agent", "Atlas", "--tool", "opencode"]);
+		const child = spawn(c.cmd, c.args, { env: s.env, cwd: s.elsewhere, stdio: "ignore" });
+		const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((done) => child.on("exit", (code, signal) => done({ code, signal })));
+		let session: ReturnType<typeof fake.runs>[number] | undefined;
+		for (let i = 0; i < 200 && session === undefined; i++) {
+			session = fake.runs().find((run) => run.args[0] === "--standalone");
+			if (session === undefined) await new Promise((wait) => setTimeout(wait, 50));
+		}
+		try {
+			expect(session).toBeDefined();
+			const tokenFile = (JSON.parse(session?.env.OPENCODE_CONFIG_CONTENT as string) as { plugins: { options: { tokenFile: string } }[] }).plugins[0]?.options.tokenFile as string;
+			expect(existsSync(tokenFile)).toBe(true);
+			child.kill("SIGTERM");
+			expect(await exited).toEqual({ code: null, signal: "SIGTERM" });
+			expect(existsSync(tokenFile)).toBe(false);
+		} finally {
+			child.kill("SIGKILL");
+			try {
+				if (session !== undefined) process.kill(session.pid, "SIGKILL");
+			} catch {
+				// gone already
+			}
+		}
+	});
+
+	it("refuses without a terminal when Orrery's plugin doesn't load in OpenCode, --yes or not, and starts nothing", () => {
+		const s = scene();
+		const fake = fakeOpenCode(join(s.dir, "bin"), { mode: "failed" });
+		for (const yes of [[], ["--yes"]]) {
+			const r = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "opencode", ...yes);
+			expect(r.status).toBe(1);
+			expect(r.stderr).toContain(
+				"Orrery's plugin doesn't load in OpenCode 2.0.30: OpenCode could not load Orrery's plugin (Error: boom in setup). Without it a session has no memory and no guard. Atlas was not opened: only a person at a terminal can choose to start OpenCode without it (run orrery agent Atlas there).",
+			);
+		}
+		expect(fake.runs().filter((run) => run.args[0] !== "serve" && run.args[0] !== "--version")).toEqual([]);
+		expect(JSON.parse(readFileSync(join(s.env.ORRERY_HOME as string, "opencode-check.json"), "utf8"))).toMatchObject({ opencode: "2.0.30", ok: false });
+	});
+
+	it("asks about OpenCode's plugin before any launch step; a yes starts plain OpenCode with the person's arguments, not as the agent", async () => {
+		const s = scene();
+		fakeOpenCode(join(s.dir, "bin"));
+		for (const [key, value] of Object.entries(s.env)) if (value !== undefined) vi.stubEnv(key, value);
+		const missing = join(s.dir, "not-yet");
+		const question = "Start OpenCode without Orrery anyway? The session won't be recorded and the guard will be off.";
+		for (const answer of [false, true]) {
+			const said: string[] = [];
+			const ran: LaunchPlan[] = [];
+			const io = {
+				say: (line: string) => said.push(`say: ${line}`),
+				confirm: async (q: string) => (said.push(`confirm: ${q}`), false),
+				askPerson: async (q: string) => (said.push(`ask: ${q}`), answer),
+			};
+			const deps = {
+				takeover: async () => { throw new Error("must not take over"); },
+				opencodeGate: async () => ({ ok: false as const, text: "Orrery's plugin doesn't load in OpenCode 2.0.31: x." }),
+				codexGate: async () => { throw new Error("must not ask Codex"); },
+				run: async (plan: LaunchPlan) => (ran.push(plan), { code: 0, signal: null }),
+			};
+			expect(await openAgentCommand(s.config, "Atlas", { tool: "opencode", args: ["--continue"], cwd: missing }, io, deps)).toBe(1);
+			expect(ran).toEqual([]);
+			// The folder it would open in was not made: that step comes after the check.
+			expect(existsSync(missing)).toBe(false);
+			const first = ["say: Orrery's plugin doesn't load in OpenCode 2.0.31: x.", `ask: ${question}`];
+			if (!answer) expect(said).toEqual([...first, "say: Not opened."]);
+			// Plain OpenCode: then the folder question (here: no), and nothing about the agent.
+			else expect(said).toEqual([...first, "say: Starting OpenCode without Orrery: this session isn't recorded and the guard is off.", `confirm: The folder ${missing} does not exist. Create it?`, "say: Not opened."]);
+		}
+		const ran: LaunchPlan[] = [];
+		const io = { say: () => {}, confirm: async () => true, askPerson: async () => true };
+		const deps = { takeover: async () => "", opencodeGate: async () => ({ ok: false as const, text: "x." }), run: async (plan: LaunchPlan) => (ran.push(plan), { code: 0, signal: null }) };
+		expect(await openAgentCommand(s.config, "Atlas", { tool: "opencode", args: ["--continue"], cwd: s.elsewhere }, io, deps)).toBe(0);
+		expect(ran).toHaveLength(1);
+		expect(ran[0]).toMatchObject({ args: ["--continue"], env: {}, unsetEnv: ["ORRERY_AGENT", "ORRERY_AGENT_TOKEN"], withoutOrrery: true });
+		expect(ran[0]?.opencode).toBeUndefined();
 	});
 
 	it("refuses Claude Code outside the agent's folder without the mod, and starts nothing", () => {

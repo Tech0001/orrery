@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { OMP_SUPPLIED } from "../../scripts/build-release.ts";
+import { OMP_SUPPLIED, OPENCODE_SUPPLIED } from "../../scripts/build-release.ts";
 import { builtRelease, bunReady, REPO, removeBuiltRelease } from "./support.ts";
 
 /**
@@ -46,6 +46,30 @@ describe.skipIf(!bunReady)("packed extensions", () => {
 		expect(left).not.toContain("@earendil-works/pi-ai/providers/all");
 		expect(left).not.toContain("typebox");
 		expect(readFileSync(join(folder, "extensions", "omp.js"), "utf8")).toMatch(/\/\/# sourceMappingURL=omp\.js\.map\s*$/);
+	});
+
+	it("OpenCode's plugin folder holds server.js for Bun, importing nothing but builtins and what OpenCode supplies, with its map", async () => {
+		const folder = join(await builtRelease(), "extensions", "opencode");
+		// OpenCode loads a plugin folder's server.*, index.*, tui.* and rpc.*: only server.js is there to load.
+		expect(readdirSync(folder).sort()).toEqual(["server.js", "server.js.map"]);
+		const server = join(folder, "server.js");
+		const left = bareImports(server);
+		expect(left.every((s) => OPENCODE_SUPPLIED.some((host) => s === host || s.startsWith(`${host}/`))), left.join(", ")).toBe(true);
+		const text = readFileSync(server, "utf8");
+		expect(text.startsWith("// @bun\n")).toBe(true);
+		expect(text).toMatch(/\/\/# sourceMappingURL=server\.js\.map\s*$/);
+	});
+
+	it("a packed pi-ai OAuth loader comes with its flows registered (it imports them by paths only node_modules has)", async () => {
+		const extensions = join(await builtRelease(), "extensions");
+		const registered = (file: string) => {
+			const text = readFileSync(join(extensions, file), "utf8");
+			return !text.includes("importOAuthModule") || /registerBunOAuthFlows\(\)/.test(text);
+		};
+		// omp.js packs the loader and registers the flows; OpenCode's plugin must do the same once it packs one.
+		expect(readFileSync(join(extensions, "omp.js"), "utf8")).toContain("importOAuthModule");
+		expect(registered("omp.js")).toBe(true);
+		expect(registered(join("opencode", "server.js"))).toBe(true);
 	});
 
 	it("omp.js carries the OAuth flows it signs in with: a summary call on the ChatGPT sign-in reaches OpenAI", async () => {

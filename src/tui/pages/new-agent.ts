@@ -20,7 +20,7 @@ import { ChatListModal, ConfirmModal, hardWrap, InputModal, MessageModal, menuUI
 import { addFromRemote, emptyAgent, expandHome, pickedChoice, safeLines, wireAgent } from "./agent-actions.ts";
 
 /** The tools an imported chat continues in. */
-const CONTINUES_IN: readonly AgentTool[] = ["pi", "omp", "claude-code", "codex"];
+const CONTINUES_IN: readonly AgentTool[] = ["pi", "omp", "claude-code", "codex", "opencode"];
 
 const NOT_IMPORTED = "Not imported; nothing was written.";
 

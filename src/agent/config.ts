@@ -14,7 +14,7 @@ export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhig
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 /** The tools an agent is launched in (the `tool` key). */
-export const AGENT_TOOLS = ["pi", "claude-code", "codex", "omp"] as const;
+export const AGENT_TOOLS = ["pi", "claude-code", "codex", "omp", "opencode"] as const;
 export type AgentLauncher = "direct" | "ori";
 export type AgentTool = (typeof AGENT_TOOLS)[number];
 

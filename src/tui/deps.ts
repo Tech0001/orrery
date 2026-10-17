@@ -15,7 +15,7 @@ import { configureHttp } from "../agent/http.ts";
 import { pageOpener } from "../agent/agent-commands.ts";
 import { runEditor } from "../agent/editor.ts";
 import { writeInstructions } from "../agent/instructions.ts";
-import { applyFix, checkCodexHooks, runTool } from "../agent/launch.ts";
+import { applyFix, checkCodexHooks, checkOpenCodePlugin, runTool } from "../agent/launch.ts";
 import { loginRows, removeLogin, saveKey, signIn } from "../agent/logins.ts";
 import { agentOverview, agentUsage, OverviewCache } from "../agent/overview.ts";
 import { versionNumber } from "../agent/running.ts";
@@ -68,6 +68,7 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 			}
 		},
 		codexCheck: (plan, say) => checkCodexHooks(plan, { onCheck: say }),
+		opencodeCheck: (plan, say) => checkOpenCodePlugin(plan, { onCheck: say }),
 		applyFix: (fix, config, row, tools, cwd) => applyFix(fix, config, row, tools, cwd === undefined ? {} : { cwd }),
 		edit: async (path) => {
 			// As launch does: the editor gets the terminal, and the TUI comes back when it exits.

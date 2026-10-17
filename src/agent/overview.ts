@@ -71,7 +71,7 @@ export interface AgentRow {
 /** A pi status older than this belongs to a pi that is gone: pi rewrites it every 5 s. */
 export const STATUS_FRESH_MS = 30_000;
 
-export const TOOL_LABELS: Record<AgentTool, string> = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP" };
+export const TOOL_LABELS: Record<AgentTool, string> = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", opencode: "OpenCode" };
 
 interface MemoryFacts {
 	readonly messages: number;
