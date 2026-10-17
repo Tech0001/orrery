@@ -38,6 +38,19 @@ describe("the OpenCode token file", () => {
 		expect(readdirSync(join(dir, "elsewhere"))).toEqual([]);
 	});
 
+	it("prunes nothing through a link put in the folder's place: files there named like a gone launcher's stay", () => {
+		const dir = scratch();
+		const elsewhere = join(dir, "elsewhere");
+		mkdirSync(elsewhere);
+		// A pid no process has: its file would be pruned in a real tokens folder.
+		const theirs = "opencode-999999999-aaaaaaaaaaaa";
+		writeFileSync(join(elsewhere, theirs), "theirs");
+		symlinkSync(elsewhere, join(dir, "tokens"));
+		expect(() => writeTokenFile(join(dir, "tokens", `opencode-${process.pid}-bbbbbbbbbbbb`), TOKEN)).toThrow("is not a real folder of this user's");
+		pruneTokenFiles(join(dir, "tokens"), () => false);
+		expect(readdirSync(elsewhere)).toEqual([theirs]);
+	});
+
 	it("takes out the files of launchers that are gone, and nothing else", () => {
 		const folder = join(scratch(), "tokens");
 		mkdirSync(folder);

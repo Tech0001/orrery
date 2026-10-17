@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto";
 import { readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { orreryHome } from "../agent/home.ts";
-import { writePrivate } from "../agent/private-file.ts";
+import { ownFolder, writePrivate } from "../agent/private-file.ts";
 import { processAlive } from "../agent/process.ts";
 import { cleanUpOnSignals, type SignalTarget } from "../agent/signal-cleanup.ts";
 
@@ -25,10 +25,14 @@ export function tokenFilePath(env: NodeJS.ProcessEnv = process.env): string {
 	return join(orreryHome(env), TOKEN_FOLDER, `opencode-${process.pid}-${randomBytes(6).toString("hex")}`);
 }
 
-/** Removes the token files whose launcher is gone. Never throws. */
+/**
+ * Removes the token files whose launcher is gone, only in a real folder of this user's (a link in its place could make
+ * it remove files elsewhere). Never throws.
+ */
 export function pruneTokenFiles(folder: string, alive: (pid: number) => boolean = processAlive): void {
 	let names: string[];
 	try {
+		if (ownFolder(folder) !== true) return;
 		names = readdirSync(folder);
 	} catch {
 		return;
