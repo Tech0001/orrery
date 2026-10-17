@@ -12,6 +12,7 @@ import { checkToolCall } from "../../src/agent/guard-rules.ts";
 import { claudeGuard } from "../../src/claude/guard.ts";
 import { runHook } from "../../src/claude/hooks.ts";
 import { codexGuard } from "../../src/codex/guard.ts";
+import { openCodeGuard, openCodePermission, openCodeToolPath } from "../../src/opencode/guard.ts";
 import { createOrrery } from "../../src/pi/index.ts";
 import { fakeOmp, ompCleanup, ompOrrery, track } from "../omp/world.ts";
 import { scratchHome, summarySourcesFor } from "../pi/world.ts";
@@ -869,12 +870,63 @@ describe("[guard] protect and .env: one table through every gate", () => {
 		return out;
 	};
 
-	it("gets the same verdict from pi, OMP, Claude Code, Codex and orrery run for every case", async () => {
+	/**
+	 * OpenCode (src/opencode/guard.ts): its shell (a command, and a workdir), the folder a session_move takes it to, an MCP
+	 * shell with a cwd; read, grep, glob, an MCP read and, for what is refused, write, edit, every patch form (Add,
+	 * Update, Delete, Move to, a move away from the file, a heredoc) and patch text under an MCP tool's name; Code Mode's
+	 * program and shells under other names; glob's pattern and grep's include. Then its second layer: what read and edit
+	 * ask leave for, as OpenCode placed it.
+	 */
+	const opencode: Gate = async (t, c) => {
+		const out: (string | undefined)[] = [];
+		const call = (tool: string, input: unknown) => out.push(openCodeGuard(tool, input, t.options, "ses_a"));
+		const patch = (...lines: string[]) => call("patch", { patchText: ["*** Begin Patch", ...lines, "*** End Patch"].join("\n") });
+		if (c.cwd !== undefined) {
+			call("shell", { command: "ls", workdir: c.cwd });
+			call("opencode_session_move", { directory: c.cwd });
+			call("box_run", { command: "ls", cwd: c.cwd });
+		}
+		if (c.path !== undefined) {
+			const placed = openCodeToolPath(c.path, t.options.cwd, t.home);
+			call("read", { path: c.path });
+			call("grep", { pattern: "x", path: c.path });
+			call("glob", { pattern: "*", path: c.path });
+			call("fs_read_file", { path: c.path });
+			out.push(openCodePermission("read", [placed], t.options));
+			if (c.refused) {
+				call("write", { path: c.path, content: "x" });
+				call("edit", { path: c.path, oldString: "a", newString: "b" });
+				patch(`*** Add File: ${c.path}`, "+x");
+				patch(`*** Update File: ${c.path}`, "@@", "-a", "+b");
+				patch(`*** Delete File: ${c.path}`);
+				patch("*** Update File: src/a.ts", `*** Move to: ${c.path}`, "@@", "-a", "+b");
+				patch(`*** Update File: ${c.path}`, "*** Move to: src/moved.ts", "@@", "-a", "+b");
+				call("patch", { patchText: `cat <<'EOF'\n*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch\nEOF` });
+				call("box_apply", { diff: `*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch` });
+				out.push(openCodePermission("edit", [placed], t.options));
+			}
+		}
+		if (c.command !== undefined) {
+			call("shell", { command: c.command });
+			call("shell", { command: c.command, workdir: "." });
+			call("execute", { code: c.command });
+			call("box_run", { command: c.command });
+			call("box_exec", { cmd: c.command });
+			call("box_shell", { input: c.command });
+		}
+		if (c.glob !== undefined) {
+			call("glob", { pattern: c.glob });
+			call("grep", { pattern: "x", include: c.glob });
+		}
+		return out;
+	};
+
+	it("gets the same verdict from pi, OMP, Claude Code, Codex, OpenCode and orrery run for every case", async () => {
 		const t = protectWorld();
 		writeFileSync(join(t.atlas, ".env.dist"), "KEY=");
 		const disagree: string[] = [];
 		for (const c of table(t)) {
-			for (const [gate, judge] of Object.entries({ pi, omp, claude, codex, durable })) {
+			for (const [gate, judge] of Object.entries({ pi, omp, claude, codex, opencode, durable })) {
 				const verdicts = await judge(t, c);
 				verdicts.forEach((verdict, at) => {
 					if ((verdict !== undefined) !== c.refused) disagree.push(`${gate} #${at} on ${c.name}: ${verdict ?? "allowed"}`);
