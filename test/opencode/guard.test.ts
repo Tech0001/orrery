@@ -353,6 +353,23 @@ describe("openCodeGuard keeps OpenCode's config and plugins in every folder (.op
 	});
 });
 
+describe("openCodeGuard judges each patch target once", () => {
+	it("a patch that names one file a thousand times is one judgment, in time", () => {
+		const t = world();
+		const text = patch(...Array.from({ length: 1000 }, () => ["*** Update File: a.ts", "@@", "-a", "+b"]).flat());
+		expect(text.length).toBeLessThan(64 * 1024);
+		expect(openCodeGuard("patch", { patchText: text }, t.options)).toBeUndefined();
+	});
+
+	it("a patch of 300 files is judged within the guard's time", () => {
+		const t = world();
+		const text = patch(...Array.from({ length: 300 }, (_, i) => [`*** Add File: f${i}.ts`, "+x"]).flat());
+		const started = performance.now();
+		expect(openCodeGuard("patch", { patchText: text }, t.options)).toBeUndefined();
+		expect(performance.now() - started).toBeLessThan(2000);
+	});
+});
+
 describe("openCodeGuard lets nothing through by its shape (security review: authorization)", () => {
 	const UNREADABLE = "Orrery could not read this call (its input is not what the tool takes); nothing was run.";
 

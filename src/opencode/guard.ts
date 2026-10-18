@@ -422,9 +422,9 @@ class Judge {
 		return use === "write" ? this.config(raw, place) : undefined;
 	}
 
-	/** Each patch target, a write. */
+	/** Each patch target, a write, judged once (a patch may name a file in many hunks, and headerTargets names each again). */
 	writes(targets: readonly string[]): string | undefined {
-		for (const target of targets) {
+		for (const target of new Set(targets)) {
 			const reason = this.path("write", target);
 			if (reason !== undefined) return reason;
 		}
