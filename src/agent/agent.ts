@@ -27,6 +27,7 @@ import { guardExtension } from "./guard.ts";
 import { cutNotice, readInstructions } from "./instructions.ts";
 import { agentViews } from "./guard-paths.ts";
 import { compactorModel, createAgentModels, modelContextWindow, savedSummaryLoginsOnly } from "./models.ts";
+import { isOpenCodeChoice } from "./opencode-source.ts";
 import { Projector } from "./projector.ts";
 import { agentSummarizer } from "./summarizer.ts";
 export { type AgentStatus, type ModelSource, readStatus } from "./status-file.ts";
@@ -185,6 +186,10 @@ export class Agent {
 			const compactorChoice = storedChoice(store, COMPACTOR_MODEL_KEY, exists);
 			const model = agentChoice.choice ?? configModel;
 			const compactorChosen = compactorChoice.choice ?? config.compactor.model;
+			// An OpenCode model makes summaries only in OpenCode (src/opencode/summaries.ts): said plainly, as orrery compact says it.
+			if (isOpenCodeChoice(compactorChosen)) {
+				throw new Error(`${config.name}'s summary model in the config (${compactorChosen.provider}/${compactorChosen.modelId}) is an OpenCode model, which works only while ${config.name} is open in OpenCode: open it there, or set another compactor_model in Orrery's config to run it here.`);
+			}
 			const view = new MemoryView(store, config.memory.viewBytes);
 			const summaryModels = options.models ?? (savedSummaryLoginsOnly(config)
 				? createAgentModels({ credentials: new FileCredentialStore(options.config.credentialsPath), providers: options.config.providers, savedLoginsOnly: true })
