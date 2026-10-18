@@ -217,6 +217,8 @@ The agent and compactor may use different models and different credentials.
 Their caches should therefore be treated separately.
 The smaller summary view limits input even when a provider does not reuse its cache.
 Usage records expose input, output and reported cache tokens so the effect can be measured.
+A summary attempt that failed once its request left is recorded too, with zero tokens; one that failed before any
+request left (no login saved, a model no longer offered) is not.
 The TUI distinguishes subscription-backed usage from priced API usage where that information is available.
 
 ## Adapters and boundaries

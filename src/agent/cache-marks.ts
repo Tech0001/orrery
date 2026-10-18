@@ -3,7 +3,8 @@
  * begins (one writer per prefix) and, for Anthropic, a cache mark on the compaction view's last whole 4-line block.
  */
 
-import type { ChatTurn } from "../memory/index.ts";
+import { type ChatTurn, sentNothing } from "../memory/index.ts";
+import { OPENCODE_API } from "./opencode-source.ts";
 
 /**
  * pi-ai marks the system prompt and the request's last block. This adds a mark on `block` of the first user message,
@@ -53,5 +54,48 @@ export function summaryCallHooks(
 	return {
 		...(onStart === undefined ? {} : { onProviderStreamEvent: once(onStart) }),
 		...(mark === undefined ? {} : { onPayload: (payload: unknown) => markCachePrefix(payload, mark) }),
+	};
+}
+
+/**
+ * The APIs whose request calls onPayload just before it leaves, every time: pi-ai's chat APIs (checked in its dist/api:
+ * each calls it once, before its fetch, SDK call or WebSocket), and OpenCode's (src/opencode/summaries.ts, before its
+ * session.generate).
+ */
+const PAYLOAD_BEFORE_SEND: ReadonlySet<string> = new Set([
+	"anthropic-messages",
+	"azure-openai-responses",
+	"bedrock-converse-stream",
+	"google-generative-ai",
+	"google-vertex",
+	"mistral-conversations",
+	"openai-codex-responses",
+	"openai-completions",
+	"openai-responses",
+	"pi-messages",
+	OPENCODE_API,
+]);
+
+/**
+ * A summary call's hooks (summaryCallHooks) that also note when its request leaves (onPayload). `failed(error)` marks a
+ * failure before then (no login saved, a model not offered) as one that sent nothing (memory/summarizer.ts
+ * sentNothing), which makes no usage row; an API that can't say when it sends may have sent, and its failure stays a row.
+ */
+export function trackedSummaryCall(
+	api: string,
+	turns: readonly ChatTurn[],
+	onStart: (() => void) | undefined,
+): { hooks: { onProviderStreamEvent?: () => void; onPayload: (payload: unknown) => unknown }; failed: (error: unknown) => unknown } {
+	const { onPayload: mark, ...hooks } = summaryCallHooks(api, turns, onStart);
+	let sent = false;
+	return {
+		hooks: {
+			...hooks,
+			onPayload: (payload: unknown) => {
+				sent = true;
+				return mark?.(payload);
+			},
+		},
+		failed: (error) => (error instanceof Error && !sent && PAYLOAD_BEFORE_SEND.has(api) ? sentNothing(error) : error),
 	};
 }

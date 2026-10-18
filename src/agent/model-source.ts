@@ -6,7 +6,7 @@
 import type { AssistantMessage, Message, Models } from "@earendil-works/pi-ai";
 import type { CompactorModel, CompactorReply } from "../memory/index.ts";
 import { chatTurnsToMessages } from "./chat-turns.ts";
-import { summaryCallHooks } from "./cache-marks.ts";
+import { trackedSummaryCall } from "./cache-marks.ts";
 import type { ModelChoice } from "./config.ts";
 
 /** The few model fields an agent reads. */
@@ -43,10 +43,17 @@ export function sourceCompactorModel(models: ModelSource, choice: ModelChoice, s
 	const model: CompactorModel = {
 		id: `${choice.provider}/${choice.modelId}`,
 		async complete(system, turns, signal, onStart): Promise<CompactorReply> {
-			const reply = await models
-				.streamSimple(found, { systemPrompt: system, messages: chatTurnsToMessages(turns, found) }, { signal, sessionId, maxRetries: 2, ...(choice.thinking === "off" ? {} : { reasoning: choice.thinking }), ...summaryCallHooks(found.api, turns, onStart) })
-				.result();
-			if (reply.stopReason === "error" || reply.stopReason === "aborted") throw new Error(reply.errorMessage ?? `Compactor model ${reply.stopReason}`);
+			// A failure before the request left (no login saved, say) sent nothing: it makes no usage row.
+			const call = trackedSummaryCall(found.api, turns, onStart);
+			let reply: AssistantMessage;
+			try {
+				reply = await models
+					.streamSimple(found, { systemPrompt: system, messages: chatTurnsToMessages(turns, found) }, { signal, sessionId, maxRetries: 2, ...(choice.thinking === "off" ? {} : { reasoning: choice.thinking }), ...call.hooks })
+					.result();
+			} catch (error) {
+				throw call.failed(error);
+			}
+			if (reply.stopReason === "error" || reply.stopReason === "aborted") throw call.failed(new Error(reply.errorMessage ?? `Compactor model ${reply.stopReason}`));
 			return {
 				text: reply.content.map((block) => (block.type === "text" ? block.text : "")).join(""),
 				usage: { input: reply.usage.input, cacheRead: reply.usage.cacheRead, cacheWrite: reply.usage.cacheWrite, output: reply.usage.output },

@@ -22,7 +22,7 @@
 import { readFileSync } from "node:fs";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type { ModelSource, SourceModel } from "../agent/model-source.ts";
-import { FREE_REASON, OPENCODE_SOURCE, openCodeFree, type OpenCodeModelInfo, openCodeModelOf, openCodeRef, openCodeVariant } from "../agent/opencode-source.ts";
+import { FREE_REASON, OPENCODE_API, OPENCODE_SOURCE, openCodeFree, type OpenCodeModelInfo, openCodeModelOf, openCodeRef, openCodeVariant } from "../agent/opencode-source.ts";
 import { writePrivate } from "../agent/private-file.ts";
 import type { GenerateEvent } from "./host.ts";
 
@@ -33,7 +33,7 @@ export const SUMMARY_MARK = { orrery: "summary" } as const;
 export const summarySession = (data: unknown): boolean => (data as { metadata?: { orrery?: unknown } } | null)?.metadata?.orrery === SUMMARY_MARK.orrery;
 
 /** The API name Orrery gives OpenCode's models (no pi-ai adapter has it: nothing marks a cache prefix). */
-export const OPENCODE_API = "opencode-session";
+export { OPENCODE_API };
 
 /** How long OpenCode's model list may take. */
 const LIST_MS = 10_000;
@@ -276,13 +276,13 @@ export class OpenCodeSummaries {
 	}
 
 	/** One summary reply from `model` (an offered OpenCode model): its text. */
-	async complete(modelId: string, system: string, messages: readonly Message[], options: { readonly signal?: AbortSignal; readonly reasoning?: string }): Promise<string> {
+	async complete(modelId: string, system: string, messages: readonly Message[], options: { readonly signal?: AbortSignal; readonly reasoning?: string; readonly onPayload?: (payload: unknown) => unknown }): Promise<string> {
 		const host = this.#hosts.at(-1);
 		if (host === undefined) throw new Error("OpenCode has no folder open with Orrery's plugin");
 		// The model's status as OpenCode lists it now (a paid model may have turned free since the list was read).
 		if (this.#now() - this.#listedAt > this.#maxAgeMs) await this.refresh();
 		const model = this.model(modelId);
-		if (model === undefined || model.free) throw new Error(this.unavailable(modelId) ?? `no model ${modelId}`);
+		if (model === undefined || model.free || this.#off !== undefined) throw new Error(this.unavailable(modelId) ?? `no model ${modelId}`);
 		const variant = openCodeVariant((options.reasoning ?? "off") as Parameters<typeof openCodeVariant>[0], model.variants);
 		const made = await untilAborted(
 			host.createSession({
@@ -299,6 +299,8 @@ export class OpenCodeSummaries {
 		this.#pending.set(sessionID, request);
 		this.#note((ids) => [...ids, sessionID]);
 		try {
+			// The request leaves now (a failure before this sent nothing: no usage row; model-source.ts).
+			options.onPayload?.(request);
 			const answer = await untilAborted(host.generate({ sessionID, prompt: "Summarize." }, { ...(options.signal === undefined ? {} : { signal: options.signal }) }), options.signal);
 			// A reply to a request Orrery's hook didn't set went as OpenCode's own (its prompt, its tools): never a summary.
 			if (!request.shaped) throw new Error("Orrery's generate hook did not shape this summary's request, so its reply is not used; nothing was saved");

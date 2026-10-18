@@ -14,6 +14,9 @@ import type { Host } from "./view-text.ts";
 /** The summary source's provider in Orrery's refs. */
 export const OPENCODE_SOURCE = "opencode";
 
+/** The API of an OpenCode model as a summary model (src/opencode/summaries.ts): through a session of OpenCode's. */
+export const OPENCODE_API = "opencode-session";
+
 /** Whether a summary-model choice is an OpenCode model. */
 export const isOpenCodeChoice = (choice: Pick<ModelChoice, "provider">): boolean => choice.provider === OPENCODE_SOURCE;
 
