@@ -182,7 +182,12 @@ export function chooseSummaryModel(app: App, row: AgentRow | undefined): void {
 		const { choice: now, source } = target.current();
 		const configured = target.configured();
 		const reset = `Back to the config's model (${configured.provider}/${configured.modelId})`;
-		const picked = await pickSummaryModel(menuUI(app.host), sources, { heading: summaryLine(now, source), thinking: now.thinking, askThinking: true, extra: source === "chat" ? [reset] : [] });
+		// OpenCode's models are OpenCode's to list (its providers, its logins): the TUI can't know them, so it says where.
+		const inside = "OpenCode's models (chosen inside OpenCode)";
+		const picked = await pickSummaryModel(menuUI(app.host), sources, { heading: summaryLine(now, source), thinking: now.thinking, askThinking: true, extra: [...(source === "chat" ? [reset] : []), inside] });
+		if (picked !== undefined && "extra" in picked && picked.extra === inside) {
+			return `OpenCode's models are picked inside OpenCode: open ${row.name} there, then /compactor.`;
+		}
 		const choice = pickedChoice(picked);
 		if (choice instanceof Error) throw choice;
 		if (choice === undefined && !(picked !== undefined && "extra" in picked)) return undefined;

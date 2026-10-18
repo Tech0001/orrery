@@ -421,6 +421,26 @@ describe("M summary model", () => {
 	});
 });
 
+describe("M summary model: OpenCode's models", () => {
+	it("says OpenCode's models are chosen inside OpenCode, and changes nothing", async () => {
+		const sources = await anthropicSources();
+		const applied: unknown[] = [];
+		const tested: unknown[] = [];
+		const target: CompactorTarget = {
+			current: () => ({ choice: { provider: "opencode", modelId: "anthropic/claude-sonnet-4-5", thinking: "off" }, source: "chat" }),
+			configured: () => ({ provider: "openai", modelId: "gpt-6.1-sol", thinking: "low" }),
+			apply: async (choice) => (applied.push(choice), "applied"),
+		};
+		const deps = fakeDeps({ sources: async () => sources, target: () => target, testChoice: async (_s, choice) => (tested.push(choice), { ok: true as const }) });
+		const app = makeApp(deps, [agentsPage]);
+		keys(app, "M");
+		await answer(app, "Summaries from:", ...typed("OpenCode"), ENTER);
+		await app.idle();
+		expect(screen(app)).toContain("OpenCode's models are picked inside OpenCode: open Alpha there, then /compactor.");
+		expect([applied, tested]).toEqual([[], []]);
+	});
+});
+
 describe("C settings", () => {
 	it("changes summary jobs and the tool in the config, keeping the rest", async () => {
 		const deps = fakeDeps();
