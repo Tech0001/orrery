@@ -157,7 +157,7 @@ interface Named {
 	readonly pathLike: string[];
 	/** Command lines: strings under a command key, and lists under one joined with spaces. */
 	readonly commands: string[];
-	/** Every string of one word (no blank), whatever its key, but for what a tool writes: a path may be one. */
+	/** Every string of one word (no blank) with a ".", "/" or "~", whatever its key, but for what a tool writes: a path may be one. */
 	readonly words: string[];
 }
 
@@ -178,7 +178,7 @@ function named(input: Readonly<Record<string, unknown>>): Named {
 			if (value !== "" && (pathKey || (next.under && oneLine(text)))) found.paths.push(value);
 			if (value !== "" && (destinationKey || (next.into && oneLine(text)))) found.destinations.push(value);
 			if (!CONTENT_KEY.test(key) && oneLine(text) && PATH_LIKE.test(text)) found.pathLike.push(value);
-			if (!CONTENT_KEY.test(key) && text !== "" && !/\s/.test(text) && text.length <= PATH_MAX) found.words.push(text);
+			if (!CONTENT_KEY.test(key) && /[./~]/.test(text) && !/\s/.test(text) && text.length <= PATH_MAX) found.words.push(text);
 			const local = CONTENT_KEY.test(key) ? undefined : fileUriPath(value);
 			if (local !== undefined) found.paths.push(local);
 		} else if (typeof value === "object" && value !== null) {
