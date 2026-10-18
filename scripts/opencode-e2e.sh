@@ -33,6 +33,8 @@ chat_model="${ORRERY_E2E_MODEL:-}"
 free_model="${ORRERY_E2E_FREE_MODEL:-opencode/opencode/deepseek-v4.1-flash-free}"
 # ORRERY_E2E_KEEP=1 keeps the run's folder (OpenCode's scratch home with its sessions, the agent's memory, the logs).
 keep="${ORRERY_E2E_KEEP:-}"
+# Your OpenCode config folder, as OpenCode finds it, before OpenCode's variables are cleared below.
+user_config="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
 # This script may itself run inside an agent's session: the sessions it starts get none of that session's variables,
 # and none of OpenCode's (one could name your own config, data or password).
 for v in $(compgen -e); do case "$v" in ORRERY_AGENT* | ORRERY_CONFIG | ORRERY_HOME | OPENCODE_*) unset "$v" ;; esac; done
@@ -45,8 +47,7 @@ fi
 command -v opencode >/dev/null || { echo "opencode is not on PATH" >&2; exit 2; }
 command -v node >/dev/null || { echo "node is not on PATH" >&2; exit 2; }
 
-# Your OpenCode config folder as it is now: each file's sha256 (the run must leave it as it was).
-user_config="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+# Your OpenCode config folder (above) as it is now: each file's sha256 (the run must leave it as it was).
 fingerprint() { node -e 'const { createHash } = require("node:crypto"); const fs = require("node:fs"); const path = require("node:path");
 const out = []; const walk = (dir, depth) => { let names = []; try { names = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
 for (const e of names) { const p = path.join(dir, e.name); if (e.isDirectory()) { if (e.name !== "node_modules" && depth < 4) walk(p, depth + 1); continue; }

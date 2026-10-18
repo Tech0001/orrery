@@ -172,9 +172,10 @@ providers and logins: Orrery never sees that key.
 
 - **Choosing one.** `/compactor` in OpenCode (also "Orrery: summary model" in the command palette) lists Orrery's
   sources and OpenCode's models, by provider (`OpenCode · <provider>`), the current one first, each with its context
-  window and price; the thinking level comes last (off, then the reasoning variants the model has). The pick is tested
-  with one small call (an OpenCode model's through OpenCode), then switched to, and a toast says so; a failed test keeps
-  the current model. "Back to the config's" returns to the config's model. In the config the same choice is
+  window and price; the thinking level comes last (the current one first, then off and the model's reasoning variants
+  that are Orrery's levels, `minimal` to `max`, in that order). The pick is tested with one small call (an OpenCode
+  model's through OpenCode), then switched to, and a toast says so; a failed test keeps the current model. "Back to the
+  config's" returns to the config's model. In the config the same choice is
   `compactor_model = "opencode/<provider>/<model>"` (a model of OpenCode's own gateway is `opencode/opencode/<model>`).
 - **Paid and own-key models only.** OpenCode's free models are listed as `free tier, unavailable`, with the reason:
   `OpenCode's free tier only works inside OpenCode chats; background summaries aren't allowed`. OpenCode refuses its
@@ -226,15 +227,16 @@ OpenCode's Plan folder, `~/.opencode/plan`, stays writable for its plan files.
 
 Two of those rules matter most here. No tool writes OpenCode's config or code: `opencode.json` or `opencode.jsonc` in
 any folder, a `.opencode` folder, OpenCode's own config, cache and state folders, its database, `OPENCODE_CONFIG`'s
-file or its system config, since OpenCode would load what an agent wrote there, with no prompt, next to the guard. And
-the skills of `.claude/skills` and `.agents/skills`, which OpenCode loads, are written only as ordinary files: `write`
-is judged by the text it puts in the file, `edit` by the file it would leave (and again, at the second layer, by the
-change OpenCode reports), `patch` by an added file's text, or, for an update, only when the skill can be read and
-neither it nor the patch's added lines hold a `---` line naming another language. A skill that would open with `---`
-and anything other than YAML or JSON (`---js`, which OpenCode runs as code) is refused, and so is a move into a skills
-folder. Shell text that names OpenCode's config or a skills folder is refused, whatever the command: `read`, `glob` and
-`grep` read them. The cost: an agent can't set up OpenCode for a project (you write those files yourself), and a shell
-`ls`, `cat`, `grep`, `git add` or commit message that names one is refused too.
+file, its system config (`/etc/opencode`, `/Library/Application Support/opencode`) or macOS's managed preferences
+(`ai.opencode.managed.plist` in `/Library/Managed Preferences`), since OpenCode would load what an agent wrote there,
+with no prompt, next to the guard. And the skills of `.claude/skills` and `.agents/skills`, which OpenCode loads, are
+written only as ordinary files: `write` is judged by the text it puts in the file, `edit` by the file it would leave
+(and again, at the second layer, by the change OpenCode reports), `patch` by an added file's text, or, for an update,
+only when the skill can be read and neither it nor the patch's added lines hold a `---` line naming another language. A
+skill that would open with `---` and anything other than YAML or JSON (`---js`, which OpenCode runs as code) is refused,
+and so is a move into a skills folder. Shell text that names OpenCode's config or a skills folder is refused, whatever
+the command: `read`, `glob` and `grep` read them. The cost: an agent can't set up OpenCode for a project (you write
+those files yourself), and a shell `ls`, `cat`, `grep`, `git add` or commit message that names one is refused too.
 
 How it reads OpenCode's tools:
 
