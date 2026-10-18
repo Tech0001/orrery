@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { chatTurnsToMessages } from "../../src/agent/chat-turns.ts";
 import { type ModelSource, sourceCompactorModel } from "../../src/agent/model-source.ts";
@@ -136,6 +139,53 @@ describe("OpenCode's models as a summary source", () => {
 		await summaries.waitFor("fake/never", 300);
 		expect(Date.now() - started).toBeLessThan(2000);
 		expect(summaries.find("fake/never")).toBeUndefined();
+	});
+
+	it("never returns a reply whose request Orrery's generate hook didn't shape (OpenCode's own prompt and tools would have gone): nothing is saved", async () => {
+		const summaries = new OpenCodeSummaries("Atlas");
+		const oc = host(summaries);
+		await summaries.refresh();
+		oc.access.generate = async () => ({ text: "OpenCode's own reply" });
+		await expect(summaries.complete("fake/fake-model", "s", [], {})).rejects.toThrow(/generate hook did not shape/);
+		await new Promise((wait) => setTimeout(wait, 0));
+		expect(oc.removed).toEqual(["ses_1"]);
+	});
+
+	it("reads a model's status again before a summary when its list is old: a model gone free since is refused", async () => {
+		let now = 0;
+		const summaries = new OpenCodeSummaries("Atlas", { now: () => now, maxAgeMs: 60_000 });
+		const oc = host(summaries);
+		let list: unknown = LIST;
+		oc.access.listModels = async () => list;
+		await summaries.refresh();
+		expect(await summaries.complete("fake/fake-model", "s", [], {})).toBe("the summary");
+		list = { data: [{ ...LIST.data[0], providerID: "fake", cost: [], settings: { baseURL: "https://opencode.ai/zen/v1" } }] };
+		now = 30_000;
+		expect(await summaries.complete("fake/fake-model", "s", [], {})).toBe("the summary");
+		now = 61_000;
+		await expect(summaries.complete("fake/fake-model", "s", [], {})).rejects.toThrow(FREE_REASON);
+	});
+
+	it("keeps a list of the summary sessions it makes until they are removed, and removes what a crash left", async () => {
+		const ledger = join(mkdtempSync(join(tmpdir(), "orrery-summary-ledger-")), "opencode-summaries.json");
+		writeFileSync(ledger, JSON.stringify(["ses_left_1", "ses_left_2"]));
+		const summaries = new OpenCodeSummaries("Atlas", { ledger });
+		const oc = host(summaries);
+		await summaries.cleanLeftovers();
+		expect(oc.removed).toEqual(["ses_left_1", "ses_left_2"]);
+		expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual([]);
+		await summaries.refresh();
+		let during: unknown;
+		const generate = oc.access.generate;
+		oc.access.generate = async (input, options) => {
+			during = JSON.parse(readFileSync(ledger, "utf8"));
+			return generate(input, options);
+		};
+		await summaries.complete("fake/fake-model", "s", [], {});
+		await new Promise((wait) => setTimeout(wait, 0));
+		expect(during).toEqual(["ses_1"]);
+		expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual([]);
+		expect(statSync(ledger).mode & 0o777).toBe(0o600);
 	});
 
 	it("goes through the latest folder still open, and says so when none is", async () => {

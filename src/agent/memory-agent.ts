@@ -207,6 +207,19 @@ export class MemoryAgent {
 		}
 	}
 
+	/**
+	 * Starts summaries that were off because their model was unknown when the agent opened, once the model source knows it
+	 * (OpenCode lists its config's providers late); the choice and where it came from stay. Whether they started.
+	 */
+	retrySummaries(): boolean {
+		if (this.summariesOff === undefined || this.#models.find(this.compactorModel.provider, this.compactorModel.modelId) === undefined) return false;
+		const { model, contextWindow } = sourceCompactorModel(this.#models, this.compactorModel, compactorSession(this.config));
+		this.compactor.summarizer = agentSummarizer(this.config, model, contextWindow, this.store);
+		this.summariesOff = undefined;
+		this.compactor.start();
+		return true;
+	}
+
 	/** Why pending summaries will not come soon (off, stopped, or failing), or undefined when they can. */
 	summaryTrouble(): SummaryTrouble | undefined {
 		if (this.summariesOff !== undefined) return { state: "stopped", reason: this.summariesOff, plain: this.summariesOff };

@@ -40,6 +40,7 @@ import { compactorCommandIn, isOpenCodeChoice } from "../agent/opencode-source.t
 import { COMPACTOR_MODEL_KEY, storedChoice } from "../agent/choices.ts";
 import { AGENT_ENV, pickAgent, TOKEN_ENV } from "../agent/pick.ts";
 import { runningVersion } from "../agent/running.ts";
+import { statusVersion } from "../agent/status-file.ts";
 import { takeRequest } from "../agent/settings-request.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { openSummarySources, type SummarySources } from "../agent/summary-sources.ts";
@@ -84,6 +85,10 @@ export interface OpenCodePluginOptions {
 	readonly log?: (line: string) => void;
 	/** How long the guard may take to answer a tool call (default GUARD_MS, 4 s); past it the call is refused. */
 	readonly guardMs?: number;
+	/** How long the memory's opening waits for OpenCode to list the OpenCode model its summaries use (default 15 s). */
+	readonly openCodeWaitMs?: number;
+	/** The Orrery version this plugin is (default the running one's): plugins of other versions don't share a memory. */
+	readonly version?: string;
 }
 
 /** What a compaction of a recorded session is: memory has the conversation, and the view comes back with it. */
@@ -270,21 +275,24 @@ class AgentInServer {
 		this.agent = agent;
 		this.feed = feed;
 		this.#options = options;
-		this.opencode = new OpenCodeSummaries(agent.name);
+		// The summary sessions made and not yet removed are listed beside the memory, so a crash's are removed later.
+		this.opencode = new OpenCodeSummaries(agent.name, { ledger: join(agent.dir, "opencode-summaries.json") });
 	}
 
 	/** The agent's memory in this server, opened by its first plugin; each plugin that takes it releases it at its cleanup. */
-	static take(config: HarnessConfig, agent: AgentConfig, feed: FeedWriter, options: OpenCodePluginOptions, access: OpenCodeAccess | undefined): AgentInServer {
+	static take(config: HarnessConfig, agent: AgentConfig, feed: FeedWriter, options: OpenCodePluginOptions): AgentInServer {
 		const agents = shared<AgentInServer>("agents");
-		const key = `${agent.name}\u0000${resolve(config.dataDir)}`;
+		// Only plugins of one Orrery version share it: a reload into another version opens the memory anew (read-only,
+		// while this one holds it) rather than drive an object of other code.
+		const key = `${options.version ?? statusVersion()}\u0000${agent.name}\u0000${resolve(config.dataDir)}`;
 		const found = agents.get(key);
 		if (found !== undefined) {
-			found.join(access);
+			found.join();
 			return found;
 		}
 		const held = new AgentInServer(key, config, agent, feed, options);
 		agents.set(key, held);
-		held.join(access);
+		held.join();
 		held.#begin();
 		return held;
 	}
@@ -297,10 +305,15 @@ class AgentInServer {
 		this.#timer.unref?.();
 	}
 
-	/** One more plugin uses it; summaries may go through its folder (`access`). */
-	join(access: OpenCodeAccess | undefined): void {
+	/** One more plugin uses it. */
+	join(): void {
 		this.#users++;
-		if (access !== undefined) this.opencode.addHost(access);
+	}
+
+	/** Summaries may go through a folder's OpenCode (`access`) once its generate hook is there; a crash's sessions go then. */
+	addSummaryHost(access: OpenCodeAccess): void {
+		this.opencode.addHost(access);
+		void this.opencode.cleanLeftovers();
 	}
 
 	/** One plugin is done with it; the last one closes the memory (the writer lock goes). Never throws. */
@@ -344,7 +357,7 @@ class AgentInServer {
 			// OpenCode's models, for an agent whose summaries use one: listed before the memory opens and checks its choice.
 			const wanted = openCodeChoiceOf(agent);
 			if (wanted === undefined) await this.opencode.refresh();
-			else await this.opencode.waitFor(wanted.modelId, OPENCODE_LIST_WAIT_MS, this.stopping.signal);
+			else await this.opencode.waitFor(wanted.modelId, this.#options.openCodeWaitMs ?? OPENCODE_LIST_WAIT_MS, this.stopping.signal);
 			const report = (message: string) => {
 				this.feed.say(message, "warning");
 				// A remote session says it was lost before it closes the store: stop recording at once.
@@ -486,6 +499,7 @@ class AgentInServer {
 				} catch (error) {
 					this.feed.once("request", `Orrery: a summary-model change from outside OpenCode failed: ${safeText(errorText(error))}`);
 				}
+				this.#retryOpenCode(memory);
 				const now = troubleState(memory);
 				const message = noticeText(name, now, this.#trouble, compactorCommandIn("opencode", name));
 				this.#trouble = noticeKey(now);
@@ -496,6 +510,38 @@ class AgentInServer {
 			this.feed.once("tick", `Orrery: status update failed: ${safeText(errorText(error))}`);
 		}
 		this.status();
+	}
+
+	/** A model list being read for #retryOpenCode. */
+	#relisting = false;
+
+	/**
+	 * Summaries on an OpenCode model that OpenCode had not listed when the memory opened (it lists its config's providers
+	 * late): on a tick, the list is read again, and once the model is there they start, with the choice they had (one
+	 * chosen in chat, which the opening had to set aside, comes back). Never throws.
+	 */
+	#retryOpenCode(memory: MemoryAgent): void {
+		if (this.#relisting) return;
+		const waiting = memory.summariesOff !== undefined && isOpenCodeChoice(memory.compactorModel);
+		const stored = memory.compactorSource === "config" ? storedChoice(memory.store, COMPACTOR_MODEL_KEY, () => true).choice : undefined;
+		const chosen = stored !== undefined && isOpenCodeChoice(stored) ? stored : undefined;
+		const setAside = chosen !== undefined && !isOpenCodeChoice(memory.compactorModel);
+		if (!waiting && !setAside) return;
+		const choice = waiting ? memory.compactorModel : (chosen as ModelChoice);
+		this.#relisting = true;
+		void this.opencode
+			.refresh()
+			.then(() => {
+				if (this.stopped || this.recording() !== memory || this.opencode.find(choice.modelId) === undefined) return;
+				if (waiting) memory.retrySummaries();
+				else memory.setCompactorModel(choice);
+				this.feed.say(`Orrery: OpenCode lists ${choice.provider}/${choice.modelId} now; ${memory.config.name}'s summaries use it.`, "info");
+				this.status();
+			})
+			.catch(() => {})
+			.finally(() => {
+				this.#relisting = false;
+			});
 	}
 
 	/** The update notices, each once (src/agent/update-notices.ts), and a refresh of the daily check when it is due. */
@@ -684,7 +730,7 @@ class OrreryInOpenCode {
 						generate: (input, options) => ctx.session.generate(input, options),
 						removeSession: (input) => ctx.session.remove(input),
 					};
-		this.#held = AgentInServer.take(config, pick.agent, feed, this.#options, this.#access);
+		this.#held = AgentInServer.take(config, pick.agent, feed, this.#options);
 		await this.#register();
 		void this.#listen();
 	}
@@ -746,6 +792,8 @@ class OrreryInOpenCode {
 		const summaries = held.opencode;
 		try {
 			await session.hook("generate", (event) => this.#guarded("making a summary's request", () => summaries.shape(event)));
+			// Only a folder whose generate hook is there makes summaries: a request it didn't shape would go as OpenCode's own.
+			if (this.#access !== undefined) held.addSummaryHost(this.#access);
 		} catch (error) {
 			summaries.disable(`this OpenCode has no generate hook (${errorText(error)})`);
 		}

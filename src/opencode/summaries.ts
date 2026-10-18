@@ -19,9 +19,11 @@
  * have none.
  */
 
+import { readFileSync } from "node:fs";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type { ModelSource, SourceModel } from "../agent/model-source.ts";
-import { FREE_REASON, OPENCODE_SOURCE, openCodeFree, openCodeModelOf, openCodeRef, openCodeVariant } from "../agent/opencode-source.ts";
+import { FREE_REASON, OPENCODE_SOURCE, openCodeFree, type OpenCodeModelInfo, openCodeModelOf, openCodeRef, openCodeVariant } from "../agent/opencode-source.ts";
+import { writePrivate } from "../agent/private-file.ts";
 import type { GenerateEvent } from "./host.ts";
 
 /** The metadata that marks a session as one of Orrery's summaries. */
@@ -69,7 +71,7 @@ export function readModelList(answer: unknown): OpenCodeModel[] {
 	if (!Array.isArray(list)) return [];
 	const models: OpenCodeModel[] = [];
 	for (const item of list as Record<string, unknown>[]) {
-		const { providerID, id, name, enabled, limit, cost, variants } = item ?? {};
+		const { providerID, id, modelID, name, enabled, limit, cost, variants, settings } = item ?? {};
 		if (typeof providerID !== "string" || typeof id !== "string" || providerID === "" || id === "" || enabled === false) continue;
 		const costs = Array.isArray(cost) ? (cost as { input?: unknown; output?: unknown }[]).map((c) => ({ input: Number(c?.input ?? 0), output: Number(c?.output ?? 0) })) : [];
 		const first = costs[0];
@@ -81,7 +83,7 @@ export function readModelList(answer: unknown): OpenCodeModel[] {
 			contextWindow: Number((limit as { context?: unknown } | undefined)?.context) || 0,
 			...(first === undefined || (first.input === 0 && first.output === 0) ? {} : { price: first }),
 			variants: Array.isArray(variants) ? variants.map((variant) => (variant as { id?: unknown })?.id).filter((v): v is string => typeof v === "string") : [],
-			free: openCodeFree({ providerID, id, cost: costs }),
+			free: openCodeFree({ providerID, id, cost: costs, ...(typeof modelID === "string" ? { modelID } : {}), ...(typeof settings === "object" && settings !== null ? { settings: settings as OpenCodeModelInfo["settings"] } : {}) }),
 		});
 	}
 	return models.sort((a, b) => a.ref.localeCompare(b.ref));
@@ -127,16 +129,65 @@ function openCodeMessages(messages: readonly Message[]): unknown[] {
 export class OpenCodeSummaries {
 	readonly #agent: string;
 	#models: OpenCodeModel[] = [];
+	/** When the list was last read (by `now`). */
+	#listedAt = Number.NEGATIVE_INFINITY;
 	readonly #hosts: OpenCodeAccess[] = [];
-	/** Summary sessions waiting for their generate hook: what their request is to be. */
-	readonly #pending = new Map<string, { readonly system: string; readonly messages: unknown[] }>();
+	/** Summary sessions waiting for their generate hook: what their request is to be, and whether the hook set it. */
+	readonly #pending = new Map<string, { readonly system: string; readonly messages: unknown[]; shaped: boolean }>();
 	/** Why the list could not be read, if it could not. */
 	listProblem: string | undefined;
 	/** Why no summary can go through OpenCode here, if none can. */
 	#off: string | undefined;
+	readonly #ledger: string | undefined;
+	readonly #now: () => number;
+	readonly #maxAgeMs: number;
+	#cleaned = false;
 
-	constructor(agent: string) {
+	/**
+	 * `ledger`: a file (private) that lists the summary sessions made and not yet removed, so those a crash left are
+	 * removed later (cleanLeftovers). `maxAgeMs`: how old the model list may be when a summary uses it (default 60 s).
+	 */
+	constructor(agent: string, options: { readonly ledger?: string; readonly now?: () => number; readonly maxAgeMs?: number } = {}) {
 		this.#agent = agent;
+		this.#ledger = options.ledger;
+		this.#now = options.now ?? Date.now;
+		this.#maxAgeMs = options.maxAgeMs ?? 60_000;
+	}
+
+	/** The session ids the ledger lists (none when it has none, or can't be read). */
+	#listed(): string[] {
+		if (this.#ledger === undefined) return [];
+		try {
+			const ids = JSON.parse(readFileSync(this.#ledger, "utf8")) as unknown;
+			return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [];
+		} catch {
+			return [];
+		}
+	}
+
+	#note(change: (ids: string[]) => string[]): void {
+		if (this.#ledger === undefined) return;
+		try {
+			writePrivate(this.#ledger, JSON.stringify(change(this.#listed())));
+		} catch {
+			// a ledger that can't be written leaves only a crash's sessions behind
+		}
+	}
+
+	/** Removes the summary sessions the ledger lists (a crash's), through the latest folder, once. Never throws. */
+	async cleanLeftovers(): Promise<void> {
+		const host = this.#hosts.at(-1);
+		if (host === undefined || this.#cleaned) return;
+		this.#cleaned = true;
+		for (const sessionID of this.#listed()) {
+			if (this.#pending.has(sessionID)) continue;
+			try {
+				await host.removeSession({ sessionID });
+			} catch {
+				// gone already, or another OpenCode's: either way not this one's to keep
+			}
+			this.#note((ids) => ids.filter((id) => id !== sessionID));
+		}
 	}
 
 	/** No summary goes through OpenCode from now on, for `why`. */
@@ -164,6 +215,7 @@ export class OpenCodeSummaries {
 				timer = setTimeout(() => fail(new Error(`OpenCode did not list its models within ${LIST_MS / 1000} s`)), LIST_MS);
 			});
 			this.#models = readModelList(await Promise.race([host.listModels(), late]));
+			this.#listedAt = this.#now();
 			this.listProblem = undefined;
 		} catch (error) {
 			this.listProblem = errorText(error);
@@ -220,12 +272,15 @@ export class OpenCodeSummaries {
 		event.messages = request.messages;
 		event.tools = {};
 		for (const key of Object.keys(event.options)) delete event.options[key];
+		request.shaped = true;
 	}
 
 	/** One summary reply from `model` (an offered OpenCode model): its text. */
 	async complete(modelId: string, system: string, messages: readonly Message[], options: { readonly signal?: AbortSignal; readonly reasoning?: string }): Promise<string> {
 		const host = this.#hosts.at(-1);
 		if (host === undefined) throw new Error("OpenCode has no folder open with Orrery's plugin");
+		// The model's status as OpenCode lists it now (a paid model may have turned free since the list was read).
+		if (this.#now() - this.#listedAt > this.#maxAgeMs) await this.refresh();
 		const model = this.model(modelId);
 		if (model === undefined || model.free) throw new Error(this.unavailable(modelId) ?? `no model ${modelId}`);
 		const variant = openCodeVariant((options.reasoning ?? "off") as Parameters<typeof openCodeVariant>[0], model.variants);
@@ -240,15 +295,22 @@ export class OpenCodeSummaries {
 		);
 		const sessionID = (made as { id?: unknown; data?: { id?: unknown } } | null)?.id ?? (made as { data?: { id?: unknown } } | null)?.data?.id;
 		if (typeof sessionID !== "string") throw new Error("OpenCode made no session for the summary");
-		this.#pending.set(sessionID, { system, messages: openCodeMessages(messages) });
+		const request = { system, messages: openCodeMessages(messages), shaped: false };
+		this.#pending.set(sessionID, request);
+		this.#note((ids) => [...ids, sessionID]);
 		try {
 			const answer = await untilAborted(host.generate({ sessionID, prompt: "Summarize." }, { ...(options.signal === undefined ? {} : { signal: options.signal }) }), options.signal);
+			// A reply to a request Orrery's hook didn't set went as OpenCode's own (its prompt, its tools): never a summary.
+			if (!request.shaped) throw new Error("Orrery's generate hook did not shape this summary's request, so its reply is not used; nothing was saved");
 			const text = (answer as { text?: unknown } | null)?.text ?? (answer as { data?: { text?: unknown } } | null)?.data?.text;
 			if (typeof text !== "string") throw new Error("OpenCode's reply had no text");
 			return text;
 		} finally {
 			this.#pending.delete(sessionID);
-			void host.removeSession({ sessionID }).catch(() => {});
+			void host.removeSession({ sessionID }).then(
+				() => this.#note((ids) => ids.filter((id) => id !== sessionID)),
+				() => {},
+			);
 		}
 	}
 }

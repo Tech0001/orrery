@@ -368,6 +368,72 @@ describe("Orrery's OpenCode plugin: summaries through OpenCode's models", () => 
 		expect(await host.callRpc("switch", { provider: "opencode" })).toEqual({ ok: false, text: "Not switched: the pick names no model." });
 	});
 
+	it("saves no summary whose request its generate hook didn't shape, and offers no folder whose generate hook isn't there", async () => {
+		const s = sceneOn("opencode/fake/fake-model");
+		seed(s.atlas, [`A long question ${"detail ".repeat(200)}`, `A long answer ${"detail ".repeat(200)}`]);
+		const host = hostFor(s);
+		host.modelList = OPENCODE_MODELS;
+		host.runGenerateHooks = false;
+		await start(s, host, { config: s.config, summarySources: fauxSources(s.config) });
+		await opened(s);
+		await waitUntil(() => host.generated.length >= 2);
+		await new Promise((wait) => setTimeout(wait, 200));
+		const store = MemoryStore.openReadOnly(join(s.atlas.dir, "memory.sqlite"));
+		try {
+			expect(store.nodeCount).toBe(0);
+		} finally {
+			store.close();
+		}
+		// An OpenCode without the generate hook: no folder to make summaries through; they are off, saying so.
+		const t = sceneOn("opencode/fake/fake-model");
+		const bare = hostFor(t);
+		bare.modelList = OPENCODE_MODELS;
+		bare.noGenerateHook = true;
+		await start(t, bare, { config: t.config, summarySources: fauxSources(t.config), openCodeWaitMs: 300 });
+		await waitUntil(() => noticesOf(t).length > 0, 5000);
+		expect(noticesOf(t).join("\n")).toMatch(/summaries are off: .*generate hook/);
+		expect(bare.made).toEqual([]);
+	});
+
+	it("removes the summary sessions a crash left (it keeps their ids beside the memory)", async () => {
+		const s = sceneOn("opencode/fake/fake-model");
+		mkdirSync(s.atlas.dir, { recursive: true });
+		writeFileSync(join(s.atlas.dir, "opencode-summaries.json"), JSON.stringify(["ses_crash_left"]));
+		const host = hostFor(s);
+		host.modelList = OPENCODE_MODELS;
+		host.sessions.set("ses_crash_left", { messages: [] });
+		await start(s, host, { config: s.config, summarySources: fauxSources(s.config) });
+		await opened(s);
+		await waitUntil(() => host.removed.includes("ses_crash_left"));
+		expect(JSON.parse(readFileSync(join(s.atlas.dir, "opencode-summaries.json"), "utf8"))).not.toContain("ses_crash_left");
+	});
+
+	it("starts summaries once OpenCode lists the chosen model, when it listed it too late for the memory's opening", async () => {
+		const s = sceneOn("opencode/fake/fake-model");
+		seed(s.atlas, [`A long question ${"detail ".repeat(200)}`, `A long answer ${"detail ".repeat(200)}`]);
+		const host = hostFor(s);
+		host.modelList = { data: [] };
+		await start(s, host, { config: s.config, summarySources: fauxSources(s.config), openCodeWaitMs: 100 });
+		await opened(s);
+		await waitUntil(() => (feedOf(s)?.line ?? "").includes("SUMMARIES STOPPED"));
+		host.modelList = OPENCODE_MODELS;
+		await waitUntil(() => host.generated.length >= 2, 5000);
+		await waitUntil(() => noticesOf(s).some((text) => text.includes("OpenCode lists opencode/fake/fake-model now")));
+		await waitUntil(() => !(feedOf(s)?.line ?? "").includes("STOPPED"));
+	});
+
+	it("shares an agent's memory only between plugins of one Orrery version: another version's reads it", async () => {
+		const s = scene();
+		const first = hostFor(s);
+		await start(s, first, { version: "1.0.0" });
+		await opened(s);
+		const second = hostFor(s, s.plain);
+		await start(s, second, { version: "2.0.0" });
+		second.open("ses_b");
+		const section = (await second.request("ses_b")).at(-1);
+		expect(section).toContain(OPENCODE_READ_ONLY);
+	});
+
 	it("never makes summaries through OpenCode's free tier: the agent opens with them off, saying why and how to switch", async () => {
 		const s = sceneOn("opencode/opencode/big-pickle");
 		const host = hostFor(s);

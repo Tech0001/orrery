@@ -37,6 +37,10 @@ export class FakeHost implements OpenCodeContext {
 	readonly removed: string[] = [];
 	/** Each session.generate request as the generate hooks left it, with its session's model. */
 	readonly generated: { sessionID: string; model: unknown; system: unknown[]; messages: unknown[]; tools: Record<string, unknown>; options: Record<string, unknown> }[] = [];
+	/** Whether session.generate runs the generate hooks (an OpenCode that doesn't: false). */
+	runGenerateHooks = true;
+	/** Makes ctx.session.hook("generate") throw, as an OpenCode without the hook would. */
+	noGenerateHook = false;
 	/** What a session.generate request answers (default: a short line). */
 	answer: (request: FakeHost["generated"][number]) => string | Promise<string> = () => "a summary line";
 	#queue: unknown[] = [];
@@ -50,6 +54,7 @@ export class FakeHost implements OpenCodeContext {
 
 	readonly session = {
 		hook: async <K extends keyof SessionHooks>(name: K, callback: (event: SessionHooks[K]) => Promise<void> | void) => {
+			if (name === "generate" && this.noGenerateHook) throw new Error("no session hook generate");
 			this.hooks.set(name, [...(this.hooks.get(name) ?? []), callback as Hook]);
 			return { dispose: async () => {} };
 		},
@@ -73,7 +78,7 @@ export class FakeHost implements OpenCodeContext {
 			const model = this.made.find((made) => made.id === sessionID)?.input.model;
 			// OpenCode's own request first (its base prompt, the session's turns, the prompt, its tools), then the hooks.
 			const event: GenerateEvent = { sessionID, system: [BASE, { type: "text", text: "# Your Model" }], messages: [{ role: "user", content: [{ type: "text", text: prompt }] }], tools: { shell: { description: "x", input: {} } }, options: { textVerbosity: "low" } };
-			await this.#run("generate", event);
+			if (this.runGenerateHooks) await this.#run("generate", event);
 			const request = { sessionID, model, system: event.system, messages: event.messages, tools: event.tools, options: event.options };
 			this.generated.push(request);
 			return { text: await this.answer(request) };
