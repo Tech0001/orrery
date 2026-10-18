@@ -1236,14 +1236,17 @@ describe("OpenCode's config and code: one table through every gate (writes and s
 		if (c.path !== undefined) {
 			call(reads, "Read", { file_path: c.path });
 			call(reads, "mcp__files__read_file", { path: c.path });
+			// An unknown tool that may not write (no write verb, no destination) is a read, wherever its path is.
+			call(reads, "mcp__box__put", { to: c.path, body: "x" });
+			call(reads, "mcp__box__store", { item: { where: [c.path] } });
 			call(writes, "Write", { file_path: c.path, content: "x" });
 			call(writes, "Edit", { file_path: c.path, old_string: "a", new_string: "b" });
 			call(writes, "MultiEdit", { file_path: c.path, edits: [] });
 			call(writes, "NotebookEdit", { notebook_path: c.path, new_source: "x" });
 			call(writes, "mcp__files__write_file", { path: c.path, content: "x" });
-			// A tool named for neither, its path under keys no heuristic reads as one.
-			call(writes, "mcp__box__put", { to: c.path, body: "x" });
-			call(writes, "mcp__box__store", { item: { where: [c.path] } });
+			// One that may write (a write verb, or a destination), its path under keys no heuristic reads as one.
+			call(writes, "mcp__box__save", { to: c.path, body: "x" });
+			call(writes, "mcp__box__store", { item: { where: [c.path] }, output: "out.txt" });
 		}
 		if (c.command !== undefined) {
 			call(writes, "Bash", { command: c.command });
@@ -1266,7 +1269,8 @@ describe("OpenCode's config and code: one table through every gate (writes and s
 			patch("*** Update File: src/a.ts", `*** Move to: ${c.path}`, "@@", "-a", "+b");
 			call(writes, "Bash", { command: `apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch\nEOF` });
 			call(writes, "mcp__box__apply", { diff: `*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch` });
-			call(writes, "mcp__box__put", { to: c.path });
+			call(reads, "mcp__box__put", { to: c.path });
+			call(writes, "mcp__box__save", { to: c.path });
 		}
 		if (c.command !== undefined) {
 			call(writes, "Bash", { command: c.command });
@@ -1291,8 +1295,10 @@ describe("OpenCode's config and code: one table through every gate (writes and s
 			patch(`*** Delete File: ${c.path}`);
 			patch("*** Update File: src/a.ts", `*** Move to: ${c.path}`, "@@", "-a", "+b");
 			call(writes, "box_apply", { diff: `*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch` });
-			call(writes, "box_put", { target_file: c.path });
-			call(writes, "box_store", { file: { path: c.path } });
+			call(reads, "box_put", { target_file: c.path });
+			call(reads, "box_store", { file: { path: c.path } });
+			call(writes, "box_save", { target_file: c.path });
+			call(writes, "box_store", { file: { path: c.path }, dest: "out.txt" });
 			writes.push(openCodePermission("edit", [placed], t.options));
 		}
 		if (c.command !== undefined) {
@@ -1499,7 +1505,8 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 			claudeGuard("mcp__box__copy", { source: "notes.md", destination: skill }, t.options),
 			claudeGuard("mcp__files__write_file", { path: skill, content: YAML }, t.options),
 			claudeGuard("NotebookEdit", { notebook_path: skill, new_source: "x" }, t.options),
-			openCodeGuard("box_put", { to: ".claude/skills/s/SKILL.md", body: YAML }, t.options, "ses_a"),
+			openCodeGuard("box_save", { to: ".claude/skills/s/SKILL.md", body: YAML }, t.options, "ses_a"),
+			codexGuard("mcp__box__put", { to: skill, body: YAML, output: "out.txt" }, t.options),
 			guardOmpToolCall("edit", { path: skill, input: "PUT 1\n+Tidy.\n" }, t.options),
 			guardOmpToolCall("edit", { path: "notes.md", input: "PUT 1\n+x\n", edits: [{ rename: skill }] }, t.options),
 			guardOmpToolCall("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [skill] }, t.options),
@@ -1513,6 +1520,10 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 		]) {
 			expect(verdict).toMatch(UNSEEN);
 		}
+		// An unknown tool that may not write (no write verb, no destination) reads a skill: allowed.
+		expect(claudeGuard("mcp__docs__open", { path: skill }, t.options)).toBeUndefined();
+		expect(codexGuard("mcp__box__put", { to: skill, body: YAML }, t.options)).toBeUndefined();
+		expect(openCodeGuard("box_put", { to: ".claude/skills/s/SKILL.md", body: YAML }, t.options, "ses_a")).toBeUndefined();
 		// A patch update: the file and its added lines without a fence-looking line pass; with one anywhere, refused.
 		expect(openCodeGuard("patch", { patchText: "*** Begin Patch\n*** Update File: .claude/skills/s/SKILL.md\n@@\n-Tidy the notes.\n+Tidy.\n*** End Patch" }, t.options, "ses_a")).toBeUndefined();
 		expect(codexGuard("apply_patch", { command: `*** Begin Patch\n*** Update File: ${join(t.atlas, ".agents", "skills", "s", "lower.md")}\n@@\n-Below:\n+Above:\n*** End Patch` }, t.options)).toMatch(/may run as code/);

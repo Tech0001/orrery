@@ -342,10 +342,10 @@ yourself), and an agent's shell command that only names one, such as a commit me
 **Skills stay ordinary files.** OpenCode also loads the skills in `.claude/skills` and `.agents/skills`, and runs a
 skill's front matter as code when it opens with `---js`. Agents may write skills with their file tools, judged by what
 the file will hold: a skill that would open with `---` and anything other than YAML or JSON is refused, and so is a
-write whose result the guard can't see (a copy or a move into a skills folder, a notebook cell, an MCP tool, OMP's
-edit; each tool's guide says which). Shell text that names a skills folder is refused, whatever the command. The cost:
-an agent's `ls`, `cat`, `git add` or commit message that names a skills folder is refused, and in Codex, which reads
-files through its shell, an agent can't read a skill or OpenCode's config at all. `AGENTS.md` and
+write whose result the guard can't see (a copy or a move into a skills folder, a notebook cell, an MCP tool that may
+write, OMP's edit; each tool's guide says which). Shell text that names a skills folder is refused, whatever the
+command. The cost: an agent's `ls`, `cat`, `git add` or commit message that names a skills folder is refused, and in
+Codex, which reads files through its shell, an agent can't read a skill or OpenCode's config at all. `AGENTS.md` and
 `.claude/settings.json` stay writable.
 
 **It is a guard, not a sandbox.** It checks file paths and the text of shell commands, so a determined program can get

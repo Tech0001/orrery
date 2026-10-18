@@ -830,15 +830,22 @@ describe("Claude Code: only the agent that owns a folder's memory view reads it"
 	});
 });
 
-describe("claudeGuard: a tool named for neither writing nor only reading, and OpenCode's config and code", () => {
-	it("refuses one naming them under any key, lets one only reading name them, and judges a long list of plain words in time", () => {
+describe("claudeGuard: an unknown tool and OpenCode's config and code", () => {
+	it("refuses one that may write (a write verb in its name, or a destination) naming them under any key, judges any other as a read, and judges a long list of plain words in time", () => {
 		const root = realpathSync(mkdtempSync(join(tmpdir(), "orrery-claude-oc-")));
 		try {
 			const options = { folder: root, allowedRoots: [root], cwd: root, home: join(root, "home"), foreignViews: [] as string[] };
-			expect(claudeGuard("mcp__box__put", { to: "opencode.json", body: "{}" }, options)).toMatch(/OpenCode's config or code/);
-			expect(claudeGuard("mcp__box__run", { job: { steps: [{ at: ".opencode/plugins/x.ts" }] } }, options)).toMatch(/OpenCode's config or code/);
+			// Write-capable: named for writing, or with a destination, whatever key names the file.
+			expect(claudeGuard("mcp__box__save", { to: "opencode.json", body: "{}" }, options)).toMatch(/OpenCode's config or code/);
+			expect(claudeGuard("mcp__box__run", { output: "out.txt", job: { steps: [{ at: ".opencode/plugins/x.ts" }] } }, options)).toMatch(/OpenCode's config or code/);
+			expect(claudeGuard("mcp__box__save", { to: ".claude/skills/s/SKILL.md", body: "x" }, options)).toMatch(/can't see what this would leave/);
+			// Any other unknown tool is a read: OpenCode's config and skills may be read; what reads refuse stays refused.
+			expect(claudeGuard("mcp__box__put", { to: "opencode.json", body: "{}" }, options)).toBeUndefined();
+			expect(claudeGuard("mcp__box__run", { job: { steps: [{ at: ".opencode/plugins/x.ts" }] } }, options)).toBeUndefined();
+			expect(claudeGuard("mcp__docs__open", { path: ".claude/skills/s/SKILL.md", note: "./.opencode/plugins/x.ts" }, options)).toBeUndefined();
+			expect(claudeGuard("mcp__box__put", { to: "~/.ssh/id_ed25519" }, options)).toMatch(/sensitive/);
 			expect(claudeGuard("mcp__fs__read_file", { path: "opencode.json" }, options)).toBeUndefined();
-			expect(claudeGuard("mcp__box__put", { to: "notes.md", body: "{}" }, options)).toBeUndefined();
+			expect(claudeGuard("mcp__box__save", { to: "notes.md", body: "{}" }, options)).toBeUndefined();
 			const started = performance.now();
 			expect(claudeGuard("mcp__db__run", { ids: Array.from({ length: 20_000 }, (_, i) => `id${i}`) }, options)).toBeUndefined();
 			expect(performance.now() - started).toBeLessThan(1500);
