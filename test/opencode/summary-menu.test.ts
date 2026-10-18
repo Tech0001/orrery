@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type MenuData, type MenuDialogs, type MenuModel, pickSummaryModel, type SummaryRpc } from "../../src/opencode/summary-menu.ts";
+import { type MenuData, type MenuDialogs, type MenuModel, pickSummaryModel, type SummaryRpc, summaryCommandLayer } from "../../src/opencode/summary-menu.ts";
 
 const model = (provider: string, modelId: string, extra: Partial<MenuModel> = {}): MenuModel => ({ provider, modelId, title: modelId, thinking: ["off", "low", "high"], current: false, ...extra });
 
@@ -82,6 +82,15 @@ describe("OpenCode's /compactor picker (its TUI side)", () => {
 		expect(await pickSummaryModel(scripted([undefined]).dialogs, server.api)).toBeUndefined();
 		expect(await pickSummaryModel(scripted(["API key", "claude-sonnet-4-5", undefined]).dialogs, server.api)).toBeUndefined();
 		expect(server.switched).toEqual([{ provider: "anthropic", modelId: "claude-sonnet-4-5", thinking: "low" }, { reset: true }]);
+	});
+
+	it("registers /compactor and its palette entry in OpenCode's global keymap mode, where slash completion and the palette see it", () => {
+		let ran = 0;
+		const layer = summaryCommandLayer(() => ran++);
+		expect(layer.mode).toBe("global");
+		expect(layer.commands).toEqual([expect.objectContaining({ id: "orrery.compactor", title: "Orrery: summary model", palette: true, slash: { name: "compactor" } })]);
+		layer.commands[0]?.run();
+		expect(ran).toBe(1);
 	});
 
 	it("says why when the server can't offer a pick", async () => {

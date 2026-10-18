@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { FeedReader, feedFileIn } from "../feed.ts";
 import { findPlugin } from "../plugin-list.ts";
 
-export { pickSummaryModel, SUMMARY_RPC } from "../summary-menu.ts";
+export { pickSummaryModel, SUMMARY_RPC, summaryCommandLayer } from "../summary-menu.ts";
 
 /**
  * The feed of the Orrery launch this TUI is (its OPENCODE_CONFIG_CONTENT names the plugin folder `entry`, the TUI

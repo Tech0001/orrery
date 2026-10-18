@@ -83,6 +83,28 @@ export interface MenuDialogs {
 	select<V>(options: { readonly title: string; readonly options: readonly { title: string; value: V; description?: string; disabled?: boolean }[]; readonly current?: V }): Promise<V | undefined>;
 }
 
+/**
+ * /compactor and "Orrery: summary model" in the command palette, as OpenCode's TUI keymap takes a plugin's commands
+ * (`context.keymap.layer`). The layer's mode is "global": without one it is OpenCode's "base" mode, which neither slash
+ * completion nor the palette reads.
+ */
+export function summaryCommandLayer(run: () => void) {
+	return {
+		mode: "global" as const,
+		commands: [
+			{
+				id: "orrery.compactor",
+				title: "Orrery: summary model",
+				description: "Choose the model that makes this agent's summaries",
+				group: "Orrery",
+				palette: true,
+				slash: { name: "compactor" },
+				run,
+			},
+		],
+	};
+}
+
 /** `items`, the current one first. */
 const currentFirst = <T extends { readonly current: boolean }>(items: readonly T[]): T[] => [...items.filter((item) => item.current), ...items.filter((item) => !item.current)];
 

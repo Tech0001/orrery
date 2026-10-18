@@ -12,7 +12,7 @@
  */
 
 import { createSignal } from "solid-js";
-import { pickSummaryModel, pluginFolder, pluginOff, SUMMARY_RPC, tuiFeed } from "./tui-feed.js";
+import { pickSummaryModel, pluginFolder, pluginOff, SUMMARY_RPC, summaryCommandLayer, tuiFeed } from "./tui-feed.js";
 
 /** The prompt's footer: OpenCode shows it on the home screen and in a session alike. */
 const SLOTS = ["prompt.footer.status"];
@@ -75,21 +75,11 @@ export default {
 			}
 		};
 		try {
-			context.keymap.layer(() => ({
-				commands: [
-					{
-						id: "orrery.compactor",
-						title: "Orrery: summary model",
-						description: "Choose the model that makes this agent's summaries",
-						group: "Orrery",
-						palette: true,
-						slash: { name: "compactor" },
-						run: () => {
-							void compactor();
-						},
-					},
-				],
-			}));
+			context.keymap.layer(() =>
+				summaryCommandLayer(() => {
+					void compactor();
+				}),
+			);
 		} catch {
 			// an OpenCode without plugin commands: `orrery compactor <Name>` in a shell still works
 		}
