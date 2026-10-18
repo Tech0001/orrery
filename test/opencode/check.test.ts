@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
@@ -55,7 +55,9 @@ describe("probePlugin", () => {
 		for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TMPDIR"]) {
 			expect(run?.env[key]?.startsWith(join(parent, "opencode-")), key).toBe(true);
 		}
-		expect(run?.cwd.startsWith(join(parent, "opencode-"))).toBe(true);
+		// The stand-in logs process.cwd(), which is the folder's real path: on macOS the system's temporary folder is a link
+		// (/var to /private/var), so either spelling of the scratch folder is the same folder.
+		expect([parent, realpathSync(parent)].some((at) => run?.cwd.startsWith(join(at, "opencode-"))), run?.cwd).toBe(true);
 		expect(statSync(parent).mode & 0o777).toBe(0o700);
 		// The lease ended through stdin, and the scratch folder is gone, with the handlers that would remove it on a signal.
 		expect(s.fake.ended()).toHaveLength(1);
