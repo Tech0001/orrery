@@ -59,7 +59,7 @@ export async function firstRun(app: App): Promise<boolean> {
 		if (folder === undefined) return false;
 		const found = app.deps.tools().filter((t) => t.id !== "ori" && t.path !== undefined);
 		if (found.length === 0) {
-			await app.host.open(new MessageModal("No tools found", "None of pi, OMP, Claude Code or Codex is on PATH. Install one, then run orrery again."));
+			await app.host.open(new MessageModal("No tools found", "None of pi, OMP, Claude Code, Codex or OpenCode is on PATH. Install one, then run orrery again."));
 			return false;
 		}
 		const toolLabel = await app.host.open(new SelectModal("Its tool:", found.map((t) => t.label)));

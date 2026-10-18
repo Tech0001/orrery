@@ -67,7 +67,7 @@ const GROUPS: readonly Group[] = [
 				"preview a history import for review, in DIR (default ./import-<Name>). It reads the Claude Code project of the agent's folder and that folder's Codex sessions in ~/.codex/sessions (--claude, --codex: another folder, or none); --claude-file adds a Claude Code session that lives under another project folder, --codex-file a rollout that started elsewhere and was resumed in the agent's folder, --notes a notes file. The summary model splits pastes over N bytes (default 1200); --no-split skips that model pass",
 			],
 			["import <Name> --commit FILE", "append a reviewed preview to the agent's memory, which must be empty"],
-			["compact <Name> [--progress FILE]", "build every missing summary (the agent must not be running); --progress: write how far it is to FILE"],
+			["compact <Name> [--progress FILE]", "build every missing summary (the agent must not be running; an OpenCode summary model builds only in OpenCode); --progress: write how far it is to FILE"],
 			[
 				"browse <Name> [--out FILE] [--open]",
 				"write an HTML explorer of the agent's memory to FILE, else ./<Name>-memory.html (--open: else into the agent's data folder, then open it)",
@@ -90,7 +90,7 @@ const GROUPS: readonly Group[] = [
 			["logout openai|openrouter | --key <openai|anthropic|openrouter>", "remove one sign-in or key"],
 			[
 				"compactor <Name> [signin|key|local [name [words] | name/model [thinking]] | provider/id [thinking] | reset]",
-				"show, list or switch the agent's summary model (shared with pi's /compactor); a switch tests the model first",
+				"show, list or switch the agent's summary model (shared with pi's /compactor); a switch tests the model first. OpenCode's models (opencode/<provider>/<model>) are chosen inside OpenCode, with its /compactor",
 			],
 			["usage [<Name>] [--days N] [--json]", "token usage per day, role and model (default 7 days)"],
 		],
@@ -132,7 +132,7 @@ const GROUPS: readonly Group[] = [
 		],
 		detail: [
 			["update [--check] [--version V] [--yes]", "install the newest release (or V); --check only says whether one is out; --yes answers setup's questions yes"],
-			["tools [--json]", "pi, Claude Code, Codex, OMP and Ori: found, version, Orrery's side installed"],
+			["tools [--json]", "pi, Claude Code, Codex, OMP, OpenCode and Ori: found, version, Orrery's side installed (Codex's and OpenCode's come with each launch)"],
 			["tools install <pi|claude-code|omp> [--yes]", "install or update Orrery's side of a tool (shows what it does first)"],
 			[
 				"claude-setup <Name> [--mod]",
