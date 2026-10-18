@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/agent/config.ts";
+import { GuardCall, guardToolCall } from "../../src/agent/guard-paths.ts";
 import { OPENCODE_COMMAND, OPENCODE_READ_ONLY } from "../../src/agent/guard-rules.ts";
 import {
 	afterDiff,
@@ -370,6 +371,22 @@ describe("openCodeGuard judges each patch target once", () => {
 		const started = performance.now();
 		expect(openCodeGuard("patch", { patchText: text }, t.options)).toBeUndefined();
 		expect(performance.now() - started).toBeLessThan(2000);
+	});
+
+	it("works out its rules once per call, however many paths it judges: a patch's 300 targets share them", () => {
+		const t = world();
+		const call = new GuardCall();
+		const text = patch(...Array.from({ length: 300 }, (_, i) => [`*** Add File: f${i}.ts`, "+x"]).flat());
+		expect(openCodeGuard("patch", { patchText: text }, { ...t.options, call })).toBeUndefined();
+		expect(call.ruleSets).toBe(1);
+		// Options that differ in what the rules come from (another cwd) get rule sets of their own.
+		const other = new GuardCall();
+		for (const cwd of [t.cwd, t.folder, t.cwd]) expect(guardToolCall("write", { path: join(t.cwd, "a.ts"), content: "x" }, { ...t.options, cwd, call: other })).toBeUndefined();
+		expect(other.ruleSets).toBe(2);
+		// The verdicts are the rules' own, shared or not.
+		for (const target of [join(t.home, ".ssh", "x"), join(t.root, "outside", "x"), join(t.cwd, "b.ts"), join(t.home, ".local", "share", "opencode", "opencode.db")]) {
+			expect(guardToolCall("write", { path: target, content: "x" }, { ...t.options, call: other })).toBe(guardToolCall("write", { path: target, content: "x" }, t.options));
+		}
 	});
 });
 

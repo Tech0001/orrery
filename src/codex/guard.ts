@@ -44,7 +44,7 @@
 import { homedir } from "node:os";
 import { isAbsolute, normalize, resolve } from "node:path";
 import type { HarnessConfig } from "../agent/config.ts";
-import { agentViews, movedAgentDirCredentials, ompCredentials, openCodeCredentials, RUST_SPACE } from "../agent/guard-paths.ts";
+import { agentViews, GuardCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials, RUST_SPACE } from "../agent/guard-paths.ts";
 import { inAnyReading, NEW_TEXT, patchNewText, type SkillShellRead, shellWord, skillShellRead, skillsNamed } from "../agent/guard-rules.ts";
 import { workArea } from "../agent/pick.ts";
 import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from "../claude/guard.ts";
@@ -338,7 +338,9 @@ export function codexGuard(toolName: string, input: unknown, options: ClaudeGuar
 	if (typeof input !== "object" || input === null || Array.isArray(input)) return CALL_UNREADABLE;
 	const args = input as Readonly<Record<string, unknown>>;
 	const deadline = performance.now() + (options.judgeMs ?? JUDGE_MS);
-	const timed = (): ClaudeGuardOptions => ({ ...options, judgeMs: deadline - performance.now() });
+	// One guard call: the rules every path of it is judged by are worked out once (guard-paths.ts GuardCall).
+	const call = options.call ?? new GuardCall();
+	const timed = (): ClaudeGuardOptions => ({ ...options, call, judgeMs: deadline - performance.now() });
 	if (deadline <= performance.now()) return OUT_OF_TIME;
 	if (toolName === "apply_patch") {
 		if (typeof args.command !== "string") return PATCH_UNREADABLE("it is no text");

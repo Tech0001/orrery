@@ -78,6 +78,7 @@ import {
 	orreryConfigNamed,
 	PROTECTED_BY,
 	PROTECTED_FILE,
+	type Protection,
 	pathProtected,
 	protection,
 	secretPath,
@@ -164,6 +165,62 @@ export interface PathGuardOptions extends GuardOptions {
 	readonly resolvePath?: (raw: string, cwd: string, home: string) => string;
 	/** How many entries an OMP ast_edit's folder or glob may reach before it is refused (default 50,000; tests set fewer). */
 	readonly astEditLimit?: number;
+	/** The guard call this judgment is part of: its rules are worked out once for all its paths (GuardCall). */
+	readonly call?: GuardCall;
+}
+
+/** What pathJudge works out from its options before it judges any path: each rule set, its paths where they really are. */
+interface PathRules {
+	readonly home: string;
+	readonly views: ReturnType<typeof viewRules>;
+	readonly protect: Protection;
+	readonly config: string[];
+	readonly openCode: OpenCodeRule;
+	readonly credentials: string[];
+	readonly foreign: string[];
+	readonly realData: string | undefined;
+	readonly data: string | undefined;
+	readonly setUp: ReadonlySet<string>;
+	readonly roots: GuardOptions;
+}
+
+/**
+ * One guard call (a tool call a gate judges): the rules pathJudge works out from its options (the credential
+ * locations, the roots, [guard] protect, OpenCode's folders, each followed through its links), made once for every
+ * path the call judges, a patch's every target among them, and reused while the options hold the same. A gate makes one
+ * per call and keeps none between calls, since the files may change.
+ */
+export class GuardCall {
+	readonly #rules = new Map<string, PathRules>();
+
+	/** How many rule sets this call has worked out. */
+	get ruleSets(): number {
+		return this.#rules.size;
+	}
+
+	/** The rules for `options`, worked out by `make` the first time options holding the same are seen. */
+	rules(options: PathGuardOptions, make: () => PathRules): PathRules {
+		const key = JSON.stringify([
+			options.home ?? null,
+			options.cwd,
+			options.folder,
+			options.allowedRoots,
+			options.foreignViews,
+			options.fileModeViews ?? null,
+			options.ownView ?? null,
+			options.configFile ?? null,
+			options.protect ?? null,
+			options.credentials ?? null,
+			options.orreryData ?? null,
+			options.openCode ?? null,
+		]);
+		let rules = this.#rules.get(key);
+		if (rules === undefined) {
+			rules = make();
+			this.#rules.set(key, rules);
+		}
+		return rules;
+	}
 }
 
 /** The agent dir PI_CODING_AGENT_DIR moves pi's (and OMP's) to, if set. */
@@ -566,22 +623,8 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
  * really is) is worked out once, and each call is judged by the same rules.
  */
 export function pathJudge(options: PathGuardOptions): (toolName: string, input: Readonly<Record<string, unknown>>) => string | undefined {
-	const home = options.home ?? homedir();
-	const views = viewsOf(options, home);
-	// [guard] protect: its path entries from this home, and where they really are.
-	const protect = protection(options.protect, home, realTarget);
-	// The config file in use, as given and where it really is: named in no command, written by no tool.
-	const config = configSpellings({ ...options, home }, options.configFile === undefined ? undefined : realTarget(options.configFile));
-	const openCode = openCodeOf(options, home);
-	// The credential locations themselves, symlinks followed (a ~/.ssh linked from a dotfiles folder, say). Compared
-	// ignoring case: on a case-insensitive file system (macOS) ~/.SSH and /USERS are the same folders.
+	const { home, views, protect, config, openCode, credentials, foreign, realData, data, setUp, roots } = options.call?.rules(options, () => pathRules(options)) ?? pathRules(options);
 	const fold = (path: string) => path.toLowerCase();
-	const credentials = [...HOME_CREDENTIALS.map((entry) => join(home, entry)), ...(options.credentials ?? [])].map((path) => fold(realTarget(path)));
-	const foreign = options.foreignViews.flatMap((view) => [view, realTarget(view)]);
-	const realData = options.orreryData === undefined ? undefined : realTarget(options.orreryData);
-	const data = realData === undefined ? undefined : fold(realData);
-	const setUp = new Set((options.fileModeViews ?? []).flatMap((view) => [view, realTarget(view)]).map(fold));
-	const roots = { folder: realRoot(options.folder), allowedRoots: options.allowedRoots.map(realRoot), cwd: realRoot(options.cwd), foreignViews: options.foreignViews, openCode };
 	return (toolName, input) => {
 		const search = SEARCHES.has(toolName);
 		// The arguments that name files: grep's glob and find's pattern (a file-name glob). grep's pattern is the text it
@@ -641,6 +684,27 @@ export function pathJudge(options: PathGuardOptions): (toolName: string, input: 
 		// key), judged with every rule its own call would get, [guard] protect included.
 		return checkToolCall({ name: toolName, arguments: { ...input, path: target } }, roots, views, config, protect);
 	};
+}
+
+/** pathJudge's rules for `options` (PathRules), worked out now. */
+function pathRules(options: PathGuardOptions): PathRules {
+	const home = options.home ?? homedir();
+	const views = viewsOf(options, home);
+	// [guard] protect: its path entries from this home, and where they really are.
+	const protect = protection(options.protect, home, realTarget);
+	// The config file in use, as given and where it really is: named in no command, written by no tool.
+	const config = configSpellings({ ...options, home }, options.configFile === undefined ? undefined : realTarget(options.configFile));
+	const openCode = openCodeOf(options, home);
+	// The credential locations themselves, symlinks followed (a ~/.ssh linked from a dotfiles folder, say). Compared
+	// ignoring case: on a case-insensitive file system (macOS) ~/.SSH and /USERS are the same folders.
+	const fold = (path: string) => path.toLowerCase();
+	const credentials = [...HOME_CREDENTIALS.map((entry) => join(home, entry)), ...(options.credentials ?? [])].map((path) => fold(realTarget(path)));
+	const foreign = options.foreignViews.flatMap((view) => [view, realTarget(view)]);
+	const realData = options.orreryData === undefined ? undefined : realTarget(options.orreryData);
+	const data = realData === undefined ? undefined : fold(realData);
+	const setUp = new Set((options.fileModeViews ?? []).flatMap((view) => [view, realTarget(view)]).map(fold));
+	const roots = { folder: realRoot(options.folder), allowedRoots: options.allowedRoots.map(realRoot), cwd: realRoot(options.cwd), foreignViews: options.foreignViews, openCode };
+	return { home, views, protect, config, openCode, credentials, foreign, realData, data, setUp, roots };
 }
 
 /** How many entries filesBelow looks at, at most. */

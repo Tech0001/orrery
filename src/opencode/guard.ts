@@ -52,7 +52,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
-import { agentViews, DATABASE_NAME, movedAgentDirCredentials, ompCredentials, openCodeCredentials, openCodeOf, realTarget } from "../agent/guard-paths.ts";
+import { agentViews, DATABASE_NAME, GuardCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials, openCodeOf, realTarget } from "../agent/guard-paths.ts";
 import { inAnyReading, NEW_TEXT, type NewText, OPENCODE_COMMAND, openCodeNamed, type OpenCodeRule, openCodeRule, openCodeSkillPath, patchNewText, SKILL_SHELL, skillsNamed } from "../agent/guard-rules.ts";
 import { workArea } from "../agent/pick.ts";
 import { ownFolder } from "../agent/private-file.ts";
@@ -327,8 +327,12 @@ class Judge {
 	readonly #options: OpenCodeGuardOptions;
 	readonly #deadline: number;
 
+	/** OpenCode's login stores, as given and where they really are (folded), worked out once for the call. */
+	#logins: string[] | undefined;
+
 	constructor(options: OpenCodeGuardOptions) {
-		this.#options = options;
+		// One guard call: the rules every path of it is judged by are worked out once (guard-paths.ts GuardCall).
+		this.#options = options.call === undefined ? { ...options, call: new GuardCall() } : options;
 		this.#deadline = performance.now() + Math.min(options.judgeMs ?? JUDGE_MS, JUDGE_MS);
 	}
 
@@ -374,7 +378,8 @@ class Judge {
 		const raw = given === "" ? "." : given;
 		const reason = this.claude(use === "write" ? "Write" : "Read", use === "write" ? { file_path: raw, [NEW_TEXT]: written } : { file_path: raw }, place);
 		if (reason !== undefined) return reason;
-		const logins = (this.#options.logins ?? []).flatMap((login) => [login, realTarget(login)]).map((login) => login.toLowerCase());
+		this.#logins ??= (this.#options.logins ?? []).flatMap((login) => [login, realTarget(login)]).map((login) => login.toLowerCase());
+		const logins = this.#logins;
 		const where = this.#placed(raw, place).map((path) => path.toLowerCase());
 		// Its database by path, or by name in its data folder (a release channel's, made after the session started).
 		const login = (path: string) => logins.includes(path) || (DATABASE_NAME.test(basename(path)) && logins.some((file) => dirname(file) === dirname(path)));
