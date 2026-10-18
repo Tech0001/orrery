@@ -16,7 +16,8 @@ describe("piCompactorModel", () => {
 		const { model } = piCompactorModel(models, { provider: "p", modelId: "m", thinking: "low" }, "compactor:Atlas");
 		const signal = new AbortController().signal;
 		expect((await model.complete("system", [{ role: "user", blocks: ["hi"] }], signal)).text).toBe("a summary");
-		expect(calls).toEqual([{ signal, sessionId: "compactor:Atlas", maxRetries: 2, reasoning: "low" }]);
+		// onPayload notes when the request leaves (a failure before then makes no usage row).
+		expect(calls).toEqual([{ signal, sessionId: "compactor:Atlas", maxRetries: 2, reasoning: "low", onPayload: expect.any(Function) }]);
 	});
 
 	it("tells the compactor once when the response begins, and marks the cache only for Anthropic", async () => {
@@ -41,8 +42,10 @@ describe("piCompactorModel", () => {
 		await piCompactorModel(make("anthropic-messages"), choice, "s").model.complete("system", turns, signal, () => starts++);
 		await piCompactorModel(make("openai-responses"), choice, "s").model.complete("system", turns, signal);
 		expect(starts).toBe(1);
-		expect(seen[0].onPayload).toBeDefined();
-		expect(seen[1].onPayload).toBeUndefined();
+		// Anthropic's payload gets the cache mark; another API's is left as it is (onPayload only notes that it was sent).
+		const payload = () => ({ system: [{ type: "text", text: "system", cache_control: { type: "ephemeral" } }], messages: [{ role: "user", content: [{ type: "text", text: "<chat>\na\nb\nc\nd\n" }, { type: "text", text: "</chat>" }, { type: "text", text: "task" }] }] });
+		expect(seen[0].onPayload?.(payload())).not.toBeUndefined();
+		expect(seen[1].onPayload?.(payload())).toBeUndefined();
 		expect(seen[1].onProviderStreamEvent).toBeUndefined();
 	});
 });
