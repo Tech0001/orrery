@@ -25,20 +25,38 @@ export interface OpenCodeModelInfo {
 	readonly providerID: string;
 	/** The model's id in its provider. */
 	readonly id: string;
+	/** The id its provider's API takes, when OpenCode lists one apart. */
+	readonly modelID?: string;
 	readonly cost?: readonly { readonly input?: number; readonly output?: number }[];
+	/** The provider settings OpenCode lists for it: which provider package it goes through, and where. */
+	readonly settings?: { readonly provider?: unknown; readonly baseURL?: unknown };
+}
+
+/** Whether a listed model goes through OpenCode's own gateway: its provider, or settings that point there. */
+function throughGateway(model: OpenCodeModelInfo): boolean {
+	if (model.providerID === "opencode" || model.providerID.startsWith("opencode-") || model.settings?.provider === "opencode") return true;
+	const url = model.settings?.baseURL;
+	if (typeof url !== "string") return false;
+	try {
+		const host = new URL(url).hostname.toLowerCase();
+		return host === "opencode.ai" || host.endsWith(".opencode.ai");
+	} catch {
+		return false;
+	}
 }
 
 /**
- * Whether a model is OpenCode's free tier: a model of OpenCode's own gateway (the `opencode` provider, and its other
- * plans such as `opencode-go`) that charges nothing for input, by OpenCode 2.0.30's own rule (it keeps exactly these on
+ * Whether a model is OpenCode's free tier: a model of OpenCode's own gateway (the `opencode` provider, its other plans
+ * such as `opencode-go`, or any provider whose listed settings go through it: an `opencode` provider package, a base
+ * URL on opencode.ai) that charges nothing for input, by OpenCode 2.0.30's own rule (it keeps exactly these on
  * without a login: core/src/plugin/provider/opencode.ts, `!model.cost.some((cost) => cost.input > 0)`), or one whose id
- * ends in "-free". Big Pickle is free and has no "-free" in its id, so the price is the marker; the name is a second one.
+ * ends in "-free". Big Pickle is free and has no "-free" in its id, so the price is the marker; the name (its id, or the API's model id)
+ * is a second one.
  */
 export function openCodeFree(model: OpenCodeModelInfo): boolean {
-	const gateway = model.providerID === "opencode" || model.providerID.startsWith("opencode-");
-	if (!gateway) return false;
+	if (!throughGateway(model)) return false;
 	const charges = (model.cost ?? []).some((cost) => typeof cost.input === "number" && cost.input > 0);
-	return !charges || /-free$/i.test(model.id);
+	return !charges || /-free$/i.test(model.id) || (typeof model.modelID === "string" && /-free$/i.test(model.modelID));
 }
 
 /** An OpenCode model's ref in Orrery: `opencode/<provider>/<model>`. */
