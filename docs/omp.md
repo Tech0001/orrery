@@ -160,7 +160,11 @@ session these calls are refused, and the model has to rephrase them:
   goes on with the previous file) and a quoted path followed by ` all`;
 - a `file://` path the guard cannot read as a file;
 - a search or ast_edit glob with braces (`{a,b}`), or with `..` after a wildcard, and an ast_edit glob with a negation
-  (`!…`) or an extended pattern (`@(…)`, `+(…)`).
+  (`!…`) or an extended pattern (`@(…)`, `+(…)`);
+- an `ast_edit` over a whole repo whose tree links outside the agent's folder (a pnpm `node_modules`, a git worktree)
+  or holds a skill or OpenCode's config, even where OMP's own walk would skip those files (it skips `node_modules`,
+  `.git` and what `.gitignore` ignores, and follows no links): run it on a narrower folder, such as `src/`, or give it
+  the files.
 
 ## Upgrading OMP
 
