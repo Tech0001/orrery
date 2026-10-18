@@ -116,7 +116,9 @@ parts of the system prompt, after OpenCode's own prompt, your `AGENTS.md` files 
   of the session (each turn, each tool step, its subagents) carries the same bytes until the session is compacted, so
   the provider's cache of the prompt holds. After a compaction they are made again, with what memory has by then.
 - **A long session** runs on the view it started with, plus its own transcript. A session continued in a new OpenCode
-  (`-c`, `-s`, or reopened from the list) gets the view made again at its first request there.
+  (`-c`, `-s`, or reopened from the list) gets the view made again at its first request there, and so does a session
+  moved to another folder (`session_move`): the new folder's plugin makes the memory section again, with what memory
+  has by then, so that request misses the prompt cache once.
 - **Summaries first.** The first request waits up to 60 seconds for pending summaries (the footer says `summarizing
   before this message…`). If they are not done by then, a notice says the view has unsummarized lines, which the model
   can zoom. While summaries are failing or stopped it doesn't wait; their own notice says why.
