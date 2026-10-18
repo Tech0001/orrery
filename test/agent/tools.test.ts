@@ -39,6 +39,32 @@ describe("checkTools", () => {
 		expect(installSteps(codex, root, env)).toEqual([]);
 	});
 
+	it("finds OpenCode, asking its version in a scratch home; Orrery's plugin comes with each launch, and the last check is said", () => {
+		const seen = tempDir("orrery-opencode-seen-");
+		dirs.push(seen);
+		// The fake writes down the environment and folder it was started with.
+		const { env } = fakeBin({ opencode: `/usr/bin/env > ${JSON.stringify(join(seen, "env.txt"))}\npwd > ${JSON.stringify(join(seen, "cwd.txt"))}\n[ "$1" = "--version" ] && echo "opencode v2.0.30"` });
+		const full = { ...env, XDG_DATA_HOME: join(env.HOME, "real-data"), OPENCODE_CONFIG: "/theirs.json", ORRERY_AGENT: "Atlas" };
+		const tools = checkTools({ root, env: full });
+		const opencode = tools.find((t) => t.id === "opencode");
+		expect(tools.map((t) => t.id).slice(0, 5)).toEqual(["pi", "claude-code", "codex", "omp", "opencode"]);
+		expect(opencode).toMatchObject({ label: "OpenCode", path: join(env.PATH, "opencode"), version: "opencode v2.0.30", wiring: "memory", detail: "plugin is checked at the first launch" });
+		expect(codexVersion(opencode?.version)).toBe("2.0.30");
+		// OpenCode writes a log line even for --version: it ran with a scratch HOME, XDG folders and TMPDIR, and none of
+		// the person's OpenCode or Orrery variables; the scratch folder is gone.
+		const lines = readFileSync(join(seen, "env.txt"), "utf8").trim().split("\n");
+		const seenEnv = Object.fromEntries(lines.map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
+		const scratch = dirname(seenEnv.HOME as string);
+		// In Orrery's home (the default one under HOME here), not in a shared temporary folder; no config above it is read.
+		expect(dirname(scratch)).toBe(join(env.HOME, ".orrery", "scratch"));
+		expect(basename(scratch)).toMatch(/^opencode-/);
+		for (const key of ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TMPDIR"]) expect(dirname(seenEnv[key] as string), key).toBe(scratch);
+		expect([seenEnv.OPENCODE_CONFIG, seenEnv.ORRERY_AGENT, seenEnv.OPENCODE_DISABLE_PROJECT_CONFIG]).toEqual([undefined, undefined, "1"]);
+		expect(readFileSync(join(seen, "cwd.txt"), "utf8").trim().startsWith(realpathSync(dirname(scratch)))).toBe(true);
+		expect(() => lstatSync(scratch)).toThrow();
+		expect(installSteps(opencode as ToolCheck, root, env)).toEqual([]);
+	});
+
 	it("reads Codex's version number from its version line", () => {
 		expect(codexVersion("codex-cli 0.162.1")).toBe("0.162.1");
 		expect(codexVersion("codex-cli 0.163.0-alpha.2")).toBe("0.163.0-alpha.2");

@@ -1,7 +1,7 @@
 # Agents in Codex
 
-An agent can run in Codex as well as in pi, OMP and Claude Code, on the same memory (`~/.orrery/agents/<Name>/`).
-Monday in Claude Code and Tuesday in Codex are one memory. A Codex session of an agent gets the agent's instructions,
+An agent can run in Codex as well as in pi, OMP, Claude Code and OpenCode, on the same memory
+(`~/.orrery/agents/<Name>/`). Monday in Claude Code and Tuesday in Codex are one memory. A Codex session of an agent gets the agent's instructions,
 its memory view at the start and after each compaction, the memory tools, and Orrery's guard on every tool call, and
 each turn is recorded into the agent's memory.
 
@@ -41,7 +41,8 @@ own `AGENTS.md` loads as that project's rules.
 - `orrery agent` refuses an agent whose memory is still being built, and asks before opening an agent that is already
   open elsewhere (a second session is read-only), as for every tool.
 
-Moving an agent over: close it in pi, OMP or Claude Code, then `orrery agent <Name> --tool codex`. It can go back later.
+Moving an agent over: close it in pi, OMP, Claude Code or OpenCode, then `orrery agent <Name> --tool codex`. It can go
+back later.
 To turn existing Codex chats into an agent, see the README's Importing chats.
 
 ## What happens at launch
@@ -90,8 +91,8 @@ The instructions travel on Codex's command line, so they show in `ps`, like ever
   that Codex was on (you quit before a first prompt, say): use `orrery agent <Name> --tool codex -- resume` and pick
   the session from Codex's list.
 - One writer: an agent records in one place at a time. A Codex session of an agent that is open elsewhere (pi, OMP,
-  Claude Code, or another Codex session) is read-only: it gets the view and the memory tools, but nothing it says is
-  recorded, and it says which tool holds the agent. A session that has ended leaves its recorder finishing summaries;
+  Claude Code, OpenCode, or another Codex session) is read-only: it gets the view and the memory tools, but nothing it
+  says is recorded, and it says which tool holds the agent. A session that has ended leaves its recorder finishing summaries;
   a new session takes the agent over at once.
 - When you send your first prompt (Codex runs the session-start hook then, not when the TUI opens), a hook message
   shows the agent's state: `Orrery · <Name> · N msgs · recording`, or `read-only: this session is not recorded`, `not
@@ -168,6 +169,34 @@ and put words in your mouth in its own memory. The cost: a shell command that on
 `grep -r codex-hook src/` or a `git commit -m` whose message names one. Run those yourself, or search with your
 editor. A name built at run time still gets through.
 
+OpenCode's config and code are read-only to agents, as in every tool: no `apply_patch` writes `opencode.json` or
+`opencode.jsonc` in any folder, a `.opencode` folder, OpenCode's own config, cache and state folders, its database, or
+its system config. OpenCode loads plugins, runs commands and takes permissions from them, with no prompt, the next time
+it opens that folder. Skills in `.claude/skills` and `.agents/skills`, which OpenCode loads, may be written with
+`apply_patch`: a file it adds is judged by its text, and an update only when the skill can be read and neither it nor
+the lines the patch adds hold a line that opens front matter in a language other than YAML or JSON (`---js`, which
+OpenCode runs as code); a move into a skills folder is refused. Shell text that names OpenCode's config is refused,
+whatever the command, and so is shell text that names a skills folder, with one exception: Codex reads files only
+through its shell, so its own shell (`exec_command`, not an MCP tool's) may run one plain read of skill files. The
+command must be exactly one of these:
+
+- `cat <file>...`
+- `head <file>` or `head -n <N> <file>`
+- `tail <file>` or `tail -n <N> <file>`
+- `sed -n '<A>,<B>p' <file>`
+- `ls <folder>`
+- `wc <file>...`
+
+`<N>`, `<A>` and `<B>` are numbers. It is one simple command, with no other option (`wc -l`, `head -c`, `tail -f`,
+`sed -i` and `ls -la` are refused), no redirection, pipe, `;`, `&&`, `&`, newline or comment, and no variable,
+substitution, glob, brace, backslash or `~user`. A word may be quoted, but only around plain path characters (letters,
+digits and `. _ / @ + , = : % -`), and every way the guard reads the command (quotes, `$'…'`, braces, backslashes, `..`)
+must give the same read. Each file is then judged as a read, links followed, so every other rule still holds: a
+credential, a `.env`, a protected file or another agent's view, or a skill that is a link to one, is refused, and so is
+a command that also names OpenCode's config. Anything else that names a skills folder is refused, a `grep`, `git add`
+or commit message among them, and an agent in Codex can't read OpenCode's config files by name. You set up OpenCode for
+a project yourself. `AGENTS.md` stays writable.
+
 ### Its limits in Codex
 
 It is a seatbelt, not a sandbox. On top of the limits every tool has (see
@@ -212,6 +241,8 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
 - "read-only": the agent is open elsewhere, in the tool the notice names. `orrery status` shows it.
 - "not recording yet", or "did not answer": read `holder.log` in the agent's data folder, under `claude/`.
 - Summaries failing: check `orrery login`; switch the source with `orrery compactor <Name>`.
+- Summaries waiting: the agent's summary model is an OpenCode model (`opencode/…`, chosen in OpenCode), which works only
+  while the agent is open in OpenCode. Switch with `orrery compactor <Name>`.
 
 ## Files
 

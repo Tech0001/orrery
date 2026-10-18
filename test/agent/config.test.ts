@@ -108,6 +108,8 @@ describe("parseConfig", () => {
 		expect(() => parseConfig(`[agents.A]\nfolder = "/w"\nmodel = "a/b"\nhost = "ghost"\n`, "/x")).toThrow(/unknown host "ghost"/);
 		expect(() => parseConfig(`[agents."bad name"]\nfolder = "/w"\nmodel = "a/b"\n`, "/x")).toThrow(ConfigError);
 		expect(() => parseConfig(`[hosts.local]\nhost = "h"\nidentity_file = "k"\n`, "/x")).toThrow(/reserved/);
+		// "opencode" names OpenCode's models in summary refs (opencode/<provider>/<model>): no server of the config's may take it.
+		expect(() => parseConfig(`[[providers]]\nid = "opencode"\nbase_url = "http://x/v1"\nmodels = [ { id = "m", context_window = 1000, max_tokens = 100 } ]\n`, "/x")).toThrow('providers[0].id: "opencode" is reserved for OpenCode\'s models (opencode/<provider>/<model>)');
 		expect(() => parseConfig(`[agents.A]\nfolder = "/w"\nmodel = "a/b"\nnode_bytes = 10\n`, "/x")).toThrow(/nodeBytes/);
 	});
 

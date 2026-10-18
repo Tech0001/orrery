@@ -3,7 +3,9 @@
  * runs and where, what to ask first, fixing what can be fixed, and running the tool with the terminal attached, as the
  * agent (ORRERY_AGENT and a fresh ORRERY_AGENT_TOKEN, src/agent/pick.ts). `orrery agent` and the TUI's Enter and L use
  * it. Codex gets Orrery's hooks, memory tools and instructions on its command line (src/codex/launch.ts), after the hook
- * check (src/codex/check.ts). Node only.
+ * check (src/codex/check.ts). OpenCode gets Orrery's plugin through OPENCODE_CONFIG_CONTENT and the agent's token as a
+ * file, never in its environment (src/opencode/launch.ts, src/opencode/token-file.ts), after the plugin check
+ * (src/opencode/check.ts). Node only.
  */
 
 import { spawn } from "node:child_process";
@@ -14,13 +16,17 @@ import { agentMode, markedHere, readSetupMarker } from "../claude/view-file.ts";
 import { type CodexGate, codexHookGate, type probeHooks } from "../codex/check.ts";
 import { codexArgs, codexLaunch, misplacedSubcommand, orreryCommand, subcommandFirst } from "../codex/launch.ts";
 import { checkHookShell, NOISY_SHELL_QUESTION, noisyShellText, type ShellCheck } from "../codex/shell.ts";
+import { type OpenCodeGate, opencodePluginGate, type probePlugin } from "../opencode/check.ts";
+import { argsRefusal, inheritsOrreryPlugin, launchConfigContent, opencodeArgs, pluginFolder } from "../opencode/launch.ts";
+import { configContent } from "../opencode/options.ts";
+import { removeOnSignals, removeTokenFile, tokenFilePath, writeTokenFile } from "../opencode/token-file.ts";
 import { buildRunning, readBuild } from "./build.ts";
 import { findAgent, type HarnessConfig, insideFolder, type AgentConfig, type AgentLauncher, type AgentTool } from "./config.ts";
 import { type AgentRow, TOOL_LABELS } from "./overview.ts";
 import { AGENT_ENV, claimedBy, newToken, releaseClaim, TOKEN_ENV, workArea } from "./pick.ts";
 import { BINARIES, codexVersion, findOnPath, installSteps, orreryVersion, wiringRoot, type Runner, realRunner, runInstall, type ToolCheck } from "./tools.ts";
 
-const HINTS: Record<AgentTool, string> = { pi: "Get it at https://pi.dev", "claude-code": "Get it at https://claude.com/claude-code", codex: "Get it at https://github.com/openai/codex", omp: "Get it at https://omp.sh" };
+const HINTS: Record<AgentTool, string> = { pi: "Get it at https://pi.dev", "claude-code": "Get it at https://claude.com/claude-code", codex: "Get it at https://github.com/openai/codex", omp: "Get it at https://omp.sh", opencode: "Get it at https://opencode.ai" };
 
 export type LaunchFix = "create-folder" | "install-pi" | "install-omp" | "install-claude-code" | "claude-setup" | "claude-setup-mod";
 
@@ -57,7 +63,24 @@ export interface LaunchPlan {
 	 * the arguments Codex would get without Orrery, and the steps' notices about Orrery's flags (withoutOrrery drops both).
 	 */
 	readonly codex?: { readonly path: string; readonly version?: string; readonly config: readonly string[]; readonly plainArgs: readonly string[]; readonly notices: readonly string[] };
-	/** Codex started without Orrery's flags, after the person said yes (withoutOrrery): not recorded, no guard. */
+	/**
+	 * OpenCode with Orrery: the OpenCode the plugin check asks, its version number, the launch's config content and
+	 * plugin folder (the check is given the same), the file the plugin reads the agent's token from (runAgent writes it
+	 * just before OpenCode starts and removes it when OpenCode exits) and that token, and the arguments OpenCode would
+	 * get without Orrery (withoutOrrery), which also drops an Orrery plugin config this process inherited
+	 * (`inherited`). The token is in no environment: `env` carries only the config content.
+	 */
+	readonly opencode?: {
+		readonly path: string;
+		readonly version?: string;
+		readonly content: string;
+		readonly folder: string;
+		readonly tokenFile: string;
+		readonly token: string;
+		readonly plainArgs: readonly string[];
+		readonly inherited?: true;
+	};
+	/** Codex or OpenCode started without Orrery, after the person said yes (withoutOrrery): not recorded, no guard. */
 	readonly withoutOrrery?: true;
 }
 
@@ -76,6 +99,9 @@ export interface LaunchOptions {
 	/** The command words that run this Orrery's CLI, for Codex's hooks and MCP server (default orreryCommand; tests). */
 	readonly orrery?: readonly string[];
 }
+
+/** Ori starts OpenCode its own way (with config of its own, unchecked): an OpenCode agent opens directly. */
+const ORI_OPENCODE = (name: string) => `Orrery doesn't open OpenCode through Ori yet: open ${name} with launcher = "direct" (orrery agent set ${name} launcher direct), or in another tool.`;
 
 /** "<what>. Installing it will:\n  <step>\n  <step>\nInstall it now?": an install question that lists what a yes does first (spec §4.6). */
 function installQuestion(what: string, check: ToolCheck, options: { root?: string; env?: NodeJS.ProcessEnv }): string {
@@ -122,6 +148,7 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 		env: { [AGENT_ENV]: agent.name, [TOKEN_ENV]: newToken() },
 		agentDir: agent.dir,
 	};
+	if (tool === "opencode" && agent.launcher === "ori") return { ...base, steps: [], blocked: ORI_OPENCODE(agent.name) };
 	const ori = agent.launcher === "ori" ? findOnPath("ori", options.env ?? process.env) : undefined;
 	if (agent.launcher === "ori" && ori === undefined) return { ...base, steps: [], blocked: 'Ori isn\'t installed: see docs/ori.md (or set launcher = "direct")' };
 	if (check?.path === undefined) return { ...base, steps: [], blocked: `${label} is not on PATH (looked for "${BINARIES[tool]}"). ${HINTS[tool]}, or ${options.changeTool ?? "change the agent's tool with C"}.` };
@@ -138,6 +165,8 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 	if (misplaced !== undefined) {
 		return { ...base, steps: [], blocked: `Put Codex's subcommand first, or Codex won't apply Orrery's flags to the session (no memory, no guard): ${subcommandFirst(agent.name, base.args)}` };
 	}
+	const badArgs = tool === "opencode" ? argsRefusal(agent.name, base.args) : undefined;
+	if (badArgs !== undefined) return { ...base, steps: [], blocked: badArgs };
 	const steps: LaunchStep[] = [];
 	if (!existsSync(cwd)) steps.push({ text: `The folder ${cwd} does not exist. Create it?`, confirm: true, fix: "create-folder" });
 	if ((row.state === "open" || row.state === "working") && row.openIn !== undefined) {
@@ -160,10 +189,27 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 	// Codex: Orrery's hooks, memory tools and instructions go on its command line, before the person's arguments.
 	const codex = tool === "codex" ? codexLaunch(agent, options.orrery ?? orreryCommand(options.env ?? process.env)) : undefined;
 	for (const notice of codex?.notices ?? []) steps.push({ text: notice, confirm: false });
-	// The tool's arguments: for Codex, Orrery's flags where Codex reads them (codexArgs), around the person's.
-	const toolArgs = codex === undefined ? base.args : codexArgs(codex, base.args);
+	// The tool's arguments: for Codex, Orrery's flags where Codex reads them (codexArgs), around the person's; for
+	// OpenCode, --standalone and the folder (opencodeArgs).
+	const toolArgs = codex !== undefined ? codexArgs(codex, base.args) : tool === "opencode" ? opencodeArgs(cwd, base.args) : base.args;
 	const version = codexVersion(check.version);
 	const codexPlan = (prefix: readonly string[]) => (codex === undefined ? {} : { codex: { path: check.path as string, ...(version === undefined ? {} : { version }), config: codex.config, plainArgs: [...prefix, ...base.args], notices: codex.notices } });
+	if (tool === "opencode") {
+		// The token goes to the plugin as a file, so neither it nor ORRERY_AGENT is in OpenCode's environment, not even
+		// inherited: a tool the model starts there (pi, another OpenCode) is not the agent by this launch. Another OpenCode
+		// inherits OPENCODE_CONFIG_CONTENT, token file and all, but finds the token claimed by this one's server
+		// (src/opencode/plugin.ts).
+		const env = options.env ?? process.env;
+		const token = base.env[TOKEN_ENV] as string;
+		const tokenFile = tokenFilePath(env);
+		const folder = pluginFolder(env, options.root ?? wiringRoot(env).root);
+		const content = configContent(folder, { agent: agent.name, tokenFile });
+		// The person's own config content stays, with Orrery's plugin added; the plugin check loads Orrery's alone.
+		const launched = launchConfigContent(env.OPENCODE_CONFIG_CONTENT, content);
+		if (launched.unread !== undefined) steps.push({ text: `Your OPENCODE_CONFIG_CONTENT ${launched.unread}, so OpenCode starts with Orrery's plugin config alone, without yours.`, confirm: false });
+		const opencode = { path: check.path, ...(version === undefined ? {} : { version }), content, folder, tokenFile, token, plainArgs: [...base.args], ...(inheritsOrreryPlugin(env) ? { inherited: true as const } : {}) };
+		return { ...base, command: check.path, args: toolArgs, env: { OPENCODE_CONFIG_CONTENT: launched.content }, unsetEnv: [AGENT_ENV, TOKEN_ENV], steps, opencode };
+	}
 	if (ori !== undefined) {
 		if (tool === "omp") steps.push({ text: 'Ori 0.15.7 can\'t start OMP: its model registration fails before startup. See docs/ori.md, or set launcher = "direct".', confirm: false });
 		steps.push({ text: `Launching ${label} through Ori in ${cwd}`, confirm: false });
@@ -199,12 +245,33 @@ export async function checkCodexHooks(
 }
 
 /**
- * The plan as plain Codex, after the person said yes to starting without Orrery: none of Orrery's flags, and no
- * ORRERY_AGENT or token, not even ones this process inherited (a session that records nothing must not hand an agent
- * to a tool it starts). It opens no agent, so it asks nothing about the agent (asAgent: a second session) and says
- * nothing about Orrery's flags; its callers skip a remote takeover too.
+ * Before OpenCode opens an agent: the plugin check (src/opencode/check.ts; at once for an OpenCode this Orrery verified
+ * before), `onCheck` hearing when OpenCode is asked (a private server starts, about a second). Ok at once for any other plan.
+ */
+export async function checkOpenCodePlugin(plan: LaunchPlan, options: { readonly env?: NodeJS.ProcessEnv; readonly probe?: typeof probePlugin; readonly onCheck?: (text: string) => void } = {}): Promise<OpenCodeGate> {
+	if (plan.opencode === undefined) return { ok: true };
+	const { path, version, content, folder } = plan.opencode;
+	return opencodePluginGate({ path, ...(version === undefined ? {} : { version }), content, folder }, {
+		orrery: orreryVersion(),
+		...(options.env === undefined ? {} : { env: options.env }),
+		...(options.probe === undefined ? {} : { probe: options.probe }),
+		...(options.onCheck === undefined ? {} : { onCheck: () => options.onCheck?.(`Checking that Orrery's plugin loads in OpenCode${version === undefined ? "" : ` ${version}`}…`) }),
+	});
+}
+
+/**
+ * The plan as plain Codex or OpenCode, after the person said yes to starting without Orrery: none of Orrery's flags or
+ * config, and no ORRERY_AGENT or token, not even ones this process inherited (a session that records nothing must not
+ * hand an agent to a tool it starts); OpenCode as `opencode [the person's arguments]` would start it. It opens no
+ * agent, so it asks nothing about the agent (asAgent: a second session) and says nothing about Orrery's flags; its
+ * callers skip a remote takeover too.
  */
 export function withoutOrrery(plan: LaunchPlan): LaunchPlan {
+	if (plan.opencode !== undefined) {
+		const { opencode, ...rest } = plan;
+		const unsetEnv = [AGENT_ENV, TOKEN_ENV, ...(opencode.inherited === true ? ["OPENCODE_CONFIG_CONTENT"] : [])];
+		return { ...rest, args: [...opencode.plainArgs], env: {}, unsetEnv, steps: plan.steps.filter((step) => step.asAgent !== true), withoutOrrery: true };
+	}
 	if (plan.codex === undefined) return plan;
 	const { codex, ...rest } = plan;
 	const steps = plan.steps.filter((step) => step.asAgent !== true && (step.confirm || !codex.notices.includes(step.text)));
@@ -267,15 +334,28 @@ export function runTool(plan: LaunchPlan, options: { spawn?: typeof spawn; env?:
 
 /**
  * Runs the plan's tool, then removes the claim its token made (src/agent/pick.ts), however the tool ended. Says which
- * process had claimed it (`claimedBy`: the tool's own process, as the agent), when one had.
+ * process had claimed it (`claimedBy`: the tool's own process, as the agent), when one had. For OpenCode the token is
+ * written to its file first and the file removed after, and on SIGTERM or SIGHUP meanwhile (src/opencode/token-file.ts).
  */
 export async function runAgent(plan: LaunchPlan, run: (plan: LaunchPlan) => Promise<ToolExit>): Promise<ToolExit & { readonly claimedBy?: number }> {
-	const token = plan.env[TOKEN_ENV] ?? "";
+	const token = plan.opencode?.token ?? plan.env[TOKEN_ENV] ?? "";
+	const tokenFile = plan.opencode?.tokenFile;
+	let undo: (() => void) | undefined;
 	try {
+		if (tokenFile !== undefined) {
+			undo = removeOnSignals(tokenFile);
+			try {
+				writeTokenFile(tokenFile, token);
+			} catch (error) {
+				throw new Error(`OpenCode was not started: the token file for ${plan.agent} could not be written (${error instanceof Error ? error.message : String(error)}).`);
+			}
+		}
 		const exit = await run(plan);
 		const by = claimedBy(plan.agentDir, token);
 		return by === undefined ? exit : { ...exit, claimedBy: by };
 	} finally {
+		undo?.();
+		if (tokenFile !== undefined) removeTokenFile(tokenFile);
 		releaseClaim(plan.agentDir, token);
 	}
 }

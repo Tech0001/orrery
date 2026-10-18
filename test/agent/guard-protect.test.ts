@@ -7,11 +7,12 @@ import { Agent } from "../../src/agent/agent.ts";
 import { ConfigError, type HarnessConfig, parseConfig } from "../../src/agent/config.ts";
 import { newConfigText } from "../../src/agent/config-edit.ts";
 import { checkResolvedPath, durablePreCheck } from "../../src/agent/guard.ts";
-import { guardOmpToolCall, guardToolCall } from "../../src/agent/guard-paths.ts";
-import { checkToolCall } from "../../src/agent/guard-rules.ts";
+import { guardOmpToolCall, guardToolCall, openCodeCredentials, type PathGuardOptions, realTarget } from "../../src/agent/guard-paths.ts";
+import { checkToolCall, OPENCODE_COMMAND, OPENCODE_READ_ONLY, openCodeLoads, openCodeRule, SKILL_SHELL } from "../../src/agent/guard-rules.ts";
 import { claudeGuard } from "../../src/claude/guard.ts";
 import { runHook } from "../../src/claude/hooks.ts";
 import { codexGuard } from "../../src/codex/guard.ts";
+import { openCodeGuard, openCodePermission, openCodeToolPath } from "../../src/opencode/guard.ts";
 import { createOrrery } from "../../src/pi/index.ts";
 import { fakeOmp, ompCleanup, ompOrrery, track } from "../omp/world.ts";
 import { scratchHome, summarySourcesFor } from "../pi/world.ts";
@@ -711,6 +712,13 @@ describe("[guard] protect and .env: one table through every gate", () => {
 			{ name: "a project's .npmrc", refused: false, path: join(t.atlas, ".npmrc"), command: "cat .npmrc", glob: "**/.npmrc" },
 			{ name: "a project's .wrangler", refused: false, path: join(t.atlas, ".wrangler", "state", "x"), command: "rm -rf .wrangler", glob: ".wrangler/**" },
 			{ name: "the tools' own commands", refused: false, command: "npm install && cargo build && gcloud auth list && az login && wrangler dev && pass show x && op read x" },
+			// OpenCode's login store, its database (with its WAL and shared memory, a release channel's too), in every gate.
+			{ name: "OpenCode's database", refused: true, path: join(t.home, ".local", "share", "opencode", "opencode.db"), command: `sqlite3 ${join(t.home, ".local", "share", "opencode", "opencode.db")} .dump` },
+			{ name: "OpenCode's database's WAL", refused: true, path: join(t.home, ".local", "share", "opencode", "opencode.db-wal"), command: `cat ${join(t.home, ".local", "share", "opencode", "opencode.db-wal")}` },
+			{ name: "OpenCode's database from ~", refused: true, home: true, path: "~/.local/share/opencode/opencode.db", command: "cp ~/.local/share/opencode/opencode.db /tmp/x" },
+			{ name: "a release channel's OpenCode database", refused: true, path: join(t.home, ".local", "share", "opencode", "opencode-beta.db"), command: `cat ${join(t.home, ".local", "share", "opencode", "opencode-beta.db")}` },
+			{ name: "OpenCode's database where XDG_DATA_HOME puts it", refused: true, path: join(t.root, "xdg-data", "opencode", "opencode.db"), command: `cat ${join(t.root, "xdg-data", "opencode", "opencode.db")}` },
+			{ name: "a project's own opencode folder", refused: false, path: join(t.atlas, "src", "a.ts"), command: "ls src/opencode && cat opencode-notes.db.md" },
 			// Orrery's hook plumbing, which only its hooks run (a hook run by hand could put made-up words in the agent's memory).
 			{ name: "a hook run by hand", refused: true, command: "echo '{}' | orrery codex-hook user-prompt-submit" },
 			{ name: "Claude Code's hook run by hand", refused: true, command: "orrery claude-hook stop < x.json" },
@@ -869,12 +877,63 @@ describe("[guard] protect and .env: one table through every gate", () => {
 		return out;
 	};
 
-	it("gets the same verdict from pi, OMP, Claude Code, Codex and orrery run for every case", async () => {
+	/**
+	 * OpenCode (src/opencode/guard.ts): its shell (a command, and a workdir), the folder a session_move takes it to, an MCP
+	 * shell with a cwd; read, grep, glob, an MCP read and, for what is refused, write, edit, every patch form (Add,
+	 * Update, Delete, Move to, a move away from the file, a heredoc) and patch text under an MCP tool's name; Code Mode's
+	 * program and shells under other names; glob's pattern and grep's include. Then its second layer: what read and edit
+	 * ask leave for, as OpenCode placed it.
+	 */
+	const opencode: Gate = async (t, c) => {
+		const out: (string | undefined)[] = [];
+		const call = (tool: string, input: unknown) => out.push(openCodeGuard(tool, input, t.options, "ses_a"));
+		const patch = (...lines: string[]) => call("patch", { patchText: ["*** Begin Patch", ...lines, "*** End Patch"].join("\n") });
+		if (c.cwd !== undefined) {
+			call("shell", { command: "ls", workdir: c.cwd });
+			call("opencode_session_move", { directory: c.cwd });
+			call("box_run", { command: "ls", cwd: c.cwd });
+		}
+		if (c.path !== undefined) {
+			const placed = openCodeToolPath(c.path, t.options.cwd, t.home);
+			call("read", { path: c.path });
+			call("grep", { pattern: "x", path: c.path });
+			call("glob", { pattern: "*", path: c.path });
+			call("fs_read_file", { path: c.path });
+			out.push(openCodePermission("read", [placed], t.options));
+			if (c.refused) {
+				call("write", { path: c.path, content: "x" });
+				call("edit", { path: c.path, oldString: "a", newString: "b" });
+				patch(`*** Add File: ${c.path}`, "+x");
+				patch(`*** Update File: ${c.path}`, "@@", "-a", "+b");
+				patch(`*** Delete File: ${c.path}`);
+				patch("*** Update File: src/a.ts", `*** Move to: ${c.path}`, "@@", "-a", "+b");
+				patch(`*** Update File: ${c.path}`, "*** Move to: src/moved.ts", "@@", "-a", "+b");
+				call("patch", { patchText: `cat <<'EOF'\n*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch\nEOF` });
+				call("box_apply", { diff: `*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch` });
+				out.push(openCodePermission("edit", [placed], t.options));
+			}
+		}
+		if (c.command !== undefined) {
+			call("shell", { command: c.command });
+			call("shell", { command: c.command, workdir: "." });
+			call("execute", { code: c.command });
+			call("box_run", { command: c.command });
+			call("box_exec", { cmd: c.command });
+			call("box_shell", { input: c.command });
+		}
+		if (c.glob !== undefined) {
+			call("glob", { pattern: c.glob });
+			call("grep", { pattern: "x", include: c.glob });
+		}
+		return out;
+	};
+
+	it("gets the same verdict from pi, OMP, Claude Code, Codex, OpenCode and orrery run for every case", async () => {
 		const t = protectWorld();
 		writeFileSync(join(t.atlas, ".env.dist"), "KEY=");
 		const disagree: string[] = [];
 		for (const c of table(t)) {
-			for (const [gate, judge] of Object.entries({ pi, omp, claude, codex, durable })) {
+			for (const [gate, judge] of Object.entries({ pi, omp, claude, codex, opencode, durable })) {
 				const verdicts = await judge(t, c);
 				verdicts.forEach((verdict, at) => {
 					if ((verdict !== undefined) !== c.refused) disagree.push(`${gate} #${at} on ${c.name}: ${verdict ?? "allowed"}`);
@@ -882,6 +941,32 @@ describe("[guard] protect and .env: one table through every gate", () => {
 			}
 		}
 		expect(disagree).toEqual([]);
+	});
+});
+
+describe("OpenCode's login store in every gate", () => {
+	it("refuses a database OPENCODE_DB names, reads and writes, through every gate's credential list", async () => {
+		const t = protectWorld();
+		const custom = join(t.root, "elsewhere", "oc-custom.db");
+		mkdirSync(join(t.root, "elsewhere"), { recursive: true });
+		writeFileSync(custom, "db");
+		const credentials = openCodeCredentials({ OPENCODE_DB: custom }, t.home);
+		expect(credentials).toContain(custom);
+		const options = { ...t.options, credentials };
+		const durable = { folder: t.atlas, allowedRoots: [t.atlas, t.root], cwd: t.atlas, foreignViews: [] as string[], home: t.home, credentials };
+		const env = new NodeExecutionEnv({ cwd: t.atlas });
+		for (const verdict of [
+			guardToolCall("read", { path: custom }, options),
+			guardToolCall("write", { path: custom, content: "x" }, options),
+			guardOmpToolCall("read", { path: custom }, options),
+			claudeGuard("Read", { file_path: custom }, options),
+			codexGuard("view_image", { path: custom }, options),
+			openCodeGuard("read", { path: custom }, options, "ses_a"),
+			await checkResolvedPath(env, custom, "read", durable, ctx),
+			await checkResolvedPath(env, custom, "write", durable, ctx),
+		]) {
+			expect(verdict).toMatch(SENSITIVE);
+		}
 	});
 });
 
@@ -1048,5 +1133,750 @@ describe("[guard] protect: speed", () => {
 			expect(large / Math.max(small, 20), `${JSON.stringify(unit)}: ${small.toFixed(0)} ms -> ${large.toFixed(0)} ms`).toBeLessThan(10);
 			expect(large, `${JSON.stringify(unit)} backstop`).toBeLessThan(10_000);
 		}
+	});
+});
+
+describe("OpenCode's config and code: one table through every gate (writes and shell text refused, reads allowed)", () => {
+	/** protectWorld, with what OpenCode loads in Atlas's folder and in home, home an allowed root (only the OpenCode rule refuses there). */
+	function openCodeWorld() {
+		const t = protectWorld();
+		const files = [
+			...["opencode.json", "sub/opencode.jsonc", ".opencode/plugins/p.ts", ".opencode/package.json", ".claude/skills/s/SKILL.md", ".agents/skills/s/SKILL.md", ".claude/settings.json", "AGENTS.md", "skills/x.md", "opencode.json.bak"].map((file) => join(t.atlas, file)),
+			...[".config/opencode/opencode.json", ".config/opencode/cli.json", ".cache/opencode/npm/x/index.js", ".local/state/opencode/kv.json", ".local/share/opencode/opencode.db", ".opencode/bin/opencode", ".config/opencode-notes.txt"].map((file) => join(t.home, file)),
+		];
+		for (const file of files) {
+			mkdirSync(join(file, ".."), { recursive: true });
+			writeFileSync(file, "x");
+		}
+		symlinkSync(join(t.atlas, "opencode.json"), join(t.atlas, "settings.json"));
+		symlinkSync(join(t.atlas, ".opencode"), join(t.atlas, "tools"));
+		// No environment: OpenCode's own folders from this home alone.
+		const openCode = openCodeRule({}, t.home, realTarget);
+		const options = { ...t.options, allowedRoots: [...t.options.allowedRoots, t.home], openCode };
+		return { ...t, options, openCode };
+	}
+	type OcWorld = ReturnType<typeof openCodeWorld>;
+
+	interface Case {
+		readonly name: string;
+		/** Whether writes to it and shell text naming it are refused (reads never are). */
+		readonly refused: boolean;
+		readonly path?: string;
+		readonly command?: string;
+	}
+
+	function table(t: OcWorld): Case[] {
+		const a = (file: string) => join(t.atlas, file);
+		const h = (file: string) => join(t.home, file);
+		return [
+			{ name: "opencode.json in the agent's folder", refused: true, path: a("opencode.json"), command: "echo '{}' > opencode.json" },
+			{ name: "opencode.jsonc in a folder below", refused: true, path: a("sub/opencode.jsonc"), command: "cat sub/opencode.jsonc" },
+			{ name: "a plugin in .opencode", refused: true, path: a(".opencode/plugins/p.ts"), command: "cp p.ts .opencode/plugins/" },
+			{ name: "a new plugin in .opencode", refused: true, path: a(".opencode/plugins/new.ts") },
+			{ name: ".opencode's package.json", refused: true, path: a(".opencode/package.json"), command: "cat ./.opencode/package.json" },
+			{ name: "a link to opencode.json", refused: true, path: a("settings.json") },
+			{ name: "a path through a link to .opencode", refused: true, path: a("tools/plugins/q.ts") },
+			{ name: "another case", refused: true, path: a(".OpenCode/Plugins/x.ts"), command: "ls .OpenCode" },
+			{ name: "a parent's opencode.json by ..", refused: true, path: a("src/../../opencode.json"), command: "mv x ../opencode.json" },
+			{ name: "OpenCode's config folder", refused: true, path: h(".config/opencode/opencode.json"), command: "cat ~/.config/opencode/opencode.json" },
+			{ name: "OpenCode's cli.json", refused: true, path: h(".config/opencode/cli.json"), command: `cat ${h(".config/opencode/cli.json")}` },
+			{ name: "OpenCode's plugin cache", refused: true, path: h(".cache/opencode/npm/x/index.js"), command: "ls $HOME/.cache/opencode/npm" },
+			{ name: "OpenCode's state", refused: true, path: h(".local/state/opencode/kv.json"), command: "cat ~/.local/state/opencode/kv.json" },
+			{ name: "OpenCode's own binary in ~/.opencode", refused: true, path: h(".opencode/bin/opencode"), command: "cp x ~/.opencode/bin/opencode" },
+			{ name: "brace-split name", refused: true, command: "cp x opencode.{json,x}" },
+			{ name: "$'…' escape", refused: true, command: "cp x $'\\x2eopencode'/plugins/y.ts" },
+			{ name: "a quoted name", refused: true, command: 'tee "opencode.jsonc" < x' },
+			{ name: "the system folder", refused: true, command: "sudo cp x /etc/opencode/opencode.json" },
+			{ name: "instructions (AGENTS.md)", refused: false, path: a("AGENTS.md"), command: "echo hi >> AGENTS.md" },
+			{ name: "Claude Code's own settings", refused: false, path: a(".claude/settings.json"), command: "cat .claude/settings.json" },
+			{ name: "a skills folder of the project's", refused: false, path: a("skills/x.md"), command: "cat skills/x.md" },
+			{ name: "a look-alike name", refused: false, path: a("opencode.json.bak"), command: "cat opencode.json.bak && ls src/opencode && npm run opencode-e2e" },
+			{ name: "a look-alike beside OpenCode's config folder", refused: false, path: h(".config/opencode-notes.txt"), command: `cat ${h(".config/opencode-notes.txt")} ~/.config/opencode-notes.txt $HOME/.config/opencode.old` },
+		];
+	}
+
+	/** Each gate's verdicts: reads (always let through) and writes and commands (refused as the case says). */
+	type Gate = (t: OcWorld, c: Case) => Promise<{ reads: (string | undefined)[]; writes: (string | undefined)[] }>;
+
+	const pi: Gate = async (t, c) => {
+		const reads: (string | undefined)[] = [];
+		const writes: (string | undefined)[] = [];
+		const call = (into: (string | undefined)[], tool: string, input: Record<string, unknown>) => into.push(guardToolCall(tool, input, t.options));
+		if (c.path !== undefined) {
+			call(reads, "read", { path: c.path });
+			call(writes, "write", { path: c.path, content: "x" });
+			call(writes, "edit", { path: c.path, edits: [] });
+		}
+		if (c.command !== undefined) call(writes, "bash", { command: c.command });
+		return { reads, writes };
+	};
+
+	const omp: Gate = async (t, c) => {
+		const reads: (string | undefined)[] = [];
+		const writes: (string | undefined)[] = [];
+		const call = (into: (string | undefined)[], tool: string, input: Record<string, unknown>) => into.push(guardOmpToolCall(tool, input, t.options));
+		if (c.path !== undefined) {
+			call(reads, "read", { path: c.path });
+			call(writes, "write", { path: c.path, content: "x" });
+			call(writes, "edit", { path: c.path, input: "PUT 1\n+x\n" });
+			call(writes, "edit", { input: `[${c.path}#1a2b]\nPUT 1\n+x\n` });
+			call(writes, "ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [c.path] });
+		}
+		if (c.command !== undefined) {
+			call(writes, "bash", { command: c.command });
+			call(writes, "eval", { language: "sh", code: c.command });
+		}
+		return { reads, writes };
+	};
+
+	const claude: Gate = async (t, c) => {
+		const reads: (string | undefined)[] = [];
+		const writes: (string | undefined)[] = [];
+		const call = (into: (string | undefined)[], tool: string, input: Record<string, unknown>) => into.push(claudeGuard(tool, input, t.options));
+		if (c.path !== undefined) {
+			call(reads, "Read", { file_path: c.path });
+			call(reads, "mcp__files__read_file", { path: c.path });
+			call(writes, "Write", { file_path: c.path, content: "x" });
+			call(writes, "Edit", { file_path: c.path, old_string: "a", new_string: "b" });
+			call(writes, "MultiEdit", { file_path: c.path, edits: [] });
+			call(writes, "NotebookEdit", { notebook_path: c.path, new_source: "x" });
+			call(writes, "mcp__files__write_file", { path: c.path, content: "x" });
+			// A tool named for neither, its path under keys no heuristic reads as one.
+			call(writes, "mcp__box__put", { to: c.path, body: "x" });
+			call(writes, "mcp__box__store", { item: { where: [c.path] } });
+		}
+		if (c.command !== undefined) {
+			call(writes, "Bash", { command: c.command });
+			call(writes, "mcp__shell__run", { command: c.command });
+		}
+		return { reads, writes };
+	};
+
+	const codex: Gate = async (t, c) => {
+		const reads: (string | undefined)[] = [];
+		const writes: (string | undefined)[] = [];
+		const call = (into: (string | undefined)[], tool: string, input: Record<string, unknown>) => into.push(codexGuard(tool, input, t.options));
+		const patch = (...lines: string[]) => call(writes, "apply_patch", { command: ["*** Begin Patch", ...lines, "*** End Patch"].join("\n") });
+		if (c.path !== undefined) {
+			call(reads, "view_image", { path: c.path });
+			call(reads, "mcp__files__read_file", { path: c.path });
+			patch(`*** Add File: ${c.path}`, "+x");
+			patch(`*** Update File: ${c.path}`, "@@", "-a", "+b");
+			patch(`*** Delete File: ${c.path}`);
+			patch("*** Update File: src/a.ts", `*** Move to: ${c.path}`, "@@", "-a", "+b");
+			call(writes, "Bash", { command: `apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch\nEOF` });
+			call(writes, "mcp__box__apply", { diff: `*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch` });
+			call(writes, "mcp__box__put", { to: c.path });
+		}
+		if (c.command !== undefined) {
+			call(writes, "Bash", { command: c.command });
+			call(writes, "mcp__box__exec_command", { cmd: c.command });
+		}
+		return { reads, writes };
+	};
+
+	const opencode: Gate = async (t, c) => {
+		const reads: (string | undefined)[] = [];
+		const writes: (string | undefined)[] = [];
+		const call = (into: (string | undefined)[], tool: string, input: unknown) => into.push(openCodeGuard(tool, input, t.options, "ses_a"));
+		const patch = (...lines: string[]) => call(writes, "patch", { patchText: ["*** Begin Patch", ...lines, "*** End Patch"].join("\n") });
+		if (c.path !== undefined) {
+			const placed = openCodeToolPath(c.path, t.options.cwd, t.home);
+			call(reads, "read", { path: c.path });
+			call(reads, "fs_read_file", { path: c.path });
+			reads.push(openCodePermission("read", [placed], t.options));
+			call(writes, "write", { path: c.path, content: "x" });
+			call(writes, "edit", { path: c.path, oldString: "a", newString: "b" });
+			patch(`*** Add File: ${c.path}`, "+x");
+			patch(`*** Delete File: ${c.path}`);
+			patch("*** Update File: src/a.ts", `*** Move to: ${c.path}`, "@@", "-a", "+b");
+			call(writes, "box_apply", { diff: `*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch` });
+			call(writes, "box_put", { target_file: c.path });
+			call(writes, "box_store", { file: { path: c.path } });
+			writes.push(openCodePermission("edit", [placed], t.options));
+		}
+		if (c.command !== undefined) {
+			call(writes, "shell", { command: c.command });
+			call(writes, "execute", { code: c.command });
+			call(writes, "box_run", { command: c.command });
+			call(writes, "box_exec", { args: [c.command] });
+		}
+		return { reads, writes };
+	};
+
+	const durable: Gate = async (t, c) => {
+		const options = { folder: t.atlas, allowedRoots: t.options.allowedRoots, cwd: t.atlas, foreignViews: [] as string[], home: t.home, protect: [join(t.home, "finance"), ...t.protect.slice(1)], openCode: t.openCode };
+		const env = new NodeExecutionEnv({ cwd: t.atlas });
+		const reads: (string | undefined)[] = [];
+		const writes: (string | undefined)[] = [];
+		if (c.path !== undefined) {
+			const path = c.path;
+			reads.push(durablePreCheck({ name: "read", arguments: { path } }, options) ?? (await checkResolvedPath(env, path, "read", options, ctx)));
+			for (const tool of ["write", "edit"]) writes.push(durablePreCheck({ name: tool, arguments: { path } }, options) ?? (await checkResolvedPath(env, path, "write", options, ctx)));
+		}
+		if (c.command !== undefined) writes.push(durablePreCheck({ name: "bash", arguments: { command: c.command } }, options));
+		return { reads, writes };
+	};
+
+	it("gets the same verdict from pi, OMP, Claude Code, Codex, OpenCode and orrery run for every case", async () => {
+		const t = openCodeWorld();
+		const disagree: string[] = [];
+		for (const c of table(t)) {
+			for (const [gate, judge] of Object.entries({ pi, omp, claude, codex, opencode, durable })) {
+				const { reads, writes } = await judge(t, c);
+				reads.forEach((verdict, at) => {
+					if (verdict !== undefined) disagree.push(`${gate} read #${at} on ${c.name}: ${verdict}`);
+				});
+				writes.forEach((verdict, at) => {
+					if ((verdict !== undefined) !== c.refused) disagree.push(`${gate} #${at} on ${c.name}: ${verdict ?? "allowed"}`);
+				});
+			}
+		}
+		expect(disagree).toEqual([]);
+	});
+
+	it("says why: OpenCode loads and runs it, and file tools may read it", () => {
+		const t = openCodeWorld();
+		expect(guardToolCall("write", { path: join(t.atlas, ".opencode", "plugins", "p.ts"), content: "x" }, t.options)).toBe(OPENCODE_READ_ONLY(join(t.atlas, ".opencode", "plugins", "p.ts")));
+		expect(guardToolCall("bash", { command: "cat opencode.json" }, t.options)).toBe(OPENCODE_COMMAND);
+		expect(OPENCODE_READ_ONLY("x")).toMatch(/^x is OpenCode's config or code \(.*\), which OpenCode loads and runs: agents may read it, not change it\.$/);
+	});
+
+	it("finds OpenCode's own folders where the environment moves them, and by their real path", () => {
+		const t = openCodeWorld();
+		const moved = join(t.root, "elsewhere");
+		mkdirSync(join(moved, "cfg", "opencode"), { recursive: true });
+		const env = { OPENCODE_CONFIG_DIR: join(moved, "oc-config"), XDG_CONFIG_HOME: join(moved, "cfg"), XDG_CACHE_HOME: join(moved, "cache"), XDG_STATE_HOME: join(moved, "state"), XDG_DATA_HOME: join(moved, "data"), OPENCODE_CONFIG: join(moved, "one.json"), OPENCODE_DB: "custom.db" };
+		const rule = openCodeRule(env, t.home, realTarget);
+		for (const path of [join(moved, "oc-config", "plugins", "x.ts"), join(moved, "cfg", "opencode", "cli.json"), join(moved, "cache", "opencode", "bin", "rg"), join(moved, "state", "opencode", "kv.json"), join(moved, "data", "opencode", "opencode.db"), join(moved, "data", "opencode", "custom.db"), join(moved, "one.json"), join(t.home, ".config", "opencode", "x")]) {
+			expect(openCodeLoads(path, rule), path).toBe(true);
+		}
+		expect(openCodeLoads(join(moved, "data", "opencode", "log", "x.log"), rule)).toBe(false);
+		expect(openCodeLoads(join(t.atlas, "opencode.db"), rule)).toBe(false);
+		// Shell text naming a moved folder by its path is refused too.
+		const folder = join(moved, "oc-config");
+		const spellings = [folder, folder.toUpperCase(), folder.replace(/\//g, "//"), folder.replace("/oc-config", "/./oc-config"), folder.replace("/oc-config", "/x/../oc-config"), folder.replace("/oc-config", "/{oc-config,y}"), folder.replace("/oc-config", "/'oc-config'")];
+		for (const spelt of spellings) {
+			for (const end of ["", "/", "/x", " && echo", '"', "'", ";", "|", ")", "*", "?", "[ab]", "$x", "~", "+", "@", "#", "%", "\\"]) {
+				const command = `cat ${spelt}${end}`;
+				expect(guardToolCall("bash", { command }, { ...t.options, openCode: rule }), command).toBe(OPENCODE_COMMAND);
+			}
+		}
+		// ... by its path, not by a look-alike beside it: a letter, digit, "-", "_" or "." carries the name on.
+		for (const command of [`ls ${folder}-old`, `ls ${folder}_2 ${folder}x`, `cat ${folder}.md ${join(moved, "one.json")}5`]) {
+			expect(guardToolCall("bash", { command }, { ...t.options, openCode: rule }), command).toBeUndefined();
+		}
+		// A moved folder under home, spelt from home as a shell may spell it.
+		const inHome = openCodeRule({ OPENCODE_CONFIG_DIR: join(t.home, "oc-config") }, t.home, realTarget);
+		for (const command of ["ls ~/oc-config", "cat $HOME/oc-config/x", 'cat "${HOME}/oc-config"', `ls ${join(t.home, "oc-config")}`]) {
+			expect(guardToolCall("bash", { command }, { ...t.options, openCode: inHome }), command).toBe(OPENCODE_COMMAND);
+		}
+		expect(guardToolCall("bash", { command: "ls ~/oc-config-old $HOME/oc-configs" }, { ...t.options, openCode: inHome })).toBeUndefined();
+		// A home reached through a link: its folders by their real path too.
+		symlinkSync(t.home, join(t.root, "home-link"));
+		const linked = openCodeRule({}, join(t.root, "home-link"), realTarget);
+		expect(openCodeLoads(join(t.home, ".config", "opencode", "opencode.json"), linked)).toBe(true);
+	});
+
+	it("leaves OpenCode's Plan folder writable by its plan files only, whatever a path does with .., case or a link", () => {
+		const t = openCodeWorld();
+		const plan = join(t.home, ".opencode", "plan");
+		expect(openCodeLoads(join(plan, "steps.md"), t.openCode)).toBe(false);
+		for (const path of [join(plan, "..", "plugins", "x.ts"), join(plan, "x", ".opencode", "plugins", "p.ts"), join(plan, "opencode.json"), join(t.home, ".opencode", "Plan2", "x.md"), join(t.home, ".opencode", "planx")]) {
+			expect(openCodeLoads(path, t.openCode), path).toBe(true);
+		}
+		// A plan folder planted as a link to ~/.opencode: where a write really lands is judged too.
+		mkdirSync(join(t.home, ".opencode"), { recursive: true });
+		symlinkSync(join(t.home, ".opencode"), plan);
+		expect(guardToolCall("write", { path: join(plan, "plugins", "x.ts"), content: "x" }, t.options)).toMatch(/OpenCode's config or code/);
+	});
+});
+
+describe("OpenCode's skills: written in every gate, never with front matter that may run as code, and fail-closed", () => {
+	const YAML = "---\nname: tidy\ndescription: Tidies the notes.\n---\nTidy the notes.\n";
+	const JS = "---js\n({ name: require('child_process').execSync('id').toString() })\n---\nTidy.\n";
+
+	function skillWorld() {
+		const t = protectWorld();
+		for (const file of [".claude/skills/s/SKILL.md", ".agents/skills/s/SKILL.md", "notes.md"]) {
+			mkdirSync(join(t.atlas, file, ".."), { recursive: true });
+			writeFileSync(join(t.atlas, file), YAML);
+		}
+		mkdirSync(join(t.home, ".claude", "skills", "h"), { recursive: true });
+		writeFileSync(join(t.home, ".claude", "skills", "h", "SKILL.md"), YAML);
+		symlinkSync(join(t.atlas, ".claude", "skills", "s", "SKILL.md"), join(t.atlas, "skill-link.md"));
+		// A skill whose text has a fence-looking line further down, which an edit could bring to the top.
+		writeFileSync(join(t.atlas, ".agents", "skills", "s", "lower.md"), "---\nname: x\n---\nBelow:\n---js\n({})\n");
+		const openCode = openCodeRule({}, t.home, realTarget);
+		const options = { ...t.options, allowedRoots: [...t.options.allowedRoots, t.home], openCode };
+		return { ...t, options, openCode };
+	}
+	type SkillWorld = ReturnType<typeof skillWorld>;
+
+	interface Case {
+		readonly name: string;
+		readonly refused: boolean;
+		readonly path: string;
+		/** A write's whole text. */
+		readonly content?: string;
+		/** An edit's exact replacement, in a file that holds `old`. */
+		readonly edit?: { readonly old: string; readonly new: string };
+		/** A patch's Add File of `content`. */
+		readonly add?: boolean;
+	}
+
+	function table(t: SkillWorld): Case[] {
+		const a = (file: string) => join(t.atlas, file);
+		const skill = a(".claude/skills/s/SKILL.md");
+		return [
+			{ name: "a skill with YAML front matter", refused: false, path: skill, content: YAML, edit: { old: "Tidy the notes.", new: "Tidy the notes, then sort them." }, add: true },
+			{ name: "a new skill in .agents", refused: false, path: a(".agents/skills/new/SKILL.md"), content: YAML, add: true },
+			{ name: "a skill in home's .claude", refused: false, path: join(t.home, ".claude", "skills", "h", "SKILL.md"), content: YAML, edit: { old: "Tidy the notes.", new: "Tidy." }, add: true },
+			{ name: "---yaml and ---json front matter", refused: false, path: a(".agents/skills/new/SKILL.md"), content: "---yaml\nname: x\n---\n", add: true },
+			{ name: "a skill whose text mentions js", refused: false, path: skill, content: "---\nname: js\n---\nWrite JS, and javascript too.\n", edit: { old: "Tidy the notes.", new: "Write JS (and javascript)." }, add: true },
+			{ name: "---js front matter", refused: true, path: skill, content: JS, edit: { old: "---\nname: tidy", new: "---js\n({ name: 'tidy' })" }, add: true },
+			{ name: "---javascript in .agents", refused: true, path: a(".agents/skills/s/SKILL.md"), content: "---javascript\n({})\n---\n", add: true },
+			{ name: "---JS, any case", refused: true, path: a(".claude/skills/s/other.md"), content: "---JS\n({})\n---\n", add: true },
+			{ name: "a byte-order mark, blanks and spaces before the fence", refused: true, path: skill, content: "﻿\n\n   --- js \n({})\n---\n", add: true },
+			{ name: "CRLF line ends", refused: true, path: skill, content: "---javascript\r\n({})\r\n---\r\n", add: true },
+			{ name: "another language gray-matter might run (coffee)", refused: true, path: skill, content: "---coffee\nname: 'x'\n---\n", add: true },
+			{ name: "an edit that finishes the first line into a fence", refused: true, path: skill, edit: { old: "\nname: tidy", new: "js\nname: tidy" } },
+			{ name: "an edit that brings a lower fence-looking line to the top", refused: true, path: a(".agents/skills/s/lower.md"), edit: { old: "---\nname: x\n---\nBelow:\n", new: "" } },
+			{ name: "an edit whose new text holds a fence-looking line anywhere", refused: true, path: skill, edit: { old: "Tidy the notes.", new: "Example:\n---js\n" } },
+			{ name: "through a link into a skills folder", refused: true, path: a("skill-link.md"), content: JS, edit: { old: "---\nname: tidy", new: "---js" }, add: true },
+			{ name: "a skills folder spelled in another case", refused: true, path: a(".Claude/Skills/s/SKILL.md"), content: JS, add: true },
+			{ name: "---js outside a skills folder", refused: false, path: a("notes.md"), content: JS, edit: { old: "Tidy the notes.", new: "---js" }, add: true },
+		];
+	}
+
+	/** Each gate's verdicts on the case's write, edit and patch (where it has them). */
+	type Gate = (t: SkillWorld, c: Case) => Promise<(string | undefined)[]>;
+	const plus = (text: string) => text.replace(/\n$/, "").split("\n").map((line) => `+${line}`);
+	const addPatch = (c: Case) => ["*** Begin Patch", `*** Add File: ${c.path}`, ...plus(c.content as string), "*** End Patch"].join("\n");
+
+	const pi: Gate = async (t, c) => [
+		...(c.content === undefined ? [] : [guardToolCall("write", { path: c.path, content: c.content }, t.options)]),
+		...(c.edit === undefined ? [] : [guardToolCall("edit", { path: c.path, edits: [{ oldText: c.edit.old, newText: c.edit.new }] }, t.options)]),
+	];
+	// OMP's write; its edits are never worked out (below).
+	const omp: Gate = async (t, c) => (c.content === undefined ? [] : [guardOmpToolCall("write", { path: c.path, content: c.content }, t.options)]);
+	const claude: Gate = async (t, c) => [
+		...(c.content === undefined ? [] : [claudeGuard("Write", { file_path: c.path, content: c.content }, t.options)]),
+		...(c.edit === undefined ? [] : [claudeGuard("Edit", { file_path: c.path, old_string: c.edit.old, new_string: c.edit.new }, t.options), claudeGuard("MultiEdit", { file_path: c.path, edits: [{ old_string: c.edit.old, new_string: c.edit.new }] }, t.options)]),
+	];
+	const codex: Gate = async (t, c) => (c.add === true ? [codexGuard("apply_patch", { command: addPatch(c) }, t.options)] : []);
+	const opencode: Gate = async (t, c) => [
+		...(c.content === undefined ? [] : [openCodeGuard("write", { path: c.path, content: c.content }, t.options, "ses_a")]),
+		...(c.edit === undefined ? [] : [openCodeGuard("edit", { path: c.path, oldString: c.edit.old, newString: c.edit.new }, t.options, "ses_a")]),
+		...(c.add === true ? [openCodeGuard("patch", { patchText: addPatch(c) }, t.options, "ses_a")] : []),
+	];
+	const durable: Gate = async (t, c) => {
+		const options = { folder: t.atlas, allowedRoots: t.options.allowedRoots, cwd: t.atlas, foreignViews: [] as string[], home: t.home, openCode: t.openCode };
+		const env = new NodeExecutionEnv({ cwd: t.atlas });
+		const out: (string | undefined)[] = [];
+		if (c.content !== undefined) {
+			const args = { path: c.path, content: c.content };
+			out.push(durablePreCheck({ name: "write", arguments: args }, options) ?? (await checkResolvedPath(env, c.path, "write", options, ctx, { whole: c.content })));
+		}
+		if (c.edit !== undefined) {
+			const args = { path: c.path, edits: [{ oldText: c.edit.old, newText: c.edit.new }] };
+			out.push(durablePreCheck({ name: "edit", arguments: args }, options) ?? (await checkResolvedPath(env, c.path, "write", options, ctx, { edits: [c.edit] })));
+		}
+		return out;
+	};
+
+	it("gets the same verdict from pi, OMP, Claude Code, Codex, OpenCode and orrery run for every case", async () => {
+		const t = skillWorld();
+		const disagree: string[] = [];
+		for (const c of table(t)) {
+			for (const [gate, judge] of Object.entries({ pi, omp, claude, codex, opencode, durable })) {
+				(await judge(t, c)).forEach((verdict, at) => {
+					if ((verdict !== undefined) !== c.refused) disagree.push(`${gate} #${at} on ${c.name}: ${verdict ?? "allowed"}`);
+				});
+			}
+		}
+		expect(disagree).toEqual([]);
+	});
+
+	it("refuses what it can't see into a skills folder: a move or rename, a copy, an unknown tool, an OMP edit, a notebook cell, an edit whose old text isn't there or whose file isn't, a patch update of a file it can't read", async () => {
+		const t = skillWorld();
+		const skill = join(t.atlas, ".claude", "skills", "s", "SKILL.md");
+		const UNSEEN = /can't see what this would leave/;
+		const options = { folder: t.atlas, allowedRoots: t.options.allowedRoots, cwd: t.atlas, foreignViews: [] as string[], home: t.home, openCode: t.openCode };
+		const env = new NodeExecutionEnv({ cwd: t.atlas });
+		for (const verdict of [
+			codexGuard("apply_patch", { command: ["*** Begin Patch", "*** Update File: notes.md", `*** Move to: ${skill}`, "@@", "-Tidy the notes.", "+Tidy.", "*** End Patch"].join("\n") }, t.options),
+			openCodeGuard("patch", { patchText: ["*** Begin Patch", "*** Update File: notes.md", "*** Move to: .claude/skills/s/SKILL.md", "@@", "-Tidy the notes.", "+Tidy.", "*** End Patch"].join("\n") }, t.options, "ses_a"),
+			claudeGuard("mcp__box__copy", { source: "notes.md", destination: skill }, t.options),
+			claudeGuard("mcp__files__write_file", { path: skill, content: YAML }, t.options),
+			claudeGuard("NotebookEdit", { notebook_path: skill, new_source: "x" }, t.options),
+			openCodeGuard("box_put", { to: ".claude/skills/s/SKILL.md", body: YAML }, t.options, "ses_a"),
+			guardOmpToolCall("edit", { path: skill, input: "PUT 1\n+Tidy.\n" }, t.options),
+			guardOmpToolCall("edit", { path: "notes.md", input: "PUT 1\n+x\n", edits: [{ rename: skill }] }, t.options),
+			guardOmpToolCall("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [skill] }, t.options),
+			guardToolCall("edit", { path: skill, edits: [{ oldText: "not in the file", newText: "x" }] }, t.options),
+			guardToolCall("edit", { path: join(t.atlas, ".claude", "skills", "s", "missing.md"), edits: [{ oldText: "a", newText: "b" }] }, t.options),
+			openCodeGuard("edit", { path: ".claude/skills/s/SKILL.md", oldString: "Tidy the  notes.", newString: "x" }, t.options, "ses_a"),
+			guardToolCall("edit", { path: skill, content: "no edits list" }, t.options),
+			openCodeGuard("patch", { patchText: "*** Begin Patch\n*** Update File: .claude/skills/s/missing.md\n@@\n-a\n+b\n*** End Patch" }, t.options, "ses_a"),
+			await checkResolvedPath(env, join(t.atlas, ".claude", "skills", "s", "missing.md"), "write", options, ctx, { edits: [{ old: "a", new: "b" }] }),
+			await checkResolvedPath(env, skill, "write", options, ctx, undefined),
+		]) {
+			expect(verdict).toMatch(UNSEEN);
+		}
+		// A patch update: the file and its added lines without a fence-looking line pass; with one anywhere, refused.
+		expect(openCodeGuard("patch", { patchText: "*** Begin Patch\n*** Update File: .claude/skills/s/SKILL.md\n@@\n-Tidy the notes.\n+Tidy.\n*** End Patch" }, t.options, "ses_a")).toBeUndefined();
+		expect(codexGuard("apply_patch", { command: `*** Begin Patch\n*** Update File: ${join(t.atlas, ".agents", "skills", "s", "lower.md")}\n@@\n-Below:\n+Above:\n*** End Patch` }, t.options)).toMatch(/may run as code/);
+		// Deleting a skill writes nothing into it.
+		expect(codexGuard("apply_patch", { command: `*** Begin Patch\n*** Delete File: ${skill}\n*** End Patch` }, t.options)).toBeUndefined();
+	});
+
+	it("refuses shell text naming a skills folder, whatever the command, in every gate, by every spelling; reading goes through the file tools (Codex's own shell aside, below)", () => {
+		const t = skillWorld();
+		const gates = (command: string) => [
+			guardToolCall("bash", { command }, t.options),
+			guardOmpToolCall("bash", { command }, t.options),
+			guardOmpToolCall("eval", { language: "sh", code: command }, t.options),
+			claudeGuard("Bash", { command }, t.options),
+			claudeGuard("mcp__shell__run", { command }, t.options),
+			codexGuard("mcp__box__exec_command", { cmd: command }, t.options),
+			openCodeGuard("shell", { command }, t.options, "ses_a"),
+			openCodeGuard("execute", { code: command }, t.options, "ses_a"),
+			openCodeGuard("box_run", { command }, t.options, "ses_a"),
+			openCodeGuard("box_exec", { args: [command] }, t.options, "ses_a"),
+			durablePreCheck({ name: "bash", arguments: { command } }, { folder: t.atlas, allowedRoots: [t.atlas], foreignViews: [] }),
+		];
+		for (const command of [
+			// Writes of every kind,
+			"cp evil.md .claude/skills/s/SKILL.md",
+			"mv x.md .agents/skills/t/SKILL.md",
+			"ln -s ../../x.md .claude/skills/s/SKILL.md",
+			"find .claude/skills -name '*.md' -fprint .claude/skills/s/SKILL.md",
+			"sort -o .claude/skills/s/SKILL.md x",
+			"awk '{print > \".agents/skills/s/SKILL.md\"}' x",
+			"sed -i 's/---/---js/' .claude/skills/s/SKILL.md",
+			"cat > .agents/skills/s/SKILL.md <<'EOF'\n---\nname: x\n---\nEOF",
+			// reads and listings too: the file tools read skills,
+			"ls .claude/skills",
+			"cat .claude/skills/s/SKILL.md",
+			"grep -r name .agents/skills",
+			// and every spelling the readings take.
+			"cat '.claude/skills/s/SKILL.md'",
+			'cat ".agents"/skills/s/SKILL.md',
+			"cat .claude/{skills,x}/s/SKILL.md",
+			"cat $'.claude/skills'/s/SKILL.md",
+			"cat $'\\x2eclaude'/skills/s/SKILL.md",
+			"ls .Claude/Skills",
+			"ls ~/.claude/skills",
+			"ls .claude/x/../skills",
+		]) {
+			expect([command, gates(command)]).toEqual([command, gates(command).map(() => SKILL_SHELL)]);
+		}
+		for (const command of ["cat notes.md", "ls .claude", "cat .claude/settings.json", "ls skills", "grep -r skills docs", "cat my.claude/skillsx"]) {
+			expect([command, gates(command)]).toEqual([command, gates(command).map(() => undefined)]);
+			expect([command, codexGuard("Bash", { command }, t.options)]).toEqual([command, undefined]);
+		}
+		// The file tools read them.
+		expect(guardToolCall("read", { path: join(t.atlas, ".claude", "skills", "s", "SKILL.md") }, t.options)).toBeUndefined();
+		expect(claudeGuard("Grep", { pattern: "name", path: join(t.atlas, ".agents", "skills") }, t.options)).toBeUndefined();
+		expect(openCodeGuard("glob", { pattern: "**/SKILL.md", path: ".claude/skills" }, t.options, "ses_a")).toBeUndefined();
+	});
+
+	it("lets Codex's own shell, which has no file tool, read skills by a strict grammar: one plain cat, head or tail (-n N), sed -n 'A,Bp', ls or wc, every reading the same, each file judged as a read", () => {
+		const t = skillWorld();
+		const s = (file: string) => join(t.atlas, ".agents", "skills", "s", file);
+		symlinkSync(join(t.home, "finance", "q3.csv"), s("fin.md"));
+		symlinkSync(join(t.atlas, ".env"), s("env.md"));
+		symlinkSync(join(t.home, "finance"), join(t.atlas, ".agents", "skills", "fin-folder"));
+		const codex = (command: string) => codexGuard("Bash", { command }, t.options);
+		const allowed = [
+			"cat .agents/skills/s/SKILL.md",
+			"cat .agents/skills/s/SKILL.md .claude/skills/s/SKILL.md",
+			"head .claude/skills/s/SKILL.md",
+			"head -n 40 .claude/skills/s/SKILL.md",
+			"tail -n 5 .agents/skills/s/lower.md",
+			"sed -n '1,200p' .agents/skills/s/SKILL.md",
+			`sed -n 1,200p "${s("SKILL.md")}"`,
+			"cat '.claude/skills/s/SKILL.md'",
+			'cat ".agents"/skills/s/SKILL.md',
+			"ls .agents/skills",
+			"ls .claude/skills/s",
+			"ls ~/.claude/skills",
+			"ls .Claude/Skills",
+			"wc .claude/skills/s/SKILL.md",
+			"  cat\t.agents/skills/s/SKILL.md  ",
+		];
+		for (const command of allowed) expect([command, codex(command)]).toEqual([command, undefined]);
+		const refused = [
+			// More than one command, a pipe, a redirection, a background job, a subshell, a comment,
+			"cat .agents/skills/s/SKILL.md | head",
+			"cat .agents/skills/s/SKILL.md > x.md",
+			"cat x.md >> .agents/skills/s/SKILL.md",
+			"cat .agents/skills/s/SKILL.md 2>/dev/null",
+			"cat .agents/skills/s/SKILL.md; rm -rf .agents/skills",
+			"cat .agents/skills/s/SKILL.md && echo",
+			"cat .agents/skills/s/SKILL.md &",
+			"cat .agents/skills/s/SKILL.md\nrm x.md",
+			"(cat .agents/skills/s/SKILL.md)",
+			"cat .agents/skills/s/SKILL.md # x",
+			// an option beyond the grammar's, or a form it doesn't take,
+			"cat -n .agents/skills/s/SKILL.md",
+			"cat -- .agents/skills/s/SKILL.md",
+			"cat - .agents/skills/s/SKILL.md",
+			"head -c 5 .agents/skills/s/SKILL.md",
+			"head -n5 .agents/skills/s/SKILL.md",
+			"head -n -5 .agents/skills/s/SKILL.md",
+			"head -n 5 .agents/skills/s/SKILL.md .claude/skills/s/SKILL.md",
+			"tail -f .agents/skills/s/SKILL.md",
+			"tail -n +5 .agents/skills/s/SKILL.md",
+			"sed -n '1,200p;w x.md' .agents/skills/s/SKILL.md",
+			"sed -n '1,$p' .agents/skills/s/SKILL.md",
+			"sed -n 1,200p .agents/skills/s/SKILL.md x.md",
+			"sed -n '1,200p' -i .agents/skills/s/SKILL.md",
+			"sed 1,200p .agents/skills/s/SKILL.md",
+			"sed -i 's/a/b/' .agents/skills/s/SKILL.md",
+			"ls -la .agents/skills",
+			"ls .agents/skills .claude/skills",
+			"wc -l .agents/skills/s/SKILL.md",
+			// another program, or one with something before it,
+			"cp .agents/skills/s/SKILL.md x.md",
+			"grep -r name .agents/skills",
+			"less .agents/skills/s/SKILL.md",
+			"CAT .agents/skills/s/SKILL.md",
+			"X=1 cat .agents/skills/s/SKILL.md",
+			"exec cat .agents/skills/s/SKILL.md",
+			// and anything the shell would change: variables, substitution, globs, braces, escapes, ~user, odd quoting.
+			"cat $HOME/.agents/skills/s/SKILL.md",
+			"cat ${HOME}/.agents/skills/s/SKILL.md",
+			'cat "$(echo .agents/skills/s/SKILL.md)"',
+			"cat `echo .agents/skills/s/SKILL.md`",
+			"cat .agents/skills/*/SKILL.md",
+			"cat .agents/skills/s/SKILL.?d",
+			"cat .agents/skills/s/[S]KILL.md",
+			"cat .agents/skills/{s,t}/SKILL.md",
+			"cat \\.agents/skills/s/SKILL.md",
+			"cat $'.agents'/skills/s/SKILL.md",
+			"cat ~root/.agents/skills/s/SKILL.md",
+			"cat '.agents/skills/s/SKILL.md",
+			"cat '.agents/skills/my skill/SKILL.md'",
+		];
+		for (const command of refused) expect([command, codex(command)]).toEqual([command, SKILL_SHELL]);
+		// Every other rule holds for what the grammar lets through: each file is a read, links followed.
+		expect(codex("cat .agents/skills/s/SKILL.md ~/.ssh/id_ed25519")).toMatch(/sensitive/);
+		expect(codex("cat .agents/skills/s/SKILL.md ~/.npmrc")).toMatch(/sensitive/);
+		expect(codex("cat .agents/skills/s/SKILL.md .env")).toMatch(/sensitive/);
+		expect(codex("cat .agents/skills/s/env.md")).toMatch(/sensitive/);
+		expect(codex("cat .agents/skills/s/fin.md")).toMatch(/protected by \[guard\] protect/);
+		expect(codex("ls .agents/skills/fin-folder")).toMatch(/protected by \[guard\] protect/);
+		expect(codex("cat .agents/skills/s/SKILL.md secrets.yml")).toMatch(/protected by \[guard\] protect/);
+		expect(codex("cat .agents/skills/s/SKILL.md opencode.json")).toBe(OPENCODE_COMMAND);
+		const birch = join(t.root, "birch-view.md");
+		writeFileSync(birch, "Birch's memory");
+		symlinkSync(birch, s("view.md"));
+		expect(codexGuard("Bash", { command: "cat .agents/skills/s/view.md" }, { ...t.options, foreignViews: [birch] })).toBeDefined();
+		expect(codexGuard("Bash", { command: "cat .agents/skills/s/SKILL.md" }, { ...t.options, foreignViews: [birch] })).toBeUndefined();
+		// Codex's own shell only: an MCP shell in Codex, and every other gate, still refuse the same read.
+		for (const verdict of [
+			codexGuard("mcp__box__exec_command", { cmd: "cat .agents/skills/s/SKILL.md" }, t.options),
+			codexGuard("mcp__box__run", { input: "cat .agents/skills/s/SKILL.md" }, t.options),
+			guardToolCall("bash", { command: "cat .agents/skills/s/SKILL.md" }, t.options),
+			claudeGuard("Bash", { command: "cat .agents/skills/s/SKILL.md" }, t.options),
+			openCodeGuard("shell", { command: "cat .agents/skills/s/SKILL.md" }, t.options, "ses_a"),
+		]) {
+			expect(verdict).toBe(SKILL_SHELL);
+		}
+		// The flag alone lets nothing through: shell text that isn't a plain read stays refused with it set.
+		expect(guardToolCall("bash", { command: "cp x.md .agents/skills/s/SKILL.md" }, { ...t.options, shellReadsSkills: true })).toBe(SKILL_SHELL);
+	});
+
+	it("reaches the rules from every write-capable tool of pi and OMP, as a write: OMP's write (a header or selector writes part of a file), every edit form, ast_edit's folders and globs, lsp's renames and edits, eval", () => {
+		const t = skillWorld();
+		const skill = join(t.atlas, ".claude", "skills", "s", "SKILL.md");
+		const plugin = join(t.atlas, ".opencode", "plugins", "p.ts");
+		mkdirSync(join(t.atlas, ".opencode", "plugins"), { recursive: true });
+		writeFileSync(plugin, "export default {}\n");
+		mkdirSync(join(t.atlas, "src", "lib"), { recursive: true });
+		writeFileSync(join(t.atlas, "src", "lib", "a.ts"), "export const a = 1;\n");
+		const omp = (tool: string, input: Record<string, unknown>, options = t.options) => guardOmpToolCall(tool, input, options);
+		const SEEN = /can't see what this would leave/;
+		const CONFIG = /OpenCode's config or code/;
+		// write: whole text passes; a [path#TAG] header or a selector writes part of the file, unseen.
+		expect(omp("write", { path: skill, content: YAML })).toBeUndefined();
+		expect(omp("write", { path: `[${skill}#1a2b]`, content: YAML })).toMatch(SEEN);
+		expect(omp("write", { path: `${skill}:3-5`, content: YAML })).toMatch(SEEN);
+		expect(omp("write", { path: plugin, content: "x" })).toMatch(CONFIG);
+		expect(omp("write", { path: `[${plugin}#1a2b]`, content: "x" })).toMatch(CONFIG);
+		// edit, every form: a path, a header in its text, a rename, MV and *** Move to: in its text.
+		expect(omp("edit", { path: skill, input: "PUT 1\n+x\n" })).toMatch(SEEN);
+		expect(omp("edit", { input: `[${skill}#1a2b]\nPUT 1\n+x\n` })).toMatch(SEEN);
+		expect(omp("edit", { path: "notes.md", input: "PUT 1\n+x\n", edits: [{ rename: skill }] })).toMatch(SEEN);
+		expect(omp("edit", { path: "notes.md", input: "PUT 1\n+x\n", edits: [{ rename: plugin }] })).toMatch(CONFIG);
+		expect(omp("edit", { input: `[notes.md#1a2b]\nMV ${plugin}\n` })).toMatch(CONFIG);
+		expect(omp("edit", { input: `*** Begin Patch\n*** Update File: notes.md\n*** Move to: ${skill}\n@@\n-a\n+b\n*** End Patch` })).toMatch(SEEN);
+		expect(omp("edit", { path: "notes.md", input: "PUT 1\n+x\n" })).toBeUndefined();
+		// ast_edit: a file, a folder or a glob whose base holds OpenCode's config, a skill or anything else the rules keep is
+		// refused; one that doesn't passes.
+		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [skill] })).toMatch(SEEN);
+		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [plugin] })).toMatch(CONFIG);
+		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: ["."] })).toBeDefined();
+		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: ["**/*.ts"] })).toBeDefined();
+		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [`${join(t.atlas, ".claude")}/**/*.md`] })).toMatch(SEEN);
+		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: ["src/**/*.ts"] })).toBeUndefined();
+		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [join(t.atlas, "src", "lib")] })).toBeUndefined();
+		// lsp: rename_file moves a file (both ends writes); a symbol rename, an applied code action and a raw request edit
+		// files the server picks, refused while the folder holds OpenCode's config or a skill; the rest only read.
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: skill })).toMatch(SEEN);
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: plugin })).toMatch(CONFIG);
+		expect(omp("lsp", { action: "rename_file", file: skill, new_name: "notes2.md" })).toMatch(SEEN);
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: join(t.root, "outside.md") })).toMatch(/outside this agent's folder/);
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: "notes2.md" })).toBeUndefined();
+		// The language server's own edits name no file: refused in any folder, as is an action Orrery doesn't know.
+		for (const input of [{ action: "rename", file: "src/lib/a.ts", line: 1, symbol: "a", new_name: "b" }, { action: "code_actions", file: "src/lib/a.ts", apply: true, query: "fix" }, { action: "code_actions", file: "src/lib/a.ts", apply: "yes" }, { action: "request", query: "workspace/executeCommand" }, { query: "textDocument/hover" }, { action: "format" }]) {
+			expect(omp("lsp", input), JSON.stringify(input)).toMatch(/language server/);
+			expect(omp("lsp", input, { ...t.options, cwd: join(t.atlas, "src") }), JSON.stringify(input)).toMatch(/language server/);
+		}
+		for (const action of ["diagnostics", "definition", "type_definition", "implementation", "references", "hover", "symbols", "status", "reload", "capabilities"]) {
+			expect(omp("lsp", { action, file: "src/lib/a.ts", line: 1 }), action).toBeUndefined();
+		}
+		expect(omp("lsp", { action: "code_actions", file: "src/lib/a.ts" })).toBeUndefined();
+		expect(omp("lsp", { action: "code_actions", file: "src/lib/a.ts", apply: false })).toBeUndefined();
+		// rename_file's two ends, under every rule.
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: ".env" })).toMatch(/sensitive file/);
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: "secrets.yml" })).toMatch(/protected by \[guard\] protect/);
+		expect(omp("lsp", { action: "rename_file", file: ".env", new_name: "notes2.md" })).toMatch(/sensitive file/);
+		// eval runs shell text: the shell rule.
+		expect(omp("eval", { language: "sh", code: "ls .claude/skills" })).toBe(SKILL_SHELL);
+		expect(omp("eval", { language: "sh", code: "cat x > opencode.json" })).toBe(OPENCODE_COMMAND);
+		// pi's write and edit, and its searches (which only read: a search root holding a skill is no write).
+		expect(guardToolCall("write", { path: plugin, content: "x" }, t.options)).toMatch(CONFIG);
+		expect(guardToolCall("edit", { path: skill, edits: [{ oldText: "Tidy the notes.", newText: "Tidy." }] }, t.options)).toBeUndefined();
+		for (const tool of ["grep", "find", "ls"]) expect(guardToolCall(tool, { pattern: "x", path: join(t.atlas, ".claude") }, t.options), tool).toBeUndefined();
+		for (const tool of ["grep", "glob", "find", "ast_grep"]) expect(omp(tool, { pattern: "x", path: join(t.atlas, ".claude", "skills") }), tool).toBeUndefined();
+	});
+
+	it("judges every file an OMP ast_edit folder or glob reaches by every rule, node_modules and .git too, and refuses one that reaches too many", () => {
+		const t = skillWorld();
+		const base = join(t.atlas, "tree");
+		const make = (file: string, text = "x") => {
+			mkdirSync(join(base, file, ".."), { recursive: true });
+			writeFileSync(join(base, file), text);
+		};
+		make("src/a.ts");
+		const edit = (paths: string[], options: PathGuardOptions = t.options) => guardOmpToolCall("ast_edit", { ops: [{ pat: "a", out: "b" }], paths }, options);
+		expect(edit([base])).toBeUndefined();
+		expect(edit([`${base}/**/*.ts`])).toBeUndefined();
+		const cases: [string, RegExp][] = [
+			["deep/.env", /sensitive file/],
+			["deep/config/secrets.yml", /protected by \[guard\] protect/],
+			["deep/vault/token.txt", /protected by \[guard\] protect/],
+			["node_modules/pkg/.env.local", /sensitive file/],
+			[".git/hooks/.env", /sensitive file/],
+			["deep/.opencode/plugins/p.ts", /OpenCode's config or code/],
+			["deep/opencode.json", /OpenCode's config or code/],
+			["deep/.claude/skills/s/SKILL.md", /can't see what this would leave/],
+		];
+		for (const [file, refused] of cases) {
+			make(file);
+			expect([file, edit([base])]).toEqual([file, expect.stringMatching(refused)]);
+			expect([file, edit([`${base}/**/*`])]).toEqual([file, expect.stringMatching(refused)]);
+			rmSync(join(base, file));
+		}
+		// A link below it leading to a protected place is judged where it leads.
+		symlinkSync(join(t.home, "finance"), join(base, "fin"));
+		expect(edit([base])).toMatch(/protected by \[guard\] protect/);
+		rmSync(join(base, "fin"));
+		// Another agent's view, and Orrery's home, below it.
+		const view = join(base, "other-agent", ".orrery", "view.md");
+		make("other-agent/.orrery/view.md");
+		expect(edit([base], { ...t.options, foreignViews: [view] })).toMatch(/another agent's memory view|sensitive file/);
+		rmSync(join(base, "other-agent"), { recursive: true });
+		make("orrery-data/agents/x.sqlite");
+		expect(edit([base], { ...t.options, orreryData: join(base, "orrery-data") })).toMatch(/sensitive file/);
+		rmSync(join(base, "orrery-data"), { recursive: true });
+		expect(edit([base])).toBeUndefined();
+		// Past the cap of files looked at: refused.
+		for (let i = 0; i < 5; i++) make(`many/f${i}.ts`);
+		expect(edit([base])).toBeUndefined();
+		expect(edit([base], { ...t.options, astEditLimit: 3 })).toMatch(/more files than Orrery's guard can look through/);
+	});
+
+	it("reads OMP's lsp and ast_edit paths as OMP does, and refuses a form it can't place: action names, URIs, ~, links, folders moved whole, globs", () => {
+		const t = skillWorld();
+		const base = join(t.atlas, "tree");
+		const make = (file: string) => {
+			mkdirSync(join(base, file, ".."), { recursive: true });
+			writeFileSync(join(base, file), "x");
+		};
+		make("clean/a.ts");
+		make("keys/.env");
+		make("plain/b.ts");
+		const omp = (tool: string, input: Record<string, unknown>) => guardOmpToolCall(tool, input, t.options);
+		// lsp's action names are OMP's exact ones: another case or spelling is an action Orrery doesn't know.
+		for (const action of ["Rename_File", "HOVER", "rename-file", "Diagnostics"]) expect(omp("lsp", { action, file: "notes.md" }), action).toMatch(/language server/);
+		// rename_file's paths, placed as OMP's resolveToCwd places them: a file: URI, ~, a path through a link.
+		expect(omp("lsp", { action: "rename_file", file: `file://${join(base, "plain", "b.ts")}`, new_name: `file://${join(t.atlas, ".claude", "skills", "x", "SKILL.md")}` })).toMatch(/can't see what this would leave/);
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: "~/finance/notes.md" })).toMatch(/protected by \[guard\] protect/);
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: "file://otherhost/x.md" })).toMatch(/file:\/\/ URL/);
+		symlinkSync(join(t.home, "finance"), join(t.atlas, "fin-link"));
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: "fin-link/notes.md" })).toMatch(/protected by \[guard\] protect/);
+		// A folder moves with every file in it: one that holds a kept file, or lands in a kept place, is refused.
+		expect(omp("lsp", { action: "rename_file", file: join(base, "keys"), new_name: join(base, "keys2") })).toMatch(/sensitive file/);
+		expect(omp("lsp", { action: "rename_file", file: join(base, "plain"), new_name: join(t.atlas, ".opencode", "plugins") })).toMatch(/OpenCode's config or code/);
+		expect(omp("lsp", { action: "rename_file", file: join(base, "clean"), new_name: join(base, "clean2") })).toBeUndefined();
+		// ast_edit: braces, a negation and extended globs are refused; several paths, in a list or one string, are each judged.
+		const edit = (paths: string[]) => omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths });
+		expect(edit([`${base}/{clean,keys}/**`])).toMatch(/brace or parent patterns/);
+		expect(edit([`!${base}/clean/**`])).toMatch(/can't tell which files/);
+		expect(edit([`${base}/@(clean|keys)/*`])).toMatch(/can't tell which files|sensitive file/);
+		expect(edit([`${base}/clean/*.ts, ${base}/keys/*`])).toMatch(/sensitive file/);
+		expect(edit([`${base}/clean/**`, `${base}/keys`])).toMatch(/sensitive file/);
+		expect(edit([`${base}/clean/**/*.ts`, `${base}/plain`])).toBeUndefined();
+		expect(edit(["~/finance/**"])).toMatch(/protected by \[guard\] protect/);
+		// A link in the tree to a folder is followed (its files judged), and a loop of links ends.
+		symlinkSync(join(base, "keys"), join(base, "clean", "keys-link"));
+		expect(edit([`${base}/clean/**`])).toMatch(/sensitive file/);
+		rmSync(join(base, "clean", "keys-link"));
+		symlinkSync(join(base, "clean"), join(base, "clean", "loop"));
+		expect(edit([`${base}/clean/**`])).toBeUndefined();
+	});
+
+	it("only ever adds refusals: a path through a skills folder that lands elsewhere is judged by the general rules", () => {
+		const t = skillWorld();
+		// Out through .. from a skills folder: past the agent's folder and its allowed roots.
+		expect(guardToolCall("write", { path: join(t.atlas, ".claude", "skills", "..", "..", "..", "..", "x.md"), content: YAML }, t.options)).toMatch(/outside this agent's folder/);
+		expect(guardToolCall("write", { path: join(t.atlas, ".claude", "skills", "..", "..", "x.md"), content: JS }, t.options)).toBeUndefined();
+		// A skills folder that is a link: to a protected folder, and to OpenCode's own folder.
+		mkdirSync(join(t.atlas, "other"), { recursive: true });
+		symlinkSync(join(t.atlas, "vault"), join(t.atlas, "other", "skills-vault"));
+		mkdirSync(join(t.atlas, "p", ".claude"), { recursive: true });
+		symlinkSync(join(t.atlas, "vault"), join(t.atlas, "p", ".claude", "skills"));
+		expect(guardToolCall("write", { path: join(t.atlas, "p", ".claude", "skills", "x.md"), content: YAML }, t.options)).toMatch(/protected by \[guard\] protect/);
+		mkdirSync(join(t.atlas, ".opencode", "plugins"), { recursive: true });
+		mkdirSync(join(t.atlas, "q", ".agents"), { recursive: true });
+		symlinkSync(join(t.atlas, ".opencode", "plugins"), join(t.atlas, "q", ".agents", "skills"));
+		expect(guardToolCall("write", { path: join(t.atlas, "q", ".agents", "skills", "x.ts"), content: YAML }, t.options)).toMatch(/OpenCode's config or code/);
+		// OpenCode's own folders are never a skills write: a skills folder inside one is OpenCode's config.
+		expect(guardToolCall("write", { path: join(t.home, ".config", "opencode", ".claude", "skills", "x.md"), content: YAML }, t.options)).toMatch(/OpenCode's config or code/);
+		expect(guardToolCall("write", { path: join(t.atlas, ".opencode", "skills", "x.md"), content: YAML }, t.options)).toMatch(/OpenCode's config or code/);
+	});
+
+	it("OpenCode's second layer judges a skill's edit on the file OpenCode says it will leave (the request's diff), and refuses one it can't tell", () => {
+		const t = skillWorld();
+		const resource = ".claude/skills/s/SKILL.md";
+		const diff = (lines: string[]) => [`Index: ${resource}`, "===================================================================", `--- ${resource}`, `+++ ${resource}`, ...lines].join("\n");
+		const safe = { files: [{ file: resource, status: "modified", patch: diff(["@@ -3,3 +3,3 @@", " description: Tidies the notes.", " ---", "-Tidy the notes.", "+Tidy."]) }] };
+		const code = { files: [{ file: resource, status: "modified", patch: diff(["@@ -1,2 +1,2 @@", "----", "+---js", " name: tidy"]) }] };
+		const stale = { files: [{ file: resource, status: "modified", patch: diff(["@@ -1,2 +1,2 @@", "-something else", "+---", " name: tidy"]) }] };
+		expect(openCodePermission("edit", [resource], t.options, safe)).toBeUndefined();
+		expect(openCodePermission("edit", [resource], t.options, code)).toMatch(/may run as code/);
+		expect(openCodePermission("edit", [resource], t.options, stale)).toMatch(/can't see what this would leave/);
+		expect(openCodePermission("edit", [resource], t.options, undefined)).toMatch(/can't see what this would leave/);
+		expect(openCodePermission("edit", [resource], t.options, { files: [{ file: "other.md", patch: "x" }] })).toMatch(/can't see what this would leave/);
+		expect(openCodePermission("edit", [resource], t.options, { files: [{ file: resource, status: "deleted", patch: "" }] })).toBeUndefined();
+		// A new skill: the whole text in the diff.
+		const added = { files: [{ file: ".agents/skills/new/SKILL.md", status: "added", patch: diff(["@@ -0,0 +1,2 @@", "+---javascript", "+({})"]) }] };
+		expect(openCodePermission("edit", [".agents/skills/new/SKILL.md"], t.options, added)).toMatch(/may run as code/);
+		// Paths elsewhere need no diff.
+		expect(openCodePermission("edit", ["notes.md"], t.options, undefined)).toBeUndefined();
 	});
 });

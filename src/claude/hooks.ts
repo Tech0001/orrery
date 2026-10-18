@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { type HarnessConfig, type AgentConfig, agentForCwd } from "../agent/config.ts";
-import { agentViews, movedAgentDirCredentials, ompCredentials } from "../agent/guard-paths.ts";
+import { agentViews, GuardCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials } from "../agent/guard-paths.ts";
 import { cutNotice, readInstructions } from "../agent/instructions.ts";
 import { workArea } from "../agent/pick.ts";
 import { writePrivate } from "../agent/private-file.ts";
@@ -378,10 +378,12 @@ export function preToolUse(input: HookInput, ctx: HookContext): object | undefin
 		const toolInput = typeof input.tool_input === "object" && input.tool_input !== null ? (input.tool_input as Record<string, unknown>) : {};
 		const home = ctx.home ?? homedir();
 		reason = claudeGuard(input.tool_name, toolInput, {
+			// One guard call: the rules every path it names is judged by are worked out once (guard-paths.ts GuardCall).
+			call: new GuardCall(),
 			folder: workArea(rules ?? {}, projectDir),
 			allowedRoots: [...(rules?.allowedRoots ?? []), ...claudeStateRoots(projectDir, home, ctx.env)],
 			cwd: typeof input.cwd === "string" ? input.cwd : projectDir,
-			credentials: [ctx.config.credentialsPath, ...movedAgentDirCredentials(ctx.env, home), ...movedConfigDirCredentials(ctx.env), ...ompCredentials(ctx.env, home)],
+			credentials: [ctx.config.credentialsPath, ...movedAgentDirCredentials(ctx.env, home), ...movedConfigDirCredentials(ctx.env), ...ompCredentials(ctx.env, home), ...openCodeCredentials(ctx.env, home)],
 			orreryData: ctx.config.dataDir,
 			home,
 			protect: ctx.config.guard.protect,

@@ -6,6 +6,7 @@ export {
 	agentViews,
 	movedAgentDirCredentials,
 	ompCredentials,
+	openCodeCredentials,
 	type PathGuardOptions as PiGuardOptions,
 	piToolPath,
 	realTarget,

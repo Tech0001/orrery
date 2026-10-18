@@ -1,4 +1,4 @@
-/** An agent's open memory, in whichever tool holds it (pi, OMP, or Claude Code's holder): its store (the single writer), view, compactor and status file. */
+/** An agent's open memory, in whichever tool holds it (pi, OMP, OpenCode, or Claude Code's or Codex's holder): its store (the single writer), view, compactor and status file. */
 
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { COMPACTOR_MODEL_KEY, storedChoice } from "./choices.ts";
 import type { HarnessConfig, AgentConfig, ModelChoice } from "./config.ts";
 import { type ModelSource, sourceCompactorModel } from "./model-source.ts";
 import { instructionsFacts } from "./instructions.ts";
+import { compactorCommandIn, isOpenCodeChoice, openCodeElsewhere, waitingForOpenCode } from "./opencode-source.ts";
 import { explainFailure, safeText } from "./source-labels.ts";
 import { agentSummarizer } from "./summarizer.ts";
 import type { Host } from "./view-text.ts";
@@ -22,8 +23,9 @@ type MemoryAgentOptions = { agent: AgentConfig; models: ModelSource; report(mess
 /** Another writer already holds the agent's store. */
 export class AgentHeld extends Error {
 	constructor(agent: string, host: Host = "pi") {
-		// In OMP the holder may be pi, OMP or Claude Code; pi keeps its words.
-		super(host === "omp" ? `${agent} is already open in another session; this OMP runs without memory.` : `${agent} is already open in another pi; this one runs without memory.`);
+		// In OMP and OpenCode the holder may be any tool; pi keeps its words.
+		const label = host === "omp" ? "OMP" : host === "opencode" ? "OpenCode" : undefined;
+		super(label !== undefined ? `${agent} is already open in another session; this ${label} runs without memory.` : `${agent} is already open in another pi; this one runs without memory.`);
 		this.name = "AgentHeld";
 	}
 }
@@ -152,13 +154,22 @@ export class MemoryAgent {
 			throw error;
 		}
 		try {
-			const stored = storedChoice(store, COMPACTOR_MODEL_KEY, (p, id) => models.find(p, id) !== undefined);
-			if (stored.stale !== undefined) options.report(`Orrery: the summary model chosen in chat (${stored.stale}) is gone; using the config's.`);
+			const host = options.host ?? "pi";
+			// An OpenCode model runs only in OpenCode (src/agent/opencode-source.ts): elsewhere it is kept, and waits.
+			const elsewhere = (choice: { provider: string }) => host !== "opencode" && isOpenCodeChoice(choice);
+			const stored = storedChoice(store, COMPACTOR_MODEL_KEY, (p, id) => models.find(p, id) !== undefined || elsewhere({ provider: p }));
+			if (stored.stale !== undefined) {
+				const slash = stored.stale.indexOf("/");
+				const why = slash > 0 ? models.unavailable?.(stored.stale.slice(0, slash), stored.stale.slice(slash + 1)) : undefined;
+				options.report(why === undefined ? `Orrery: the summary model chosen in chat (${stored.stale}) is gone; using the config's.` : `Orrery: the summary model chosen in chat (${stored.stale}) can't be used here (${why}); using the config's.`);
+			}
 			const choice = stored.choice ?? agent.compactor.model;
 			const view = new MemoryView(store, agent.memory.viewBytes);
 			// An unknown summary model must not cost the agent its memory, logging or guard: the agent opens and the
-			// compactor waits for /compactor to name a model pi knows.
-			const off = models.find(choice.provider, choice.modelId) === undefined ? `unknown model ${choice.provider}/${choice.modelId}` : undefined;
+			// compactor waits for /compactor to name a model it knows.
+			const ref = `${choice.provider}/${choice.modelId}`;
+			const known = models.find(choice.provider, choice.modelId) !== undefined;
+			const off = known ? undefined : elsewhere(choice) ? waitingForOpenCode(agent.name, ref) : models.unavailable?.(choice.provider, choice.modelId) ?? `unknown model ${ref}`;
 			let summarizer: Summarizer = { summarize: async () => Promise.reject(new Error(`Orrery: summaries are off: ${off}`)) };
 			if (off === undefined) {
 				const { model, contextWindow } = sourceCompactorModel(models, choice, compactorSession(agent));
@@ -171,10 +182,11 @@ export class MemoryAgent {
 				compactorReport(options.report),
 			);
 			if (off === undefined) compactor.start();
-			else options.report(`Orrery: ${agent.name}: summaries are off: ${off}. Choose a summary model with /compactor provider/id.`);
+			else if (elsewhere(choice)) options.report(openCodeElsewhere(agent.name, ref, host));
+			else options.report(`Orrery: ${agent.name}: summaries are off: ${off}. Choose a summary model with ${compactorCommandIn(host, agent.name)} provider/id.`);
 			// After a remote check-out (openChecked), which may bring newer instructions with the memory.
 			const { at: instructionsAt } = instructionsFacts(agent.dir);
-			return new MemoryAgent({ config: agent, store, view, compactor, models, choice, source: stored.choice ? "chat" : "config", off, host: options.host ?? "pi", instructionsAt });
+			return new MemoryAgent({ config: agent, store, view, compactor, models, choice, source: stored.choice ? "chat" : "config", off, host, instructionsAt });
 		} catch (error) {
 			store.close();
 			throw error;
@@ -193,6 +205,19 @@ export class MemoryAgent {
 			this.summariesOff = undefined;
 			this.compactor.start();
 		}
+	}
+
+	/**
+	 * Starts summaries that were off because their model was unknown when the agent opened, once the model source knows it
+	 * (OpenCode lists its config's providers late); the choice and where it came from stay. Whether they started.
+	 */
+	retrySummaries(): boolean {
+		if (this.summariesOff === undefined || this.#models.find(this.compactorModel.provider, this.compactorModel.modelId) === undefined) return false;
+		const { model, contextWindow } = sourceCompactorModel(this.#models, this.compactorModel, compactorSession(this.config));
+		this.compactor.summarizer = agentSummarizer(this.config, model, contextWindow, this.store);
+		this.summariesOff = undefined;
+		this.compactor.start();
+		return true;
 	}
 
 	/** Why pending summaries will not come soon (off, stopped, or failing), or undefined when they can. */

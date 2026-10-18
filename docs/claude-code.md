@@ -128,7 +128,7 @@ only the Orrery mod brings them.
 
 Moving an agent over (the spec's section 6):
 
-1. close it in pi or Codex;
+1. close it in pi, OMP, Codex or OpenCode;
 2. run `orrery claude-setup <Name>` (or add `--mod`);
 3. `orrery agent <Name>`, or `cd <agent folder> && claude` for the file setup.
 
@@ -241,6 +241,9 @@ Open the agent with `orrery agent <Name>`, or start Claude Code at the root of i
 - When an agent's summaries start failing or stop, you get a one-line notice (once, and once more when they recover)
   saying which source and why, for example "the OpenRouter account has no balance". It is shown to you, not to the
   model, so it never enters memory. Summaries keep retrying; switch the source with `/orrery:compactor`.
+- An agent whose summaries use an OpenCode model (`opencode/…`, chosen in OpenCode) records in Claude Code, but its
+  summaries wait until it is open in OpenCode again; a notice says so, and `/orrery:compactor` switches to another
+  model.
 - Claude Code's own compaction stays on.
 
 ## Commands
@@ -294,8 +297,8 @@ readers like Birch. They read snapshots of the agent's memory. In a session that
 
 An agent records in one place at a time.
 
-- Claude Code on an agent that pi, OMP, Codex or another Claude Code session holds runs read-only, and says which. It
-  still loads the view and has the memory tools, but nothing it says is recorded.
+- Claude Code on an agent that pi, OMP, Codex, OpenCode or another Claude Code session holds runs read-only, and says
+  which. It still loads the view and has the memory tools, but nothing it says is recorded.
 - While pi holds the agent, a Claude Code session is read-only. While a Claude Code session records, pi runs without
   memory and warns that the agent is open in Claude Code (a second pi's warning says "already open in another pi").
 - After a session ends, its recorder finishes the summaries for up to 10 minutes. A new session, or pi, opened meanwhile
@@ -317,6 +320,21 @@ anywhere, or Orrery's program with the word `holder`. An agent that ran a hook b
 put words in your mouth in its own memory. The cost: a Bash command that only names them is refused as well, such as
 `grep -r claude-hook src/` or a `git commit -m` whose message names one; the Grep tool's pattern is not read this way.
 A name built at run time still gets through.
+
+OpenCode's config and code are read-only to agents, as in every tool: no tool writes `opencode.json` or
+`opencode.jsonc` in any folder, a `.opencode` folder, OpenCode's own config, cache and state folders, its database, or
+its system config. OpenCode loads plugins, runs commands and takes permissions from them, with no prompt, the next time
+it opens that folder. Read, Grep and Glob may read them; a Bash command that names one is refused, whatever it does.
+
+Skills in `.claude/skills` and `.agents/skills` (Claude Code's own skills folders, which OpenCode loads too) stay
+writable with Write, Edit and MultiEdit: a Write is judged by its content, an edit by the file it would leave (the file
+must be readable, and hold each old text). A skill that would open with `---` and anything other than YAML or JSON
+(`---js`, which OpenCode runs as code) is refused, and so is an edit that adds such a line anywhere in it, and a write
+whose result the guard can't see: a NotebookEdit, a copy or move into a skills folder, an MCP or other tool that
+writes there. A Bash command that names a skills folder is refused, whatever it does (`ls ~/.claude/skills`, `git add
+.claude/skills`): use Read, Glob, Grep, Write and Edit. The cost: a Bash command that only names those files or
+folders (a `grep`, a commit message) is refused too, and an agent can't set up OpenCode for a project; you do that
+yourself. `.claude/settings.json` and `AGENTS.md` stay writable.
 
 Tool logins in your home folder are refused the same way: `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`,
 `~/.gem/credentials`, `~/.config/gcloud`, `~/.azure`, `~/.terraform.d/credentials.tfrc.json`, `~/.wrangler`,
@@ -349,6 +367,10 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
   destination keys (`out_dir`, `output`, `dest`, `target`, `save_path`), write verbs in the tool's name, and strings
   that start like a path. A tool that names a file under another key, or writes without a verb or a destination key, is
   not confined to the agent's folder.
+- A tool the guard does not know, named neither for writing nor only for reading (`read`, `get`, `list`, `search`, …),
+  is refused when any string it carries outside what it writes may name a skill or OpenCode's config or code, even a
+  one-word value such as `opencode.json`: the guard can't tell whether it only reads. Claude Code's own LSP tool is
+  one, so an LSP call on a skill or on OpenCode's config is refused; Read, Grep and Glob read them.
 - What a tool writes (`content`, `new_source`, `old_string`, `new_string`) is never read as a path, so an MCP tool that
   takes a path under one of those keys is unchecked.
 - Text that spans lines, or is over 4,096 characters once normalized, is treated as text. A tool that pulls a path out
@@ -388,7 +410,7 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
 ## Troubleshooting
 
 - "did not answer": read `holder.log`.
-- "read-only": the agent is open in the tool the notice names (pi, OMP, Codex or another Claude Code session).
+- "read-only": the agent is open in the tool the notice names (pi, OMP, Codex, OpenCode or another Claude Code session).
   `orrery status` shows it.
 - "not set up for Claude Code here": run `orrery claude-setup <Name>`, then start a new session.
 - "open outside its folder, where only the Orrery mod brings its memory": run `orrery claude-setup <Name> --mod`, then

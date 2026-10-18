@@ -1,6 +1,6 @@
 {
 	"name": "orrery",
-	"version": "0.7.0",
+	"version": "0.8.0",
 	"description": "An agent's memory in Claude Code: the memory view (in the system prompt through the Orrery mod, or at session start), recording, zoom/date/search, and the credential guard.",
 	"author": { "name": "Orrery contributors" }
 }

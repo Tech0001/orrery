@@ -79,6 +79,13 @@ describe("agentOverview", () => {
 		expect(TOOL_LABELS.omp).toBe("OMP");
 	});
 
+	it("reads a fresh OpenCode status as open in OpenCode, and guesses OpenCode as the tool when the config names none", () => {
+		const { config, agentDir } = setup();
+		writeFileSync(join(agentDir, "status.json"), JSON.stringify(status({ model: "opencode", thinking: "opencode", busy: true })));
+		expect(agentOverview(config, { now: NOW, alive })[0]).toMatchObject({ state: "working", openIn: "opencode", tool: "opencode", toolSet: false });
+		expect(TOOL_LABELS.opencode).toBe("OpenCode");
+	});
+
 	it("reads Claude Code's heartbeat: recording is open (working when busy), finishing is finishing", () => {
 		const { config, agentDir } = setup();
 		writeHolder(agentDir, { pid: 1, session: "s", claudePid: 2, state: "recording", startedAt: NOW - 5000, updatedAt: NOW - 1000 });

@@ -10,7 +10,7 @@ import * as hostPiAi from "@earendil-works/pi-ai/compat";
 import type { CredentialStore, Model, Models, Provider } from "@earendil-works/pi-ai/compat";
 import { builtinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import type { ChatTurn, CompactorModel, CompactorReply } from "../memory/index.ts";
-import { summaryCallHooks } from "./cache-marks.ts";
+import { trackedSummaryCall } from "./cache-marks.ts";
 import { chatTurnsToMessages } from "./chat-turns.ts";
 import type { CustomProviderConfig, AgentConfig, ModelChoice } from "./config.ts";
 
@@ -131,13 +131,16 @@ export function compactorModel(models: Models, choice: ModelChoice, sessionId: s
 		id: `${choice.provider}/${choice.modelId}`,
 		async complete(system: string, turns: readonly ChatTurn[], signal: AbortSignal, onStart?: () => void): Promise<CompactorReply> {
 			const messages = chatTurnsToMessages(turns, model);
-			const reply = await models.completeSimple(
-				model,
-				{ systemPrompt: system, messages },
-				{ signal, sessionId, maxRetries: 2, ...(choice.thinking === "off" ? {} : { reasoning: choice.thinking }), ...summaryCallHooks(model.api, turns, onStart) },
-			);
+			// A failure before the request left (no login saved, say) sent nothing: it makes no usage row.
+			const call = trackedSummaryCall(model.api, turns, onStart);
+			let reply: Awaited<ReturnType<Models["completeSimple"]>>;
+			try {
+				reply = await models.completeSimple(model, { systemPrompt: system, messages }, { signal, sessionId, maxRetries: 2, ...(choice.thinking === "off" ? {} : { reasoning: choice.thinking }), ...call.hooks });
+			} catch (error) {
+				throw call.failed(error);
+			}
 			if (reply.stopReason === "error" || reply.stopReason === "aborted") {
-				throw new Error(reply.errorMessage ?? `Compactor model ${reply.stopReason}`);
+				throw call.failed(new Error(reply.errorMessage ?? `Compactor model ${reply.stopReason}`));
 			}
 			return {
 				text: reply.content.map((block) => (block.type === "text" ? block.text : "")).join(""),

@@ -62,6 +62,19 @@ describe("the Tools page", () => {
 		expect(screen(app)).toContain("Nothing to install: Orrery's hooks and memory tools come with each launch.");
 	});
 
+	it("OpenCode needs nothing installed: I and Enter say Orrery's plugin comes with each launch, and the last plugin check", async () => {
+		const opencode: ToolCheck = { id: "opencode", label: "OpenCode", path: "/bin/opencode", version: "opencode v2.0.30", wiring: "memory", detail: "plugin checked with OpenCode 2.0.30" };
+		const app = makeApp(fakeDeps({ tools: () => [opencode], installSteps: () => [], install: () => { throw new Error("must not install"); } }), [toolsPage]);
+		expect(screen(app)).toMatch(/OpenCode\s+\/bin\/opencode\s+2\.0\.30\s+memory\s+plugin checked/);
+		keys(app, "I");
+		await app.idle();
+		expect(screen(app, 200)).toContain("Nothing to install for OpenCode: Orrery's plugin comes with each launch (plugin checked with OpenCode 2.0.30).");
+		keys(app, ENTER);
+		await answer(app, "OpenCode");
+		expect(screen(app)).toContain("Orrery: memory");
+		expect(screen(app)).toContain("Nothing to install: Orrery's plugin comes with each launch.");
+	});
+
 	it("I on the Orrery row says how Orrery updates: orrery update for a release, commit then npm run install-local from a checkout", async () => {
 		for (const [running, said] of [
 			["0.6.1", "Orrery updates with orrery update."],

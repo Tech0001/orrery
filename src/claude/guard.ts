@@ -26,7 +26,8 @@
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { guardToolCall, type PathGuardOptions, realTarget } from "../agent/guard-paths.ts";
+import { guardToolCall, openCodeOf, type PathGuardOptions, realTarget } from "../agent/guard-paths.ts";
+import { NEW_TEXT, type NewText, OPENCODE_READ_ONLY, openCodeLoads, openCodeSkillPath, SKILL_UNSEEN } from "../agent/guard-rules.ts";
 import { ownFolder } from "../agent/private-file.ts";
 
 /** Claude Code's tool names as pi's guard knows them. */
@@ -156,6 +157,8 @@ interface Named {
 	readonly pathLike: string[];
 	/** Command lines: strings under a command key, and lists under one joined with spaces. */
 	readonly commands: string[];
+	/** Every string of one word (no blank) with a ".", "/" or "~", whatever its key, but for what a tool writes: a path may be one. */
+	readonly words: string[];
 }
 
 /**
@@ -163,7 +166,7 @@ interface Named {
  * string counts only if it may be a path (oneLine): the rest is text or data.
  */
 function named(input: Readonly<Record<string, unknown>>): Named {
-	const found: Named = { paths: [], destinations: [], pathLike: [], commands: [] };
+	const found: Named = { paths: [], destinations: [], pathLike: [], commands: [], words: [] };
 	const stack: { key: string; value: unknown; under: boolean; into: boolean }[] = Object.entries(input).map(([key, value]) => ({ key, value, under: false, into: false }));
 	for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
 		const { key, value } = next;
@@ -175,6 +178,7 @@ function named(input: Readonly<Record<string, unknown>>): Named {
 			if (value !== "" && (pathKey || (next.under && oneLine(text)))) found.paths.push(value);
 			if (value !== "" && (destinationKey || (next.into && oneLine(text)))) found.destinations.push(value);
 			if (!CONTENT_KEY.test(key) && oneLine(text) && PATH_LIKE.test(text)) found.pathLike.push(value);
+			if (!CONTENT_KEY.test(key) && /[./~]/.test(text) && !/\s/.test(text) && text.length <= PATH_MAX) found.words.push(text);
 			const local = CONTENT_KEY.test(key) ? undefined : fileUriPath(value);
 			if (local !== undefined) found.paths.push(local);
 		} else if (typeof value === "object" && value !== null) {
@@ -258,13 +262,48 @@ export function claudeGuard(toolName: string, input: Readonly<Record<string, unk
 		...found.paths.map((path) => [path, mode] as const),
 		...found.destinations.map((path) => [path, "write"] as const),
 	]);
+	// What a write puts in its file, for the rule on a skill's front matter (guard-rules.ts openCodeSkillRefusal); a
+	// destination's (a copy's or a move's) is the file it takes, which the guard can't see.
+	const written = newTextOf(toolName, input);
+	const destinations = new Set(found.destinations);
 	for (const [path, use] of how) {
 		if (performance.now() >= deadline) return "this call names more paths than the guard can check in time; nothing was run.";
-		const reason = judgeBounded(use, { path }, guard);
+		const reason = judgeBounded(use, use === "read" ? { path } : { path, [NEW_TEXT]: destinations.has(path) ? undefined : written }, guard);
 		if (reason !== undefined) return reason;
+	}
+	// A tool Orrery doesn't know, named neither for writing nor only for reading, may write what it names, under any key:
+	// OpenCode's config and code (guard-rules.ts openCodeLoads), which no tool may write, are refused by every string
+	// that may be a path.
+	const last = toolName.split("__").at(-1) ?? toolName;
+	if (as === undefined && !verb && !READS_ONLY.test(last)) {
+		const openCode = openCodeOf(guard, home);
+		for (const text of new Set([...how.keys(), ...found.words])) {
+			if (performance.now() >= deadline) return "this call names more paths than the guard can check in time; nothing was run.";
+			const resolved = guard.resolvePath(text, guard.cwd, home);
+			if (resolved.length > PATH_MAX) continue;
+			const real = realTarget(resolved);
+			if (openCodeLoads(resolved, openCode) || openCodeLoads(real, openCode)) return OPENCODE_READ_ONLY(text);
+			if (openCodeSkillPath(resolved) || openCodeSkillPath(real)) return SKILL_UNSEEN(text);
+		}
 	}
 	return undefined;
 }
+
+/**
+ * What a write puts in its file, as far as the call shows (guard-rules.ts NewText): a gate's own (NEW_TEXT, Codex's and
+ * OpenCode's), Write's whole content, Edit's and MultiEdit's exact replacements; undefined for anything else (a notebook
+ * cell, a tool named for writing), which the skills rule refuses.
+ */
+function newTextOf(toolName: string, input: Readonly<Record<string, unknown>>): NewText | undefined {
+	if (NEW_TEXT in input) return (input as { readonly [NEW_TEXT]?: NewText })[NEW_TEXT];
+	if (toolName === "Write") return typeof input.content === "string" ? { whole: input.content } : undefined;
+	const edits = toolName === "Edit" ? [input] : toolName === "MultiEdit" && Array.isArray(input.edits) ? (input.edits as Record<string, unknown>[]) : [];
+	if (edits.length === 0 || !edits.every((edit) => typeof edit?.old_string === "string" && typeof edit.new_string === "string")) return undefined;
+	return { edits: edits.map((edit) => ({ old: edit.old_string as string, new: edit.new_string as string })) };
+}
+
+/** A tool that only reads, by the verb in its name (no download among them): it may name OpenCode's config to read it. */
+const READS_ONLY = /^(?!.*download)(?=.*(read|get|view|list|cat|show|search|find|grep|glob|stat|head|tail|fetch|inspect|describe|info|query|look))/i;
 
 /**
  * The folder Claude Code keeps a project's state in under ~/.claude/projects: the project folder with every

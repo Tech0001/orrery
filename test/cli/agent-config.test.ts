@@ -151,14 +151,16 @@ describe("orrery tools", () => {
 		expect(out.status).toBe(0);
 		// Wrangler's row appears only where worker/ has its own dependencies installed, which a fresh clone does not.
 		const wrangler = existsSync(fileURLToPath(new URL("../../worker/node_modules/.bin/wrangler", import.meta.url))) ? ["wrangler"] : [];
-		expect(JSON.parse(out.stdout).tools.map((t: { id: string }) => t.id)).toEqual(["pi", "claude-code", "codex", "omp", "ori", ...wrangler]);
+		expect(JSON.parse(out.stdout).tools.map((t: { id: string }) => t.id)).toEqual(["pi", "claude-code", "codex", "omp", "opencode", "ori", ...wrangler]);
 	});
 
 	it("keeps full paths, details and version strings in CLI text and JSON", () => {
-		const { env, home } = bare({ pi: 'echo "1.1.0"', claude: 'if [ "$1" = "--version" ]; then echo "2.1.296 (Claude Code)"; else echo "[]"; fi', codex: 'echo "codex-cli 0.162.1"', omp: 'echo "omp/18.10.2"' });
+		const { env, home } = bare({ pi: 'echo "1.1.0"', claude: 'if [ "$1" = "--version" ]; then echo "2.1.296 (Claude Code)"; else echo "[]"; fi', codex: 'echo "codex-cli 0.162.1"', omp: 'echo "omp/18.10.2"', opencode: 'echo "opencode v2.0.30"' });
 		const text = orrery(["tools"], env);
 		expect(text.status).toBe(0);
-		for (const version of ["2.1.296 (Claude Code)", "codex-cli 0.162.1", "omp/18.10.2"]) expect(text.stdout).toContain(version);
+		for (const version of ["2.1.296 (Claude Code)", "codex-cli 0.162.1", "omp/18.10.2", "opencode v2.0.30"]) expect(text.stdout).toContain(version);
+		// OpenCode's side comes with each launch, as Codex's does; the Tools line says what the last check found.
+		expect(text.stdout).toMatch(/^OpenCode +opencode v2\.0\.30 +memory +plugin is checked at the first launch$/m);
 		expect(text.stdout).toContain(`${home}/.pi/agent/extensions/orrery.ts`);
 		const result = orrery(["tools", "--json"], env);
 		expect(result.status).toBe(0);

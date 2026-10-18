@@ -13,6 +13,8 @@
  *   "~" a name, not home; links followed by realTarget; names matched in any case); what a patch writes is never judged;
  *   a patch the guard cannot read is refused, and so is one for another environment;
  * - view_image reads its path, placed as Codex places it;
+ * - Codex's own shell (Bash), which is how Codex reads files: shell text that names a skills folder is refused, unless it
+ *   is one plain read of skill files (guard-rules.ts skillShellRead), whose every file is then judged as a read;
  * - every tool, Bash and MCP tools among them, by Claude Code's heuristics: every command line (command, cmd, script,
  *   shell, args, argv) and every path or file: URI it names. spawn_agent's message is words for the new agent, which
  *   runs its own tools through this hook; a file its input hands that agent (an image, a skill) is a read;
@@ -42,8 +44,8 @@
 import { homedir } from "node:os";
 import { isAbsolute, normalize, resolve } from "node:path";
 import type { HarnessConfig } from "../agent/config.ts";
-import { agentViews, movedAgentDirCredentials, ompCredentials, RUST_SPACE } from "../agent/guard-paths.ts";
-import { inAnyReading, shellWord } from "../agent/guard-rules.ts";
+import { agentViews, GuardCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials, RUST_SPACE } from "../agent/guard-paths.ts";
+import { inAnyReading, NEW_TEXT, patchNewText, type SkillShellRead, shellWord, skillShellRead, skillsNamed } from "../agent/guard-rules.ts";
 import { workArea } from "../agent/pick.ts";
 import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from "../claude/guard.ts";
 import { TOOL_INPUT_MAX } from "../claude/hooks.ts";
@@ -193,15 +195,19 @@ const CALL_UNREADABLE = "Orrery could not read this call; nothing was run.";
 const PATCH_UNREADABLE = (why: string) => `Orrery could not read this patch (${why}); nothing was changed.`;
 const SHELL_PATCH_UNREADABLE = (why: string) => `This command runs apply_patch with a patch Orrery could not read (${why}); nothing was run. Use the apply_patch tool.`;
 
-/** Each of `targets` judged as a write, from each of `bases`, within the guard's time; the first refusal. */
-function judgeWrites(targets: readonly string[], bases: readonly string[], options: ClaudeGuardOptions): string | undefined {
+/**
+ * Each of `targets` judged as a write, from each of `bases`, within the guard's time; the first refusal. `patch`: the
+ * patch text they come from, for what each puts in its file (guard-rules.ts patchNewText).
+ */
+function judgeWrites(targets: readonly string[], bases: readonly string[], options: ClaudeGuardOptions, patch: string): string | undefined {
+	const written = patchNewText(patch);
 	const deadline = performance.now() + (options.judgeMs ?? JUDGE_MS);
 	if (targets.length > 0 && deadline <= performance.now()) return "this patch names more files than the guard can check in time; nothing was changed.";
 	for (const target of new Set(targets)) {
 		for (const cwd of isAbsolute(target) ? [options.cwd] : bases) {
 			const left = deadline - performance.now();
 			if (left <= 0) return "this patch names more files than the guard can check in time; nothing was changed.";
-			const reason = claudeGuard("Write", { file_path: target }, { ...options, cwd, resolvePath: (raw, base) => codexToolPath(raw, base), judgeMs: left });
+			const reason = claudeGuard("Write", { file_path: target, [NEW_TEXT]: written(target) }, { ...options, cwd, resolvePath: (raw, base) => codexToolPath(raw, base), judgeMs: left });
 			if (reason !== undefined) return reason;
 		}
 	}
@@ -221,7 +227,7 @@ function shellCommandPatch(command: string, options: ClaudeGuardOptions): string
 	if (carried.expands && read.targets.some((target) => /[$`\\]/.test(target))) return SHELL_PATCH_UNREADABLE("a path holds what the shell would change");
 	const bases = patchBases(carried.cd, options.cwd, options.home ?? homedir());
 	if (bases === undefined) return SHELL_PATCH_UNREADABLE("its cd goes where the guard cannot tell");
-	return judgeWrites(read.targets, bases, options) ?? "";
+	return judgeWrites(read.targets, bases, options, carried.patch) ?? "";
 }
 
 /** A line that opens or belongs to a patch: "*** Begin Patch" at its end, or a hunk header (trimmed) at its start. */
@@ -246,7 +252,7 @@ function patchText(text: string, options: ClaudeGuardOptions): string | undefine
 			return PATCH_UNREADABLE("a hunk header stands outside *** Begin Patch and *** End Patch");
 		}
 	}
-	return judgeWrites(targets, [options.cwd], options);
+	return judgeWrites(targets, [options.cwd], options, text);
 }
 
 /**
@@ -289,7 +295,7 @@ function byContent(input: Readonly<Record<string, unknown>>, timed: () => Claude
 		if (list.length === 2 && /^(?:apply_patch|applypatch)$/i.test(list[0] as string)) {
 			const read = readPatch(list[1] as string);
 			if ("unreadable" in read) return PATCH_UNREADABLE(read.unreadable);
-			const reason = judgeWrites(read.targets, [timed().cwd], timed());
+			const reason = judgeWrites(read.targets, [timed().cwd], timed(), list[1] as string);
 			if (reason !== undefined) return reason;
 			for (const item of list) judged.add(item);
 		}
@@ -313,6 +319,16 @@ function byContent(input: Readonly<Record<string, unknown>>, timed: () => Claude
 	return undefined;
 }
 
+/** Each file a plain read of skill files reads (guard-rules.ts skillShellRead) as a read, and a folder ls lists as a listing. */
+function judgeReads(read: SkillShellRead, timed: () => ClaudeGuardOptions): string | undefined {
+	for (const path of read.paths) {
+		if ((timed().judgeMs ?? 0) <= 0) return OUT_OF_TIME;
+		const reason = read.program === "ls" ? claudeGuard("LS", { path }, timed()) : claudeGuard("Read", { file_path: path }, timed());
+		if (reason !== undefined) return reason;
+	}
+	return undefined;
+}
+
 /**
  * Why a Codex tool call is refused, or undefined to let it through (module doc). Every check shares the call's time
  * (`judgeMs`, default 2 s): one that has none left refuses, so the hook answers before Codex's timeout lets the call
@@ -322,13 +338,21 @@ export function codexGuard(toolName: string, input: unknown, options: ClaudeGuar
 	if (typeof input !== "object" || input === null || Array.isArray(input)) return CALL_UNREADABLE;
 	const args = input as Readonly<Record<string, unknown>>;
 	const deadline = performance.now() + (options.judgeMs ?? JUDGE_MS);
-	const timed = (): ClaudeGuardOptions => ({ ...options, judgeMs: deadline - performance.now() });
+	// One guard call: the rules every path of it is judged by are worked out once (guard-paths.ts GuardCall).
+	const call = options.call ?? new GuardCall();
+	const timed = (): ClaudeGuardOptions => ({ ...options, call, judgeMs: deadline - performance.now() });
 	if (deadline <= performance.now()) return OUT_OF_TIME;
 	if (toolName === "apply_patch") {
 		if (typeof args.command !== "string") return PATCH_UNREADABLE("it is no text");
 		const read = readPatch(args.command);
 		if ("unreadable" in read) return PATCH_UNREADABLE(read.unreadable);
-		return judgeWrites(read.targets, [options.cwd], timed()) ?? byContent(args, timed, args.command);
+		return judgeWrites(read.targets, [options.cwd], timed(), args.command) ?? byContent(args, timed, args.command);
+	}
+	// Codex's own shell, which has no file tool to read with: a plain read of skill files passes the skills rule, every
+	// other rule still applies, and each file it reads is judged as a read (links followed). An MCP shell is not Codex's.
+	if (toolName === "Bash" && typeof args.command === "string" && skillsNamed(args.command)) {
+		const read = skillShellRead(args.command);
+		if (read !== undefined) return claudeGuard("Bash", args, { ...timed(), shellReadsSkills: true }) ?? judgeReads(read, timed) ?? byContent(args, timed);
 	}
 	const reason = toolName === "view_image" ? claudeGuard("view_image", args, { ...timed(), resolvePath: (raw, cwd) => codexToolPath(raw, cwd) }) : claudeGuard(toolName, args, timed());
 	return reason ?? byContent(args, timed);
@@ -406,7 +430,7 @@ function judgeCall(stdin: string | undefined, ctx: CodexGuardContext): string | 
 		folder: workArea(agent ?? {}, call.cwd),
 		allowedRoots: agent?.allowedRoots ?? [],
 		cwd: call.cwd,
-		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...movedConfigDirCredentials(env), ...ompCredentials(env, home)],
+		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...movedConfigDirCredentials(env), ...ompCredentials(env, home), ...openCodeCredentials(env, home)],
 		orreryData: config.dataDir,
 		home,
 		protect: config.guard.protect,

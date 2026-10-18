@@ -25,8 +25,9 @@ import { createAgentEnv, type AgentEnv } from "./env.ts";
 import { memoryExtension } from "./extension.ts";
 import { guardExtension } from "./guard.ts";
 import { cutNotice, readInstructions } from "./instructions.ts";
-import { agentViews } from "./guard-paths.ts";
+import { agentViews, openCodeCredentials } from "./guard-paths.ts";
 import { compactorModel, createAgentModels, modelContextWindow, savedSummaryLoginsOnly } from "./models.ts";
+import { isOpenCodeChoice, OPENCODE_SOURCE } from "./opencode-source.ts";
 import { Projector } from "./projector.ts";
 import { agentSummarizer } from "./summarizer.ts";
 export { type AgentStatus, type ModelSource, readStatus } from "./status-file.ts";
@@ -185,6 +186,10 @@ export class Agent {
 			const compactorChoice = storedChoice(store, COMPACTOR_MODEL_KEY, exists);
 			const model = agentChoice.choice ?? configModel;
 			const compactorChosen = compactorChoice.choice ?? config.compactor.model;
+			// An OpenCode model makes summaries only in OpenCode (src/opencode/summaries.ts): said plainly, as orrery compact says it.
+			if (isOpenCodeChoice(compactorChosen)) {
+				throw new Error(`${config.name}'s summary model in the config (${compactorChosen.provider}/${compactorChosen.modelId}) is an OpenCode model, which works only while ${config.name} is open in OpenCode: open it there, or set another compactor_model in Orrery's config to run it here.`);
+			}
 			const view = new MemoryView(store, config.memory.viewBytes);
 			const summaryModels = options.models ?? (savedSummaryLoginsOnly(config)
 				? createAgentModels({ credentials: new FileCredentialStore(options.config.credentialsPath), providers: options.config.providers, savedLoginsOnly: true })
@@ -205,7 +210,7 @@ export class Agent {
 				guardExtension({
 					folder,
 					allowedRoots: config.allowedRoots,
-					credentials: [options.config.credentialsPath],
+					credentials: [options.config.credentialsPath, ...openCodeCredentials()],
 					orreryData: options.config.dataDir,
 					protect: options.config.guard.protect,
 					...agentViews(options.config, config),
@@ -244,9 +249,14 @@ export class Agent {
 				compactorModel: compactorChosen,
 				compactorSource: compactorChoice.choice ? "chat" : "config",
 			});
-			for (const stale of [agentChoice.stale, compactorChoice.stale]) {
-				if (stale !== undefined) agent.report(`The model chosen in chat (${stale}) is no longer available; using the config's.`);
-			}
+			const stale = (choice: string) => `The model chosen in chat (${choice}) is no longer available; using the config's.`;
+			if (agentChoice.stale !== undefined) agent.report(stale(agentChoice.stale));
+			// A summary model chosen in OpenCode runs only there (src/opencode/summaries.ts): not gone, just not here.
+			const summaries = compactorChoice.stale;
+			if (summaries?.startsWith(`${OPENCODE_SOURCE}/`)) {
+				const own = config.compactor.model;
+				agent.report(`${config.name}'s summary model chosen in OpenCode (${summaries}) is an OpenCode model, which works only inside OpenCode: using the config's (${own.provider}/${own.modelId}) here.`);
+			} else if (summaries !== undefined) agent.report(stale(summaries));
 			if (found?.cut === true) agent.report(cutNotice(config.name));
 			compactor.start();
 			projector.start(harness);

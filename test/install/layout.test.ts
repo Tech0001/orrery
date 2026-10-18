@@ -14,7 +14,7 @@ describe("entries", () => {
 		mkdirSync(join(app, "0.5.0-9d7452f", "src"), { recursive: true });
 		symlinkSync("0.6.0", join(app, "current"));
 		const current = join(app, "current");
-		expect(entries(current)).toEqual({ style: "binary", cli: join(current, "bin", "orrery"), pi: join(current, "extensions", "pi.js"), omp: join(current, "extensions", "omp.js") });
+		expect(entries(current)).toEqual({ style: "binary", cli: join(current, "bin", "orrery"), pi: join(current, "extensions", "pi.js"), omp: join(current, "extensions", "omp.js"), opencode: join(current, "extensions", "opencode") });
 		expect(entries(join(app, "0.5.0-9d7452f")).style).toBe("source");
 		expect(entries(join(app, "0.5.0-9d7452f")).pi).toBe(join(app, "0.5.0-9d7452f", "src", "pi", "index.ts"));
 		expect(entries(join(app, "0.5.0-9d7452f"))).toEqual({
@@ -22,6 +22,8 @@ describe("entries", () => {
 			cli: join(app, "0.5.0-9d7452f", "src", "cli", "main.ts"),
 			pi: join(app, "0.5.0-9d7452f", "src", "pi", "index.ts"),
 			omp: join(app, "0.5.0-9d7452f", "src", "omp", "index.ts"),
+			// A source copy's OpenCode plugin folder holds only the plugin's entry (OpenCode loads server.* there).
+			opencode: join(app, "0.5.0-9d7452f", "src", "opencode", "plugin"),
 		});
 	});
 
@@ -72,6 +74,7 @@ describe("entries", () => {
 			cli: [join("bin", "orrery"), join("src", "cli", "main.ts")],
 			pi: [join("extensions", "pi.js"), join("src", "pi", "index.ts")],
 			omp: [join("extensions", "omp.js"), join("src", "omp", "index.ts")],
+			opencode: [join("extensions", "opencode"), join("src", "opencode", "plugin")],
 		});
 	});
 });

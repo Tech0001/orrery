@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseConfig } from "../../src/agent/config.ts";
@@ -23,7 +23,7 @@ afterEach(() => {
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-const tool = (id: ToolCheck["id"], fields: Partial<ToolCheck> = {}): ToolCheck => ({ id, label: { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", ori: "Ori", wrangler: "wrangler" }[id], path: `/bin/${id}`, version: id === "codex" ? "codex-cli 0.162.1" : "1", wiring: id === "codex" ? "memory" : "installed", detail: "", ...fields });
+const tool = (id: ToolCheck["id"], fields: Partial<ToolCheck> = {}): ToolCheck => ({ id, label: { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", opencode: "OpenCode", ori: "Ori", wrangler: "wrangler" }[id], path: `/bin/${id}`, version: id === "codex" ? "codex-cli 0.162.1" : id === "opencode" ? "opencode v2.0.30" : "1", wiring: id === "codex" || id === "opencode" ? "memory" : "installed", detail: "", ...fields });
 
 /** Summary sources with an Anthropic key saved, in a temp folder (offline: listing models makes no call). */
 async function anthropicSources() {
@@ -132,6 +132,67 @@ describe("L launch", () => {
 		expect(plans[0]).toMatchObject({ command: "/bin/codex", env: { ORRERY_AGENT: "Alpha" }, codex: { path: "/bin/codex" } });
 		expect(plans[0]?.withoutOrrery).toBeUndefined();
 		expect(screen(app)).toContain("Back from Codex (Alpha).");
+	});
+
+	it("opens OpenCode with --standalone and Orrery's plugin once the plugin check passes; the token goes to a file", async () => {
+		const home = tempDir("orrery-tui-opencode-");
+		dirs.push(home);
+		vi.stubEnv("ORRERY_HOME", home);
+		const plans: LaunchPlan[] = [];
+		const checked: LaunchPlan[] = [];
+		const deps = fakeDeps(
+			{
+				tools: () => [tool("pi"), tool("codex"), tool("opencode")],
+				codexCheck: async () => { throw new Error("must not ask Codex"); },
+				opencodeCheck: async (plan) => (checked.push(plan), { ok: true }),
+				launch: async (plan) => (plans.push(plan), { code: 0, signal: null }),
+			},
+			[row({ name: "Alpha", tool: "opencode", folder: "/" })],
+		);
+		const app = makeApp(deps, [agentsPage]);
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await app.idle();
+		expect(checked).toHaveLength(1);
+		expect(plans).toHaveLength(1);
+		const plan = plans[0] as LaunchPlan;
+		expect(plan).toMatchObject({ tool: "opencode", command: "/bin/opencode", args: ["--standalone", "/"], unsetEnv: ["ORRERY_AGENT", "ORRERY_AGENT_TOKEN"], opencode: { path: "/bin/opencode", version: "2.0.30" } });
+		expect(Object.keys(plan.env)).toEqual(["OPENCODE_CONFIG_CONTENT"]);
+		expect(plan.opencode?.tokenFile.startsWith(join(home, "tokens"))).toBe(true);
+		// Written for the launch, removed after it.
+		expect(readdirSync(join(home, "tokens"))).toEqual([]);
+		expect(screen(app)).toContain("Back from OpenCode (Alpha).");
+	});
+
+	it("when Orrery's plugin doesn't load in OpenCode: says so and asks, default no; yes starts plain OpenCode, unrecorded", async () => {
+		const home = tempDir("orrery-tui-opencode-");
+		dirs.push(home);
+		vi.stubEnv("ORRERY_HOME", home);
+		const plans: LaunchPlan[] = [];
+		const text = "Orrery's plugin doesn't load in OpenCode 2.0.31: OpenCode could not load Orrery's plugin (x). Without it a session has no memory and no guard.";
+		const deps = fakeDeps(
+			{ tools: () => [tool("pi"), tool("opencode")], opencodeCheck: async () => ({ ok: false, text }), launch: async (plan) => (plans.push(plan), { code: 0, signal: null }) },
+			[row({ name: "Alpha", tool: "opencode", folder: "/" })],
+		);
+		const app = makeApp(deps, [agentsPage]);
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "Orrery's plugin doesn't load in OpenCode 2.0.31");
+		expect(screen(app)).toContain("Start OpenCode without Orrery anyway? The session won't be recorded and the guard will be off.");
+		keys(app, "n");
+		await app.idle();
+		expect(plans).toEqual([]);
+		expect(screen(app)).toContain("Not launched.");
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "Orrery's plugin doesn't load", "y");
+		await app.idle();
+		expect(plans).toHaveLength(1);
+		// Plain OpenCode: no --standalone, no plugin, no token, and not as the agent.
+		expect(plans[0]).toMatchObject({ command: "/bin/opencode", args: [], env: {}, withoutOrrery: true });
+		expect(plans[0]?.opencode).toBeUndefined();
+		expect(existsSync(join(home, "tokens"))).toBe(false);
+		expect(screen(app)).toContain("Back from OpenCode (Alpha), started without Orrery: that session was not recorded.");
 	});
 
 	it("asks before a second session on an open agent; no cancels", async () => {
@@ -360,6 +421,26 @@ describe("M summary model", () => {
 	});
 });
 
+describe("M summary model: OpenCode's models", () => {
+	it("says OpenCode's models are chosen inside OpenCode, and changes nothing", async () => {
+		const sources = await anthropicSources();
+		const applied: unknown[] = [];
+		const tested: unknown[] = [];
+		const target: CompactorTarget = {
+			current: () => ({ choice: { provider: "opencode", modelId: "anthropic/claude-sonnet-4-5", thinking: "off" }, source: "chat" }),
+			configured: () => ({ provider: "openai", modelId: "gpt-6.1-sol", thinking: "low" }),
+			apply: async (choice) => (applied.push(choice), "applied"),
+		};
+		const deps = fakeDeps({ sources: async () => sources, target: () => target, testChoice: async (_s, choice) => (tested.push(choice), { ok: true as const }) });
+		const app = makeApp(deps, [agentsPage]);
+		keys(app, "M");
+		await answer(app, "Summaries from:", ...typed("OpenCode"), ENTER);
+		await app.idle();
+		expect(screen(app)).toContain("OpenCode's models are picked inside OpenCode: open Alpha there, then /compactor.");
+		expect([applied, tested]).toEqual([[], []]);
+	});
+});
+
 describe("C settings", () => {
 	it("changes summary jobs and the tool in the config, keeping the rest", async () => {
 		const deps = fakeDeps();
@@ -375,6 +456,11 @@ describe("C settings", () => {
 		await answer(app, "Tool:", ...typed("codex"), ENTER);
 		await app.idle();
 		expect(deps.edits.at(-1)).toContain('tool = "codex"');
+		keys(app, "C");
+		await answer(app, "change which setting", ...typed("tool"), ENTER);
+		await answer(app, "Tool:", ...typed("opencode"), ENTER);
+		await app.idle();
+		expect(deps.edits.at(-1)).toContain('tool = "opencode"');
 	});
 
 	it("changes where Claude Code compacts, refusing under 100 thousand", async () => {

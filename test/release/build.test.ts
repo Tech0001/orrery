@@ -10,14 +10,14 @@ const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")) as { ve
 describe.skipIf(!bunReady)("build-release (host)", () => {
 	afterAll(removeBuiltRelease);
 
-	it("lays out one release folder: VERSION, the binary, the plugin, deploy files and licenses, and no sources", async () => {
+	it("lays out one release folder: VERSION, the binary, the plugins and extensions, deploy files and licenses, and no sources", async () => {
 		const folder = await builtRelease();
 		const version = readFileSync(join(folder, "VERSION"), "utf8").trim();
 		expect(version).toMatch(new RegExp(`^${pkg.version.replace(/\./g, "\\.")}-[0-9a-f]{7}$`));
 		expect(basename(folder)).toMatch(new RegExp(`^orrery-${version}-(linux|darwin)-(x64|arm64)$`));
 		expect(statSync(join(folder, "bin", "orrery")).mode & 0o111).not.toBe(0);
 		expect(readdirSync(join(folder, "bin"))).toEqual(["orrery"]);
-		for (const file of [".claude-plugin/marketplace.json", "claude-plugin/.claude-plugin/plugin.json", "claude-plugin/hooks/mod.ts", "claude-plugin/bin/orrery-run", "deploy/workstation/backup.sh", "LICENSE", "THIRD_PARTY_LICENSES"]) {
+		for (const file of [".claude-plugin/marketplace.json", "claude-plugin/.claude-plugin/plugin.json", "claude-plugin/hooks/mod.ts", "claude-plugin/bin/orrery-run", "extensions/pi.js", "extensions/omp.js", "extensions/opencode/server.js", "deploy/workstation/backup.sh", "LICENSE", "THIRD_PARTY_LICENSES"]) {
 			expect(existsSync(join(folder, file)), file).toBe(true);
 		}
 		expect(existsSync(join(folder, "claude-plugin", "tests"))).toBe(false);

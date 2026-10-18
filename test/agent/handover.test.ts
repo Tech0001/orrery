@@ -32,6 +32,9 @@ describe("openElsewhere: where an agent is open, said to a session that can't ha
 		writeFileSync(join(dir, "status.json"), JSON.stringify(statusOf("omp")));
 		expect(openElsewhere(dir, "omp")).toBe("open in another OMP session");
 		expect(openElsewhere(dir, "codex")).toBe("open in OMP");
+		writeFileSync(join(dir, "status.json"), JSON.stringify(statusOf("opencode")));
+		expect(openElsewhere(dir, "pi")).toBe("open in OpenCode");
+		expect(openElsewhere(dir, "opencode")).toBe("open in another OpenCode session");
 	});
 
 	it("lists every other tool when nothing says which", () => {
@@ -40,5 +43,6 @@ describe("openElsewhere: where an agent is open, said to a session that can't ha
 		expect(openElsewhere(dir, "omp")).toBe("open elsewhere (pi, Claude Code, Codex, or another OMP session)");
 		expect(openElsewhere(dir, "claude-code")).toBe("open elsewhere (pi, OMP, Codex, or another Claude Code session)");
 		expect(openElsewhere(dir, "codex")).toBe("open elsewhere (pi, OMP, Claude Code, or another Codex session)");
+		expect(openElsewhere(dir, "opencode")).toBe("open elsewhere (pi, OMP, Claude Code, Codex, or another OpenCode session)");
 	});
 });

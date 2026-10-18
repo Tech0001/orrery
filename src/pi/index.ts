@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { defaultConfigPath, type HarnessConfig, type AgentConfig, agentForCwd, loadConfig, protectInText } from "../agent/config.ts";
-import { HOST_LABELS, holderFresh, openElsewhere, openYielding, readHolder } from "../agent/handover.ts";
+import { HOST_LABELS, holderFresh, holdingTool, openElsewhere, openYielding, readHolder } from "../agent/handover.ts";
 import { orreryHome } from "../agent/home.ts";
 import { cutNotice, instructionsSection, readInstructions } from "../agent/instructions.ts";
 import { compactorCommand } from "../agent/agent-commands.ts";
@@ -30,7 +30,7 @@ import { browse, memoryReport, pageOpener } from "./commands.ts";
 import { compactorMenu, agentTarget, signInFromMenu } from "../agent/compactor-menu.ts";
 import { AgentHeld, PiAgent } from "./agent.ts";
 import { copySession, markSessionCopied, moveCursor, startAtTail } from "./log.ts";
-import { guardOmpToolCall, guardToolCall, agentViews, movedAgentDirCredentials, ompCredentials } from "./guard.ts";
+import { guardOmpToolCall, guardToolCall, agentViews, movedAgentDirCredentials, ompCredentials, openCodeCredentials } from "./guard.ts";
 import { memoryTools, readerTools } from "./tools.ts";
 import { compactionDecision, memorySection, trimToRun } from "./turn.ts";
 import { remoteFooter, remoteOpenNotice } from "../remote/checkout.ts";
@@ -169,7 +169,7 @@ function guardBase(config: HarnessConfig, options: OrreryOptions): Pick<Guarded,
 	return {
 		home,
 		orreryData: config.dataDir,
-		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)],
+		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home), ...openCodeCredentials(env, home)],
 		protect: config.guard.protect,
 		...(configFile === undefined ? {} : { configFile }),
 	};
@@ -192,7 +192,7 @@ function unreadableGuard(file: string, cwd: string, options: OrreryOptions, prot
 	} catch {
 		data = join(home, ".orrery"); // a relative ORRERY_HOME: the default home
 	}
-	const credentials = [join(data, "credentials.json"), join(dirname(resolve(file)), "credentials.json"), ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)];
+	const credentials = [join(data, "credentials.json"), join(dirname(resolve(file)), "credentials.json"), ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home), ...openCodeCredentials(env, home)];
 	const known = { protect: protect ?? [], ...(protect === undefined ? { blind: true } : {}) };
 	return { by: "unreadable", workArea: workArea({}, cwd), allowedRoots: [], home, orreryData: data, credentials, foreignViews: [], fileModeViews: [], configFile: file, ...known };
 }
@@ -782,14 +782,16 @@ function troubleState(agent: PiAgent): TroubleState | null {
 }
 
 /**
- * Why this session runs without memory: the agent is open in Claude Code or Codex (its holder beats), in another session,
- * or failed to open. A remote agent held on this machine names the tool that holds it, when one says (openElsewhere).
+ * Why this session runs without memory: the agent is open in Claude Code or Codex (its holder beats), in OpenCode (its
+ * status says so), in another session, or failed to open. A remote agent held on this machine names the tool that holds
+ * it, when one says (openElsewhere).
  */
 function notOpened(agent: AgentConfig, error: unknown, label: string, host: "pi" | "omp"): string {
 	if (!(error instanceof AgentHeld)) return `Orrery: ${agent.name}: ${agent.remote === undefined ? errorText(error) : remoteOpenNotice(agent, error)}; this ${label} runs without memory.`;
 	if (agent.remote !== undefined) return `${agent.name} is ${openElsewhere(agent.dir, host)} on this machine; this ${label} runs without memory.`;
 	const holder = readHolder(agent.dir);
 	if (holderFresh(holder)) return `${agent.name} is open in ${HOST_LABELS[holder.host === "codex" ? "codex" : "claude-code"]}; this ${label} runs without memory.`;
+	if (holdingTool(agent.dir) === "opencode") return `${agent.name} is open in OpenCode; this ${label} runs without memory.`;
 	return error.message;
 }
 

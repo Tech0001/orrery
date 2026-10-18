@@ -12,12 +12,13 @@ import { editInstructionsFile } from "../../agent/editor.ts";
 import { instructionsTemplate, readInstructions } from "../../agent/instructions.ts";
 import { summaryLine } from "../../agent/agent-commands.ts";
 import { exitText, launchLabel, type LaunchPlan, launchPlan, remoteGate, runAgent, withoutOrrery } from "../../agent/launch.ts";
+import { withoutOrreryQuestion } from "../../agent/load-check.ts";
+import type { CodexGate } from "../../codex/check.ts";
 import { archiveRefusal, type AgentRow, TOOL_LABELS } from "../../agent/overview.ts";
 import { workArea } from "../../agent/pick.ts";
 import { safeText } from "../../agent/source-labels.ts";
 import { switchSummaryModel } from "../../agent/summary-text.ts";
 import { shortHome } from "../../agent/tools.ts";
-import { WITHOUT_ORRERY_QUESTION } from "../../codex/check.ts";
 import { localIso } from "../../memory/index.ts";
 import type { App } from "../app.ts";
 import { ConfirmModal, hardWrap, InputModal, MessageModal, menuUI, SelectModal } from "../dialogs.ts";
@@ -100,16 +101,18 @@ async function whereToOpen(app: App, row: AgentRow): Promise<string | undefined>
 }
 
 /**
- * Codex's checks (src/agent/launch.ts checkCodexHooks): the plan as it is when they pass; when Orrery's hooks don't
- * load, plain Codex after a yes; when the hooks' shell prints, the plan as it is after a yes (each question's default is
- * no: n and Esc), else undefined.
+ * Codex's checks (src/agent/launch.ts checkCodexHooks) and OpenCode's (checkOpenCodePlugin): the plan as it is when
+ * they pass; when Orrery's hooks or plugin don't load, plain Codex or OpenCode after a yes; when Codex's hook shell
+ * prints, the plan as it is after a yes (each question's default is no: n and Esc), else undefined.
  */
-async function codexHooksOrPlain(app: App, plan: LaunchPlan): Promise<LaunchPlan | undefined> {
-	if (plan.codex === undefined) return plan;
-	const gate = await app.deps.codexCheck(plan, (text) => app.say(text));
+async function checkedOrPlain(app: App, plan: LaunchPlan): Promise<LaunchPlan | undefined> {
+	if (plan.codex === undefined && plan.opencode === undefined) return plan;
+	const say = (text: string) => app.say(text);
+	const check = (p: LaunchPlan): Promise<CodexGate> => (p.opencode !== undefined ? app.deps.opencodeCheck(p, say) : app.deps.codexCheck(p, say));
+	const gate = await check(plan);
 	if (gate.ok) return plan;
 	if ("noisyShell" in gate) return (await app.host.open(new ConfirmModal(safeLines(`${gate.text}\n\n${gate.question}`)))) ? plan : undefined;
-	if (!(await app.host.open(new ConfirmModal(safeLines(`${gate.text}\n\n${WITHOUT_ORRERY_QUESTION}`))))) return undefined;
+	if (!(await app.host.open(new ConfirmModal(safeLines(`${gate.text}\n\n${withoutOrreryQuestion(TOOL_LABELS[plan.tool])}`))))) return undefined;
 	return withoutOrrery(plan);
 }
 
@@ -130,10 +133,10 @@ export function launchAgent(app: App, row: AgentRow | undefined): void {
 		const plan = launchPlan(config, gate.row, tools, { cwd });
 		const label = launchLabel(plan);
 		if (plan.blocked !== undefined) throw new Error(plan.blocked);
-		// Codex's hook check comes first: a no to it must leave no lock taken over and no step done.
-		const launching = await codexHooksOrPlain(app, plan);
+		// Codex's hook check and OpenCode's plugin check come first: a no to one must leave no lock taken over and no step done.
+		const launching = await checkedOrPlain(app, plan);
 		if (launching === undefined) return "Not launched.";
-		// Plain Codex opens no agent: it takes no lock over (nor asks about a second session, withoutOrrery).
+		// Plain Codex or OpenCode opens no agent: it takes no lock over (nor asks about a second session, withoutOrrery).
 		if (gate.takeover !== undefined && launching.withoutOrrery !== true) {
 			if (app.deps.takeoverAgent === undefined) throw new Error("Remote takeover is unavailable here.");
 			if (!(await app.host.open(new ConfirmModal(safeLines(gate.takeover))))) return "Not launched.";
@@ -179,7 +182,12 @@ export function chooseSummaryModel(app: App, row: AgentRow | undefined): void {
 		const { choice: now, source } = target.current();
 		const configured = target.configured();
 		const reset = `Back to the config's model (${configured.provider}/${configured.modelId})`;
-		const picked = await pickSummaryModel(menuUI(app.host), sources, { heading: summaryLine(now, source), thinking: now.thinking, askThinking: true, extra: source === "chat" ? [reset] : [] });
+		// OpenCode's models are OpenCode's to list (its providers, its logins): the TUI can't know them, so it says where.
+		const inside = "OpenCode's models (chosen inside OpenCode)";
+		const picked = await pickSummaryModel(menuUI(app.host), sources, { heading: summaryLine(now, source), thinking: now.thinking, askThinking: true, extra: [...(source === "chat" ? [reset] : []), inside] });
+		if (picked !== undefined && "extra" in picked && picked.extra === inside) {
+			return `OpenCode's models are picked inside OpenCode: open ${row.name} there, then /compactor.`;
+		}
 		const choice = pickedChoice(picked);
 		if (choice instanceof Error) throw choice;
 		if (choice === undefined && !(picked !== undefined && "extra" in picked)) return undefined;

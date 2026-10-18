@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { parse } from "smol-toml";
 import { type MemoryConfig, memoryConfig } from "../memory/index.ts";
 import { ConfigError, orreryHome } from "./home.ts";
+import { OPENCODE_SOURCE } from "./opencode-source.ts";
 
 export { ConfigError };
 
@@ -14,7 +15,7 @@ export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhig
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 /** The tools an agent is launched in (the `tool` key). */
-export const AGENT_TOOLS = ["pi", "claude-code", "codex", "omp"] as const;
+export const AGENT_TOOLS = ["pi", "claude-code", "codex", "omp", "opencode"] as const;
 export type AgentLauncher = "direct" | "ori";
 export type AgentTool = (typeof AGENT_TOOLS)[number];
 
@@ -173,8 +174,10 @@ function parseProviders(raw: unknown): CustomProviderConfig[] {
 		const models = t.models;
 		if (!Array.isArray(models) || models.length === 0) throw new ConfigError(`${where}.models must be a non-empty array`);
 		const apiKeyEnv = optStr(t, "api_key_env", where);
+		const id = str(t, "id", where);
+		if (id === OPENCODE_SOURCE) throw new ConfigError(`${where}.id: "${OPENCODE_SOURCE}" is reserved for OpenCode's models (opencode/<provider>/<model>)`);
 		return {
-			id: str(t, "id", where),
+			id,
 			baseUrl: str(t, "base_url", where),
 			...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
 			models: models.map((m, j) => {

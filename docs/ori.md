@@ -54,6 +54,9 @@ For Codex, Orrery's hooks, memory server and instructions follow `ori codex` as 
 after the same hook check; a Codex session through Ori has not been checked yet. If Ori is missing, Orrery refuses the
 launch and names this document.
 
+OpenCode agents are not launched through Ori yet: Ori starts OpenCode its own way, with config of its own that Orrery
+has not checked, so `orrery agent` refuses an OpenCode agent whose launcher is `ori` and says to set it to `direct`.
+
 ## Sign in for summaries
 
 For agents with `launcher = "ori"`, Orrery's cloud summaries use only its own saved logins. They ignore

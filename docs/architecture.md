@@ -14,7 +14,7 @@ The store is local and inspectable; summaries are derived data rather than the o
 ## An agent from prompt to recall
 
 An agent has a data directory under `data_dir/agents/<Name>/`, a summary model, and optionally a default folder.
-The `tool` setting selects pi, OMP, Claude Code or Codex for launching.
+The `tool` setting selects pi, OMP, Claude Code, Codex or OpenCode for launching.
 The optional `launcher` setting selects direct launch or Ori.
 Those launch choices do not select a different memory database: each tool reaches the same memory through its own
 adapter.
@@ -61,6 +61,7 @@ A later session reads the same log and view, regardless of the previous agent's 
 The host adapter decides what constitutes a recordable event.
 pi and OMP record user messages and completed assistant text, without copying every tool exchange.
 Claude Code's plugin records prompts and final replies through hooks.
+OpenCode's plugin records prompts and the final reply of each run, inside OpenCode's server process.
 The older durable runtime and imported histories can contain additional message kinds.
 Hidden reasoning is not a memory source.
 
@@ -105,7 +106,7 @@ Status pages, memory tools, exports and other authorized agents use read-only sn
 Readers do not take the writer lock or advance the writer's progress.
 A second pi or OMP session cannot quietly become a second recorder.
 It reports the conflict and runs without agent memory, while applicable guard rules remain active.
-Claude Code can provide a read-only window while its recording window owns the agent.
+Claude Code, Codex and OpenCode provide a read-only session while another session owns the agent.
 
 The rule applies across tools, not just across two copies of the same executable.
 Close the recording session before opening the agent in another tool.
@@ -216,6 +217,8 @@ The agent and compactor may use different models and different credentials.
 Their caches should therefore be treated separately.
 The smaller summary view limits input even when a provider does not reuse its cache.
 Usage records expose input, output and reported cache tokens so the effect can be measured.
+A summary attempt that failed once its request left is recorded too, with zero tokens; one that failed before any
+request left (no login saved, a model no longer offered) is not.
 The TUI distinguishes subscription-backed usage from priced API usage where that information is available.
 
 ## Adapters and boundaries
@@ -258,11 +261,21 @@ The agent is the one `ORRERY_AGENT` names, with its token; no folder picks it, s
 Before a Codex or Orrery version it has not seen, the launch asks Codex's app server whether the hooks load, because Codex skips an untrusted hook silently.
 See [Codex](codex.md) for the guard's Codex-specific limits.
 
+**OpenCode:** nothing is installed into OpenCode either.
+`orrery agent` launches `opencode --standalone`, a private server for that one launch, with `OPENCODE_CONFIG_CONTENT` naming Orrery's plugin folder, the agent and the path of a 0600 token file; the token never enters OpenCode's environment, which the model's shell and MCP servers inherit.
+The plugin runs in OpenCode's server process for the session, as pi's extension does in pi: it holds the writer, records each run's prompt and final reply, runs summaries, and adds the instructions and memory section as the last system parts, the same bytes on every request of a session in that OpenCode until its compaction.
+It answers OpenCode's compaction from memory with no model call, names sessions so no title request is sent, and gives `zoom`, `date` and `search` as plugin tools.
+The guard runs on OpenCode's tool hook with its own deadline, since OpenCode sets none, and again at OpenCode's permission check for reads and edits.
+Summaries can also go through a paid or own-key model of OpenCode's, as short-lived OpenCode sessions, while the agent is open there; OpenCode's free tier is not offered.
+Before an OpenCode or Orrery version it has not seen, the launch asks a private OpenCode server whether the plugin loads.
+See [OpenCode](opencode.md) for the details and the guard's OpenCode-specific limits.
+
 **Ori:** Ori supplies OpenRouter models to the agent executable.
 Orrery launches `ori pi`, `ori omp`, `ori claude` or `ori codex` in the folder the agent is opened in.
 The optional `ori_model` is passed through as `--model`.
 Ori's pi provider suppression affects the session registry; Orrery's separate summary registry survives it.
 [Ori](ori.md) records the tested startup incompatibility with OMP and the manual Claude check still required.
+OpenCode agents are not launched through Ori yet.
 
 **Durable runtime:** `orrery run <Name>`, which starts an agent's own harness in the terminal it runs in, remains an alternative built on pi-durable.
 It owns a durable session database alongside the memory store and can execute tools over SSH.
@@ -277,6 +290,7 @@ OpenAI sign-in and OpenRouter PKCE sign-in are offered independently of the codi
 API keys are entered through a hidden terminal field or the Logins page.
 Custom compatible model servers come from explicit provider configuration.
 A candidate model is tested before a settings change replaces the working summary source.
+An agent open in OpenCode may also use a paid or own-key model of OpenCode's (`opencode/<provider>/<model>`), through OpenCode's providers and logins; elsewhere such summaries wait until the agent is open in OpenCode again.
 
 OpenRouter sign-in uses a verifier, S256 challenge and callback state.
 A temporary loopback server receives the redirect; a manual redirect URL or code works when necessary.
@@ -341,7 +355,23 @@ and put a "user:" message in its own memory. The cost is that a command which on
 `grep` or a commit message, is refused too; a name built at run time still gets through.
 In Codex the guard runs as its `PreToolUse` hook, which sees neither a command's `workdir` nor hosted web search, and
 which Codex lets through when the hook crashes or times out; the guard therefore refuses within its own deadline, and
-[Codex](codex.md#its-limits-in-codex) lists what remains.
+[Codex](codex.md#its-limits-in-codex) lists what remains. In OpenCode it runs on the plugin's tool hook, where a throw
+refuses the call but nothing limits the hook's time: it refuses past its own 4-second deadline, and
+[OpenCode](opencode.md#its-limits-in-opencode) lists what remains.
+OpenCode's config and code are read-only in every tool, because OpenCode loads plugins, runs commands and takes
+permissions from them with no prompt, next to the guard, the next time it opens a folder: no tool writes `opencode.json`
+or `opencode.jsonc` in any folder, a `.opencode` folder (OpenCode's Plan folder, `~/.opencode/plan`, aside), OpenCode's
+config, cache and state folders, its database, `OPENCODE_CONFIG`'s file or its system and managed config. File tools may
+read them; shell text that names one is refused. The skills of `.claude/skills` and `.agents/skills`, which OpenCode
+also loads, stay writable by the file tools, but a skill whose front matter could run as code (a first line of `---`
+and a language other than YAML or JSON, such as `---js`) is refused, as is any write whose resulting text the gate
+cannot see (a move or copy into a skills folder, an unknown tool, an OMP edit, a notebook cell, an edit of a file that
+can't be read); shell text naming a skills folder is refused outright. The costs: an agent cannot set up OpenCode for a
+project, a shell command that only names those files (a `grep`, a commit message) is refused, and in Codex, which reads
+files through its shell, an agent cannot read OpenCode's config at all (Codex's own shell may run one plain read of
+skill files, [Codex](codex.md) gives the grammar, each file judged as a read). OpenCode's own login store (its
+database, with its WAL and shared-memory files, and what `OPENCODE_DB` names) is a credential store like OMP's
+`agent.db`: every tool is refused it, reads included.
 
 This is a credential guard, not a sandbox.
 Shell and evaluation tools receive text checks, not an operating-system isolation boundary.
@@ -375,10 +405,10 @@ They compare both fresh builds and continuing runs, with Unicode and varying mes
 The Python oracle is a behavioral reference, not the runtime serving an agent.
 
 Adapter tests exercise resumes, rewinds, tool calls, recording conflicts and cross-tool ownership.
-Real pi, OMP and Codex tests load the actual installed binaries with scratch homes and fake model services.
+Real pi, OMP, Codex and OpenCode tests load the actual installed binaries with scratch homes and fake model services.
 The real-Ori test uses a fake catalog and synthetic credentials without a live model call.
 A missing binary skips its real-tool tests; a known Ori/OMP mismatch is a named compatibility skip.
-Paid live checks and the opt-in Claude Code and Codex scripts are separate from the default test suite.
+Paid live checks and the opt-in Claude Code, Codex and OpenCode scripts are separate from the default test suite.
 
 The core trade-off is compression with recoverable detail: summaries can lose facts, but `zoom` reaches the source.
 A local single-writer store favors predictable ordering and simple recovery over simultaneous collaboration.

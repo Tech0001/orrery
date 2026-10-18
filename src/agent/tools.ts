@@ -1,7 +1,7 @@
 /**
- * pi, Claude Code, Codex and OMP as orrery sees them (spec 2026-10-08-orrery-tui-design §3.4, §4.6): found on PATH, their
- * version, whether orrery's side is installed (Codex's comes with each launch: the last hook check is said), and the
- * steps that install it. Node only.
+ * pi, Claude Code, Codex, OMP and OpenCode as orrery sees them (spec 2026-10-08-orrery-tui-design §3.4, §4.6): found on
+ * PATH, their version, whether orrery's side is installed (Codex's and OpenCode's come with each launch: the last hook
+ * or plugin check is said), and the steps that install it. Node only.
  */
 
 import { execFile, spawnSync } from "node:child_process";
@@ -11,11 +11,13 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } fro
 import { ENTRY_TAILS, endsWithSegments, entries, oneLineTarget, type Style } from "../install/layout.ts";
 import type { AgentTool } from "./config.ts";
 import { codexCheckDetail } from "../codex/check.ts";
+import { opencodeCheckDetail } from "../opencode/check.ts";
+import { makeScratch } from "../opencode/scratch.ts";
 import { realTarget } from "./guard-paths.ts";
 import { runningRoot, versionNumber, wiringRoot } from "./running.ts";
 import { safeText } from "./source-labels.ts";
 
-/** "memory": Orrery's side comes with each launch, nothing is installed (Codex: src/codex/launch.ts). */
+/** "memory": Orrery's side comes with each launch, nothing is installed (Codex: src/codex/launch.ts; OpenCode: src/opencode/launch.ts). */
 export type Wiring = "installed" | "missing" | "other" | "update available" | "unknown" | "memory" | "none";
 
 export interface ToolCheck {
@@ -61,8 +63,8 @@ export const realRunner: Runner = (cmd, args) => {
 	return { status: r.status, stdout: r.stdout ?? "", stderr: `${r.stderr ?? ""}${why === "" ? "" : `${r.stderr ? "\n" : ""}${why}`}` };
 };
 
-const LABELS: Record<AgentTool, string> = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP" };
-export const BINARIES: Record<AgentTool, string> = { pi: "pi", "claude-code": "claude", codex: "codex", omp: "omp" };
+const LABELS: Record<AgentTool, string> = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", opencode: "OpenCode" };
+export const BINARIES: Record<AgentTool, string> = { pi: "pi", "claude-code": "claude", codex: "codex", omp: "omp", opencode: "opencode" };
 
 export { runningRoot, runningVersion, wiringRoot } from "./running.ts";
 /** @deprecated alias for runningRoot */
@@ -305,7 +307,10 @@ function claudeWiring(root: string, path: string, run: Runner): Pick<ToolCheck, 
 	return { wiring: "installed", detail: entry.enabled === false ? "installed but turned off in Claude Code" : `plugin ${safeText(String(entry.version ?? ""))}`.trim() };
 }
 
-/** Codex's version number from its version line ("codex-cli 0.162.1" → "0.162.1"); undefined when there is none. */
+/**
+ * A tool's version number from its version line ("codex-cli 0.162.1" → "0.162.1", "opencode v2.0.30" → "2.0.30");
+ * undefined when there is none. Codex's and OpenCode's checks are kept by it.
+ */
 export function codexVersion(line: string | undefined): string | undefined {
 	const number = toolVersionNumber(line);
 	return /^\d+\.\d+\.\d+/.test(number) ? number : undefined;
@@ -325,7 +330,26 @@ function versionLine(stdout: string): string | undefined {
 	return stdout.split("\n").map((line) => safeText(line).trim()).findLast((line) => /^(?:[A-Za-z][A-Za-z -]*[ /])?v?\d+\.\d+\.\d+\b/.test(line));
 }
 
-/** pi, Claude Code, Codex and OMP, in that order. */
+/**
+ * `opencode --version` in a scratch home (src/opencode/scratch.ts): OpenCode writes a log line into its data folder
+ * even for that, and the person's OpenCode setup is never written to. Empty output when it cannot run.
+ */
+export function opencodeVersionOutput(path: string, env: NodeJS.ProcessEnv): RunResult {
+	let scratch: ReturnType<typeof makeScratch>;
+	try {
+		scratch = makeScratch(env);
+	} catch (error) {
+		return { status: null, stdout: "", stderr: reason(error) };
+	}
+	try {
+		const r = spawnSync(path, ["--version"], { encoding: "utf8", timeout: 15_000, env: scratch.env, cwd: scratch.cwd });
+		return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+	} finally {
+		scratch.remove();
+	}
+}
+
+/** pi, Claude Code, Codex, OMP and OpenCode, in that order. */
 export function checkTools(options: { root?: string; env?: NodeJS.ProcessEnv; run?: Runner; probeWrangler?: boolean } = {}): ToolCheck[] {
 	const env = options.env ?? process.env;
 	const root = options.root ?? wiringRoot(env).root;
@@ -333,11 +357,13 @@ export function checkTools(options: { root?: string; env?: NodeJS.ProcessEnv; ru
 		const r = spawnSync(cmd, [...args], { encoding: "utf8", timeout: 15_000, env });
 		return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 	});
-	const checks: ToolCheck[] = (["pi", "claude-code", "codex", "omp"] as const).map((id) => {
+	const checks: ToolCheck[] = (["pi", "claude-code", "codex", "omp", "opencode"] as const).map((id) => {
 		const path = findOnPath(BINARIES[id], env);
-		const version = path === undefined ? undefined : versionLine(run(path, ["--version"]).stdout);
+		const asked = path === undefined ? undefined : id === "opencode" && options.run === undefined ? opencodeVersionOutput(path, env) : run(path, ["--version"]);
+		const version = asked === undefined ? undefined : versionLine(asked.stdout);
 		const found = { id, label: LABELS[id], ...(path === undefined ? {} : { path }), ...(version === undefined ? {} : { version }) };
 		if (id === "codex") return { ...found, wiring: "memory" as const, detail: codexCheckDetail(env, codexVersion(version), orreryVersion()) };
+		if (id === "opencode") return { ...found, wiring: "memory" as const, detail: opencodeCheckDetail(env, codexVersion(version), orreryVersion()) };
 		if (id === "pi") return { ...found, ...piWiring(root, env) };
 		if (id === "omp") return { ...found, ...ompWiring(root, env) };
 		if (path === undefined) return { ...found, wiring: "missing" as const, detail: "Claude Code is not on PATH" };

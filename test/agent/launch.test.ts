@@ -3,13 +3,14 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { agentMode, writeSetupMarker } from "../../src/claude/view-file.ts";
 import { parseConfig } from "../../src/agent/config.ts";
-import { applyFix, checkCodexHooks, exitText, launchLabel, launchPlan, runAgent, runTool, withoutOrrery } from "../../src/agent/launch.ts";
+import { applyFix, checkCodexHooks, checkOpenCodePlugin, exitText, launchLabel, launchPlan, runAgent, runTool, withoutOrrery } from "../../src/agent/launch.ts";
 import { cutNotice, writeInstructions } from "../../src/agent/instructions.ts";
 import { codexLaunch } from "../../src/codex/launch.ts";
 import { claimToken } from "../../src/agent/pick.ts";
 import { agentOverview } from "../../src/agent/overview.ts";
 import { checkTools, ompExtensionFile, orreryRoot, piExtensionFile } from "../../src/agent/tools.ts";
 import { tempDir } from "./support.ts";
+import { fakeOpenCode } from "../opencode/fake-opencode.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -24,7 +25,7 @@ function setup(tool: string, folder?: string, extra = "") {
 	const bin = join(dir, "bin");
 	mkdirSync(bin);
 	const out = join(dir, "out.txt");
-	for (const name of ["pi", "claude", "codex", "omp", "ori"]) {
+	for (const name of ["pi", "claude", "codex", "omp", "ori", "opencode"]) {
 		writeFileSync(join(bin, name), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.0; exit 0; fi\nif [ "$1" = "plugin" ]; then echo '[]'; exit 0; fi\npwd > ${JSON.stringify(out)}\nexit 3\n`);
 		chmodSync(join(bin, name), 0o755);
 	}
@@ -401,6 +402,146 @@ describe("Codex launch plans", () => {
 			expect(plan.args).toEqual(["-x"]);
 			expect(withoutOrrery(plan)).toBe(plan);
 			expect(await checkCodexHooks(plan, { probe: async () => { throw new Error("must not ask"); } })).toEqual({ ok: true });
+			expect(plan.opencode).toBeUndefined();
+			expect(await checkOpenCodePlugin(plan, { probe: async () => { throw new Error("must not ask"); } })).toEqual({ ok: true });
 		}
+	});
+});
+
+describe("OpenCode launch plans", () => {
+	/** Orrery's home in the setup's scratch HOME. */
+	const homeOf = (env: { HOME: string }) => join(env.HOME, ".orrery");
+
+	it("runs opencode --standalone in the folder with Orrery's plugin in OPENCODE_CONFIG_CONTENT, and the token only in a file", async () => {
+		const { config, row, env, ws } = setup("opencode");
+		const fake = fakeOpenCode(env.PATH);
+		const tools = checkTools({ root: orreryRoot(), env });
+		expect(tools.find((t) => t.id === "opencode")).toMatchObject({ wiring: "memory", version: "opencode v2.0.30" });
+		const plan = launchPlan(config, row, tools, { env, root: orreryRoot(), args: ["--continue"] });
+		expect(plan.blocked).toBeUndefined();
+		expect(plan.command).toBe(fake.path);
+		expect(plan.args).toEqual(["--standalone", ws, "--continue"]);
+		const opencode = plan.opencode!;
+		const token = opencode.token;
+		expect(token).toMatch(/^[0-9a-f]{32}$/);
+		expect(opencode.tokenFile.startsWith(join(homeOf(env), "tokens", `opencode-${process.pid}-`))).toBe(true);
+		expect(opencode.folder).toBe(join(orreryRoot(), "src", "opencode", "plugin"));
+		expect(JSON.parse(opencode.content)).toEqual({ plugins: [{ package: opencode.folder, options: { agent: "A", tokenFile: opencode.tokenFile } }] });
+		expect(opencode.version).toBe("2.0.30");
+		expect(opencode.plainArgs).toEqual(["--continue"]);
+		// The token is in no variable: OpenCode's environment reaches the model's shell and MCP servers.
+		expect(plan.env).toEqual({ OPENCODE_CONFIG_CONTENT: opencode.content });
+		expect(plan.unsetEnv).toEqual(["ORRERY_AGENT", "ORRERY_AGENT_TOKEN"]);
+		expect(opencode.content).not.toContain(token);
+		// The plugin claims the token while OpenCode runs, as pi's extension does.
+		const result = await runAgent(plan, async (p) => {
+			claimToken(plan.agentDir, token, 999_999);
+			return runTool(p, { env: { ...env, ORRERY_AGENT: "Other", ORRERY_AGENT_TOKEN: "e".repeat(32) } });
+		});
+		expect(result).toEqual({ code: 0, signal: null, claimedBy: 999_999 });
+		const run = fake.runs().find((r) => r.args[0] === "--standalone");
+		expect(run?.args).toEqual(["--standalone", ws, "--continue"]);
+		expect(realpathSync(run?.cwd as string)).toBe(realpathSync(ws));
+		expect(run?.env.OPENCODE_CONFIG_CONTENT).toBe(opencode.content);
+		expect([run?.env.ORRERY_AGENT, run?.env.ORRERY_AGENT_TOKEN]).toEqual([undefined, undefined]);
+		expect(Object.values(run?.env ?? {}).some((value) => value.includes(token))).toBe(false);
+		// While OpenCode ran, the token was in its file: 0600, in a 0700 folder.
+		expect(run?.tokenFile).toEqual({ mode: 0o600, folderMode: 0o700, text: token });
+		// Once it exited, the file and the claim are gone.
+		expect(existsSync(opencode.tokenFile)).toBe(false);
+		expect(readdirSync(join(plan.agentDir, "claims"))).toEqual([]);
+		// Each plan has its own token and file.
+		const again = launchPlan(config, row, tools, { env, root: orreryRoot() }).opencode!;
+		expect(again.token).not.toBe(token);
+		expect(again.tokenFile).not.toBe(opencode.tokenFile);
+	});
+
+	it("keeps the person's own OPENCODE_CONFIG_CONTENT, with Orrery's plugin added, and says so plainly when it can't be read", () => {
+		const { config, row, env } = setup("opencode");
+		fakeOpenCode(env.PATH);
+		const tools = checkTools({ root: orreryRoot(), env });
+		const theirs = { ...env, OPENCODE_CONFIG_CONTENT: '{\n  // mine\n  "model": "x/y",\n  "plugins": ["their-plugin"],\n}' };
+		const plan = launchPlan(config, row, tools, { env: theirs, root: orreryRoot() });
+		const opencode = plan.opencode!;
+		const entry = JSON.parse(opencode.content).plugins[0];
+		expect(JSON.parse(plan.env.OPENCODE_CONFIG_CONTENT as string)).toEqual({ model: "x/y", plugins: ["their-plugin", entry] });
+		// The plugin check loads Orrery's plugin alone.
+		expect(JSON.parse(opencode.content)).toEqual({ plugins: [entry] });
+		expect(plan.steps.map((step) => step.text).join("\n")).not.toMatch(/OPENCODE_CONFIG_CONTENT/);
+		const unread = launchPlan(config, row, tools, { env: { ...env, OPENCODE_CONFIG_CONTENT: "{model: x}" }, root: orreryRoot() });
+		expect(unread.env.OPENCODE_CONFIG_CONTENT).toBe(unread.opencode?.content);
+		expect(unread.steps).toContainEqual({ text: expect.stringMatching(/^Your OPENCODE_CONFIG_CONTENT isn't JSON or JSONC \(.+\), so OpenCode starts with Orrery's plugin config alone, without yours\.$/), confirm: false });
+	});
+
+	it("removes the token file and the claim when OpenCode fails to start, and starts nothing when the file can't be written", async () => {
+		const { config, row, tools, env } = setup("opencode");
+		const plan = launchPlan(config, row, tools, { env, root: orreryRoot() });
+		const { tokenFile, token } = plan.opencode!;
+		await expect(
+			runAgent(plan, async () => {
+				expect(readFileSync(tokenFile, "utf8")).toBe(token);
+				claimToken(plan.agentDir, token, 999_999);
+				throw new Error("no spawn");
+			}),
+		).rejects.toThrow("no spawn");
+		expect(existsSync(tokenFile)).toBe(false);
+		expect(readdirSync(join(plan.agentDir, "claims"))).toEqual([]);
+		// Orrery's token folder is a file: no token file, and OpenCode is not started.
+		rmSync(join(homeOf(env), "tokens"), { recursive: true, force: true });
+		writeFileSync(join(homeOf(env), "tokens"), "");
+		let ran = false;
+		await expect(runAgent(launchPlan(config, row, tools, { env, root: orreryRoot() }), async () => ((ran = true), { code: 0, signal: null }))).rejects.toThrow(/^OpenCode was not started: the token file for A could not be written \(/);
+		expect(ran).toBe(false);
+	});
+
+	it("puts --standalone after run or mini, and refuses --server, other subcommands and Ori", () => {
+		const { config, row, tools, env, ws } = setup("opencode");
+		expect(launchPlan(config, row, tools, { env, args: ["run", "fix it"] }).args).toEqual(["run", "--standalone", "fix it"]);
+		expect(launchPlan(config, row, tools, { env, args: ["--server", "http://127.0.0.1:4096"] }).blocked).toBe("OpenCode's --server connects to another server, which doesn't load Orrery's plugin (no memory, no guard): open A without it.");
+		expect(launchPlan(config, row, tools, { env, args: ["acp"] }).blocked).toContain("opencode acp opens no session for A");
+		const ori = setup("opencode", ws, 'launcher = "ori"\n');
+		expect(launchPlan(ori.config, ori.row, ori.tools, { env: ori.env }).blocked).toBe('Orrery doesn\'t open OpenCode through Ori yet: open A with launcher = "direct" (orrery agent set A launcher direct), or in another tool.');
+	});
+
+	it("checks that the plugin loads with the plan's own config content and folder, and says so", async () => {
+		const { config, row, tools, env } = setup("opencode");
+		const plan = launchPlan(config, row, tools, { env, root: orreryRoot() });
+		const asked: string[][] = [];
+		const said: string[] = [];
+		const probe = async (path: string, content: string, folder: string) => (asked.push([path, content, folder]), { ok: false as const, why: "OpenCode could not load Orrery's plugin (x)" });
+		const gate = await checkOpenCodePlugin(plan, { env: { ...env, ORRERY_HOME: homeOf(env) }, probe, onCheck: (text) => said.push(text) });
+		expect(asked).toEqual([[join(env.PATH, "opencode"), plan.opencode!.content, plan.opencode!.folder]]);
+		// The fake says "1.0": no version number, so the check runs at every launch.
+		expect(said).toEqual(["Checking that Orrery's plugin loads in OpenCode…"]);
+		expect(gate).toEqual({ ok: false, text: "Orrery's plugin doesn't load in OpenCode (its version is unknown): OpenCode could not load Orrery's plugin (x). Without it a session has no memory and no guard." });
+	});
+
+	it("as plain OpenCode (a yes to starting without Orrery): the person's arguments, no plugin, no token, no agent", async () => {
+		const { config, row, tools, env } = setup("opencode");
+		const open = { ...row, state: "open" as const, openIn: "pi" as const };
+		const plan = launchPlan(config, open, tools, { env, root: orreryRoot(), args: ["--continue"] });
+		expect(plan.steps.map((step) => step.asAgent)).toEqual([true]);
+		const plain = withoutOrrery(plan);
+		expect(plain).toMatchObject({ command: join(env.PATH, "opencode"), args: ["--continue"], env: {}, unsetEnv: ["ORRERY_AGENT", "ORRERY_AGENT_TOKEN"], withoutOrrery: true, steps: [] });
+		expect(plain.opencode).toBeUndefined();
+		// No token file is written.
+		expect(await runAgent(plain, async () => ({ code: 0, signal: null }))).toEqual({ code: 0, signal: null });
+		expect(existsSync(join(homeOf(env), "tokens"))).toBe(false);
+		// Started from the shell of an OpenCode that Orrery opened: that session's plugin config is not taken along,
+		// while a config of the person's own is.
+		const outer = { ...env, OPENCODE_CONFIG_CONTENT: plan.opencode!.content };
+		const nested = withoutOrrery(launchPlan(config, row, tools, { env: outer, root: orreryRoot() }));
+		expect(nested.unsetEnv).toEqual(["ORRERY_AGENT", "ORRERY_AGENT_TOKEN", "OPENCODE_CONFIG_CONTENT"]);
+		const seen: unknown[] = [];
+		const fake = ((_c: string, _a: string[], o: { env?: unknown }) => {
+			seen.push(o.env);
+			const h: Record<string, (...a: unknown[]) => void> = {};
+			setTimeout(() => h.exit?.(0, null), 0);
+			return { on: (n: string, f: (...a: unknown[]) => void) => { h[n] = f; } };
+		}) as never;
+		await runTool(nested, { env: outer, spawn: fake });
+		expect(seen).toEqual([{ PATH: env.PATH, HOME: env.HOME }]);
+		const own = { ...env, OPENCODE_CONFIG_CONTENT: '{"model":"x/y"}' };
+		expect(withoutOrrery(launchPlan(config, row, tools, { env: own, root: orreryRoot() })).unsetEnv).toEqual(["ORRERY_AGENT", "ORRERY_AGENT_TOKEN"]);
 	});
 });

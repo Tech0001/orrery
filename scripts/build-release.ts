@@ -71,10 +71,18 @@ export const PI_SUPPLIED: readonly string[] = [
 export const OMP_SUPPLIED: readonly string[] = [...BOTH(["pi-agent-core", "pi-tui", "pi-ai/compat", "pi-ai/oauth", "pi-coding-agent"]), "@oh-my-pi/pi-coding-agent/config/registry"];
 /** src/agent/models.ts's import of this repo's own pi-ai, which only OMP takes: pi.js leaves it out (omp.js packs it). */
 const OMP_FALLBACK = "*/node_modules/@earendil-works/pi-ai/dist/compat.js";
+/**
+ * What OpenCode 2.0.30 gives a plugin (packages/plugin/src/runtime.ts): its own "effect" and "@opencode/plugin", and
+ * every subpath of them, and it refuses a plugin's own copies. Orrery's plugin imports neither; they stay out if it does.
+ */
+export const OPENCODE_SUPPLIED: readonly string[] = ["effect", "@opencode/plugin"];
 
-/** extensions/<name>.js (+ .map) from one entry point, leaving `external` to the host. */
-function pack(from: string, folder: string, entry: string, name: string, external: readonly string[]): void {
-	run(process.execPath, ["build", join(from, entry), "--target=node", "--format=esm", "--sourcemap=linked", "--outdir", join(folder, "extensions"), `--entry-naming=${name}.[ext]`, ...external.flatMap((e) => ["--external", e])], from);
+/**
+ * extensions/<name>.js (+ .map) from one entry point, leaving `external` to the host. `target`: the runtime it is for
+ * (pi and OMP load extensions on Node or Bun, OpenCode only on Bun).
+ */
+function pack(from: string, folder: string, entry: string, name: string, external: readonly string[], target: "node" | "bun" = "node"): void {
+	run(process.execPath, ["build", join(from, entry), `--target=${target}`, "--format=esm", "--sourcemap=linked", "--outdir", join(folder, "extensions"), `--entry-naming=${name}.[ext]`, ...external.flatMap((e) => ["--external", e])], from);
 }
 
 /** A package-lock.json (lockfileVersion 3) entry, keyed by its folder ("node_modules/a/node_modules/b"). */
@@ -179,6 +187,11 @@ export async function buildRelease(options: { from: string; out: string; targets
 		compile(from, folder, target);
 		pack(from, folder, "src/pi/index.ts", "pi", [...PI_SUPPLIED, OMP_FALLBACK]);
 		pack(from, folder, "src/omp/index.ts", "omp", OMP_SUPPLIED);
+		// OpenCode loads a plugin folder (extensions/opencode): its server.* in its server, its tui.* in its TUI. tui.tsx goes
+		// as it is (OpenCode compiles its JSX with its own Solid transform), with what it reads the plugin's status with.
+		pack(from, folder, "src/opencode/plugin/server.ts", "opencode/server", OPENCODE_SUPPLIED, "bun");
+		pack(from, folder, "src/opencode/plugin/tui-feed.ts", "opencode/tui-feed", OPENCODE_SUPPLIED, "bun");
+		cpSync(join(from, "src", "opencode", "plugin", "tui.tsx"), join(folder, "extensions", "opencode", "tui.tsx"));
 		cpSync(join(from, ".claude-plugin"), join(folder, ".claude-plugin"), { recursive: true });
 		cpSync(join(from, "claude-plugin"), join(folder, "claude-plugin"), { recursive: true, filter: (src) => basename(src) !== "tests" });
 		cpSync(join(from, "deploy", "workstation"), join(folder, "deploy", "workstation"), { recursive: true });

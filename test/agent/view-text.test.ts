@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { fenced, memorySection } from "../../src/agent/view-text.ts";
+import { fenced, memorySection, OPENCODE_READ_ONLY } from "../../src/agent/view-text.ts";
 import { MemoryStore, MemoryView, Part } from "../../src/memory/index.ts";
 
 const dirs: string[] = [];
@@ -45,6 +45,30 @@ describe("memorySection", () => {
 		expect(text).toContain("search(query) finds messages anywhere in the full log");
 		expect(text).not.toContain("```text");
 		expect(text.endsWith(`\n\n${view.render()}`)).toBe(true);
+	});
+
+	it("opencode: refreshed at start and compaction, the plugin's own tools by their names, the view unfenced and last", () => {
+		const view = quotingView();
+		const text = memorySection(view, "opencode");
+		expect(text.startsWith("# Memory\n\nEarlier conversation reaches you only through the view below. It is refreshed when this session starts and each\ntime the conversation is compacted;")).toBe(true);
+		expect(text).toContain("so say in your final reply what\nyou did and learned that will matter later. zoom, date and search are the Orrery memory tools.\n\n");
+		expect(text).not.toContain("mcp__");
+		expect(text).toContain("search(query) finds messages anywhere in the full log");
+		expect(text).not.toContain("```text");
+		expect(text.endsWith(`\n\n${view.render()}`)).toBe(true);
+		expect(text).not.toContain(OPENCODE_READ_ONLY);
+	});
+
+	it("opencode, read-only: says after the intro that nothing is recorded and a compaction is OpenCode's own", () => {
+		const view = quotingView();
+		const text = memorySection(view, "opencode", { readOnly: true });
+		const recorded = memorySection(view, "opencode");
+		expect(OPENCODE_READ_ONLY).toBe(
+			"This session is read-only, though: another session has the agent, so nothing said here goes to memory, a\ncompaction here is OpenCode's own summary, and the view below stays as it was when this session started.",
+		);
+		expect(text).toBe(recorded.replace("are the Orrery memory tools.\n\n", `are the Orrery memory tools.\n\n${OPENCODE_READ_ONLY}\n\n`));
+		// Only OpenCode's section has a read-only form.
+		expect(memorySection(view, "pi", { readOnly: true })).toBe(memorySection(view, "pi"));
 	});
 
 	it("gives pi the section it always had: no memory between turns, the rules, then the view as is", () => {

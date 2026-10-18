@@ -65,7 +65,8 @@ cd ~/code/agent-Atlas && pi -c
 The first time in a default folder that already has old pi sessions, start with `pi` (a new session), not `pi -c`.
 Otherwise the old session is copied into memory as if it were new.
 
-The same agent can also be opened in Claude Code (see [claude-code.md](claude-code.md)) or OMP (see [omp.md](omp.md)), one at a time.
+The same agent can also be opened in Claude Code (see [claude-code.md](claude-code.md)), OMP (see [omp.md](omp.md)),
+Codex (see [codex.md](codex.md)) or OpenCode (see [opencode.md](opencode.md)), one at a time.
 
 **Which agent a session is** is decided when it starts, in this order: `ORRERY_AGENT` when it names a configured agent
 (`orrery agent` sets it; a name that is not configured gives a notice and no memory), then the agent whose default
@@ -125,7 +126,8 @@ If summaries are pending, a message waits for them for at most 60 seconds. Then 
 stopped; the warning gives the reason.
 
 If the summary model is unknown to Orrery, the agent still opens with its memory. Pick a model with `/compactor`, and
-summaries start.
+summaries start. An agent whose summaries use an OpenCode model (`opencode/…`, chosen in OpenCode) records in pi, but
+its summaries wait until it is open in OpenCode again; a notice says so, and `/compactor` switches to another model.
 
 pi's own compaction is off for agents, so a `pi -c` session keeps growing. Start a fresh session with `/new` now and then
 (for example weekly). Memory carries over.
@@ -275,6 +277,18 @@ still applies to it. Close the first one, or work in it.
   anywhere, or Orrery's program with the word `holder`. An agent that ran a hook by hand could feed it made-up input and
   put words in your mouth in its own memory. The cost: a bash command that only names them is refused too, such as
   `grep -r codex-hook src/` or a `git commit -m` whose message names one. A name built at run time still gets through.
+- OpenCode's config and code are read-only to agents, as in every tool: no tool writes `opencode.json` or
+  `opencode.jsonc` in any folder, a `.opencode` folder, OpenCode's own config, cache and state folders, its database,
+  or its system config. OpenCode loads plugins, runs commands and takes permissions from them, with no prompt, the next
+  time it opens that folder. `read` may read them. bash text that names one is refused, whatever the command: read them
+  with `read`. The cost: a bash `cat`, `grep` or commit message that names one is refused too, and an agent can't set
+  up OpenCode for a project; you do that yourself.
+- Skills in `.claude/skills` and `.agents/skills`, which OpenCode loads, stay writable with write and edit: a write is
+  judged by the text it puts in the file, an edit by the file it would leave (the file must be readable, and hold each
+  old text). A skill that would open with `---` and anything other than YAML or JSON (`---js`, which OpenCode runs as
+  code) is refused, and so is an edit that adds such a line anywhere in it. bash text that names a skills folder is
+  refused, whatever the command (`ls`, `cat`, `git add`): use `read`, `grep`, `find`, `write` and `edit`. `AGENTS.md`
+  and `.claude/settings.json` stay writable.
 - The guard knows pi's built-in tools only. Tools added by other pi packages (for example context-mode's
   `ctx_execute`) are not checked.
 - A message does not wait for summaries longer than 60 seconds, and not at all while they are failing or stopped.

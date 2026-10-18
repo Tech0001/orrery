@@ -67,11 +67,28 @@ export function fitSource(source: string, maxBytes: number): FittedSource {
 	return { text: `${head}\n[… ${elided} bytes elided; zoom for full text …]\n${tail}`, elided };
 }
 
+const SENT_NOTHING = Symbol.for("orrery.summary.sent-nothing");
+
+/**
+ * Marks a summary attempt's error as one that sent no request (no login saved, a model no longer offered): the attempt
+ * makes no usage row. Its message and kind stay as they are.
+ */
+export function sentNothing<E extends Error>(error: E): E {
+	Object.defineProperty(error, SENT_NOTHING, { value: true });
+	return error;
+}
+
+/** Whether a summary attempt's error sent no request (sentNothing). */
+export function sentNoRequest(error: unknown): boolean {
+	return typeof error === "object" && error !== null && (error as { [SENT_NOTHING]?: unknown })[SENT_NOTHING] === true;
+}
+
 export interface ModelSummarizerOptions {
 	readonly nodeBytes: number;
 	readonly tries: number;
 	/** Largest source the model can read whole; larger sources are fitted with `fitSource`. Default: unlimited. */
 	readonly maxSourceBytes?: number;
+	/** Each call's usage, a failed one's too (undefined usage), but not an attempt that sent no request (sentNothing). */
 	readonly onUsage?: (usage: TokenUsage | undefined, ok: boolean) => void;
 }
 
@@ -103,7 +120,7 @@ export class ModelSummarizer implements Summarizer {
 			try {
 				reply = await this.model.complete(COMPACT, turns, signal, task.onStart);
 			} catch (error) {
-				this.options.onUsage?.(undefined, false);
+				if (!sentNoRequest(error)) this.options.onUsage?.(undefined, false);
 				throw error;
 			}
 			this.options.onUsage?.(reply.usage, true);

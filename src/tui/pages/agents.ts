@@ -33,7 +33,7 @@ const COLUMNS: readonly Column[] = [
 ];
 
 /** Tool names short enough for the table; the agent's page and the filter use the full ones. */
-const SHORT_TOOL: Record<AgentTool, string> = { pi: "pi", "claude-code": "Claude", codex: "Codex", omp: "OMP" };
+const SHORT_TOOL: Record<AgentTool, string> = { pi: "pi", "claude-code": "Claude", codex: "Codex", omp: "OMP", opencode: "OpenCode" };
 
 const NO_AGENTS = "No agents yet. Press N to add one.";
 const kb = (bytes: number) => Math.round(bytes / 1000);

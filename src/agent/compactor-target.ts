@@ -104,7 +104,7 @@ export function agentCompactorTarget(
 					}
 					const status = readStatus(agent.dir);
 					const piOpen = status !== undefined && status.open !== false && status.model !== "claude-code" && status.model !== "codex" && Date.now() - Date.parse(status.updatedAt) < 30_000;
-					const who = claude ? HOST_LABELS[holder.host === "codex" ? "codex" : "claude-code"] : piOpen ? "pi" : "another Orrery process (an import or build?)";
+					const who = claude ? HOST_LABELS[holder.host === "codex" ? "codex" : "claude-code"] : piOpen ? (status.model === "opencode" ? "OpenCode" : "pi") : "another Orrery process (an import or build?)";
 					throw new Error(`${agent.name} (open in ${who}) didn't answer within ${waitMs / 1000} s; the change was not applied.${claude ? ` See ${holderLog(agent.dir)}.` : ""}`);
 				}
 				await sleep(100);

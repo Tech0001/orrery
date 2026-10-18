@@ -7,15 +7,14 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { orreryHome } from "../agent/home.ts";
-import { writePrivate } from "../agent/private-file.ts";
+import { type LoadCheck, loadCheckDetail, readLoadCheck, versionedCheck, withoutOrreryQuestion, withoutOrrerySaid } from "../agent/load-check.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { CODEX_HOOKS, trustKey } from "./launch.ts";
 
-export type HookCheck = { readonly ok: true } | { readonly ok: false; readonly why: string };
+export type HookCheck = LoadCheck;
 
 /** How long Codex's app server may take to start and answer. */
 const PROBE_MS = 15_000;
@@ -161,34 +160,14 @@ export interface CodexCheckState {
 	readonly at: string;
 }
 
-/** The state file, where Orrery's home really is (a home that is a link keeps it too). */
-function stateFile(env: NodeJS.ProcessEnv): string {
-	const home = orreryHome(env);
-	try {
-		return join(realpathSync(home), "codex-check.json");
-	} catch {
-		return join(home, "codex-check.json");
-	}
-}
+const STATE = { file: "codex-check.json", key: "codex" } as const;
 
 /** The last check, or undefined when there is none or it cannot be read. */
 export function readCodexCheck(env: NodeJS.ProcessEnv = process.env): CodexCheckState | undefined {
-	try {
-		const read = JSON.parse(readFileSync(stateFile(env), "utf8")) as Partial<CodexCheckState> | null;
-		if (typeof read?.codex !== "string" || typeof read.orrery !== "string" || typeof read.ok !== "boolean") return undefined;
-		return { codex: read.codex, orrery: read.orrery, ok: read.ok, ...(typeof read.why === "string" ? { why: read.why } : {}), at: typeof read.at === "string" ? read.at : "" };
-	} catch {
-		return undefined;
-	}
-}
-
-/** Keeps the check's result. One that cannot be written is not fatal: the next launch checks again. */
-function writeCodexCheck(env: NodeJS.ProcessEnv, state: CodexCheckState): void {
-	try {
-		writePrivate(stateFile(env), `${JSON.stringify(state, null, 2)}\n`, { keepFolderMode: true });
-	} catch {
-		// not kept
-	}
+	const read = readLoadCheck(env, STATE.file, STATE.key);
+	if (read === undefined) return undefined;
+	const { version, ...rest } = read;
+	return { codex: version, ...rest };
 }
 
 /**
@@ -202,9 +181,9 @@ export type CodexGate =
 	| { readonly ok: false; readonly text: string; readonly noisyShell: true; readonly question: string };
 
 /** What the person is asked when the hooks don't load (default no). */
-export const WITHOUT_ORRERY_QUESTION = "Start Codex without Orrery anyway? The session won't be recorded and the guard will be off.";
+export const WITHOUT_ORRERY_QUESTION = withoutOrreryQuestion("Codex");
 /** What is said when they say yes. */
-export const WITHOUT_ORRERY_SAID = "Starting Codex without Orrery: this session isn't recorded and the guard is off.";
+export const WITHOUT_ORRERY_SAID = withoutOrrerySaid("Codex");
 
 /**
  * Before Codex opens an agent: ok at once when this Codex version was verified by this Orrery version, else the check
@@ -215,25 +194,14 @@ export async function codexHookGate(
 	options: { readonly env?: NodeJS.ProcessEnv; readonly orrery: string; readonly probe?: typeof probeHooks; readonly now?: () => number; readonly onCheck?: () => void },
 ): Promise<CodexGate> {
 	const env = options.env ?? process.env;
-	const saved = readCodexCheck(env);
-	if (target.version !== undefined && saved?.ok === true && saved.codex === target.version && saved.orrery === options.orrery) return { ok: true };
-	options.onCheck?.();
-	const result = await (options.probe ?? probeHooks)(target.path, target.config, { env });
-	if (target.version !== undefined) {
-		const at = new Date((options.now ?? Date.now)()).toISOString();
-		writeCodexCheck(env, { codex: target.version, orrery: options.orrery, ok: result.ok, ...(result.ok ? {} : { why: result.why }), at });
-	}
+	const result = await versionedCheck(target.version, { env, orrery: options.orrery, ...STATE, ...(options.now === undefined ? {} : { now: options.now }), ...(options.onCheck === undefined ? {} : { onCheck: options.onCheck }) }, () =>
+		(options.probe ?? probeHooks)(target.path, target.config, { env }),
+	);
 	if (result.ok) return { ok: true };
 	return { ok: false, text: `Orrery's hooks don't load in Codex ${target.version ?? "(its version is unknown)"}: ${result.why}. Without them a session has no memory and no guard.` };
 }
 
 /** The Tools page's word on the check: which Codex it verified, or what happens at the next launch. */
 export function codexCheckDetail(env: NodeJS.ProcessEnv, version: string | undefined, orrery: string): string {
-	const saved = readCodexCheck(env);
-	if (saved === undefined) return version === undefined ? "hooks are checked at each launch" : "hooks are checked at the first launch";
-	if (version === undefined) return `hooks checked with Codex ${saved.codex}; this Codex is checked at each launch`;
-	if (saved.codex !== version) return `hooks checked with Codex ${saved.codex}; ${version} is checked at its first launch`;
-	if (!saved.ok) return `hooks did not load in Codex ${version}: ${saved.why ?? "no reason kept"}`;
-	if (saved.orrery !== orrery) return `hooks checked with Codex ${version} by Orrery ${saved.orrery}; checked again at the next launch`;
-	return `hooks checked with Codex ${version}`;
+	return loadCheckDetail(readLoadCheck(env, STATE.file, STATE.key), version, orrery, { what: "hooks", are: "are", tool: "Codex" });
 }

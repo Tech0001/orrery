@@ -53,6 +53,7 @@ export function fakeDeps(overrides: Partial<AppDeps> = {}, rows: AgentRow[] = [r
 			return { code: 0, signal: null };
 		},
 		codexCheck: async () => ({ ok: true }),
+		opencodeCheck: async () => ({ ok: true }),
 		applyFix: () => "fixed",
 		edit: async () => ({ code: 0, signal: null }),
 		install: () => ({ ok: true, output: "done\n" }),

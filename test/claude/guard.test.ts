@@ -829,3 +829,21 @@ describe("Claude Code: only the agent that owns a folder's memory view reads it"
 		for (const [name, input] of calls) expect([name, input, await tool(name, input)]).toEqual([name, input, REFUSED]);
 	});
 });
+
+describe("claudeGuard: a tool named for neither writing nor only reading, and OpenCode's config and code", () => {
+	it("refuses one naming them under any key, lets one only reading name them, and judges a long list of plain words in time", () => {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "orrery-claude-oc-")));
+		try {
+			const options = { folder: root, allowedRoots: [root], cwd: root, home: join(root, "home"), foreignViews: [] as string[] };
+			expect(claudeGuard("mcp__box__put", { to: "opencode.json", body: "{}" }, options)).toMatch(/OpenCode's config or code/);
+			expect(claudeGuard("mcp__box__run", { job: { steps: [{ at: ".opencode/plugins/x.ts" }] } }, options)).toMatch(/OpenCode's config or code/);
+			expect(claudeGuard("mcp__fs__read_file", { path: "opencode.json" }, options)).toBeUndefined();
+			expect(claudeGuard("mcp__box__put", { to: "notes.md", body: "{}" }, options)).toBeUndefined();
+			const started = performance.now();
+			expect(claudeGuard("mcp__db__run", { ids: Array.from({ length: 20_000 }, (_, i) => `id${i}`) }, options)).toBeUndefined();
+			expect(performance.now() - started).toBeLessThan(1500);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});

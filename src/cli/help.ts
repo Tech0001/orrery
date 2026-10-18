@@ -22,7 +22,7 @@ const GROUPS: readonly Group[] = [
 	{
 		title: "Agents",
 		short: [
-			["agent <Name>", "open it in this folder (--tool pi|omp|claude-code|codex)"],
+			["agent <Name>", "open it in this folder (--tool pi|omp|claude-code|codex|opencode)"],
 			["agent add <Name>", "add an agent"],
 			["agent edit <Name>", "edit its instructions"],
 			["agent set <Name> …", "change a setting"],
@@ -32,11 +32,11 @@ const GROUPS: readonly Group[] = [
 		],
 		detail: [
 			[
-				"agent <Name> [--tool pi|omp|claude-code|codex] [--yes] [-- <tool arguments>]",
-				"open the agent here: its tool starts in this folder with its instructions and memory (--tool: another tool this time; --yes: answers its questions yes; what follows -- goes to the tool). Codex gets Orrery's hooks, memory tools and instructions on its command line, after a check that the hooks load in that Codex; only a person at a terminal can start it without them",
+				"agent <Name> [--tool pi|omp|claude-code|codex|opencode] [--yes] [-- <tool arguments>]",
+				"open the agent here: its tool starts in this folder with its instructions and memory (--tool: another tool this time; --yes: answers its questions yes; what follows -- goes to the tool). Codex gets Orrery's hooks, memory tools and instructions on its command line, after a check that the hooks load in that Codex; OpenCode gets Orrery's plugin for this launch (opencode --standalone, nothing written to OpenCode's config), after a check that it loads in that OpenCode; only a person at a terminal can start either without them",
 			],
 			[
-				"agent add <Name> --folder DIR --tool pi|omp|claude-code|codex --summary provider/id [--thinking L]",
+				"agent add <Name> --folder DIR --tool pi|omp|claude-code|codex|opencode --summary provider/id [--thinking L]",
 				"add an agent to the config (the TUI's N); --thinking is the summary model's thinking level (default low)",
 			],
 			["agent edit <Name>", "open the agent's instructions in $EDITOR (else nano, else vi); needs a terminal"],
@@ -67,7 +67,7 @@ const GROUPS: readonly Group[] = [
 				"preview a history import for review, in DIR (default ./import-<Name>). It reads the Claude Code project of the agent's folder and that folder's Codex sessions in ~/.codex/sessions (--claude, --codex: another folder, or none); --claude-file adds a Claude Code session that lives under another project folder, --codex-file a rollout that started elsewhere and was resumed in the agent's folder, --notes a notes file. The summary model splits pastes over N bytes (default 1200); --no-split skips that model pass",
 			],
 			["import <Name> --commit FILE", "append a reviewed preview to the agent's memory, which must be empty"],
-			["compact <Name> [--progress FILE]", "build every missing summary (the agent must not be running); --progress: write how far it is to FILE"],
+			["compact <Name> [--progress FILE]", "build every missing summary (the agent must not be running; an OpenCode summary model builds only in OpenCode); --progress: write how far it is to FILE"],
 			[
 				"browse <Name> [--out FILE] [--open]",
 				"write an HTML explorer of the agent's memory to FILE, else ./<Name>-memory.html (--open: else into the agent's data folder, then open it)",
@@ -90,7 +90,7 @@ const GROUPS: readonly Group[] = [
 			["logout openai|openrouter | --key <openai|anthropic|openrouter>", "remove one sign-in or key"],
 			[
 				"compactor <Name> [signin|key|local [name [words] | name/model [thinking]] | provider/id [thinking] | reset]",
-				"show, list or switch the agent's summary model (shared with pi's /compactor); a switch tests the model first",
+				"show, list or switch the agent's summary model (shared with pi's /compactor); a switch tests the model first. OpenCode's models (opencode/<provider>/<model>) are chosen inside OpenCode, with its /compactor",
 			],
 			["usage [<Name>] [--days N] [--json]", "token usage per day, role and model (default 7 days)"],
 		],
@@ -132,7 +132,7 @@ const GROUPS: readonly Group[] = [
 		],
 		detail: [
 			["update [--check] [--version V] [--yes]", "install the newest release (or V); --check only says whether one is out; --yes answers setup's questions yes"],
-			["tools [--json]", "pi, Claude Code, Codex, OMP and Ori: found, version, Orrery's side installed"],
+			["tools [--json]", "pi, Claude Code, Codex, OMP, OpenCode and Ori: found, version, Orrery's side installed (Codex's and OpenCode's come with each launch)"],
 			["tools install <pi|claude-code|omp> [--yes]", "install or update Orrery's side of a tool (shows what it does first)"],
 			[
 				"claude-setup <Name> [--mod]",

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { durablePreCheck } from "../../src/agent/guard.ts";
 import { guardOmpToolCall, guardToolCall } from "../../src/agent/guard-paths.ts";
 import { claudeGuard } from "../../src/claude/guard.ts";
+import { openCodeGuard } from "../../src/opencode/guard.ts";
 import { tempDir } from "./support.ts";
 
 /**
@@ -21,7 +22,10 @@ function world() {
 	return { root, options: { folder, allowedRoots: [] as string[], cwd: folder, home, foreignViews: [] as string[] } };
 }
 
-/** Every gate's verdict on one command line: pi's bash, OMP's bash and eval, Claude Code's Bash and an MCP shell, orrery run. */
+/**
+ * Every gate's verdict on one command line: pi's bash, OMP's bash and eval, Claude Code's Bash and an MCP shell, orrery
+ * run, OpenCode's shell, Code Mode program and an MCP shell.
+ */
 function verdicts(command: string): (string | undefined)[] {
 	const { root, options } = world();
 	try {
@@ -33,6 +37,9 @@ function verdicts(command: string): (string | undefined)[] {
 			claudeGuard("Bash", { command }, options),
 			claudeGuard("mcp__shell__run", { command }, options),
 			durablePreCheck({ name: "bash", arguments: { command } }, options),
+			openCodeGuard("shell", { command }, options),
+			openCodeGuard("execute", { code: command }, options),
+			openCodeGuard("box_run", { command }, options),
 		];
 	} finally {
 		rmSync(root, { recursive: true, force: true });
@@ -92,7 +99,7 @@ describe("Orrery's hook plumbing in shell text", () => {
 		// Text that names both for another reason: the price of reading them in either order.
 		["holder beside one of Orrery's own commands", "orrery status; echo holder"],
 	])("refuses %s in every gate", (_what, command) => {
-		expect(verdicts(command)).toEqual(Array(7).fill(PLUMBING));
+		expect(verdicts(command)).toEqual(Array(10).fill(PLUMBING));
 	});
 
 	it.each([
@@ -107,6 +114,6 @@ describe("Orrery's hook plumbing in shell text", () => {
 		["a hook's name built from a variable", "o=codex; orrery $o-hook stop"],
 		["arguments read from a file", "xargs -a args.txt orrery"],
 	])("leaves %s alone", (_what, command) => {
-		expect(verdicts(command)).toEqual(Array(7).fill(undefined));
+		expect(verdicts(command)).toEqual(Array(10).fill(undefined));
 	});
 });

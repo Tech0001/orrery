@@ -9,7 +9,7 @@ Security problems go through [SECURITY.md](SECURITY.md), not public issues.
 Open an issue with:
 
 - the Orrery version (`orrery --version`; from a checkout, the commit from `git rev-parse --short HEAD`)
-- the coding tool and its version: `orrery tools` lists pi, OMP, Claude Code and Codex
+- the coding tool and its version: `orrery tools` lists pi, OMP, Claude Code, Codex and OpenCode
 - what you ran, what you expected and what happened
 - the error text
 
@@ -49,11 +49,13 @@ ORRERY_TEST_OMP=/path/to/omp npm test -- test/omp/real-omp.test.ts
 ORRERY_TEST_ORI=/path/to/ori ORRERY_TEST_PI=/path/to/pi ORRERY_TEST_OMP=/path/to/omp \
   npm test -- test/ori/real-ori.test.ts
 ORRERY_TEST_CODEX=/path/to/codex npm test -- test/codex/real-codex.test.ts
+ORRERY_TEST_OPENCODE=/path/to/opencode npm test -- test/opencode/real-opencode.test.ts
 ```
 
 These tests isolate agent homes and use fake model services. `ORRERY_TEST_ORI_STRICT=1` turns the named upstream
-Ori/OMP compatibility skip into a failure. [Claude Code testing](docs/claude-code.md#testing) and
-[Codex testing](docs/codex.md#testing) describe the separate opt-in live scripts, which make paid calls. CI runs the suite on Node 22.19 and 24 and on macOS. There the real-pi
+Ori/OMP compatibility skip into a failure. [Claude Code testing](docs/claude-code.md#testing),
+[Codex testing](docs/codex.md#testing) and [OpenCode testing](docs/opencode.md#testing) describe the separate opt-in
+live scripts, which make real model calls. CI runs the suite on Node 22.19 and 24 and on macOS. There the real-pi
 tests use the npm pi from the dev dependencies and fail rather than skip (`ORRERY_REQUIRE_PI=1`); CI needs no other
 agent binaries and no credentials.
 
@@ -70,8 +72,9 @@ release).
 - Add a test that fails without the change. For a bug fix, start with the failing test.
 - `npm run check` must pass. CI runs it on Ubuntu with Node 22.19 and 24, and on macOS.
 - Update the README or the guide in `docs/` when users will see the change.
-- Tests use synthetic data and scratch homes, never a real `~/.pi`, `~/.claude`, `~/.omp`, `~/.codex` or Orrery data
-  folder.
+- Tests use synthetic data and scratch homes, never a real `~/.pi`, `~/.claude`, `~/.omp`, `~/.codex`, OpenCode's
+  folders (`~/.config/opencode`, `~/.local/share/opencode` and the rest) or Orrery data folder. OpenCode writes a log
+  line even for `--version`, so run it with scratch `HOME` and `XDG_*` folders every time.
   Write fake keys in two pieces (`"sk-" + "proj-…"`) so secret scanners don't flag them.
 
 ## Areas that need extra care

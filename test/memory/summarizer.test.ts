@@ -11,6 +11,8 @@ import {
 	fitSource,
 	ModelSummarizer,
 	ruler,
+	sentNoRequest,
+	sentNothing,
 } from "../../src/memory/summarizer.ts";
 import { Part, type TokenUsage } from "../../src/memory/types.ts";
 
@@ -89,17 +91,22 @@ describe("ModelSummarizer", () => {
 		expect(byteSize(step)).toBeLessThan(2000);
 	});
 
-	it("reports usage for every call, including failures", async () => {
+	it("reports usage for every call that sent a request, a failed one included; an attempt that sent none is no row", async () => {
 		const seen: Array<[TokenUsage | undefined, boolean]> = [];
 		const onUsage = (usage: TokenUsage | undefined, ok: boolean) => seen.push([usage, ok]);
 		const ok = new ModelSummarizer(new FakeModel(["user: fine"]), { nodeBytes: 512, tries: 5, onUsage });
 		await ok.summarize(leaf(0, "src"), signal);
 		const failing = new ModelSummarizer(new FakeModel([new Error("rate limited")]), { nodeBytes: 512, tries: 5, onUsage });
 		await expect(failing.summarize(leaf(0, "src"), signal)).rejects.toThrow("rate limited");
+		// No login saved, a model not offered: the attempt failed before any request left, and still fails as it did.
+		const local = sentNothing(new Error("Provider is not configured: openrouter"));
+		const unsent = new ModelSummarizer(new FakeModel([local]), { nodeBytes: 512, tries: 5, onUsage });
+		await expect(unsent.summarize(leaf(0, "src"), signal)).rejects.toBe(local);
 		expect(seen).toEqual([
 			[USAGE, true],
 			[undefined, false],
 		]);
+		expect([sentNoRequest(local), sentNoRequest(new Error("rate limited")), sentNoRequest("text"), sentNoRequest(undefined)]).toEqual([true, false, false, false]);
 	});
 
 	it("rejects an empty summary", async () => {

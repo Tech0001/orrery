@@ -149,6 +149,39 @@ describe("Agent", () => {
 		reopened.close();
 	});
 
+	it("refuses to open (orrery run) with an OpenCode summary model in the config, in orrery compact's words, not as an unknown model", async () => {
+		const { config } = fixture();
+		const { models } = fauxModels();
+		const agent = config.agents.get("Test")!;
+		const onOpenCode = { ...config, agents: new Map([["Test", { ...agent, compactor: { ...agent.compactor, model: { provider: "opencode", modelId: "anthropic/claude-sonnet-4-5", thinking: "off" as const } } }]]) };
+		await expect(Agent.open({ config: onOpenCode, agent: "Test", models, context: ctx })).rejects.toThrow(
+			"Test's summary model in the config (opencode/anthropic/claude-sonnet-4-5) is an OpenCode model, which works only while Test is open in OpenCode: open it there, or set another compactor_model in Orrery's config to run it here.",
+		);
+		MemoryStore.open(join(agent.dir, "memory.sqlite")).close();
+	});
+
+	it("says a summary model chosen in OpenCode works only inside OpenCode, and uses the config's (orrery run)", async () => {
+		const { config } = fixture();
+		const { models } = fauxModels();
+		const agent = config.agents.get("Test")!;
+		const store = MemoryStore.open(join(agent.dir, "memory.sqlite"));
+		store.setMeta("lane.compactor-model", JSON.stringify({ provider: "opencode", modelId: "anthropic/claude-sonnet-4-5", thinking: "off" }));
+		store.close();
+		const said: string[] = [];
+		const write = vi.spyOn(process.stderr, "write").mockImplementation((text) => (said.push(String(text)), true));
+		try {
+			const opened = await Agent.open({ config, agent: "Test", models, context: ctx });
+			expect(opened.compactorModel).toEqual(agent.compactor.model);
+			await opened.close();
+		} finally {
+			write.mockRestore();
+		}
+		expect(said.join("")).toContain(
+			"Test's summary model chosen in OpenCode (opencode/anthropic/claude-sonnet-4-5) is an OpenCode model, which works only inside OpenCode: using the config's (faux-compactor/faux-1) here.",
+		);
+		expect(said.join("")).not.toContain("no longer available");
+	});
+
 	it("runs an agent without a folder in the folder it starts in, with its own instructions", async () => {
 		const { dir, folder } = fixture();
 		const config = parseConfig(agentConfigToml({ dataDir: join(dir, "data"), folder }).replace(/^folder = .*\n/m, ""), dir);
