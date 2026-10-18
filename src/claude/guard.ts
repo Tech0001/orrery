@@ -264,7 +264,7 @@ export function claudeGuard(toolName: string, input: Readonly<Record<string, unk
 	]);
 	// What a write puts in its file, for the rule on a skill's front matter (guard-rules.ts openCodeSkillRefusal); a
 	// destination's (a copy's or a move's) is the file it takes, which the guard can't see.
-	const written = newTextOf(toolName, as, input);
+	const written = newTextOf(toolName, input);
 	const destinations = new Set(found.destinations);
 	for (const [path, use] of how) {
 		if (performance.now() >= deadline) return "this call names more paths than the guard can check in time; nothing was run.";
@@ -291,31 +291,15 @@ export function claudeGuard(toolName: string, input: Readonly<Record<string, unk
 
 /**
  * What a write puts in its file, as far as the call shows (guard-rules.ts NewText): a gate's own (NEW_TEXT, Codex's and
- * OpenCode's patches), Write's content, Edit's and MultiEdit's replacements, a notebook cell's source, or the text a
- * tool named for writing carries; undefined when it shows none.
+ * OpenCode's), Write's whole content, Edit's and MultiEdit's exact replacements; undefined for anything else (a notebook
+ * cell, a tool named for writing), which the skills rule refuses.
  */
-function newTextOf(toolName: string, as: string | undefined, input: Readonly<Record<string, unknown>>): NewText | undefined {
+function newTextOf(toolName: string, input: Readonly<Record<string, unknown>>): NewText | undefined {
 	if (NEW_TEXT in input) return (input as { readonly [NEW_TEXT]?: NewText })[NEW_TEXT];
-	const text = (value: unknown) => (typeof value === "string" ? value : undefined);
-	if (toolName === "Write") {
-		const content = text(input.content);
-		return content === undefined ? undefined : { whole: content };
-	}
-	if (toolName === "Edit") {
-		const [old, now] = [text(input.old_string), text(input.new_string)];
-		return now === undefined ? undefined : { edits: [{ old: old ?? "", new: now }] };
-	}
-	if (toolName === "MultiEdit") {
-		const edits = Array.isArray(input.edits) ? (input.edits as { old_string?: unknown; new_string?: unknown }[]) : [];
-		return edits.length > 0 && edits.every((edit) => typeof edit?.new_string === "string") ? { edits: edits.map((edit) => ({ old: text(edit.old_string) ?? "", new: edit.new_string as string })) } : undefined;
-	}
-	if (toolName === "NotebookEdit") {
-		const source = text(input.new_source);
-		return source === undefined ? undefined : { parts: [source] };
-	}
-	if (as !== undefined) return undefined;
-	const parts = Object.entries(input).flatMap(([key, value]) => (CONTENT_KEY.test(key) && key !== "old_string" && typeof value === "string" ? [value] : []));
-	return parts.length === 0 ? undefined : { parts };
+	if (toolName === "Write") return typeof input.content === "string" ? { whole: input.content } : undefined;
+	const edits = toolName === "Edit" ? [input] : toolName === "MultiEdit" && Array.isArray(input.edits) ? (input.edits as Record<string, unknown>[]) : [];
+	if (edits.length === 0 || !edits.every((edit) => typeof edit?.old_string === "string" && typeof edit.new_string === "string")) return undefined;
+	return { edits: edits.map((edit) => ({ old: edit.old_string as string, new: edit.new_string as string })) };
 }
 
 /** A tool that only reads, by the verb in its name (no download among them): it may name OpenCode's config to read it. */

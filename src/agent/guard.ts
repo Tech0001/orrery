@@ -37,6 +37,7 @@ import {
 	OPENCODE_READ_ONLY,
 	openCodeLoads,
 	openCodeRule,
+	openCodeSkillPath,
 	openCodeSkillRefusal,
 	piNewText,
 	orreryAppNamed,
@@ -158,10 +159,13 @@ export async function checkResolvedPath(
 		// OpenCode's config and code (guard-rules.ts openCodeLoads), where the tool writes and where that really is.
 		const openCode = options.openCode ?? openCodeRule(process.env, options.home ?? homedir());
 		if (openCodeLoads(target, openCode) || openCodeLoads(real, openCode)) return OPENCODE_READ_ONLY(real);
-		// A skill OpenCode loads: not with front matter it runs as code. An edit is judged on its new text (the file may
-		// be on another machine: it is not read here).
-		const skill = openCodeSkillRefusal(target, real, written);
-		if (skill !== undefined) return skill;
+		// A skill OpenCode loads: not with front matter it may run as code (guard-rules.ts), an edit judged on the file it
+		// would leave, read where the tool runs.
+		if (openCodeSkillPath(target) || openCodeSkillPath(real)) {
+			const now = await env.readTextFile(real, context);
+			const skill = openCodeSkillRefusal(target, real, written, now.ok ? now.value : undefined);
+			if (skill !== undefined) return skill;
+		}
 		const roots = await Promise.all([options.folder, ...options.allowedRoots].map((root) => realPath(env, root, context)));
 		if (!roots.some((root) => within(real, root))) return `${real} is outside this agent's folder and allowed roots.`;
 	}

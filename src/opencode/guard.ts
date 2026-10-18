@@ -35,8 +35,9 @@
  * shares: a write to one (a write, an edit, a patch target, a path an MCP or plugin tool may write, through a link, in
  * any case) is refused, and so is shell text naming one; reading them is not. OpenCode's Plan folder (~/.opencode/plan,
  * below) is no config: its plan files may be written. The skills of .claude and .agents may be written, but never with
- * front matter OpenCode runs as code (---js, ---javascript: guard-rules.ts openCodeSkillRefusal): a write, edit or patch
- * is judged by the text it puts there; the permission layer, which sees paths only, leaves that to the tool hook.
+ * front matter that may run as code, and only where the guard can see what the file will start with (guard-rules.ts
+ * openCodeSkillRefusal, fail-closed): a write by its text, an edit on the file it would leave, a patch by its lines;
+ * the permission layer again on the diff OpenCode's request carries, applied to the file as it is.
  * The guard is fail-closed: an input it cannot read, an input over 1 MB, a command line over 64 KB and a call it cannot
  * judge within its time are refused (OpenCode has no time limit on a hook: a hook that never answers holds the call).
  * Limits, beyond the shell-text limits every gate has: a plugin of the person's own that changes a call's input after
@@ -46,12 +47,12 @@
  * (plugin/tui.tsx); Code Mode's fetch() (network only); a relative target in an MCP tool's patch text is judged from the session's folder.
  */
 
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { agentViews, movedAgentDirCredentials, ompCredentials, openCodeOf, realTarget } from "../agent/guard-paths.ts";
-import { inAnyReading, NEW_TEXT, type NewText, OPENCODE_COMMAND, openCodeNamed, type OpenCodeRule, openCodeRule, patchNewText, SKILL_COMMAND, skillCodeNamed } from "../agent/guard-rules.ts";
+import { inAnyReading, NEW_TEXT, type NewText, OPENCODE_COMMAND, openCodeNamed, type OpenCodeRule, openCodeRule, openCodeSkillPath, patchNewText, SKILL_SHELL, skillShellWrite } from "../agent/guard-rules.ts";
 import { workArea } from "../agent/pick.ts";
 import { ownFolder } from "../agent/private-file.ts";
 import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from "../claude/guard.ts";
@@ -376,7 +377,7 @@ class Judge {
 	named(command: string): string | undefined {
 		if (loginNamed(command)) return LOGIN;
 		if (openCodeNamed(command, openCodeOf(this.#options, this.#options.home ?? homedir()))) return OPENCODE_COMMAND;
-		return skillCodeNamed(command) ? SKILL_COMMAND : undefined;
+		return skillShellWrite(command) ? SKILL_SHELL : undefined;
 	}
 
 	/** Where OpenCode's tools place `raw` (or `place` does), and where that lands. */
@@ -571,21 +572,78 @@ function byTool(tool: string, text: (key: string) => string | undefined, judge: 
 }
 
 /**
+ * A file's text after a unified diff (as OpenCode's write, edit and patch tools give it in their permission request:
+ * `@@ -a,b +c,d @@` hunks of " ", "-" and "+" lines), applied to `before`; undefined when it doesn't apply as written.
+ * Line ends are compared without their "\r".
+ */
+export function afterDiff(before: string, patch: string): string | undefined {
+	const old = before.replace(/\r/g, "").split("\n");
+	const out: string[] = [];
+	let at = 0;
+	let inHunk = false;
+	for (const raw of patch.replace(/\r/g, "").split("\n")) {
+		const header = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/.exec(raw);
+		if (header !== null) {
+			const start = Number(header[1]);
+			const count = header[2] === undefined ? 1 : Number(header[2]);
+			// An empty range names the line after which its lines go.
+			const from = count === 0 ? start : start - 1;
+			if (from < at || from > old.length) return undefined;
+			out.push(...old.slice(at, from));
+			at = from;
+			inHunk = true;
+			continue;
+		}
+		if (!inHunk || raw.startsWith("\\")) continue;
+		const mark = raw[0];
+		const text = raw.slice(1);
+		if (mark === "+") out.push(text);
+		else if (mark === " " || mark === "-") {
+			if (old[at] !== text) return undefined;
+			if (mark === " ") out.push(text);
+			at++;
+		} else if (raw !== "") inHunk = false;
+	}
+	if (!inHunk && at === 0 && out.length === 0) return undefined;
+	out.push(...old.slice(at));
+	return out.join("\n");
+}
+
+/** A file's text now (at most 1 MB, a byte-order mark dropped); "" for one that isn't there; undefined when it can't be read. */
+function textNow(file: string): string | undefined {
+	try {
+		return readFileSync(file, "utf8").replace(/^\uFEFF/, "");
+	} catch (error) {
+		return (error as { code?: unknown }).code === "ENOENT" ? "" : undefined;
+	}
+}
+
+/**
  * The second layer, on OpenCode's permission check (`ctx.permission.hook("evaluate")`, which runs as a tool asks leave,
  * with what it will touch as OpenCode itself placed it): a read's and an edit's resources (a path in the session's folder,
  * relative to it, or an absolute one) judged as reads and writes. It catches what changed after the first hook judged a
  * call (another plugin's hook may change its input), a file the read tool opens in place of a missing one, and a tool a
- * plugin renamed. Other actions (shell, external_directory, the searches…) are the first hook's.
+ * plugin renamed. An edit of a skill (guard-rules.ts openCodeSkillRefusal) is judged on the file OpenCode says it will
+ * leave: the diff in the request's metadata (`files`), applied to the file as it is; a skill with no diff there, or one
+ * that doesn't apply, is refused. Other actions (shell, external_directory, the searches…) are the first hook's.
  */
-export function openCodePermission(action: string, resources: readonly unknown[], options: OpenCodeGuardOptions): string | undefined {
+export function openCodePermission(action: string, resources: readonly unknown[], options: OpenCodeGuardOptions, metadata?: unknown): string | undefined {
 	if (action !== "read" && action !== "edit") return undefined;
 	const judge = new Judge(options);
 	// A resource is placed as OpenCode wrote it: relative to the session's folder (a "~" there is a name), or absolute.
 	const literal = (raw: string, cwd: string) => resolve(cwd, raw);
+	const files = (metadata as { files?: unknown } | null | undefined)?.files;
 	for (const resource of resources) {
 		if (typeof resource !== "string") return "Orrery could not read what this tool asks leave for; nothing was run.";
-		// What an edit puts in a skill was judged by the tool hook (this layer is asked for paths only).
-		const reason = judge.path(action === "read" ? "read" : "write", resource, literal, { parts: [] });
+		let written: NewText | undefined;
+		const placed = literal(resource, options.cwd);
+		if (action === "edit" && (openCodeSkillPath(placed) || openCodeSkillPath(realTarget(placed)))) {
+			const file = Array.isArray(files) ? (files as { file?: unknown; patch?: unknown; status?: unknown }[]).find((each) => each?.file === resource) : undefined;
+			const before = textNow(realTarget(placed));
+			const after = file?.status === "deleted" ? "" : typeof file?.patch === "string" && before !== undefined ? afterDiff(before, file.patch) : undefined;
+			written = after === undefined ? undefined : { whole: after };
+		}
+		const reason = judge.path(action === "read" ? "read" : "write", resource, literal, written);
 		if (reason !== undefined) return reason;
 	}
 	return undefined;
@@ -625,6 +683,8 @@ export interface ToolCallEvent {
 export interface PermissionEvent {
 	readonly action?: unknown;
 	readonly resources?: unknown;
+	/** What the tool will do, as OpenCode tells it: its write's, edit's or patch's diffs (`files`, each `{file, patch, status}`). */
+	readonly metadata?: unknown;
 	effect?: unknown;
 	message?: unknown;
 }
@@ -697,7 +757,7 @@ export class OpenCodeGuardHook {
 		if (event.effect === "deny") return;
 		const action = typeof event.action === "string" ? event.action : "";
 		const resources = Array.isArray(event.resources) ? event.resources : [];
-		const refusal = await this.#answer((options) => this.#permit(action, resources, options));
+		const refusal = await this.#answer((options) => this.#permit(action, resources, options, event.metadata));
 		if (refusal === undefined) return;
 		event.effect = "deny";
 		event.message = refusal;

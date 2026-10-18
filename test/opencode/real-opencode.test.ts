@@ -474,6 +474,37 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Or
 		}
 	}, 180_000);
 
+	it("lets a skill be written and edited (both of the guard's layers), and refuses one whose front matter may run as code", async () => {
+		const world = await agentWorld();
+		const skill = join(world.ws, ".claude", "skills", "tidy", "SKILL.md");
+		const toolResult = async (tool: string, args: object, model = "fake/fake-model"): Promise<string> => {
+			const before = world.model.requests.length;
+			const run = await opencodeRun(["run", "--standalone", "--format", "json", "-m", model, `TOOL64 ${tool} ${Buffer.from(JSON.stringify(args)).toString("base64")}`], world.ws, world.env);
+			expect(run.status, run.stderr).toBe(0);
+			const answered = world.model.requests.slice(before).find((request) => request.body.messages?.at(-1)?.role === "tool");
+			expect(answered, `${tool}: the model got no tool result`).toBeDefined();
+			return conversationOf(answered as FakeRequest).at(-1) ?? "";
+		};
+		const CODE = /Orrery guard: .*may run as code/;
+		try {
+			const yaml = "---\nname: tidy\ndescription: Tidies the notes.\n---\nTidy the notes.\n";
+			expect(await toolResult("write", { path: ".claude/skills/tidy/SKILL.md", content: yaml })).not.toContain("Orrery guard");
+			expect(readFileSync(skill, "utf8")).toBe(yaml);
+			expect(await toolResult("edit", { path: ".claude/skills/tidy/SKILL.md", oldString: "Tidy the notes.", newString: "Tidy and sort the notes." })).not.toContain("Orrery guard");
+			expect(readFileSync(skill, "utf8")).toContain("Tidy and sort the notes.");
+			expect(await toolResult("patch", { patchText: "*** Begin Patch\n*** Update File: .claude/skills/tidy/SKILL.md\n@@\n-Tidy and sort the notes.\n+Tidy, sort and date the notes.\n*** End Patch" }, "fake/gpt-5-fake")).not.toContain("Orrery guard");
+			expect(readFileSync(skill, "utf8")).toContain("Tidy, sort and date the notes.");
+			expect(await toolResult("write", { path: ".claude/skills/tidy/SKILL.md", content: "---js\n({})\n---\n" })).toMatch(CODE);
+			expect(await toolResult("edit", { path: ".claude/skills/tidy/SKILL.md", oldString: "---\nname: tidy", newString: "---javascript\n({})" })).toMatch(CODE);
+			expect(await toolResult("patch", { patchText: "*** Begin Patch\n*** Add File: .agents/skills/x/SKILL.md\n+---JS\n+({})\n*** End Patch" }, "fake/gpt-5-fake")).toMatch(CODE);
+			expect(await toolResult("shell", { command: "cp notes.md .claude/skills/tidy/SKILL.md" })).toMatch(/writes into a skills folder/);
+			expect(readFileSync(skill, "utf8")).toContain("Tidy, sort and date the notes.");
+			expect(existsSync(join(world.ws, ".agents"))).toBe(false);
+		} finally {
+			await world.model.close();
+		}
+	}, 180_000);
+
 	it("refuses, at OpenCode's permission check, what another plugin's hook changed after Orrery's judged the call", async () => {
 		// A plugin after Orrery's that points a read somewhere else once Orrery's hook has let it through.
 		const world = await agentWorld({

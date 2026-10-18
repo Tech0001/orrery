@@ -8,7 +8,7 @@ import { ConfigError, type HarnessConfig, parseConfig } from "../../src/agent/co
 import { newConfigText } from "../../src/agent/config-edit.ts";
 import { checkResolvedPath, durablePreCheck } from "../../src/agent/guard.ts";
 import { guardOmpToolCall, guardToolCall, realTarget } from "../../src/agent/guard-paths.ts";
-import { checkToolCall, OPENCODE_COMMAND, OPENCODE_READ_ONLY, openCodeLoads, openCodeRule, SKILL_COMMAND } from "../../src/agent/guard-rules.ts";
+import { checkToolCall, OPENCODE_COMMAND, OPENCODE_READ_ONLY, openCodeLoads, openCodeRule, SKILL_SHELL } from "../../src/agent/guard-rules.ts";
 import { claudeGuard } from "../../src/claude/guard.ts";
 import { runHook } from "../../src/claude/hooks.ts";
 import { codexGuard } from "../../src/codex/guard.ts";
@@ -1342,7 +1342,7 @@ describe("OpenCode's config and code: one table through every gate (writes and s
 	});
 });
 
-describe("OpenCode's skills: written in every gate, but never with front matter OpenCode runs as code", () => {
+describe("OpenCode's skills: written in every gate, never with front matter that may run as code, and fail-closed", () => {
 	const YAML = "---\nname: tidy\ndescription: Tidies the notes.\n---\nTidy the notes.\n";
 	const JS = "---js\n({ name: require('child_process').execSync('id').toString() })\n---\nTidy.\n";
 
@@ -1355,8 +1355,8 @@ describe("OpenCode's skills: written in every gate, but never with front matter 
 		mkdirSync(join(t.home, ".claude", "skills", "h"), { recursive: true });
 		writeFileSync(join(t.home, ".claude", "skills", "h", "SKILL.md"), YAML);
 		symlinkSync(join(t.atlas, ".claude", "skills", "s", "SKILL.md"), join(t.atlas, "skill-link.md"));
-		// A first line one step short of a fence, for an edit that would finish it.
-		writeFileSync(join(t.atlas, ".agents", "skills", "s", "almost.md"), "---jav\nname: x\n---\n");
+		// A skill whose text has a fence-looking line further down, which an edit could bring to the top.
+		writeFileSync(join(t.atlas, ".agents", "skills", "s", "lower.md"), "---\nname: x\n---\nBelow:\n---js\n({})\n");
 		const openCode = openCodeRule({}, t.home, realTarget);
 		const options = { ...t.options, allowedRoots: [...t.options.allowedRoots, t.home], openCode };
 		return { ...t, options, openCode };
@@ -1367,77 +1367,70 @@ describe("OpenCode's skills: written in every gate, but never with front matter 
 		readonly name: string;
 		readonly refused: boolean;
 		readonly path: string;
-		/** What a write puts in the file, and an edit's replacement (its new text the same as the write's when not given). */
-		readonly content: string;
+		/** A write's whole text. */
+		readonly content?: string;
+		/** An edit's exact replacement, in a file that holds `old`. */
 		readonly edit?: { readonly old: string; readonly new: string };
-		/** A patch's lines may put it there (whole lines): left out where only a replacement could. */
-		readonly patch?: boolean;
+		/** A patch's Add File of `content`. */
+		readonly add?: boolean;
 	}
 
 	function table(t: SkillWorld): Case[] {
 		const a = (file: string) => join(t.atlas, file);
+		const skill = a(".claude/skills/s/SKILL.md");
 		return [
-			{ name: "a skill with YAML front matter", refused: false, path: a(".claude/skills/s/SKILL.md"), content: YAML, edit: { old: "Tidy the notes.", new: "Tidy the notes, then sort them." }, patch: true },
-			{ name: "a new skill in .agents", refused: false, path: a(".agents/skills/new/SKILL.md"), content: YAML, patch: true },
-			{ name: "a skill in home's .claude", refused: false, path: join(t.home, ".claude", "skills", "h", "SKILL.md"), content: YAML, patch: true },
-			{ name: "a skill whose text mentions js", refused: false, path: a(".claude/skills/s/SKILL.md"), content: "---\nname: js\n---\nWrite JS, and javascript too.\n", edit: { old: "Tidy the notes.", new: "Write JS (and javascript)." }, patch: true },
-			{ name: "---js front matter", refused: true, path: a(".claude/skills/s/SKILL.md"), content: JS, edit: { old: "---\nname: tidy", new: "---js\n({ name: 'tidy' })" }, patch: true },
-			{ name: "---javascript front matter in .agents", refused: true, path: a(".agents/skills/s/SKILL.md"), content: "---javascript\n({})\n---\n", patch: true },
-			{ name: "---JS, any case", refused: true, path: a(".claude/skills/s/other.md"), content: "---JS\n({})\n---\n", patch: true },
-			{ name: "---js after a byte-order mark", refused: true, path: a(".claude/skills/s/SKILL.md"), content: "\uFEFF---js\n({})\n---\n", patch: true },
-			{ name: "an edit that finishes the first line into a fence", refused: true, path: a(".claude/skills/s/SKILL.md"), content: JS, edit: { old: "\nname: tidy", new: "js\nname: tidy" } },
-			{ name: "an edit that finishes a fence a step at a time", refused: true, path: a(".agents/skills/s/almost.md"), content: JS, edit: { old: "jav\n", new: "javascript\n" } },
-			{ name: "through a link into a skills folder", refused: true, path: a("skill-link.md"), content: JS, patch: true },
-			{ name: "---js outside a skills folder", refused: false, path: a("notes.md"), content: JS, edit: { old: "Tidy the notes.", new: "---js" }, patch: true },
+			{ name: "a skill with YAML front matter", refused: false, path: skill, content: YAML, edit: { old: "Tidy the notes.", new: "Tidy the notes, then sort them." }, add: true },
+			{ name: "a new skill in .agents", refused: false, path: a(".agents/skills/new/SKILL.md"), content: YAML, add: true },
+			{ name: "a skill in home's .claude", refused: false, path: join(t.home, ".claude", "skills", "h", "SKILL.md"), content: YAML, edit: { old: "Tidy the notes.", new: "Tidy." }, add: true },
+			{ name: "---yaml and ---json front matter", refused: false, path: a(".agents/skills/new/SKILL.md"), content: "---yaml\nname: x\n---\n", add: true },
+			{ name: "a skill whose text mentions js", refused: false, path: skill, content: "---\nname: js\n---\nWrite JS, and javascript too.\n", edit: { old: "Tidy the notes.", new: "Write JS (and javascript)." }, add: true },
+			{ name: "---js front matter", refused: true, path: skill, content: JS, edit: { old: "---\nname: tidy", new: "---js\n({ name: 'tidy' })" }, add: true },
+			{ name: "---javascript in .agents", refused: true, path: a(".agents/skills/s/SKILL.md"), content: "---javascript\n({})\n---\n", add: true },
+			{ name: "---JS, any case", refused: true, path: a(".claude/skills/s/other.md"), content: "---JS\n({})\n---\n", add: true },
+			{ name: "a byte-order mark, blanks and spaces before the fence", refused: true, path: skill, content: "﻿\n\n   --- js \n({})\n---\n", add: true },
+			{ name: "CRLF line ends", refused: true, path: skill, content: "---javascript\r\n({})\r\n---\r\n", add: true },
+			{ name: "another language gray-matter might run (coffee)", refused: true, path: skill, content: "---coffee\nname: 'x'\n---\n", add: true },
+			{ name: "an edit that finishes the first line into a fence", refused: true, path: skill, edit: { old: "\nname: tidy", new: "js\nname: tidy" } },
+			{ name: "an edit that brings a lower fence-looking line to the top", refused: true, path: a(".agents/skills/s/lower.md"), edit: { old: "---\nname: x\n---\nBelow:\n", new: "" } },
+			{ name: "an edit whose new text holds a fence-looking line anywhere", refused: true, path: skill, edit: { old: "Tidy the notes.", new: "Example:\n---js\n" } },
+			{ name: "through a link into a skills folder", refused: true, path: a("skill-link.md"), content: JS, edit: { old: "---\nname: tidy", new: "---js" }, add: true },
+			{ name: "a skills folder spelled in another case", refused: true, path: a(".Claude/Skills/s/SKILL.md"), content: JS, add: true },
+			{ name: "---js outside a skills folder", refused: false, path: a("notes.md"), content: JS, edit: { old: "Tidy the notes.", new: "---js" }, add: true },
 		];
 	}
 
-	/** Each gate's verdicts on a write, an edit and a patch (where it has them) of the case. */
+	/** Each gate's verdicts on the case's write, edit and patch (where it has them). */
 	type Gate = (t: SkillWorld, c: Case) => Promise<(string | undefined)[]>;
-	const editOf = (c: Case) => c.edit ?? { old: "Tidy the notes.", new: c.content };
 	const plus = (text: string) => text.replace(/\n$/, "").split("\n").map((line) => `+${line}`);
+	const addPatch = (c: Case) => ["*** Begin Patch", `*** Add File: ${c.path}`, ...plus(c.content as string), "*** End Patch"].join("\n");
 
-	const pi: Gate = async (t, c) => {
-		const edit = editOf(c);
-		return [guardToolCall("write", { path: c.path, content: c.content }, t.options), guardToolCall("edit", { path: c.path, edits: [{ oldText: edit.old, newText: edit.new }] }, t.options)];
-	};
-	const omp: Gate = async (t, c) => [
-		guardOmpToolCall("write", { path: c.path, content: c.content }, t.options),
-		...(c.patch === true ? [guardOmpToolCall("edit", { path: c.path, input: ["PUT 1", ...plus(c.content)].join("\n") }, t.options)] : []),
+	const pi: Gate = async (t, c) => [
+		...(c.content === undefined ? [] : [guardToolCall("write", { path: c.path, content: c.content }, t.options)]),
+		...(c.edit === undefined ? [] : [guardToolCall("edit", { path: c.path, edits: [{ oldText: c.edit.old, newText: c.edit.new }] }, t.options)]),
 	];
-	const claude: Gate = async (t, c) => {
-		const edit = editOf(c);
-		return [
-			claudeGuard("Write", { file_path: c.path, content: c.content }, t.options),
-			claudeGuard("Edit", { file_path: c.path, old_string: edit.old, new_string: edit.new }, t.options),
-			claudeGuard("MultiEdit", { file_path: c.path, edits: [{ old_string: edit.old, new_string: edit.new }] }, t.options),
-			claudeGuard("mcp__files__write_file", { path: c.path, content: c.content }, t.options),
-		];
-	};
-	const codex: Gate = async (t, c) =>
-		c.patch === true
-			? [codexGuard("apply_patch", { command: ["*** Begin Patch", `*** Add File: ${c.path}`, ...plus(c.content), "*** End Patch"].join("\n") }, t.options), codexGuard("Bash", { command: `apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: ${c.path}\n${plus(c.content).join("\n")}\n*** End Patch\nEOF` }, t.options)]
-			: [];
-	const opencode: Gate = async (t, c) => {
-		const edit = editOf(c);
-		return [
-			openCodeGuard("write", { path: c.path, content: c.content }, t.options, "ses_a"),
-			openCodeGuard("edit", { path: c.path, oldString: edit.old, newString: edit.new }, t.options, "ses_a"),
-			...(c.patch === true ? [openCodeGuard("patch", { patchText: ["*** Begin Patch", `*** Add File: ${c.path}`, ...plus(c.content), "*** End Patch"].join("\n") }, t.options, "ses_a")] : []),
-		];
-	};
+	// OMP's write; its edits are never worked out (below).
+	const omp: Gate = async (t, c) => (c.content === undefined ? [] : [guardOmpToolCall("write", { path: c.path, content: c.content }, t.options)]);
+	const claude: Gate = async (t, c) => [
+		...(c.content === undefined ? [] : [claudeGuard("Write", { file_path: c.path, content: c.content }, t.options)]),
+		...(c.edit === undefined ? [] : [claudeGuard("Edit", { file_path: c.path, old_string: c.edit.old, new_string: c.edit.new }, t.options), claudeGuard("MultiEdit", { file_path: c.path, edits: [{ old_string: c.edit.old, new_string: c.edit.new }] }, t.options)]),
+	];
+	const codex: Gate = async (t, c) => (c.add === true ? [codexGuard("apply_patch", { command: addPatch(c) }, t.options)] : []);
+	const opencode: Gate = async (t, c) => [
+		...(c.content === undefined ? [] : [openCodeGuard("write", { path: c.path, content: c.content }, t.options, "ses_a")]),
+		...(c.edit === undefined ? [] : [openCodeGuard("edit", { path: c.path, oldString: c.edit.old, newString: c.edit.new }, t.options, "ses_a")]),
+		...(c.add === true ? [openCodeGuard("patch", { patchText: addPatch(c) }, t.options, "ses_a")] : []),
+	];
 	const durable: Gate = async (t, c) => {
 		const options = { folder: t.atlas, allowedRoots: t.options.allowedRoots, cwd: t.atlas, foreignViews: [] as string[], home: t.home, openCode: t.openCode };
 		const env = new NodeExecutionEnv({ cwd: t.atlas });
-		const edit = editOf(c);
 		const out: (string | undefined)[] = [];
-		const write = { path: c.path, content: c.content };
-		out.push(durablePreCheck({ name: "write", arguments: write }, options) ?? (await checkResolvedPath(env, c.path, "write", options, ctx, { whole: c.content })));
-		// orrery run's edit is judged on its new text alone (its files may be on another machine): an edit that needs the
-		// file's text to tell (one a step at a time) is pi's, OMP's, Claude Code's and OpenCode's to catch.
-		if (c.name !== "an edit that finishes a fence a step at a time") {
-			const edits = { path: c.path, edits: [{ oldText: edit.old, newText: edit.new }] };
-			out.push(durablePreCheck({ name: "edit", arguments: edits }, options) ?? (await checkResolvedPath(env, c.path, "write", options, ctx, { edits: [{ old: edit.old, new: edit.new }] })));
+		if (c.content !== undefined) {
+			const args = { path: c.path, content: c.content };
+			out.push(durablePreCheck({ name: "write", arguments: args }, options) ?? (await checkResolvedPath(env, c.path, "write", options, ctx, { whole: c.content })));
+		}
+		if (c.edit !== undefined) {
+			const args = { path: c.path, edits: [{ oldText: c.edit.old, newText: c.edit.new }] };
+			out.push(durablePreCheck({ name: "edit", arguments: args }, options) ?? (await checkResolvedPath(env, c.path, "write", options, ctx, { edits: [c.edit] })));
 		}
 		return out;
 	};
@@ -1455,30 +1448,113 @@ describe("OpenCode's skills: written in every gate, but never with front matter 
 		expect(disagree).toEqual([]);
 	});
 
-	it("refuses what it can't see into a skills folder (a move, a copy, an unknown tool), and shell text naming one with a fence; reads and other shell text pass", () => {
+	it("refuses what it can't see into a skills folder: a move or rename, a copy, an unknown tool, an OMP edit, a notebook cell, an edit whose old text isn't there or whose file isn't, a patch update of a file it can't read", async () => {
 		const t = skillWorld();
 		const skill = join(t.atlas, ".claude", "skills", "s", "SKILL.md");
-		const SEEN = /can't see what this puts in it/;
-		expect(codexGuard("apply_patch", { command: ["*** Begin Patch", "*** Update File: notes.md", `*** Move to: ${skill}`, "@@", "-Tidy the notes.", "+Tidy.", "*** End Patch"].join("\n") }, t.options)).toMatch(SEEN);
-		expect(openCodeGuard("patch", { patchText: ["*** Begin Patch", "*** Update File: notes.md", "*** Move to: .claude/skills/s/SKILL.md", "@@", "-Tidy the notes.", "+Tidy.", "*** End Patch"].join("\n") }, t.options)).toMatch(SEEN);
-		expect(claudeGuard("mcp__box__copy", { source: "notes.md", destination: skill }, t.options)).toMatch(SEEN);
-		expect(openCodeGuard("box_put", { to: ".claude/skills/s/SKILL.md", body: YAML }, t.options)).toMatch(SEEN);
-		expect(guardOmpToolCall("edit", { path: "notes.md", input: "PUT 1\n+x\n", edits: [{ rename: skill }] }, t.options)).toMatch(SEEN);
-		// Deleting a skill puts nothing in it.
+		const UNSEEN = /can't see what this would leave/;
+		const options = { folder: t.atlas, allowedRoots: t.options.allowedRoots, cwd: t.atlas, foreignViews: [] as string[], home: t.home, openCode: t.openCode };
+		const env = new NodeExecutionEnv({ cwd: t.atlas });
+		for (const verdict of [
+			codexGuard("apply_patch", { command: ["*** Begin Patch", "*** Update File: notes.md", `*** Move to: ${skill}`, "@@", "-Tidy the notes.", "+Tidy.", "*** End Patch"].join("\n") }, t.options),
+			openCodeGuard("patch", { patchText: ["*** Begin Patch", "*** Update File: notes.md", "*** Move to: .claude/skills/s/SKILL.md", "@@", "-Tidy the notes.", "+Tidy.", "*** End Patch"].join("\n") }, t.options, "ses_a"),
+			claudeGuard("mcp__box__copy", { source: "notes.md", destination: skill }, t.options),
+			claudeGuard("mcp__files__write_file", { path: skill, content: YAML }, t.options),
+			claudeGuard("NotebookEdit", { notebook_path: skill, new_source: "x" }, t.options),
+			openCodeGuard("box_put", { to: ".claude/skills/s/SKILL.md", body: YAML }, t.options, "ses_a"),
+			guardOmpToolCall("edit", { path: skill, input: "PUT 1\n+Tidy.\n" }, t.options),
+			guardOmpToolCall("edit", { path: "notes.md", input: "PUT 1\n+x\n", edits: [{ rename: skill }] }, t.options),
+			guardOmpToolCall("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [skill] }, t.options),
+			guardToolCall("edit", { path: skill, edits: [{ oldText: "not in the file", newText: "x" }] }, t.options),
+			guardToolCall("edit", { path: join(t.atlas, ".claude", "skills", "s", "missing.md"), edits: [{ oldText: "a", newText: "b" }] }, t.options),
+			openCodeGuard("edit", { path: ".claude/skills/s/SKILL.md", oldString: "Tidy the  notes.", newString: "x" }, t.options, "ses_a"),
+			guardToolCall("edit", { path: skill, content: "no edits list" }, t.options),
+			openCodeGuard("patch", { patchText: "*** Begin Patch\n*** Update File: .claude/skills/s/missing.md\n@@\n-a\n+b\n*** End Patch" }, t.options, "ses_a"),
+			await checkResolvedPath(env, join(t.atlas, ".claude", "skills", "s", "missing.md"), "write", options, ctx, { edits: [{ old: "a", new: "b" }] }),
+			await checkResolvedPath(env, skill, "write", options, ctx, undefined),
+		]) {
+			expect(verdict).toMatch(UNSEEN);
+		}
+		// A patch update: the file and its added lines without a fence-looking line pass; with one anywhere, refused.
+		expect(openCodeGuard("patch", { patchText: "*** Begin Patch\n*** Update File: .claude/skills/s/SKILL.md\n@@\n-Tidy the notes.\n+Tidy.\n*** End Patch" }, t.options, "ses_a")).toBeUndefined();
+		expect(codexGuard("apply_patch", { command: `*** Begin Patch\n*** Update File: ${join(t.atlas, ".agents", "skills", "s", "lower.md")}\n@@\n-Below:\n+Above:\n*** End Patch` }, t.options)).toMatch(/may run as code/);
+		// Deleting a skill writes nothing into it.
 		expect(codexGuard("apply_patch", { command: `*** Begin Patch\n*** Delete File: ${skill}\n*** End Patch` }, t.options)).toBeUndefined();
-		// Shell text: a skills folder with a fence is refused; either alone passes.
-		for (const command of ["printf -- '---js\\n({})\\n---\\n' > .claude/skills/s/SKILL.md", "cat > .agents/skills/s/SKILL.md <<'EOF'\n---javascript\n({})\n---\nEOF", "echo $'---\\x6as' > .claude/skills/x/SKILL.md"]) {
-			for (const verdict of [guardToolCall("bash", { command }, t.options), claudeGuard("Bash", { command }, t.options), codexGuard("Bash", { command }, t.options), openCodeGuard("shell", { command }, t.options, "ses_a"), durablePreCheck({ name: "bash", arguments: { command } }, { folder: t.atlas, allowedRoots: [t.atlas], foreignViews: [] })]) {
-				expect([command, verdict]).toEqual([command, SKILL_COMMAND]);
-			}
+	});
+
+	it("refuses a shell command that writes into a skills folder, in every gate, and lets one that reads or lists pass", () => {
+		const t = skillWorld();
+		const gates = (command: string) => [
+			guardToolCall("bash", { command }, t.options),
+			guardOmpToolCall("bash", { command }, t.options),
+			claudeGuard("Bash", { command }, t.options),
+			codexGuard("Bash", { command }, t.options),
+			openCodeGuard("shell", { command }, t.options, "ses_a"),
+			openCodeGuard("box_run", { command }, t.options, "ses_a"),
+			durablePreCheck({ name: "bash", arguments: { command } }, { folder: t.atlas, allowedRoots: [t.atlas], foreignViews: [] }),
+		];
+		for (const command of [
+			"cp evil.md .claude/skills/s/SKILL.md",
+			"mv x.md .agents/skills/t/SKILL.md",
+			"install -m 644 x .claude/skills/s/SKILL.md",
+			"ln -s ../../x.md .claude/skills/s/SKILL.md",
+			"rsync -a skills/ .claude/skills/",
+			"dd if=x of=.claude/skills/s/SKILL.md",
+			"tee .claude/skills/s/SKILL.md < x",
+			"sed -i 's/---/---js/' .claude/skills/s/SKILL.md",
+			"echo hi > .claude/skills/s/SKILL.md",
+			"cat x >> ~/.claude/skills/h/SKILL.md",
+			"cat > .agents/skills/s/SKILL.md <<'EOF'\n---\nname: x\n---\nEOF",
+			"node -e \"require('fs').writeFileSync('.claude/skills/s/SKILL.md', '---js')\"",
+			"find .claude/skills -name '*.md' -exec sh -c 'cat x > {}' \;",
+			"ls .claude/skills | xargs -I{} cp x .claude/skills/{}/SKILL.md",
+			"cp x $'.claude/skills'/s/SKILL.md",
+			"cp x .Claude/Skills/s/SKILL.md",
+			"git checkout other -- .claude/skills/s/SKILL.md",
+		]) {
+			expect([command, gates(command)]).toEqual([command, gates(command).map(() => SKILL_SHELL)]);
 		}
-		for (const command of ["cat .claude/skills/s/SKILL.md", "mkdir -p .agents/skills/t && cp notes.md .agents/skills/t/SKILL.md", "grep -- '---js' docs/*.md"]) {
-			expect([command, guardToolCall("bash", { command }, t.options), openCodeGuard("shell", { command }, t.options, "ses_a")]).toEqual([command, undefined, undefined]);
+		for (const command of ["cat .claude/skills/s/SKILL.md", "ls -la .agents/skills", "grep -o name .claude/skills/s/SKILL.md", "find .claude/skills -name '*.md'", "head -5 .claude/skills/s/SKILL.md | wc -l", "cd .claude/skills && ls", "cp notes.md backup.md"]) {
+			expect([command, gates(command)]).toEqual([command, gates(command).map(() => undefined)]);
 		}
-		expect(openCodeGuard("read", { path: ".claude/skills/s/SKILL.md" }, t.options, "ses_a")).toBeUndefined();
-		// A fence that is not at a line's start is text: file tools write it (shell text naming a skills folder with one is
-		// refused all the same, a seatbelt).
-		expect(guardToolCall("write", { path: skill, content: "---\nname: x\n---\nA `---js` fence is not front matter here.\n" }, t.options)).toBeUndefined();
+	});
+
+	it("only ever adds refusals: a path through a skills folder that lands elsewhere is judged by the general rules", () => {
+		const t = skillWorld();
+		// Out through .. from a skills folder: past the agent's folder and its allowed roots.
+		expect(guardToolCall("write", { path: join(t.atlas, ".claude", "skills", "..", "..", "..", "..", "x.md"), content: YAML }, t.options)).toMatch(/outside this agent's folder/);
+		expect(guardToolCall("write", { path: join(t.atlas, ".claude", "skills", "..", "..", "x.md"), content: JS }, t.options)).toBeUndefined();
+		// A skills folder that is a link: to a protected folder, and to OpenCode's own folder.
+		mkdirSync(join(t.atlas, "other"), { recursive: true });
+		symlinkSync(join(t.atlas, "vault"), join(t.atlas, "other", "skills-vault"));
+		mkdirSync(join(t.atlas, "p", ".claude"), { recursive: true });
+		symlinkSync(join(t.atlas, "vault"), join(t.atlas, "p", ".claude", "skills"));
+		expect(guardToolCall("write", { path: join(t.atlas, "p", ".claude", "skills", "x.md"), content: YAML }, t.options)).toMatch(/protected by \[guard\] protect/);
+		mkdirSync(join(t.atlas, ".opencode", "plugins"), { recursive: true });
+		mkdirSync(join(t.atlas, "q", ".agents"), { recursive: true });
+		symlinkSync(join(t.atlas, ".opencode", "plugins"), join(t.atlas, "q", ".agents", "skills"));
+		expect(guardToolCall("write", { path: join(t.atlas, "q", ".agents", "skills", "x.ts"), content: YAML }, t.options)).toMatch(/OpenCode's config or code/);
+		// OpenCode's own folders are never a skills write: a skills folder inside one is OpenCode's config.
+		expect(guardToolCall("write", { path: join(t.home, ".config", "opencode", ".claude", "skills", "x.md"), content: YAML }, t.options)).toMatch(/OpenCode's config or code/);
+		expect(guardToolCall("write", { path: join(t.atlas, ".opencode", "skills", "x.md"), content: YAML }, t.options)).toMatch(/OpenCode's config or code/);
+	});
+
+	it("OpenCode's second layer judges a skill's edit on the file OpenCode says it will leave (the request's diff), and refuses one it can't tell", () => {
+		const t = skillWorld();
+		const resource = ".claude/skills/s/SKILL.md";
+		const diff = (lines: string[]) => [`Index: ${resource}`, "===================================================================", `--- ${resource}`, `+++ ${resource}`, ...lines].join("\n");
+		const safe = { files: [{ file: resource, status: "modified", patch: diff(["@@ -3,3 +3,3 @@", " description: Tidies the notes.", " ---", "-Tidy the notes.", "+Tidy."]) }] };
+		const code = { files: [{ file: resource, status: "modified", patch: diff(["@@ -1,2 +1,2 @@", "----", "+---js", " name: tidy"]) }] };
+		const stale = { files: [{ file: resource, status: "modified", patch: diff(["@@ -1,2 +1,2 @@", "-something else", "+---", " name: tidy"]) }] };
+		expect(openCodePermission("edit", [resource], t.options, safe)).toBeUndefined();
+		expect(openCodePermission("edit", [resource], t.options, code)).toMatch(/may run as code/);
+		expect(openCodePermission("edit", [resource], t.options, stale)).toMatch(/can't see what this would leave/);
+		expect(openCodePermission("edit", [resource], t.options, undefined)).toMatch(/can't see what this would leave/);
+		expect(openCodePermission("edit", [resource], t.options, { files: [{ file: "other.md", patch: "x" }] })).toMatch(/can't see what this would leave/);
+		expect(openCodePermission("edit", [resource], t.options, { files: [{ file: resource, status: "deleted", patch: "" }] })).toBeUndefined();
+		// A new skill: the whole text in the diff.
+		const added = { files: [{ file: ".agents/skills/new/SKILL.md", status: "added", patch: diff(["@@ -0,0 +1,2 @@", "+---javascript", "+({})"]) }] };
+		expect(openCodePermission("edit", [".agents/skills/new/SKILL.md"], t.options, added)).toMatch(/may run as code/);
+		// Paths elsewhere need no diff.
+		expect(openCodePermission("edit", ["notes.md"], t.options, undefined)).toBeUndefined();
 	});
 });
-
