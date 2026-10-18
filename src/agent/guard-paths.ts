@@ -173,6 +173,32 @@ function movedAgentDir(env: NodeJS.ProcessEnv, home: string): string | undefined
 	return dir === "~" ? home : dir.startsWith("~/") ? join(home, dir.slice(2)) : resolve(dir);
 }
 
+/** OpenCode's data folder: $XDG_DATA_HOME/opencode, else ~/.local/share/opencode (util/src/global-roots.ts). */
+function openCodeData(env: NodeJS.ProcessEnv, home: string): string {
+	return join(env.XDG_DATA_HOME || join(home, ".local", "share"), "opencode");
+}
+
+/** A database file of OpenCode's by name: opencode.db, or a release channel's opencode-<channel>.db, with SQLite's -wal and -shm. */
+export const DATABASE_NAME = /^opencode(?:-[a-z0-9._-]+)?\.db(?:-wal|-shm|-journal)?$/i;
+
+/**
+ * OpenCode's login store: its database (provider keys and sign-ins are in its credential table; cli/src/database-path.ts),
+ * the one OPENCODE_DB names, and the auth.json older versions kept (auth.json is a sensitive name everywhere already).
+ * Names only are listed in the data folder: nothing in it is read.
+ */
+export function openCodeCredentials(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] {
+	const data = openCodeData(env, home);
+	let names: string[] = [];
+	try {
+		names = readdirSync(data).filter((name) => DATABASE_NAME.test(name));
+	} catch {
+		// no data folder yet
+	}
+	const named = env.OPENCODE_DB && env.OPENCODE_DB !== ":memory:" ? resolve(data, env.OPENCODE_DB) : undefined;
+	const database = named ?? join(data, "opencode.db");
+	return [...new Set([database, `${database}-wal`, `${database}-shm`, `${database}-journal`, ...names.map((name) => join(data, name)), join(data, "auth.json")])];
+}
+
 /** pi's models.json and auth.json when PI_CODING_AGENT_DIR moves pi's agent dir away from ~/.pi/agent. */
 export function movedAgentDirCredentials(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] {
 	const agentDir = movedAgentDir(env, home);

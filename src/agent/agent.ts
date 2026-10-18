@@ -25,7 +25,7 @@ import { createAgentEnv, type AgentEnv } from "./env.ts";
 import { memoryExtension } from "./extension.ts";
 import { guardExtension } from "./guard.ts";
 import { cutNotice, readInstructions } from "./instructions.ts";
-import { agentViews } from "./guard-paths.ts";
+import { agentViews, openCodeCredentials } from "./guard-paths.ts";
 import { compactorModel, createAgentModels, modelContextWindow, savedSummaryLoginsOnly } from "./models.ts";
 import { isOpenCodeChoice } from "./opencode-source.ts";
 import { Projector } from "./projector.ts";
@@ -210,7 +210,7 @@ export class Agent {
 				guardExtension({
 					folder,
 					allowedRoots: config.allowedRoots,
-					credentials: [options.config.credentialsPath],
+					credentials: [options.config.credentialsPath, ...openCodeCredentials()],
 					orreryData: options.config.dataDir,
 					protect: options.config.guard.protect,
 					...agentViews(options.config, config),

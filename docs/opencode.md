@@ -212,9 +212,10 @@ built-in tools, MCP and plugin tools, Code Mode's `execute` and each tool it cal
 rules every tool gets: credential files, secret files such as `.env`, what `[guard] protect` lists, Orrery's data
 folder, and other agents' memory views are refused; writes stay inside the folder OpenCode was opened in (or the
 agent's default folder, when it is inside it) and the agent's `allowed_roots`; OpenCode's config and code are
-read-only, and so are skills' executable front matter (see the README's Safety for the full list). In OpenCode's
-sessions, OpenCode's own login store is refused too, reads included: its database (`opencode.db` in its data folder,
-or what `OPENCODE_DB` names), which holds its provider keys and sign-ins, and the `auth.json` older versions kept.
+read-only, and so are skills' executable front matter (see the README's Safety for the full list). OpenCode's own
+login store is refused too, reads included, in OpenCode's sessions and every other tool's: its database (`opencode.db`
+in its data folder, a release channel's, or what `OPENCODE_DB` names), which holds its provider keys and sign-ins, and
+the `auth.json` older versions kept.
 OpenCode's Plan folder, `~/.opencode/plan`, stays writable for its plan files.
 
 Two of those rules matter most here. No tool writes OpenCode's config or code: `opencode.json` or `opencode.jsonc` in

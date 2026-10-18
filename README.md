@@ -280,8 +280,8 @@ refused, and Orrery's own config and program are read-only to agents. Out of the
   `~/.pypirc`, `~/.cargo/credentials`, `~/.gem/credentials`, `~/.config/gcloud`, `~/.azure`,
   `~/.terraform.d/credentials.tfrc.json`, wrangler's login (`~/.wrangler`, `~/.config/.wrangler`, and
   `~/Library/Preferences/.wrangler` on macOS), Hugging Face's tokens, `~/.password-store`, the 1Password CLI's
-  `~/.config/op`, and the logins of pi, OMP, Codex and Orrery (Claude Code's too, in its sessions, and OpenCode's
-  database, in OpenCode's).
+  `~/.config/op`, and the logins of pi, OMP, Codex, OpenCode (its database, wherever `XDG_DATA_HOME` or
+  `OPENCODE_DB` puts it) and Orrery (Claude Code's too, in its sessions).
 - **Secret files in any folder:** `.env` and `.env.<anything>`, `.dev.vars` and `.dev.vars.<anything>` (Cloudflare
   Workers), `.secrets`, `secrets.toml`, `master.key` and `.htpasswd`. The shared templates stay open: `.env.example`,
   `.env.sample`, `.env.template` and `.env.dist`, and the same for `.dev.vars`.

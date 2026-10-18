@@ -30,7 +30,7 @@ import { browse, memoryReport, pageOpener } from "./commands.ts";
 import { compactorMenu, agentTarget, signInFromMenu } from "../agent/compactor-menu.ts";
 import { AgentHeld, PiAgent } from "./agent.ts";
 import { copySession, markSessionCopied, moveCursor, startAtTail } from "./log.ts";
-import { guardOmpToolCall, guardToolCall, agentViews, movedAgentDirCredentials, ompCredentials } from "./guard.ts";
+import { guardOmpToolCall, guardToolCall, agentViews, movedAgentDirCredentials, ompCredentials, openCodeCredentials } from "./guard.ts";
 import { memoryTools, readerTools } from "./tools.ts";
 import { compactionDecision, memorySection, trimToRun } from "./turn.ts";
 import { remoteFooter, remoteOpenNotice } from "../remote/checkout.ts";
@@ -169,7 +169,7 @@ function guardBase(config: HarnessConfig, options: OrreryOptions): Pick<Guarded,
 	return {
 		home,
 		orreryData: config.dataDir,
-		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)],
+		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home), ...openCodeCredentials(env, home)],
 		protect: config.guard.protect,
 		...(configFile === undefined ? {} : { configFile }),
 	};
@@ -192,7 +192,7 @@ function unreadableGuard(file: string, cwd: string, options: OrreryOptions, prot
 	} catch {
 		data = join(home, ".orrery"); // a relative ORRERY_HOME: the default home
 	}
-	const credentials = [join(data, "credentials.json"), join(dirname(resolve(file)), "credentials.json"), ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home)];
+	const credentials = [join(data, "credentials.json"), join(dirname(resolve(file)), "credentials.json"), ...movedAgentDirCredentials(env, home), ...ompCredentials(env, home), ...openCodeCredentials(env, home)];
 	const known = { protect: protect ?? [], ...(protect === undefined ? { blind: true } : {}) };
 	return { by: "unreadable", workArea: workArea({}, cwd), allowedRoots: [], home, orreryData: data, credentials, foreignViews: [], fileModeViews: [], configFile: file, ...known };
 }

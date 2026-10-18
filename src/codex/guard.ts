@@ -42,7 +42,7 @@
 import { homedir } from "node:os";
 import { isAbsolute, normalize, resolve } from "node:path";
 import type { HarnessConfig } from "../agent/config.ts";
-import { agentViews, movedAgentDirCredentials, ompCredentials, RUST_SPACE } from "../agent/guard-paths.ts";
+import { agentViews, movedAgentDirCredentials, ompCredentials, openCodeCredentials, RUST_SPACE } from "../agent/guard-paths.ts";
 import { inAnyReading, NEW_TEXT, patchNewText, shellWord } from "../agent/guard-rules.ts";
 import { workArea } from "../agent/pick.ts";
 import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from "../claude/guard.ts";
@@ -410,7 +410,7 @@ function judgeCall(stdin: string | undefined, ctx: CodexGuardContext): string | 
 		folder: workArea(agent ?? {}, call.cwd),
 		allowedRoots: agent?.allowedRoots ?? [],
 		cwd: call.cwd,
-		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...movedConfigDirCredentials(env), ...ompCredentials(env, home)],
+		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...movedConfigDirCredentials(env), ...ompCredentials(env, home), ...openCodeCredentials(env, home)],
 		orreryData: config.dataDir,
 		home,
 		protect: config.guard.protect,

@@ -53,6 +53,9 @@ const SENSITIVE = [
 	/\.pgpass\b/,
 	// pi's provider settings (API keys may sit in it) and any process's environment (/proc/self/environ and the like).
 	/\.pi\/agent\/models\.json\b/,
+	// OpenCode's login store: its database (provider keys and sign-ins, with its WAL and shared memory) in its data
+	// folder, $XDG_DATA_HOME/opencode or ~/.local/share/opencode, a release channel's too (opencode-<channel>.db).
+	/(^|[\s"'=:/])opencode\/opencode(?:-[a-z0-9._-]+)?\.db(?:-wal|-shm|-journal)?\b/,
 	/(^|[\s"'=:;|&<>(])\/proc\/([^/\s"']+\/)+environ\b/,
 	// OMP's credential stores: agent.db (its logins) and models.yml (API keys) in ~/.omp/agent or a profile's, and agent.db
 	// under $XDG_DATA_HOME/omp once OMP moved its data there.

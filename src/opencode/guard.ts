@@ -28,8 +28,9 @@
  * Paths are placed from the folder of the plugin's location, which is the session's: OpenCode runs a session's tools in
  * its location, and a session moved elsewhere (session_move) runs in the new folder's location, with a plugin and guard
  * of its own. An empty path is that folder, as OpenCode resolves it.
- * OpenCode's own login store (its database, which holds provider keys and sign-ins, and the auth.json it had before) is
- * kept as Claude Code's login is in Claude Code's gate.
+ * OpenCode's own login store (its database, which holds provider keys and sign-ins, and the auth.json it had before) is a
+ * credential store every gate keeps (src/agent/guard-paths.ts openCodeCredentials, guard-rules.ts by name); here its
+ * database is also refused by name alone in shell text, wherever it is spelled.
  * OpenCode's config and code (a .opencode folder and opencode.json(c) in any folder, OpenCode's own config, cache, state
  * and database: src/agent/guard-rules.ts openCodeLoads, with OpenCode's source for each) are kept by the rules every gate
  * shares: a write to one (a write, an edit, a patch target, a path an MCP or plugin tool may write, through a link, in
@@ -51,7 +52,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
-import { agentViews, movedAgentDirCredentials, ompCredentials, openCodeOf, realTarget } from "../agent/guard-paths.ts";
+import { agentViews, DATABASE_NAME, movedAgentDirCredentials, ompCredentials, openCodeCredentials, openCodeOf, realTarget } from "../agent/guard-paths.ts";
 import { inAnyReading, NEW_TEXT, type NewText, OPENCODE_COMMAND, openCodeNamed, type OpenCodeRule, openCodeRule, openCodeSkillPath, patchNewText, SKILL_SHELL, skillsNamed } from "../agent/guard-rules.ts";
 import { workArea } from "../agent/pick.ts";
 import { ownFolder } from "../agent/private-file.ts";
@@ -87,31 +88,8 @@ export function openCodeHome(env: NodeJS.ProcessEnv = process.env): string {
 	return env.OPENCODE_TEST_HOME || homedir();
 }
 
-/** OpenCode's data folder: $XDG_DATA_HOME/opencode, else ~/.local/share/opencode (util/src/global-roots.ts). */
-function openCodeData(env: NodeJS.ProcessEnv, home: string): string {
-	return join(env.XDG_DATA_HOME || join(home, ".local", "share"), "opencode");
-}
-
-/** A database file of OpenCode's by name: opencode.db, or a release channel's opencode-<channel>.db, with SQLite's -wal and -shm. */
-const DATABASE_NAME = /^opencode(?:-[a-z0-9._-]+)?\.db(?:-wal|-shm|-journal)?$/i;
-
-/**
- * OpenCode's login store: its database (provider keys and sign-ins are in its credential table; cli/src/database-path.ts),
- * the one OPENCODE_DB names, and the auth.json older versions kept (auth.json is a sensitive name everywhere already).
- * Names only are listed in the data folder: nothing in it is read.
- */
-export function openCodeLogins(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] {
-	const data = openCodeData(env, home);
-	let names: string[] = [];
-	try {
-		names = readdirSync(data).filter((name) => DATABASE_NAME.test(name));
-	} catch {
-		// no data folder yet
-	}
-	const named = env.OPENCODE_DB && env.OPENCODE_DB !== ":memory:" ? resolve(data, env.OPENCODE_DB) : undefined;
-	const database = named ?? join(data, "opencode.db");
-	return [...new Set([database, `${database}-wal`, `${database}-shm`, `${database}-journal`, ...names.map((name) => join(data, name)), join(data, "auth.json")])];
-}
+/** OpenCode's login store (src/agent/guard-paths.ts openCodeCredentials, which every gate keeps). */
+export const openCodeLogins = openCodeCredentials;
 
 /** OpenCode's database named in shell text (DATABASE_NAME as a word): a command that names it is refused. */
 const DATABASE_WORD = /(?:^|[\s"'=:/~<>;|&()`{,@])opencode(?:-[a-z0-9._-]+)?\.db(?:-wal|-shm|-journal)?(?=$|[\s"'/:;|&()<>`,}*?[])/;

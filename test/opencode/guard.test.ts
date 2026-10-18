@@ -254,12 +254,12 @@ describe("openCodeGuard judges each tool with the shared rules", () => {
 		expect(openCodeGuard("read", { path: db }, t.options)).toMatch(SENSITIVE);
 		expect(openCodeGuard("read", { path: `${db}-wal` }, t.options)).toMatch(SENSITIVE);
 		expect(openCodeGuard("grep", { pattern: "key", path: join(t.home, ".local", "share") }, t.options)).toMatch(/would search credential files/);
-		// Named in a command: OpenCode's database is its config and code too (saved permissions), which every gate keeps.
-		expect(openCodeGuard("shell", { command: "sqlite3 ~/.local/share/opencode/opencode.db 'select * from credential'" }, t.options)).toBe(OPENCODE_COMMAND);
+		// Named in a command: OpenCode's database is a credential store every gate keeps by name, and its config and code.
+		expect(openCodeGuard("shell", { command: "sqlite3 ~/.local/share/opencode/opencode.db 'select * from credential'" }, t.options)).toMatch(SENSITIVE);
 		expect(openCodeGuard("shell", { command: "cp data/opencode-beta.db /tmp/x" }, t.options)).toBe(OPENCODE_COMMAND);
 		expect(openCodeGuard("box_sql", { code: "sqlite3 opencode.db" }, t.options)).toBe(OPENCODE_COMMAND);
 		// A channel's database made after the session started, by its name in OpenCode's data folder.
-		expect(openCodeGuard("read", { path: join(t.home, ".local", "share", "opencode", "opencode-dev.db") }, t.options)).toMatch(/OpenCode's login/);
+		expect(openCodeGuard("read", { path: join(t.home, ".local", "share", "opencode", "opencode-dev.db") }, t.options)).toMatch(SENSITIVE);
 		expect(openCodeGuard("shell", { command: "ls ~/.local/share/opencode/log && cat notes-opencode.dbx" }, t.options)).toBeUndefined();
 	});
 

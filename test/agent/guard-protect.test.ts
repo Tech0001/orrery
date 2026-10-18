@@ -7,7 +7,7 @@ import { Agent } from "../../src/agent/agent.ts";
 import { ConfigError, type HarnessConfig, parseConfig } from "../../src/agent/config.ts";
 import { newConfigText } from "../../src/agent/config-edit.ts";
 import { checkResolvedPath, durablePreCheck } from "../../src/agent/guard.ts";
-import { guardOmpToolCall, guardToolCall, type PathGuardOptions, realTarget } from "../../src/agent/guard-paths.ts";
+import { guardOmpToolCall, guardToolCall, openCodeCredentials, type PathGuardOptions, realTarget } from "../../src/agent/guard-paths.ts";
 import { checkToolCall, OPENCODE_COMMAND, OPENCODE_READ_ONLY, openCodeLoads, openCodeRule, SKILL_SHELL } from "../../src/agent/guard-rules.ts";
 import { claudeGuard } from "../../src/claude/guard.ts";
 import { runHook } from "../../src/claude/hooks.ts";
@@ -712,6 +712,13 @@ describe("[guard] protect and .env: one table through every gate", () => {
 			{ name: "a project's .npmrc", refused: false, path: join(t.atlas, ".npmrc"), command: "cat .npmrc", glob: "**/.npmrc" },
 			{ name: "a project's .wrangler", refused: false, path: join(t.atlas, ".wrangler", "state", "x"), command: "rm -rf .wrangler", glob: ".wrangler/**" },
 			{ name: "the tools' own commands", refused: false, command: "npm install && cargo build && gcloud auth list && az login && wrangler dev && pass show x && op read x" },
+			// OpenCode's login store, its database (with its WAL and shared memory, a release channel's too), in every gate.
+			{ name: "OpenCode's database", refused: true, path: join(t.home, ".local", "share", "opencode", "opencode.db"), command: `sqlite3 ${join(t.home, ".local", "share", "opencode", "opencode.db")} .dump` },
+			{ name: "OpenCode's database's WAL", refused: true, path: join(t.home, ".local", "share", "opencode", "opencode.db-wal"), command: `cat ${join(t.home, ".local", "share", "opencode", "opencode.db-wal")}` },
+			{ name: "OpenCode's database from ~", refused: true, home: true, path: "~/.local/share/opencode/opencode.db", command: "cp ~/.local/share/opencode/opencode.db /tmp/x" },
+			{ name: "a release channel's OpenCode database", refused: true, path: join(t.home, ".local", "share", "opencode", "opencode-beta.db"), command: `cat ${join(t.home, ".local", "share", "opencode", "opencode-beta.db")}` },
+			{ name: "OpenCode's database where XDG_DATA_HOME puts it", refused: true, path: join(t.root, "xdg-data", "opencode", "opencode.db"), command: `cat ${join(t.root, "xdg-data", "opencode", "opencode.db")}` },
+			{ name: "a project's own opencode folder", refused: false, path: join(t.atlas, "src", "a.ts"), command: "ls src/opencode && cat opencode-notes.db.md" },
 			// Orrery's hook plumbing, which only its hooks run (a hook run by hand could put made-up words in the agent's memory).
 			{ name: "a hook run by hand", refused: true, command: "echo '{}' | orrery codex-hook user-prompt-submit" },
 			{ name: "Claude Code's hook run by hand", refused: true, command: "orrery claude-hook stop < x.json" },
@@ -937,6 +944,32 @@ describe("[guard] protect and .env: one table through every gate", () => {
 	});
 });
 
+describe("OpenCode's login store in every gate", () => {
+	it("refuses a database OPENCODE_DB names, reads and writes, through every gate's credential list", async () => {
+		const t = protectWorld();
+		const custom = join(t.root, "elsewhere", "oc-custom.db");
+		mkdirSync(join(t.root, "elsewhere"), { recursive: true });
+		writeFileSync(custom, "db");
+		const credentials = openCodeCredentials({ OPENCODE_DB: custom }, t.home);
+		expect(credentials).toContain(custom);
+		const options = { ...t.options, credentials };
+		const durable = { folder: t.atlas, allowedRoots: [t.atlas, t.root], cwd: t.atlas, foreignViews: [] as string[], home: t.home, credentials };
+		const env = new NodeExecutionEnv({ cwd: t.atlas });
+		for (const verdict of [
+			guardToolCall("read", { path: custom }, options),
+			guardToolCall("write", { path: custom, content: "x" }, options),
+			guardOmpToolCall("read", { path: custom }, options),
+			claudeGuard("Read", { file_path: custom }, options),
+			codexGuard("view_image", { path: custom }, options),
+			openCodeGuard("read", { path: custom }, options, "ses_a"),
+			await checkResolvedPath(env, custom, "read", durable, ctx),
+			await checkResolvedPath(env, custom, "write", durable, ctx),
+		]) {
+			expect(verdict).toMatch(SENSITIVE);
+		}
+	});
+});
+
 describe("the built-in rules through the reworked readings", () => {
 	it("keeps every refusal 0.6.3 made past the brace caps and in $'…', and refuses more", () => {
 		const t = protectWorld();
@@ -1149,7 +1182,6 @@ describe("OpenCode's config and code: one table through every gate (writes and s
 			{ name: "OpenCode's cli.json", refused: true, path: h(".config/opencode/cli.json"), command: `cat ${h(".config/opencode/cli.json")}` },
 			{ name: "OpenCode's plugin cache", refused: true, path: h(".cache/opencode/npm/x/index.js"), command: "ls $HOME/.cache/opencode/npm" },
 			{ name: "OpenCode's state", refused: true, path: h(".local/state/opencode/kv.json"), command: "cat ~/.local/state/opencode/kv.json" },
-			{ name: "OpenCode's database", refused: true, path: h(".local/share/opencode/opencode.db"), command: "sqlite3 ~/.local/share/opencode/opencode.db .dump" },
 			{ name: "OpenCode's own binary in ~/.opencode", refused: true, path: h(".opencode/bin/opencode"), command: "cp x ~/.opencode/bin/opencode" },
 			{ name: "brace-split name", refused: true, command: "cp x opencode.{json,x}" },
 			{ name: "$'…' escape", refused: true, command: "cp x $'\\x2eopencode'/plugins/y.ts" },
