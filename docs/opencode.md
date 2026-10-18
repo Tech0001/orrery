@@ -112,8 +112,8 @@ parts of the system prompt, after OpenCode's own prompt, your `AGENTS.md` files 
 - **A long session** runs on the view it started with, plus its own transcript. A session continued in a new OpenCode
   (`-c`, `-s`, or reopened from the list) gets the view made again at its first request there.
 - **Summaries first.** The first request waits up to 60 seconds for pending summaries (the footer says `summarizing
-  before this message…`). If they are not done, or are failing, a notice says the view has unsummarized lines, which
-  the model can zoom.
+  before this message…`). If they are not done by then, a notice says the view has unsummarized lines, which the model
+  can zoom. While summaries are failing or stopped it doesn't wait; their own notice says why.
 - **Read-only sessions** get the view as it was when they started, and the memory section tells the model that the
   session is read-only: nothing said there goes to memory, and a compaction there is OpenCode's own.
 - **Subagents** get their session's view and are not recorded.
@@ -168,8 +168,7 @@ providers and logins: Orrery never sees that key.
   sources and OpenCode's models, by provider (`OpenCode · <provider>`), the current one first, each with its context
   window and price; the thinking level comes last (off, then the reasoning variants the model has). The pick is tested
   with one small call (an OpenCode model's through OpenCode), then switched to, and a toast says so; a failed test keeps
-  the current model.
-  "Back to the config's" returns to the config's model. In the config the same choice is
+  the current model. "Back to the config's" returns to the config's model. In the config the same choice is
   `compactor_model = "opencode/<provider>/<model>"` (a model of OpenCode's own gateway is `opencode/opencode/<model>`).
 - **Paid and own-key models only.** OpenCode's free models are listed as `free tier, unavailable`, with the reason:
   `OpenCode's free tier only works inside OpenCode chats; background summaries aren't allowed`. OpenCode refuses its
@@ -177,10 +176,10 @@ providers and logins: Orrery never sees that key.
   tried one), so the free tier is meant for OpenCode's own chats; a summary made as a session would get through, but
   OpenCode's terms also forbid using its services in a way that "automatically or programmatically extracts data or
   Output", and summaries are automated background work. So free models are not offered until OpenCode says background
-  use is fine. Free
-  means a model of OpenCode's own gateway (the `opencode` provider, its other plans such as `opencode-go`, or any
-  provider set up to go through it) that charges nothing for input, or whose id ends in `-free`. A model that turns
-  free later is refused at its next summary: the model list is read again when it is more than a minute old.
+  use is fine. Free means a model of OpenCode's own gateway (the `opencode` provider, its other plans such as
+  `opencode-go`, or any provider set up to go through it) that charges nothing for input, or whose id ends in `-free`.
+  A model that turns free later is refused at its next summary: the model list is read again when it is more than a
+  minute old.
 - **Only while the agent is open in OpenCode.** Opened anywhere else (pi, OMP, Claude Code, Codex), an agent whose
   summaries use an OpenCode model keeps recording, but its summaries wait until it is open in OpenCode again; the status
   says so, and a notice says how to switch to another model there. `orrery compact <Name>` and `orrery run <Name>`
@@ -226,10 +225,9 @@ is judged by the text it puts in the file, `edit` by the file it would leave (an
 change OpenCode reports), `patch` by an added file's text, or, for an update, only when the skill can be read and
 neither it nor the patch's added lines hold a `---` line naming another language. A skill that would open with `---`
 and anything other than YAML or JSON (`---js`, which OpenCode runs as code) is refused, and so is a move into a skills
-folder. Shell text that
-names OpenCode's config or a skills folder is refused, whatever the command: `read`, `glob` and `grep` read them. The
-cost: an agent can't set up OpenCode for a project (you write those files yourself), and a shell `ls`, `cat`, `grep`,
-`git add` or commit message that names one is refused too.
+folder. Shell text that names OpenCode's config or a skills folder is refused, whatever the command: `read`, `glob` and
+`grep` read them. The cost: an agent can't set up OpenCode for a project (you write those files yourself), and a shell
+`ls`, `cat`, `grep`, `git add` or commit message that names one is refused too.
 
 How it reads OpenCode's tools:
 
@@ -284,8 +282,8 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
   `NO GUARD, NO MEMORY`; quit OpenCode and open the agent again.
 - **Code Mode's `fetch()`** reaches the network without a tool call (OpenCode refuses `file:` there).
 - **A command run in another folder** (`workdir`) that names a file relative to that folder: the rules on names still
-  hold (`.env`, a protected name), but the rules on paths read it from the session's folder, as after a `cd`. So is a
-  relative path in an MCP tool's patch text.
+  hold (`.env`, a protected name), but the rules on paths read it from the session's folder, as after a `cd`. The same
+  goes for a relative path in an MCP tool's patch text.
 - **The `!` commands you type** in OpenCode are yours, not tool calls: the guard doesn't see them.
 - **A name built from a variable** (`f=.en; cat ${f}v`), read from a file, or printed by another program gets through
   the shell-text rules, as in every tool.
