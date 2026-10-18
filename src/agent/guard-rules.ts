@@ -759,8 +759,9 @@ export function openCodeNamed(text: string, rule?: OpenCodeRule): boolean {
 // - a patch's Add File by its whole text, an Update File only when the file can be read and neither it nor any line the
 //   patch adds holds a fence-looking line (which line ends up first is not worked out); a Delete File writes nothing;
 // - anything else (a Move to or a rename into a skills folder, a copy, an MCP or unknown tool, an OMP edit, a notebook
-//   cell, a file that can't be read) is refused, and so is a shell command that writes into a skills folder: anything
-//   but the plain reading commands (skillShellWrite). Reading skills, by any tool, passes.
+//   cell, a file that can't be read) is refused;
+// - shell text naming a skills folder is refused, whatever the command (skillsNamed: the readings every protected name
+//   gets, so quotes, braces, $'…', case and ".." spellings too): reading skills goes through the file tools.
 // Limit (the guard is a seatbelt): two edits racing on one skill file, each judged on the file before the other.
 
 /** Whether a path (one spelling of it) is in a .claude or .agents skills folder. */
@@ -798,7 +799,7 @@ export const SKILL_CODE = (path: string) =>
 export const SKILL_UNSEEN = (path: string) =>
 	`${path} is a skill OpenCode loads (a .claude or .agents skills folder), whose front matter may run as code, and Orrery can't see what this would leave at the file's start; write the file whole, or edit it with exact text it holds.`;
 export const SKILL_SHELL =
-	"This command writes into a skills folder OpenCode loads (.claude or .agents skills), whose front matter may run as code; write skills with the file tools (write or edit), which check it.";
+	"This command names a skills folder OpenCode loads (.claude or .agents skills), whose front matter may run as code; read skills with the file tools (read, glob, grep) and write them with write or edit, which check them.";
 
 /**
  * Why a write of `text` to `path` (as written or placed) or `real` (where it lands) is refused for a skill's front
@@ -875,33 +876,9 @@ export function patchNewText(patch: string): (target: string) => NewText | undef
 
 const SKILLS_NAMED = new RegExp(`${OC_START}\\.(?:claude|agents)/+skills${OC_END}`);
 
-/** Commands that only read files (and only print to the screen); any other names in a command that names a skills folder make it a write. */
-const READING_COMMANDS = new Set(["cat", "ls", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "find", "fd", "wc", "stat", "file", "tree", "du", "diff", "cmp", "nl", "bat", "realpath", "readlink", "basename", "dirname", "pwd", "cd", "echo", "printf", "test", "true"]);
-/** The options with which a reading command writes or runs: find's -exec and -delete, fd's --exec, tree's -o. */
-const WRITING_OPTIONS: Readonly<Record<string, RegExp>> = {
-	find: /(?:^|\s)(?:-exec(?:dir)?|-ok(?:dir)?|-delete|-fprint0?|-fprintf|-fls)(?=\s|$)/,
-	fd: /(?:^|\s)(?:-x|--exec(?:-batch)?)(?=\s|=|$)/,
-	tree: /(?:^|\s)(?:-o|--output)(?=\s|=|$)/,
-};
-
-/** Whether one reading of shell text names a skills folder in anything but the plain reading commands. */
-function writesSkills(form: string): boolean {
-	if (!SKILLS_NAMED.test(form)) return false;
-	// Redirection, substitution or a subshell: where it writes can't be told.
-	if (/[>`]|\$\(|<\(/.test(form)) return true;
-	for (const segment of form.split(/\|\||&&|[;|&\n]/)) {
-		const words = segment.trim().split(/\s+/).filter(Boolean);
-		while (words.length > 0 && /^[a-z_][a-z0-9_]*=/.test(words[0] as string)) words.shift();
-		if (words.length === 0) continue;
-		const command = (words[0] as string).split("/").at(-1) as string;
-		if (!READING_COMMANDS.has(command) || (WRITING_OPTIONS[command]?.test(words.slice(1).join(" ")) ?? false)) return true;
-	}
-	return false;
-}
-
-/** Whether shell text writes into a skills folder (above), in any reading of it. */
-export function skillShellWrite(text: string): boolean {
-	return inAnyReading(text, writesSkills);
+/** Whether shell text names a skills folder (above), in any reading of it. */
+export function skillsNamed(text: string): boolean {
+	return inAnyReading(text, (form) => SKILLS_NAMED.test(form));
 }
 
 /**
@@ -1016,7 +993,7 @@ export function checkToolCall(
 		const inReading = (test: (form: string) => boolean) => reading.forms.some(test) || reading.pieces.some(test);
 		const own = openCode().own;
 		if (inReading((form) => OPENCODE_NAMED.test(form) || own.some((root) => form.includes(root)))) return OPENCODE_COMMAND;
-		if (inReading(writesSkills)) return SKILL_SHELL;
+		if (inReading((form) => SKILLS_NAMED.test(form))) return SKILL_SHELL;
 	}
 	const raw = call.arguments.path;
 	if (typeof raw !== "string") return undefined;

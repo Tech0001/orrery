@@ -15,7 +15,8 @@
  * guard-rules.ts openCodeLoads), which OpenCode loads and runs, are read-only as Orrery's config is: no tool writes them
  * and shell text may not name them. The skills of .claude and .agents, which OpenCode loads too, may be written by the
  * file tools, but only where the guard can see the file will not start with front matter that may run as code
- * (guard-rules.ts openCodeSkillRefusal, fail-closed), and no shell command may write into them. Known limits:
+ * (guard-rules.ts openCodeSkillRefusal, fail-closed), and shell text may not name them (skills are read with the file
+ * tools). Known limits:
  * - A hard link is another name for the same file, and the guard does not count links: one to another agent's view (the
  *   copy goes stale once Orrery replaces the view on its next write), to the config file in use, or to a file of the
  *   installed program (app/), made before the guard ran or by a spelling it cannot see, reads or writes the file

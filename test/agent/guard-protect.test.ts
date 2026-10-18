@@ -1481,41 +1481,55 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 		expect(codexGuard("apply_patch", { command: `*** Begin Patch\n*** Delete File: ${skill}\n*** End Patch` }, t.options)).toBeUndefined();
 	});
 
-	it("refuses a shell command that writes into a skills folder, in every gate, and lets one that reads or lists pass", () => {
+	it("refuses shell text naming a skills folder, whatever the command, in every gate, by every spelling; reading goes through the file tools", () => {
 		const t = skillWorld();
 		const gates = (command: string) => [
 			guardToolCall("bash", { command }, t.options),
 			guardOmpToolCall("bash", { command }, t.options),
+			guardOmpToolCall("eval", { language: "sh", code: command }, t.options),
 			claudeGuard("Bash", { command }, t.options),
+			claudeGuard("mcp__shell__run", { command }, t.options),
 			codexGuard("Bash", { command }, t.options),
+			codexGuard("mcp__box__exec_command", { cmd: command }, t.options),
 			openCodeGuard("shell", { command }, t.options, "ses_a"),
+			openCodeGuard("execute", { code: command }, t.options, "ses_a"),
 			openCodeGuard("box_run", { command }, t.options, "ses_a"),
+			openCodeGuard("box_exec", { args: [command] }, t.options, "ses_a"),
 			durablePreCheck({ name: "bash", arguments: { command } }, { folder: t.atlas, allowedRoots: [t.atlas], foreignViews: [] }),
 		];
 		for (const command of [
+			// Writes of every kind,
 			"cp evil.md .claude/skills/s/SKILL.md",
 			"mv x.md .agents/skills/t/SKILL.md",
-			"install -m 644 x .claude/skills/s/SKILL.md",
 			"ln -s ../../x.md .claude/skills/s/SKILL.md",
-			"rsync -a skills/ .claude/skills/",
-			"dd if=x of=.claude/skills/s/SKILL.md",
-			"tee .claude/skills/s/SKILL.md < x",
+			"find .claude/skills -name '*.md' -fprint .claude/skills/s/SKILL.md",
+			"sort -o .claude/skills/s/SKILL.md x",
+			"awk '{print > \".agents/skills/s/SKILL.md\"}' x",
 			"sed -i 's/---/---js/' .claude/skills/s/SKILL.md",
-			"echo hi > .claude/skills/s/SKILL.md",
-			"cat x >> ~/.claude/skills/h/SKILL.md",
 			"cat > .agents/skills/s/SKILL.md <<'EOF'\n---\nname: x\n---\nEOF",
-			"node -e \"require('fs').writeFileSync('.claude/skills/s/SKILL.md', '---js')\"",
-			"find .claude/skills -name '*.md' -exec sh -c 'cat x > {}' \;",
-			"ls .claude/skills | xargs -I{} cp x .claude/skills/{}/SKILL.md",
-			"cp x $'.claude/skills'/s/SKILL.md",
-			"cp x .Claude/Skills/s/SKILL.md",
-			"git checkout other -- .claude/skills/s/SKILL.md",
+			// reads and listings too: the file tools read skills,
+			"ls .claude/skills",
+			"cat .claude/skills/s/SKILL.md",
+			"grep -r name .agents/skills",
+			// and every spelling the readings take.
+			"cat '.claude/skills/s/SKILL.md'",
+			'cat ".agents"/skills/s/SKILL.md',
+			"cat .claude/{skills,x}/s/SKILL.md",
+			"cat $'.claude/skills'/s/SKILL.md",
+			"cat $'\\x2eclaude'/skills/s/SKILL.md",
+			"ls .Claude/Skills",
+			"ls ~/.claude/skills",
+			"ls .claude/x/../skills",
 		]) {
 			expect([command, gates(command)]).toEqual([command, gates(command).map(() => SKILL_SHELL)]);
 		}
-		for (const command of ["cat .claude/skills/s/SKILL.md", "ls -la .agents/skills", "grep -o name .claude/skills/s/SKILL.md", "find .claude/skills -name '*.md'", "head -5 .claude/skills/s/SKILL.md | wc -l", "cd .claude/skills && ls", "cp notes.md backup.md"]) {
+		for (const command of ["cat notes.md", "ls .claude", "cat .claude/settings.json", "ls skills", "grep -r skills docs", "cat my.claude/skillsx"]) {
 			expect([command, gates(command)]).toEqual([command, gates(command).map(() => undefined)]);
 		}
+		// The file tools read them.
+		expect(guardToolCall("read", { path: join(t.atlas, ".claude", "skills", "s", "SKILL.md") }, t.options)).toBeUndefined();
+		expect(claudeGuard("Grep", { pattern: "name", path: join(t.atlas, ".agents", "skills") }, t.options)).toBeUndefined();
+		expect(openCodeGuard("glob", { pattern: "**/SKILL.md", path: ".claude/skills" }, t.options, "ses_a")).toBeUndefined();
 	});
 
 	it("only ever adds refusals: a path through a skills folder that lands elsewhere is judged by the general rules", () => {

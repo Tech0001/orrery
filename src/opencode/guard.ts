@@ -52,7 +52,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { agentViews, movedAgentDirCredentials, ompCredentials, openCodeOf, realTarget } from "../agent/guard-paths.ts";
-import { inAnyReading, NEW_TEXT, type NewText, OPENCODE_COMMAND, openCodeNamed, type OpenCodeRule, openCodeRule, openCodeSkillPath, patchNewText, SKILL_SHELL, skillShellWrite } from "../agent/guard-rules.ts";
+import { inAnyReading, NEW_TEXT, type NewText, OPENCODE_COMMAND, openCodeNamed, type OpenCodeRule, openCodeRule, openCodeSkillPath, patchNewText, SKILL_SHELL, skillsNamed } from "../agent/guard-rules.ts";
 import { workArea } from "../agent/pick.ts";
 import { ownFolder } from "../agent/private-file.ts";
 import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from "../claude/guard.ts";
@@ -377,7 +377,7 @@ class Judge {
 	named(command: string): string | undefined {
 		if (loginNamed(command)) return LOGIN;
 		if (openCodeNamed(command, openCodeOf(this.#options, this.#options.home ?? homedir()))) return OPENCODE_COMMAND;
-		return skillShellWrite(command) ? SKILL_SHELL : undefined;
+		return skillsNamed(command) ? SKILL_SHELL : undefined;
 	}
 
 	/** Where OpenCode's tools place `raw` (or `place` does), and where that lands. */

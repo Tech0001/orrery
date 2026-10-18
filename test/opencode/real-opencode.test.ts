@@ -497,7 +497,8 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Or
 			expect(await toolResult("write", { path: ".claude/skills/tidy/SKILL.md", content: "---js\n({})\n---\n" })).toMatch(CODE);
 			expect(await toolResult("edit", { path: ".claude/skills/tidy/SKILL.md", oldString: "---\nname: tidy", newString: "---javascript\n({})" })).toMatch(CODE);
 			expect(await toolResult("patch", { patchText: "*** Begin Patch\n*** Add File: .agents/skills/x/SKILL.md\n+---JS\n+({})\n*** End Patch" }, "fake/gpt-5-fake")).toMatch(CODE);
-			expect(await toolResult("shell", { command: "cp notes.md .claude/skills/tidy/SKILL.md" })).toMatch(/writes into a skills folder/);
+			expect(await toolResult("shell", { command: "cp notes.md .claude/skills/tidy/SKILL.md" })).toMatch(/names a skills folder/);
+			expect(await toolResult("shell", { command: "ls .claude/skills" })).toMatch(/names a skills folder/);
 			expect(readFileSync(skill, "utf8")).toContain("Tidy, sort and date the notes.");
 			expect(existsSync(join(world.ws, ".agents"))).toBe(false);
 		} finally {
