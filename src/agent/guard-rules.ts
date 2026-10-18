@@ -31,6 +31,11 @@ export interface GuardOptions {
 	 * more files and folders no tool reads, writes or names (protection).
 	 */
 	readonly protect?: readonly string[];
+	/**
+	 * OpenCode's config and code (openCodeRule), which no tool writes and no shell text names; default: from this
+	 * process's environment and the guard's home.
+	 */
+	readonly openCode?: OpenCodeRule;
 }
 
 const SENSITIVE = [
@@ -621,6 +626,117 @@ export const orreryAppNamed = (path: string) => /(^|\/)\.orrery\/app(\/|$)/.test
 /** Why a write to Orrery's installed program is refused: the hooks and extensions every agent runs are in it. */
 export const APP_READ_ONLY = (path: string) => `${path} is Orrery's installed program: agents may read it, not change it.`;
 
+// ---- OpenCode's config and code (ruling 2026-10-17): no agent writes them, in any gate ----
+//
+// OpenCode 2.0.30 (source at its tag) loads code, runs commands and takes permissions from these, with no trust prompt
+// and on a file's change, in its server, next to Orrery's guard. A file another tool writes there runs the next time
+// OpenCode opens that folder, so every gate refuses writes to them, and shell text naming them; file tools may read them.
+// - In every folder from a session's up to / (core/src/config/discovery.ts:77-85): opencode.json and opencode.jsonc
+//   (plugins, MCP server commands, the shell, formatters run on every edit, provider packages imported as code,
+//   permissions, agents, commands); a .opencode folder, whole (its own opencode.json(c), plugin(s)/ and the
+//   node_modules they import, agent(s)/, mode(s)/, command(s)/ with !`cmd` run at invocation, skill(s)/; Markdown front
+//   matter starting ---js is run by gray-matter as it loads: core/src/config/plugin/{agent,command,skill,source}.ts,
+//   config/markdown.ts); and the skills of .claude and .agents (config/plugin/compatibility.ts:40, ---js the same).
+//   OpenCode's Plan folder, ~/.opencode/plan, is no config: its plan files may be written (plugin/plan.ts:31); the rest
+//   of ~/.opencode is a config root like any other, and holds OpenCode's own binary (bin/opencode).
+// - Its own folders: the config folder ($OPENCODE_CONFIG_DIR, else $XDG_CONFIG_HOME/opencode, ~/.config/opencode: its
+//   opencode.json(c), plugins/, cli.json with TUI plugins and auto-accepted permissions, service.json's server
+//   environment, tui.json), the cache ($XDG_CACHE_HOME/opencode: the npm plugins it imports, bin/rg it runs), the state
+//   folder ($XDG_STATE_HOME/opencode: kv.json, migrated into cli.json), its database (saved permissions, a project's
+//   start command; $XDG_DATA_HOME/opencode/opencode*.db, $OPENCODE_DB), $OPENCODE_CONFIG, the system folder
+//   (/etc/opencode, /Library/Application Support/opencode) and macOS's managed preferences (ai.opencode.managed.plist).
+// Limits: a project's node_modules a plugin may import from, and git's hooks OpenCode runs with `git worktree add`, are
+// the project's (every tool's own risk too); a spelling of these folders through a variable or a link in shell text.
+
+/** OpenCode's config files by name, in any folder. */
+const OPENCODE_FILES = new Set(["opencode.json", "opencode.jsonc", "ai.opencode.managed.plist"]);
+/** OpenCode's database files by name (in its data folder). */
+const OPENCODE_DATABASE = /^opencode(?:-[a-z0-9._-]+)?\.db(?:-wal|-shm|-journal)?$/;
+
+/** OpenCode's own folders for `home` and `env` (above): absolute, as given (realTarget is the caller's). */
+export function openCodeOwnFolders(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] {
+	const xdg = (name: string, fallback: string) => (env[name] && posix.isAbsolute(env[name]) ? (env[name] as string) : posix.join(home, fallback));
+	const folders = new Set<string>([
+		posix.join(home, ".config", "opencode"),
+		posix.join(xdg("XDG_CONFIG_HOME", ".config"), "opencode"),
+		posix.join(home, ".cache", "opencode"),
+		posix.join(xdg("XDG_CACHE_HOME", ".cache"), "opencode"),
+		posix.join(home, ".local", "state", "opencode"),
+		posix.join(xdg("XDG_STATE_HOME", ".local/state"), "opencode"),
+		"/etc/opencode",
+		"/Library/Application Support/opencode",
+	]);
+	if (env.OPENCODE_CONFIG_DIR) folders.add(posix.resolve(env.OPENCODE_CONFIG_DIR));
+	if (env.OPENCODE_CONFIG) folders.add(posix.resolve(env.OPENCODE_CONFIG));
+	const data = posix.join(xdg("XDG_DATA_HOME", ".local/share"), "opencode");
+	for (const end of ["", "-wal", "-shm", "-journal"]) folders.add(posix.join(data, `opencode.db${end}`));
+	if (env.OPENCODE_DB && env.OPENCODE_DB !== ":memory:") folders.add(posix.resolve(data, env.OPENCODE_DB));
+	return [...folders].map((folder) => posix.normalize(folder));
+}
+
+/** What the OpenCode rule judges against: OpenCode's own folders and the Plan folders (each as given and real, folded). */
+export interface OpenCodeRule {
+	readonly own: readonly string[];
+	/** ~/.opencode/plan, from each spelling of home. */
+	readonly plans: readonly string[];
+	/** OpenCode's data folders (its database files by name there). */
+	readonly data: readonly string[];
+}
+
+/** The rule for `home` and `env`; `real` follows links (realTarget), so a root reached through one counts too. */
+export function openCodeRule(env: NodeJS.ProcessEnv = process.env, home: string = homedir(), real: (path: string) => string = (path) => path): OpenCodeRule {
+	const both = (paths: readonly string[]) => [...new Set(paths.flatMap((path) => [path, real(path)]).map((path) => posix.normalize(path).toLowerCase().replace(/\/+$/, "")))];
+	const homes = [home, real(home)];
+	const xdgData = env.XDG_DATA_HOME && posix.isAbsolute(env.XDG_DATA_HOME) ? env.XDG_DATA_HOME : posix.join(home, ".local", "share");
+	return {
+		own: both(openCodeOwnFolders(env, home)),
+		plans: [...new Set(homes.map((at) => posix.join(posix.normalize(at), ".opencode", "plan").toLowerCase()))],
+		data: both([posix.join(xdgData, "opencode"), posix.join(home, ".local", "share", "opencode")]),
+	};
+}
+
+/** Whether an absolute path is OpenCode's config or code (above): one spelling of it, folded and normalized here. */
+export function openCodeLoads(path: string, rule: OpenCodeRule): boolean {
+	const folded = posix.normalize(path).toLowerCase();
+	if (rule.own.some((root) => within(folded, root))) return true;
+	const parts = folded.split("/");
+	const name = parts.at(-1) ?? "";
+	if (OPENCODE_FILES.has(name)) return true;
+	if (OPENCODE_DATABASE.test(name) && rule.data.some((data) => folded === posix.join(data, name))) return true;
+	// Below the Plan folder only another config folder or file counts: the plan files are no config.
+	const plan = rule.plans.find((at) => within(folded, at));
+	const rest = plan === undefined ? parts : folded.slice(plan.length).split("/");
+	return rest.some((part, at) => part === ".opencode" || ((part === ".claude" || part === ".agents") && rest[at + 1] === "skills"));
+}
+
+/** Why a write to OpenCode's config or code is refused. */
+export const OPENCODE_READ_ONLY = (path: string) =>
+	`${path} is OpenCode's config or code (a .opencode folder, opencode.json(c), a .claude or .agents skills folder, or OpenCode's own config, cache, state or database), which OpenCode loads and runs: agents may read it, not change it.`;
+
+/** Why shell text naming OpenCode's config or code is refused. */
+export const OPENCODE_COMMAND =
+	"This command names OpenCode's config or code (a .opencode folder, opencode.json(c), a .claude or .agents skills folder, or OpenCode's own config, cache, state or database), which OpenCode loads and runs: agents may read them with file tools, not change them.";
+
+const OC_START = "(?:^|[\\s\"'=:/~<>;|&()`{,@*])";
+const OC_END = "(?=$|[\\s\"'/:;|&()<>`,}*?\\[])";
+/** OpenCode's config and code named in shell text (readings are lower case): by name, and its folders by their tails. */
+const OPENCODE_NAMED = new RegExp(
+	[
+		`${OC_START}(?:\\.opencode|opencode\\.jsonc?|ai\\.opencode\\.managed\\.plist|opencode(?:-[a-z0-9._-]+)?\\.db(?:-wal|-shm|-journal)?)${OC_END}`,
+		`${OC_START}\\.(?:claude|agents)/+skills${OC_END}`,
+		`\\.(?:config|cache)/+opencode${OC_END}`,
+		`\\.local/+state/+opencode${OC_END}`,
+		`(?:^|[\\s"'=:<>;|&()\`{,@])/+etc/+opencode${OC_END}`,
+		`application(?:\\\\? |%20)support/+opencode${OC_END}`,
+	].join("|"),
+);
+
+/** Whether text a shell may run names OpenCode's config or code, in any reading of it; `rule`'s own folders by their spelling too. */
+export function openCodeNamed(text: string, rule?: OpenCodeRule): boolean {
+	const named = (form: string) => OPENCODE_NAMED.test(form) || (rule?.own.some((root) => form.includes(root)) ?? false);
+	return inAnyReading(text, named);
+}
+
 /**
  * Whether a reading opens the agent view file it names, the name ending at `end`: made once per reading (`views(form)`),
  * then asked for each view file the reading names.
@@ -718,6 +834,8 @@ export function checkToolCall(
 	config: readonly string[] = configSpellings(options),
 	protect: Protection = protection(options.protect),
 ): string | undefined {
+	let rule = options.openCode;
+	const openCode = () => (rule ??= openCodeRule(process.env, (options as { readonly home?: string }).home ?? homedir()));
 	const command = call.arguments.command;
 	if (call.name === "bash" && typeof command === "string") {
 		// Shell text's readings, made once: sensitive by flagged's rules for shell text and the built-in home secrets spelt
@@ -727,6 +845,7 @@ export function checkToolCall(
 		const entry = protectedIn(reading, protect);
 		if (entry !== undefined) return `This command touches ${entry}, ${PROTECTED_BY}.`;
 		if (reading.forms.some(runsPlumbing) || reading.pieces.some(runsPlumbing)) return PLUMBING_REFUSED;
+		if (openCodeNamed(command, openCode())) return OPENCODE_COMMAND;
 	}
 	const raw = call.arguments.path;
 	if (typeof raw !== "string") return undefined;
@@ -737,6 +856,7 @@ export function checkToolCall(
 	const writes = call.name === "write" || call.name === "edit";
 	if (writes && (orreryConfigNamed(path) || config.includes(path.toLowerCase()))) return CONFIG_READ_ONLY(path);
 	if (writes && orreryAppNamed(path)) return APP_READ_ONLY(path);
+	if (writes && openCodeLoads(path, openCode())) return OPENCODE_READ_ONLY(path);
 	if (writes && ![options.folder, ...options.allowedRoots].some((root) => within(path, root))) {
 		return `${path} is outside this agent's folder and allowed roots.`;
 	}

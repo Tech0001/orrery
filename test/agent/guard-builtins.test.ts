@@ -344,7 +344,6 @@ describe("credential files and folders under home, built in", () => {
 			"ls .wrangler/state",
 			"rm -rf .wrangler",
 			"cat ~/.cargo/config.toml",
-			"ls ~/.config/opencode",
 			"cat ~/.npmrc-old",
 			"ls ~/.config",
 			"ls ~/.cache/pip",

@@ -7,8 +7,8 @@ import { Agent } from "../../src/agent/agent.ts";
 import { ConfigError, type HarnessConfig, parseConfig } from "../../src/agent/config.ts";
 import { newConfigText } from "../../src/agent/config-edit.ts";
 import { checkResolvedPath, durablePreCheck } from "../../src/agent/guard.ts";
-import { guardOmpToolCall, guardToolCall } from "../../src/agent/guard-paths.ts";
-import { checkToolCall } from "../../src/agent/guard-rules.ts";
+import { guardOmpToolCall, guardToolCall, realTarget } from "../../src/agent/guard-paths.ts";
+import { checkToolCall, OPENCODE_COMMAND, OPENCODE_READ_ONLY, openCodeLoads, openCodeRule } from "../../src/agent/guard-rules.ts";
 import { claudeGuard } from "../../src/claude/guard.ts";
 import { runHook } from "../../src/claude/hooks.ts";
 import { codexGuard } from "../../src/codex/guard.ts";
@@ -1100,5 +1100,246 @@ describe("[guard] protect: speed", () => {
 			expect(large / Math.max(small, 20), `${JSON.stringify(unit)}: ${small.toFixed(0)} ms -> ${large.toFixed(0)} ms`).toBeLessThan(10);
 			expect(large, `${JSON.stringify(unit)} backstop`).toBeLessThan(10_000);
 		}
+	});
+});
+
+describe("OpenCode's config and code: one table through every gate (writes and shell text refused, reads allowed)", () => {
+	/** protectWorld, with what OpenCode loads in Atlas's folder and in home, home an allowed root (only the OpenCode rule refuses there). */
+	function openCodeWorld() {
+		const t = protectWorld();
+		const files = [
+			...["opencode.json", "sub/opencode.jsonc", ".opencode/plugins/p.ts", ".opencode/package.json", ".claude/skills/s/SKILL.md", ".agents/skills/s/SKILL.md", ".claude/settings.json", "AGENTS.md", "skills/x.md", "opencode.json.bak"].map((file) => join(t.atlas, file)),
+			...[".config/opencode/opencode.json", ".config/opencode/cli.json", ".cache/opencode/npm/x/index.js", ".local/state/opencode/kv.json", ".local/share/opencode/opencode.db", ".opencode/bin/opencode"].map((file) => join(t.home, file)),
+		];
+		for (const file of files) {
+			mkdirSync(join(file, ".."), { recursive: true });
+			writeFileSync(file, "x");
+		}
+		symlinkSync(join(t.atlas, "opencode.json"), join(t.atlas, "settings.json"));
+		symlinkSync(join(t.atlas, ".opencode"), join(t.atlas, "tools"));
+		// No environment: OpenCode's own folders from this home alone.
+		const openCode = openCodeRule({}, t.home, realTarget);
+		const options = { ...t.options, allowedRoots: [...t.options.allowedRoots, t.home], openCode };
+		return { ...t, options, openCode };
+	}
+	type OcWorld = ReturnType<typeof openCodeWorld>;
+
+	interface Case {
+		readonly name: string;
+		/** Whether writes to it and shell text naming it are refused (reads never are). */
+		readonly refused: boolean;
+		readonly path?: string;
+		readonly command?: string;
+	}
+
+	function table(t: OcWorld): Case[] {
+		const a = (file: string) => join(t.atlas, file);
+		const h = (file: string) => join(t.home, file);
+		return [
+			{ name: "opencode.json in the agent's folder", refused: true, path: a("opencode.json"), command: "echo '{}' > opencode.json" },
+			{ name: "opencode.jsonc in a folder below", refused: true, path: a("sub/opencode.jsonc"), command: "cat sub/opencode.jsonc" },
+			{ name: "a plugin in .opencode", refused: true, path: a(".opencode/plugins/p.ts"), command: "cp p.ts .opencode/plugins/" },
+			{ name: "a new plugin in .opencode", refused: true, path: a(".opencode/plugins/new.ts") },
+			{ name: ".opencode's package.json", refused: true, path: a(".opencode/package.json"), command: "cat ./.opencode/package.json" },
+			{ name: "a .claude skill", refused: true, path: a(".claude/skills/s/SKILL.md"), command: "cat .claude/skills/s/SKILL.md" },
+			{ name: "an .agents skill", refused: true, path: a(".agents/skills/s/SKILL.md"), command: "mkdir -p .agents/skills/t" },
+			{ name: "a link to opencode.json", refused: true, path: a("settings.json") },
+			{ name: "a path through a link to .opencode", refused: true, path: a("tools/plugins/q.ts") },
+			{ name: "another case", refused: true, path: a(".OpenCode/Plugins/x.ts"), command: "ls .OpenCode" },
+			{ name: "a parent's opencode.json by ..", refused: true, path: a("src/../../opencode.json"), command: "mv x ../opencode.json" },
+			{ name: "OpenCode's config folder", refused: true, path: h(".config/opencode/opencode.json"), command: "cat ~/.config/opencode/opencode.json" },
+			{ name: "OpenCode's cli.json", refused: true, path: h(".config/opencode/cli.json"), command: `cat ${h(".config/opencode/cli.json")}` },
+			{ name: "OpenCode's plugin cache", refused: true, path: h(".cache/opencode/npm/x/index.js"), command: "ls $HOME/.cache/opencode/npm" },
+			{ name: "OpenCode's state", refused: true, path: h(".local/state/opencode/kv.json"), command: "cat ~/.local/state/opencode/kv.json" },
+			{ name: "OpenCode's database", refused: true, path: h(".local/share/opencode/opencode.db"), command: "sqlite3 ~/.local/share/opencode/opencode.db .dump" },
+			{ name: "OpenCode's own binary in ~/.opencode", refused: true, path: h(".opencode/bin/opencode"), command: "cp x ~/.opencode/bin/opencode" },
+			{ name: "brace-split name", refused: true, command: "cp x opencode.{json,x}" },
+			{ name: "$'…' escape", refused: true, command: "cp x $'\\x2eopencode'/plugins/y.ts" },
+			{ name: "a quoted name", refused: true, command: 'tee "opencode.jsonc" < x' },
+			{ name: "the system folder", refused: true, command: "sudo cp x /etc/opencode/opencode.json" },
+			{ name: "instructions (AGENTS.md)", refused: false, path: a("AGENTS.md"), command: "echo hi >> AGENTS.md" },
+			{ name: "Claude Code's own settings", refused: false, path: a(".claude/settings.json"), command: "cat .claude/settings.json" },
+			{ name: "a skills folder of the project's", refused: false, path: a("skills/x.md"), command: "cat skills/x.md" },
+			{ name: "a look-alike name", refused: false, path: a("opencode.json.bak"), command: "cat opencode.json.bak && ls src/opencode && npm run opencode-e2e" },
+		];
+	}
+
+	/** Each gate's verdicts: reads (always let through) and writes and commands (refused as the case says). */
+	type Gate = (t: OcWorld, c: Case) => Promise<{ reads: (string | undefined)[]; writes: (string | undefined)[] }>;
+
+	const pi: Gate = async (t, c) => {
+		const reads: (string | undefined)[] = [];
+		const writes: (string | undefined)[] = [];
+		const call = (into: (string | undefined)[], tool: string, input: Record<string, unknown>) => into.push(guardToolCall(tool, input, t.options));
+		if (c.path !== undefined) {
+			call(reads, "read", { path: c.path });
+			call(writes, "write", { path: c.path, content: "x" });
+			call(writes, "edit", { path: c.path, edits: [] });
+		}
+		if (c.command !== undefined) call(writes, "bash", { command: c.command });
+		return { reads, writes };
+	};
+
+	const omp: Gate = async (t, c) => {
+		const reads: (string | undefined)[] = [];
+		const writes: (string | undefined)[] = [];
+		const call = (into: (string | undefined)[], tool: string, input: Record<string, unknown>) => into.push(guardOmpToolCall(tool, input, t.options));
+		if (c.path !== undefined) {
+			call(reads, "read", { path: c.path });
+			call(writes, "write", { path: c.path, content: "x" });
+			call(writes, "edit", { path: c.path, input: "PUT 1\n+x\n" });
+			call(writes, "edit", { input: `[${c.path}#1a2b]\nPUT 1\n+x\n` });
+			call(writes, "ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [c.path] });
+		}
+		if (c.command !== undefined) {
+			call(writes, "bash", { command: c.command });
+			call(writes, "eval", { language: "sh", code: c.command });
+		}
+		return { reads, writes };
+	};
+
+	const claude: Gate = async (t, c) => {
+		const reads: (string | undefined)[] = [];
+		const writes: (string | undefined)[] = [];
+		const call = (into: (string | undefined)[], tool: string, input: Record<string, unknown>) => into.push(claudeGuard(tool, input, t.options));
+		if (c.path !== undefined) {
+			call(reads, "Read", { file_path: c.path });
+			call(reads, "mcp__files__read_file", { path: c.path });
+			call(writes, "Write", { file_path: c.path, content: "x" });
+			call(writes, "Edit", { file_path: c.path, old_string: "a", new_string: "b" });
+			call(writes, "MultiEdit", { file_path: c.path, edits: [] });
+			call(writes, "NotebookEdit", { notebook_path: c.path, new_source: "x" });
+			call(writes, "mcp__files__write_file", { path: c.path, content: "x" });
+			// A tool named for neither, its path under keys no heuristic reads as one.
+			call(writes, "mcp__box__put", { to: c.path, body: "x" });
+			call(writes, "mcp__box__store", { item: { where: [c.path] } });
+		}
+		if (c.command !== undefined) {
+			call(writes, "Bash", { command: c.command });
+			call(writes, "mcp__shell__run", { command: c.command });
+		}
+		return { reads, writes };
+	};
+
+	const codex: Gate = async (t, c) => {
+		const reads: (string | undefined)[] = [];
+		const writes: (string | undefined)[] = [];
+		const call = (into: (string | undefined)[], tool: string, input: Record<string, unknown>) => into.push(codexGuard(tool, input, t.options));
+		const patch = (...lines: string[]) => call(writes, "apply_patch", { command: ["*** Begin Patch", ...lines, "*** End Patch"].join("\n") });
+		if (c.path !== undefined) {
+			call(reads, "view_image", { path: c.path });
+			call(reads, "mcp__files__read_file", { path: c.path });
+			patch(`*** Add File: ${c.path}`, "+x");
+			patch(`*** Update File: ${c.path}`, "@@", "-a", "+b");
+			patch(`*** Delete File: ${c.path}`);
+			patch("*** Update File: src/a.ts", `*** Move to: ${c.path}`, "@@", "-a", "+b");
+			call(writes, "Bash", { command: `apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch\nEOF` });
+			call(writes, "mcp__box__apply", { diff: `*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch` });
+			call(writes, "mcp__box__put", { to: c.path });
+		}
+		if (c.command !== undefined) {
+			call(writes, "Bash", { command: c.command });
+			call(writes, "mcp__box__exec_command", { cmd: c.command });
+		}
+		return { reads, writes };
+	};
+
+	const opencode: Gate = async (t, c) => {
+		const reads: (string | undefined)[] = [];
+		const writes: (string | undefined)[] = [];
+		const call = (into: (string | undefined)[], tool: string, input: unknown) => into.push(openCodeGuard(tool, input, t.options, "ses_a"));
+		const patch = (...lines: string[]) => call(writes, "patch", { patchText: ["*** Begin Patch", ...lines, "*** End Patch"].join("\n") });
+		if (c.path !== undefined) {
+			const placed = openCodeToolPath(c.path, t.options.cwd, t.home);
+			call(reads, "read", { path: c.path });
+			call(reads, "fs_read_file", { path: c.path });
+			reads.push(openCodePermission("read", [placed], t.options));
+			call(writes, "write", { path: c.path, content: "x" });
+			call(writes, "edit", { path: c.path, oldString: "a", newString: "b" });
+			patch(`*** Add File: ${c.path}`, "+x");
+			patch(`*** Delete File: ${c.path}`);
+			patch("*** Update File: src/a.ts", `*** Move to: ${c.path}`, "@@", "-a", "+b");
+			call(writes, "box_apply", { diff: `*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch` });
+			call(writes, "box_put", { target_file: c.path });
+			call(writes, "box_store", { file: { path: c.path } });
+			writes.push(openCodePermission("edit", [placed], t.options));
+		}
+		if (c.command !== undefined) {
+			call(writes, "shell", { command: c.command });
+			call(writes, "execute", { code: c.command });
+			call(writes, "box_run", { command: c.command });
+			call(writes, "box_exec", { args: [c.command] });
+		}
+		return { reads, writes };
+	};
+
+	const durable: Gate = async (t, c) => {
+		const options = { folder: t.atlas, allowedRoots: t.options.allowedRoots, cwd: t.atlas, foreignViews: [] as string[], home: t.home, protect: [join(t.home, "finance"), ...t.protect.slice(1)], openCode: t.openCode };
+		const env = new NodeExecutionEnv({ cwd: t.atlas });
+		const reads: (string | undefined)[] = [];
+		const writes: (string | undefined)[] = [];
+		if (c.path !== undefined) {
+			const path = c.path;
+			reads.push(durablePreCheck({ name: "read", arguments: { path } }, options) ?? (await checkResolvedPath(env, path, "read", options, ctx)));
+			for (const tool of ["write", "edit"]) writes.push(durablePreCheck({ name: tool, arguments: { path } }, options) ?? (await checkResolvedPath(env, path, "write", options, ctx)));
+		}
+		if (c.command !== undefined) writes.push(durablePreCheck({ name: "bash", arguments: { command: c.command } }, options));
+		return { reads, writes };
+	};
+
+	it("gets the same verdict from pi, OMP, Claude Code, Codex, OpenCode and orrery run for every case", async () => {
+		const t = openCodeWorld();
+		const disagree: string[] = [];
+		for (const c of table(t)) {
+			for (const [gate, judge] of Object.entries({ pi, omp, claude, codex, opencode, durable })) {
+				const { reads, writes } = await judge(t, c);
+				reads.forEach((verdict, at) => {
+					if (verdict !== undefined) disagree.push(`${gate} read #${at} on ${c.name}: ${verdict}`);
+				});
+				writes.forEach((verdict, at) => {
+					if ((verdict !== undefined) !== c.refused) disagree.push(`${gate} #${at} on ${c.name}: ${verdict ?? "allowed"}`);
+				});
+			}
+		}
+		expect(disagree).toEqual([]);
+	});
+
+	it("says why: OpenCode loads and runs it, and file tools may read it", () => {
+		const t = openCodeWorld();
+		expect(guardToolCall("write", { path: join(t.atlas, ".opencode", "plugins", "p.ts"), content: "x" }, t.options)).toBe(OPENCODE_READ_ONLY(join(t.atlas, ".opencode", "plugins", "p.ts")));
+		expect(guardToolCall("bash", { command: "cat opencode.json" }, t.options)).toBe(OPENCODE_COMMAND);
+		expect(OPENCODE_READ_ONLY("x")).toMatch(/^x is OpenCode's config or code \(.*\), which OpenCode loads and runs: agents may read it, not change it\.$/);
+	});
+
+	it("finds OpenCode's own folders where the environment moves them, and by their real path", () => {
+		const t = openCodeWorld();
+		const moved = join(t.root, "elsewhere");
+		mkdirSync(join(moved, "cfg", "opencode"), { recursive: true });
+		const env = { OPENCODE_CONFIG_DIR: join(moved, "oc-config"), XDG_CONFIG_HOME: join(moved, "cfg"), XDG_CACHE_HOME: join(moved, "cache"), XDG_STATE_HOME: join(moved, "state"), XDG_DATA_HOME: join(moved, "data"), OPENCODE_CONFIG: join(moved, "one.json"), OPENCODE_DB: "custom.db" };
+		const rule = openCodeRule(env, t.home, realTarget);
+		for (const path of [join(moved, "oc-config", "plugins", "x.ts"), join(moved, "cfg", "opencode", "cli.json"), join(moved, "cache", "opencode", "bin", "rg"), join(moved, "state", "opencode", "kv.json"), join(moved, "data", "opencode", "opencode.db"), join(moved, "data", "opencode", "custom.db"), join(moved, "one.json"), join(t.home, ".config", "opencode", "x")]) {
+			expect(openCodeLoads(path, rule), path).toBe(true);
+		}
+		expect(openCodeLoads(join(moved, "data", "opencode", "log", "x.log"), rule)).toBe(false);
+		expect(openCodeLoads(join(t.atlas, "opencode.db"), rule)).toBe(false);
+		// Shell text naming a moved folder by its path is refused too.
+		expect(guardToolCall("bash", { command: `ls ${join(moved, "oc-config")}` }, { ...t.options, openCode: rule })).toBe(OPENCODE_COMMAND);
+		// A home reached through a link: its folders by their real path too.
+		symlinkSync(t.home, join(t.root, "home-link"));
+		const linked = openCodeRule({}, join(t.root, "home-link"), realTarget);
+		expect(openCodeLoads(join(t.home, ".config", "opencode", "opencode.json"), linked)).toBe(true);
+	});
+
+	it("leaves OpenCode's Plan folder writable by its plan files only, whatever a path does with .., case or a link", () => {
+		const t = openCodeWorld();
+		const plan = join(t.home, ".opencode", "plan");
+		expect(openCodeLoads(join(plan, "steps.md"), t.openCode)).toBe(false);
+		for (const path of [join(plan, "..", "plugins", "x.ts"), join(plan, "x", ".opencode", "plugins", "p.ts"), join(plan, "opencode.json"), join(plan, ".claude", "skills", "s", "SKILL.md"), join(t.home, ".opencode", "Plan2", "x.md"), join(t.home, ".opencode", "planx")]) {
+			expect(openCodeLoads(path, t.openCode), path).toBe(true);
+		}
+		// A plan folder planted as a link to ~/.opencode: where a write really lands is judged too.
+		mkdirSync(join(t.home, ".opencode"), { recursive: true });
+		symlinkSync(join(t.home, ".opencode"), plan);
+		expect(guardToolCall("write", { path: join(plan, "plugins", "x.ts"), content: "x" }, t.options)).toMatch(/OpenCode's config or code/);
 	});
 });

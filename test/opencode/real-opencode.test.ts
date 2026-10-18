@@ -440,7 +440,7 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Or
 			expect(await toolResult("execute", { code })).toMatch(REFUSED);
 			expect(readdirSync(vault)).toEqual(["secret.txt"]);
 			// OpenCode's config and plugins, in the session's own folder too: OpenCode would load them into its server.
-			const CONFIG = /Orrery guard: .*OpenCode's config or plugins/;
+			const CONFIG = /Orrery guard: .*OpenCode's config or code/;
 			expect(await toolResult("write", { path: "opencode.json", content: "{}" })).toMatch(CONFIG);
 			expect(await toolResult("edit", { path: "sub/opencode.jsonc", oldString: "a", newString: "b" })).toMatch(CONFIG);
 			expect(await toolResult("patch", { patchText: "*** Begin Patch\n*** Add File: .opencode/plugins/x.ts\n+x\n*** End Patch" }, "fake/gpt-5-fake")).toMatch(CONFIG);

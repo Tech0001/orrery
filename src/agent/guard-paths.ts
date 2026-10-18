@@ -10,7 +10,10 @@
  * guard-rules.ts, but the shared examples) are kept as credentials are, with two differences: a protect name entry or a
  * secret name is not judged against a search's root, and neither is judged in an OMP edit's text, only in its targets
  * (specs 2026-10-15-guard-protect, 2026-10-16-guard-presets). Shell text may not run Orrery's hook plumbing (codex-hook,
- * claude-hook, orrery holder; guard-rules.ts runsPlumbing), which only Orrery's own hooks run. Known limits:
+ * claude-hook, orrery holder; guard-rules.ts runsPlumbing), which only Orrery's own hooks run. OpenCode's config and code
+ * (a .opencode folder and opencode.json(c) in any folder, .claude and .agents skills, OpenCode's own config, cache,
+ * state and database: guard-rules.ts openCodeLoads), which OpenCode loads and runs, are read-only as Orrery's config is:
+ * no tool writes them and shell text may not name them. Known limits:
  * - A hard link is another name for the same file, and the guard does not count links: one to another agent's view (the
  *   copy goes stale once Orrery replaces the view on its next write), to the config file in use, or to a file of the
  *   installed program (app/), made before the guard ran or by a spelling it cannot see, reads or writes the file
@@ -58,6 +61,10 @@ import {
 	type GuardOptions,
 	HOME_SECRETS,
 	inOrreryHome,
+	OPENCODE_READ_ONLY,
+	openCodeLoads,
+	type OpenCodeRule,
+	openCodeRule,
 	orreryAppNamed,
 	orreryConfigNamed,
 	PROTECTED_BY,
@@ -542,6 +549,9 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	if (writes && (isConfig(resolved) || isConfig(target))) return CONFIG_READ_ONLY(raw);
 	// So is Orrery's installed program (app/): the hooks and extensions every agent runs are in it.
 	if (writes && (orreryAppNamed(resolved) || orreryAppNamed(target))) return APP_READ_ONLY(raw);
+	// And OpenCode's config and code, which OpenCode loads and runs (guard-rules.ts openCodeLoads).
+	const openCode = openCodeOf(options, home);
+	if (writes && (openCodeLoads(resolved, openCode) || openCodeLoads(target, openCode))) return OPENCODE_READ_ONLY(raw);
 	// The credential locations themselves, symlinks followed (a ~/.ssh linked from a dotfiles folder, say). Compared
 	// ignoring case: on a case-insensitive file system (macOS) ~/.SSH and /USERS are the same folders.
 	const fold = (path: string) => path.toLowerCase();
@@ -579,11 +589,16 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	// key), judged with every rule its own call would get, [guard] protect included.
 	return checkToolCall(
 		{ name: toolName, arguments: { ...input, path: target } },
-		{ folder: realRoot(options.folder), allowedRoots: options.allowedRoots.map(realRoot), cwd: realRoot(options.cwd), foreignViews: options.foreignViews },
+		{ folder: realRoot(options.folder), allowedRoots: options.allowedRoots.map(realRoot), cwd: realRoot(options.cwd), foreignViews: options.foreignViews, openCode },
 		views,
 		config,
 		protect,
 	);
+}
+
+/** OpenCode's config and code for `options` (GuardOptions.openCode), roots reached through links counted too. */
+export function openCodeOf(options: Pick<PathGuardOptions, "openCode">, home: string): OpenCodeRule {
+	return options.openCode ?? openCodeRule(process.env, home, realTarget);
 }
 
 /** OMP's searches: each takes files, folders or globs in `path` and reads what is under them. */

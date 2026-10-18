@@ -30,12 +30,11 @@
  * of its own. An empty path is that folder, as OpenCode resolves it.
  * OpenCode's own login store (its database, which holds provider keys and sign-ins, and the auth.json it had before) is
  * kept as Claude Code's login is in Claude Code's gate.
- * OpenCode's config and plugins are kept in every folder: OpenCode loads a .opencode folder (plugins, agents, commands,
- * skills) and opencode.json and opencode.jsonc from the session's folder and each folder above it into its server, next
- * to this guard (core/src/config/discovery.ts), so a write to one (a write, an edit, a patch target, an MCP or plugin
- * tool's written path, through a link too, in any case) is refused, and so is shell text naming one, as the database's
- * name is; reading them is not. OpenCode's Plan folder (~/.opencode/plan, below) is no config folder: its plan files may
- * be written.
+ * OpenCode's config and code (a .opencode folder and opencode.json(c) in any folder, the skills of .claude and .agents,
+ * OpenCode's own config, cache, state and database: src/agent/guard-rules.ts openCodeLoads, with OpenCode's source for
+ * each) are kept by the rules every gate shares: a write to one (a write, an edit, a patch target, a path an MCP or
+ * plugin tool may write, through a link, in any case) is refused, and so is shell text naming one; reading them is not.
+ * OpenCode's Plan folder (~/.opencode/plan, below) is no config: its plan files may be written.
  * The guard is fail-closed: an input it cannot read, an input over 1 MB, a command line over 64 KB and a call it cannot
  * judge within its time are refused (OpenCode has no time limit on a hook: a hook that never answers holds the call).
  * Limits, beyond the shell-text limits every gate has: a plugin of the person's own that changes a call's input after
@@ -47,13 +46,13 @@
 
 import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
-import { agentViews, movedAgentDirCredentials, ompCredentials, realTarget } from "../agent/guard-paths.ts";
-import { inAnyReading } from "../agent/guard-rules.ts";
+import { agentViews, movedAgentDirCredentials, ompCredentials, openCodeOf, realTarget } from "../agent/guard-paths.ts";
+import { inAnyReading, OPENCODE_COMMAND, openCodeNamed, type OpenCodeRule, openCodeRule } from "../agent/guard-rules.ts";
 import { workArea } from "../agent/pick.ts";
 import { ownFolder } from "../agent/private-file.ts";
-import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials, writtenPaths } from "../claude/guard.ts";
+import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from "../claude/guard.ts";
 
 /** The longest tool input the guard reads (1 MB, as Claude Code's and Codex's): a longer one is refused unread. */
 export const OPENCODE_TOOL_INPUT_MAX = 1024 * 1024;
@@ -119,36 +118,6 @@ function loginNamed(command: string): boolean {
 	return inAnyReading(command, (form) => DATABASE_WORD.test(form));
 }
 
-/** OpenCode's config files, by name, in each folder it walks (core/src/config/discovery.ts `names`). */
-const CONFIG_NAMES = new Set(["opencode.json", "opencode.jsonc"]);
-/** The folder OpenCode loads plugins, agents, commands, skills and config from, in each folder it walks. */
-const CONFIG_FOLDER = ".opencode";
-const CONFIG_WHAT = "OpenCode's config or plugins (a .opencode folder, opencode.json or opencode.jsonc), which OpenCode loads into its server";
-const CONFIG_FILE = (path: string) => `${path} is ${CONFIG_WHAT}; an agent may not change it.`;
-const CONFIG_COMMAND = `This command names ${CONFIG_WHAT}; an agent may not change them.`;
-
-/** OpenCode's config named in shell text: ".opencode", "opencode.json" or "opencode.jsonc" as a word or a path's part, any case. */
-const CONFIG_WORD = /(?:^|[\s"'=:/~<>;|&()`{,@])(?:\.opencode|opencode\.jsonc?)(?=$|[\s"'/:;|&()<>`,}*?[])/i;
-
-/** Whether shell text names OpenCode's config, in any reading a shell may make of it. */
-function configNamed(command: string): boolean {
-	return inAnyReading(command, (form) => CONFIG_WORD.test(form));
-}
-
-/**
- * Whether an absolute path is OpenCode's config or plugins: named opencode.json or opencode.jsonc, or in a .opencode
- * folder, in any case (macOS's file system is case-insensitive). OpenCode's Plan folder `plan` (~/.opencode/plan) is
- * not one: OpenCode loads nothing from it, so only a config folder or file below it counts there.
- */
-export function openCodeConfigPath(path: string, plan: string): boolean {
-	const lower = path.toLowerCase();
-	const parts = lower.split(sep);
-	if (CONFIG_NAMES.has(parts.at(-1) ?? "")) return true;
-	const planned = plan.toLowerCase();
-	const below = lower === planned || lower.startsWith(`${planned}${sep}`) ? lower.slice(planned.length) : lower;
-	return below.split(sep).includes(CONFIG_FOLDER);
-}
-
 /**
  * OpenCode's own per-user state an agent may write, as Claude Code's plans folder is in Claude Code's gate: the folder
  * its Plan agent writes plan files in (~/.opencode/plan, plugin/plan.ts), when it is a real folder of this user's or not
@@ -199,7 +168,16 @@ export function openCodeGuardOptions(
 		protect: config.guard.protect,
 		...agentViews(config, agent),
 		...(context.configFile === undefined ? {} : { configFile: context.configFile }),
+		// Made once for the session: a patch judges each of its targets by it.
+		openCode: openCodeRules(env, [home, tilde]),
 	};
+}
+
+/** OpenCode's config and code (guard-rules.ts openCodeRule) for each of `homes` (OpenCode's own "~" may differ from the account's). */
+function openCodeRules(env: NodeJS.ProcessEnv, homes: readonly string[]): OpenCodeRule {
+	const rules = [...new Set(homes)].map((home) => openCodeRule(env, home, realTarget));
+	const all = (pick: (rule: OpenCodeRule) => readonly string[]) => [...new Set(rules.flatMap(pick))];
+	return { own: all((rule) => rule.own), plans: all((rule) => rule.plans), data: all((rule) => rule.data) };
 }
 
 // ---- OpenCode's patch format ----
@@ -392,9 +370,9 @@ class Judge {
 		return this.claude("Bash", { command }) ?? this.named(command);
 	}
 
-	/** OpenCode's login or config named in text a shell runs. */
+	/** OpenCode's login, or its config and code (guard-rules.ts openCodeNamed), named in text a shell runs. */
 	named(command: string): string | undefined {
-		return loginNamed(command) ? LOGIN : configNamed(command) ? CONFIG_COMMAND : undefined;
+		return loginNamed(command) ? LOGIN : openCodeNamed(command, openCodeOf(this.#options, this.#options.home ?? homedir())) ? OPENCODE_COMMAND : undefined;
 	}
 
 	/** Where OpenCode's tools place `raw` (or `place` does), and where that lands. */
@@ -402,12 +380,6 @@ class Judge {
 		const home = this.#options.openCodeHome ?? this.#options.home ?? homedir();
 		const placed = (place ?? ((path: string, cwd: string) => openCodeToolPath(path, cwd, home)))(raw, this.#options.cwd);
 		return [placed, realTarget(placed)];
-	}
-
-	/** A write of OpenCode's config or plugins (openCodeConfigPath), where it is placed or where that lands. */
-	config(raw: string, place?: (raw: string, cwd: string) => string): string | undefined {
-		const plan = join(this.#options.openCodeHome ?? this.#options.home ?? homedir(), ".opencode", "plan");
-		return this.#placed(raw === "" ? "." : raw, place).some((path) => openCodeConfigPath(path, plan)) ? CONFIG_FILE(raw) : undefined;
 	}
 
 	/** A path the call opens as `use`, placed as OpenCode places it; OpenCode's login by its path too, and a write of its config. */
@@ -420,8 +392,7 @@ class Judge {
 		const where = this.#placed(raw, place).map((path) => path.toLowerCase());
 		// Its database by path, or by name in its data folder (a release channel's, made after the session started).
 		const login = (path: string) => logins.includes(path) || (DATABASE_NAME.test(basename(path)) && logins.some((file) => dirname(file) === dirname(path)));
-		if (where.some(login)) return LOGIN_FILE(raw);
-		return use === "write" ? this.config(raw, place) : undefined;
+		return where.some(login) ? LOGIN_FILE(raw) : undefined;
 	}
 
 	/** Each patch target, a write, judged once (a patch may name a file in many hunks, and headerTargets names each again). */
@@ -460,18 +431,13 @@ class Judge {
 	}
 
 	/**
-	 * What any tool carries: Claude Code's heuristics on its input (and OpenCode's config among the paths they take as
-	 * written), a string under input or code as shell text, OpenCode's login and config named in anything run as shell
-	 * text, and every patch header line in any string, each target a write.
+	 * What any tool carries: Claude Code's heuristics on its input (OpenCode's config and code among them), a string under
+	 * input or code as shell text, OpenCode's login and config named in anything run as shell text, and every patch header
+	 * line in any string, each target a write.
 	 */
 	content(tool: string, input: Readonly<Record<string, unknown>>): string | undefined {
 		const reason = this.claude(tool, input);
 		if (reason !== undefined) return reason;
-		for (const written of writtenPaths(tool, input)) {
-			if (this.outOfTime) return OUT_OF_TIME;
-			const config = this.config(written);
-			if (config !== undefined) return config;
-		}
 		for (const { text, runs, code } of stringsIn(input)) {
 			if (this.outOfTime) return OUT_OF_TIME;
 			if (code) {

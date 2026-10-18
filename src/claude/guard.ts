@@ -26,7 +26,8 @@
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { guardToolCall, type PathGuardOptions, realTarget } from "../agent/guard-paths.ts";
+import { guardToolCall, openCodeOf, type PathGuardOptions, realTarget } from "../agent/guard-paths.ts";
+import { OPENCODE_READ_ONLY, openCodeLoads } from "../agent/guard-rules.ts";
 import { ownFolder } from "../agent/private-file.ts";
 
 /** Claude Code's tool names as pi's guard knows them. */
@@ -156,6 +157,8 @@ interface Named {
 	readonly pathLike: string[];
 	/** Command lines: strings under a command key, and lists under one joined with spaces. */
 	readonly commands: string[];
+	/** Every string of one word (no blank), whatever its key, but for what a tool writes: a path may be one. */
+	readonly words: string[];
 }
 
 /**
@@ -163,7 +166,7 @@ interface Named {
  * string counts only if it may be a path (oneLine): the rest is text or data.
  */
 function named(input: Readonly<Record<string, unknown>>): Named {
-	const found: Named = { paths: [], destinations: [], pathLike: [], commands: [] };
+	const found: Named = { paths: [], destinations: [], pathLike: [], commands: [], words: [] };
 	const stack: { key: string; value: unknown; under: boolean; into: boolean }[] = Object.entries(input).map(([key, value]) => ({ key, value, under: false, into: false }));
 	for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
 		const { key, value } = next;
@@ -175,6 +178,7 @@ function named(input: Readonly<Record<string, unknown>>): Named {
 			if (value !== "" && (pathKey || (next.under && oneLine(text)))) found.paths.push(value);
 			if (value !== "" && (destinationKey || (next.into && oneLine(text)))) found.destinations.push(value);
 			if (!CONTENT_KEY.test(key) && oneLine(text) && PATH_LIKE.test(text)) found.pathLike.push(value);
+			if (!CONTENT_KEY.test(key) && text !== "" && !/\s/.test(text) && text.length <= PATH_MAX) found.words.push(text);
 			const local = CONTENT_KEY.test(key) ? undefined : fileUriPath(value);
 			if (local !== undefined) found.paths.push(local);
 		} else if (typeof value === "object" && value !== null) {
@@ -224,17 +228,6 @@ export interface ClaudeGuardOptions extends PathGuardOptions {
 	readonly judgeMs?: number;
 }
 
-/**
- * The paths claudeGuard judges as writes in a call, as written: under a path key in a tool that writes (Write, Edit, or
- * a tool named for writing), and every destination. For a gate's own write rules (OpenCode's config, src/opencode/guard.ts).
- */
-export function writtenPaths(toolName: string, input: Readonly<Record<string, unknown>>): string[] {
-	const found = named(input);
-	const as = AS_PI[toolName];
-	const writes = as === "write" || as === "edit" || (as === undefined && WRITE_VERB.test(toolName.split("__").at(-1) ?? toolName));
-	return [...(writes ? found.paths : []), ...found.destinations];
-}
-
 /** Why the call is refused, or undefined to let it through. */
 export function claudeGuard(toolName: string, input: Readonly<Record<string, unknown>>, options: ClaudeGuardOptions): string | undefined {
 	const { judgeMs = JUDGE_MS, ...where } = options;
@@ -274,8 +267,24 @@ export function claudeGuard(toolName: string, input: Readonly<Record<string, unk
 		const reason = judgeBounded(use, { path }, guard);
 		if (reason !== undefined) return reason;
 	}
+	// A tool Orrery doesn't know, named neither for writing nor only for reading, may write what it names, under any key:
+	// OpenCode's config and code (guard-rules.ts openCodeLoads), which no tool may write, are refused by every string
+	// that may be a path.
+	const last = toolName.split("__").at(-1) ?? toolName;
+	if (as === undefined && !verb && !READS_ONLY.test(last)) {
+		const openCode = openCodeOf(guard, home);
+		for (const text of new Set([...how.keys(), ...found.words])) {
+			if (performance.now() >= deadline) return "this call names more paths than the guard can check in time; nothing was run.";
+			const resolved = guard.resolvePath(text, guard.cwd, home);
+			if (resolved.length > PATH_MAX) continue;
+			if (openCodeLoads(resolved, openCode) || openCodeLoads(realTarget(resolved), openCode)) return OPENCODE_READ_ONLY(text);
+		}
+	}
 	return undefined;
 }
+
+/** A tool that only reads, by the verb in its name (no download among them): it may name OpenCode's config to read it. */
+const READS_ONLY = /^(?!.*download)(?=.*(read|get|view|list|cat|show|search|find|grep|glob|stat|head|tail|fetch|inspect|describe|info|query|look))/i;
 
 /**
  * The folder Claude Code keeps a project's state in under ~/.claude/projects: the project folder with every

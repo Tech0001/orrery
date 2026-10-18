@@ -33,6 +33,9 @@ import {
 	foldName,
 	type GuardOptions,
 	inOrreryHome,
+	OPENCODE_READ_ONLY,
+	openCodeLoads,
+	openCodeRule,
 	orreryAppNamed,
 	orreryConfigNamed,
 	PROTECTED_FILE,
@@ -145,6 +148,9 @@ export async function checkResolvedPath(
 		if (config.some((file) => lower === posix.normalize(file).toLowerCase())) return CONFIG_READ_ONLY(real);
 		// So is Orrery's installed program (app/).
 		if (orreryAppNamed(target) || orreryAppNamed(real) || (data !== undefined && within(lower, posix.join(data, "app").toLowerCase()))) return APP_READ_ONLY(real);
+		// OpenCode's config and code (guard-rules.ts openCodeLoads), where the tool writes and where that really is.
+		const openCode = options.openCode ?? openCodeRule(process.env, options.home ?? homedir());
+		if (openCodeLoads(target, openCode) || openCodeLoads(real, openCode)) return OPENCODE_READ_ONLY(real);
 		const roots = await Promise.all([options.folder, ...options.allowedRoots].map((root) => realPath(env, root, context)));
 		if (!roots.some((root) => within(real, root))) return `${real} is outside this agent's folder and allowed roots.`;
 	}

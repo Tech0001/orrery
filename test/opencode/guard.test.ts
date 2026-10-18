@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/agent/config.ts";
+import { OPENCODE_COMMAND, OPENCODE_READ_ONLY } from "../../src/agent/guard-rules.ts";
 import {
 	CONFIG_UNREADABLE,
 	headerTargets,
@@ -253,9 +254,10 @@ describe("openCodeGuard judges each tool with the shared rules", () => {
 		expect(openCodeGuard("read", { path: db }, t.options)).toMatch(SENSITIVE);
 		expect(openCodeGuard("read", { path: `${db}-wal` }, t.options)).toMatch(SENSITIVE);
 		expect(openCodeGuard("grep", { pattern: "key", path: join(t.home, ".local", "share") }, t.options)).toMatch(/would search credential files/);
-		expect(openCodeGuard("shell", { command: "sqlite3 ~/.local/share/opencode/opencode.db 'select * from credential'" }, t.options)).toBe("This command touches sensitive files (OpenCode's login).");
-		expect(openCodeGuard("shell", { command: "cp data/opencode-beta.db /tmp/x" }, t.options)).toMatch(/OpenCode's login/);
-		expect(openCodeGuard("box_sql", { code: "sqlite3 opencode.db" }, t.options)).toMatch(/OpenCode's login/);
+		// Named in a command: OpenCode's database is its config and code too (saved permissions), which every gate keeps.
+		expect(openCodeGuard("shell", { command: "sqlite3 ~/.local/share/opencode/opencode.db 'select * from credential'" }, t.options)).toBe(OPENCODE_COMMAND);
+		expect(openCodeGuard("shell", { command: "cp data/opencode-beta.db /tmp/x" }, t.options)).toBe(OPENCODE_COMMAND);
+		expect(openCodeGuard("box_sql", { code: "sqlite3 opencode.db" }, t.options)).toBe(OPENCODE_COMMAND);
 		// A channel's database made after the session started, by its name in OpenCode's data folder.
 		expect(openCodeGuard("read", { path: join(t.home, ".local", "share", "opencode", "opencode-dev.db") }, t.options)).toMatch(/OpenCode's login/);
 		expect(openCodeGuard("shell", { command: "ls ~/.local/share/opencode/log && cat notes-opencode.dbx" }, t.options)).toBeUndefined();
@@ -264,7 +266,7 @@ describe("openCodeGuard judges each tool with the shared rules", () => {
 	it("lets the Plan agent write its plan files (~/.opencode/plan) and nothing else of ~/.opencode", () => {
 		const t = world();
 		expect(openCodeGuard("write", { path: "~/.opencode/plan/steps.md", content: "x" }, t.options)).toBeUndefined();
-		expect(openCodeGuard("write", { path: "~/.opencode/plugins/x.ts", content: "x" }, t.options)).toMatch(OUTSIDE);
+		expect(openCodeGuard("write", { path: "~/.opencode/plugins/x.ts", content: "x" }, t.options)).toMatch(/OpenCode's config or code/);
 		// Not when it is a link (to home, say).
 		mkdirSync(join(t.home, ".opencode"));
 		symlinkSync(t.home, join(t.home, ".opencode", "plan"));
@@ -302,8 +304,8 @@ describe("openCodeGuard keeps OpenCode's config and plugins in every folder (.op
 		expect(call("write", { path: ".opencode/plugins/x.ts", content: "" })).toMatch(CONFIG);
 		expect(call("patch", { patchText: patch("*** Add File: .opencode/x.ts", "+x") })).toMatch(CONFIG);
 		expect(call("shell", { command: "cp x opencode.json" })).toMatch(CONFIG);
-		expect(call("write", { path: "opencode.json", content: "{}" })).toBe("opencode.json is OpenCode's config or plugins (a .opencode folder, opencode.json or opencode.jsonc), which OpenCode loads into its server; an agent may not change it.");
-		expect(call("shell", { command: "cp x opencode.json" })).toBe("This command names OpenCode's config or plugins (a .opencode folder, opencode.json or opencode.jsonc), which OpenCode loads into its server; an agent may not change them.");
+		expect(call("write", { path: "opencode.json", content: "{}" })).toBe(OPENCODE_READ_ONLY("opencode.json"));
+		expect(call("shell", { command: "cp x opencode.json" })).toBe(OPENCODE_COMMAND);
 	});
 
 	it("in any folder the agent may write (its own, above the session's, an allowed root), in any case, and through a link", () => {
