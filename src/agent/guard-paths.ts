@@ -47,7 +47,7 @@
  *   (grep) of an agent's folder is not, since the guard cannot know which folders hold a view.
  */
 
-import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { type Dirent, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,7 +70,8 @@ import {
 	openCodeLoads,
 	openCodeSkillPath,
 	openCodeSkillRefusal,
-	piNewText,
+	newTextIn,
+	SKILL_UNSEEN,
 	type OpenCodeRule,
 	openCodeRule,
 	orreryAppNamed,
@@ -562,7 +563,7 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	if (writes && (openCodeLoads(resolved, openCode) || openCodeLoads(target, openCode))) return OPENCODE_READ_ONLY(raw);
 	// A skill OpenCode loads may be written, but not given front matter it runs as code (guard-rules.ts).
 	const skills = writes && (openCodeSkillPath(resolved) || openCodeSkillPath(target));
-	const skill = skills ? openCodeSkillRefusal(resolved, target, (input as { readonly [NEW_TEXT]?: NewText })[NEW_TEXT] ?? piNewText(toolName, input), readSmall(target)) : undefined;
+	const skill = skills ? openCodeSkillRefusal(resolved, target, newTextIn(toolName, input), readSmall(target)) : undefined;
 	if (skill !== undefined) return skill;
 	// The credential locations themselves, symlinks followed (a ~/.ssh linked from a dotfiles folder, say). Compared
 	// ignoring case: on a case-insensitive file system (macOS) ~/.SSH and /USERS are the same folders.
@@ -608,6 +609,44 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	);
 }
 
+/** How many entries openCodeUnder looks at, at most. */
+const UNDER_LIMIT = 50_000;
+
+/**
+ * The first of OpenCode's config or a skill (guard-rules.ts openCodeLoads, openCodeSkillPath) at or below `root`, by its
+ * path or, for a link, where it leads: "too many" past UNDER_LIMIT entries; undefined when there is none. node_modules
+ * and .git are not looked into (a limit: OpenCode loads a folder's config only for a session in or below it).
+ */
+function openCodeUnder(root: string, rule: OpenCodeRule): string | "too many" | undefined {
+	const hit = (path: string) => openCodeLoads(path, rule) || openCodeSkillPath(path);
+	if (hit(root) || hit(realTarget(root))) return root;
+	const stack = [root];
+	let seen = 0;
+	for (let dir = stack.pop(); dir !== undefined; dir = stack.pop()) {
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(dir, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			if (++seen > UNDER_LIMIT) return "too many";
+			const path = join(dir, entry.name);
+			if (hit(path) || (entry.isSymbolicLink() && hit(realTarget(path)))) return path;
+			if (entry.isDirectory() && entry.name !== "node_modules" && entry.name !== ".git") stack.push(path);
+		}
+	}
+	return undefined;
+}
+
+/** Why a write to files below `root` (an ast_edit's folder or glob, a language server's edits) is refused for OpenCode's config or a skill there. */
+function reachesOpenCode(root: string, what: string, options: PathGuardOptions, home: string): string | undefined {
+	const found = openCodeUnder(root, openCodeOf(options, home));
+	if (found === undefined) return undefined;
+	if (found === "too many") return `${what} reaches more files than Orrery's guard can look through for OpenCode's config and skills; give a narrower path.`;
+	return openCodeSkillPath(found) || openCodeSkillPath(realTarget(found)) ? SKILL_UNSEEN(found) : OPENCODE_READ_ONLY(found);
+}
+
 /** A file's text, for judging an edit on what it would leave (at most 1 MB); undefined when it can't be read. */
 function readSmall(file: string): string | undefined {
 	try {
@@ -651,7 +690,11 @@ const EDIT_UNREADABLE = "Orrery could not read every target of this edit; use a 
  * rewrites files, folders or globs; searches and read take several paths in one string. Each path is judged on its own
  * and the first refusal wins (fix round 3 ruling: where OMP's own parsers may read more, fail closed). A search path or
  * ast_edit target may name the session's own view from "~/" as well as by its absolute path (OMP expands "~" in its
- * own process); shell text, eval code and an edit's text may not (ViewRules).
+ * own process); shell text, eval code and an edit's text may not (ViewRules). Every tool that writes reaches the write
+ * rules as a write: a write with a [path#TAG] header or a selector writes part of a file (what it then starts with is
+ * unseen to the skills rule), an ast_edit folder or glob and the language server's own edits (lsp rename, an applied
+ * code action, a raw request) may not reach OpenCode's config or a skill below their folder, and lsp's rename_file
+ * moves a file (both ends writes).
  */
 export function guardOmpToolCall(toolName: string, input: Readonly<Record<string, unknown>>, options: PathGuardOptions): string | undefined {
 	const omp: PathGuardOptions = { ...options, resolvePath: ompToolPath };
@@ -700,10 +743,30 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 		if (reason !== undefined || typeof input.path !== "string" || input.path === "") return reason;
 		return target("edit", input.path, input);
 	}
-	if (toolName === "write" && typeof input.path === "string" && input.path !== "") return target("write", input.path, input, true);
+	if (toolName === "write" && typeof input.path === "string" && input.path !== "") {
+		// A [path#TAG] header or a ":"/"?" selector writes part of a file: what the file then starts with is unseen.
+		const partial = headerPath(input.path) !== input.path || selectorPrefixes(input.path).length > 0;
+		return target("write", input.path, partial ? { ...input, [NEW_TEXT]: undefined } : input, true);
+	}
+	// lsp: renaming a file moves it (both ends are writes of what the guard can't see); a symbol rename, a code action
+	// applied and a raw request make the language server's own edits, in files no argument names: refused when the
+	// session's folder holds OpenCode's config or a skill (openCodeUnder).
+	if (toolName === "lsp") {
+		const action = typeof input.action === "string" ? input.action : "request";
+		if (action === "rename_file") return firstRefusal([...strings([input.file]), ...strings([input.new_name])], (path) => target("edit", path, { [NEW_TEXT]: undefined }));
+		if (action === "rename" || action === "request" || (action === "code_actions" && input.apply === true)) {
+			const reason = reachesOpenCode(omp.cwd, `lsp ${action}`, omp, home);
+			if (reason !== undefined) return reason;
+		}
+		return judge(toolName, input);
+	}
 	// ast_edit rewrites what its patterns match, in files its globs reach: a skill among them is one whose text the guard
 	// can't see (guard-rules.ts openCodeSkillRefusal).
-	if (toolName === "ast_edit") return firstRefusal(strings(input.paths).flatMap(pathParts), (part) => glob("edit", part));
+	if (toolName === "ast_edit") {
+		const parts = strings(input.paths).flatMap(pathParts);
+		// A folder or a glob rewrites files below its base: none of them may be OpenCode's config or a skill.
+		return firstRefusal(parts, (part) => glob("edit", part)) ?? firstRefusal(parts, (part) => reachesOpenCode(ompToolPath(globBase(part.replace(/\\/g, "/")), omp.cwd, home), `ast_edit ${part}`, omp, home));
+	}
 	const raw = typeof input.path === "string" && input.path.trim() !== "" ? input.path : undefined;
 	// Judged as pi's grep is: a root at home or above, or holding credentials, is refused. glob lists names only, so it is
 	// judged as pi's find (a listing); grep, ast_grep and find (which takes grep_keywords) read contents.

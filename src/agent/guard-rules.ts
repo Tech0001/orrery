@@ -826,6 +826,11 @@ export function openCodeSkillRefusal(path: string, real: string, text: NewText |
 	return runsAsCode(first) || runsAsCode(all) ? SKILL_CODE(path) : undefined;
 }
 
+/** What a write puts in a file: what a gate handed over (NEW_TEXT, undefined there meaning unseen), else by pi's arguments. */
+export function newTextIn(tool: string, args: Readonly<Record<string, unknown>>): NewText | undefined {
+	return NEW_TEXT in args ? (args as { readonly [NEW_TEXT]?: NewText })[NEW_TEXT] : piNewText(tool, args);
+}
+
 /** What pi's write and edit (and orrery run's) put in a file, by their arguments; undefined for any other shape. */
 export function piNewText(tool: string, args: Readonly<Record<string, unknown>>): NewText | undefined {
 	if (tool === "write") return typeof args.content === "string" ? { whole: args.content } : undefined;
@@ -1006,7 +1011,7 @@ export function checkToolCall(
 	if (writes && orreryAppNamed(path)) return APP_READ_ONLY(path);
 	if (writes && openCodeLoads(path, openCode())) return OPENCODE_READ_ONLY(path);
 	// A whole write to a skill is judged here; an edit, which needs the file's text, by the caller that can read it.
-	const written = (call.arguments as { readonly [NEW_TEXT]?: NewText })[NEW_TEXT] ?? piNewText(call.name, call.arguments);
+	const written = newTextIn(call.name, call.arguments);
 	const skill = writes && written !== undefined && "whole" in written ? openCodeSkillRefusal(path, path, written, undefined) : undefined;
 	if (skill !== undefined) return skill;
 	if (writes && ![options.folder, ...options.allowedRoots].some((root) => within(path, root))) {

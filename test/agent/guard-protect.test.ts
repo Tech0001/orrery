@@ -1532,6 +1532,62 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 		expect(openCodeGuard("glob", { pattern: "**/SKILL.md", path: ".claude/skills" }, t.options, "ses_a")).toBeUndefined();
 	});
 
+	it("reaches the rules from every write-capable tool of pi and OMP, as a write: OMP's write (a header or selector writes part of a file), every edit form, ast_edit's folders and globs, lsp's renames and edits, eval", () => {
+		const t = skillWorld();
+		const skill = join(t.atlas, ".claude", "skills", "s", "SKILL.md");
+		const plugin = join(t.atlas, ".opencode", "plugins", "p.ts");
+		mkdirSync(join(t.atlas, ".opencode", "plugins"), { recursive: true });
+		writeFileSync(plugin, "export default {}\n");
+		mkdirSync(join(t.atlas, "src", "lib"), { recursive: true });
+		writeFileSync(join(t.atlas, "src", "lib", "a.ts"), "export const a = 1;\n");
+		const omp = (tool: string, input: Record<string, unknown>, options = t.options) => guardOmpToolCall(tool, input, options);
+		const SEEN = /can't see what this would leave/;
+		const CONFIG = /OpenCode's config or code/;
+		// write: whole text passes; a [path#TAG] header or a selector writes part of the file, unseen.
+		expect(omp("write", { path: skill, content: YAML })).toBeUndefined();
+		expect(omp("write", { path: `[${skill}#1a2b]`, content: YAML })).toMatch(SEEN);
+		expect(omp("write", { path: `${skill}:3-5`, content: YAML })).toMatch(SEEN);
+		expect(omp("write", { path: plugin, content: "x" })).toMatch(CONFIG);
+		expect(omp("write", { path: `[${plugin}#1a2b]`, content: "x" })).toMatch(CONFIG);
+		// edit, every form: a path, a header in its text, a rename, MV and *** Move to: in its text.
+		expect(omp("edit", { path: skill, input: "PUT 1\n+x\n" })).toMatch(SEEN);
+		expect(omp("edit", { input: `[${skill}#1a2b]\nPUT 1\n+x\n` })).toMatch(SEEN);
+		expect(omp("edit", { path: "notes.md", input: "PUT 1\n+x\n", edits: [{ rename: skill }] })).toMatch(SEEN);
+		expect(omp("edit", { path: "notes.md", input: "PUT 1\n+x\n", edits: [{ rename: plugin }] })).toMatch(CONFIG);
+		expect(omp("edit", { input: `[notes.md#1a2b]\nMV ${plugin}\n` })).toMatch(CONFIG);
+		expect(omp("edit", { input: `*** Begin Patch\n*** Update File: notes.md\n*** Move to: ${skill}\n@@\n-a\n+b\n*** End Patch` })).toMatch(SEEN);
+		expect(omp("edit", { path: "notes.md", input: "PUT 1\n+x\n" })).toBeUndefined();
+		// ast_edit: a file, a folder or a glob whose base holds OpenCode's config or a skill is refused; one that doesn't passes.
+		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [skill] })).toMatch(SEEN);
+		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [plugin] })).toMatch(CONFIG);
+		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: ["."] })).toBeDefined();
+		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: ["**/*.ts"] })).toBeDefined();
+		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [`${join(t.atlas, ".claude")}/**/*.md`] })).toMatch(SEEN);
+		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: ["src/**/*.ts"] })).toBeUndefined();
+		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [join(t.atlas, "src", "lib")] })).toBeUndefined();
+		// lsp: rename_file moves a file (both ends writes); a symbol rename, an applied code action and a raw request edit
+		// files the server picks, refused while the folder holds OpenCode's config or a skill; the rest only read.
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: skill })).toMatch(SEEN);
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: plugin })).toMatch(CONFIG);
+		expect(omp("lsp", { action: "rename_file", file: skill, new_name: "notes2.md" })).toMatch(SEEN);
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: join(t.root, "outside.md") })).toMatch(/outside this agent's folder/);
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: "notes2.md" })).toBeUndefined();
+		for (const input of [{ action: "rename", file: "src/lib/a.ts", line: 1, symbol: "a", new_name: "b" }, { action: "code_actions", file: "src/lib/a.ts", apply: true, query: "fix" }, { query: "workspace/executeCommand" }]) {
+			expect(omp("lsp", input), JSON.stringify(input)).toBeDefined();
+			expect(omp("lsp", input, { ...t.options, cwd: join(t.atlas, "src") }), JSON.stringify(input)).toBeUndefined();
+		}
+		expect(omp("lsp", { action: "definition", file: "src/lib/a.ts", line: 1 })).toBeUndefined();
+		expect(omp("lsp", { action: "code_actions", file: "src/lib/a.ts" })).toBeUndefined();
+		// eval runs shell text: the shell rule.
+		expect(omp("eval", { language: "sh", code: "ls .claude/skills" })).toBe(SKILL_SHELL);
+		expect(omp("eval", { language: "sh", code: "cat x > opencode.json" })).toBe(OPENCODE_COMMAND);
+		// pi's write and edit, and its searches (which only read: a search root holding a skill is no write).
+		expect(guardToolCall("write", { path: plugin, content: "x" }, t.options)).toMatch(CONFIG);
+		expect(guardToolCall("edit", { path: skill, edits: [{ oldText: "Tidy the notes.", newText: "Tidy." }] }, t.options)).toBeUndefined();
+		for (const tool of ["grep", "find", "ls"]) expect(guardToolCall(tool, { pattern: "x", path: join(t.atlas, ".claude") }, t.options), tool).toBeUndefined();
+		for (const tool of ["grep", "glob", "find", "ast_grep"]) expect(omp(tool, { pattern: "x", path: join(t.atlas, ".claude", "skills") }), tool).toBeUndefined();
+	});
+
 	it("only ever adds refusals: a path through a skills folder that lands elsewhere is judged by the general rules", () => {
 		const t = skillWorld();
 		// Out through .. from a skills folder: past the agent's folder and its allowed roots.
