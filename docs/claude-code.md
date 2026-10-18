@@ -367,6 +367,10 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
   destination keys (`out_dir`, `output`, `dest`, `target`, `save_path`), write verbs in the tool's name, and strings
   that start like a path. A tool that names a file under another key, or writes without a verb or a destination key, is
   not confined to the agent's folder.
+- A tool the guard does not know, named neither for writing nor only for reading (`read`, `get`, `list`, `search`, …),
+  is refused when any string it carries outside what it writes may name a skill or OpenCode's config or code, even a
+  one-word value such as `opencode.json`: the guard can't tell whether it only reads. Claude Code's own LSP tool is
+  one, so an LSP call on a skill or on OpenCode's config is refused; Read, Grep and Glob read them.
 - What a tool writes (`content`, `new_source`, `old_string`, `new_string`) is never read as a path, so an MCP tool that
   takes a path under one of those keys is unchecked.
 - Text that spans lines, or is over 4,096 characters once normalized, is treated as text. A tool that pulls a path out
