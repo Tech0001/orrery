@@ -98,7 +98,9 @@ question about the agent (a second session, or taking over a remote lock). Witho
   session, another agent's, or one opened while the agent was read-only) is recorded from then on, but keeps
   OpenCode's own compaction (below).
 - A session moved to another folder (OpenCode's `session_move`) keeps recording: the plugins of every folder one
-  OpenCode serves share the agent's memory.
+  OpenCode serves share the agent's memory. One rare case: if Orrery is updated while the session is open, OpenCode
+  loads the new version's plugin for a folder it opens after that, which can't share memory with the old one still
+  running, so a session moved there opens read-only until you restart OpenCode.
 - One writer: an agent records in one place at a time. An OpenCode session of an agent that is open elsewhere (pi, OMP,
   Claude Code, Codex, or another OpenCode) is read-only: it gets the view and the memory tools, but nothing it says is
   recorded, and a notice says which tool holds the agent.
