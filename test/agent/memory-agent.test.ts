@@ -147,3 +147,73 @@ describe("MemoryAgent", () => {
 		}
 	});
 });
+
+describe("MemoryAgent: summaries through an OpenCode model, opened elsewhere", () => {
+	/** Agent Test, its summaries on `ref` (the config's, or chosen in chat when `chosen`). */
+	function agentOn(ref: string, chosen = false) {
+		const dir = tempDir("orrery-memory-agent-");
+		dirs.push(dir);
+		const extra = chosen ? "" : "";
+		const toml = agentConfigToml({ dataDir: join(dir, "data"), folder: join(dir, "ws"), extra }).replace('compactor_model = "faux-compactor/faux-1"', `compactor_model = ${JSON.stringify(chosen ? "faux-compactor/faux-1" : ref)}`);
+		const agent = parseConfig(toml, dir).agents.get("Test")!;
+		if (chosen) {
+			mkdirSync(agent.dir, { recursive: true });
+			const store = MemoryStore.open(join(agent.dir, "memory.sqlite"));
+			const slash = ref.indexOf("/");
+			store.setMeta(COMPACTOR_MODEL_KEY, JSON.stringify({ provider: ref.slice(0, slash), modelId: ref.slice(slash + 1), thinking: "low" }));
+			store.close();
+		}
+		return agent;
+	}
+
+	it.each([
+		["pi", "/compactor"],
+		["omp", "/compactor"],
+		["claude-code", "/orrery:compactor"],
+		["codex", "orrery compactor Test"],
+	] as const)("opens in %s with its memory, its summaries waiting, and says how to switch there (%s)", async (host, command) => {
+		for (const chosen of [false, true]) {
+			const agent = agentOn("opencode/anthropic/claude-sonnet-4-5", chosen);
+			const reports: string[] = [];
+			const open = MemoryAgent.open({ agent, models: agentModelSource(fauxModels().models), report: (message) => reports.push(message), host });
+			try {
+				// A choice made in chat stays: it is no stale model here, only one that runs elsewhere.
+				expect(open.compactorModel).toEqual({ provider: "opencode", modelId: "anthropic/claude-sonnet-4-5", thinking: chosen ? "low" : "off" });
+				expect(open.compactorSource).toBe(chosen ? "chat" : "config");
+				expect(open.summaryTrouble()).toEqual({ state: "stopped", reason: expect.any(String), plain: "opencode/anthropic/claude-sonnet-4-5 is an OpenCode model: summaries wait until Test is open in OpenCode" });
+				expect(reports).toEqual([
+					`Orrery: Test's summaries use an OpenCode model (opencode/anthropic/claude-sonnet-4-5), which works only while Test is open in OpenCode; they wait until then. To summarize here, choose another summary model with ${command}.`,
+				]);
+				open.view.append("user", `A long message ${"detail ".repeat(200)}`);
+				expect(open.view.settled).toBe(false);
+				// Switching to one of Orrery's sources starts them.
+				open.setCompactorModel({ provider: "faux-compactor", modelId: "faux-1", thinking: "off" });
+				expect(await open.view.settle(AbortSignal.timeout(10_000))).toBe(true);
+			} finally {
+				await open.close();
+			}
+		}
+	});
+
+	it("names the host's command for an unknown summary model; pi's and OMP's words are as they were", async () => {
+		for (const [host, command] of [["pi", "/compactor"], ["omp", "/compactor"], ["claude-code", "/orrery:compactor"], ["codex", "orrery compactor Test"], ["opencode", "/compactor in OpenCode"]] as const) {
+			const agent = agentOn("nowhere/model-x");
+			const reports: string[] = [];
+			const open = MemoryAgent.open({ agent, models: agentModelSource(fauxModels().models), report: (message) => reports.push(message), host });
+			await open.close();
+			expect(reports, host).toEqual([`Orrery: Test: summaries are off: unknown model nowhere/model-x. Choose a summary model with ${command} provider/id.`]);
+		}
+	});
+
+	it("in OpenCode, an OpenCode model its plugin doesn't offer (gone, or OpenCode's free tier) is no model there: a chat choice falls back to the config's", async () => {
+		const agent = agentOn("opencode/opencode/big-pickle", true);
+		const reports: string[] = [];
+		const open = MemoryAgent.open({ agent, models: agentModelSource(fauxModels().models), report: (message) => reports.push(message), host: "opencode" });
+		try {
+			expect(open.compactorModel).toEqual({ provider: "faux-compactor", modelId: "faux-1", thinking: "off" });
+			expect(reports).toEqual(["Orrery: the summary model chosen in chat (opencode/opencode/big-pickle) is gone; using the config's."]);
+		} finally {
+			await open.close();
+		}
+	});
+});

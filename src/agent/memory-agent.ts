@@ -7,6 +7,7 @@ import { COMPACTOR_MODEL_KEY, storedChoice } from "./choices.ts";
 import type { HarnessConfig, AgentConfig, ModelChoice } from "./config.ts";
 import { type ModelSource, sourceCompactorModel } from "./model-source.ts";
 import { instructionsFacts } from "./instructions.ts";
+import { compactorCommandIn, isOpenCodeChoice, openCodeElsewhere, waitingForOpenCode } from "./opencode-source.ts";
 import { explainFailure, safeText } from "./source-labels.ts";
 import { agentSummarizer } from "./summarizer.ts";
 import type { Host } from "./view-text.ts";
@@ -153,13 +154,18 @@ export class MemoryAgent {
 			throw error;
 		}
 		try {
-			const stored = storedChoice(store, COMPACTOR_MODEL_KEY, (p, id) => models.find(p, id) !== undefined);
+			const host = options.host ?? "pi";
+			// An OpenCode model runs only in OpenCode (src/agent/opencode-source.ts): elsewhere it is kept, and waits.
+			const elsewhere = (choice: { provider: string }) => host !== "opencode" && isOpenCodeChoice(choice);
+			const stored = storedChoice(store, COMPACTOR_MODEL_KEY, (p, id) => models.find(p, id) !== undefined || elsewhere({ provider: p }));
 			if (stored.stale !== undefined) options.report(`Orrery: the summary model chosen in chat (${stored.stale}) is gone; using the config's.`);
 			const choice = stored.choice ?? agent.compactor.model;
 			const view = new MemoryView(store, agent.memory.viewBytes);
 			// An unknown summary model must not cost the agent its memory, logging or guard: the agent opens and the
-			// compactor waits for /compactor to name a model pi knows.
-			const off = models.find(choice.provider, choice.modelId) === undefined ? `unknown model ${choice.provider}/${choice.modelId}` : undefined;
+			// compactor waits for /compactor to name a model it knows.
+			const ref = `${choice.provider}/${choice.modelId}`;
+			const known = models.find(choice.provider, choice.modelId) !== undefined;
+			const off = known ? undefined : elsewhere(choice) ? waitingForOpenCode(agent.name, ref) : `unknown model ${ref}`;
 			let summarizer: Summarizer = { summarize: async () => Promise.reject(new Error(`Orrery: summaries are off: ${off}`)) };
 			if (off === undefined) {
 				const { model, contextWindow } = sourceCompactorModel(models, choice, compactorSession(agent));
@@ -172,10 +178,11 @@ export class MemoryAgent {
 				compactorReport(options.report),
 			);
 			if (off === undefined) compactor.start();
-			else options.report(`Orrery: ${agent.name}: summaries are off: ${off}. Choose a summary model with /compactor provider/id.`);
+			else if (elsewhere(choice)) options.report(openCodeElsewhere(agent.name, ref, host));
+			else options.report(`Orrery: ${agent.name}: summaries are off: ${off}. Choose a summary model with ${compactorCommandIn(host, agent.name)} provider/id.`);
 			// After a remote check-out (openChecked), which may bring newer instructions with the memory.
 			const { at: instructionsAt } = instructionsFacts(agent.dir);
-			return new MemoryAgent({ config: agent, store, view, compactor, models, choice, source: stored.choice ? "chat" : "config", off, host: options.host ?? "pi", instructionsAt });
+			return new MemoryAgent({ config: agent, store, view, compactor, models, choice, source: stored.choice ? "chat" : "config", off, host, instructionsAt });
 		} catch (error) {
 			store.close();
 			throw error;

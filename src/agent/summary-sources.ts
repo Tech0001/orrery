@@ -9,6 +9,7 @@ import { agentForCwd, type HarnessConfig, type AgentConfig, type ModelChoice } f
 import { credentialOrigin, FileCredentialStore } from "./credentials.ts";
 import { agentModelSource, sourceCompactorModel } from "./model-source.ts";
 import { createAgentModels, savedSummaryLoginsOnly } from "./models.ts";
+import { isOpenCodeChoice, OPENCODE_ONLY_INSIDE } from "./opencode-source.ts";
 import { explainFailure, providerLabel } from "./source-labels.ts";
 
 export { explainFailure, providerLabel } from "./source-labels.ts";
@@ -170,7 +171,7 @@ export type TestResult = { readonly ok: true } | { readonly ok: false; readonly 
 /** One small call with `choice` before a switch (spec §4.4). Login checks come first, so they cost no request. */
 export async function testChoice(sources: SummarySources, choice: ModelChoice, timeoutMs = 60_000): Promise<TestResult> {
 	const name = `${choice.provider}/${choice.modelId}`;
-	if (sources.models.getModel(choice.provider, choice.modelId) === undefined) return { ok: false, reason: `unknown model ${name}` };
+	if (sources.models.getModel(choice.provider, choice.modelId) === undefined) return { ok: false, reason: isOpenCodeChoice(choice) ? OPENCODE_ONLY_INSIDE : `unknown model ${name}` };
 	if (KNOWN.has(choice.provider)) {
 		const auth = await sources.models.checkAuth(choice.provider);
 		if (auth === undefined) return { ok: false, reason: `no login saved for ${providerLabel(choice.provider)}; ${loginHint(sources.config, choice.provider)}` };

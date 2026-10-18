@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { parse } from "smol-toml";
 import { type MemoryConfig, memoryConfig } from "../memory/index.ts";
 import { ConfigError, orreryHome } from "./home.ts";
+import { OPENCODE_SOURCE } from "./opencode-source.ts";
 
 export { ConfigError };
 
@@ -173,8 +174,10 @@ function parseProviders(raw: unknown): CustomProviderConfig[] {
 		const models = t.models;
 		if (!Array.isArray(models) || models.length === 0) throw new ConfigError(`${where}.models must be a non-empty array`);
 		const apiKeyEnv = optStr(t, "api_key_env", where);
+		const id = str(t, "id", where);
+		if (id === OPENCODE_SOURCE) throw new ConfigError(`${where}.id: "${OPENCODE_SOURCE}" is reserved for OpenCode's models (opencode/<provider>/<model>)`);
 		return {
-			id: str(t, "id", where),
+			id,
 			baseUrl: str(t, "base_url", where),
 			...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
 			models: models.map((m, j) => {

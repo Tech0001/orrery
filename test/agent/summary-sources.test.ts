@@ -191,6 +191,14 @@ describe("testChoice", () => {
 		expect(await testChoice(sources, { provider: "faux-test", modelId: "nope", thinking: "off" })).toEqual({ ok: false, reason: "unknown model faux-test/nope" });
 	});
 
+	it("refuses an OpenCode model outside OpenCode, saying where it is chosen", async () => {
+		const sources = fauxSources(() => fauxAssistantMessage("OK"));
+		expect(await testChoice(sources, { provider: "opencode", modelId: "anthropic/claude-sonnet-4-5", thinking: "off" })).toEqual({
+			ok: false,
+			reason: "OpenCode models are chosen inside OpenCode, where they run: open the agent in OpenCode and use /compactor there",
+		});
+	});
+
 	it("gives the reason without a closing period, which every caller adds", async () => {
 		const sources = fauxSources(() => fauxAssistantMessage("", { stopReason: "error", errorMessage: "Connection error." }));
 		expect(await testChoice(sources, { provider: "faux-test", modelId: "faux-1", thinking: "off" })).toEqual({ ok: false, reason: "Connection error" });
