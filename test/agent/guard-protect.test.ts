@@ -1643,6 +1643,46 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 		expect(edit([base], { ...t.options, astEditLimit: 3 })).toMatch(/more files than Orrery's guard can look through/);
 	});
 
+	it("reads OMP's lsp and ast_edit paths as OMP does, and refuses a form it can't place: action names, URIs, ~, links, folders moved whole, globs", () => {
+		const t = skillWorld();
+		const base = join(t.atlas, "tree");
+		const make = (file: string) => {
+			mkdirSync(join(base, file, ".."), { recursive: true });
+			writeFileSync(join(base, file), "x");
+		};
+		make("clean/a.ts");
+		make("keys/.env");
+		make("plain/b.ts");
+		const omp = (tool: string, input: Record<string, unknown>) => guardOmpToolCall(tool, input, t.options);
+		// lsp's action names are OMP's exact ones: another case or spelling is an action Orrery doesn't know.
+		for (const action of ["Rename_File", "HOVER", "rename-file", "Diagnostics"]) expect(omp("lsp", { action, file: "notes.md" }), action).toMatch(/language server/);
+		// rename_file's paths, placed as OMP's resolveToCwd places them: a file: URI, ~, a path through a link.
+		expect(omp("lsp", { action: "rename_file", file: `file://${join(base, "plain", "b.ts")}`, new_name: `file://${join(t.atlas, ".claude", "skills", "x", "SKILL.md")}` })).toMatch(/can't see what this would leave/);
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: "~/finance/notes.md" })).toMatch(/protected by \[guard\] protect/);
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: "file://otherhost/x.md" })).toMatch(/file:\/\/ URL/);
+		symlinkSync(join(t.home, "finance"), join(t.atlas, "fin-link"));
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: "fin-link/notes.md" })).toMatch(/protected by \[guard\] protect/);
+		// A folder moves with every file in it: one that holds a kept file, or lands in a kept place, is refused.
+		expect(omp("lsp", { action: "rename_file", file: join(base, "keys"), new_name: join(base, "keys2") })).toMatch(/sensitive file/);
+		expect(omp("lsp", { action: "rename_file", file: join(base, "plain"), new_name: join(t.atlas, ".opencode", "plugins") })).toMatch(/OpenCode's config or code/);
+		expect(omp("lsp", { action: "rename_file", file: join(base, "clean"), new_name: join(base, "clean2") })).toBeUndefined();
+		// ast_edit: braces, a negation and extended globs are refused; several paths, in a list or one string, are each judged.
+		const edit = (paths: string[]) => omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths });
+		expect(edit([`${base}/{clean,keys}/**`])).toMatch(/brace or parent patterns/);
+		expect(edit([`!${base}/clean/**`])).toMatch(/can't tell which files/);
+		expect(edit([`${base}/@(clean|keys)/*`])).toMatch(/can't tell which files|sensitive file/);
+		expect(edit([`${base}/clean/*.ts, ${base}/keys/*`])).toMatch(/sensitive file/);
+		expect(edit([`${base}/clean/**`, `${base}/keys`])).toMatch(/sensitive file/);
+		expect(edit([`${base}/clean/**/*.ts`, `${base}/plain`])).toBeUndefined();
+		expect(edit(["~/finance/**"])).toMatch(/protected by \[guard\] protect/);
+		// A link in the tree to a folder is followed (its files judged), and a loop of links ends.
+		symlinkSync(join(base, "keys"), join(base, "clean", "keys-link"));
+		expect(edit([`${base}/clean/**`])).toMatch(/sensitive file/);
+		rmSync(join(base, "clean", "keys-link"));
+		symlinkSync(join(base, "clean"), join(base, "clean", "loop"));
+		expect(edit([`${base}/clean/**`])).toBeUndefined();
+	});
+
 	it("only ever adds refusals: a path through a skills folder that lands elsewhere is judged by the general rules", () => {
 		const t = skillWorld();
 		// Out through .. from a skills folder: past the agent's folder and its allowed roots.

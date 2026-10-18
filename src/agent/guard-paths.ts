@@ -49,7 +49,7 @@
 
 import { type Dirent, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { viewFile } from "../claude/paths.ts";
 import { agentMode } from "../claude/view-file.ts";
@@ -621,14 +621,20 @@ export function pathJudge(options: PathGuardOptions): (toolName: string, input: 
 const BELOW_LIMIT = 50_000;
 
 /**
- * Every file at or below `root` (and every link, whose target the rules judge where it leads), node_modules and .git
- * among them: "too many" past `limit` entries. A root that is no folder is itself.
+ * Every file at or below `root`, node_modules and .git among them, as a tool that walks it may reach them: a link to a
+ * folder is followed (its files listed by their paths through the link, each folder once by where it really is), any
+ * other link listed (the rules judge it where it leads). "too many" past `limit` entries. A root that is no folder is
+ * itself.
  */
 function filesBelow(root: string, limit: number): string[] | "too many" {
 	const files: string[] = [];
 	const stack = [root];
+	const visited = new Set<string>();
 	let seen = 0;
 	for (let dir = stack.pop(); dir !== undefined; dir = stack.pop()) {
+		const real = realTarget(dir);
+		if (visited.has(real)) continue;
+		visited.add(real);
 		let entries: Dirent[];
 		try {
 			entries = readdirSync(dir, { withFileTypes: true });
@@ -640,10 +646,22 @@ function filesBelow(root: string, limit: number): string[] | "too many" {
 			if (++seen > limit) return "too many";
 			const path = join(dir, entry.name);
 			if (entry.isDirectory()) stack.push(path);
-			else files.push(path);
+			else if (entry.isSymbolicLink() && isFolder(path)) {
+				files.push(path);
+				stack.push(path);
+			} else files.push(path);
 		}
 	}
 	return files;
+}
+
+/** Whether a path leads to a folder (through links). */
+function isFolder(path: string): boolean {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
 }
 
 /** The lsp actions that only read (OMP's lsp tool, src/lsp/types.ts): code_actions reads too unless it applies one. */
@@ -752,12 +770,25 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 		const partial = headerPath(input.path) !== input.path || selectorPrefixes(input.path).length > 0;
 		return target("write", input.path, partial ? { ...input, [NEW_TEXT]: undefined } : input, true);
 	}
-	// lsp, by its action: renaming a file moves it (both ends writes of what the guard can't see, under every rule); the
-	// actions that only read pass as before; a symbol rename, an applied code action, a raw request and any action Orrery
-	// doesn't know have the language server edit files no argument names, and are refused.
+	// lsp, by its action, as OMP's lsp tool reads it (its exact names, src/lsp/tool.ts): renaming a file moves it, and a
+	// folder moves with every file in it (OMP's lsp renames each); both ends are writes of what the guard can't see, under
+	// every rule, placed as OMP places them (resolveToCwd, which ompToolPath mirrors). The actions that only read pass as
+	// before; a symbol rename, an applied code action, a raw request and any action Orrery doesn't know have the language
+	// server edit files no argument names, and are refused.
 	if (toolName === "lsp") {
 		const action = input.action;
-		if (action === "rename_file") return firstRefusal([...strings([input.file]), ...strings([input.new_name])], (path) => target("edit", path, { [NEW_TEXT]: undefined }));
+		if (action === "rename_file") {
+			const [from, to] = [input.file, input.new_name];
+			if (typeof from !== "string" || typeof to !== "string" || from === "" || to === "") return undefined;
+			const ends = firstRefusal([from, to], (path) => target("edit", path, { [NEW_TEXT]: undefined }));
+			if (ends !== undefined) return ends;
+			const source = ompToolPath(from, omp.cwd, home);
+			const destination = ompToolPath(to, omp.cwd, home);
+			const files = filesBelow(source, omp.astEditLimit ?? BELOW_LIMIT);
+			if (files === "too many") return `lsp rename_file moves more files than Orrery's guard can look through; move a narrower folder.`;
+			const each = pathJudge(omp);
+			return firstRefusal(files, (file) => each("edit", { path: file, [NEW_TEXT]: undefined }) ?? each("edit", { path: join(destination, relative(source, file)), [NEW_TEXT]: undefined }));
+		}
 		const reads = typeof action === "string" && (LSP_READS.has(action) || (action === "code_actions" && (input.apply === undefined || input.apply === false)));
 		return reads ? judge(toolName, input) : LSP_EDITS(typeof action === "string" ? action : "request");
 	}
@@ -767,6 +798,9 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 		const parts = strings(input.paths).flatMap(pathParts);
 		const named = firstRefusal(parts, (part) => glob("edit", part));
 		if (named !== undefined) return named;
+		// Glob forms the guard doesn't expand itself (a negation, extended globs): refused rather than read loosely.
+		const unread = parts.find((part) => /^!/.test(part) || (/[*?[]/.test(part) && /[()|+@]/.test(part)));
+		if (unread !== undefined) return `ast_edit path "${unread}": Orrery's guard can't tell which files this pattern reaches; give plain paths or simple globs.`;
 		// A folder or a glob rewrites files below its base: every one of them is judged as a write, by every rule.
 		const each = pathJudge(omp);
 		for (const part of parts) {
