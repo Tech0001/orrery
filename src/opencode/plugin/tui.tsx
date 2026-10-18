@@ -7,10 +7,12 @@
  * transform; "solid-js" is OpenCode's own), so it is copied into a release as tui.tsx, and kept out of tsc. A failure
  * here never stops the TUI: the footer stays empty. Every 5 s it also reads OpenCode's plugin list: when OpenCode has
  * turned the server plugin off (a reload that failed), the footer and a toast say the session has no guard and no memory.
+ * It adds /compactor (and "Orrery: summary model" in the command palette): the summary-model picker, in OpenCode's
+ * dialogs, which asks the server plugin through its RPC (src/opencode/summary-menu.ts).
  */
 
 import { createSignal } from "solid-js";
-import { pluginFolder, pluginOff, tuiFeed } from "./tui-feed.js";
+import { pickSummaryModel, pluginFolder, pluginOff, SUMMARY_RPC, tuiFeed } from "./tui-feed.js";
 
 /** The prompt's footer: OpenCode shows it on the home screen and in a session alike. */
 const SLOTS = ["prompt.footer.status"];
@@ -55,6 +57,42 @@ export default {
 				// the next read tries again
 			}
 		};
+		/** /compactor: the summary-model picker, through the server plugin's RPC (src/opencode/summary-menu.ts). */
+		const compactor = async () => {
+			const toast = (message: string, variant: string) => context.ui.toast.show({ title: "Orrery", message, variant, duration: 10_000 });
+			try {
+				const call = context.client.rpc(SUMMARY_RPC);
+				const options = where ?? {};
+				const rpc = {
+					menu: () => call.menu({}, options),
+					models: (input: { provider: string }) => call.models(input, options),
+					switch: (input: object) => call.switch(input, options),
+				};
+				const result = await pickSummaryModel({ select: (asked) => context.ui.dialog.select(asked) }, rpc);
+				if (result !== undefined) toast(result.text, result.ok ? "success" : "warning");
+			} catch (error) {
+				toast(`Orrery: the summary-model picker failed (${error instanceof Error ? error.message : String(error)}).`, "error");
+			}
+		};
+		try {
+			context.keymap.layer(() => ({
+				commands: [
+					{
+						id: "orrery.compactor",
+						title: "Orrery: summary model",
+						description: "Choose the model that makes this agent's summaries",
+						group: "Orrery",
+						palette: true,
+						slash: { name: "compactor" },
+						run: () => {
+							void compactor();
+						},
+					},
+				],
+			}));
+		} catch {
+			// an OpenCode without plugin commands: `orrery compactor <Name>` in a shell still works
+		}
 		const disposers: Array<() => void> = [];
 		for (const slot of SLOTS) {
 			try {

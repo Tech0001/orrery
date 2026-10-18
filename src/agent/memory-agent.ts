@@ -158,14 +158,18 @@ export class MemoryAgent {
 			// An OpenCode model runs only in OpenCode (src/agent/opencode-source.ts): elsewhere it is kept, and waits.
 			const elsewhere = (choice: { provider: string }) => host !== "opencode" && isOpenCodeChoice(choice);
 			const stored = storedChoice(store, COMPACTOR_MODEL_KEY, (p, id) => models.find(p, id) !== undefined || elsewhere({ provider: p }));
-			if (stored.stale !== undefined) options.report(`Orrery: the summary model chosen in chat (${stored.stale}) is gone; using the config's.`);
+			if (stored.stale !== undefined) {
+				const slash = stored.stale.indexOf("/");
+				const why = slash > 0 ? models.unavailable?.(stored.stale.slice(0, slash), stored.stale.slice(slash + 1)) : undefined;
+				options.report(why === undefined ? `Orrery: the summary model chosen in chat (${stored.stale}) is gone; using the config's.` : `Orrery: the summary model chosen in chat (${stored.stale}) can't be used here (${why}); using the config's.`);
+			}
 			const choice = stored.choice ?? agent.compactor.model;
 			const view = new MemoryView(store, agent.memory.viewBytes);
 			// An unknown summary model must not cost the agent its memory, logging or guard: the agent opens and the
 			// compactor waits for /compactor to name a model it knows.
 			const ref = `${choice.provider}/${choice.modelId}`;
 			const known = models.find(choice.provider, choice.modelId) !== undefined;
-			const off = known ? undefined : elsewhere(choice) ? waitingForOpenCode(agent.name, ref) : `unknown model ${ref}`;
+			const off = known ? undefined : elsewhere(choice) ? waitingForOpenCode(agent.name, ref) : models.unavailable?.(choice.provider, choice.modelId) ?? `unknown model ${ref}`;
 			let summarizer: Summarizer = { summarize: async () => Promise.reject(new Error(`Orrery: summaries are off: ${off}`)) };
 			if (off === undefined) {
 				const { model, contextWindow } = sourceCompactorModel(models, choice, compactorSession(agent));

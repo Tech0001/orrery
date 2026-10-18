@@ -37,11 +37,24 @@ export interface TitleEvent {
 	result?: string;
 }
 
+/**
+ * The generate hook: before a session.generate request (a summary's, src/opencode/summaries.ts), with its system parts,
+ * messages, tool definitions and request options, which a hook may replace. The model is the session's.
+ */
+export interface GenerateEvent {
+	readonly sessionID: string;
+	system: unknown[];
+	messages: unknown[];
+	tools: Record<string, unknown>;
+	options: Record<string, unknown>;
+}
+
 export interface SessionHooks {
 	readonly prompt: PromptEvent;
 	readonly context: ContextEvent;
 	readonly compaction: CompactionEvent;
 	readonly title: TitleEvent;
+	readonly generate: GenerateEvent;
 }
 
 /** A plugin tool, as ctx.tool.transform's editor adds it. */
@@ -69,7 +82,16 @@ export interface OpenCodeContext {
 		get(input: { sessionID: string }): Promise<unknown>;
 		/** A session's messages as the model's context has them. */
 		context(input: { sessionID: string }): Promise<unknown>;
+		/** Makes a session (`{location, title, model, metadata}`): its info, `{id, …}`. */
+		create(input: object): Promise<unknown>;
+		/** One request from a session's context, through its generate hook, its model the session's: `{text}`. */
+		generate(input: { sessionID: string; prompt: string }, options?: { signal?: AbortSignal }): Promise<unknown>;
+		remove(input: { sessionID: string }): Promise<unknown>;
 	};
+	/** The models OpenCode's providers have: `{data: [{providerID, id, name, cost, variants, enabled, limit}]}`. */
+	readonly model: { list(input?: object): Promise<unknown> };
+	/** The plugin's RPC, which its TUI entry calls (the summary-model picker: src/opencode/summary-menu.ts). */
+	readonly rpc?: { register(definition: object, handlers: Record<string, (input: unknown) => Promise<unknown>>): Promise<unknown> };
 	/** The server's event stream: every session's, of every folder. */
 	readonly event: { subscribe(options?: { signal?: AbortSignal }): AsyncIterable<unknown> };
 	readonly tool: {

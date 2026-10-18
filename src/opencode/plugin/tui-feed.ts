@@ -1,13 +1,15 @@
 /**
  * The reading side of the plugin's feed (src/opencode/feed.ts) for its TUI entry, tui.tsx, which imports it as
  * "./tui-feed.js": a release packs this file there (scripts/build-release.ts), and in a checkout Bun finds this one. Also
- * what the TUI entry says when OpenCode has turned Orrery's server plugin off (pluginOff).
+ * what the TUI entry says when OpenCode has turned Orrery's server plugin off (pluginOff), and its /compactor picker.
  */
 
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FeedReader, feedFileIn } from "../feed.ts";
 import { findPlugin } from "../plugin-list.ts";
+
+export { pickSummaryModel, SUMMARY_RPC } from "../summary-menu.ts";
 
 /**
  * The feed of the Orrery launch this TUI is (its OPENCODE_CONFIG_CONTENT names the plugin folder `entry`, the TUI

@@ -10,7 +10,10 @@ import { MemoryStore } from "../../src/memory/index.ts";
 import { opencodePluginGate, probePlugin, readOpenCodeCheck } from "../../src/opencode/check.ts";
 import { readFeed } from "../../src/opencode/feed.ts";
 import { configContent } from "../../src/opencode/options.ts";
+import { FREE_REASON } from "../../src/agent/opencode-source.ts";
+import { COMPACT } from "../../src/memory/prompts.ts";
 import { COMPACTION_SUMMARY } from "../../src/opencode/plugin.ts";
+import type { MenuData } from "../../src/opencode/summary-menu.ts";
 import { feedFileOf } from "../../src/opencode/token-file.ts";
 import { waitUntil } from "../claude/support.ts";
 import { builtRelease, bunReady, removeBuiltRelease } from "../release/support.ts";
@@ -211,16 +214,29 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Or
  * server (test/opencode/fake-model.ts): scratch homes, Orrery's config and home in the scratch folder too, and the
  * launch's token in a 0600 file, as `orrery agent <Name> --tool opencode` gives them.
  */
-async function agentWorld(options: { readonly protect?: (base: string) => string[]; readonly after?: (base: string) => string } = {}) {
+async function agentWorld(options: { readonly protect?: (base: string) => string[]; readonly after?: (base: string) => string; readonly compactor?: string; readonly providers?: (baseURL: string) => string } = {}) {
 	const base = mkdtempSync(join(scratch, "agent-"));
 	const ws = join(base, "ws");
 	const home = join(base, "orrery-home");
 	mkdirSync(ws);
 	mkdirSync(join(home, "tokens"), { recursive: true, mode: 0o700 });
 	const guard = options.protect === undefined ? [] : ["[guard]", `protect = ${JSON.stringify(options.protect(base))}`];
+	const model = await startFakeModel();
 	writeFileSync(
 		join(base, "config.toml"),
-		[`data_dir = ${JSON.stringify(join(base, "data"))}`, "[updates]", "check = false", ...guard, "[agents.Atlas]", `folder = ${JSON.stringify(ws)}`, 'tool = "opencode"', 'compactor_model = "openai/gpt-5.4-mini"', 'compactor_thinking = "off"', ""].join("\n"),
+		[
+			`data_dir = ${JSON.stringify(join(base, "data"))}`,
+			"[updates]",
+			"check = false",
+			...guard,
+			...(options.providers === undefined ? [] : [options.providers(model.baseURL)]),
+			"[agents.Atlas]",
+			`folder = ${JSON.stringify(ws)}`,
+			'tool = "opencode"',
+			`compactor_model = ${JSON.stringify(options.compactor ?? "openai/gpt-5.4-mini")}`,
+			'compactor_thinking = "off"',
+			"",
+		].join("\n"),
 	);
 	const agentDir = join(base, "data", "agents", "Atlas");
 	mkdirSync(agentDir, { recursive: true });
@@ -228,7 +244,6 @@ async function agentWorld(options: { readonly protect?: (base: string) => string
 	const token = newToken();
 	const tokenFile = join(home, "tokens", `opencode-${process.pid}-aaaaaaaaaaaa`);
 	writeFileSync(tokenFile, token, { mode: 0o600 });
-	const model = await startFakeModel();
 	const folder = await pluginCopy();
 	const content = JSON.stringify({
 		model: "fake/fake-model",
@@ -515,4 +530,104 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Or
 			await world.model.close();
 		}
 	}, 180_000);
+});
+
+/** A private `opencode serve --stdio --port 0` for `world` in its folder: GET, the plugin's RPC as its TUI calls it, and stop. */
+async function serveWorld(world: Awaited<ReturnType<typeof agentWorld>>, password: string) {
+	const server = spawn(opencode as string, ["serve", "--stdio", "--port", "0"], { cwd: world.ws, env: { ...world.env, OPENCODE_PASSWORD: password }, stdio: ["pipe", "pipe", "ignore"] });
+	const stopped = new Promise((done) => server.on("exit", done));
+	const url = await new Promise<string>((done, fail) => {
+		let out = "";
+		server.stdout.on("data", (chunk) => {
+			out += chunk;
+			if (out.includes("\n")) done((JSON.parse(out.slice(0, out.indexOf("\n"))) as { url: string }).url);
+		});
+		server.on("exit", () => fail(new Error("the server stopped")));
+	});
+	const headers = { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`, "content-type": "application/json" };
+	const where = `location%5Bdirectory%5D=${encodeURIComponent(world.ws)}`;
+	return {
+		get: async (path: string) => (await fetch(`${url}${path}`, { headers })).json() as Promise<unknown>,
+		rpc: async (method: string, input: object = {}) => {
+			const response = await fetch(`${url}/api/rpc/orrery.summaries/${method}?${where}`, { method: "POST", headers, body: JSON.stringify({ input }) });
+			return ((await response.json()) as { output?: unknown }).output;
+		},
+		where,
+		stop: async () => {
+			server.stdin.end();
+			const killer = setTimeout(() => server.kill("SIGKILL"), 10_000);
+			await stopped;
+			clearTimeout(killer);
+		},
+	};
+}
+
+describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("summaries through OpenCode's models, in the installed OpenCode (packed plugin, a fake own-key provider, scratch homes)", () => {
+	afterAll(removeBuiltRelease);
+
+	it("makes the agent's summaries through an own-key OpenCode model, refuses OpenCode's free tier as a source, and switches back to Orrery's own", async () => {
+		const world = await agentWorld({
+			compactor: "opencode/fake/fake-model",
+			// One of Orrery's own sources: a server of Orrery's config (the same fake), for the switch back.
+			providers: (baseURL) => ["[[providers]]", 'id = "local-fake"', `base_url = ${JSON.stringify(baseURL)}`, 'models = [ { id = "fake-model", context_window = 100000, max_tokens = 1000 } ]'].join("\n"),
+		});
+		const store = MemoryStore.open(join(world.agentDir, "memory.sqlite"));
+		store.appendBatch([`A long question ${"detail ".repeat(200)}`, `A long answer ${"detail ".repeat(200)}`].map((text, i) => ({ kind: i === 0 ? ("user" as const) : ("talk" as const), text, date: "2026-10-17T10:00:00.000Z" })));
+		store.close();
+		const nodes = () => {
+			const read = MemoryStore.openReadOnly(join(world.agentDir, "memory.sqlite"));
+			try {
+				return read.nodeCount;
+			} finally {
+				read.close();
+			}
+		};
+		const server = await serveWorld(world, "test-password-5");
+		try {
+			// OpenCode loads a folder's plugins when asked about the folder: the agent's memory opens and summarizes.
+			await server.get(`/api/plugin?${server.where}`);
+			await waitUntil(() => nodes() >= 2, 30_000);
+			const summaries = world.model.requests.filter((request) => systemOf(request) === COMPACT);
+			expect(summaries.length).toBeGreaterThanOrEqual(2);
+			for (const request of summaries) {
+				// Orrery's request as it is: its system prompt alone, its turns, no tools.
+				expect((request.body.messages ?? []).filter((message) => message.role === "system")).toHaveLength(1);
+				expect(conversationOf(request).at(-1)).toMatch(/^user: [\s\S]*Compaction:/);
+				expect(request.body.tools ?? []).toEqual([]);
+			}
+			// Each summary's session is OpenCode's for its request only: none is left.
+			let left = "Orrery summary";
+			for (let tries = 0; tries < 50 && left.includes("Orrery summary"); tries++) {
+				left = JSON.stringify(await server.get(`/api/session?directory=${encodeURIComponent(world.ws)}`));
+				if (left.includes("Orrery summary")) await new Promise((wait) => setTimeout(wait, 100));
+			}
+			expect(left).not.toContain("Orrery summary");
+			// The picker, through the plugin's RPC as OpenCode's TUI calls it: OpenCode's models listed, the free tier unavailable.
+			const menu = (await server.rpc("menu")) as MenuData;
+			expect(menu.line).toBe("summaries: opencode/fake/fake-model (off) · from config");
+			const offered = menu.groups.find((group) => group.key === "opencode")?.providers.flatMap((provider) => provider.models ?? []) ?? [];
+			expect(offered.find((model) => model.modelId === "fake/fake-model")).toMatchObject({ current: true });
+			expect(offered.find((model) => model.modelId === "fake/fake-model")?.unavailable).toBeUndefined();
+			const free = offered.filter((model) => model.modelId.startsWith("opencode/"));
+			expect(free.length).toBeGreaterThan(0);
+			for (const model of free) expect([model.modelId, model.unavailable]).toEqual([model.modelId, FREE_REASON]);
+			// A free model is refused as a source, and nothing goes to any model for it.
+			const before = world.model.requests.length;
+			expect(await server.rpc("switch", { provider: "opencode", modelId: free[0]?.modelId, thinking: "off" })).toEqual({ ok: false, text: `Not switched: ${FREE_REASON}. Still on opencode/fake/fake-model.` });
+			expect(world.model.requests.length).toBe(before);
+			// Back to one of Orrery's own sources: tested, then switched; the agent's next summaries are Orrery's.
+			expect(await server.rpc("switch", { provider: "local-fake", modelId: "fake-model", thinking: "off" })).toEqual({ ok: true, text: "summaries: local-fake/fake-model (off) · set in chat" });
+			expect(((await server.rpc("menu")) as MenuData).line).toBe("summaries: local-fake/fake-model (off) · set in chat");
+		} finally {
+			await server.stop();
+			await world.model.close();
+		}
+		const read = MemoryStore.openReadOnly(join(world.agentDir, "memory.sqlite"));
+		try {
+			expect(JSON.parse(read.getMeta("lane.compactor-model") ?? "{}")).toEqual({ provider: "local-fake", modelId: "fake-model", thinking: "off" });
+			expect(read.usageRows().some((row) => row.role === "compactor" && row.model === "opencode/fake/fake-model")).toBe(true);
+		} finally {
+			read.close();
+		}
+	}, 120_000);
 });

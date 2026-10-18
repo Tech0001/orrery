@@ -12,6 +12,9 @@ import { readStatus } from "../../src/agent/status-file.ts";
 import type { SummarySources } from "../../src/agent/summary-sources.ts";
 import { memorySection, OPENCODE_READ_ONLY } from "../../src/agent/view-text.ts";
 import { MemoryStore, MemoryView } from "../../src/memory/index.ts";
+import { COMPACT } from "../../src/memory/prompts.ts";
+import { FREE_REASON } from "../../src/agent/opencode-source.ts";
+import type { MenuData } from "../../src/opencode/summary-menu.ts";
 import { type Feed, readFeed } from "../../src/opencode/feed.ts";
 import { COMPACTION_SUMMARY, openCodePlugin, type OpenCodePluginOptions, sessionTitle } from "../../src/opencode/plugin.ts";
 import { feedFileOf } from "../../src/opencode/token-file.ts";
@@ -30,7 +33,7 @@ afterEach(async () => {
 const TUI = 4242;
 
 /** Agent Atlas (folder ws, OpenCode), Birch (a reader), a plain folder, and a launch token for Atlas in Orrery's home. */
-function scene() {
+function scene(summaries: { readonly model: string; readonly thinking: string } = { model: "faux-compactor/faux-1", thinking: "off" }) {
 	const dir = tempDir("orrery-opencode-plugin-");
 	dirs.push(dir);
 	for (const folder of ["ws", "birch", "plain"]) mkdirSync(join(dir, folder));
@@ -41,8 +44,8 @@ function scene() {
 		"[agents.Atlas]",
 		`folder = ${JSON.stringify(join(dir, "ws"))}`,
 		'tool = "opencode"',
-		'compactor_model = "faux-compactor/faux-1"',
-		'compactor_thinking = "off"',
+		`compactor_model = ${JSON.stringify(summaries.model)}`,
+		`compactor_thinking = ${JSON.stringify(summaries.thinking)}`,
 		"[agents.Birch]",
 		`folder = ${JSON.stringify(join(dir, "birch"))}`,
 		'tool = "opencode"',
@@ -276,6 +279,104 @@ describe("Orrery's OpenCode plugin: the system prompt", () => {
 		expect(Date.now() - started).toBeGreaterThanOrEqual(250);
 		expect(parts[1]).toContain("(not summarized yet: zoom it)");
 		await waitUntil(() => noticesOf(s).some((text) => text.includes("this session's memory view has unsummarized lines (the model can zoom them)")));
+	});
+});
+
+/** OpenCode's model list in the fake host: an own-key model (two variants) and two of OpenCode's free tier. */
+const OPENCODE_MODELS = {
+	data: [
+		{ id: "fake-model", providerID: "fake", name: "Fake", enabled: true, cost: [], limit: { context: 200_000, output: 4096 }, variants: [{ id: "low" }, { id: "high" }] },
+		{ id: "big-pickle", providerID: "opencode", name: "Big Pickle", enabled: true, cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }], limit: { context: 200_000, output: 32_000 }, variants: [] },
+	],
+};
+
+/** The scene, Atlas's summaries on `ref` (thinking `thinking`). */
+const sceneOn = (ref: string, thinking = "off") => scene({ model: ref, thinking });
+
+describe("Orrery's OpenCode plugin: summaries through OpenCode's models", () => {
+	it("makes the agent's summaries through the chosen OpenCode model: Orrery's prompt as it is, in a session of its own (the thinking level's variant), removed after and never recorded", async () => {
+		const s = sceneOn("opencode/fake/fake-model", "high");
+		seed(s.atlas, [`A long question ${"detail ".repeat(200)}`, `A long answer ${"detail ".repeat(200)}`]);
+		const host = hostFor(s);
+		host.modelList = OPENCODE_MODELS;
+		await start(s, host, { config: s.config, summarySources: fauxSources(s.config) });
+		await opened(s);
+		// One summary line for each message.
+		await waitUntil(() => host.generated.length >= 2);
+		const store = () => MemoryStore.openReadOnly(join(s.atlas.dir, "memory.sqlite"));
+		await waitUntil(() => {
+			const st = store();
+			try {
+				return st.nodeCount >= 2;
+			} finally {
+				st.close();
+			}
+		});
+		const [request] = host.generated;
+		expect(request?.system).toEqual([{ type: "text", text: COMPACT }]);
+		expect(request?.tools).toEqual({});
+		expect(request?.options).toEqual({});
+		const blocks = (request?.messages as { role: string; content: { text: string }[] }[])[0]?.content.map((block) => block.text) ?? [];
+		expect(blocks.at(-1)).toMatch(/^Compaction:/);
+		expect(request?.model).toEqual({ providerID: "fake", id: "fake-model", variant: "high" });
+		expect(host.made.map((made) => made.input.metadata)).toEqual(host.made.map(() => ({ orrery: "summary" })));
+		await waitUntil(() => host.removed.length === host.made.length);
+		// Never the agent's: no session mark in memory for them, and no notice of trouble.
+		const st = store();
+		try {
+			for (const made of host.made) expect(st.getMeta(`opencode.session.${made.id}`)).toBeUndefined();
+			expect(st.usageRows().filter((row) => row.role === "compactor").map((row) => row.model)).toContain("opencode/fake/fake-model");
+		} finally {
+			st.close();
+		}
+		expect(noticesOf(s)).toEqual([]);
+	});
+
+	it("offers Orrery's sources and OpenCode's models in /compactor's picker; tests a pick through OpenCode, then switches; refuses the free tier; switches back to Orrery's own", async () => {
+		const s = scene();
+		const host = hostFor(s);
+		host.modelList = OPENCODE_MODELS;
+		await start(s, host);
+		await opened(s);
+		const menu = (await host.callRpc("menu")) as MenuData;
+		expect(menu.line).toBe("summaries: faux-compactor/faux-1 (off) · from config");
+		expect(menu.configured).toBeUndefined();
+		expect(menu.groups.map((group) => [group.key, group.current])).toEqual([["signin", false], ["key", false], ["opencode", false]]);
+		const opencode = menu.groups.find((group) => group.key === "opencode");
+		expect(opencode?.providers.map((provider) => [provider.key, provider.models?.map((model) => [model.modelId, model.unavailable, model.thinking])])).toEqual([
+			["fake", [["fake/fake-model", undefined, ["off", "low", "high"]]]],
+			["opencode", [["opencode/big-pickle", FREE_REASON, ["off"]]]],
+		]);
+		// Orrery's own sources need a login saved: they say how.
+		expect(menu.groups.find((group) => group.key === "key")?.providers.map((provider) => provider.unavailable)).toEqual([expect.stringContaining("orrery login --key openai"), expect.stringContaining("orrery login --key anthropic"), expect.stringContaining("orrery login")]);
+		// A pick of OpenCode's: one small call through OpenCode (as testChoice makes), then the switch.
+		const before = host.generated.length;
+		expect(await host.callRpc("switch", { provider: "opencode", modelId: "fake/fake-model", thinking: "high" })).toEqual({ ok: true, text: "summaries: opencode/fake/fake-model (high) · set in chat" });
+		const test = host.generated[before];
+		expect([test?.system, test?.messages, test?.model]).toEqual([[{ type: "text", text: "Reply with one word." }], [{ role: "user", content: [{ type: "text", text: "Reply with OK." }] }], { providerID: "fake", id: "fake-model", variant: "high" }]);
+		expect(((await host.callRpc("menu")) as MenuData).groups.find((group) => group.current)?.key).toBe("opencode");
+		// OpenCode's free tier: refused, with the reason, and nothing sent.
+		const sent = host.generated.length;
+		expect(await host.callRpc("switch", { provider: "opencode", modelId: "opencode/big-pickle", thinking: "off" })).toEqual({
+			ok: false,
+			text: "Not switched: OpenCode's free tier only works inside OpenCode chats; background summaries aren't allowed. Still on opencode/fake/fake-model.",
+		});
+		expect(host.generated.length).toBe(sent);
+		// Back to Orrery's own, and to the config's.
+		expect(await host.callRpc("switch", { provider: "faux-compactor", modelId: "faux-1", thinking: "low" })).toEqual({ ok: true, text: "summaries: faux-compactor/faux-1 (low) · set in chat" });
+		expect(await host.callRpc("switch", { reset: true })).toEqual({ ok: true, text: "summaries: faux-compactor/faux-1 (off) · from config" });
+		expect(await host.callRpc("switch", { provider: "opencode" })).toEqual({ ok: false, text: "Not switched: the pick names no model." });
+	});
+
+	it("never makes summaries through OpenCode's free tier: the agent opens with them off, saying why and how to switch", async () => {
+		const s = sceneOn("opencode/opencode/big-pickle");
+		const host = hostFor(s);
+		host.modelList = OPENCODE_MODELS;
+		await start(s, host, { config: s.config, summarySources: fauxSources(s.config) });
+		await opened(s);
+		expect(noticesOf(s)).toEqual(["Orrery: Atlas: summaries are off: OpenCode's free tier only works inside OpenCode chats; background summaries aren't allowed. Choose a summary model with /compactor provider/id."]);
+		expect(feedOf(s)?.line).toContain("SUMMARIES STOPPED: OpenCode's free tier only works inside OpenCode chats");
+		expect(host.made).toEqual([]);
 	});
 });
 

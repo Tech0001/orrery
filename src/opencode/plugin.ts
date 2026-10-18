@@ -2,7 +2,8 @@
  * Orrery inside OpenCode (spec 2026-10-16-opencode-design, "The plugin"), in OpenCode's server process (Bun) for the
  * whole session, as pi's and OMP's extension is in theirs: it opens the agent's memory with the writer lock (one writer;
  * held elsewhere, the session reads memory but is not recorded; remote memory as pi has it), records, runs summaries on
- * Orrery's own logins and keeps the view.
+ * Orrery's own logins or through one of OpenCode's paid or own-key models (src/opencode/summaries.ts), and keeps the
+ * view. Its /compactor picker (the TUI entry's) asks it through OpenCode's plugin RPC (src/opencode/summary-menu.ts).
  * - Which agent: the one the launch's options name (src/opencode/options.ts), with the token from the token file (only
  *   one in Orrery's tokens folder: a project's opencode.json can name this plugin with options of its own) claimed for
  *   this OpenCode server's process (src/agent/pick.ts). A token another live process claimed (an OpenCode started from
@@ -28,13 +29,15 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { compactorCommand } from "../agent/agent-commands.ts";
-import { type AgentConfig, defaultConfigPath, type HarnessConfig, loadConfig } from "../agent/config.ts";
+import { type AgentConfig, defaultConfigPath, type HarnessConfig, loadConfig, type ModelChoice } from "../agent/config.ts";
 import { openElsewhere, openYielding } from "../agent/handover.ts";
 import { cutNotice, instructionsSection, readInstructions } from "../agent/instructions.ts";
 import { AgentHeld, MemoryAgent } from "../agent/memory-agent.ts";
 import { memoryTools, readerTools, type ViewAccess, withAgentView } from "../agent/memory-tools.ts";
 import { agentModelSource } from "../agent/model-source.ts";
 import { noticeKey, noticeText, type TroubleState } from "../agent/notices.ts";
+import { compactorCommandIn, isOpenCodeChoice } from "../agent/opencode-source.ts";
+import { COMPACTOR_MODEL_KEY, storedChoice } from "../agent/choices.ts";
 import { AGENT_ENV, pickAgent, TOKEN_ENV } from "../agent/pick.ts";
 import { runningVersion } from "../agent/running.ts";
 import { takeRequest } from "../agent/settings-request.ts";
@@ -47,6 +50,9 @@ import { localIso, MemoryStore, MemoryView } from "../memory/index.ts";
 import { remoteOpenNotice } from "../remote/checkout.ts";
 import type { LockState, Storage } from "../remote/types.ts";
 import { FEED_NOTICES, type FeedLevel, type FeedNotice, writeFeed } from "./feed.ts";
+import { type OpenCodeAccess, OpenCodeSummaries, summarySession, withOpenCode } from "./summaries.ts";
+import { type MenuData, type MenuModel, SUMMARY_RPC, type SwitchResult } from "./summary-menu.ts";
+import { menuData, orreryModels, switchTo } from "./summary-picker.ts";
 import { CONFIG_UNREADABLE, OpenCodeGuardHook, openCodeGuardOptions } from "./guard.ts";
 import type { CompactionEvent, ContextEvent, OpenCodeContext, OpenCodePlugin, PluginTool, PromptEvent, TitleEvent } from "./host.ts";
 import { PLUGIN_ID, readPluginOptions } from "./options.ts";
@@ -121,6 +127,32 @@ function troubleState(memory: MemoryAgent): TroubleState | null {
 export function sessionTitle(agent: string, at: Date = new Date()): string {
 	const pad = (n: number) => String(n).padStart(2, "0");
 	return `${agent} · ${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
+
+/** How long the memory's opening waits for OpenCode to list the OpenCode model its summaries use. */
+const OPENCODE_LIST_WAIT_MS = 15_000;
+
+/**
+ * The OpenCode model an agent's summaries use, if they use one: the one chosen in chat (in its memory), else the
+ * config's. Read before the memory opens; a memory that can't be read has none.
+ */
+function openCodeChoiceOf(agent: AgentConfig): ModelChoice | undefined {
+	let chosen: ModelChoice | undefined;
+	const file = join(agent.dir, "memory.sqlite");
+	if (existsSync(file)) {
+		try {
+			const store = MemoryStore.openReadOnly(file);
+			try {
+				chosen = storedChoice(store, COMPACTOR_MODEL_KEY, () => true).choice;
+			} finally {
+				store.close();
+			}
+		} catch {
+			chosen = undefined;
+		}
+	}
+	const choice = chosen ?? agent.compactor.model;
+	return isOpenCodeChoice(choice) ? choice : undefined;
 }
 
 /** The plugin's line where a person running OpenCode with --print-logs sees it (default stderr). Never throws. */
@@ -227,6 +259,10 @@ class AgentInServer {
 	summarizing = 0;
 	#trouble: string | undefined;
 	readonly #updatesShown = new Set<string>();
+	/** OpenCode's models for this agent's summaries (src/opencode/summaries.ts), through the plugins' folders. */
+	readonly opencode: OpenCodeSummaries;
+	/** Orrery's own logins and models for summaries, once the memory has opened. */
+	sources: SummarySources | undefined;
 
 	private constructor(key: string, config: HarnessConfig, agent: AgentConfig, feed: FeedWriter, options: OpenCodePluginOptions) {
 		this.#key = key;
@@ -234,19 +270,22 @@ class AgentInServer {
 		this.agent = agent;
 		this.feed = feed;
 		this.#options = options;
+		this.opencode = new OpenCodeSummaries(agent.name);
 	}
 
 	/** The agent's memory in this server, opened by its first plugin; each plugin that takes it releases it at its cleanup. */
-	static take(config: HarnessConfig, agent: AgentConfig, feed: FeedWriter, options: OpenCodePluginOptions): AgentInServer {
+	static take(config: HarnessConfig, agent: AgentConfig, feed: FeedWriter, options: OpenCodePluginOptions, access: OpenCodeAccess | undefined): AgentInServer {
 		const agents = shared<AgentInServer>("agents");
 		const key = `${agent.name}\u0000${resolve(config.dataDir)}`;
-		let held = agents.get(key);
-		if (held === undefined) {
-			held = new AgentInServer(key, config, agent, feed, options);
-			agents.set(key, held);
-			held.#begin();
+		const found = agents.get(key);
+		if (found !== undefined) {
+			found.join(access);
+			return found;
 		}
-		held.join();
+		const held = new AgentInServer(key, config, agent, feed, options);
+		agents.set(key, held);
+		held.join(access);
+		held.#begin();
 		return held;
 	}
 
@@ -258,13 +297,15 @@ class AgentInServer {
 		this.#timer.unref?.();
 	}
 
-	/** One more plugin uses it. */
-	join(): void {
+	/** One more plugin uses it; summaries may go through its folder (`access`). */
+	join(access: OpenCodeAccess | undefined): void {
 		this.#users++;
+		if (access !== undefined) this.opencode.addHost(access);
 	}
 
 	/** One plugin is done with it; the last one closes the memory (the writer lock goes). Never throws. */
-	async release(): Promise<void> {
+	async release(access: OpenCodeAccess | undefined): Promise<void> {
+		if (access !== undefined) this.opencode.removeHost(access);
 		if (--this.#users > 0) return;
 		shared<AgentInServer>("agents").delete(this.#key);
 		this.stopped = true;
@@ -299,12 +340,17 @@ class AgentInServer {
 		let asked: LockState | undefined;
 		try {
 			const sources = await (this.#options.summarySources ?? openSummarySources)(config, agent);
+			this.sources = sources;
+			// OpenCode's models, for an agent whose summaries use one: listed before the memory opens and checks its choice.
+			const wanted = openCodeChoiceOf(agent);
+			if (wanted === undefined) await this.opencode.refresh();
+			else await this.opencode.waitFor(wanted.modelId, OPENCODE_LIST_WAIT_MS, this.stopping.signal);
 			const report = (message: string) => {
 				this.feed.say(message, "warning");
 				// A remote session says it was lost before it closes the store: stop recording at once.
 				this.recording();
 			};
-			const memory = { agent, models: agentModelSource(sources.models), host: "opencode" as const, report };
+			const memory = { agent, models: withOpenCode(agentModelSource(sources.models), this.opencode), host: "opencode" as const, report };
 			let opened: MemoryAgent;
 			if (agent.remote === undefined) opened = await openYielding(() => MemoryAgent.open(memory), agent.dir);
 			else {
@@ -394,6 +440,39 @@ class AgentInServer {
 		}
 	}
 
+	/** The summary-model picker's offer (src/opencode/summary-picker.ts). Never rejects. */
+	async menu(): Promise<MenuData> {
+		try {
+			return await menuData(this.recording(), this.sources, this.opencode);
+		} catch (error) {
+			return { line: "", thinking: "off", groups: [], problem: `Orrery: the summary-model picker failed (${safeText(errorText(error))}).` };
+		}
+	}
+
+	/** Orrery's models for a provider the picker names. Never rejects. */
+	async menuModels(input: unknown): Promise<{ models: MenuModel[] }> {
+		const memory = this.recording();
+		const provider = (input as { provider?: unknown } | null)?.provider;
+		if (memory === undefined || this.sources === undefined || typeof provider !== "string") return { models: [] };
+		try {
+			return { models: orreryModels(this.sources, provider, memory.compactorModel) };
+		} catch {
+			return { models: [] };
+		}
+	}
+
+	/** A pick from the picker, tested, then switched to; the status says so at once. Never rejects. */
+	async switchSummaries(input: unknown): Promise<SwitchResult> {
+		let result: SwitchResult;
+		try {
+			result = await switchTo(this.recording(), this.sources, this.opencode, input);
+		} catch (error) {
+			result = { ok: false, text: `Not switched: ${safeText(errorText(error))}.` };
+		}
+		this.tick();
+		return { ok: result.ok, text: safeText(result.text) };
+	}
+
 	/** Every tickMs: summary-model changes made from outside (the TUI's M), summary trouble, updates, the status. */
 	tick(): void {
 		try {
@@ -408,7 +487,7 @@ class AgentInServer {
 					this.feed.once("request", `Orrery: a summary-model change from outside OpenCode failed: ${safeText(errorText(error))}`);
 				}
 				const now = troubleState(memory);
-				const message = noticeText(name, now, this.#trouble, `orrery compactor ${name}`);
+				const message = noticeText(name, now, this.#trouble, compactorCommandIn("opencode", name));
 				this.#trouble = noticeKey(now);
 				if (message !== undefined) this.feed.say(message, now ? "warning" : "info");
 			}
@@ -454,6 +533,8 @@ class OrreryInOpenCode {
 	readonly #options: OpenCodePluginOptions;
 	/** The agent's memory in this server, once the launch's agent is known; shared with the other folders' plugins. */
 	#held: AgentInServer | undefined;
+	/** What summaries through OpenCode's models ask of this folder's OpenCode (src/opencode/summaries.ts). */
+	#access: OpenCodeAccess | undefined;
 	readonly #stopping = new AbortController();
 	#stopped = false;
 	/** The feed for this launch's TUI; only the OpenCode that claimed the launch's token writes it. */
@@ -592,7 +673,18 @@ class OrreryInOpenCode {
 		this.#feed = feed;
 		// Taking the memory starts opening it (when no other folder's plugin has): a hook that runs while the others are
 		// being registered waits for it.
-		this.#held = AgentInServer.take(config, pick.agent, feed, this.#options);
+		const ctx = this.#ctx;
+		this.#access =
+			this.#directory === undefined
+				? undefined
+				: {
+						directory: this.#directory,
+						listModels: () => ctx.model.list(),
+						createSession: (input) => ctx.session.create(input),
+						generate: (input, options) => ctx.session.generate(input, options),
+						removeSession: (input) => ctx.session.remove(input),
+					};
+		this.#held = AgentInServer.take(config, pick.agent, feed, this.#options, this.#access);
 		await this.#register();
 		void this.#listen();
 	}
@@ -610,7 +702,7 @@ class OrreryInOpenCode {
 		} catch {
 			// the memory is let go all the same
 		}
-		await held.release();
+		await held.release(this.#access);
 	}
 
 	/** No agent: what the person is told, with a feed that says so. */
@@ -649,6 +741,25 @@ class OrreryInOpenCode {
 		await session.hook("context", (event) => this.#guarded("the memory for this request", () => this.#onContext(event)));
 		await session.hook("compaction", (event) => this.#guarded("answering the compaction from memory", () => this.#onCompaction(event)));
 		await session.hook("title", (event) => this.#guarded("naming the session", () => this.#onTitle(event)));
+		// A summary through one of OpenCode's models: its request is Orrery's (src/opencode/summaries.ts).
+		const held = this.#agent;
+		const summaries = held.opencode;
+		try {
+			await session.hook("generate", (event) => this.#guarded("making a summary's request", () => summaries.shape(event)));
+		} catch (error) {
+			summaries.disable(`this OpenCode has no generate hook (${errorText(error)})`);
+		}
+		// The summary-model picker, which the TUI entry's /compactor calls (src/opencode/summary-menu.ts).
+		try {
+			if (this.#ctx.rpc === undefined) throw new Error("this OpenCode has no plugin RPC");
+			await this.#ctx.rpc.register(SUMMARY_RPC, {
+				menu: () => held.menu(),
+				models: (input) => held.menuModels(input),
+				switch: (input) => held.switchSummaries(input),
+			});
+		} catch (error) {
+			this.#log(`Orrery: OpenCode's /compactor could not be added (${errorText(error)}); in a shell: orrery compactor ${held.agent.name}.`);
+		}
 		await tool.transform((editor) => {
 			try {
 				for (const each of this.#tools()) editor.add(each);
@@ -817,6 +928,8 @@ class OrreryInOpenCode {
 		const { type, data } = (event ?? {}) as { type?: unknown; data?: { sessionID?: unknown; parentID?: unknown } };
 		const sessionID = data?.sessionID;
 		if (typeof sessionID !== "string" || this.#stopped) return;
+		// Orrery's own summary sessions (src/opencode/summaries.ts) are no agent's.
+		if (type === "session.created" && summarySession(data)) return;
 		if (type === "session.created") {
 			const parent = typeof data?.parentID === "string" && data.parentID !== "" ? data.parentID : null;
 			if (!this.#parents.has(sessionID)) this.#parents.set(sessionID, Promise.resolve(parent));

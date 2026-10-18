@@ -20,6 +20,8 @@ export interface SourceModel {
 /** What an agent needs of a model registry: find a model, and stream one reply from it. */
 export interface ModelSource {
 	find(provider: string, modelId: string): SourceModel | undefined;
+	/** Why a model this source knows of can't be used (OpenCode's free tier, say), when it says; undefined: unknown. */
+	unavailable?(provider: string, modelId: string): string | undefined;
 	streamSimple(
 		model: SourceModel,
 		context: { systemPrompt: string; messages: Message[] },

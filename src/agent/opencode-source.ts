@@ -69,9 +69,8 @@ export function compactorCommandIn(host: Host, agent: string): string {
 			return "/orrery:compactor";
 		case "codex":
 			return `orrery compactor ${agent}`;
-		case "opencode":
-			return "/compactor in OpenCode";
 		default:
+			// pi's, OMP's and OpenCode's own /compactor.
 			return "/compactor";
 	}
 }

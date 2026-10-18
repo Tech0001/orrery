@@ -6,7 +6,7 @@
  */
 
 import type { PermissionEvent, ToolCallEvent } from "../../src/opencode/guard.ts";
-import type { CompactionEvent, ContextEvent, OpenCodeContext, PluginTool, PromptEvent, SessionHooks, TitleEvent } from "../../src/opencode/host.ts";
+import type { CompactionEvent, ContextEvent, GenerateEvent, OpenCodeContext, PluginTool, PromptEvent, SessionHooks, TitleEvent } from "../../src/opencode/host.ts";
 
 type Hook = (event: never) => Promise<void> | void;
 
@@ -30,6 +30,15 @@ export class FakeHost implements OpenCodeContext {
 	readonly tools: PluginTool[] = [];
 	/** Makes ctx.session.get or ctx.session.context throw, as a broken OpenCode might. */
 	failing: { get?: boolean; context?: boolean } = {};
+	/** What ctx.model.list answers (OpenCode's model list). */
+	modelList: unknown = { data: [] };
+	/** Sessions made through ctx.session.create (their input), and those removed. */
+	readonly made: { id: string; input: Record<string, unknown> }[] = [];
+	readonly removed: string[] = [];
+	/** Each session.generate request as the generate hooks left it, with its session's model. */
+	readonly generated: { sessionID: string; model: unknown; system: unknown[]; messages: unknown[]; tools: Record<string, unknown>; options: Record<string, unknown> }[] = [];
+	/** What a session.generate request answers (default: a short line). */
+	answer: (request: FakeHost["generated"][number]) => string | Promise<string> = () => "a summary line";
 	#queue: unknown[] = [];
 	#wake: (() => void) | undefined;
 	#subscribed = 0;
@@ -53,7 +62,46 @@ export class FakeHost implements OpenCodeContext {
 			if (this.failing.context) throw new Error("context unavailable");
 			return this.sessions.get(sessionID)?.messages ?? [];
 		},
+		create: async (input: object) => {
+			const id = nextId("ses");
+			this.made.push({ id, input: input as Record<string, unknown> });
+			this.sessions.set(id, { messages: [] });
+			this.emit({ type: "session.created", data: { sessionID: id, ...("metadata" in input ? { metadata: (input as { metadata: unknown }).metadata } : {}) } });
+			return { id, ...input };
+		},
+		generate: async ({ sessionID, prompt }: { sessionID: string; prompt: string }) => {
+			const model = this.made.find((made) => made.id === sessionID)?.input.model;
+			// OpenCode's own request first (its base prompt, the session's turns, the prompt, its tools), then the hooks.
+			const event: GenerateEvent = { sessionID, system: [BASE, { type: "text", text: "# Your Model" }], messages: [{ role: "user", content: [{ type: "text", text: prompt }] }], tools: { shell: { description: "x", input: {} } }, options: { textVerbosity: "low" } };
+			await this.#run("generate", event);
+			const request = { sessionID, model, system: event.system, messages: event.messages, tools: event.tools, options: event.options };
+			this.generated.push(request);
+			return { text: await this.answer(request) };
+		},
+		remove: async ({ sessionID }: { sessionID: string }) => {
+			this.removed.push(sessionID);
+			this.sessions.delete(sessionID);
+		},
 	};
+
+	readonly model = { list: async () => this.modelList };
+
+	/** The plugin's RPC handlers, by method (the TUI entry calls them). */
+	rpcHandlers: Record<string, (input: unknown) => Promise<unknown>> = {};
+	readonly rpc = {
+		register: async (definition: object, handlers: Record<string, (input: unknown) => Promise<unknown>>) => {
+			if ((definition as { id?: unknown }).id !== "orrery.summaries") throw new Error("an RPC of another id");
+			this.rpcHandlers = handlers;
+			return { dispose: async () => {}, events: { emit: async () => {} } };
+		},
+	};
+
+	/** A call of the plugin's RPC, as OpenCode's TUI makes one. */
+	async callRpc(method: string, input: unknown = {}): Promise<unknown> {
+		const handler = this.rpcHandlers[method];
+		if (handler === undefined) throw new Error(`no RPC method ${method}`);
+		return handler(input);
+	}
 
 	readonly event = {
 		subscribe: (options?: { signal?: AbortSignal }): AsyncIterable<unknown> => {

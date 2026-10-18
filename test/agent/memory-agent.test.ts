@@ -196,7 +196,7 @@ describe("MemoryAgent: summaries through an OpenCode model, opened elsewhere", (
 	});
 
 	it("names the host's command for an unknown summary model; pi's and OMP's words are as they were", async () => {
-		for (const [host, command] of [["pi", "/compactor"], ["omp", "/compactor"], ["claude-code", "/orrery:compactor"], ["codex", "orrery compactor Test"], ["opencode", "/compactor in OpenCode"]] as const) {
+		for (const [host, command] of [["pi", "/compactor"], ["omp", "/compactor"], ["claude-code", "/orrery:compactor"], ["codex", "orrery compactor Test"], ["opencode", "/compactor"]] as const) {
 			const agent = agentOn("nowhere/model-x");
 			const reports: string[] = [];
 			const open = MemoryAgent.open({ agent, models: agentModelSource(fauxModels().models), report: (message) => reports.push(message), host });
