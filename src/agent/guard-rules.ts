@@ -737,9 +737,25 @@ const OPENCODE_NAMED = new RegExp(
 	].join("|"),
 );
 
-/** Whether text a shell may run names OpenCode's config or code, in any reading of it; `rule`'s own folders by their spelling too. */
+/** A character that carries a name on past one of OpenCode's own folders (opencode-notes.txt beside ~/.config/opencode). */
+const NAME_GOES_ON = /^[a-z0-9._+@%#~-]$/;
+
+/**
+ * Whether a reading names one of OpenCode's own folders (`roots`, folded) by its path: the folder itself or a path below
+ * it, not a longer name beside it. Whatever else follows (an end, "/", a space, a quote, ";", a glob, a "$") names it.
+ */
+function namesOpenCodeFolder(form: string, roots: readonly string[]): boolean {
+	return roots.some((root) => {
+		for (let at = form.indexOf(root); at !== -1; at = form.indexOf(root, at + 1)) {
+			if (!NAME_GOES_ON.test(form.charAt(at + root.length))) return true;
+		}
+		return false;
+	});
+}
+
+/** Whether text a shell may run names OpenCode's config or code, in any reading of it; `rule`'s own folders by their path too. */
 export function openCodeNamed(text: string, rule?: OpenCodeRule): boolean {
-	const named = (form: string) => OPENCODE_NAMED.test(form) || (rule?.own.some((root) => form.includes(root)) ?? false);
+	const named = (form: string) => OPENCODE_NAMED.test(form) || (rule !== undefined && namesOpenCodeFolder(form, rule.own));
 	return inAnyReading(text, named);
 }
 
@@ -1000,7 +1016,7 @@ export function checkToolCall(
 		// The readings made above, once for every rule.
 		const inReading = (test: (form: string) => boolean) => reading.forms.some(test) || reading.pieces.some(test);
 		const own = openCode().own;
-		if (inReading((form) => OPENCODE_NAMED.test(form) || own.some((root) => form.includes(root)))) return OPENCODE_COMMAND;
+		if (inReading((form) => OPENCODE_NAMED.test(form) || namesOpenCodeFolder(form, own))) return OPENCODE_COMMAND;
 		if (inReading((form) => SKILLS_NAMED.test(form))) return SKILL_SHELL;
 	}
 	const raw = call.arguments.path;

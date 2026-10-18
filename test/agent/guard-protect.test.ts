@@ -1142,7 +1142,7 @@ describe("OpenCode's config and code: one table through every gate (writes and s
 		const t = protectWorld();
 		const files = [
 			...["opencode.json", "sub/opencode.jsonc", ".opencode/plugins/p.ts", ".opencode/package.json", ".claude/skills/s/SKILL.md", ".agents/skills/s/SKILL.md", ".claude/settings.json", "AGENTS.md", "skills/x.md", "opencode.json.bak"].map((file) => join(t.atlas, file)),
-			...[".config/opencode/opencode.json", ".config/opencode/cli.json", ".cache/opencode/npm/x/index.js", ".local/state/opencode/kv.json", ".local/share/opencode/opencode.db", ".opencode/bin/opencode"].map((file) => join(t.home, file)),
+			...[".config/opencode/opencode.json", ".config/opencode/cli.json", ".cache/opencode/npm/x/index.js", ".local/state/opencode/kv.json", ".local/share/opencode/opencode.db", ".opencode/bin/opencode", ".config/opencode-notes.txt"].map((file) => join(t.home, file)),
 		];
 		for (const file of files) {
 			mkdirSync(join(file, ".."), { recursive: true });
@@ -1191,6 +1191,7 @@ describe("OpenCode's config and code: one table through every gate (writes and s
 			{ name: "Claude Code's own settings", refused: false, path: a(".claude/settings.json"), command: "cat .claude/settings.json" },
 			{ name: "a skills folder of the project's", refused: false, path: a("skills/x.md"), command: "cat skills/x.md" },
 			{ name: "a look-alike name", refused: false, path: a("opencode.json.bak"), command: "cat opencode.json.bak && ls src/opencode && npm run opencode-e2e" },
+			{ name: "a look-alike beside OpenCode's config folder", refused: false, path: h(".config/opencode-notes.txt"), command: `cat ${h(".config/opencode-notes.txt")} ~/.config/opencode-notes.txt $HOME/.config/opencode.old` },
 		];
 	}
 
@@ -1353,7 +1354,13 @@ describe("OpenCode's config and code: one table through every gate (writes and s
 		expect(openCodeLoads(join(moved, "data", "opencode", "log", "x.log"), rule)).toBe(false);
 		expect(openCodeLoads(join(t.atlas, "opencode.db"), rule)).toBe(false);
 		// Shell text naming a moved folder by its path is refused too.
-		expect(guardToolCall("bash", { command: `ls ${join(moved, "oc-config")}` }, { ...t.options, openCode: rule })).toBe(OPENCODE_COMMAND);
+		for (const command of [`ls ${join(moved, "oc-config")}`, `rm -rf ${join(moved, "oc-config")} && echo`, `cp x ${join(moved, "oc-config")}/`, `cat "${join(moved, "oc-config")}";`, `cat ${join(moved, "oc-config")}*`]) {
+			expect(guardToolCall("bash", { command }, { ...t.options, openCode: rule }), command).toBe(OPENCODE_COMMAND);
+		}
+		// ... by its path, not by a look-alike beside it.
+		for (const command of [`ls ${join(moved, "oc-config")}-old`, `cat ${join(moved, "oc-config")}.md ${join(moved, "one.json")}5`]) {
+			expect(guardToolCall("bash", { command }, { ...t.options, openCode: rule }), command).toBeUndefined();
+		}
 		// A home reached through a link: its folders by their real path too.
 		symlinkSync(t.home, join(t.root, "home-link"));
 		const linked = openCodeRule({}, join(t.root, "home-link"), realTarget);
