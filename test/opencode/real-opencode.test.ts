@@ -362,6 +362,53 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("an
 		expect(readStatus(world.agentDir)).toMatchObject({ open: false });
 		MemoryStore.open(join(world.agentDir, "memory.sqlite")).close();
 	}, 120_000);
+
+	it("keeps recording a session moved to another folder (opencode_session_move): that folder's plugin, in the same server, shares the agent's memory", async () => {
+		const world = await agentWorld();
+		const other = join(world.base, "other");
+		mkdirSync(other);
+		const password = "test-password-4";
+		const server = spawn(opencode as string, ["serve", "--stdio", "--port", "0"], { cwd: world.ws, env: { ...world.env, OPENCODE_PASSWORD: password }, stdio: ["pipe", "pipe", "ignore"] });
+		const stopped = new Promise((done) => server.on("exit", done));
+		try {
+			const url = await new Promise<string>((done, fail) => {
+				let out = "";
+				server.stdout.on("data", (chunk) => {
+					out += chunk;
+					if (out.includes("\n")) done((JSON.parse(out.slice(0, out.indexOf("\n"))) as { url: string }).url);
+				});
+				server.on("exit", () => fail(new Error("the server stopped")));
+			});
+			const client: NodeJS.ProcessEnv = { ...world.env, OPENCODE_PASSWORD: password };
+			delete client.OPENCODE_CONFIG_CONTENT;
+			const turn = async (text: string, session?: string) => {
+				const run = await opencodeRun(["run", "--server", url, "--format", "json", ...(session === undefined ? [] : ["-s", session]), text], world.ws, client);
+				expect(run.status, run.stderr).toBe(0);
+				return { session: sessionIn(run.stdout) as string, stdout: run.stdout };
+			};
+			const { session } = await turn("TEXT before-the-move");
+			await waitUntil(() => world.memory().length === 2);
+			const move = `return await tools.opencode.session_move({ directory: ${JSON.stringify(other)} })`;
+			const moved = await turn(`TOOL64 execute ${Buffer.from(JSON.stringify({ code: move })).toString("base64")}`, session);
+			expect(moved.stdout).toContain('"tool":"opencode.session_move","status":"completed"');
+			// The session runs in the other folder now, with that folder's plugin: still recorded, by the same memory.
+			await turn("TEXT after-the-move", session);
+			await waitUntil(() => world.memory().includes("talk: after-the-move"));
+			const lines = world.memory();
+			expect(lines.filter((line) => line.startsWith("user: ")).map((line) => line.replace(/^user: "?|"?$/g, ""))).toEqual(["TEXT before-the-move", expect.stringMatching(/^TOOL64 execute /), "TEXT after-the-move"]);
+			expect(lines.at(-1)).toBe("talk: after-the-move");
+			expect(readStatus(world.agentDir)).toMatchObject({ open: true, model: "opencode" });
+			expect(readFeed(feedFileOf(world.tokenFile))?.line).not.toMatch(/read-only|no memory/);
+		} finally {
+			server.stdin.end();
+			const killer = setTimeout(() => server.kill("SIGKILL"), 10_000);
+			await stopped;
+			clearTimeout(killer);
+			await world.model.close();
+		}
+		expect(readStatus(world.agentDir)).toMatchObject({ open: false });
+		MemoryStore.open(join(world.agentDir, "memory.sqlite")).close();
+	}, 120_000);
 });
 
 describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Orrery's guard in the installed OpenCode (packed plugin, fake model, scratch homes)", () => {

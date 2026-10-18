@@ -17,8 +17,12 @@
  *   OpenCode's own compaction runs. The title hook names the session, so no title request goes to a model.
  * - zoom, date and search (and, for readers, agents and agent_memory) are plugin tools the model sees directly.
  * - Status: status.json as pi writes it, and the feed for the TUI entry's footer and toasts (src/opencode/feed.ts).
+ * - One memory per agent in a server: OpenCode makes a plugin for each folder it serves (a session moved with
+ *   opencode_session_move gets its new folder's), and they share the agent's memory, its status and its feed
+ *   (AgentInServer), so recording goes on wherever the session runs.
  * Every hook body is wrapped: a failure says so in a notice and the turn goes on (a throw in the context hook would fail
- * the person's turn). Cleanup releases the writer lock: a reload runs cleanup, then setup again, in the same process.
+ * the person's turn). The last plugin's cleanup releases the writer lock: a reload runs cleanup, then setup again, in the
+ * same process.
  */
 
 import { existsSync } from "node:fs";
@@ -119,39 +123,349 @@ export function sessionTitle(agent: string, at: Date = new Date()): string {
 	return `${agent} · ${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
 }
 
+/** The plugin's line where a person running OpenCode with --print-logs sees it (default stderr). Never throws. */
+function logLine(options: OpenCodePluginOptions, line: string): void {
+	try {
+		(options.log ?? ((text: string) => process.stderr.write(`${text}\n`)))(line);
+	} catch {
+		// nowhere to say it
+	}
+}
+
+/**
+ * The feed of one launch (its token file's), for its TUI: the status line and the latest notices. One per feed file in
+ * this server, shared by the plugins that write it (src/opencode/feed.ts).
+ */
+class FeedWriter {
+	readonly #file: string;
+	readonly #tui: number;
+	readonly #log: (line: string) => void;
+	line = "Orrery";
+	#notices: FeedNotice[] = [];
+	#count = 0;
+	#written = "";
+	/** Notices said once (keys), and texts of failures said already. */
+	readonly #said = new Set<string>();
+
+	constructor(file: string, tui: number, log: (line: string) => void) {
+		this.#file = file;
+		this.#tui = tui;
+		this.#log = log;
+	}
+
+	/** A notice for the person (a toast in the TUI), never for the model. */
+	say(text: string, level: FeedLevel = "info"): void {
+		this.#notices = [...this.#notices, { n: ++this.#count, text, level }].slice(-FEED_NOTICES);
+		this.write();
+	}
+
+	/** A notice said once for `key` in this server's life. */
+	once(key: string, text: string, level: FeedLevel = "warning"): void {
+		if (this.#said.has(key)) return;
+		this.#said.add(key);
+		this.say(text, level);
+	}
+
+	write(): void {
+		const feed = { tui: this.#tui, line: this.line, notices: this.#notices };
+		const text = JSON.stringify(feed);
+		if (text === this.#written) return;
+		try {
+			writeFeed(this.#file, feed);
+			this.#written = text;
+		} catch (error) {
+			this.#log(`Orrery: the status for OpenCode's TUI could not be written: ${errorText(error)}`);
+		}
+	}
+}
+
+/**
+ * What the plugins of this server share, kept on globalThis: OpenCode loads the plugin's module once per folder it
+ * serves (a module of its own each time), so a module's own variables are not shared. Objects one module made are used
+ * by another only through their methods and public fields (a class's private fields are its own module's).
+ */
+function shared<T>(name: string): Map<string, T> {
+	const key = Symbol.for(`orrery.opencode.${name}`);
+	const store = globalThis as unknown as Record<symbol, Map<string, T> | undefined>;
+	store[key] ??= new Map<string, T>();
+	return store[key];
+}
+
+/** The feeds this server writes, by file. */
+function feedWriter(file: string, tui: number, log: (line: string) => void): FeedWriter {
+	const feeds = shared<FeedWriter>("feeds");
+	let writer = feeds.get(file);
+	if (writer === undefined) {
+		writer = new FeedWriter(file, tui, log);
+		feeds.set(file, writer);
+	}
+	return writer;
+}
+
+/**
+ * The agent's memory in this OpenCode server: one per agent (by its name and Orrery's data folder), shared by the
+ * plugins of every folder the server serves (ruling 2026-10-17). OpenCode makes a plugin per folder, and a session moved
+ * with opencode_session_move gets the plugin of its new folder, in the same process: that plugin takes this memory too,
+ * so recording goes on (a second opening would find the writer lock held and read only). The plugins that use it are
+ * counted; the last one's cleanup closes it, releasing the writer lock (a reload runs cleanup, then setup again).
+ */
+class AgentInServer {
+	readonly config: HarnessConfig;
+	readonly agent: AgentConfig;
+	readonly feed: FeedWriter;
+	readonly #key: string;
+	readonly #options: OpenCodePluginOptions;
+	memory: Memory = { kind: "opening" };
+	opening: Promise<void> = Promise.resolve();
+	readonly #openAbort = new AbortController();
+	readonly stopping = new AbortController();
+	stopped = false;
+	#timer: ReturnType<typeof setInterval> | undefined;
+	#users = 0;
+	/** Sessions whose run is going on. */
+	readonly busy = new Set<string>();
+	summarizing = 0;
+	#trouble: string | undefined;
+	readonly #updatesShown = new Set<string>();
+
+	private constructor(key: string, config: HarnessConfig, agent: AgentConfig, feed: FeedWriter, options: OpenCodePluginOptions) {
+		this.#key = key;
+		this.config = config;
+		this.agent = agent;
+		this.feed = feed;
+		this.#options = options;
+	}
+
+	/** The agent's memory in this server, opened by its first plugin; each plugin that takes it releases it at its cleanup. */
+	static take(config: HarnessConfig, agent: AgentConfig, feed: FeedWriter, options: OpenCodePluginOptions): AgentInServer {
+		const agents = shared<AgentInServer>("agents");
+		const key = `${agent.name}\u0000${resolve(config.dataDir)}`;
+		let held = agents.get(key);
+		if (held === undefined) {
+			held = new AgentInServer(key, config, agent, feed, options);
+			agents.set(key, held);
+			held.#begin();
+		}
+		held.join();
+		return held;
+	}
+
+	/** Starts opening the memory, and the ticks. */
+	#begin(): void {
+		this.status();
+		this.opening = this.#open();
+		this.#timer = setInterval(() => this.tick(), this.#options.tickMs ?? 5000);
+		this.#timer.unref?.();
+	}
+
+	/** One more plugin uses it. */
+	join(): void {
+		this.#users++;
+	}
+
+	/** One plugin is done with it; the last one closes the memory (the writer lock goes). Never throws. */
+	async release(): Promise<void> {
+		if (--this.#users > 0) return;
+		shared<AgentInServer>("agents").delete(this.#key);
+		this.stopped = true;
+		this.stopping.abort();
+		this.#openAbort.abort(new Error("OpenCode closed the plugin"));
+		if (this.#timer !== undefined) clearInterval(this.#timer);
+		this.#timer = undefined;
+		try {
+			await this.opening;
+		} catch {
+			// the memory closes all the same
+		}
+		const state = this.memory;
+		if (state.kind !== "recording") return;
+		this.memory = { kind: "off" };
+		try {
+			state.memory.writeStatus(false, false);
+		} catch {
+			// an agent left "open" in its status is old news within 30 s
+		}
+		try {
+			await state.memory.close();
+		} catch (error) {
+			logLine(this.#options, `Orrery: closing ${state.memory.config.name}'s memory failed: ${errorText(error)}`);
+		}
+	}
+
+	/** Opens the agent's memory, as pi does: recording, read-only (held elsewhere), or off. Never rejects. */
+	async #open(): Promise<void> {
+		const { agent, config } = this;
+		let deadline: ReturnType<typeof setTimeout> | undefined;
+		let asked: LockState | undefined;
+		try {
+			const sources = await (this.#options.summarySources ?? openSummarySources)(config, agent);
+			const report = (message: string) => {
+				this.feed.say(message, "warning");
+				// A remote session says it was lost before it closes the store: stop recording at once.
+				this.recording();
+			};
+			const memory = { agent, models: agentModelSource(sources.models), host: "opencode" as const, report };
+			let opened: MemoryAgent;
+			if (agent.remote === undefined) opened = await openYielding(() => MemoryAgent.open(memory), agent.dir);
+			else {
+				deadline = setTimeout(() => this.#openAbort.abort(new Error("Remote checkout took longer than 25 seconds")), 25_000);
+				// No one to ask in OpenCode's server: a remote agent held elsewhere stays there (orrery agent takeover).
+				opened = await MemoryAgent.openChecked({
+					...memory,
+					config,
+					signal: this.#openAbort.signal,
+					storage: this.#options.remoteStorage?.(config, agent.remote),
+					confirmTakeover: async (held) => {
+						asked = held;
+						return false;
+					},
+					open: (open) => openYielding(open, agent.dir),
+				});
+			}
+			if (this.stopped) {
+				await opened.close();
+				return;
+			}
+			this.memory = { kind: "recording", memory: opened };
+			// The open's own reports already said what is wrong now: notices start from here.
+			this.#trouble = noticeKey(troubleState(opened));
+		} catch (error) {
+			if (this.stopped) return;
+			if (error instanceof AgentHeld) {
+				const where = openElsewhere(agent.dir, "opencode");
+				this.memory = { kind: "read-only", where };
+				this.feed.say(`Orrery: ${agent.name} is ${where}; this session reads memory but is not recorded.`, "warning");
+			} else {
+				this.memory = { kind: "off" };
+				const why = agent.remote === undefined ? safeText(errorText(error)) : remoteOpenNotice(agent, error);
+				this.feed.say(`Orrery: ${agent.name}: ${why}${asked === undefined ? "" : `; run orrery agent takeover ${agent.name} to open it here`}; this session runs without memory.`, "warning");
+			}
+		} finally {
+			clearTimeout(deadline);
+			this.status();
+		}
+	}
+
+	/** The memory while it records; a remote memory moved elsewhere stops recording here (and closes). */
+	recording(): MemoryAgent | undefined {
+		const state = this.memory;
+		if (state.kind !== "recording") return undefined;
+		if (!state.memory.remote?.lost) return state.memory;
+		this.memory = { kind: "off" };
+		void state.memory.close().catch(() => {});
+		this.status();
+		return undefined;
+	}
+
+	/** The status line, status.json (while recording) and the feed, now. Never throws. */
+	status(): void {
+		const name = this.agent.name;
+		try {
+			const state = this.memory;
+			if (state.kind === "recording" && !state.memory.remote?.lost) {
+				state.memory.writeStatus(this.busy.size > 0);
+				this.feed.line = this.summarizing > 0 ? `Orrery · ${name} · summarizing before this message…` : `${state.memory.statusLine()} · recording`;
+			} else if (state.kind === "read-only") this.feed.line = `Orrery · ${name} · read-only: ${state.where}`;
+			else if (state.kind === "off") this.feed.line = `Orrery · ${name} · no memory`;
+			else this.feed.line = `Orrery · ${name} · opening memory…`;
+		} catch (error) {
+			this.feed.once("status", `Orrery: status update failed: ${safeText(errorText(error))}`);
+		}
+		this.feed.write();
+	}
+
+	/** Waits for pending summaries that can come (not when summaries are off, stopped or failing), at most memoryWaitMs. */
+	async settle(memory: MemoryAgent): Promise<void> {
+		if (memory.view.settled || memory.summaryTrouble() !== undefined) return;
+		this.summarizing++;
+		this.status();
+		const wait = new AbortController();
+		const timer = setTimeout(() => wait.abort(), this.#options.memoryWaitMs ?? 60_000);
+		try {
+			await memory.awaitSummaries(AbortSignal.any([wait.signal, this.stopping.signal]));
+		} finally {
+			clearTimeout(timer);
+			this.summarizing--;
+		}
+		if (!memory.view.settled) {
+			const trouble = memory.summaryTrouble();
+			const why = trouble === undefined ? "summaries still pending" : `summaries are ${trouble.state} (${trouble.plain})`;
+			this.feed.say(`Orrery: ${why}; this session's memory view has unsummarized lines (the model can zoom them).`, "warning");
+		}
+	}
+
+	/** Every tickMs: summary-model changes made from outside (the TUI's M), summary trouble, updates, the status. */
+	tick(): void {
+		try {
+			const memory = this.recording();
+			if (memory !== undefined) {
+				const name = memory.config.name;
+				try {
+					const taken = takeRequest(memory.config.dir, name);
+					if (taken.ignored !== undefined) this.feed.say(`Orrery: ignored ${taken.ignored}.`, "warning");
+					if (taken.request !== undefined) this.feed.say(safeText(`Orrery: ${compactorCommand(memory, taken.request.args)} (changed from outside OpenCode)`));
+				} catch (error) {
+					this.feed.once("request", `Orrery: a summary-model change from outside OpenCode failed: ${safeText(errorText(error))}`);
+				}
+				const now = troubleState(memory);
+				const message = noticeText(name, now, this.#trouble, `orrery compactor ${name}`);
+				this.#trouble = noticeKey(now);
+				if (message !== undefined) this.feed.say(message, now ? "warning" : "info");
+			}
+			this.#showUpdates();
+		} catch (error) {
+			this.feed.once("tick", `Orrery: status update failed: ${safeText(errorText(error))}`);
+		}
+		this.status();
+	}
+
+	/** The update notices, each once (src/agent/update-notices.ts), and a refresh of the daily check when it is due. */
+	#showUpdates(): void {
+		const updates = this.#options.updates;
+		if (updates === undefined) return;
+		const enabled = this.config.updates.check;
+		const show = () => {
+			if (this.stopped) return;
+			try {
+				let running: string | undefined;
+				try {
+					running = updates.running === undefined ? runningVersion(updates.env) : updates.running();
+				} catch {
+					running = undefined;
+				}
+				for (const notice of updateNotices(updates.env, Date.now(), { enabled, running })) {
+					if (this.#updatesShown.has(notice.key)) continue;
+					this.#updatesShown.add(notice.key);
+					this.feed.say(notice.text, "warning");
+				}
+			} catch {
+				// a notice that cannot be read or shown is left out
+			}
+		};
+		show();
+		const now = Date.now();
+		if (enabled && cachedUpdate(updates.env, now).stale) void refreshUpdateCache(updates.env, now).then(show, () => {});
+	}
+}
+
 /** Orrery's plugin for one OpenCode location (folder), from setup to cleanup. */
 class OrreryInOpenCode {
 	readonly #ctx: OpenCodeContext;
 	readonly #options: OpenCodePluginOptions;
-	#agent: AgentConfig | undefined;
-	#config: HarnessConfig | undefined;
-	#memory: Memory = { kind: "opening" };
-	#opening: Promise<void> = Promise.resolve();
-	readonly #openAbort = new AbortController();
+	/** The agent's memory in this server, once the launch's agent is known; shared with the other folders' plugins. */
+	#held: AgentInServer | undefined;
 	readonly #stopping = new AbortController();
 	#stopped = false;
-	#timer: ReturnType<typeof setInterval> | undefined;
 	/** The feed for this launch's TUI; only the OpenCode that claimed the launch's token writes it. */
-	#feed: string | undefined;
-	#line = "Orrery";
-	#notices: FeedNotice[] = [];
-	#count = 0;
-	#written = "";
-	/** Notices said once per plugin (keys), and texts of failures said already. */
-	readonly #said = new Set<string>();
+	#feed: FeedWriter | undefined;
 	/** Main sessions this location's hooks have seen: the event stream is the whole server's. */
 	readonly #ours = new Set<string>();
-	/** Sessions whose run is going on. */
-	readonly #busy = new Set<string>();
 	/** Prompts recorded (their message ids): OpenCode may run a prompt hook twice for one prompt. */
 	readonly #prompts = new Set<string>();
 	readonly #parents = new Map<string, Promise<string | null>>();
 	/** Each main session's system parts, made once (and again after its compaction). */
 	readonly #parts = new Map<string, Promise<readonly string[]>>();
 	readonly #pending = new Set<Promise<void>>();
-	#summarizing = 0;
-	#trouble: string | undefined;
-	readonly #updatesShown = new Set<string>();
 
 	/** The guard on this folder's tool calls (src/opencode/guard.ts): its rules are set by start. */
 	readonly #guard: OpenCodeGuardHook;
@@ -221,7 +535,8 @@ class OrreryInOpenCode {
 
 	/**
 	 * Reads the options, the config and the token, picks the agent, sets the guard's rules (the agent's, or no agent's),
-	 * and, with an agent, registers the memory's hooks and opens its memory.
+	 * and, with an agent, takes its memory in this server (opening it if no other folder's plugin has) and registers the
+	 * memory's hooks.
 	 */
 	async start(): Promise<void> {
 		const env = this.#options.env ?? process.env;
@@ -239,7 +554,7 @@ class OrreryInOpenCode {
 			this.#noAgent(env);
 			return;
 		}
-		const feed = feedFileOf(options.tokenFile);
+		const feed = feedWriter(feedFileOf(options.tokenFile), this.#options.tui ?? process.ppid, (line) => this.#log(line));
 		let config: HarnessConfig;
 		try {
 			config = this.#options.config ?? loadConfig(defaultConfigPath(env));
@@ -275,101 +590,44 @@ class OrreryInOpenCode {
 		// nested OpenCode in another agent's folder would become that agent's writer.
 		if (pick.kind === "none" || pick.by !== "env") return;
 		this.#feed = feed;
-		this.#config = config;
-		this.#agent = pick.agent;
-		this.#status();
-		// Opening before the hooks are there: a hook that runs while the others are being registered waits for it.
-		this.#opening = this.#open();
+		// Taking the memory starts opening it (when no other folder's plugin has): a hook that runs while the others are
+		// being registered waits for it.
+		this.#held = AgentInServer.take(config, pick.agent, feed, this.#options);
 		await this.#register();
 		void this.#listen();
-		this.#timer = setInterval(() => this.#tick(), this.#options.tickMs ?? 5000);
-		this.#timer.unref?.();
 	}
 
-	/** Cleanup: stops listening, waits a little for a reply being recorded, and closes the memory (the writer lock goes). Never throws. */
+	/** Cleanup: stops listening, waits a little for a reply being recorded, and lets go of the memory (the last plugin closes it). Never throws. */
 	async stop(): Promise<void> {
 		this.#stopped = true;
 		this.#stopping.abort();
-		this.#openAbort.abort(new Error("OpenCode closed the plugin"));
-		if (this.#timer !== undefined) clearInterval(this.#timer);
-		this.#timer = undefined;
+		const held = this.#held;
+		if (held === undefined) return;
 		try {
-			await this.#opening;
+			await held.opening;
 			const waited = new Promise<void>((done) => setTimeout(done, this.#options.closeWaitMs ?? 3000).unref?.());
 			await Promise.race([Promise.allSettled([...this.#pending]), waited]);
 		} catch {
-			// the memory closes all the same
+			// the memory is let go all the same
 		}
-		const state = this.#memory;
-		if (state.kind !== "recording") return;
-		this.#memory = { kind: "off" };
-		try {
-			state.memory.writeStatus(false, false);
-		} catch {
-			// an agent left "open" in its status is old news within 30 s
-		}
-		try {
-			await state.memory.close();
-		} catch (error) {
-			this.#log(`Orrery: closing ${state.memory.config.name}'s memory failed: ${errorText(error)}`);
-		}
+		await held.release();
 	}
 
 	/** No agent: what the person is told, with a feed that says so. */
 	#refuse(text: string): void {
-		this.#line = "Orrery · no memory";
-		this.#say(text, "warning");
+		const feed = this.#feed;
+		if (feed === undefined) return;
+		feed.line = "Orrery · no memory";
+		feed.say(text, "warning");
 	}
 
 	#log(line: string): void {
-		try {
-			(this.#options.log ?? ((text: string) => process.stderr.write(`${text}\n`)))(line);
-		} catch {
-			// nowhere to say it
-		}
+		logLine(this.#options, line);
 	}
 
-	/** A notice for the person (a toast in the TUI), never for the model. */
-	#say(text: string, level: FeedLevel = "info"): void {
-		this.#notices = [...this.#notices, { n: ++this.#count, text, level }].slice(-FEED_NOTICES);
-		this.#writeFeed();
-	}
-
-	/** A notice said once for `key` in this plugin's life. */
-	#once(key: string, text: string, level: FeedLevel = "warning"): void {
-		if (this.#said.has(key)) return;
-		this.#said.add(key);
-		this.#say(text, level);
-	}
-
-	#writeFeed(): void {
-		if (this.#feed === undefined) return;
-		const feed = { tui: this.#options.tui ?? process.ppid, line: this.#line, notices: this.#notices };
-		const text = JSON.stringify(feed);
-		if (text === this.#written) return;
-		try {
-			writeFeed(this.#feed, feed);
-			this.#written = text;
-		} catch (error) {
-			this.#log(`Orrery: the status for OpenCode's TUI could not be written: ${errorText(error)}`);
-		}
-	}
-
-	/** The status line, status.json (while recording) and the feed, now. Never throws. */
-	#status(): void {
-		const name = this.#agent?.name ?? "";
-		try {
-			const state = this.#memory;
-			if (state.kind === "recording" && !state.memory.remote?.lost) {
-				state.memory.writeStatus(this.#busy.size > 0);
-				this.#line = this.#summarizing > 0 ? `Orrery · ${name} · summarizing before this message…` : `${state.memory.statusLine()} · recording`;
-			} else if (state.kind === "read-only") this.#line = `Orrery · ${name} · read-only: ${state.where}`;
-			else if (state.kind === "off") this.#line = `Orrery · ${name} · no memory`;
-			else this.#line = `Orrery · ${name} · opening memory…`;
-		} catch (error) {
-			this.#once("status", `Orrery: status update failed: ${safeText(errorText(error))}`);
-		}
-		this.#writeFeed();
+	/** The agent's memory in this server: set for every hook start registered. */
+	get #agent(): AgentInServer {
+		return this.#held as AgentInServer;
 	}
 
 	/**
@@ -381,7 +639,7 @@ class OrreryInOpenCode {
 			await run();
 		} catch (error) {
 			const text = `Orrery: ${what} failed (${safeText(errorText(error))}); the session goes on without it.`;
-			this.#once(text, text);
+			this.#feed?.once(text, text);
 		}
 	}
 
@@ -395,75 +653,9 @@ class OrreryInOpenCode {
 			try {
 				for (const each of this.#tools()) editor.add(each);
 			} catch (error) {
-				this.#once("tools", `Orrery: the memory tools could not be added: ${safeText(errorText(error))}`);
+				this.#feed?.once("tools", `Orrery: the memory tools could not be added: ${safeText(errorText(error))}`);
 			}
 		});
-	}
-
-	/** Opens the agent's memory, as pi does: recording, read-only (held elsewhere), or off. Never rejects. */
-	async #open(): Promise<void> {
-		const agent = this.#agent as AgentConfig;
-		const config = this.#config as HarnessConfig;
-		let deadline: ReturnType<typeof setTimeout> | undefined;
-		let asked: LockState | undefined;
-		try {
-			const sources = await (this.#options.summarySources ?? openSummarySources)(config, agent);
-			const report = (message: string) => {
-				this.#say(message, "warning");
-				// A remote session says it was lost before it closes the store: stop recording at once.
-				this.#recording();
-			};
-			const memory = { agent, models: agentModelSource(sources.models), host: "opencode" as const, report };
-			let opened: MemoryAgent;
-			if (agent.remote === undefined) opened = await openYielding(() => MemoryAgent.open(memory), agent.dir);
-			else {
-				deadline = setTimeout(() => this.#openAbort.abort(new Error("Remote checkout took longer than 25 seconds")), 25_000);
-				// No one to ask in OpenCode's server: a remote agent held elsewhere stays there (orrery agent takeover).
-				opened = await MemoryAgent.openChecked({
-					...memory,
-					config,
-					signal: this.#openAbort.signal,
-					storage: this.#options.remoteStorage?.(config, agent.remote),
-					confirmTakeover: async (held) => {
-						asked = held;
-						return false;
-					},
-					open: (open) => openYielding(open, agent.dir),
-				});
-			}
-			if (this.#stopped) {
-				await opened.close();
-				return;
-			}
-			this.#memory = { kind: "recording", memory: opened };
-			// The open's own reports already said what is wrong now: notices start from here.
-			this.#trouble = noticeKey(troubleState(opened));
-		} catch (error) {
-			if (this.#stopped) return;
-			if (error instanceof AgentHeld) {
-				const where = openElsewhere(agent.dir, "opencode");
-				this.#memory = { kind: "read-only", where };
-				this.#say(`Orrery: ${agent.name} is ${where}; this session reads memory but is not recorded.`, "warning");
-			} else {
-				this.#memory = { kind: "off" };
-				const why = agent.remote === undefined ? safeText(errorText(error)) : remoteOpenNotice(agent, error);
-				this.#say(`Orrery: ${agent.name}: ${why}${asked === undefined ? "" : `; run orrery agent takeover ${agent.name} to open it here`}; this session runs without memory.`, "warning");
-			}
-		} finally {
-			clearTimeout(deadline);
-			this.#status();
-		}
-	}
-
-	/** The memory while it records; a remote memory moved elsewhere stops recording here (and closes). */
-	#recording(): MemoryAgent | undefined {
-		const state = this.#memory;
-		if (state.kind !== "recording") return undefined;
-		if (!state.memory.remote?.lost) return state.memory;
-		this.#memory = { kind: "off" };
-		void state.memory.close().catch(() => {});
-		this.#status();
-		return undefined;
 	}
 
 	/** A session's parent, or null for a main session (from session.created when seen, else OpenCode's session info). */
@@ -495,8 +687,9 @@ class OrreryInOpenCode {
 	async #onPrompt(event: PromptEvent): Promise<void> {
 		if ((await this.#parentOf(event.sessionID)) !== null) return;
 		this.#ours.add(event.sessionID);
-		await this.#opening;
-		const memory = this.#recording();
+		const held = this.#agent;
+		await held.opening;
+		const memory = held.recording();
 		if (memory === undefined || this.#prompts.has(event.messageID)) return;
 		this.#prompts.add(event.messageID);
 		// A session this agent's memory has from its start is its own (sessionKey); one resumed with turns memory never had is not.
@@ -504,15 +697,15 @@ class OrreryInOpenCode {
 		// The session's parts are made before its prompt goes in: the request it starts has the prompt in its conversation,
 		// not in its memory section too. One that fails is made again at the request, which says so.
 		if (!this.#parts.has(event.sessionID)) await this.#partsOf(event.sessionID).catch(() => {});
-		if (this.#recording() !== memory) return;
+		if (held.recording() !== memory) return;
 		const text = typeof event.prompt?.text === "string" ? event.prompt.text : "";
 		if (text.trim() === "") {
 			for (const [key, value] of Object.entries(own)) memory.store.setMeta(key, value);
 			return;
 		}
 		memory.view.appendBatch([{ kind: "user", text, date: localIso() }], own);
-		this.#busy.add(event.sessionID);
-		this.#status();
+		held.busy.add(event.sessionID);
+		held.status();
 	}
 
 	/** Whether the session is this agent's own: its memory has it from its start (sessionKey). */
@@ -533,8 +726,8 @@ class OrreryInOpenCode {
 
 	/** A main session OpenCode made while this agent's memory opens or records: once it records, the session is its own. */
 	async #onCreated(sessionID: string): Promise<void> {
-		await this.#opening;
-		const memory = this.#recording();
+		await this.#agent.opening;
+		const memory = this.#agent.recording();
 		if (memory !== undefined && !this.#ownSession(memory, sessionID)) memory.store.setMeta(sessionKey(sessionID), "made");
 	}
 
@@ -563,19 +756,20 @@ class OrreryInOpenCode {
 
 	/** The agent's instructions (if it has any), then its memory section (recording or read-only), as they are now. */
 	async #render(): Promise<readonly string[]> {
-		await this.#opening;
-		const agent = this.#agent as AgentConfig;
+		const held = this.#agent;
+		await held.opening;
+		const agent = held.agent;
 		const parts: string[] = [];
 		const found = readInstructions(agent.dir);
 		if (found !== undefined) {
 			parts.push(instructionsSection(agent.name, found));
-			if (found.cut) this.#once("cut", cutNotice(agent.name));
+			if (found.cut) held.feed.once("cut", cutNotice(agent.name));
 		}
-		const state = this.#memory;
-		const memory = this.#recording();
+		const state = held.memory;
+		const memory = held.recording();
 		if (memory !== undefined) {
 			memory.instructionsAt = found?.at;
-			await this.#settle(memory);
+			await held.settle(memory);
 			parts.push(memorySection(memory.view, "opencode"));
 		} else if (state.kind === "read-only") {
 			const file = join(agent.dir, "memory.sqlite");
@@ -588,42 +782,22 @@ class OrreryInOpenCode {
 				}
 			}
 		}
-		this.#status();
+		held.status();
 		return parts;
-	}
-
-	/** Waits for pending summaries that can come (not when summaries are off, stopped or failing), at most memoryWaitMs. */
-	async #settle(memory: MemoryAgent): Promise<void> {
-		if (memory.view.settled || memory.summaryTrouble() !== undefined) return;
-		this.#summarizing++;
-		this.#status();
-		const wait = new AbortController();
-		const timer = setTimeout(() => wait.abort(), this.#options.memoryWaitMs ?? 60_000);
-		try {
-			await memory.awaitSummaries(AbortSignal.any([wait.signal, this.#stopping.signal]));
-		} finally {
-			clearTimeout(timer);
-			this.#summarizing--;
-		}
-		if (!memory.view.settled) {
-			const trouble = memory.summaryTrouble();
-			const why = trouble === undefined ? "summaries still pending" : `summaries are ${trouble.state} (${trouble.plain})`;
-			this.#say(`Orrery: ${why}; this session's memory view has unsummarized lines (the model can zoom them).`, "warning");
-		}
 	}
 
 	async #onCompaction(event: CompactionEvent): Promise<void> {
 		if ((await this.#parentOf(event.sessionID)) !== null) return;
-		await this.#opening;
+		await this.#agent.opening;
 		// Not recorded, or not from its start (a resumed session): OpenCode's own summary keeps what memory doesn't have.
-		const memory = this.#recording();
+		const memory = this.#agent.recording();
 		if (memory === undefined || !this.#ownSession(memory, event.sessionID)) return;
 		event.result = { summary: COMPACTION_SUMMARY };
 		this.#parts.delete(event.sessionID);
 	}
 
 	#onTitle(event: TitleEvent): void {
-		event.result = sessionTitle((this.#agent as AgentConfig).name);
+		event.result = sessionTitle(this.#agent.agent.name);
 	}
 
 	/** The event stream, for each run's start and end. Ends at cleanup. */
@@ -635,27 +809,27 @@ class OrreryInOpenCode {
 				this.#onEvent(event);
 			}
 		} catch (error) {
-			if (!signal.aborted) this.#once("events", `Orrery: OpenCode's event stream stopped (${safeText(errorText(error))}); replies are not recorded from here on.`);
+			if (!signal.aborted) this.#feed?.once("events", `Orrery: OpenCode's event stream stopped (${safeText(errorText(error))}); replies are not recorded from here on.`);
 		}
 	}
 
 	#onEvent(event: unknown): void {
 		const { type, data } = (event ?? {}) as { type?: unknown; data?: { sessionID?: unknown; parentID?: unknown } };
 		const sessionID = data?.sessionID;
-		if (typeof sessionID !== "string") return;
+		if (typeof sessionID !== "string" || this.#stopped) return;
 		if (type === "session.created") {
 			const parent = typeof data?.parentID === "string" && data.parentID !== "" ? data.parentID : null;
 			if (!this.#parents.has(sessionID)) this.#parents.set(sessionID, Promise.resolve(parent));
 			if (parent === null) this.#track(this.#guarded("marking a new session as the agent's", () => this.#onCreated(sessionID)));
 		} else if (type === "session.execution.started") {
 			if (this.#ours.has(sessionID)) {
-				this.#busy.add(sessionID);
-				this.#status();
+				this.#agent.busy.add(sessionID);
+				this.#agent.status();
 			}
 		} else if (type === "session.execution.succeeded") {
 			this.#track(this.#guarded("recording a reply", () => this.#onSucceeded(sessionID)));
 		} else if (type === "session.execution.failed" || type === "session.execution.interrupted") {
-			if (this.#busy.delete(sessionID)) this.#status();
+			if (this.#agent.busy.delete(sessionID)) this.#agent.status();
 		}
 	}
 
@@ -665,34 +839,38 @@ class OrreryInOpenCode {
 		void work.finally(() => this.#pending.delete(work));
 	}
 
-	/** A run of one of this location's main sessions ended: its final reply goes to memory, once. */
+	/**
+	 * A run of one of this location's main sessions ended: its final reply goes to memory, once (every folder's plugin
+	 * hears the server's events, and a moved session is in two folders' sessions).
+	 */
 	async #onSucceeded(sessionID: string): Promise<void> {
-		this.#busy.delete(sessionID);
+		const held = this.#agent;
+		held.busy.delete(sessionID);
 		try {
 			if (!this.#ours.has(sessionID)) return;
-			await this.#opening;
-			const memory = this.#recording();
+			await held.opening;
+			const memory = held.recording();
 			if (memory === undefined) return;
 			const answer = await this.#ctx.session.context({ sessionID });
 			const reply = finalReply(Array.isArray(answer) ? answer : (answer as { data?: unknown } | null)?.data);
 			if (reply === undefined) return;
 			const key = `opencode.reply.${sessionID}`;
-			if (this.#recording() !== memory || memory.store.getMeta(key) === reply.id) return;
+			if (held.recording() !== memory || memory.store.getMeta(key) === reply.id) return;
 			memory.view.appendBatch(reply.text.trim() === "" ? [] : [{ kind: "talk", text: reply.text, date: reply.date }], { [key]: reply.id }, reply.usage);
 			memory.afterTurn();
 		} finally {
-			this.#status();
+			held.status();
 		}
 	}
 
 	/** The memory tools over the live view while recording, a read-only snapshot while read-only. */
 	#tools(): PluginTool[] {
-		const agent = this.#agent as AgentConfig;
-		const config = this.#config as HarnessConfig;
+		const held = this.#agent;
+		const { agent, config } = held;
 		const access: ViewAccess = (use) => {
-			const memory = this.#recording();
+			const memory = held.recording();
 			if (memory !== undefined) return use(memory.view);
-			if (this.#memory.kind === "read-only") return withAgentView(agent, use, config);
+			if (held.memory.kind === "read-only") return withAgentView(agent, use, config);
 			throw new Error(`Orrery: ${agent.name}'s memory is not open in this OpenCode`);
 		};
 		const tools = [...memoryTools(access), ...(agent.reads.length > 0 ? readerTools(() => agent, config) : [])];
@@ -703,64 +881,10 @@ class OrreryInOpenCode {
 			input: JSON.parse(JSON.stringify(each.parameters)) as object,
 			options: { codemode: false },
 			execute: async (input: Record<string, unknown>) => {
-				await this.#opening;
+				await held.opening;
 				return { content: await each.run(input ?? {}) };
 			},
 		}));
-	}
-
-	/** Every tickMs: summary-model changes made from outside (the TUI's M), summary trouble, updates, the status. */
-	#tick(): void {
-		try {
-			const memory = this.#recording();
-			if (memory !== undefined) {
-				const name = memory.config.name;
-				try {
-					const taken = takeRequest(memory.config.dir, name);
-					if (taken.ignored !== undefined) this.#say(`Orrery: ignored ${taken.ignored}.`, "warning");
-					if (taken.request !== undefined) this.#say(safeText(`Orrery: ${compactorCommand(memory, taken.request.args)} (changed from outside OpenCode)`));
-				} catch (error) {
-					this.#once("request", `Orrery: a summary-model change from outside OpenCode failed: ${safeText(errorText(error))}`);
-				}
-				const now = troubleState(memory);
-				const message = noticeText(name, now, this.#trouble, `orrery compactor ${name}`);
-				this.#trouble = noticeKey(now);
-				if (message !== undefined) this.#say(message, now ? "warning" : "info");
-			}
-			this.#showUpdates();
-		} catch (error) {
-			this.#once("tick", `Orrery: status update failed: ${safeText(errorText(error))}`);
-		}
-		this.#status();
-	}
-
-	/** The update notices, each once (src/agent/update-notices.ts), and a refresh of the daily check when it is due. */
-	#showUpdates(): void {
-		const updates = this.#options.updates;
-		const config = this.#config;
-		if (updates === undefined || config === undefined) return;
-		const enabled = config.updates.check;
-		const show = () => {
-			if (this.#stopped) return;
-			try {
-				let running: string | undefined;
-				try {
-					running = updates.running === undefined ? runningVersion(updates.env) : updates.running();
-				} catch {
-					running = undefined;
-				}
-				for (const notice of updateNotices(updates.env, Date.now(), { enabled, running })) {
-					if (this.#updatesShown.has(notice.key)) continue;
-					this.#updatesShown.add(notice.key);
-					this.#say(notice.text, "warning");
-				}
-			} catch {
-				// a notice that cannot be read or shown is left out
-			}
-		};
-		show();
-		const now = Date.now();
-		if (enabled && cachedUpdate(updates.env, now).stale) void refreshUpdateCache(updates.env, now).then(show, () => {});
 	}
 }
 

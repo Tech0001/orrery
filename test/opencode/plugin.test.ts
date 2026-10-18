@@ -64,8 +64,8 @@ function scene() {
 const fauxSources = (config: HarnessConfig) => async (): Promise<SummarySources> => ({ config, credentials: new FileCredentialStore(join(config.dataDir, "logins.json")), models: fauxModels().models });
 
 /** The plugin set up in `host` (cleaned up after the test); the cleanup is returned too. */
-async function start(s: ReturnType<typeof scene>, host: FakeHost, options: OpenCodePluginOptions = {}): Promise<() => Promise<void>> {
-	const plugin = openCodePlugin({ config: s.config, env: s.env, owner: process.pid, tui: TUI, summarySources: fauxSources(s.config), tickMs: 30, memoryWaitMs: 2000, log: () => {}, ...options });
+async function start(s: ReturnType<typeof scene>, host: FakeHost, options: OpenCodePluginOptions = {}, make: typeof openCodePlugin = openCodePlugin): Promise<() => Promise<void>> {
+	const plugin = make({ config: s.config, env: s.env, owner: process.pid, tui: TUI, summarySources: fauxSources(s.config), tickMs: 30, memoryWaitMs: 2000, log: () => {}, ...options });
 	const cleanup = await plugin.setup(host);
 	let done = false;
 	const once = async () => {
@@ -462,6 +462,47 @@ describe("Orrery's OpenCode plugin: its life in OpenCode's server", () => {
 		await second.prompt("ses_a", "After the reload.");
 		await waitUntil(() => messages(s.atlas).length === 1);
 		expect(claimedBy(s.atlas.dir, s.token)).toBe(process.pid);
+	});
+
+	it("shares one memory agent between the plugins of one OpenCode server (a moved session gets its new folder's plugin): it keeps recording, a reply both hear goes in once, and the memory closes with the last plugin", async () => {
+		const s = scene();
+		const first = hostFor(s);
+		const closeFirst = await start(s, first);
+		await opened(s);
+		first.open("ses_a");
+		await first.prompt("ses_a", "Before the move.");
+		first.reply("ses_a", "Answered before.");
+		await waitUntil(() => messages(s.atlas).length === 2);
+		// opencode_session_move: OpenCode makes a plugin for the folder the session moved to, in the same server, and the
+		// session's hooks go to it from then on. It loads the plugin's module anew for each folder: a module of its own.
+		const second = hostFor(s, s.plain);
+		second.sessions.set("ses_a", { messages: [...(first.sessions.get("ses_a")?.messages ?? [])] });
+		const anotherModule = "../../src/opencode/plugin.ts?another-folder";
+		const again = (await import(anotherModule)) as { openCodePlugin: typeof openCodePlugin };
+		expect(again.openCodePlugin).not.toBe(openCodePlugin);
+		const closeSecond = await start(s, second, {}, again.openCodePlugin);
+		await second.prompt("ses_a", "After the move.");
+		const section = (await second.request("ses_a")).at(-1);
+		expect(section).toContain("Answered before.");
+		expect(section).not.toContain(OPENCODE_READ_ONLY);
+		// The server's event stream reaches both plugins: the reply goes in once.
+		const replied = second.reply("ses_a", "Answered after.");
+		first.sessions.set("ses_a", { messages: [...(second.sessions.get("ses_a")?.messages ?? [])] });
+		first.emit({ type: "session.execution.succeeded", data: { sessionID: "ses_a" } });
+		await waitUntil(() => messages(s.atlas).length === 4);
+		await new Promise((wait) => setTimeout(wait, 100));
+		expect(messages(s.atlas)).toEqual(["user: Before the move.", "talk: Answered before.", "user: After the move.", "talk: Answered after."]);
+		expect(replied).toMatch(/^msg_/);
+		expect(noticesOf(s).filter((text) => /not recorded|already open/.test(text))).toEqual([]);
+		// The first folder's plugin goes (OpenCode releases a folder it no longer serves): the memory stays open for the other.
+		await closeFirst();
+		await second.prompt("ses_a", "Still recorded.");
+		await waitUntil(() => messages(s.atlas).length === 5);
+		expect(readStatus(s.atlas.dir)).toMatchObject({ open: true });
+		// The last one closes it, and the writer lock goes.
+		await closeSecond();
+		expect(readStatus(s.atlas.dir)).toMatchObject({ open: false });
+		MemoryStore.open(join(s.atlas.dir, "memory.sqlite")).close();
 	});
 
 	it("records a prompt that comes while it is still registering its hooks: the memory is opening by then", async () => {
