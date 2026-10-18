@@ -1354,13 +1354,24 @@ describe("OpenCode's config and code: one table through every gate (writes and s
 		expect(openCodeLoads(join(moved, "data", "opencode", "log", "x.log"), rule)).toBe(false);
 		expect(openCodeLoads(join(t.atlas, "opencode.db"), rule)).toBe(false);
 		// Shell text naming a moved folder by its path is refused too.
-		for (const command of [`ls ${join(moved, "oc-config")}`, `rm -rf ${join(moved, "oc-config")} && echo`, `cp x ${join(moved, "oc-config")}/`, `cat "${join(moved, "oc-config")}";`, `cat ${join(moved, "oc-config")}*`]) {
-			expect(guardToolCall("bash", { command }, { ...t.options, openCode: rule }), command).toBe(OPENCODE_COMMAND);
+		const folder = join(moved, "oc-config");
+		const spellings = [folder, folder.toUpperCase(), folder.replace(/\//g, "//"), folder.replace("/oc-config", "/./oc-config"), folder.replace("/oc-config", "/x/../oc-config"), folder.replace("/oc-config", "/{oc-config,y}"), folder.replace("/oc-config", "/'oc-config'")];
+		for (const spelt of spellings) {
+			for (const end of ["", "/", "/x", " && echo", '"', "'", ";", "|", ")", "*", "?", "[ab]", "$x", "~", "+", "@", "#", "%", "\\"]) {
+				const command = `cat ${spelt}${end}`;
+				expect(guardToolCall("bash", { command }, { ...t.options, openCode: rule }), command).toBe(OPENCODE_COMMAND);
+			}
 		}
-		// ... by its path, not by a look-alike beside it.
-		for (const command of [`ls ${join(moved, "oc-config")}-old`, `cat ${join(moved, "oc-config")}.md ${join(moved, "one.json")}5`]) {
+		// ... by its path, not by a look-alike beside it: a letter, digit, "-", "_" or "." carries the name on.
+		for (const command of [`ls ${folder}-old`, `ls ${folder}_2 ${folder}x`, `cat ${folder}.md ${join(moved, "one.json")}5`]) {
 			expect(guardToolCall("bash", { command }, { ...t.options, openCode: rule }), command).toBeUndefined();
 		}
+		// A moved folder under home, spelt from home as a shell may spell it.
+		const inHome = openCodeRule({ OPENCODE_CONFIG_DIR: join(t.home, "oc-config") }, t.home, realTarget);
+		for (const command of ["ls ~/oc-config", "cat $HOME/oc-config/x", 'cat "${HOME}/oc-config"', `ls ${join(t.home, "oc-config")}`]) {
+			expect(guardToolCall("bash", { command }, { ...t.options, openCode: inHome }), command).toBe(OPENCODE_COMMAND);
+		}
+		expect(guardToolCall("bash", { command: "ls ~/oc-config-old $HOME/oc-configs" }, { ...t.options, openCode: inHome })).toBeUndefined();
 		// A home reached through a link: its folders by their real path too.
 		symlinkSync(t.home, join(t.root, "home-link"));
 		const linked = openCodeRule({}, join(t.root, "home-link"), realTarget);

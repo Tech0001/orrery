@@ -158,7 +158,7 @@ export function openCodeGuardOptions(
 function openCodeRules(env: NodeJS.ProcessEnv, homes: readonly string[]): OpenCodeRule {
 	const rules = [...new Set(homes)].map((home) => openCodeRule(env, home, realTarget));
 	const all = (pick: (rule: OpenCodeRule) => readonly string[]) => [...new Set(rules.flatMap(pick))];
-	return { own: all((rule) => rule.own), plans: all((rule) => rule.plans), data: all((rule) => rule.data) };
+	return { own: all((rule) => rule.own), spelled: all((rule) => rule.spelled ?? []), plans: all((rule) => rule.plans), data: all((rule) => rule.data) };
 }
 
 // ---- OpenCode's patch format ----

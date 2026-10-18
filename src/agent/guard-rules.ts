@@ -684,6 +684,8 @@ export function openCodeOwnFolders(env: NodeJS.ProcessEnv = process.env, home: s
 /** What the OpenCode rule judges against: OpenCode's own folders and the Plan folders (each as given and real, folded). */
 export interface OpenCodeRule {
 	readonly own: readonly string[];
+	/** Each of `own` under home as shell text may spell it from there ("~", "$HOME", "${HOME}"), folded. */
+	readonly spelled?: readonly string[];
 	/** ~/.opencode/plan, from each spelling of home. */
 	readonly plans: readonly string[];
 	/** OpenCode's data folders (its database files by name there). */
@@ -695,8 +697,12 @@ export function openCodeRule(env: NodeJS.ProcessEnv = process.env, home: string 
 	const both = (paths: readonly string[]) => [...new Set(paths.flatMap((path) => [path, real(path)]).map((path) => posix.normalize(path).toLowerCase().replace(/\/+$/, "")))];
 	const homes = [home, real(home)];
 	const xdgData = env.XDG_DATA_HOME && posix.isAbsolute(env.XDG_DATA_HOME) ? env.XDG_DATA_HOME : posix.join(home, ".local", "share");
+	const own = both(openCodeOwnFolders(env, home));
+	const homeFolded = [...new Set(homes.map((at) => posix.normalize(at).toLowerCase().replace(/\/+$/, "")))].filter((at) => at !== "");
+	const spelled = own.flatMap((root) => homeFolded.filter((at) => root.startsWith(`${at}/`)).flatMap((at) => ["~", "$home", "${home}"].map((start) => `${start}${root.slice(at.length)}`)));
 	return {
-		own: both(openCodeOwnFolders(env, home)),
+		own,
+		spelled: [...new Set(spelled)],
 		plans: [...new Set(homes.map((at) => posix.join(posix.normalize(at), ".opencode", "plan").toLowerCase()))],
 		data: both([posix.join(xdgData, "opencode"), posix.join(home, ".local", "share", "opencode")]),
 	};
@@ -738,7 +744,7 @@ const OPENCODE_NAMED = new RegExp(
 );
 
 /** A character that carries a name on past one of OpenCode's own folders (opencode-notes.txt beside ~/.config/opencode). */
-const NAME_GOES_ON = /^[a-z0-9._+@%#~-]$/;
+const NAME_GOES_ON = /^[a-z0-9._-]$/;
 
 /**
  * Whether a reading names one of OpenCode's own folders (`roots`, folded) by its path: the folder itself or a path below
@@ -755,7 +761,7 @@ function namesOpenCodeFolder(form: string, roots: readonly string[]): boolean {
 
 /** Whether text a shell may run names OpenCode's config or code, in any reading of it; `rule`'s own folders by their path too. */
 export function openCodeNamed(text: string, rule?: OpenCodeRule): boolean {
-	const named = (form: string) => OPENCODE_NAMED.test(form) || (rule !== undefined && namesOpenCodeFolder(form, rule.own));
+	const named = (form: string) => OPENCODE_NAMED.test(form) || (rule !== undefined && namesOpenCodeFolder(form, [...rule.own, ...(rule.spelled ?? [])]));
 	return inAnyReading(text, named);
 }
 
@@ -1015,7 +1021,7 @@ export function checkToolCall(
 		if (reading.forms.some(runsPlumbing) || reading.pieces.some(runsPlumbing)) return PLUMBING_REFUSED;
 		// The readings made above, once for every rule.
 		const inReading = (test: (form: string) => boolean) => reading.forms.some(test) || reading.pieces.some(test);
-		const own = openCode().own;
+		const own = [...openCode().own, ...(openCode().spelled ?? [])];
 		if (inReading((form) => OPENCODE_NAMED.test(form) || namesOpenCodeFolder(form, own))) return OPENCODE_COMMAND;
 		if (inReading((form) => SKILLS_NAMED.test(form))) return SKILL_SHELL;
 	}
