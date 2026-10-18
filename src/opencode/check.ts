@@ -11,12 +11,11 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { realpathSync } from "node:fs";
 import { get } from "node:http";
-import { relative, isAbsolute } from "node:path";
 import { type LoadCheck, loadCheckDetail, readLoadCheck, versionedCheck } from "../agent/load-check.ts";
 import { cleanUpOnSignals, type SignalTarget } from "../agent/signal-cleanup.ts";
 import { safeText } from "../agent/source-labels.ts";
+import { findPlugin } from "./plugin-list.ts";
 import { makeScratch, type Scratch } from "./scratch.ts";
 
 /** How long the private server may take to start, load the plugin and say so. */
@@ -30,32 +29,6 @@ const LIST_MAX = 4 * 1024 * 1024;
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const plain = (text: string) => safeText(text).slice(0, 300);
-
-/** Whether `path` is `folder` or inside it, by its given path or its real one (OpenCode lists a loaded plugin's real file). */
-function within(path: string, folder: string): boolean {
-	const folders = new Set([folder]);
-	try {
-		folders.add(realpathSync(folder));
-	} catch {
-		// not there: the given path only
-	}
-	for (const root of folders) {
-		const rel = relative(root, path);
-		if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return true;
-	}
-	return false;
-}
-
-/** Orrery's plugin in OpenCode's plugin list (its source is the plugin folder), the list's size, or undefined for a list in a shape Orrery doesn't know. */
-function findPlugin(answer: unknown, folder: string): { readonly entry?: { readonly status?: unknown; readonly error?: unknown }; readonly size: number } | undefined {
-	const data = (answer as { data?: unknown } | null)?.data;
-	if (!Array.isArray(data)) return undefined;
-	for (const item of data as { source?: { type?: unknown; path?: unknown }; state?: { status?: unknown; error?: unknown } }[]) {
-		const source = item?.source;
-		if (source?.type === "local" && typeof source.path === "string" && within(source.path, folder)) return { entry: item.state ?? {}, size: data.length };
-	}
-	return { size: data.length };
-}
 
 /** GET `path` from the private server, as JSON; rejects on anything else. No proxy: the server is on this machine. */
 function getJson(base: URL, path: string, password: string, timeoutMs: number): Promise<unknown> {

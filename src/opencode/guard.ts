@@ -40,7 +40,9 @@
  * judge within its time are refused (OpenCode has no time limit on a hook: a hook that never answers holds the call).
  * Limits, beyond the shell-text limits every gate has: a plugin of the person's own that changes a call's input after
  * Orrery's hook has judged it (the second layer, openCodePermission, judges what read and edit ask leave for, as
- * OpenCode placed it); Code Mode's fetch() (network only); a relative target in an MCP tool's patch text is judged from the session's folder.
+ * OpenCode placed it); a session whose OpenCode has turned Orrery's plugin off (a reload that failed: OpenCode logs
+ * "failed to restore plugin; deactivating") runs with no guard at all, which the TUI's footer and a toast then say
+ * (plugin/tui.tsx); Code Mode's fetch() (network only); a relative target in an MCP tool's patch text is judged from the session's folder.
  */
 
 import { readdirSync } from "node:fs";

@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { FeedReader, feedFileIn, readFeed, writeFeed } from "../../src/opencode/feed.ts";
 import { configContent } from "../../src/opencode/options.ts";
-import { tuiFeed } from "../../src/opencode/plugin/tui-feed.ts";
+import { pluginOff, tuiFeed } from "../../src/opencode/plugin/tui-feed.ts";
 import { tempDir } from "../agent/support.ts";
 
 const dirs: string[] = [];
@@ -70,5 +70,19 @@ describe("the plugin's feed for OpenCode's TUI", () => {
 		writeFeed(`${tokenFile}.feed.json`, { tui: 8, line: "theirs", notices: [note(9)] });
 		expect(reader.look()).toEqual({ fresh: [] });
 		expect(tuiFeed({}, 7, entry)).toBeUndefined();
+	});
+
+	it("says, from OpenCode's plugin list, when OpenCode has turned Orrery's plugin off (a reload that failed): no guard and no memory", () => {
+		const folder = join(scratch(), "plugin");
+		mkdirSync(folder);
+		const list = (state: unknown, path = join(folder, "server.js")) => ({ data: [{ id: "x", source: { type: "builtin" }, state: { status: "active" } }, { id: "orrery", source: { type: "local", path }, state }] });
+		expect(pluginOff(list({ status: "active" }), folder)).toBeUndefined();
+		expect(pluginOff(list({ status: "failed", error: "Error: setup threw\n    at setup (server.js:1:2)", ref: "err_1" }), folder)).toBe("Orrery · NO GUARD, NO MEMORY: OpenCode turned Orrery's plugin off (Error: setup threw). Quit OpenCode and open the agent again.");
+		expect(pluginOff(list({ status: "failed" }), folder)).toBe("Orrery · NO GUARD, NO MEMORY: OpenCode turned Orrery's plugin off (no reason given). Quit OpenCode and open the agent again.");
+		// Another folder's plugin, a list still loading, or one in a shape Orrery doesn't know: nothing said.
+		expect(pluginOff(list({ status: "failed" }, join(scratch(), "theirs", "server.js")), folder)).toBeUndefined();
+		expect(pluginOff({ data: [] }, folder)).toBeUndefined();
+		expect(pluginOff({ nope: 1 }, folder)).toBeUndefined();
+		expect(pluginOff(undefined, folder)).toBeUndefined();
 	});
 });
