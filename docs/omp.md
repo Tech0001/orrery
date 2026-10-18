@@ -112,13 +112,18 @@ targets one is refused. A config that cannot be read is handled as in pi: OMP ke
 part reads cleanly, and refuses every tool call when it does not; a `[guard] protect` that lists nothing counts as
 none.
 
-`ast_edit` over a folder or a glob rewrites files no argument names, so every file below its base is judged as a write,
-by every rule (`node_modules` and `.git` included, links judged where they lead): one over a folder that holds a `.env`,
-a protected name, another agent's view, OpenCode's config or a skill is refused, and so is one that reaches more than
-50,000 files. Give it the files, or a narrower folder. `lsp` is judged by its action: `rename_file` moves a file, or a
-folder with every file in it, and both ends are judged as writes; the actions that only read pass; a symbol rename, an
-applied code action, a raw request and an action Orrery doesn't know are refused, since the language server then edits
-files no argument names. Make those edits with `edit` or `write`.
+`ast_edit` over a folder or a glob rewrites files no argument names, so every file below its base that OMP's walk
+reaches is judged as a write, by every rule. The guard walks as OMP 18.11.1's `ast_edit` does: `node_modules` and `.git`
+folders are skipped, a link below the folder is not followed, hidden files are walked, and what a `.gitignore` or
+`.ignore` file in the walk ignores is skipped; a glob ending in `*.<extension>` reaches only files with that extension.
+Where it can't read an ignore file exactly it skips less, never more: a rule it doesn't read (`**`, a class, an escape)
+is left out, and a whitelist (`!`) in an ignore file of the walk or of a folder above it has it skip by none of them.
+One that reaches a `.env`, a protected name, another agent's view, OpenCode's config or a skill (OMP's `ast_edit`
+rewrites Markdown too) is refused, and so is one that reaches more than 50,000 files. Give it the files, a narrower
+folder or a glob by extension. `lsp` is judged by its action: `rename_file` moves a file, or a folder with every file in
+it, and both ends are judged as writes; the actions that only read pass; a symbol rename, an applied code action, a raw
+request and an action Orrery doesn't know are refused, since the language server then edits files no argument names.
+Make those edits with `edit` or `write`.
 
 OpenCode's config and code are read-only to agents here too, as in every tool, and skills are written only as
 ordinary files (see the README's Safety):

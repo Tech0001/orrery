@@ -681,6 +681,117 @@ function filesBelow(root: string, limit: number): string[] | "too many" {
 	return files;
 }
 
+/**
+ * Every file OMP's ast_edit rewrites at or below `root`, as its walk reaches them (pi-natives' astEdit, checked against
+ * OMP 18.11.1): node_modules and .git folders are skipped at any depth, whatever an ignore file says; links below the
+ * root are not followed (the root itself is); hidden files are walked; and what a .gitignore or .ignore file in the walk
+ * ignores is skipped (ignoreRules). With `extension`, only files whose name ends with it, in any case. "too many" past
+ * `limit` entries. A root that is no folder is itself.
+ * - The walk reads more ignore files than the guard does (folders above the root, git's excludes, a global gitignore),
+ *   so the guard skips less, never more: an ignore rule it can't read exactly is left out, and a whitelist (`!`) in an
+ *   ignore file of the walk or of a folder above it, which could bring back what another skips, or one it can't read,
+ *   has it skip by none of them.
+ */
+export function astEditFiles(root: string, limit: number, extension?: string): string[] | "too many" {
+	if (!isFolder(root)) return [root];
+	const above = [root, realTarget(root)].flatMap((start) => {
+		const folders: string[] = [];
+		for (let dir = dirname(start); ; dir = dirname(dir)) {
+			folders.push(dir);
+			if (dirname(dir) === dir) return folders;
+		}
+	});
+	const ignoresRead = above.every((dir) => IGNORE_FILES.every((name) => ignoreRules(join(dir, name), dir) !== undefined));
+	const walked = ignoresRead ? walkAstEdit(root, limit, extension, true) : "unread";
+	return walked === "unread" ? (walkAstEdit(root, limit, extension, false) as string[] | "too many") : walked;
+}
+
+/** The ignore files OMP's ast_edit walk reads in each folder (OMP 18.11.1: not .rgignore). */
+const IGNORE_FILES = [".gitignore", ".ignore"];
+
+/** One rule of an ignore file: what it ignores below `dir` (a name at any depth, or a path from `dir` when anchored). */
+interface IgnoreRule {
+	readonly dir: string;
+	readonly anchored: boolean;
+	readonly folderOnly: boolean;
+	readonly pattern: RegExp;
+}
+
+/**
+ * The rules an ignore file in `dir` gives, read as the ignore crate reads a .gitignore line (comments, a trailing
+ * blank, a leading "/" anchoring it, a trailing "/" for folders only, a "/" inside anchoring it too, "*" and "?" never
+ * crossing a "/"), case counting. A rule with anything else in it ("**", a class, a brace, an escape, a blank inside) is
+ * left out, which only skips less. undefined when the file has a whitelist ("!"), or is there but can't be read; [] when
+ * there is no file.
+ */
+function ignoreRules(file: string, dir: string): IgnoreRule[] | undefined {
+	let text: string;
+	try {
+		if (!lstatSync(file, { throwIfNoEntry: false })) return [];
+		if (statSync(file).size > 1024 * 1024) return undefined;
+		text = readFileSync(file, "utf8");
+	} catch {
+		return undefined;
+	}
+	const rules: IgnoreRule[] = [];
+	for (const raw of text.split("\n")) {
+		let line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+		if (line.startsWith("#")) continue;
+		if (!line.endsWith("\\ ")) line = line.trimEnd();
+		if (line === "") continue;
+		if (line.startsWith("!")) return undefined;
+		let anchored = line.startsWith("/");
+		if (anchored) line = line.slice(1);
+		const folderOnly = line.endsWith("/");
+		if (folderOnly) line = line.slice(0, -1);
+		if (!/^[A-Za-z0-9._*?-]+(?:\/[A-Za-z0-9._*?-]+)*$/.test(line) || line.includes("**")) continue;
+		anchored ||= line.includes("/");
+		const pattern = new RegExp(`^${[...line].map((char) => (char === "*" ? "[^/]*" : char === "?" ? "[^/]" : char === "." ? "\\." : char)).join("")}$`);
+		rules.push({ dir, anchored, folderOnly, pattern });
+	}
+	return rules;
+}
+
+/** Whether `rule` ignores the entry at `path` (named `name`, a folder or not). */
+function ignoredBy(rule: IgnoreRule, path: string, name: string, folder: boolean): boolean {
+	if (rule.folderOnly && !folder) return false;
+	return rule.pattern.test(rule.anchored ? relative(rule.dir, path) : name);
+}
+
+/** astEditFiles' walk, with the ignore files' rules or without them; "unread" when one in the walk can't be read exactly. */
+function walkAstEdit(root: string, limit: number, extension: string | undefined, ignores: boolean): string[] | "too many" | "unread" {
+	const files: string[] = [];
+	const stack: { dir: string; rules: readonly IgnoreRule[] }[] = [{ dir: root, rules: [] }];
+	let seen = 0;
+	for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(next.dir, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		let rules = next.rules;
+		if (ignores) {
+			for (const name of IGNORE_FILES) {
+				const read = ignoreRules(join(next.dir, name), next.dir);
+				if (read === undefined) return "unread";
+				rules = [...rules, ...read];
+			}
+		}
+		for (const entry of entries) {
+			if (++seen > limit) return "too many";
+			if (entry.isSymbolicLink()) continue;
+			const path = join(next.dir, entry.name);
+			const folder = entry.isDirectory();
+			if (folder && (entry.name === "node_modules" || entry.name === ".git")) continue;
+			if (rules.some((rule) => ignoredBy(rule, path, entry.name, folder))) continue;
+			if (folder) stack.push({ dir: path, rules });
+			else if (extension === undefined || entry.name.toLowerCase().endsWith(extension)) files.push(path);
+		}
+	}
+	return files;
+}
+
 /** Whether a path leads to a folder (through links). */
 function isFolder(path: string): boolean {
 	try {
@@ -739,8 +850,9 @@ const EDIT_UNREADABLE = "Orrery could not read every target of this edit; use a 
  * ast_edit target may name the session's own view from "~/" as well as by its absolute path (OMP expands "~" in its
  * own process); shell text, eval code and an edit's text may not (ViewRules). Every tool that writes reaches the write
  * rules as a write: a write with a [path#TAG] header or a selector writes part of a file (what it then starts with is
- * unseen to the skills rule); an ast_edit folder or glob has every file below its base (node_modules and .git too)
- * judged as a write by every rule, and past 50,000 entries is refused; lsp's rename_file moves a file (both ends
+ * unseen to the skills rule); an ast_edit folder or glob has every file below its base that OMP's walk reaches
+ * (astEditFiles: node_modules, .git, links below and what .gitignore and .ignore files skip left out) judged as a write by
+ * every rule, and past 50,000 entries is refused; lsp's rename_file moves a file (both ends
  * writes), its reading actions pass, and every other action (a symbol rename, an applied code action, a raw request,
  * one Orrery doesn't know) is refused, since the language server's edits name no file.
  */
@@ -827,10 +939,14 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 		// Glob forms the guard doesn't expand itself (a negation, extended globs): refused rather than read loosely.
 		const unread = parts.find((part) => /^!/.test(part) || (/[*?[]/.test(part) && /[()|+@]/.test(part)));
 		if (unread !== undefined) return `ast_edit path "${unread}": Orrery's guard can't tell which files this pattern reaches; give plain paths or simple globs.`;
-		// A folder or a glob rewrites files below its base: every one of them is judged as a write, by every rule.
+		// A folder or a glob rewrites the files below its base that OMP's walk reaches (astEditFiles), a glob's last part
+		// "*.<extension>" only those with that extension: every one of them is judged as a write, by every rule.
 		const each = pathJudge(omp);
 		for (const part of parts) {
-			const files = filesBelow(ompToolPath(globBase(part.replace(/\\/g, "/")), omp.cwd, home), omp.astEditLimit ?? BELOW_LIMIT);
+			const slashed = part.replace(/\\/g, "/");
+			const last = slashed.split("/").at(-1) ?? "";
+			const extension = /^\*\.[A-Za-z0-9]+$/.test(last) ? last.slice(1).toLowerCase() : undefined;
+			const files = astEditFiles(ompToolPath(globBase(slashed), omp.cwd, home), omp.astEditLimit ?? BELOW_LIMIT, extension);
 			if (files === "too many") return `ast_edit ${part} reaches more files than Orrery's guard can look through; give a narrower path.`;
 			const reason = firstRefusal(files, (file) => each("edit", { path: file, [NEW_TEXT]: undefined }));
 			if (reason !== undefined) return reason;
