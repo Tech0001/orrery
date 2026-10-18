@@ -626,6 +626,9 @@ export const orreryAppNamed = (path: string) => /(^|\/)\.orrery\/app(\/|$)/.test
 /** Why a write to Orrery's installed program is refused: the hooks and extensions every agent runs are in it. */
 export const APP_READ_ONLY = (path: string) => `${path} is Orrery's installed program: agents may read it, not change it.`;
 
+/** Where a gate hands what a write puts in a file to the shared rules (a key no tool's own input has). */
+export const NEW_TEXT: unique symbol = Symbol("orrery.newText");
+
 // ---- OpenCode's config and code (ruling 2026-10-17): no agent writes them, in any gate ----
 //
 // OpenCode 2.0.30 (source at its tag) loads code, runs commands and takes permissions from these, with no trust prompt
@@ -636,7 +639,8 @@ export const APP_READ_ONLY = (path: string) => `${path} is Orrery's installed pr
 //   permissions, agents, commands); a .opencode folder, whole (its own opencode.json(c), plugin(s)/ and the
 //   node_modules they import, agent(s)/, mode(s)/, command(s)/ with !`cmd` run at invocation, skill(s)/; Markdown front
 //   matter starting ---js is run by gray-matter as it loads: core/src/config/plugin/{agent,command,skill,source}.ts,
-//   config/markdown.ts); and the skills of .claude and .agents (config/plugin/compatibility.ts:40, ---js the same).
+//   config/markdown.ts). The skills of .claude and .agents are loaded too (config/plugin/compatibility.ts:40), but they
+//   are ordinary files people write: there only front matter that runs as code is refused (openCodeSkillRefusal, below).
 //   OpenCode's Plan folder, ~/.opencode/plan, is no config: its plan files may be written (plugin/plan.ts:31); the rest
 //   of ~/.opencode is a config root like any other, and holds OpenCode's own binary (bin/opencode).
 // - Its own folders: the config folder ($OPENCODE_CONFIG_DIR, else $XDG_CONFIG_HOME/opencode, ~/.config/opencode: its
@@ -706,16 +710,16 @@ export function openCodeLoads(path: string, rule: OpenCodeRule): boolean {
 	// Below the Plan folder only another config folder or file counts: the plan files are no config.
 	const plan = rule.plans.find((at) => within(folded, at));
 	const rest = plan === undefined ? parts : folded.slice(plan.length).split("/");
-	return rest.some((part, at) => part === ".opencode" || ((part === ".claude" || part === ".agents") && rest[at + 1] === "skills"));
+	return rest.includes(".opencode");
 }
 
 /** Why a write to OpenCode's config or code is refused. */
 export const OPENCODE_READ_ONLY = (path: string) =>
-	`${path} is OpenCode's config or code (a .opencode folder, opencode.json(c), a .claude or .agents skills folder, or OpenCode's own config, cache, state or database), which OpenCode loads and runs: agents may read it, not change it.`;
+	`${path} is OpenCode's config or code (a .opencode folder, opencode.json(c), or OpenCode's own config, cache, state or database), which OpenCode loads and runs: agents may read it, not change it.`;
 
 /** Why shell text naming OpenCode's config or code is refused. */
 export const OPENCODE_COMMAND =
-	"This command names OpenCode's config or code (a .opencode folder, opencode.json(c), a .claude or .agents skills folder, or OpenCode's own config, cache, state or database), which OpenCode loads and runs: agents may read them with file tools, not change them.";
+	"This command names OpenCode's config or code (a .opencode folder, opencode.json(c), or OpenCode's own config, cache, state or database), which OpenCode loads and runs: agents may read them with file tools, not change them.";
 
 const OC_START = "(?:^|[\\s\"'=:/~<>;|&()`{,@*])";
 const OC_END = "(?=$|[\\s\"'/:;|&()<>`,}*?\\[])";
@@ -723,7 +727,6 @@ const OC_END = "(?=$|[\\s\"'/:;|&()<>`,}*?\\[])";
 const OPENCODE_NAMED = new RegExp(
 	[
 		`${OC_START}(?:\\.opencode|opencode\\.jsonc?|ai\\.opencode\\.managed\\.plist|opencode(?:-[a-z0-9._-]+)?\\.db(?:-wal|-shm|-journal)?)${OC_END}`,
-		`${OC_START}\\.(?:claude|agents)/+skills${OC_END}`,
 		`\\.(?:config|cache)/+opencode${OC_END}`,
 		`\\.local/+state/+opencode${OC_END}`,
 		`(?:^|[\\s"'=:<>;|&()\`{,@])/+etc/+opencode${OC_END}`,
@@ -735,6 +738,108 @@ const OPENCODE_NAMED = new RegExp(
 export function openCodeNamed(text: string, rule?: OpenCodeRule): boolean {
 	const named = (form: string) => OPENCODE_NAMED.test(form) || (rule?.own.some((root) => form.includes(root)) ?? false);
 	return inAnyReading(text, named);
+}
+
+// ---- OpenCode's skills: written as anyone writes them, but never with front matter that runs as code ----
+//
+// OpenCode reads the Markdown of .claude/skills and .agents/skills (in every folder it walks, and home's) as skills,
+// through gray-matter 4.0.3 with its default options (core/src/config/markdown.ts: `matter(content, {})`). gray-matter
+// takes the text after a file's opening "---" on its first line as the front matter's language, and its javascript
+// engine (named js or javascript, in any case) runs that front matter with eval as the file loads. It registers no
+// other code engine by default (coffee and cson need one passed in its options, which OpenCode does not), so the fences
+// are ---js and ---javascript. A write whose file would start with one is refused; so is an edit or a patch whose new
+// text holds one at a line's start, or that could finish a first line "---" into one (be strict where the place can't
+// be told), and a write whose text the guard can't see (a move, a copy, a tool it doesn't know). Shell text naming a
+// skills folder and holding such a fence is refused. Limit: a shell command that copies or moves a file written
+// elsewhere into a skills folder (`mv x.md .claude/skills/s/SKILL.md`) names no fence.
+
+/** Whether a path (one spelling of it) is in a .claude or .agents skills folder. */
+export function openCodeSkillPath(path: string): boolean {
+	const parts = posix.normalize(path).toLowerCase().split("/");
+	return parts.some((part, at) => (part === ".claude" || part === ".agents") && parts[at + 1] === "skills");
+}
+
+/**
+ * What a write puts in a file, as far as a gate can see: the whole file (a write), replacements in it (an edit), whole
+ * lines it adds (a patch), or text it puts somewhere in it (judged strictly). Undefined where the gate can't see it.
+ */
+export type NewText =
+	| { readonly whole: string }
+	| { readonly edits: readonly { readonly old: string; readonly new: string }[] }
+	| { readonly lines: readonly string[] }
+	| { readonly parts: readonly string[] };
+
+/** A file (or a line) starting with front matter gray-matter runs as code. */
+const CODE_FENCE = /^\uFEFF?---[ \t]*(?:js|javascript)(?![\w$])/i;
+/** Text that could finish a first line "---" (or part of one) into such a fence. */
+const FENCE_END = /^-{0,3}[ \t]*(?:js|javascript)(?![\w$])/i;
+
+/** Whether a file with this text would have front matter OpenCode runs as code. */
+export function runsAsCode(text: string): boolean {
+	return CODE_FENCE.test(text);
+}
+
+/** Whether text put somewhere in a file could give it such front matter: a fence at a line's start, or a first line that could finish one. */
+function mayRunAsCode(text: string): boolean {
+	const lines = text.split(/\r?\n/);
+	return FENCE_END.test(lines[0] ?? "") || lines.some((line) => CODE_FENCE.test(line.replace(/^[ \t+]+/, "")));
+}
+
+/** Why a write is refused there. */
+export const SKILL_CODE = (path: string) =>
+	`${path} is a skill OpenCode loads (a .claude or .agents skills folder), and this would start it with front matter OpenCode runs as code (---js or ---javascript); give the skill YAML front matter (---) instead.`;
+export const SKILL_UNSEEN = (path: string) =>
+	`${path} is a skill OpenCode loads (a .claude or .agents skills folder), where front matter starting ---js runs as code, and Orrery can't see what this puts in it; use a write or an edit with the text.`;
+export const SKILL_COMMAND =
+	"This command names a skills folder OpenCode loads (.claude or .agents skills) with front matter OpenCode runs as code (---js or ---javascript); give the skill YAML front matter (---) instead.";
+
+/**
+ * Why a write of `text` to `path` (as written or placed) or `real` (where it lands) is refused for a skill's front
+ * matter, or undefined. An edit is also judged on the file as it would leave it, when `read` can read it now.
+ */
+export function openCodeSkillRefusal(path: string, real: string, text: NewText | undefined, read?: (file: string) => string | undefined): string | undefined {
+	if (!openCodeSkillPath(path) && !openCodeSkillPath(real)) return undefined;
+	if (text === undefined) return SKILL_UNSEEN(path);
+	if ("whole" in text) return runsAsCode(text.whole) ? SKILL_CODE(path) : undefined;
+	if ("lines" in text) return text.lines.some((line) => CODE_FENCE.test(line)) ? SKILL_CODE(path) : undefined;
+	if ("parts" in text) return text.parts.some(mayRunAsCode) ? SKILL_CODE(path) : undefined;
+	if (text.edits.some((edit) => mayRunAsCode(edit.new))) return SKILL_CODE(path);
+	const before = read?.(real);
+	if (before === undefined) return undefined;
+	let after = before;
+	for (const edit of text.edits) if (edit.old !== "" && after.includes(edit.old)) after = after.replace(edit.old, () => edit.new);
+	return runsAsCode(after) ? SKILL_CODE(path) : undefined;
+}
+
+/** What pi's write and edit (and orrery run's) put in a file, by their arguments; undefined for any other shape. */
+export function piNewText(tool: string, args: Readonly<Record<string, unknown>>): NewText | undefined {
+	if (tool === "write") return typeof args.content === "string" ? { whole: args.content } : undefined;
+	if (tool !== "edit" || !Array.isArray(args.edits)) return undefined;
+	const edits = (args.edits as { oldText?: unknown; newText?: unknown }[]).map((edit) => ({ old: typeof edit?.oldText === "string" ? edit.oldText : "", new: typeof edit?.newText === "string" ? edit.newText : undefined }));
+	return edits.every((edit) => edit.new !== undefined) ? { edits: edits as { old: string; new: string }[] } : undefined;
+}
+
+/**
+ * What a patch (the *** Begin Patch format Codex and OpenCode share) puts in its files, judged strictly: every added
+ * line of the whole patch, for each of its targets; a Move to target's text is the file it moves, which the guard
+ * can't see.
+ */
+export function patchNewText(patch: string): (target: string) => NewText | undefined {
+	const lines = patch.split("\n").map((line) => line.replace(/\r$/, ""));
+	const added = lines.filter((line) => line.startsWith("+")).map((line) => line.slice(1));
+	const moves = new Set(lines.map((line) => line.trim()).filter((line) => line.startsWith("*** Move to:")).map((line) => line.slice("*** Move to:".length).trim()));
+	return (target) => (moves.has(target.trim()) ? undefined : { lines: added });
+}
+
+const SKILLS_NAMED = new RegExp(`${OC_START}\\.(?:claude|agents)/+skills${OC_END}`);
+const FENCE_NAMED = /-{3}[ \t]*(?:js|javascript)(?![\w$])/;
+
+/** Whether one reading of shell text names a skills folder and holds front matter that runs as code. */
+const skillCodeIn = (form: string) => SKILLS_NAMED.test(form) && FENCE_NAMED.test(form);
+
+/** Whether shell text names a skills folder and holds front matter that runs as code, in a reading of it. */
+export function skillCodeNamed(text: string): boolean {
+	return inAnyReading(text, skillCodeIn);
 }
 
 /**
@@ -845,7 +950,11 @@ export function checkToolCall(
 		const entry = protectedIn(reading, protect);
 		if (entry !== undefined) return `This command touches ${entry}, ${PROTECTED_BY}.`;
 		if (reading.forms.some(runsPlumbing) || reading.pieces.some(runsPlumbing)) return PLUMBING_REFUSED;
-		if (openCodeNamed(command, openCode())) return OPENCODE_COMMAND;
+		// The readings made above, once for every rule.
+		const inReading = (test: (form: string) => boolean) => reading.forms.some(test) || reading.pieces.some(test);
+		const own = openCode().own;
+		if (inReading((form) => OPENCODE_NAMED.test(form) || own.some((root) => form.includes(root)))) return OPENCODE_COMMAND;
+		if (inReading(skillCodeIn)) return SKILL_COMMAND;
 	}
 	const raw = call.arguments.path;
 	if (typeof raw !== "string") return undefined;
@@ -857,6 +966,8 @@ export function checkToolCall(
 	if (writes && (orreryConfigNamed(path) || config.includes(path.toLowerCase()))) return CONFIG_READ_ONLY(path);
 	if (writes && orreryAppNamed(path)) return APP_READ_ONLY(path);
 	if (writes && openCodeLoads(path, openCode())) return OPENCODE_READ_ONLY(path);
+	const skill = writes ? openCodeSkillRefusal(path, path, (call.arguments as { readonly [NEW_TEXT]?: NewText })[NEW_TEXT] ?? piNewText(call.name, call.arguments)) : undefined;
+	if (skill !== undefined) return skill;
 	if (writes && ![options.folder, ...options.allowedRoots].some((root) => within(path, root))) {
 		return `${path} is outside this agent's folder and allowed roots.`;
 	}

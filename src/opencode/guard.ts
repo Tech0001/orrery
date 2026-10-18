@@ -30,11 +30,13 @@
  * of its own. An empty path is that folder, as OpenCode resolves it.
  * OpenCode's own login store (its database, which holds provider keys and sign-ins, and the auth.json it had before) is
  * kept as Claude Code's login is in Claude Code's gate.
- * OpenCode's config and code (a .opencode folder and opencode.json(c) in any folder, the skills of .claude and .agents,
- * OpenCode's own config, cache, state and database: src/agent/guard-rules.ts openCodeLoads, with OpenCode's source for
- * each) are kept by the rules every gate shares: a write to one (a write, an edit, a patch target, a path an MCP or
- * plugin tool may write, through a link, in any case) is refused, and so is shell text naming one; reading them is not.
- * OpenCode's Plan folder (~/.opencode/plan, below) is no config: its plan files may be written.
+ * OpenCode's config and code (a .opencode folder and opencode.json(c) in any folder, OpenCode's own config, cache, state
+ * and database: src/agent/guard-rules.ts openCodeLoads, with OpenCode's source for each) are kept by the rules every gate
+ * shares: a write to one (a write, an edit, a patch target, a path an MCP or plugin tool may write, through a link, in
+ * any case) is refused, and so is shell text naming one; reading them is not. OpenCode's Plan folder (~/.opencode/plan,
+ * below) is no config: its plan files may be written. The skills of .claude and .agents may be written, but never with
+ * front matter OpenCode runs as code (---js, ---javascript: guard-rules.ts openCodeSkillRefusal): a write, edit or patch
+ * is judged by the text it puts there; the permission layer, which sees paths only, leaves that to the tool hook.
  * The guard is fail-closed: an input it cannot read, an input over 1 MB, a command line over 64 KB and a call it cannot
  * judge within its time are refused (OpenCode has no time limit on a hook: a hook that never answers holds the call).
  * Limits, beyond the shell-text limits every gate has: a plugin of the person's own that changes a call's input after
@@ -49,7 +51,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { agentViews, movedAgentDirCredentials, ompCredentials, openCodeOf, realTarget } from "../agent/guard-paths.ts";
-import { inAnyReading, OPENCODE_COMMAND, openCodeNamed, type OpenCodeRule, openCodeRule } from "../agent/guard-rules.ts";
+import { inAnyReading, NEW_TEXT, type NewText, OPENCODE_COMMAND, openCodeNamed, type OpenCodeRule, openCodeRule, patchNewText, SKILL_COMMAND, skillCodeNamed } from "../agent/guard-rules.ts";
 import { workArea } from "../agent/pick.ts";
 import { ownFolder } from "../agent/private-file.ts";
 import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from "../claude/guard.ts";
@@ -372,7 +374,9 @@ class Judge {
 
 	/** OpenCode's login, or its config and code (guard-rules.ts openCodeNamed), named in text a shell runs. */
 	named(command: string): string | undefined {
-		return loginNamed(command) ? LOGIN : openCodeNamed(command, openCodeOf(this.#options, this.#options.home ?? homedir())) ? OPENCODE_COMMAND : undefined;
+		if (loginNamed(command)) return LOGIN;
+		if (openCodeNamed(command, openCodeOf(this.#options, this.#options.home ?? homedir()))) return OPENCODE_COMMAND;
+		return skillCodeNamed(command) ? SKILL_COMMAND : undefined;
 	}
 
 	/** Where OpenCode's tools place `raw` (or `place` does), and where that lands. */
@@ -382,11 +386,14 @@ class Judge {
 		return [placed, realTarget(placed)];
 	}
 
-	/** A path the call opens as `use`, placed as OpenCode places it; OpenCode's login by its path too, and a write of its config. */
-	path(use: "read" | "write", given: string, place?: (raw: string, cwd: string) => string): string | undefined {
+	/**
+	 * A path the call opens as `use`, placed as OpenCode places it; OpenCode's login by its path too. A write's `written`:
+	 * what it puts in the file, for the rule on a skill's front matter (guard-rules.ts NewText; undefined: unseen).
+	 */
+	path(use: "read" | "write", given: string, place?: (raw: string, cwd: string) => string, written?: NewText): string | undefined {
 		// An empty path is the session's folder to OpenCode (it resolves it from there); Claude Code's guard skips it.
 		const raw = given === "" ? "." : given;
-		const reason = this.claude(use === "write" ? "Write" : "Read", { file_path: raw }, place);
+		const reason = this.claude(use === "write" ? "Write" : "Read", use === "write" ? { file_path: raw, [NEW_TEXT]: written } : { file_path: raw }, place);
 		if (reason !== undefined) return reason;
 		const logins = (this.#options.logins ?? []).flatMap((login) => [login, realTarget(login)]).map((login) => login.toLowerCase());
 		const where = this.#placed(raw, place).map((path) => path.toLowerCase());
@@ -395,10 +402,14 @@ class Judge {
 		return where.some(login) ? LOGIN_FILE(raw) : undefined;
 	}
 
-	/** Each patch target, a write, judged once (a patch may name a file in many hunks, and headerTargets names each again). */
-	writes(targets: readonly string[]): string | undefined {
+	/**
+	 * Each patch target, a write, judged once (a patch may name a file in many hunks, and headerTargets names each again),
+	 * with what the patch text `patch` puts in it (guard-rules.ts patchNewText).
+	 */
+	writes(targets: readonly string[], patch: string): string | undefined {
+		const written = patchNewText(patch);
 		for (const target of new Set(targets)) {
-			const reason = this.path("write", target);
+			const reason = this.path("write", target, undefined, written(target));
 			if (reason !== undefined) return reason;
 		}
 		return undefined;
@@ -449,7 +460,7 @@ class Judge {
 			}
 			if (text.includes("*** ")) {
 				const targets = headerTargets(text);
-				const patch = targets.length > 0 ? this.writes(targets) : undefined;
+				const patch = targets.length > 0 ? this.writes(targets, text) : undefined;
 				if (patch !== undefined) return patch;
 			}
 		}
@@ -521,15 +532,16 @@ function byTool(tool: string, text: (key: string) => string | undefined, judge: 
 		case "read":
 			return judge.read(text("path") as string);
 		case "write":
+			return judge.path("write", text("path") as string, undefined, { whole: text("content") as string });
 		case "edit":
-			return judge.path("write", text("path") as string);
+			return judge.path("write", text("path") as string, undefined, { edits: [{ old: text("oldString") as string, new: text("newString") as string }] });
 		case "patch": {
 			const patch = text("patchText") as string;
 			if (patch === "") return undefined;
 			if (patch.length > CHECK_MAX) return "this patch is too long to check (over 64 KB); nothing was changed.";
 			const read = readPatch(patch);
 			if ("unreadable" in read) return PATCH_UNREADABLE(read.unreadable);
-			return judge.writes([...read.targets, ...headerTargets(patch)]);
+			return judge.writes([...read.targets, ...headerTargets(patch)], patch);
 		}
 		case "glob": {
 			const root = searchRoot(text("path"), true);
@@ -572,7 +584,8 @@ export function openCodePermission(action: string, resources: readonly unknown[]
 	const literal = (raw: string, cwd: string) => resolve(cwd, raw);
 	for (const resource of resources) {
 		if (typeof resource !== "string") return "Orrery could not read what this tool asks leave for; nothing was run.";
-		const reason = judge.path(action === "read" ? "read" : "write", resource, literal);
+		// What an edit puts in a skill was judged by the tool hook (this layer is asked for paths only).
+		const reason = judge.path(action === "read" ? "read" : "write", resource, literal, { parts: [] });
 		if (reason !== undefined) return reason;
 	}
 	return undefined;

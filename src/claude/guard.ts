@@ -27,7 +27,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { guardToolCall, openCodeOf, type PathGuardOptions, realTarget } from "../agent/guard-paths.ts";
-import { OPENCODE_READ_ONLY, openCodeLoads } from "../agent/guard-rules.ts";
+import { NEW_TEXT, type NewText, OPENCODE_READ_ONLY, openCodeLoads, openCodeSkillPath, SKILL_UNSEEN } from "../agent/guard-rules.ts";
 import { ownFolder } from "../agent/private-file.ts";
 
 /** Claude Code's tool names as pi's guard knows them. */
@@ -262,9 +262,13 @@ export function claudeGuard(toolName: string, input: Readonly<Record<string, unk
 		...found.paths.map((path) => [path, mode] as const),
 		...found.destinations.map((path) => [path, "write"] as const),
 	]);
+	// What a write puts in its file, for the rule on a skill's front matter (guard-rules.ts openCodeSkillRefusal); a
+	// destination's (a copy's or a move's) is the file it takes, which the guard can't see.
+	const written = newTextOf(toolName, as, input);
+	const destinations = new Set(found.destinations);
 	for (const [path, use] of how) {
 		if (performance.now() >= deadline) return "this call names more paths than the guard can check in time; nothing was run.";
-		const reason = judgeBounded(use, { path }, guard);
+		const reason = judgeBounded(use, use === "read" ? { path } : { path, [NEW_TEXT]: destinations.has(path) ? undefined : written }, guard);
 		if (reason !== undefined) return reason;
 	}
 	// A tool Orrery doesn't know, named neither for writing nor only for reading, may write what it names, under any key:
@@ -277,10 +281,41 @@ export function claudeGuard(toolName: string, input: Readonly<Record<string, unk
 			if (performance.now() >= deadline) return "this call names more paths than the guard can check in time; nothing was run.";
 			const resolved = guard.resolvePath(text, guard.cwd, home);
 			if (resolved.length > PATH_MAX) continue;
-			if (openCodeLoads(resolved, openCode) || openCodeLoads(realTarget(resolved), openCode)) return OPENCODE_READ_ONLY(text);
+			const real = realTarget(resolved);
+			if (openCodeLoads(resolved, openCode) || openCodeLoads(real, openCode)) return OPENCODE_READ_ONLY(text);
+			if (openCodeSkillPath(resolved) || openCodeSkillPath(real)) return SKILL_UNSEEN(text);
 		}
 	}
 	return undefined;
+}
+
+/**
+ * What a write puts in its file, as far as the call shows (guard-rules.ts NewText): a gate's own (NEW_TEXT, Codex's and
+ * OpenCode's patches), Write's content, Edit's and MultiEdit's replacements, a notebook cell's source, or the text a
+ * tool named for writing carries; undefined when it shows none.
+ */
+function newTextOf(toolName: string, as: string | undefined, input: Readonly<Record<string, unknown>>): NewText | undefined {
+	if (NEW_TEXT in input) return (input as { readonly [NEW_TEXT]?: NewText })[NEW_TEXT];
+	const text = (value: unknown) => (typeof value === "string" ? value : undefined);
+	if (toolName === "Write") {
+		const content = text(input.content);
+		return content === undefined ? undefined : { whole: content };
+	}
+	if (toolName === "Edit") {
+		const [old, now] = [text(input.old_string), text(input.new_string)];
+		return now === undefined ? undefined : { edits: [{ old: old ?? "", new: now }] };
+	}
+	if (toolName === "MultiEdit") {
+		const edits = Array.isArray(input.edits) ? (input.edits as { old_string?: unknown; new_string?: unknown }[]) : [];
+		return edits.length > 0 && edits.every((edit) => typeof edit?.new_string === "string") ? { edits: edits.map((edit) => ({ old: text(edit.old_string) ?? "", new: edit.new_string as string })) } : undefined;
+	}
+	if (toolName === "NotebookEdit") {
+		const source = text(input.new_source);
+		return source === undefined ? undefined : { parts: [source] };
+	}
+	if (as !== undefined) return undefined;
+	const parts = Object.entries(input).flatMap(([key, value]) => (CONTENT_KEY.test(key) && key !== "old_string" && typeof value === "string" ? [value] : []));
+	return parts.length === 0 ? undefined : { parts };
 }
 
 /** A tool that only reads, by the verb in its name (no download among them): it may name OpenCode's config to read it. */

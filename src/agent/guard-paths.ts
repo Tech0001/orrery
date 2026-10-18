@@ -11,9 +11,10 @@
  * secret name is not judged against a search's root, and neither is judged in an OMP edit's text, only in its targets
  * (specs 2026-10-15-guard-protect, 2026-10-16-guard-presets). Shell text may not run Orrery's hook plumbing (codex-hook,
  * claude-hook, orrery holder; guard-rules.ts runsPlumbing), which only Orrery's own hooks run. OpenCode's config and code
- * (a .opencode folder and opencode.json(c) in any folder, .claude and .agents skills, OpenCode's own config, cache,
- * state and database: guard-rules.ts openCodeLoads), which OpenCode loads and runs, are read-only as Orrery's config is:
- * no tool writes them and shell text may not name them. Known limits:
+ * (a .opencode folder and opencode.json(c) in any folder, OpenCode's own config, cache, state and database:
+ * guard-rules.ts openCodeLoads), which OpenCode loads and runs, are read-only as Orrery's config is: no tool writes them
+ * and shell text may not name them. The skills of .claude and .agents, which OpenCode loads too, may be written but not
+ * given front matter OpenCode runs as code (guard-rules.ts openCodeSkillRefusal). Known limits:
  * - A hard link is another name for the same file, and the guard does not count links: one to another agent's view (the
  *   copy goes stale once Orrery replaces the view on its next write), to the config file in use, or to a file of the
  *   installed program (app/), made before the guard ran or by a spelling it cannot see, reads or writes the file
@@ -44,7 +45,7 @@
  *   (grep) of an agent's folder is not, since the guard cannot know which folders hold a view.
  */
 
-import { lstatSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,8 +62,12 @@ import {
 	type GuardOptions,
 	HOME_SECRETS,
 	inOrreryHome,
+	NEW_TEXT,
+	type NewText,
 	OPENCODE_READ_ONLY,
 	openCodeLoads,
+	openCodeSkillRefusal,
+	piNewText,
 	type OpenCodeRule,
 	openCodeRule,
 	orreryAppNamed,
@@ -552,6 +557,9 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 	// And OpenCode's config and code, which OpenCode loads and runs (guard-rules.ts openCodeLoads).
 	const openCode = openCodeOf(options, home);
 	if (writes && (openCodeLoads(resolved, openCode) || openCodeLoads(target, openCode))) return OPENCODE_READ_ONLY(raw);
+	// A skill OpenCode loads may be written, but not given front matter it runs as code (guard-rules.ts).
+	const skill = writes ? openCodeSkillRefusal(resolved, target, (input as { readonly [NEW_TEXT]?: NewText })[NEW_TEXT] ?? piNewText(toolName, input), readSmall) : undefined;
+	if (skill !== undefined) return skill;
 	// The credential locations themselves, symlinks followed (a ~/.ssh linked from a dotfiles folder, say). Compared
 	// ignoring case: on a case-insensitive file system (macOS) ~/.SSH and /USERS are the same folders.
 	const fold = (path: string) => path.toLowerCase();
@@ -594,6 +602,15 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 		config,
 		protect,
 	);
+}
+
+/** A file's text, for judging an edit on what it would leave (at most 1 MB); undefined when it can't be read. */
+function readSmall(file: string): string | undefined {
+	try {
+		return statSync(file).size > 1024 * 1024 ? undefined : readFileSync(file, "utf8");
+	} catch {
+		return undefined;
+	}
 }
 
 /** OpenCode's config and code for `options` (GuardOptions.openCode), roots reached through links counted too. */
@@ -672,12 +689,17 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 		const read = readEditText(text);
 		if (read.unreadable) return EDIT_UNREADABLE;
 		const renames = Array.isArray(input.edits) ? strings(input.edits.map((entry: unknown) => (entry as { rename?: unknown } | null)?.rename)) : [];
+		// What the edit puts in its files, judged strictly (a skill's front matter, guard-rules.ts); a rename's is the file it
+		// moves, which the guard can't see.
+		const written = { [NEW_TEXT]: { parts: [text] } };
 		// OMP's own path and paths (its reading of the text) count as much as the guard's.
-		const reason = firstRefusal([...strings(input.paths), ...strings([input._path]), ...read.forms, ...renames], (path) => target("edit", path));
+		const reason = firstRefusal([...strings(input.paths), ...strings([input._path]), ...read.forms], (path) => target("edit", path, written)) ?? firstRefusal(renames, (path) => target("edit", path));
 		if (reason !== undefined || typeof input.path !== "string" || input.path === "") return reason;
-		return target("edit", input.path, input);
+		return target("edit", input.path, { ...input, ...written });
 	}
 	if (toolName === "write" && typeof input.path === "string" && input.path !== "") return target("write", input.path, input, true);
+	// ast_edit rewrites what its patterns match, in files its globs reach: a skill among them is one whose text the guard
+	// can't see (guard-rules.ts openCodeSkillRefusal).
 	if (toolName === "ast_edit") return firstRefusal(strings(input.paths).flatMap(pathParts), (part) => glob("edit", part));
 	const raw = typeof input.path === "string" && input.path.trim() !== "" ? input.path : undefined;
 	// Judged as pi's grep is: a root at home or above, or holding credentials, is refused. glob lists names only, so it is

@@ -43,7 +43,7 @@ import { homedir } from "node:os";
 import { isAbsolute, normalize, resolve } from "node:path";
 import type { HarnessConfig } from "../agent/config.ts";
 import { agentViews, movedAgentDirCredentials, ompCredentials, RUST_SPACE } from "../agent/guard-paths.ts";
-import { inAnyReading, shellWord } from "../agent/guard-rules.ts";
+import { inAnyReading, NEW_TEXT, patchNewText, shellWord } from "../agent/guard-rules.ts";
 import { workArea } from "../agent/pick.ts";
 import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from "../claude/guard.ts";
 import { TOOL_INPUT_MAX } from "../claude/hooks.ts";
@@ -193,15 +193,19 @@ const CALL_UNREADABLE = "Orrery could not read this call; nothing was run.";
 const PATCH_UNREADABLE = (why: string) => `Orrery could not read this patch (${why}); nothing was changed.`;
 const SHELL_PATCH_UNREADABLE = (why: string) => `This command runs apply_patch with a patch Orrery could not read (${why}); nothing was run. Use the apply_patch tool.`;
 
-/** Each of `targets` judged as a write, from each of `bases`, within the guard's time; the first refusal. */
-function judgeWrites(targets: readonly string[], bases: readonly string[], options: ClaudeGuardOptions): string | undefined {
+/**
+ * Each of `targets` judged as a write, from each of `bases`, within the guard's time; the first refusal. `patch`: the
+ * patch text they come from, for what each puts in its file (guard-rules.ts patchNewText).
+ */
+function judgeWrites(targets: readonly string[], bases: readonly string[], options: ClaudeGuardOptions, patch: string): string | undefined {
+	const written = patchNewText(patch);
 	const deadline = performance.now() + (options.judgeMs ?? JUDGE_MS);
 	if (targets.length > 0 && deadline <= performance.now()) return "this patch names more files than the guard can check in time; nothing was changed.";
 	for (const target of new Set(targets)) {
 		for (const cwd of isAbsolute(target) ? [options.cwd] : bases) {
 			const left = deadline - performance.now();
 			if (left <= 0) return "this patch names more files than the guard can check in time; nothing was changed.";
-			const reason = claudeGuard("Write", { file_path: target }, { ...options, cwd, resolvePath: (raw, base) => codexToolPath(raw, base), judgeMs: left });
+			const reason = claudeGuard("Write", { file_path: target, [NEW_TEXT]: written(target) }, { ...options, cwd, resolvePath: (raw, base) => codexToolPath(raw, base), judgeMs: left });
 			if (reason !== undefined) return reason;
 		}
 	}
@@ -221,7 +225,7 @@ function shellCommandPatch(command: string, options: ClaudeGuardOptions): string
 	if (carried.expands && read.targets.some((target) => /[$`\\]/.test(target))) return SHELL_PATCH_UNREADABLE("a path holds what the shell would change");
 	const bases = patchBases(carried.cd, options.cwd, options.home ?? homedir());
 	if (bases === undefined) return SHELL_PATCH_UNREADABLE("its cd goes where the guard cannot tell");
-	return judgeWrites(read.targets, bases, options) ?? "";
+	return judgeWrites(read.targets, bases, options, carried.patch) ?? "";
 }
 
 /** A line that opens or belongs to a patch: "*** Begin Patch" at its end, or a hunk header (trimmed) at its start. */
@@ -246,7 +250,7 @@ function patchText(text: string, options: ClaudeGuardOptions): string | undefine
 			return PATCH_UNREADABLE("a hunk header stands outside *** Begin Patch and *** End Patch");
 		}
 	}
-	return judgeWrites(targets, [options.cwd], options);
+	return judgeWrites(targets, [options.cwd], options, text);
 }
 
 /**
@@ -289,7 +293,7 @@ function byContent(input: Readonly<Record<string, unknown>>, timed: () => Claude
 		if (list.length === 2 && /^(?:apply_patch|applypatch)$/i.test(list[0] as string)) {
 			const read = readPatch(list[1] as string);
 			if ("unreadable" in read) return PATCH_UNREADABLE(read.unreadable);
-			const reason = judgeWrites(read.targets, [timed().cwd], timed());
+			const reason = judgeWrites(read.targets, [timed().cwd], timed(), list[1] as string);
 			if (reason !== undefined) return reason;
 			for (const item of list) judged.add(item);
 		}
@@ -328,7 +332,7 @@ export function codexGuard(toolName: string, input: unknown, options: ClaudeGuar
 		if (typeof args.command !== "string") return PATCH_UNREADABLE("it is no text");
 		const read = readPatch(args.command);
 		if ("unreadable" in read) return PATCH_UNREADABLE(read.unreadable);
-		return judgeWrites(read.targets, [options.cwd], timed()) ?? byContent(args, timed, args.command);
+		return judgeWrites(read.targets, [options.cwd], timed(), args.command) ?? byContent(args, timed, args.command);
 	}
 	const reason = toolName === "view_image" ? claudeGuard("view_image", args, { ...timed(), resolvePath: (raw, cwd) => codexToolPath(raw, cwd) }) : claudeGuard(toolName, args, timed());
 	return reason ?? byContent(args, timed);

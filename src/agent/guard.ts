@@ -33,9 +33,12 @@ import {
 	foldName,
 	type GuardOptions,
 	inOrreryHome,
+	type NewText,
 	OPENCODE_READ_ONLY,
 	openCodeLoads,
 	openCodeRule,
+	openCodeSkillRefusal,
+	piNewText,
 	orreryAppNamed,
 	orreryConfigNamed,
 	PROTECTED_FILE,
@@ -108,13 +111,17 @@ async function realPath(env: ExecutionEnv, absolute: string, context: Context): 
 	}
 }
 
-/** The authoritative check: resolve like pi's tools, follow symlinks, then apply the rules. */
+/**
+ * The authoritative check: resolve like pi's tools, follow symlinks, then apply the rules. `written`: what a write puts
+ * in the file (guard-rules.ts NewText), for the rule on a skill's front matter; undefined: unseen.
+ */
 export async function checkResolvedPath(
 	env: ExecutionEnv,
 	path: string,
 	mode: "read" | "write",
 	options: DurableGuardOptions,
 	context: Context,
+	written?: NewText,
 ): Promise<string | undefined> {
 	const resolved = await env.absolutePath(toolPath(path), context);
 	if (!resolved.ok) return undefined; // The tool itself will fail on this path.
@@ -151,17 +158,22 @@ export async function checkResolvedPath(
 		// OpenCode's config and code (guard-rules.ts openCodeLoads), where the tool writes and where that really is.
 		const openCode = options.openCode ?? openCodeRule(process.env, options.home ?? homedir());
 		if (openCodeLoads(target, openCode) || openCodeLoads(real, openCode)) return OPENCODE_READ_ONLY(real);
+		// A skill OpenCode loads: not with front matter it runs as code. An edit is judged on its new text (the file may
+		// be on another machine: it is not read here).
+		const skill = openCodeSkillRefusal(target, real, written);
+		if (skill !== undefined) return skill;
 		const roots = await Promise.all([options.folder, ...options.allowedRoots].map((root) => realPath(env, root, context)));
 		if (!roots.some((root) => within(real, root))) return `${real} is outside this agent's folder and allowed roots.`;
 	}
 	return undefined;
 }
 
-function guarded<T extends ToolRegistration>(tool: T, mode: "read" | "write", options: DurableGuardOptions): T {
+function guarded<T extends ToolRegistration>(tool: T, kind: "read" | "write" | "edit", options: DurableGuardOptions): T {
+	const mode = kind === "read" ? "read" : "write";
 	const execute: T["execute"] = async (args, api, context) => {
 		const path = (args as { path?: unknown }).path;
 		if (typeof path === "string" && api.env !== undefined) {
-			const reason = await checkResolvedPath(api.env, path, mode, options, context);
+			const reason = await checkResolvedPath(api.env, path, mode, options, context, kind === "read" ? undefined : piNewText(kind, args as Record<string, unknown>));
 			if (reason !== undefined) throw new Error(`Blocked: ${reason}`);
 		}
 		return tool.execute(args, api, context);
@@ -182,7 +194,7 @@ export function guardExtension(options: DurableGuardOptions) {
 		],
 		wraps: [
 			wrapTool(createWriteTool() as ToolRegistration, (tool) => guarded(tool, "write", options)),
-			wrapTool(createEditTool() as ToolRegistration, (tool) => guarded(tool, "write", options)),
+			wrapTool(createEditTool() as ToolRegistration, (tool) => guarded(tool, "edit", options)),
 			wrapTool(createReadTool() as ToolRegistration, (tool) => guarded(tool, "read", options)),
 		],
 	});
