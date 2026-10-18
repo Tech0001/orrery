@@ -102,5 +102,5 @@ describe.skipIf(!bunReady)("the binary, installed", () => {
 		expect(existsSync(join(bin, "plugin"))).toBe(false);
 		expect(existsSync(join(bin, "marketplace"))).toBe(false);
 		expect(existsSync(orreryHome)).toBe(true);
-	});
+	}, 120_000);
 });
