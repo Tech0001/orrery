@@ -1531,7 +1531,7 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 		expect(codexGuard("apply_patch", { command: `*** Begin Patch\n*** Delete File: ${skill}\n*** End Patch` }, t.options)).toBeUndefined();
 	});
 
-	it("refuses shell text naming a skills folder, whatever the command, in every gate, by every spelling; reading goes through the file tools", () => {
+	it("refuses shell text naming a skills folder, whatever the command, in every gate, by every spelling; reading goes through the file tools (Codex's own shell aside, below)", () => {
 		const t = skillWorld();
 		const gates = (command: string) => [
 			guardToolCall("bash", { command }, t.options),
@@ -1539,7 +1539,6 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 			guardOmpToolCall("eval", { language: "sh", code: command }, t.options),
 			claudeGuard("Bash", { command }, t.options),
 			claudeGuard("mcp__shell__run", { command }, t.options),
-			codexGuard("Bash", { command }, t.options),
 			codexGuard("mcp__box__exec_command", { cmd: command }, t.options),
 			openCodeGuard("shell", { command }, t.options, "ses_a"),
 			openCodeGuard("execute", { code: command }, t.options, "ses_a"),
@@ -1575,11 +1574,119 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 		}
 		for (const command of ["cat notes.md", "ls .claude", "cat .claude/settings.json", "ls skills", "grep -r skills docs", "cat my.claude/skillsx"]) {
 			expect([command, gates(command)]).toEqual([command, gates(command).map(() => undefined)]);
+			expect([command, codexGuard("Bash", { command }, t.options)]).toEqual([command, undefined]);
 		}
 		// The file tools read them.
 		expect(guardToolCall("read", { path: join(t.atlas, ".claude", "skills", "s", "SKILL.md") }, t.options)).toBeUndefined();
 		expect(claudeGuard("Grep", { pattern: "name", path: join(t.atlas, ".agents", "skills") }, t.options)).toBeUndefined();
 		expect(openCodeGuard("glob", { pattern: "**/SKILL.md", path: ".claude/skills" }, t.options, "ses_a")).toBeUndefined();
+	});
+
+	it("lets Codex's own shell, which has no file tool, read skills by a strict grammar: one plain cat, head or tail (-n N), sed -n 'A,Bp', ls or wc, every reading the same, each file judged as a read", () => {
+		const t = skillWorld();
+		const s = (file: string) => join(t.atlas, ".agents", "skills", "s", file);
+		symlinkSync(join(t.home, "finance", "q3.csv"), s("fin.md"));
+		symlinkSync(join(t.atlas, ".env"), s("env.md"));
+		symlinkSync(join(t.home, "finance"), join(t.atlas, ".agents", "skills", "fin-folder"));
+		const codex = (command: string) => codexGuard("Bash", { command }, t.options);
+		const allowed = [
+			"cat .agents/skills/s/SKILL.md",
+			"cat .agents/skills/s/SKILL.md .claude/skills/s/SKILL.md",
+			"head .claude/skills/s/SKILL.md",
+			"head -n 40 .claude/skills/s/SKILL.md",
+			"tail -n 5 .agents/skills/s/lower.md",
+			"sed -n '1,200p' .agents/skills/s/SKILL.md",
+			`sed -n 1,200p "${s("SKILL.md")}"`,
+			"cat '.claude/skills/s/SKILL.md'",
+			'cat ".agents"/skills/s/SKILL.md',
+			"ls .agents/skills",
+			"ls .claude/skills/s",
+			"ls ~/.claude/skills",
+			"ls .Claude/Skills",
+			"wc .claude/skills/s/SKILL.md",
+			"  cat\t.agents/skills/s/SKILL.md  ",
+		];
+		for (const command of allowed) expect([command, codex(command)]).toEqual([command, undefined]);
+		const refused = [
+			// More than one command, a pipe, a redirection, a background job, a subshell, a comment,
+			"cat .agents/skills/s/SKILL.md | head",
+			"cat .agents/skills/s/SKILL.md > x.md",
+			"cat x.md >> .agents/skills/s/SKILL.md",
+			"cat .agents/skills/s/SKILL.md 2>/dev/null",
+			"cat .agents/skills/s/SKILL.md; rm -rf .agents/skills",
+			"cat .agents/skills/s/SKILL.md && echo",
+			"cat .agents/skills/s/SKILL.md &",
+			"cat .agents/skills/s/SKILL.md\nrm x.md",
+			"(cat .agents/skills/s/SKILL.md)",
+			"cat .agents/skills/s/SKILL.md # x",
+			// an option beyond the grammar's, or a form it doesn't take,
+			"cat -n .agents/skills/s/SKILL.md",
+			"cat -- .agents/skills/s/SKILL.md",
+			"cat - .agents/skills/s/SKILL.md",
+			"head -c 5 .agents/skills/s/SKILL.md",
+			"head -n5 .agents/skills/s/SKILL.md",
+			"head -n -5 .agents/skills/s/SKILL.md",
+			"head -n 5 .agents/skills/s/SKILL.md .claude/skills/s/SKILL.md",
+			"tail -f .agents/skills/s/SKILL.md",
+			"tail -n +5 .agents/skills/s/SKILL.md",
+			"sed -n '1,200p;w x.md' .agents/skills/s/SKILL.md",
+			"sed -n '1,$p' .agents/skills/s/SKILL.md",
+			"sed -n 1,200p .agents/skills/s/SKILL.md x.md",
+			"sed -n '1,200p' -i .agents/skills/s/SKILL.md",
+			"sed 1,200p .agents/skills/s/SKILL.md",
+			"sed -i 's/a/b/' .agents/skills/s/SKILL.md",
+			"ls -la .agents/skills",
+			"ls .agents/skills .claude/skills",
+			"wc -l .agents/skills/s/SKILL.md",
+			// another program, or one with something before it,
+			"cp .agents/skills/s/SKILL.md x.md",
+			"grep -r name .agents/skills",
+			"less .agents/skills/s/SKILL.md",
+			"CAT .agents/skills/s/SKILL.md",
+			"X=1 cat .agents/skills/s/SKILL.md",
+			"exec cat .agents/skills/s/SKILL.md",
+			// and anything the shell would change: variables, substitution, globs, braces, escapes, ~user, odd quoting.
+			"cat $HOME/.agents/skills/s/SKILL.md",
+			"cat ${HOME}/.agents/skills/s/SKILL.md",
+			'cat "$(echo .agents/skills/s/SKILL.md)"',
+			"cat `echo .agents/skills/s/SKILL.md`",
+			"cat .agents/skills/*/SKILL.md",
+			"cat .agents/skills/s/SKILL.?d",
+			"cat .agents/skills/s/[S]KILL.md",
+			"cat .agents/skills/{s,t}/SKILL.md",
+			"cat \\.agents/skills/s/SKILL.md",
+			"cat $'.agents'/skills/s/SKILL.md",
+			"cat ~root/.agents/skills/s/SKILL.md",
+			"cat '.agents/skills/s/SKILL.md",
+			"cat '.agents/skills/my skill/SKILL.md'",
+		];
+		for (const command of refused) expect([command, codex(command)]).toEqual([command, SKILL_SHELL]);
+		// Every other rule holds for what the grammar lets through: each file is a read, links followed.
+		expect(codex("cat .agents/skills/s/SKILL.md ~/.ssh/id_ed25519")).toMatch(/sensitive/);
+		expect(codex("cat .agents/skills/s/SKILL.md ~/.npmrc")).toMatch(/sensitive/);
+		expect(codex("cat .agents/skills/s/SKILL.md .env")).toMatch(/sensitive/);
+		expect(codex("cat .agents/skills/s/env.md")).toMatch(/sensitive/);
+		expect(codex("cat .agents/skills/s/fin.md")).toMatch(/protected by \[guard\] protect/);
+		expect(codex("ls .agents/skills/fin-folder")).toMatch(/protected by \[guard\] protect/);
+		expect(codex("cat .agents/skills/s/SKILL.md secrets.yml")).toMatch(/protected by \[guard\] protect/);
+		expect(codex("cat .agents/skills/s/SKILL.md opencode.json")).toBe(OPENCODE_COMMAND);
+		const birch = join(t.root, "birch-view.md");
+		writeFileSync(birch, "Birch's memory");
+		symlinkSync(birch, s("view.md"));
+		expect(codexGuard("Bash", { command: "cat .agents/skills/s/view.md" }, { ...t.options, foreignViews: [birch] })).toBeDefined();
+		expect(codexGuard("Bash", { command: "cat .agents/skills/s/SKILL.md" }, { ...t.options, foreignViews: [birch] })).toBeUndefined();
+		// Codex's own shell only: an MCP shell in Codex, and every other gate, still refuse the same read.
+		for (const verdict of [
+			codexGuard("mcp__box__exec_command", { cmd: "cat .agents/skills/s/SKILL.md" }, t.options),
+			codexGuard("mcp__box__run", { input: "cat .agents/skills/s/SKILL.md" }, t.options),
+			guardToolCall("bash", { command: "cat .agents/skills/s/SKILL.md" }, t.options),
+			claudeGuard("Bash", { command: "cat .agents/skills/s/SKILL.md" }, t.options),
+			openCodeGuard("shell", { command: "cat .agents/skills/s/SKILL.md" }, t.options, "ses_a"),
+		]) {
+			expect(verdict).toBe(SKILL_SHELL);
+		}
+		// The flag alone lets nothing through: shell text that isn't a plain read stays refused with it set.
+		expect(guardToolCall("bash", { command: "cp x.md .agents/skills/s/SKILL.md" }, { ...t.options, shellReadsSkills: true })).toBe(SKILL_SHELL);
 	});
 
 	it("reaches the rules from every write-capable tool of pi and OMP, as a write: OMP's write (a header or selector writes part of a file), every edit form, ast_edit's folders and globs, lsp's renames and edits, eval", () => {

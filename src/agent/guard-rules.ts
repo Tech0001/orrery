@@ -36,6 +36,12 @@ export interface GuardOptions {
 	 * process's environment and the guard's home.
 	 */
 	readonly openCode?: OpenCodeRule;
+	/**
+	 * Codex's own shell only (src/codex/guard.ts), which has no file tool to read with: shell text that is a plain read
+	 * of skill files (skillShellRead) is not refused for naming a skills folder. Every other rule still applies, and the
+	 * Codex gate judges each file it reads as a read.
+	 */
+	readonly shellReadsSkills?: boolean;
 }
 
 const SENSITIVE = [
@@ -911,6 +917,97 @@ export function skillsNamed(text: string): boolean {
 	return inAnyReading(text, (form) => SKILLS_NAMED.test(form));
 }
 
+// ---- A plain read of skill files, for Codex's own shell ----
+//
+// Codex reads files only through its shell, so refusing every command that names a skills folder would leave it no way
+// to read its own skills. Its shell may run one plain read instead, a grammar rather than a list of commands with open
+// options: exactly `cat <file>...`, `head [-n N] <file>`, `tail [-n N] <file>`, `sed -n '<A>,<B>p' <file>` (the range
+// Codex reads files with), `ls <dir>` or `wc <file>...`. One simple command: no other option, no redirection, pipe, `;`,
+// `&&`, `&`, newline, comment, substitution, variable, glob, brace, escape or `~user`; a word may be quoted, its text
+// only plain path characters. Every reading of the text (quotes, $'…', braces, backslashes, paths collapsed) must be
+// that same read, or it is refused.
+
+/** What a plain read of skill files reads (skillShellRead): its program, and each file (a folder, for ls) as the shell hands it over. */
+export interface SkillShellRead {
+	readonly program: "cat" | "head" | "tail" | "sed" | "ls" | "wc";
+	readonly paths: readonly string[];
+}
+
+/** A character a plain word may hold, quoted or not. */
+const PLAIN_CHAR = /^[A-Za-z0-9._/@+,=:%-]$/;
+
+/**
+ * The words of a text that is one plain command (above), as the shell hands them over: quotes gone, in their own case;
+ * undefined when anything in it is more than that. A word starts with "~" only as "~" or "~/…" (home), unquoted.
+ */
+function plainWords(text: string): string[] | undefined {
+	const words: string[] = [];
+	let word: string | undefined;
+	for (let at = 0; at < text.length; at++) {
+		const char = text.charAt(at);
+		if (char === " " || char === "\t") {
+			if (word !== undefined) words.push(word);
+			word = undefined;
+		} else if (char === "'" || char === '"') {
+			const end = text.indexOf(char, at + 1);
+			if (end === -1) return undefined;
+			const quoted = text.slice(at + 1, end);
+			if (![...quoted].every((inner) => PLAIN_CHAR.test(inner))) return undefined;
+			word = (word ?? "") + quoted;
+			at = end;
+		} else if (char === "~" && word === undefined && (at + 1 === text.length || [" ", "\t", "/"].includes(text.charAt(at + 1)))) {
+			word = "~";
+		} else if (PLAIN_CHAR.test(char)) {
+			word = (word ?? "") + char;
+		} else {
+			return undefined;
+		}
+	}
+	if (word !== undefined) words.push(word);
+	return words;
+}
+
+/** The plain read `words` make (above), or undefined. */
+function plainRead(words: readonly string[]): SkillShellRead | undefined {
+	const [program, ...rest] = words;
+	const file = (word: string | undefined): word is string => word !== undefined && word !== "" && !word.startsWith("-");
+	const count = /^[0-9]{1,9}$/;
+	switch (program) {
+		case "cat":
+		case "wc":
+			return rest.length > 0 && rest.every(file) ? { program, paths: rest } : undefined;
+		case "head":
+		case "tail":
+			if (rest.length === 1 && file(rest[0])) return { program, paths: rest };
+			return rest.length === 3 && rest[0] === "-n" && count.test(rest[1] as string) && file(rest[2]) ? { program, paths: [rest[2]] } : undefined;
+		case "sed":
+			return rest.length === 3 && rest[0] === "-n" && /^[0-9]{1,9},[0-9]{1,9}p$/.test(rest[1] as string) && file(rest[2]) ? { program, paths: [rest[2]] } : undefined;
+		case "ls":
+			return rest.length === 1 && file(rest[0]) ? { program, paths: rest } : undefined;
+		default:
+			return undefined;
+	}
+}
+
+/** The longest text a plain read may be. */
+const PLAIN_READ_MAX = 4096;
+
+/**
+ * The plain read of files shell text is (above), when it is one in every reading of it; undefined otherwise. Its paths
+ * are as the shell hands them over (the text's own case, quotes gone).
+ */
+export function skillShellRead(text: string): SkillShellRead | undefined {
+	if (text.length > PLAIN_READ_MAX) return undefined;
+	const words = plainWords(text);
+	const read = words === undefined ? undefined : plainRead(words);
+	if (read === undefined) return undefined;
+	const fits = (form: string) => {
+		const inForm = plainWords(form);
+		return inForm !== undefined && plainRead(inForm) !== undefined;
+	};
+	return inAnyReading(text, (form) => !fits(form)) ? undefined : read;
+}
+
 /**
  * Whether a reading opens the agent view file it names, the name ending at `end`: made once per reading (`views(form)`),
  * then asked for each view file the reading names.
@@ -1023,7 +1120,7 @@ export function checkToolCall(
 		const inReading = (test: (form: string) => boolean) => reading.forms.some(test) || reading.pieces.some(test);
 		const own = [...openCode().own, ...(openCode().spelled ?? [])];
 		if (inReading((form) => OPENCODE_NAMED.test(form) || namesOpenCodeFolder(form, own))) return OPENCODE_COMMAND;
-		if (inReading((form) => SKILLS_NAMED.test(form))) return SKILL_SHELL;
+		if (inReading((form) => SKILLS_NAMED.test(form)) && !(options.shellReadsSkills === true && skillShellRead(command) !== undefined)) return SKILL_SHELL;
 	}
 	const raw = call.arguments.path;
 	if (typeof raw !== "string") return undefined;

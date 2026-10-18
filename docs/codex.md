@@ -175,10 +175,27 @@ its system config. OpenCode loads plugins, runs commands and takes permissions f
 it opens that folder. Skills in `.claude/skills` and `.agents/skills`, which OpenCode loads, may be written with
 `apply_patch`: a file it adds is judged by its text, and an update only when the skill can be read and neither it nor
 the lines the patch adds hold a line that opens front matter in a language other than YAML or JSON (`---js`, which
-OpenCode runs as code); a move into a skills folder is refused. Shell text that names OpenCode's config or a skills
-folder is refused, whatever the command. The cost is larger in Codex, which reads files through its shell: an agent in
-Codex can't read OpenCode's config files or a skill at all, and a `grep`, `ls`, `git add` or commit message that names
-one is refused too. You set up OpenCode for a project yourself. `AGENTS.md` stays writable.
+OpenCode runs as code); a move into a skills folder is refused. Shell text that names OpenCode's config is refused,
+whatever the command, and so is shell text that names a skills folder, with one exception: Codex reads files only
+through its shell, so its own shell (`exec_command`, not an MCP tool's) may run one plain read of skill files. The
+command must be exactly one of these:
+
+- `cat <file>...`
+- `head <file>` or `head -n <N> <file>`
+- `tail <file>` or `tail -n <N> <file>`
+- `sed -n '<A>,<B>p' <file>`
+- `ls <folder>`
+- `wc <file>...`
+
+`<N>`, `<A>` and `<B>` are numbers. It is one simple command, with no other option (`wc -l`, `head -c`, `tail -f`,
+`sed -i` and `ls -la` are refused), no redirection, pipe, `;`, `&&`, `&`, newline or comment, and no variable,
+substitution, glob, brace, backslash or `~user`. A word may be quoted, but only around plain path characters (letters,
+digits and `. _ / @ + , = : % -`), and every way the guard reads the command (quotes, `$'…'`, braces, backslashes, `..`)
+must give the same read. Each file is then judged as a read, links followed, so every other rule still holds: a
+credential, a `.env`, a protected file or another agent's view, or a skill that is a link to one, is refused, and so is
+a command that also names OpenCode's config. Anything else that names a skills folder is refused, a `grep`, `git add`
+or commit message among them, and an agent in Codex can't read OpenCode's config files by name. You set up OpenCode for
+a project yourself. `AGENTS.md` stays writable.
 
 ### Its limits in Codex
 

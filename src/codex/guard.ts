@@ -13,6 +13,8 @@
  *   "~" a name, not home; links followed by realTarget; names matched in any case); what a patch writes is never judged;
  *   a patch the guard cannot read is refused, and so is one for another environment;
  * - view_image reads its path, placed as Codex places it;
+ * - Codex's own shell (Bash), which is how Codex reads files: shell text that names a skills folder is refused, unless it
+ *   is one plain read of skill files (guard-rules.ts skillShellRead), whose every file is then judged as a read;
  * - every tool, Bash and MCP tools among them, by Claude Code's heuristics: every command line (command, cmd, script,
  *   shell, args, argv) and every path or file: URI it names. spawn_agent's message is words for the new agent, which
  *   runs its own tools through this hook; a file its input hands that agent (an image, a skill) is a read;
@@ -43,7 +45,7 @@ import { homedir } from "node:os";
 import { isAbsolute, normalize, resolve } from "node:path";
 import type { HarnessConfig } from "../agent/config.ts";
 import { agentViews, movedAgentDirCredentials, ompCredentials, openCodeCredentials, RUST_SPACE } from "../agent/guard-paths.ts";
-import { inAnyReading, NEW_TEXT, patchNewText, shellWord } from "../agent/guard-rules.ts";
+import { inAnyReading, NEW_TEXT, patchNewText, type SkillShellRead, shellWord, skillShellRead, skillsNamed } from "../agent/guard-rules.ts";
 import { workArea } from "../agent/pick.ts";
 import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from "../claude/guard.ts";
 import { TOOL_INPUT_MAX } from "../claude/hooks.ts";
@@ -317,6 +319,16 @@ function byContent(input: Readonly<Record<string, unknown>>, timed: () => Claude
 	return undefined;
 }
 
+/** Each file a plain read of skill files reads (guard-rules.ts skillShellRead) as a read, and a folder ls lists as a listing. */
+function judgeReads(read: SkillShellRead, timed: () => ClaudeGuardOptions): string | undefined {
+	for (const path of read.paths) {
+		if ((timed().judgeMs ?? 0) <= 0) return OUT_OF_TIME;
+		const reason = read.program === "ls" ? claudeGuard("LS", { path }, timed()) : claudeGuard("Read", { file_path: path }, timed());
+		if (reason !== undefined) return reason;
+	}
+	return undefined;
+}
+
 /**
  * Why a Codex tool call is refused, or undefined to let it through (module doc). Every check shares the call's time
  * (`judgeMs`, default 2 s): one that has none left refuses, so the hook answers before Codex's timeout lets the call
@@ -333,6 +345,12 @@ export function codexGuard(toolName: string, input: unknown, options: ClaudeGuar
 		const read = readPatch(args.command);
 		if ("unreadable" in read) return PATCH_UNREADABLE(read.unreadable);
 		return judgeWrites(read.targets, [options.cwd], timed(), args.command) ?? byContent(args, timed, args.command);
+	}
+	// Codex's own shell, which has no file tool to read with: a plain read of skill files passes the skills rule, every
+	// other rule still applies, and each file it reads is judged as a read (links followed). An MCP shell is not Codex's.
+	if (toolName === "Bash" && typeof args.command === "string" && skillsNamed(args.command)) {
+		const read = skillShellRead(args.command);
+		if (read !== undefined) return claudeGuard("Bash", args, { ...timed(), shellReadsSkills: true }) ?? judgeReads(read, timed) ?? byContent(args, timed);
 	}
 	const reason = toolName === "view_image" ? claudeGuard("view_image", args, { ...timed(), resolvePath: (raw, cwd) => codexToolPath(raw, cwd) }) : claudeGuard(toolName, args, timed());
 	return reason ?? byContent(args, timed);

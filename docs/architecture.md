@@ -366,9 +366,10 @@ and a language other than YAML or JSON, such as `---js`) is refused, as is any w
 cannot see (a move or copy into a skills folder, an unknown tool, an OMP edit, a notebook cell, an edit of a file that
 can't be read); shell text naming a skills folder is refused outright. The costs: an agent cannot set up OpenCode for a
 project, a shell command that only names those files (a `grep`, a commit message) is refused, and in Codex, which reads
-files through its shell, an agent cannot read them at all. OpenCode's own login store (its database, with its WAL
-and shared-memory files, and what `OPENCODE_DB` names) is a credential store like OMP's `agent.db`: every tool is
-refused it, reads included.
+files through its shell, an agent cannot read OpenCode's config at all (Codex's own shell may run one plain read of
+skill files, [Codex](codex.md) gives the grammar, each file judged as a read). OpenCode's own login store (its
+database, with its WAL and shared-memory files, and what `OPENCODE_DB` names) is a credential store like OMP's
+`agent.db`: every tool is refused it, reads included.
 
 This is a credential guard, not a sandbox.
 Shell and evaluation tools receive text checks, not an operating-system isolation boundary.
