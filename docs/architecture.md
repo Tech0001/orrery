@@ -361,14 +361,14 @@ permissions from them with no prompt, next to the guard, the next time it opens 
 or `opencode.jsonc` in any folder, a `.opencode` folder (OpenCode's Plan folder, `~/.opencode/plan`, aside), OpenCode's
 config, cache and state folders, its database, `OPENCODE_CONFIG`'s file or its system and managed config. File tools may
 read them; shell text that names one is refused. The skills of `.claude/skills` and `.agents/skills`, which OpenCode
-also loads, stay writable by the file tools, but a skill whose front matter could run as code (a first line of `---` and
-a language other than YAML or JSON, such as `---js`) is refused, as is any write whose resulting text the gate cannot
-see (a move or copy into a skills folder, an unknown tool that may write, an OMP edit, a notebook cell, an edit of a
-file that can't be read); shell text naming a skills folder is refused outright. The costs: an agent cannot set up
-OpenCode for a project, a shell command that only names those files (a `grep`, a commit message) is refused, and in
-Codex, which reads files through its shell, an agent cannot read them at all. OpenCode's own login store (its database,
-with its WAL and shared-memory files, and what `OPENCODE_DB` names) is a credential store like OMP's `agent.db`: every
-tool is refused it, reads included.
+also loads, stay writable by the file tools, but a skill whose front matter could run as code (a first line of `---`
+and a language other than YAML or JSON, such as `---js`) is refused, as is any write whose resulting text the gate
+cannot see (a move or copy into a skills folder, an unknown tool, an OMP edit, a notebook cell, an edit of a file that
+can't be read); shell text naming a skills folder is refused outright. The costs: an agent cannot set up OpenCode for a
+project, a shell command that only names those files (a `grep`, a commit message) is refused, and in Codex, which reads
+files through its shell, an agent cannot read them at all. OpenCode's own login store (its database, with its WAL
+and shared-memory files, and what `OPENCODE_DB` names) is a credential store like OMP's `agent.db`: every tool is
+refused it, reads included.
 
 This is a credential guard, not a sandbox.
 Shell and evaluation tools receive text checks, not an operating-system isolation boundary.

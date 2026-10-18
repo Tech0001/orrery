@@ -271,11 +271,11 @@ export function claudeGuard(toolName: string, input: Readonly<Record<string, unk
 		const reason = judgeBounded(use, use === "read" ? { path } : { path, [NEW_TEXT]: destinations.has(path) ? undefined : written }, guard);
 		if (reason !== undefined) return reason;
 	}
-	// A tool Orrery doesn't know that may write (a write verb in its name, or a destination key) may write what it names
-	// under any key: OpenCode's config and code (guard-rules.ts openCodeLoads), which no tool may write, are refused by
-	// every string that may be a path, and so is a skill, whose new text the guard can't see. Any other unknown tool is
-	// a read, judged as one above.
-	if (as === undefined && (verb || found.destinations.length > 0)) {
+	// A tool Orrery doesn't know, named neither for writing nor only for reading, may write what it names, under any key:
+	// OpenCode's config and code (guard-rules.ts openCodeLoads), which no tool may write, are refused by every string
+	// that may be a path.
+	const last = toolName.split("__").at(-1) ?? toolName;
+	if (as === undefined && !verb && !READS_ONLY.test(last)) {
 		const openCode = openCodeOf(guard, home);
 		for (const text of new Set([...how.keys(), ...found.words])) {
 			if (performance.now() >= deadline) return "this call names more paths than the guard can check in time; nothing was run.";
@@ -301,6 +301,9 @@ function newTextOf(toolName: string, input: Readonly<Record<string, unknown>>): 
 	if (edits.length === 0 || !edits.every((edit) => typeof edit?.old_string === "string" && typeof edit.new_string === "string")) return undefined;
 	return { edits: edits.map((edit) => ({ old: edit.old_string as string, new: edit.new_string as string })) };
 }
+
+/** A tool that only reads, by the verb in its name (no download among them): it may name OpenCode's config to read it. */
+const READS_ONLY = /^(?!.*download)(?=.*(read|get|view|list|cat|show|search|find|grep|glob|stat|head|tail|fetch|inspect|describe|info|query|look))/i;
 
 /**
  * The folder Claude Code keeps a project's state in under ~/.claude/projects: the project folder with every

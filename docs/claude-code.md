@@ -330,13 +330,11 @@ Skills in `.claude/skills` and `.agents/skills` (Claude Code's own skills folder
 writable with Write, Edit and MultiEdit: a Write is judged by its content, an edit by the file it would leave (the file
 must be readable, and hold each old text). A skill that would open with `---` and anything other than YAML or JSON
 (`---js`, which OpenCode runs as code) is refused, and so is an edit that adds such a line anywhere in it, and a write
-whose result the guard can't see: a NotebookEdit, a copy or move into a skills folder, an MCP or other tool that may
-write (a write verb in its name, such as `write_file` or `save`, or a destination key such as `output`) and names one
-under any key. Any other MCP or unknown tool is judged as a read: it may read OpenCode's config and skills. A Bash
-command that names a skills folder is refused, whatever it does (`ls ~/.claude/skills`, `git add .claude/skills`): use
-Read, Glob, Grep, Write and Edit. The cost: a Bash command that only names those files or folders (a `grep`, a commit
-message) is refused too, and an agent can't set up OpenCode for a project; you do that yourself. `.claude/settings.json`
-and `AGENTS.md` stay writable.
+whose result the guard can't see: a NotebookEdit, a copy or move into a skills folder, an MCP or other tool that
+writes there. A Bash command that names a skills folder is refused, whatever it does (`ls ~/.claude/skills`, `git add
+.claude/skills`): use Read, Glob, Grep, Write and Edit. The cost: a Bash command that only names those files or
+folders (a `grep`, a commit message) is refused too, and an agent can't set up OpenCode for a project; you do that
+yourself. `.claude/settings.json` and `AGENTS.md` stay writable.
 
 Tool logins in your home folder are refused the same way: `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`,
 `~/.gem/credentials`, `~/.config/gcloud`, `~/.azure`, `~/.terraform.d/credentials.tfrc.json`, `~/.wrangler`,
