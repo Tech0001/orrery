@@ -80,8 +80,15 @@ export interface SummaryRpc {
 
 /** The dialogs the picker uses (OpenCode's TUI ui.dialog.select). */
 export interface MenuDialogs {
-	select<V>(options: { readonly title: string; readonly options: readonly { title: string; value: V; description?: string; disabled?: boolean }[]; readonly current?: V }): Promise<V | undefined>;
+	select<V>(options: { readonly title: string; readonly options: readonly { title: string; value: V; description?: string }[]; readonly current?: V }): Promise<V | undefined>;
 }
+
+/**
+ * An option that can't be picked, as OpenCode's dialog can show it: never `disabled`, which its dialog drops with its
+ * description (dialog-select.tsx), but "unavailable" in its title and the reason as its description. Picking one says why.
+ */
+const unavailableOption = <V>(title: string, value: V, reason: string | undefined) =>
+	reason === undefined ? { title, value } : { title: title.includes("unavailable") ? title : `${title}  ·  unavailable`, value, description: reason };
 
 /**
  * /compactor and "Orrery: summary model" in the command palette, as OpenCode's TUI keymap takes a plugin's commands
@@ -135,7 +142,7 @@ export async function pickSummaryModel(dialogs: MenuDialogs, rpc: SummaryRpc): P
 	if (providers.length > 1) {
 		const key = await dialogs.select<string>({
 			title: `${group.title}:`,
-			options: providers.map((each) => ({ title: each.title, value: each.key, ...(each.unavailable === undefined ? {} : { description: each.unavailable, disabled: true }) })),
+			options: providers.map((each) => unavailableOption(each.title, each.key, each.unavailable)),
 			current: provider?.key,
 		});
 		provider = providers.find((each) => each.key === key);
@@ -146,7 +153,7 @@ export async function pickSummaryModel(dialogs: MenuDialogs, rpc: SummaryRpc): P
 	if (models.length === 0) return { ok: false, text: `${provider.title} has no models to pick.` };
 	const index = await dialogs.select<number>({
 		title: `${provider.title} model:`,
-		options: models.map((model, at) => ({ title: model.title, value: at, ...(model.unavailable === undefined ? {} : { description: model.unavailable, disabled: true }) })),
+		options: models.map((model, at) => unavailableOption(model.title, at, model.unavailable)),
 		current: models.findIndex((model) => model.unavailable === undefined),
 	});
 	const model = index === undefined ? undefined : models[index];

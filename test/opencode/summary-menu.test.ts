@@ -24,10 +24,10 @@ const DATA: MenuData = {
 
 /** Dialogs that answer from a script (by an option's title, or "first"), keeping what each showed. */
 function scripted(answers: (string | undefined)[]) {
-	const shown: { title: string; options: string[]; disabled: string[] }[] = [];
+	const shown: { title: string; options: string[]; disabled: string[]; descriptions: (string | undefined)[] }[] = [];
 	const dialogs: MenuDialogs = {
 		select: async ({ title, options }) => {
-			shown.push({ title, options: options.map((o) => o.title), disabled: options.filter((o) => o.disabled).map((o) => o.title) });
+			shown.push({ title, options: options.map((o) => o.title), disabled: options.filter((o) => "disabled" in o).map((o) => o.title), descriptions: options.map((o) => o.description) });
 			const answer = answers.shift();
 			if (answer === undefined) return undefined;
 			const picked = answer === "first" ? options[0] : options.find((o) => o.title === answer);
@@ -66,11 +66,37 @@ describe("OpenCode's /compactor picker (its TUI side)", () => {
 	});
 
 	it("lists OpenCode's free tier as unavailable, with the reason, and never switches to it", async () => {
-		const { dialogs, shown } = scripted(["OpenCode", "OpenCode · opencode", "opencode/big-pickle"]);
+		const { dialogs, shown } = scripted(["OpenCode", "OpenCode · opencode", "opencode/big-pickle  ·  unavailable"]);
 		const server = rpc();
 		expect(await pickSummaryModel(dialogs, server.api)).toEqual({ ok: false, text: "opencode/big-pickle: OpenCode's free tier only works inside OpenCode chats; background summaries aren't allowed." });
-		expect(shown[2]?.disabled).toEqual(["opencode/big-pickle"]);
+		// Shown, not disabled (OpenCode's dialog drops a disabled option, reason and all): the reason as its description.
+		expect(shown[2]).toMatchObject({ options: ["opencode/big-pickle  ·  unavailable"], disabled: [], descriptions: ["OpenCode's free tier only works inside OpenCode chats; background summaries aren't allowed"] });
 		expect(server.switched).toEqual([]);
+		// A title that says so already is kept as it is.
+		const titled = { ...DATA, groups: DATA.groups.map((group) => (group.key !== "opencode" ? group : { ...group, providers: group.providers.map((provider) => ({ ...provider, models: provider.models?.map((each) => (each.unavailable === undefined ? each : { ...each, title: "big-pickle  ·  free tier, unavailable" })) })) })) };
+		const again = scripted(["OpenCode", "OpenCode · opencode", "big-pickle  ·  free tier, unavailable"]);
+		expect(await pickSummaryModel(again.dialogs, rpc(titled).api)).toMatchObject({ ok: false });
+		expect(again.shown[2]?.options).toEqual(["big-pickle  ·  free tier, unavailable"]);
+	});
+
+	it("lists a provider that can't be used (no login saved) with the reason, and picking it says why", async () => {
+		const signin = { key: "signin", title: "Sign in", current: false, providers: [{ key: "openai", title: "OpenAI", current: false, unavailable: "not saved; in a shell: orrery login openai" }, { key: "anthropic", title: "Anthropic", current: false }] };
+		const data: MenuData = { ...DATA, groups: [signin, ...DATA.groups.filter((group) => group.key !== "signin")] };
+		const { dialogs, shown } = scripted(["Sign in", "OpenAI  ·  unavailable"]);
+		const server = rpc(data);
+		expect(await pickSummaryModel(dialogs, server.api)).toEqual({ ok: false, text: "OpenAI: not saved; in a shell: orrery login openai." });
+		expect(shown[1]).toMatchObject({ options: ["OpenAI  ·  unavailable", "Anthropic"], disabled: [], descriptions: ["not saved; in a shell: orrery login openai", undefined] });
+		expect(server.switched).toEqual([]);
+		expect(server.asked).toEqual([]);
+	});
+
+	it("registers /compactor and its palette entry in OpenCode's global keymap mode, where slash completion and the palette see it", () => {
+		let ran = 0;
+		const layer = summaryCommandLayer(() => ran++);
+		expect(layer.mode).toBe("global");
+		expect(layer.commands).toEqual([expect.objectContaining({ id: "orrery.compactor", title: "Orrery: summary model", palette: true, slash: { name: "compactor" } })]);
+		layer.commands[0]?.run();
+		expect(ran).toBe(1);
 	});
 
 	it("asks the server for an Orrery source's models, then the thinking level, then switches; goes back to the config's; stops on a cancel", async () => {
@@ -82,15 +108,6 @@ describe("OpenCode's /compactor picker (its TUI side)", () => {
 		expect(await pickSummaryModel(scripted([undefined]).dialogs, server.api)).toBeUndefined();
 		expect(await pickSummaryModel(scripted(["API key", "claude-sonnet-4-5", undefined]).dialogs, server.api)).toBeUndefined();
 		expect(server.switched).toEqual([{ provider: "anthropic", modelId: "claude-sonnet-4-5", thinking: "low" }, { reset: true }]);
-	});
-
-	it("registers /compactor and its palette entry in OpenCode's global keymap mode, where slash completion and the palette see it", () => {
-		let ran = 0;
-		const layer = summaryCommandLayer(() => ran++);
-		expect(layer.mode).toBe("global");
-		expect(layer.commands).toEqual([expect.objectContaining({ id: "orrery.compactor", title: "Orrery: summary model", palette: true, slash: { name: "compactor" } })]);
-		layer.commands[0]?.run();
-		expect(ran).toBe(1);
 	});
 
 	it("says why when the server can't offer a pick", async () => {
