@@ -18,6 +18,7 @@ import { agentOverview, agentUsage, summaryText, TOOL_LABELS, totalCost, usageCo
 import { agentCompactorTarget } from "../agent/compactor-target.ts";
 import { createAgentCompactor } from "../agent/agent.ts";
 import { createAgentModels, savedSummaryLoginsOnly } from "../agent/models.ts";
+import { isOpenCodeChoice } from "../agent/opencode-source.ts";
 import { openSummarySources, type SummarySources } from "../agent/summary-sources.ts";
 import { runCompactorText } from "../agent/summary-text.ts";
 import { type Compactor, MemoryStore, MemoryView, renderMemoryHtml } from "../memory/index.ts";
@@ -69,6 +70,11 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
  */
 export async function compactCommand(config: HarnessConfig, agentName: string, models?: Models, options: { readonly progress?: string } = {}): Promise<void> {
 	const agent = findAgent(config, agentName);
+	// An OpenCode model makes summaries only through Orrery's plugin, while the agent is open in OpenCode.
+	const chosen = agent.compactor.model;
+	if (isOpenCodeChoice(chosen)) {
+		throw new Error(`${agent.name}'s summary model in the config (${chosen.provider}/${chosen.modelId}) is an OpenCode model, which works only while ${agent.name} is open in OpenCode: build its summaries there, or set another compactor_model in Orrery's config to build them here.`);
+	}
 	await withBriefCheckOut(config, agent, async (remote, writer) => {
 		const store = MemoryStore.open(join(agent.dir, "memory.sqlite"), writer);
 		let compactor: Compactor | undefined;

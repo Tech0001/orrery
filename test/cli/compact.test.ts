@@ -39,6 +39,21 @@ describe("compactCommand", () => {
 		reopened.close();
 	});
 
+	it("builds nothing for an agent whose config's summary model is an OpenCode model, and says where it works and how to change it", async () => {
+		const dir = tempDir("orrery-compact-");
+		dirs.push(dir);
+		const toml = agentConfigToml({ dataDir: join(dir, "data"), folder: join(dir, "ws") }).replace('compactor_model = "faux-compactor/faux-1"', 'compactor_model = "opencode/anthropic/claude-sonnet-4-5"');
+		const config = parseConfig(toml, dir);
+		const agentDir = config.agents.get("Test")!.dir;
+		seedHistory(agentDir);
+		await expect(compactCommand(config, "Test", fauxModels().models)).rejects.toThrow(
+			"Test's summary model in the config (opencode/anthropic/claude-sonnet-4-5) is an OpenCode model, which works only while Test is open in OpenCode: build its summaries there, or set another compactor_model in Orrery's config to build them here.",
+		);
+		const store = MemoryStore.openReadOnly(join(agentDir, "memory.sqlite"));
+		expect(store.nodeCount).toBe(0);
+		store.close();
+	});
+
 	// The whole model path in a CLI process (the binary under test:binary): models.ts and pi-ai's providers load, and
 	// the summaries come from an OpenAI-compatible server; --progress writes the build's state.
 	it("runs `orrery compact` as a process against an OpenAI-compatible server", async () => {
