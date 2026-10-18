@@ -7,7 +7,7 @@ import { Agent } from "../../src/agent/agent.ts";
 import { ConfigError, type HarnessConfig, parseConfig } from "../../src/agent/config.ts";
 import { newConfigText } from "../../src/agent/config-edit.ts";
 import { checkResolvedPath, durablePreCheck } from "../../src/agent/guard.ts";
-import { astEditFiles, guardOmpToolCall, guardToolCall, openCodeCredentials, type PathGuardOptions, realTarget } from "../../src/agent/guard-paths.ts";
+import { guardOmpToolCall, guardToolCall, openCodeCredentials, type PathGuardOptions, realTarget } from "../../src/agent/guard-paths.ts";
 import { checkToolCall, OPENCODE_COMMAND, OPENCODE_READ_ONLY, openCodeLoads, openCodeRule, SKILL_SHELL } from "../../src/agent/guard-rules.ts";
 import { claudeGuard } from "../../src/claude/guard.ts";
 import { runHook } from "../../src/claude/hooks.ts";
@@ -1754,7 +1754,7 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 		for (const tool of ["grep", "glob", "find", "ast_grep"]) expect(omp(tool, { pattern: "x", path: join(t.atlas, ".claude", "skills") }), tool).toBeUndefined();
 	});
 
-	it("judges every file an OMP ast_edit folder or glob reaches, by every rule, and refuses one that reaches too many", () => {
+	it("judges every file an OMP ast_edit folder or glob reaches by every rule, node_modules and .git too, and refuses one that reaches too many", () => {
 		const t = skillWorld();
 		const base = join(t.atlas, "tree");
 		const make = (file: string, text = "x") => {
@@ -1769,7 +1769,8 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 			["deep/.env", /sensitive file/],
 			["deep/config/secrets.yml", /protected by \[guard\] protect/],
 			["deep/vault/token.txt", /protected by \[guard\] protect/],
-			[".hidden/.env", /sensitive file/],
+			["node_modules/pkg/.env.local", /sensitive file/],
+			[".git/hooks/.env", /sensitive file/],
 			["deep/.opencode/plugins/p.ts", /OpenCode's config or code/],
 			["deep/opencode.json", /OpenCode's config or code/],
 			["deep/.claude/skills/s/SKILL.md", /can't see what this would leave/],
@@ -1780,6 +1781,10 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 			expect([file, edit([`${base}/**/*`])]).toEqual([file, expect.stringMatching(refused)]);
 			rmSync(join(base, file));
 		}
+		// A link below it leading to a protected place is judged where it leads.
+		symlinkSync(join(t.home, "finance"), join(base, "fin"));
+		expect(edit([base])).toMatch(/protected by \[guard\] protect/);
+		rmSync(join(base, "fin"));
 		// Another agent's view, and Orrery's home, below it.
 		const view = join(base, "other-agent", ".orrery", "view.md");
 		make("other-agent/.orrery/view.md");
@@ -1793,105 +1798,6 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 		for (let i = 0; i < 5; i++) make(`many/f${i}.ts`);
 		expect(edit([base])).toBeUndefined();
 		expect(edit([base], { ...t.options, astEditLimit: 3 })).toMatch(/more files than Orrery's guard can look through/);
-	});
-
-	it("walks an OMP ast_edit folder as OMP 18.11.1's ast_edit does: node_modules and .git skipped, links below not followed, .gitignore and .ignore kept when the guard reads them exactly, a glob's extension", () => {
-		const t = skillWorld();
-		const base = join(t.atlas, "walk");
-		const make = (file: string, text = "x") => {
-			mkdirSync(join(base, file, ".."), { recursive: true });
-			writeFileSync(join(base, file), text);
-		};
-		const edit = (paths: string[]) => guardOmpToolCall("ast_edit", { ops: [{ pat: "a", out: "b" }], paths }, t.options);
-		make("src/a.ts");
-		// What OMP's walk never reaches: node_modules and .git folders (at any depth, whatever an ignore file says), and
-		// what a link below the folder leads to (a pnpm or worktree node_modules, a link to a protected place).
-		for (const file of ["node_modules/pkg/.env.local", "sub/node_modules/x/opencode.json", ".git/hooks/.env", "sub/.git/config/secrets.yml"]) {
-			make(file);
-			expect([file, edit([base])]).toEqual([file, undefined]);
-			rmSync(join(base, file));
-		}
-		symlinkSync(join(t.home, "finance"), join(base, "fin"));
-		symlinkSync(join(t.home, "finance", "q3.csv"), join(base, "q3.csv"));
-		symlinkSync(join(t.atlas, ".claude", "skills"), join(base, "skills-link"));
-		expect(edit([base])).toBeUndefined();
-		// A folder named another way is walked, and the folder named itself is followed when it is a link.
-		make("Node_Modules/.env");
-		expect(edit([base])).toMatch(/sensitive file/);
-		rmSync(join(base, "Node_Modules"), { recursive: true });
-		expect(edit([join(base, "fin")])).toMatch(/protected by \[guard\] protect/);
-		// .gitignore and .ignore: what they ignore is skipped, a name at any depth, an anchored path from its own folder,
-		// a folder-only pattern only for folders; case counts, as in OMP.
-		make(".gitignore", "# built\ndist/\n/top/\n*.local.md\r\nsecret?.txt   \n");
-		make("sub/.ignore", "scratch\n");
-		for (const file of ["dist/.env", "deep/dist/.claude/skills/s/SKILL.md", "top/.env", "deep/notes.local.md", "deep/x/secret1.txt", "sub/scratch/opencode.json"]) {
-			make(file);
-			expect([file, edit([base])]).toEqual([file, undefined]);
-			rmSync(join(base, file));
-		}
-		for (const [file, refused] of [
-			["deep/top/.env", /sensitive file/],
-			["Dist/.env", /sensitive file/],
-			["deep/secret12.txt/.env", /sensitive file/],
-			["scratch/opencode.json", /OpenCode's config or code/],
-		] as const) {
-			make(file);
-			expect([file, edit([base])]).toEqual([file, expect.stringMatching(refused)]);
-			rmSync(join(base, file.split("/")[0] as string), { recursive: true });
-		}
-		// A folder an ignore file skips is still walked when ast_edit names it.
-		make("dist/.env");
-		expect(edit([join(base, "dist")])).toMatch(/sensitive file/);
-		// A rule the guard doesn't read exactly ("**", a class, an escape, a blank inside) is left out: what it would skip
-		// is walked.
-		make(".gitignore", "dist/\n**/build\n[abc]\n\\#x\nmy dir\n");
-		for (const file of ["build/.env", "b/.env", "#x/.env", "my dir/.env"]) {
-			make(file);
-			expect([file, edit([base])]).toEqual([file, expect.stringMatching(/sensitive file/)]);
-			rmSync(join(base, file.split("/")[0] as string), { recursive: true });
-		}
-		expect(edit([base])).toBeUndefined();
-		// A whitelist ("!") in an ignore file of the walk or of a folder above it could bring back what another skips:
-		// then nothing is skipped by them.
-		for (const [where, text] of [
-			[".gitignore", "dist/\n!dist/keep\n"],
-			["sub/.ignore", "!x\n"],
-			["src/.gitignore", "!scratch\n"],
-		] as const) {
-			make(where, text);
-			expect([where, text, edit([base])]).toEqual([where, text, expect.stringMatching(/sensitive file/)]);
-			rmSync(join(base, where));
-			make(".gitignore", "dist/\n");
-		}
-		expect(edit([base])).toBeUndefined();
-		writeFileSync(join(t.atlas, ".ignore"), "!dist/\n");
-		expect(edit([base])).toMatch(/sensitive file/);
-		rmSync(join(t.atlas, ".ignore"));
-		expect(edit([base])).toBeUndefined();
-		// A glob whose last part is *.<extension> rewrites only files with that extension (in any case, to be safe).
-		rmSync(join(base, ".gitignore"));
-		make("deep/.claude/skills/s/SKILL.md");
-		expect(edit([`${base}/**/*.md`])).toMatch(/can't see what this would leave/);
-		expect(edit([`${base}/**/*.MD`])).toMatch(/can't see what this would leave|sensitive file/);
-		expect(edit([`${base}/**/*`])).toMatch(/sensitive file|can't see what this would leave/);
-		rmSync(join(base, "dist"), { recursive: true });
-		expect(edit([`${base}/**/*.ts`])).toBeUndefined();
-		expect(edit([`${base}/**/*.md`])).toMatch(/can't see what this would leave/);
-		make("deep/.opencode/plugins/p.ts");
-		expect(edit([`${base}/**/*.ts`])).toMatch(/OpenCode's config or code/);
-		// The walk itself, in one small tree.
-		const small = join(t.atlas, "small");
-		for (const file of ["a.ts", "b.md", ".hidden/c.ts", "node_modules/d.ts", "out/e.ts", "keep/f.ts"]) {
-			mkdirSync(join(small, file, ".."), { recursive: true });
-			writeFileSync(join(small, file), "x");
-		}
-		writeFileSync(join(small, ".gitignore"), "out/\n");
-		symlinkSync(join(small, "keep"), join(small, "keep-link"));
-		const walked = (extension?: string) => (astEditFiles(small, 100, extension) as string[]).map((file) => file.slice(small.length + 1)).sort();
-		expect(walked()).toEqual([".gitignore", ".hidden/c.ts", "a.ts", "b.md", "keep/f.ts"]);
-		expect(walked(".ts")).toEqual([".hidden/c.ts", "a.ts", "keep/f.ts"]);
-		expect(astEditFiles(join(small, "a.ts"), 100)).toEqual([join(small, "a.ts")]);
-		expect(astEditFiles(small, 3)).toBe("too many");
 	});
 
 	it("reads OMP's lsp and ast_edit paths as OMP does, and refuses a form it can't place: action names, URIs, ~, links, folders moved whole, globs", () => {
@@ -1926,9 +1832,9 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 		expect(edit([`${base}/clean/**`, `${base}/keys`])).toMatch(/sensitive file/);
 		expect(edit([`${base}/clean/**/*.ts`, `${base}/plain`])).toBeUndefined();
 		expect(edit(["~/finance/**"])).toMatch(/protected by \[guard\] protect/);
-		// A link in the tree to a folder is not followed, as OMP's walk doesn't follow one, and a loop of links ends.
+		// A link in the tree to a folder is followed (its files judged), and a loop of links ends.
 		symlinkSync(join(base, "keys"), join(base, "clean", "keys-link"));
-		expect(edit([`${base}/clean/**`])).toBeUndefined();
+		expect(edit([`${base}/clean/**`])).toMatch(/sensitive file/);
 		rmSync(join(base, "clean", "keys-link"));
 		symlinkSync(join(base, "clean"), join(base, "clean", "loop"));
 		expect(edit([`${base}/clean/**`])).toBeUndefined();
