@@ -20,18 +20,19 @@ from pi to Claude Code, open the agent in another project or carry on from anoth
 
 ## What you can do
 
-- **Keep one agent across tools.** pi, OMP (oh-my-pi), Claude Code and Codex all read and record the same agent's
-  memory. OpenRouter's Ori can launch it too.
+- **Keep one agent across tools.** pi, OMP (oh-my-pi), Claude Code, Codex and OpenCode all read and record the same
+  agent's memory. OpenRouter's Ori can launch it too.
 - **Open any agent anywhere.** `orrery agent Atlas` starts Atlas's tool in the folder you are in, with its
   instructions and memory. The folder's own `AGENTS.md` or `CLAUDE.md` still applies as that project's rules.
 - **Turn existing chats into an agent.** Pick one or more of your Claude Code or Codex chats from a list and they
   become an agent that remembers those conversations. The chats themselves are only read, never changed.
 - **Give each agent its instructions.** Who it is and how it works, sent to the model ahead of its memory.
 - **Choose how summaries are paid for.** Sign in with your ChatGPT account (the one Codex uses) or OpenRouter, use an
-  OpenAI, Anthropic or OpenRouter API key, or run a local model server. See [Summaries](#summaries).
+  OpenAI, Anthropic or OpenRouter API key, or run a local model server. In OpenCode, a paid or own-key model of
+  OpenCode's can make them too. See [Summaries](#summaries).
 - **Let agents read each other.** An agent you allow can look up other agents' memory, read-only.
-- **Compact Claude Code sessions for free.** With the optional mod, Claude Code's compaction is answered from the
-  agent's memory: about two seconds, no additional tokens.
+- **Compact Claude Code and OpenCode sessions for free.** OpenCode's compaction, and Claude Code's with the optional
+  mod, is answered from the agent's memory: no model call, no additional tokens.
 - **Take an agent to another computer.** Keep its memory on your own SSH server or a Cloudflare Worker, encrypted
   before it leaves your machine.
 - **Back up and restore.** `orrery backup` snapshots every agent (on Linux, a systemd timer can run it nightly), and
@@ -51,7 +52,7 @@ from pi to Claude Code, open the agent in another project or carry on from anoth
 
 You need:
 - Linux or macOS, x64 or arm64. On Windows, use WSL. Alpine and other musl Linux is not supported yet.
-- At least one coding tool: pi, OMP, Claude Code or Codex, installed on its own.
+- At least one coding tool: pi, OMP, Claude Code, Codex or OpenCode, installed on its own.
 - A way to make summaries: a ChatGPT or OpenRouter account, an API key, or a local model server (see
   [Summaries](#summaries)).
 
@@ -62,7 +63,8 @@ curl -fsSL https://github.com/Tech0001/orrery/releases/latest/download/install.s
 ```
 
 The script checks the download, installs Orrery into `~/.orrery`, and asks before connecting it to each coding tool
-it finds. It puts the `orrery` command in `~/.local/bin`; add that folder to your PATH if it is not there already.
+it finds (Codex and OpenCode need nothing: Orrery's side comes with each launch). It puts the `orrery` command in
+`~/.local/bin`; add that folder to your PATH if it is not there already.
 
 **2. Start Orrery.**
 
@@ -108,8 +110,8 @@ memory, up to 32 KB. Only you edit them: an agent can suggest a change in chat b
 **Default folder.** An agent can have one (`folder = "…"`, or **C** in the TUI). Starting its tool there, or in any
 folder inside it, picks that agent automatically, as if you had run `orrery agent`. Choose a folder that belongs to
 the agent, not a broad one like your home folder, or every session under it records into that agent. With no default
-folder, the agent opens only through Orrery. Claude Code needs one setup step per agent first; see
-[Coding tools](#coding-tools).
+folder, the agent opens only through Orrery. Claude Code needs one setup step per agent first; Codex and OpenCode never
+pick an agent by its folder, and open agents only through Orrery; see [Coding tools](#coding-tools).
 
 **Importing chats.** **N**, then **From an existing chat**, lists your Claude Code and Codex chats, newest first,
 and marks the ones written to in the last ten minutes as in use. Pick one, or mark several with Space and they are
@@ -122,7 +124,7 @@ gather a whole project's Claude Code and Codex history; see `orrery help import`
 (or `["*"]` for all) lets it use the `agents` and `agent_memory` tools to look into those agents' memory, read-only.
 
 **One session at a time.** An agent records from one session. A second session on the same agent runs without its
-memory in pi and OMP, and read-only in Claude Code and Codex.
+memory in pi and OMP, and read-only in Claude Code, Codex and OpenCode.
 
 **Archiving.** **A** on a closed agent's page takes it out of the list; its memory stays on disk.
 
@@ -137,6 +139,7 @@ chosen in Orrery. They are independent: change either one and the memory stays t
 | OpenRouter | `orrery login openrouter` | Signs in and saves an OpenRouter key |
 | An API key: OpenAI, Anthropic or OpenRouter | `orrery login --key anthropic` | Typed into a hidden prompt; `--from-pi` copies a key pi already has |
 | A local model server | `[[providers]]` in `config.toml` | Any OpenAI-compatible server, such as llama.cpp |
+| A paid or own-key model of OpenCode's | `/compactor` in OpenCode | Only while the agent is open in OpenCode; OpenCode's free models are not offered ([why](docs/opencode.md#summaries-through-opencode)) |
 
 The **Logins** page does the same. Orrery keeps its own logins, separate from your coding tools', in a private file
 (mode 0600).
@@ -167,6 +170,7 @@ the one in that environment variable.
 | Claude Code | A plugin with hooks and memory tools, plus an optional mod for the system prompt and compaction | [docs/claude-code.md](docs/claude-code.md) |
 | Ori | Launches the agent with an OpenRouter model; Orrery keeps the memory | [docs/ori.md](docs/ori.md) |
 | Codex | Memory, recording, the memory tools and the guard, on Codex's command line at each `orrery agent` launch | [docs/codex.md](docs/codex.md) |
+| OpenCode | A plugin for each `orrery agent` launch: memory, recording, the memory tools, the guard, compaction from memory and `/compactor` | [docs/opencode.md](docs/opencode.md) |
 
 Connect a tool with **I** on the **Tools** page, or `orrery tools install pi`. Each guide lists the versions tested
 and the known limits. Claude Code needs one more step per agent before it records, described in its guide:
@@ -174,6 +178,9 @@ and the known limits. Claude Code needs one more step per agent before it record
 which also lets Claude Code open the agent in any folder. Codex needs nothing installed: open its agents with
 `orrery agent Atlas --tool codex` (or set the agent's tool to `codex`), which brings Orrery's hooks, memory tools and
 instructions on Codex's command line and writes nothing to `~/.codex`. A plain `codex` is not an agent's session.
+Neither does OpenCode: `orrery agent Atlas --tool opencode` (or the agent's tool set to `opencode`) starts
+`opencode --standalone` with Orrery's plugin for that launch, after checking once per OpenCode version that the plugin
+loads, and writes nothing to OpenCode's config. A plain `opencode` is not an agent's session either.
 
 The Claude Code desktop app works too: after `orrery claude-setup <Name>`, start a session in the agent's folder, and
 the app's Claude Code records it and loads the memory (tested with the Linux app). Claude Code on the web runs in the
@@ -206,8 +213,11 @@ Leave these to the person, in their own terminal:
 Orrery's own files are off-limits to agents: your tools are refused anywhere in `~/.orrery`, except that file tools may
 read the config and the installed program, and shell commands that name `.orrery` are refused. Ask the CLI instead.
 Shell commands that name Orrery's hook plumbing (`codex-hook`, `claude-hook`, or `orrery` with `holder`) are refused
-too, even in a `grep` or a commit message: leave those to the person. Your own memory has its own tools: `zoom`, `date`
-and `search` (`memory_search` in OMP; in Codex, from the `orrery` MCP server).
+too, even in a `grep` or a commit message: leave those to the person. So are shell commands that name OpenCode's
+config (`opencode.json`, a `.opencode` folder, OpenCode's own folders) or a skills folder (`.claude/skills`,
+`.agents/skills`): read those with your file tools. You can't write OpenCode's config, so ask the person to set up
+OpenCode for a project; skills you may write with your file tools, with plain YAML front matter. Your own memory has
+its own tools: `zoom`, `date` and `search` (`memory_search` in OMP; in Codex, from the `orrery` MCP server).
 
 ## Memory that follows you
 
@@ -239,10 +249,10 @@ orrery uninstall           # remove the program; memory, config and logins stay
 ```
 
 Agents that are open keep their version until they restart. The Agents page says when one is waiting, and the pi, OMP,
-Claude Code or Codex session says once: "Orrery was updated to 0.6.2; restart this session to use it." Orrery checks for
-a new release at most once a day, shared by the TUI and every agent's session (pi, OMP, and the recorder of Claude Code
-and Codex sessions); the TUI header and each session then say once that it is out. A session never waits on the
-check: it shows what the last one found, and a newer answer when it comes. The check is one request to `github.com`,
+Claude Code, Codex or OpenCode session says once: "Orrery was updated to 0.6.2; restart this session to use it." Orrery
+checks for a new release at most once a day, shared by the TUI and every agent's session (pi, OMP, OpenCode, and the
+recorder of Claude Code and Codex sessions); the TUI header and each session then say once that it is out. A session
+never waits on the check: it shows what the last one found, and a newer answer when it comes. The check is one request to `github.com`,
 which sees your IP address; `check = false` under `[updates]` in `config.toml` turns it off, and the release notice with
 it (the restart notice needs no request and stays). Notices reach you, never the model. `orrery uninstall --purge` also
 deletes `~/.orrery`, after you type `delete`.
@@ -270,7 +280,8 @@ refused, and Orrery's own config and program are read-only to agents. Out of the
   `~/.pypirc`, `~/.cargo/credentials`, `~/.gem/credentials`, `~/.config/gcloud`, `~/.azure`,
   `~/.terraform.d/credentials.tfrc.json`, wrangler's login (`~/.wrangler`, `~/.config/.wrangler`, and
   `~/Library/Preferences/.wrangler` on macOS), Hugging Face's tokens, `~/.password-store`, the 1Password CLI's
-  `~/.config/op`, and the logins of pi, OMP, Codex and Orrery (Claude Code's too, in its sessions).
+  `~/.config/op`, and the logins of pi, OMP, Codex and Orrery (Claude Code's too, in its sessions, and OpenCode's
+  database, in OpenCode's).
 - **Secret files in any folder:** `.env` and `.env.<anything>`, `.dev.vars` and `.dev.vars.<anything>` (Cloudflare
   Workers), `.secrets`, `secrets.toml`, `master.key` and `.htpasswd`. The shared templates stay open: `.env.example`,
   `.env.sample`, `.env.template` and `.env.dist`, and the same for `.dev.vars`.
@@ -319,9 +330,28 @@ nothing, as a new config has it, counts as no entries even when the TOML is brok
 Orrery's program with `holder` is refused, so an agent cannot feed a hook made-up input and put words in your mouth in
 its memory. The cost: an agent's `grep` for those names, or a commit message that mentions one, is refused too.
 
+**Agents can't change OpenCode's config or code, in any tool.** OpenCode loads plugins, runs commands and takes
+permissions from its config, with no prompt, the next time it opens a folder, so a file an agent wrote there from any
+tool would run inside OpenCode. No agent may write `opencode.json` or `opencode.jsonc` in any folder, a `.opencode`
+folder, OpenCode's own config, cache and state folders (`~/.config/opencode`, `~/.cache/opencode`,
+`~/.local/state/opencode`, or where `XDG_*` and `OPENCODE_CONFIG_DIR` put them), its database, the file
+`OPENCODE_CONFIG` names, or its system config (`/etc/opencode`). File tools may read them; shell text that names one
+is refused, a `cat` or a `grep` too. The cost: an agent can't set up OpenCode for a project (you write those files
+yourself), and an agent's shell command that only names one, such as a commit message, is refused.
+
+**Skills stay ordinary files.** OpenCode also loads the skills in `.claude/skills` and `.agents/skills`, and runs a
+skill's front matter as code when it opens with `---js`. Agents may write skills with their file tools, judged by what
+the file will hold: a skill that would open with `---` and anything other than YAML or JSON is refused, and so is a
+write whose result the guard can't see (a copy or a move into a skills folder, a notebook cell, an MCP tool, OMP's
+edit; each tool's guide says which). Shell text that names a skills folder is refused, whatever the command. The cost:
+an agent's `ls`, `cat`, `git add` or commit message that names a skills folder is refused, and in Codex, which reads
+files through its shell, an agent can't read a skill or OpenCode's config at all. `AGENTS.md` and
+`.claude/settings.json` stay writable.
+
 **It is a guard, not a sandbox.** It checks file paths and the text of shell commands, so a determined program can get
 around it; the [architecture guide](docs/architecture.md#the-credential-guard) lists the known limits, and
-[Codex's guide](docs/codex.md#its-limits-in-codex) the ones that are Codex's own.
+[Codex's](docs/codex.md#its-limits-in-codex) and [OpenCode's](docs/opencode.md#its-limits-in-opencode) guides the ones
+that are their own.
 
 Logins are kept in private files (mode 0600), never in the config. Your agents' memory on disk is not encrypted;
 copies sent to a remote are. Model providers see whatever context is sent to them, memory included.
@@ -337,9 +367,9 @@ npm run test:bun-suite  # the full suite on Bun
 npm run demo            # the TUI with five fictional agents: no model calls, nothing of yours touched
 ```
 
-The suite has more than 2,000 tests and uses synthetic data only. Tests against real pi, OMP, Ori and Codex run when
-those programs are installed; CI runs the suite on Node 22.19 and 24 and on macOS. [CONTRIBUTING.md](CONTRIBUTING.md)
-covers bug reports, pull requests and the real-tool tests; [SECURITY.md](SECURITY.md) says how to report a security problem
+The suite has more than 2,000 tests and uses synthetic data only. Tests against real pi, OMP, Ori, Codex and OpenCode
+run when those programs are installed; CI runs the suite on Node 22.19 and 24 and on macOS.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers bug reports, pull requests and the real-tool tests; [SECURITY.md](SECURITY.md) says how to report a security problem
 privately.
 
 ## Credits

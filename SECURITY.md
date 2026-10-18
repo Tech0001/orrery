@@ -30,5 +30,5 @@ Only the latest release receives security fixes.
 - Attacks that need an already compromised local account or root
 - Local working copies being unencrypted, which is documented
 - What model providers do with the context sent to them
-- Vulnerabilities in pi, OMP, Claude Code, Ori or Codex themselves, which belong upstream. How Orrery uses them is in
-  scope.
+- Vulnerabilities in pi, OMP, Claude Code, Ori, Codex or OpenCode themselves, which belong upstream. How Orrery uses
+  them is in scope.

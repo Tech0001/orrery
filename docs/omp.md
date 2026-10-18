@@ -78,14 +78,15 @@ Everything in [pi.md](pi.md)'s Daily use holds, with these differences:
 
 ## One writer
 
-An agent is open in one tool at a time. A second pi, OMP, Claude Code or Codex session on the same agent runs without
-memory (read-only in Claude Code and Codex) and says so. The TUI shows an agent open in OMP as open in OMP.
+An agent is open in one tool at a time. A second pi, OMP, Claude Code, Codex or OpenCode session on the same agent runs
+without memory (read-only in Claude Code, Codex and OpenCode) and says so. The TUI shows an agent open in OMP as open in
+OMP.
 
 ## The guard
 
 The path guard covers OMP's tools as it covers pi's: write; edit, also of several files at once; ast_edit, each file,
-folder or glob it rewrites; and searches and reads given several paths in one string. OMP's own credential stores are
-blocked in every tool, in pi and Claude Code sessions too: `~/.omp/agent/agent.db`, `models.yml`, `.env` and
+folder or glob it rewrites; lsp; and searches and reads given several paths in one string. OMP's own credential stores
+are blocked in every tool, in pi and Claude Code sessions too: `~/.omp/agent/agent.db`, `models.yml`, `.env` and
 `secrets.yml`, and `~/.omp/.env`; the same in each profile, in an agent folder `PI_CODING_AGENT_DIR` names, and in the
 folder `PI_CONFIG_DIR` moves `~/.omp` to; `agent.db` under `$XDG_DATA_HOME/omp`; and a project's `.omp/secrets.yml`.
 
@@ -111,6 +112,29 @@ targets one is refused. A config that cannot be read is handled as in pi: OMP ke
 part reads cleanly, and refuses every tool call when it does not; a `[guard] protect` that lists nothing counts as
 none.
 
+`ast_edit` over a folder or a glob rewrites files no argument names, so every file below its base is judged as a write,
+by every rule (`node_modules` and `.git` included, links judged where they lead): one over a folder that holds a `.env`,
+a protected name, another agent's view, OpenCode's config or a skill is refused, and so is one that reaches more than
+50,000 files. Give it the files, or a narrower folder. `lsp` is judged by its action: `rename_file` moves a file, or a
+folder with every file in it, and both ends are judged as writes; the actions that only read pass; a symbol rename, an
+applied code action, a raw request and an action Orrery doesn't know are refused, since the language server then edits
+files no argument names. Make those edits with `edit` or `write`.
+
+OpenCode's config and code are read-only to agents here too, as in every tool, and skills are written only as
+ordinary files (see the README's Safety):
+
+- No tool writes `opencode.json` or `opencode.jsonc` in any folder, a `.opencode` folder, OpenCode's own config, cache
+  and state folders, its database, or its system config: OpenCode loads plugins, runs commands and takes permissions
+  from them, with no prompt, the next time it opens that folder. `read` and the searches may read them.
+- A skill in `.claude/skills` or `.agents/skills` (OpenCode loads those) may be written whole with `write`; one that
+  would open with `---` and anything other than YAML or JSON (`---js`, which OpenCode runs as code) is refused. OMP's
+  `edit` can't change a skill: what its edits leave in the file is not worked out, so they are refused there, and so
+  is a `write` to part of a file (a `[path#TAG]` header or a selector).
+- `bash` and `eval` text that names OpenCode's config (`opencode.json`, `.opencode`, its folders) or a skills folder is
+  refused, whatever the command: read them with `read`, `grep` and `find`. The cost: a `grep`, `ls`, `git add` or
+  commit message that names one is refused too, and an agent can't set up OpenCode for a project; you do that yourself.
+  `AGENTS.md` and `.claude/settings.json` stay writable.
+
 It is a credential guard, not a sandbox. `bash` and `eval` get only a check of their text for ssh keys and credential
 stores. The check also refuses commands that name Orrery's home (`.orrery`), except the agent's own `view.md` by its
 full path; a search or `ast_edit` root may name that file from `~/` too, since OMP expands `~` in its own process,
@@ -135,7 +159,8 @@ session these calls are refused, and the model has to rephrase them:
   cleanly as one. Two forms OMP itself accepts are refused this way too: sloppy mode's bare `*** Edit File:` line (which
   goes on with the previous file) and a quoted path followed by ` all`;
 - a `file://` path the guard cannot read as a file;
-- a search or ast_edit glob with braces (`{a,b}`), or with `..` after a wildcard.
+- a search or ast_edit glob with braces (`{a,b}`), or with `..` after a wildcard, and an ast_edit glob with a negation
+  (`!…`) or an extended pattern (`@(…)`, `+(…)`).
 
 ## Upgrading OMP
 

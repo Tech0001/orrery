@@ -1,7 +1,7 @@
 # Running Orrery on an always-on machine
 
-Most users run an agent inside [pi](pi.md), [OMP](omp.md), [Claude Code](claude-code.md) or [Codex](codex.md) on their
-workstation.
+Most users run an agent inside [pi](pi.md), [OMP](omp.md), [Claude Code](claude-code.md), [Codex](codex.md) or
+[OpenCode](opencode.md) on their workstation.
 An always-on Linux host can instead run the older `orrery run <Name>` runtime, which starts an agent's own harness in
 the terminal it runs in. Each agent has a systemd unit and a private tmux server, while its file and shell tools can
 execute on a workstation over SSH. The extension and service must never write the same agent at the same time.
