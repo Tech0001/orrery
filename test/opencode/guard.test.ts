@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/agent/config.ts";
 import { OPENCODE_COMMAND, OPENCODE_READ_ONLY } from "../../src/agent/guard-rules.ts";
 import {
+	afterDiff,
 	CONFIG_UNREADABLE,
 	headerTargets,
 	type OpenCodeGuardOptions,
@@ -508,6 +509,33 @@ describe("openCodeGuard places every path where OpenCode 2.0.30 does (security r
 		expect(openCodeGuard("read", { path: "fin/q3.csv" }, t.options)).toMatch(PROTECTED);
 		expect(openCodeGuard("write", { path: "fin/new.csv", content: "x" }, t.options)).toMatch(PROTECTED);
 		expect(openCodeGuard("grep", { pattern: "x", path: "fin" }, t.options)).toMatch(PROTECTED);
+	});
+});
+
+describe("afterDiff: a file's text after the unified diff OpenCode reports for an edit", () => {
+	const diff = (...hunks: string[]) => ["--- a/x.md", "+++ b/x.md", ...hunks].join("\n");
+
+	it("applies each hunk: a change, an insertion at the top or after a line, several hunks, lines kept around them", () => {
+		expect(afterDiff("a\nb\nc\n", diff("@@ -2,1 +2,1 @@", "-b", "+B"))).toBe("a\nB\nc\n");
+		expect(afterDiff("a\nb\n", diff("@@ -0,0 +1,1 @@", "+---js"))).toBe("---js\na\nb\n");
+		expect(afterDiff("a\nb\n", diff("@@ -1,0 +2,1 @@", "+x"))).toBe("a\nx\nb\n");
+		expect(afterDiff("a\nb\nc\nd\n", diff("@@ -1,2 +1,2 @@", " a", "-b", "+B", "@@ -4 +4 @@", "-d", "+D"))).toBe("a\nB\nc\nD\n");
+		expect(afterDiff("", diff("@@ -0,0 +1,2 @@", "+x", "+y"))).toBe("x\ny\n");
+		expect(afterDiff("a\nb\n", diff("@@ -1,2 +0,0 @@", "-a", "-b"))).toBe("");
+	});
+
+	it("reads CRLF and a missing final newline as the same lines", () => {
+		expect(afterDiff("a\r\nb\r\n", diff("@@ -2 +2 @@", "-b", "+B").replace(/\n/g, "\r\n"))).toBe("a\nB\n");
+		expect(afterDiff("a\nb", diff("@@ -2 +2 @@", "-b", "\\ No newline at end of file", "+B", "\\ No newline at end of file"))).toBe("a\nB");
+	});
+
+	it("is undefined when the diff doesn't fit the text: a kept or removed line that differs, hunks out of order or past the end, no hunk", () => {
+		expect(afterDiff("a\nb\n", diff("@@ -2 +2 @@", "-x", "+B"))).toBeUndefined();
+		expect(afterDiff("a\nb\n", diff("@@ -1,2 +1,2 @@", " a", " x"))).toBeUndefined();
+		expect(afterDiff("a\nb\nc\n", diff("@@ -3 +3 @@", "-c", "+C", "@@ -1 +1 @@", "-a", "+A"))).toBeUndefined();
+		expect(afterDiff("a\n", diff("@@ -5 +5 @@", "-e", "+E"))).toBeUndefined();
+		expect(afterDiff("a\n", diff())).toBeUndefined();
+		expect(afterDiff("a\n", "")).toBeUndefined();
 	});
 });
 
