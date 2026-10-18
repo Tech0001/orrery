@@ -290,6 +290,69 @@ describe("openCodeGuard judges each tool with the shared rules", () => {
 	});
 });
 
+describe("openCodeGuard keeps OpenCode's config and plugins in every folder (.opencode/, opencode.json, opencode.jsonc): OpenCode loads them into its server", () => {
+	const CONFIG = /OpenCode's config/;
+
+	it("refuses the security review's probes: a write of opencode.json and opencode.jsonc, an edit of sub2/opencode.json, a write into .opencode/plugins, a patch adding to .opencode, a shell command naming opencode.json", () => {
+		const t = world();
+		const call = (tool: string, input: unknown) => openCodeGuard(tool, input, t.options);
+		expect(call("write", { path: "opencode.json", content: "{}" })).toMatch(CONFIG);
+		expect(call("write", { path: "opencode.jsonc", content: "{}" })).toMatch(CONFIG);
+		expect(call("edit", { path: "sub2/opencode.json", oldString: "a", newString: "b" })).toMatch(CONFIG);
+		expect(call("write", { path: ".opencode/plugins/x.ts", content: "" })).toMatch(CONFIG);
+		expect(call("patch", { patchText: patch("*** Add File: .opencode/x.ts", "+x") })).toMatch(CONFIG);
+		expect(call("shell", { command: "cp x opencode.json" })).toMatch(CONFIG);
+		expect(call("write", { path: "opencode.json", content: "{}" })).toBe("opencode.json is OpenCode's config or plugins (a .opencode folder, opencode.json or opencode.jsonc), which OpenCode loads into its server; an agent may not change it.");
+		expect(call("shell", { command: "cp x opencode.json" })).toBe("This command names OpenCode's config or plugins (a .opencode folder, opencode.json or opencode.jsonc), which OpenCode loads into its server; an agent may not change them.");
+	});
+
+	it("in any folder the agent may write (its own, above the session's, an allowed root), in any case, and through a link", () => {
+		const t = world();
+		const write = (path: string) => openCodeGuard("write", { path, content: "x" }, t.options);
+		for (const path of ["../opencode.json", join(t.folder, ".opencode", "agents", "a.md"), join(t.root, "shared", "opencode.jsonc"), join(t.root, "shared", ".opencode", "x"), "deep/er/.opencode/commands/c.md", "OpenCode.JSON", ".OpenCode/plugins/x.ts"]) expect(write(path), path).toMatch(CONFIG);
+		// A link whose target is one.
+		writeFileSync(join(t.cwd, "opencode.json"), "{}");
+		symlinkSync(join(t.cwd, "opencode.json"), join(t.cwd, "settings.json"));
+		mkdirSync(join(t.folder, ".opencode"));
+		symlinkSync(join(t.folder, ".opencode"), join(t.cwd, "tools"));
+		expect(write("settings.json")).toMatch(CONFIG);
+		expect(write("tools/plugins/x.ts")).toMatch(CONFIG);
+		// Names that only look alike are other files.
+		for (const path of ["opencode.json.bak", "my-opencode.json", "opencode.json5", "notes/opencode/x.md", ".opencoder/x"]) expect(write(path), path).toBeUndefined();
+	});
+
+	it("a patch's every target, a Move to among them, and an MCP or plugin tool that writes one; the permission layer's edit", () => {
+		const t = world();
+		expect(openCodeGuard("patch", { patchText: patch("*** Update File: a.ts", "*** Move to: opencode.jsonc", "@@", "-a", "+b") }, t.options)).toMatch(CONFIG);
+		expect(openCodeGuard("patch", { patchText: patch("*** Delete File: .opencode/plugins/guard-off.ts") }, t.options)).toMatch(CONFIG);
+		expect(openCodeGuard("fs_write_file", { path: "opencode.json", content: "{}" }, t.options)).toMatch(CONFIG);
+		expect(openCodeGuard("box_copy", { source: "a.ts", destination: ".opencode/plugins/a.ts" }, t.options)).toMatch(CONFIG);
+		expect(openCodeGuard("box_apply", { diff: patch("*** Add File: .opencode/x.ts", "+x") }, t.options)).toMatch(CONFIG);
+		expect(openCodePermission("edit", ["opencode.json"], t.options)).toMatch(CONFIG);
+		expect(openCodePermission("edit", [join(t.folder, ".opencode", "x.ts")], t.options)).toMatch(CONFIG);
+	});
+
+	it("shell text naming one in any reading a shell may make, as the other names this gate keeps; Code Mode's program and a tool's run text too", () => {
+		const t = world();
+		const shell = (command: string) => openCodeGuard("shell", { command }, t.options);
+		for (const command of ["echo '{}' > opencode.json", "mkdir -p .opencode/plugins", "cp x.ts ./.opencode/plugins/", "cat sub/opencode.jsonc", 'mv a "opencode.json"', "cp a open{code.json,x}", "tee OPENCODE.JSON < a", "ls .opencode"]) expect(shell(command), command).toMatch(CONFIG);
+		for (const command of ["cat opencode.json.bak", "ls notes/opencode", "npm run opencode-e2e", "echo .opencoder"]) expect(shell(command), command).toBeUndefined();
+		expect(openCodeGuard("execute", { code: "await tools.fs.write_file({ path: '.opencode/plugins/x.ts', content: '' })" }, t.options)).toMatch(CONFIG);
+		expect(openCodeGuard("box_run", { command: "cp x opencode.json" }, t.options)).toMatch(CONFIG);
+	});
+
+	it("leaves reading them alone, and OpenCode's Plan folder (~/.opencode/plan) writable", () => {
+		const t = world();
+		expect(openCodeGuard("read", { path: "opencode.json" }, t.options)).toBeUndefined();
+		expect(openCodeGuard("read", { path: join(t.folder, ".opencode", "plugins", "x.ts") }, t.options)).toBeUndefined();
+		expect(openCodeGuard("glob", { pattern: ".opencode/**" }, t.options)).toBeUndefined();
+		expect(openCodeGuard("grep", { pattern: "plugins", include: "opencode.json*" }, t.options)).toBeUndefined();
+		expect(openCodeGuard("write", { path: "~/.opencode/plan/steps.md", content: "x" }, t.options)).toBeUndefined();
+		expect(openCodeGuard("write", { path: "~/.opencode/plan/opencode.json", content: "x" }, t.options)).toMatch(CONFIG);
+		expect(openCodeGuard("write", { path: "~/.opencode/plan/x/.opencode/plugins/p.ts", content: "x" }, t.options)).toMatch(CONFIG);
+	});
+});
+
 describe("openCodeGuard lets nothing through by its shape (security review: authorization)", () => {
 	const UNREADABLE = "Orrery could not read this call (its input is not what the tool takes); nothing was run.";
 

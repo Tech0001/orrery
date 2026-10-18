@@ -392,6 +392,13 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Or
 			const code = `return await tools.opencode.session_move({ directory: ${JSON.stringify(`${world.base}/va`)} + "ult" })`;
 			expect(await toolResult("execute", { code })).toMatch(REFUSED);
 			expect(readdirSync(vault)).toEqual(["secret.txt"]);
+			// OpenCode's config and plugins, in the session's own folder too: OpenCode would load them into its server.
+			const CONFIG = /Orrery guard: .*OpenCode's config or plugins/;
+			expect(await toolResult("write", { path: "opencode.json", content: "{}" })).toMatch(CONFIG);
+			expect(await toolResult("edit", { path: "sub/opencode.jsonc", oldString: "a", newString: "b" })).toMatch(CONFIG);
+			expect(await toolResult("patch", { patchText: "*** Begin Patch\n*** Add File: .opencode/plugins/x.ts\n+x\n*** End Patch" }, "fake/gpt-5-fake")).toMatch(CONFIG);
+			expect(await toolResult("shell", { command: "echo '{}' > opencode.jsonc" })).toMatch(CONFIG);
+			for (const name of ["opencode.json", "opencode.jsonc", ".opencode"]) expect(existsSync(join(world.ws, name)), name).toBe(false);
 			expect(readFileSync(join(vault, "secret.txt"), "utf8")).toBe("the secret");
 			// Ordinary calls go through.
 			expect(await toolResult("shell", { command: "echo hello-from-shell" })).toContain("hello-from-shell");

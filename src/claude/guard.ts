@@ -224,6 +224,17 @@ export interface ClaudeGuardOptions extends PathGuardOptions {
 	readonly judgeMs?: number;
 }
 
+/**
+ * The paths claudeGuard judges as writes in a call, as written: under a path key in a tool that writes (Write, Edit, or
+ * a tool named for writing), and every destination. For a gate's own write rules (OpenCode's config, src/opencode/guard.ts).
+ */
+export function writtenPaths(toolName: string, input: Readonly<Record<string, unknown>>): string[] {
+	const found = named(input);
+	const as = AS_PI[toolName];
+	const writes = as === "write" || as === "edit" || (as === undefined && WRITE_VERB.test(toolName.split("__").at(-1) ?? toolName));
+	return [...(writes ? found.paths : []), ...found.destinations];
+}
+
 /** Why the call is refused, or undefined to let it through. */
 export function claudeGuard(toolName: string, input: Readonly<Record<string, unknown>>, options: ClaudeGuardOptions): string | undefined {
 	const { judgeMs = JUDGE_MS, ...where } = options;
