@@ -42,17 +42,21 @@ plugin (the installed program's `extensions/opencode` folder), the agent, and th
   refused, with the reason: `--server`, which connects to another server that never loads Orrery's plugin, and the
   subcommands that open no session (`serve`, `acp`, `api`, `session`, `auth`, `models`, `plugin`, `mcp`, `debug`,
   `stats`, `service`, `reload`, `pair`, `upgrade`, `update`, `uninstall`): run those as plain `opencode`.
+- **Your own `OPENCODE_CONFIG_CONTENT`** stays: Orrery reads it (JSON or JSONC, as OpenCode does) and adds its plugin
+  after your own plugins. If it can't read it (not JSON or JSONC, not an object, a `plugins` that isn't a list), the
+  launch says so and OpenCode starts with Orrery's plugin config alone. Comments in yours don't reach OpenCode.
 - **A plain `opencode` is not an agent's session,** even in the agent's folder: no memory, no recording, no guard.
   Opening by folder would need Orrery's plugin in OpenCode's global config and its shared service, which Orrery does
   not write.
 - **The token file.** OpenCode's environment and its config content reach the model's shell commands and MCP servers,
   so the agent's one-time token goes in neither. The launch writes it to a file only you can read
   (`tokens/opencode-<pid>-<random>` in Orrery's home, mode 0600 in a 0700 folder) just before OpenCode starts, and
-  removes it when OpenCode exits, or when the launcher is stopped (a file a killed launcher left is removed by the
-  next launch). The plugin claims the token for this OpenCode's server. `OPENCODE_CONFIG_CONTENT` holds only the plugin
-  folder, the agent's name and that path, and the model's shell can see it. `ORRERY_AGENT` and `ORRERY_AGENT_TOKEN`
-  are taken out of OpenCode's environment, so a tool the model starts is not the agent; an OpenCode it starts inherits
-  the config, finds the token already claimed, and runs as no agent's session, with the guard and without memory.
+  removes it when OpenCode exits, or when the launcher is stopped (a file a killed launcher left is removed by the next
+  launch). The plugin claims the token for this OpenCode's server. Orrery's part of `OPENCODE_CONFIG_CONTENT` holds only
+  the plugin folder, the agent's name and that path, and the model's shell can see it. `ORRERY_AGENT` and
+  `ORRERY_AGENT_TOKEN` are taken out of OpenCode's environment, so a tool the model starts is not the agent; an OpenCode
+  it starts inherits the config, finds the token already claimed, and runs as no agent's session, with the guard and
+  without memory.
 - `orrery agent` refuses an agent whose memory is still being built, and asks before opening an agent that is already
   open elsewhere (a second session is read-only), as for every tool.
 - **Ori** does not open OpenCode agents yet: an agent with `launcher = "ori"` is refused in OpenCode, with how to

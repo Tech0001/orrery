@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { argsRefusal, inheritsOrreryPlugin, opencodeArgs, pluginFolder } from "../../src/opencode/launch.ts";
+import { argsRefusal, inheritsOrreryPlugin, launchConfigContent, opencodeArgs, pluginFolder } from "../../src/opencode/launch.ts";
 import { configContent, PLUGIN_ID, readPluginOptions } from "../../src/opencode/options.ts";
 
 describe("OpenCode's command line", () => {
@@ -43,6 +43,44 @@ describe("OpenCode's command line", () => {
 	it("names the plugin folder of the install shape at hand: a release's extensions/opencode, a checkout's src/opencode/plugin", () => {
 		const checkout = fileURLToPath(new URL("../..", import.meta.url));
 		expect(pluginFolder({}, checkout)).toBe(join(checkout, "src", "opencode", "plugin"));
+	});
+});
+
+describe("the person's own OPENCODE_CONFIG_CONTENT at launch", () => {
+	const ours = configContent("/h/app/current/extensions/opencode", { agent: "Atlas", tokenFile: "/t/x" });
+	const entry = JSON.parse(ours).plugins[0];
+
+	it("is Orrery's alone when there is none", () => {
+		expect(launchConfigContent(undefined, ours)).toEqual({ content: ours });
+		expect(launchConfigContent("", ours)).toEqual({ content: ours });
+		expect(launchConfigContent("  \n", ours)).toEqual({ content: ours });
+	});
+
+	it("keeps theirs, JSON or JSONC, with Orrery's plugin entry after their own plugins", () => {
+		expect(JSON.parse(launchConfigContent('{"model": "x/y", "plugins": ["their-plugin", {"package": "/p/two"}]}', ours).content)).toEqual({ model: "x/y", plugins: ["their-plugin", { package: "/p/two" }, entry] });
+		expect(JSON.parse(launchConfigContent('{"model": "x/y"}', ours).content)).toEqual({ model: "x/y", plugins: [entry] });
+		const jsonc = '\uFEFF{\n  // the model\n  "model": "x/y", /* a note, with a "quote" */\n  "url": "http://a/*b*/c//d",\n  "plugins": ["their-plugin",],\n  "nested": {"a": [1, 2,], "b": "\\" // not a comment\\\\",},\n}\n';
+		expect(JSON.parse(launchConfigContent(jsonc, ours).content)).toEqual({ model: "x/y", url: "http://a/*b*/c//d", plugins: ["their-plugin", entry], nested: { a: [1, 2], b: '" // not a comment\\' } });
+	});
+
+	it("drops an Orrery plugin entry theirs carries (inherited from the shell of a session Orrery opened), and keeps the rest", () => {
+		const inherited = JSON.stringify({ model: "x/y", plugins: ["their-plugin", { package: "/h/app/current/extensions/opencode", options: { agent: "Birch", tokenFile: "/t/y" } }, "/src/orrery/src/opencode/plugin"] });
+		expect(JSON.parse(launchConfigContent(inherited, ours).content)).toEqual({ model: "x/y", plugins: ["their-plugin", entry] });
+	});
+
+	it("is Orrery's alone, and says why, when theirs can't be read or merged", () => {
+		for (const [theirs, why] of [
+			["{model: x}", /isn't JSON or JSONC/],
+			['{"a": 1', /isn't JSON or JSONC/],
+			['{"a": /* open', /isn't JSON or JSONC/],
+			["[1, 2]", /isn't a JSON object/],
+			["null", /isn't a JSON object/],
+			['{"plugins": "one"}', /"plugins" isn't a list/],
+		] as const) {
+			const merged = launchConfigContent(theirs, ours);
+			expect(merged.content, theirs).toBe(ours);
+			expect(merged.unread, theirs).toMatch(why);
+		}
 	});
 });
 

@@ -17,7 +17,7 @@ import { type CodexGate, codexHookGate, type probeHooks } from "../codex/check.t
 import { codexArgs, codexLaunch, misplacedSubcommand, orreryCommand, subcommandFirst } from "../codex/launch.ts";
 import { checkHookShell, NOISY_SHELL_QUESTION, noisyShellText, type ShellCheck } from "../codex/shell.ts";
 import { type OpenCodeGate, opencodePluginGate, type probePlugin } from "../opencode/check.ts";
-import { argsRefusal, inheritsOrreryPlugin, opencodeArgs, pluginFolder } from "../opencode/launch.ts";
+import { argsRefusal, inheritsOrreryPlugin, launchConfigContent, opencodeArgs, pluginFolder } from "../opencode/launch.ts";
 import { configContent } from "../opencode/options.ts";
 import { removeOnSignals, removeTokenFile, tokenFilePath, writeTokenFile } from "../opencode/token-file.ts";
 import { buildRunning, readBuild } from "./build.ts";
@@ -204,8 +204,11 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 		const tokenFile = tokenFilePath(env);
 		const folder = pluginFolder(env, options.root ?? wiringRoot(env).root);
 		const content = configContent(folder, { agent: agent.name, tokenFile });
+		// The person's own config content stays, with Orrery's plugin added; the plugin check loads Orrery's alone.
+		const launched = launchConfigContent(env.OPENCODE_CONFIG_CONTENT, content);
+		if (launched.unread !== undefined) steps.push({ text: `Your OPENCODE_CONFIG_CONTENT ${launched.unread}, so OpenCode starts with Orrery's plugin config alone, without yours.`, confirm: false });
 		const opencode = { path: check.path, ...(version === undefined ? {} : { version }), content, folder, tokenFile, token, plainArgs: [...base.args], ...(inheritsOrreryPlugin(env) ? { inherited: true as const } : {}) };
-		return { ...base, command: check.path, args: toolArgs, env: { OPENCODE_CONFIG_CONTENT: content }, unsetEnv: [AGENT_ENV, TOKEN_ENV], steps, opencode };
+		return { ...base, command: check.path, args: toolArgs, env: { OPENCODE_CONFIG_CONTENT: launched.content }, unsetEnv: [AGENT_ENV, TOKEN_ENV], steps, opencode };
 	}
 	if (ori !== undefined) {
 		if (tool === "omp") steps.push({ text: 'Ori 0.15.7 can\'t start OMP: its model registration fails before startup. See docs/ori.md, or set launcher = "direct".', confirm: false });

@@ -456,6 +456,23 @@ describe("OpenCode launch plans", () => {
 		expect(again.tokenFile).not.toBe(opencode.tokenFile);
 	});
 
+	it("keeps the person's own OPENCODE_CONFIG_CONTENT, with Orrery's plugin added, and says so plainly when it can't be read", () => {
+		const { config, row, env } = setup("opencode");
+		fakeOpenCode(env.PATH);
+		const tools = checkTools({ root: orreryRoot(), env });
+		const theirs = { ...env, OPENCODE_CONFIG_CONTENT: '{\n  // mine\n  "model": "x/y",\n  "plugins": ["their-plugin"],\n}' };
+		const plan = launchPlan(config, row, tools, { env: theirs, root: orreryRoot() });
+		const opencode = plan.opencode!;
+		const entry = JSON.parse(opencode.content).plugins[0];
+		expect(JSON.parse(plan.env.OPENCODE_CONFIG_CONTENT as string)).toEqual({ model: "x/y", plugins: ["their-plugin", entry] });
+		// The plugin check loads Orrery's plugin alone.
+		expect(JSON.parse(opencode.content)).toEqual({ plugins: [entry] });
+		expect(plan.steps.map((step) => step.text).join("\n")).not.toMatch(/OPENCODE_CONFIG_CONTENT/);
+		const unread = launchPlan(config, row, tools, { env: { ...env, OPENCODE_CONFIG_CONTENT: "{model: x}" }, root: orreryRoot() });
+		expect(unread.env.OPENCODE_CONFIG_CONTENT).toBe(unread.opencode?.content);
+		expect(unread.steps).toContainEqual({ text: expect.stringMatching(/^Your OPENCODE_CONFIG_CONTENT isn't JSON or JSONC \(.+\), so OpenCode starts with Orrery's plugin config alone, without yours\.$/), confirm: false });
+	});
+
 	it("removes the token file and the claim when OpenCode fails to start, and starts nothing when the file can't be written", async () => {
 		const { config, row, tools, env } = setup("opencode");
 		const plan = launchPlan(config, row, tools, { env, root: orreryRoot() });
