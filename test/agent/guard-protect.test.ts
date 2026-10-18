@@ -7,7 +7,7 @@ import { Agent } from "../../src/agent/agent.ts";
 import { ConfigError, type HarnessConfig, parseConfig } from "../../src/agent/config.ts";
 import { newConfigText } from "../../src/agent/config-edit.ts";
 import { checkResolvedPath, durablePreCheck } from "../../src/agent/guard.ts";
-import { guardOmpToolCall, guardToolCall, realTarget } from "../../src/agent/guard-paths.ts";
+import { guardOmpToolCall, guardToolCall, type PathGuardOptions, realTarget } from "../../src/agent/guard-paths.ts";
 import { checkToolCall, OPENCODE_COMMAND, OPENCODE_READ_ONLY, openCodeLoads, openCodeRule, SKILL_SHELL } from "../../src/agent/guard-rules.ts";
 import { claudeGuard } from "../../src/claude/guard.ts";
 import { runHook } from "../../src/claude/hooks.ts";
@@ -1557,7 +1557,8 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 		expect(omp("edit", { input: `[notes.md#1a2b]\nMV ${plugin}\n` })).toMatch(CONFIG);
 		expect(omp("edit", { input: `*** Begin Patch\n*** Update File: notes.md\n*** Move to: ${skill}\n@@\n-a\n+b\n*** End Patch` })).toMatch(SEEN);
 		expect(omp("edit", { path: "notes.md", input: "PUT 1\n+x\n" })).toBeUndefined();
-		// ast_edit: a file, a folder or a glob whose base holds OpenCode's config or a skill is refused; one that doesn't passes.
+		// ast_edit: a file, a folder or a glob whose base holds OpenCode's config, a skill or anything else the rules keep is
+		// refused; one that doesn't passes.
 		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [skill] })).toMatch(SEEN);
 		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: [plugin] })).toMatch(CONFIG);
 		expect(omp("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: ["."] })).toBeDefined();
@@ -1572,12 +1573,20 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 		expect(omp("lsp", { action: "rename_file", file: skill, new_name: "notes2.md" })).toMatch(SEEN);
 		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: join(t.root, "outside.md") })).toMatch(/outside this agent's folder/);
 		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: "notes2.md" })).toBeUndefined();
-		for (const input of [{ action: "rename", file: "src/lib/a.ts", line: 1, symbol: "a", new_name: "b" }, { action: "code_actions", file: "src/lib/a.ts", apply: true, query: "fix" }, { query: "workspace/executeCommand" }]) {
-			expect(omp("lsp", input), JSON.stringify(input)).toBeDefined();
-			expect(omp("lsp", input, { ...t.options, cwd: join(t.atlas, "src") }), JSON.stringify(input)).toBeUndefined();
+		// The language server's own edits name no file: refused in any folder, as is an action Orrery doesn't know.
+		for (const input of [{ action: "rename", file: "src/lib/a.ts", line: 1, symbol: "a", new_name: "b" }, { action: "code_actions", file: "src/lib/a.ts", apply: true, query: "fix" }, { action: "code_actions", file: "src/lib/a.ts", apply: "yes" }, { action: "request", query: "workspace/executeCommand" }, { query: "textDocument/hover" }, { action: "format" }]) {
+			expect(omp("lsp", input), JSON.stringify(input)).toMatch(/language server/);
+			expect(omp("lsp", input, { ...t.options, cwd: join(t.atlas, "src") }), JSON.stringify(input)).toMatch(/language server/);
 		}
-		expect(omp("lsp", { action: "definition", file: "src/lib/a.ts", line: 1 })).toBeUndefined();
+		for (const action of ["diagnostics", "definition", "type_definition", "implementation", "references", "hover", "symbols", "status", "reload", "capabilities"]) {
+			expect(omp("lsp", { action, file: "src/lib/a.ts", line: 1 }), action).toBeUndefined();
+		}
 		expect(omp("lsp", { action: "code_actions", file: "src/lib/a.ts" })).toBeUndefined();
+		expect(omp("lsp", { action: "code_actions", file: "src/lib/a.ts", apply: false })).toBeUndefined();
+		// rename_file's two ends, under every rule.
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: ".env" })).toMatch(/sensitive file/);
+		expect(omp("lsp", { action: "rename_file", file: "notes.md", new_name: "secrets.yml" })).toMatch(/protected by \[guard\] protect/);
+		expect(omp("lsp", { action: "rename_file", file: ".env", new_name: "notes2.md" })).toMatch(/sensitive file/);
 		// eval runs shell text: the shell rule.
 		expect(omp("eval", { language: "sh", code: "ls .claude/skills" })).toBe(SKILL_SHELL);
 		expect(omp("eval", { language: "sh", code: "cat x > opencode.json" })).toBe(OPENCODE_COMMAND);
@@ -1586,6 +1595,52 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 		expect(guardToolCall("edit", { path: skill, edits: [{ oldText: "Tidy the notes.", newText: "Tidy." }] }, t.options)).toBeUndefined();
 		for (const tool of ["grep", "find", "ls"]) expect(guardToolCall(tool, { pattern: "x", path: join(t.atlas, ".claude") }, t.options), tool).toBeUndefined();
 		for (const tool of ["grep", "glob", "find", "ast_grep"]) expect(omp(tool, { pattern: "x", path: join(t.atlas, ".claude", "skills") }), tool).toBeUndefined();
+	});
+
+	it("judges every file an OMP ast_edit folder or glob reaches by every rule, node_modules and .git too, and refuses one that reaches too many", () => {
+		const t = skillWorld();
+		const base = join(t.atlas, "tree");
+		const make = (file: string, text = "x") => {
+			mkdirSync(join(base, file, ".."), { recursive: true });
+			writeFileSync(join(base, file), text);
+		};
+		make("src/a.ts");
+		const edit = (paths: string[], options: PathGuardOptions = t.options) => guardOmpToolCall("ast_edit", { ops: [{ pat: "a", out: "b" }], paths }, options);
+		expect(edit([base])).toBeUndefined();
+		expect(edit([`${base}/**/*.ts`])).toBeUndefined();
+		const cases: [string, RegExp][] = [
+			["deep/.env", /sensitive file/],
+			["deep/config/secrets.yml", /protected by \[guard\] protect/],
+			["deep/vault/token.txt", /protected by \[guard\] protect/],
+			["node_modules/pkg/.env.local", /sensitive file/],
+			[".git/hooks/.env", /sensitive file/],
+			["deep/.opencode/plugins/p.ts", /OpenCode's config or code/],
+			["deep/opencode.json", /OpenCode's config or code/],
+			["deep/.claude/skills/s/SKILL.md", /can't see what this would leave/],
+		];
+		for (const [file, refused] of cases) {
+			make(file);
+			expect([file, edit([base])]).toEqual([file, expect.stringMatching(refused)]);
+			expect([file, edit([`${base}/**/*`])]).toEqual([file, expect.stringMatching(refused)]);
+			rmSync(join(base, file));
+		}
+		// A link below it leading to a protected place is judged where it leads.
+		symlinkSync(join(t.home, "finance"), join(base, "fin"));
+		expect(edit([base])).toMatch(/protected by \[guard\] protect/);
+		rmSync(join(base, "fin"));
+		// Another agent's view, and Orrery's home, below it.
+		const view = join(base, "other-agent", ".orrery", "view.md");
+		make("other-agent/.orrery/view.md");
+		expect(edit([base], { ...t.options, foreignViews: [view] })).toMatch(/another agent's memory view|sensitive file/);
+		rmSync(join(base, "other-agent"), { recursive: true });
+		make("orrery-data/agents/x.sqlite");
+		expect(edit([base], { ...t.options, orreryData: join(base, "orrery-data") })).toMatch(/sensitive file/);
+		rmSync(join(base, "orrery-data"), { recursive: true });
+		expect(edit([base])).toBeUndefined();
+		// Past the cap of files looked at: refused.
+		for (let i = 0; i < 5; i++) make(`many/f${i}.ts`);
+		expect(edit([base])).toBeUndefined();
+		expect(edit([base], { ...t.options, astEditLimit: 3 })).toMatch(/more files than Orrery's guard can look through/);
 	});
 
 	it("only ever adds refusals: a path through a skills folder that lands elsewhere is judged by the general rules", () => {

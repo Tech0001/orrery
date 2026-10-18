@@ -162,6 +162,8 @@ export interface PathGuardOptions extends GuardOptions {
 	readonly orreryData?: string;
 	/** How the tool resolves the path it is given, to the file it will open; default: pi's (piToolPath). */
 	readonly resolvePath?: (raw: string, cwd: string, home: string) => string;
+	/** How many entries an OMP ast_edit's folder or glob may reach before it is refused (default 50,000; tests set fewer). */
+	readonly astEditLimit?: number;
 }
 
 /** The agent dir PI_CODING_AGENT_DIR moves pi's (and OMP's) to, if set. */
@@ -529,97 +531,101 @@ const LISTINGS = new Set(["ls", "find"]);
 
 /** Why a tool call (in pi's tool names and arguments) is refused, or undefined to let it through. */
 export function guardToolCall(toolName: string, input: Readonly<Record<string, unknown>>, options: PathGuardOptions): string | undefined {
+	return pathJudge(options)(toolName, input);
+}
+
+/**
+ * guardToolCall for many calls under the same options (an OMP ast_edit's every file): what the options give (the
+ * views, [guard] protect, the config's spellings, the credential locations, OpenCode's rule, the roots, each where it
+ * really is) is worked out once, and each call is judged by the same rules.
+ */
+export function pathJudge(options: PathGuardOptions): (toolName: string, input: Readonly<Record<string, unknown>>) => string | undefined {
 	const home = options.home ?? homedir();
-	const search = SEARCHES.has(toolName);
 	const views = viewsOf(options, home);
 	// [guard] protect: its path entries from this home, and where they really are.
 	const protect = protection(options.protect, home, realTarget);
-	// The arguments that name files: grep's glob and find's pattern (a file-name glob). grep's pattern is the text it
-	// searches for, so code that mentions auth.json can still be searched. A glob opens no view file: a path does.
-	const nameKey = toolName === "grep" ? "glob" : toolName === "find" ? "pattern" : undefined;
-	const names = nameKey === undefined ? undefined : input[nameKey];
-	if (typeof names === "string" && (sensitive(names, views.path()) || secretText(names, protect))) return `${toolName} ${nameKey} "${names}" names sensitive files (keys, credentials or Orrery's private data).`;
-	const namedEntry = typeof names === "string" ? textProtected(names, protect) : undefined;
-	if (namedEntry !== undefined) return `${toolName} ${nameKey} "${names}" names ${namedEntry}, ${PROTECTED_BY}.`;
 	// The config file in use, as given and where it really is: named in no command, written by no tool.
 	const config = configSpellings({ ...options, home }, options.configFile === undefined ? undefined : realTarget(options.configFile));
-	const given = typeof input.path === "string" && input.path !== "" ? input.path : undefined;
-	const raw = given ?? (search ? "." : undefined);
-	if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, options, views, config, protect);
-	// All three forms: what the model wrote, where the tool resolves it, and where it really lands.
-	const resolved = (options.resolvePath ?? piToolPath)(raw, options.cwd, home);
-	const named = views.path(resolved);
-	if (sensitive(raw, named) || sensitive(resolved, named) || secretPath(raw, protect)) return SENSITIVE_FILE(raw);
-	const target = realTarget(resolved);
-	if (sensitive(target, views.path(target))) return SENSITIVE_FILE(raw);
-	// Orrery's config is read, never written: an agent's view and these rules come from it.
-	const writes = toolName === "write" || toolName === "edit";
-	const isConfig = (path: string) => orreryConfigNamed(path) || config.includes(path.toLowerCase());
-	if (writes && (isConfig(resolved) || isConfig(target))) return CONFIG_READ_ONLY(raw);
-	// So is Orrery's installed program (app/): the hooks and extensions every agent runs are in it.
-	if (writes && (orreryAppNamed(resolved) || orreryAppNamed(target))) return APP_READ_ONLY(raw);
-	// And OpenCode's config and code, which OpenCode loads and runs (guard-rules.ts openCodeLoads).
 	const openCode = openCodeOf(options, home);
-	if (writes && (openCodeLoads(resolved, openCode) || openCodeLoads(target, openCode))) return OPENCODE_READ_ONLY(raw);
-	// A skill OpenCode loads may be written, but not given front matter it runs as code (guard-rules.ts).
-	const skills = writes && (openCodeSkillPath(resolved) || openCodeSkillPath(target));
-	const skill = skills ? openCodeSkillRefusal(resolved, target, newTextIn(toolName, input), readSmall(target)) : undefined;
-	if (skill !== undefined) return skill;
 	// The credential locations themselves, symlinks followed (a ~/.ssh linked from a dotfiles folder, say). Compared
 	// ignoring case: on a case-insensitive file system (macOS) ~/.SSH and /USERS are the same folders.
 	const fold = (path: string) => path.toLowerCase();
-	const where = fold(target);
 	const credentials = [...HOME_CREDENTIALS.map((entry) => join(home, entry)), ...(options.credentials ?? [])].map((path) => fold(realTarget(path)));
-	if (credentials.some((location) => within(where, location))) return SENSITIVE_FILE(raw);
-	// Another agent's view file, as given and where it really is: no tool reads or writes it, by any spelling or link.
 	const foreign = options.foreignViews.flatMap((view) => [view, realTarget(view)]);
-	if (foreign.some((view) => within(where, fold(view)))) return OTHER_VIEW(raw);
-	// Orrery's home, judged on its real path (inOrreryHome).
 	const realData = options.orreryData === undefined ? undefined : realTarget(options.orreryData);
 	const data = realData === undefined ? undefined : fold(realData);
-	if (realData !== undefined && inOrreryHome(where, realData) && !(search && where === data)) return SENSITIVE_FILE(raw);
-	if (writes && realData !== undefined && where === fold(join(realData, "config.toml"))) return CONFIG_READ_ONLY(raw);
-	if (writes && realData !== undefined && within(where, fold(join(realData, "app")))) return APP_READ_ONLY(raw);
-	// [guard] protect: a path inside a path entry, or with a part a name entry names, in any of its three forms.
-	if ([raw, resolved, target].some((path) => pathProtected(path, protect) !== undefined)) return PROTECTED_FILE(raw);
-	// A search reads everything under its root, hidden files too, whatever its glob: judge the root, not the glob's
-	// spelling. Home and above hold the credentials; /proc holds every process's environment.
-	if (search && (credentials.some((location) => within(location, where)) || (data !== undefined && within(data, where)) || within(where, "/proc"))) {
-		return `${toolName} on ${target} would search credential files (~/.ssh, ~/.pi and the like, or /proc); search a narrower folder.`;
-	}
-	// So does a root that holds a path entry, as written or where it really is. A name entry is not judged here: which
-	// folders hold one is not known without listing them.
-	const held = search ? protect.paths.find((entry) => [entry.path, entry.real].some((at) => within(foldName(at), foldName(target)))) : undefined;
-	if (held !== undefined) return `${toolName} on ${target} would search ${held.entry}, ${PROTECTED_BY}; search a narrower folder.`;
-	// A content search whose root holds another agent's view file: one that is there, or whose agent is set up the file
-	// way (it is written soon). An agent that never uses Claude Code's file mode has none to keep a folder's searches from,
-	// and a listing reads names only.
 	const setUp = new Set((options.fileModeViews ?? []).flatMap((view) => [view, realTarget(view)]).map(fold));
-	if (search && !LISTINGS.has(toolName) && foreign.some((view) => within(fold(view), where) && (setUp.has(fold(view)) || present(view)))) {
-		return `${toolName} on ${target} would search another agent's memory view; search a narrower folder.`;
-	}
-	// The rest, on the real path: the roots, and a command the call may carry beside its path (bash with an extra path
-	// key), judged with every rule its own call would get, [guard] protect included.
-	return checkToolCall(
-		{ name: toolName, arguments: { ...input, path: target } },
-		{ folder: realRoot(options.folder), allowedRoots: options.allowedRoots.map(realRoot), cwd: realRoot(options.cwd), foreignViews: options.foreignViews, openCode },
-		views,
-		config,
-		protect,
-	);
+	const roots = { folder: realRoot(options.folder), allowedRoots: options.allowedRoots.map(realRoot), cwd: realRoot(options.cwd), foreignViews: options.foreignViews, openCode };
+	return (toolName, input) => {
+		const search = SEARCHES.has(toolName);
+		// The arguments that name files: grep's glob and find's pattern (a file-name glob). grep's pattern is the text it
+		// searches for, so code that mentions auth.json can still be searched. A glob opens no view file: a path does.
+		const nameKey = toolName === "grep" ? "glob" : toolName === "find" ? "pattern" : undefined;
+		const names = nameKey === undefined ? undefined : input[nameKey];
+		if (typeof names === "string" && (sensitive(names, views.path()) || secretText(names, protect))) return `${toolName} ${nameKey} "${names}" names sensitive files (keys, credentials or Orrery's private data).`;
+		const namedEntry = typeof names === "string" ? textProtected(names, protect) : undefined;
+		if (namedEntry !== undefined) return `${toolName} ${nameKey} "${names}" names ${namedEntry}, ${PROTECTED_BY}.`;
+		const given = typeof input.path === "string" && input.path !== "" ? input.path : undefined;
+		const raw = given ?? (search ? "." : undefined);
+		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode }, views, config, protect);
+		// All three forms: what the model wrote, where the tool resolves it, and where it really lands.
+		const resolved = (options.resolvePath ?? piToolPath)(raw, options.cwd, home);
+		const named = views.path(resolved);
+		if (sensitive(raw, named) || sensitive(resolved, named) || secretPath(raw, protect)) return SENSITIVE_FILE(raw);
+		const target = realTarget(resolved);
+		if (sensitive(target, views.path(target))) return SENSITIVE_FILE(raw);
+		// Orrery's config is read, never written: an agent's view and these rules come from it.
+		const writes = toolName === "write" || toolName === "edit";
+		const isConfig = (path: string) => orreryConfigNamed(path) || config.includes(path.toLowerCase());
+		if (writes && (isConfig(resolved) || isConfig(target))) return CONFIG_READ_ONLY(raw);
+		// So is Orrery's installed program (app/): the hooks and extensions every agent runs are in it.
+		if (writes && (orreryAppNamed(resolved) || orreryAppNamed(target))) return APP_READ_ONLY(raw);
+		// And OpenCode's config and code, which OpenCode loads and runs (guard-rules.ts openCodeLoads).
+		if (writes && (openCodeLoads(resolved, openCode) || openCodeLoads(target, openCode))) return OPENCODE_READ_ONLY(raw);
+		// A skill OpenCode loads may be written, but not given front matter it runs as code (guard-rules.ts).
+		const skills = writes && (openCodeSkillPath(resolved) || openCodeSkillPath(target));
+		const skill = skills ? openCodeSkillRefusal(resolved, target, newTextIn(toolName, input), readSmall(target)) : undefined;
+		if (skill !== undefined) return skill;
+		const where = fold(target);
+		if (credentials.some((location) => within(where, location))) return SENSITIVE_FILE(raw);
+		// Another agent's view file, as given and where it really is: no tool reads or writes it, by any spelling or link.
+		if (foreign.some((view) => within(where, fold(view)))) return OTHER_VIEW(raw);
+		// Orrery's home, judged on its real path (inOrreryHome).
+		if (realData !== undefined && inOrreryHome(where, realData) && !(search && where === data)) return SENSITIVE_FILE(raw);
+		if (writes && realData !== undefined && where === fold(join(realData, "config.toml"))) return CONFIG_READ_ONLY(raw);
+		if (writes && realData !== undefined && within(where, fold(join(realData, "app")))) return APP_READ_ONLY(raw);
+		// [guard] protect: a path inside a path entry, or with a part a name entry names, in any of its three forms.
+		if ([raw, resolved, target].some((path) => pathProtected(path, protect) !== undefined)) return PROTECTED_FILE(raw);
+		// A search reads everything under its root, hidden files too, whatever its glob: judge the root, not the glob's
+		// spelling. Home and above hold the credentials; /proc holds every process's environment.
+		if (search && (credentials.some((location) => within(location, where)) || (data !== undefined && within(data, where)) || within(where, "/proc"))) {
+			return `${toolName} on ${target} would search credential files (~/.ssh, ~/.pi and the like, or /proc); search a narrower folder.`;
+		}
+		// So does a root that holds a path entry, as written or where it really is. A name entry is not judged here: which
+		// folders hold one is not known without listing them.
+		const held = search ? protect.paths.find((entry) => [entry.path, entry.real].some((at) => within(foldName(at), foldName(target)))) : undefined;
+		if (held !== undefined) return `${toolName} on ${target} would search ${held.entry}, ${PROTECTED_BY}; search a narrower folder.`;
+		// A content search whose root holds another agent's view file: one that is there, or whose agent is set up the file
+		// way (it is written soon). An agent that never uses Claude Code's file mode has none to keep a folder's searches
+		// from, and a listing reads names only.
+		if (search && !LISTINGS.has(toolName) && foreign.some((view) => within(fold(view), where) && (setUp.has(fold(view)) || present(view)))) {
+			return `${toolName} on ${target} would search another agent's memory view; search a narrower folder.`;
+		}
+		// The rest, on the real path: the roots, and a command the call may carry beside its path (bash with an extra path
+		// key), judged with every rule its own call would get, [guard] protect included.
+		return checkToolCall({ name: toolName, arguments: { ...input, path: target } }, roots, views, config, protect);
+	};
 }
 
-/** How many entries openCodeUnder looks at, at most. */
-const UNDER_LIMIT = 50_000;
+/** How many entries filesBelow looks at, at most. */
+const BELOW_LIMIT = 50_000;
 
 /**
- * The first of OpenCode's config or a skill (guard-rules.ts openCodeLoads, openCodeSkillPath) at or below `root`, by its
- * path or, for a link, where it leads: "too many" past UNDER_LIMIT entries; undefined when there is none. node_modules
- * and .git are not looked into (a limit: OpenCode loads a folder's config only for a session in or below it).
+ * Every file at or below `root` (and every link, whose target the rules judge where it leads), node_modules and .git
+ * among them: "too many" past `limit` entries. A root that is no folder is itself.
  */
-function openCodeUnder(root: string, rule: OpenCodeRule): string | "too many" | undefined {
-	const hit = (path: string) => openCodeLoads(path, rule) || openCodeSkillPath(path);
-	if (hit(root) || hit(realTarget(root))) return root;
+function filesBelow(root: string, limit: number): string[] | "too many" {
+	const files: string[] = [];
 	const stack = [root];
 	let seen = 0;
 	for (let dir = stack.pop(); dir !== undefined; dir = stack.pop()) {
@@ -627,25 +633,22 @@ function openCodeUnder(root: string, rule: OpenCodeRule): string | "too many" | 
 		try {
 			entries = readdirSync(dir, { withFileTypes: true });
 		} catch {
+			if (dir === root) files.push(root);
 			continue;
 		}
 		for (const entry of entries) {
-			if (++seen > UNDER_LIMIT) return "too many";
+			if (++seen > limit) return "too many";
 			const path = join(dir, entry.name);
-			if (hit(path) || (entry.isSymbolicLink() && hit(realTarget(path)))) return path;
-			if (entry.isDirectory() && entry.name !== "node_modules" && entry.name !== ".git") stack.push(path);
+			if (entry.isDirectory()) stack.push(path);
+			else files.push(path);
 		}
 	}
-	return undefined;
+	return files;
 }
 
-/** Why a write to files below `root` (an ast_edit's folder or glob, a language server's edits) is refused for OpenCode's config or a skill there. */
-function reachesOpenCode(root: string, what: string, options: PathGuardOptions, home: string): string | undefined {
-	const found = openCodeUnder(root, openCodeOf(options, home));
-	if (found === undefined) return undefined;
-	if (found === "too many") return `${what} reaches more files than Orrery's guard can look through for OpenCode's config and skills; give a narrower path.`;
-	return openCodeSkillPath(found) || openCodeSkillPath(realTarget(found)) ? SKILL_UNSEEN(found) : OPENCODE_READ_ONLY(found);
-}
+/** The lsp actions that only read (OMP's lsp tool, src/lsp/types.ts): code_actions reads too unless it applies one. */
+const LSP_READS = new Set(["diagnostics", "definition", "references", "hover", "symbols", "type_definition", "implementation", "status", "reload", "capabilities"]);
+const LSP_EDITS = (action: string) => `lsp ${action} has the language server edit files no argument names, which Orrery's guard can't judge; nothing was run. Make the edit with edit or write.`;
 
 /** A file's text, for judging an edit on what it would leave (at most 1 MB); undefined when it can't be read. */
 function readSmall(file: string): string | undefined {
@@ -692,9 +695,10 @@ const EDIT_UNREADABLE = "Orrery could not read every target of this edit; use a 
  * ast_edit target may name the session's own view from "~/" as well as by its absolute path (OMP expands "~" in its
  * own process); shell text, eval code and an edit's text may not (ViewRules). Every tool that writes reaches the write
  * rules as a write: a write with a [path#TAG] header or a selector writes part of a file (what it then starts with is
- * unseen to the skills rule), an ast_edit folder or glob and the language server's own edits (lsp rename, an applied
- * code action, a raw request) may not reach OpenCode's config or a skill below their folder, and lsp's rename_file
- * moves a file (both ends writes).
+ * unseen to the skills rule); an ast_edit folder or glob has every file below its base (node_modules and .git too)
+ * judged as a write by every rule, and past 50,000 entries is refused; lsp's rename_file moves a file (both ends
+ * writes), its reading actions pass, and every other action (a symbol rename, an applied code action, a raw request,
+ * one Orrery doesn't know) is refused, since the language server's edits name no file.
  */
 export function guardOmpToolCall(toolName: string, input: Readonly<Record<string, unknown>>, options: PathGuardOptions): string | undefined {
 	const omp: PathGuardOptions = { ...options, resolvePath: ompToolPath };
@@ -748,24 +752,30 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 		const partial = headerPath(input.path) !== input.path || selectorPrefixes(input.path).length > 0;
 		return target("write", input.path, partial ? { ...input, [NEW_TEXT]: undefined } : input, true);
 	}
-	// lsp: renaming a file moves it (both ends are writes of what the guard can't see); a symbol rename, a code action
-	// applied and a raw request make the language server's own edits, in files no argument names: refused when the
-	// session's folder holds OpenCode's config or a skill (openCodeUnder).
+	// lsp, by its action: renaming a file moves it (both ends writes of what the guard can't see, under every rule); the
+	// actions that only read pass as before; a symbol rename, an applied code action, a raw request and any action Orrery
+	// doesn't know have the language server edit files no argument names, and are refused.
 	if (toolName === "lsp") {
-		const action = typeof input.action === "string" ? input.action : "request";
+		const action = input.action;
 		if (action === "rename_file") return firstRefusal([...strings([input.file]), ...strings([input.new_name])], (path) => target("edit", path, { [NEW_TEXT]: undefined }));
-		if (action === "rename" || action === "request" || (action === "code_actions" && input.apply === true)) {
-			const reason = reachesOpenCode(omp.cwd, `lsp ${action}`, omp, home);
-			if (reason !== undefined) return reason;
-		}
-		return judge(toolName, input);
+		const reads = typeof action === "string" && (LSP_READS.has(action) || (action === "code_actions" && (input.apply === undefined || input.apply === false)));
+		return reads ? judge(toolName, input) : LSP_EDITS(typeof action === "string" ? action : "request");
 	}
 	// ast_edit rewrites what its patterns match, in files its globs reach: a skill among them is one whose text the guard
 	// can't see (guard-rules.ts openCodeSkillRefusal).
 	if (toolName === "ast_edit") {
 		const parts = strings(input.paths).flatMap(pathParts);
-		// A folder or a glob rewrites files below its base: none of them may be OpenCode's config or a skill.
-		return firstRefusal(parts, (part) => glob("edit", part)) ?? firstRefusal(parts, (part) => reachesOpenCode(ompToolPath(globBase(part.replace(/\\/g, "/")), omp.cwd, home), `ast_edit ${part}`, omp, home));
+		const named = firstRefusal(parts, (part) => glob("edit", part));
+		if (named !== undefined) return named;
+		// A folder or a glob rewrites files below its base: every one of them is judged as a write, by every rule.
+		const each = pathJudge(omp);
+		for (const part of parts) {
+			const files = filesBelow(ompToolPath(globBase(part.replace(/\\/g, "/")), omp.cwd, home), omp.astEditLimit ?? BELOW_LIMIT);
+			if (files === "too many") return `ast_edit ${part} reaches more files than Orrery's guard can look through; give a narrower path.`;
+			const reason = firstRefusal(files, (file) => each("edit", { path: file, [NEW_TEXT]: undefined }));
+			if (reason !== undefined) return reason;
+		}
+		return undefined;
 	}
 	const raw = typeof input.path === "string" && input.path.trim() !== "" ? input.path : undefined;
 	// Judged as pi's grep is: a root at home or above, or holding credentials, is refused. glob lists names only, so it is
