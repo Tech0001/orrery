@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Holder } from "../../src/claude/holder.ts";
 import { HOOK_EVENTS, type HookContext, runHook } from "../../src/claude/hooks.ts";
 import { holderLog, sessionDir, setupMarker, viewFile } from "../../src/claude/paths.ts";
+import { unsupportedCause } from "../../src/claude/peer.ts";
 import { claudeSetup, claudeSetupMod } from "../../src/claude/setup.ts";
 import { claudeSession } from "../../src/claude/pick.ts";
 import { newToken } from "../../src/agent/pick.ts";
@@ -221,7 +222,9 @@ describe("the caller check (spec 2026-10-18-agent-permissions 3c): a writing hoo
 		["another process (the shell's own socket pair)", CLAUDE + 1, CALLER_NOTICE],
 		["a pipe or a file (the shell's `echo … |`)", "not-socket", CALLER_NOTICE],
 		["a runtime that can't ask (Node)", "unsupported", cannotCheck("it runs under Node, not its own binary")],
-	] as const)("refuses %s: nothing spooled, forgotten, decided or started, and the guard still judges", async (_name, peer, notice) => {
+	] as const)("refuses %s: nothing spooled, forgotten, decided or started, and the guard still judges", async (_name, peer, given) => {
+		// Under Bun (the suite run by Bun, test:bun-suite) a runtime that can't ask gives Bun's cause, not Node's.
+		const notice = peer === "unsupported" && process.versions.bun !== undefined ? cannotCheck(unsupportedCause()) : given;
 		const t = testAgent({ setup: true });
 		const genuine = await recordingSession(t);
 		expect(spooled(t)).toEqual(["transcript"]);

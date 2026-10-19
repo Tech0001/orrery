@@ -18,7 +18,8 @@ const decide = (t: TestAgent, start?: (pid: number) => string | undefined) =>
 	claudeSession(t.config, { env: { CLAUDE_PROJECT_DIR: t.folder }, cwd: t.folder, pid: CLAUDE, decide: true, ...(start === undefined ? {} : { start }) });
 
 describe("stdinPeer", () => {
-	it("cannot tell under Node, which has no getsockopt: unsupported, and says why", () => {
+	// The suite run by Bun (test:bun-suite) asks for real; the built binary's tests check that.
+	it.skipIf(process.versions.bun !== undefined)("cannot tell under Node, which has no getsockopt: unsupported, and says why", () => {
 		expect(process.versions.bun).toBeUndefined();
 		expect(stdinPeer()).toBe("unsupported");
 		expect(unsupportedCause()).toBe("it runs under Node, not its own binary");

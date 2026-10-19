@@ -88,7 +88,8 @@ describe("the hooks as Claude Code runs them", () => {
 		expect([none.status, none.stdout, none.stderr]).toEqual([0, "", ""]);
 	}, 60_000);
 
-	it.skipIf(binary)("under Node, which cannot ask who is on stdin, record nothing, and SessionStart says why", () => {
+	// Not under Bun either: the suite run by Bun (test:bun-suite) runs the hooks under Bun, which asks.
+	it.skipIf(binary || process.versions.bun !== undefined)("under Node, which cannot ask who is on stdin, record nothing, and SessionStart says why", () => {
 		const t = testAgent({ setup: true });
 		const transcript = transcriptIn(t.dir);
 		const env = { ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: t.folder, CLAUDE_CONFIG_DIR: transcript.configDir };
