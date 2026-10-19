@@ -224,18 +224,33 @@ function refusedGuard(cwd: string, config: HarnessConfig, options: OrreryOptions
 /** The process that hosts this session: the tool's own (the owner of its ORRERY_AGENT_TOKEN claim). */
 const hostPid = (options: OrreryOptions): number => options.owner ?? process.pid;
 
+/** Where nestedIn keeps its decisions: on globalThis, which every load of this extension in the process shares. */
+const NESTED_DECISIONS = Symbol.for("orrery.pi.nested");
+
 /**
  * The agent session this one was started inside, if any (spec 2026-10-18-agent-permissions §3b; src/agent/sessions.ts):
  * an ancestor of this tool's process recorded in the config's data folder, or, when the ancestry is cut, the markers in
  * its environment. This tool's own launch (its ORRERY_AGENT and token, its own record) is no such session. A look that
  * fails (it should never throw) counts as a session whose agent is unknown: a check that can't judge refuses.
+ * Decided once per process and data folder, as Claude Code, Codex and OpenCode decide it: kept where every load of this
+ * extension in the process finds it (a new session, an OMP subagent, a reload), so a pi or OMP started inside a session
+ * stays without memory once that session ends, and one started outside stays outside.
  */
 function nestedIn(config: HarnessConfig, options: OrreryOptions): Inside | undefined {
+	const self = hostPid(options);
+	const key = `${self}\u0000${resolve(config.dataDir)}`;
+	const store = globalThis as unknown as Record<symbol, Map<string, { readonly inside: Inside | undefined }> | undefined>;
+	const decided = (store[NESTED_DECISIONS] ??= new Map());
+	const found = decided.get(key);
+	if (found !== undefined) return found.inside;
+	let inside: Inside | undefined;
 	try {
-		return insideSession([config.dataDir], options.env ?? process.env, config, { self: hostPid(options) });
+		inside = insideSession([config.dataDir], options.env ?? process.env, config, { self });
 	} catch {
-		return { agent: undefined, tool: undefined, via: "marker", dataDir: config.dataDir };
+		inside = { agent: undefined, tool: undefined, via: "marker", dataDir: config.dataDir };
 	}
+	decided.set(key, { inside });
+	return inside;
 }
 
 /**

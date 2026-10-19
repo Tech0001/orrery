@@ -105,6 +105,33 @@ describe("an OMP started inside an agent's session (spec 2026-10-18-agent-permis
 		expect(hosts(dataDir)).toEqual([`${process.ppid}.json`]);
 	});
 
+	it("is decided once for the process: after the outer session ended, a new session, a subagent and a reload stay nested", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		hostRecord(dataDir, "Atlas", "pi", process.ppid);
+		const notice = { type: "warning", message: "Orrery: started inside Atlas's session (pi), so this one opens no memory and records nothing." };
+		const omp = await ompOrrery(join(root, "agent-Birch"), config);
+		expect(omp.notices).toEqual([notice]);
+		// The outer session ends; this OMP outlives it and starts a new session.
+		forgetSession(dataDir, process.ppid);
+		omp.session = { id: "n1", entries: [] };
+		await omp.emit("session_switch", { reason: "new" });
+		expect(omp.tools.size).toBe(0);
+		expect(omp.status("orrery")).toBeUndefined();
+		expect(await turn(omp, "Question.", "Answer.")).toBeUndefined();
+		// Atlas's rules and Birch's at once, as before: Birch's own root alone is refused.
+		expect(await write(omp, join(root, "plain", "x.txt"))).toEqual(refusedOutside);
+		// A subagent the OMP starts now (the extension loaded again in this process) keeps that guard.
+		const sub = await ompOrrery(join(root, "agent-Birch"), config, { agent: "sub" });
+		expect(sub.tools.size).toBe(0);
+		expect(await write(sub, join(root, "plain", "x.txt"))).toEqual(refusedOutside);
+		// So does the extension loaded again for the main session.
+		const again = await ompOrrery(join(root, "agent-Birch"), config);
+		expect(again.notices).toEqual([notice]);
+		expect(again.tools.size).toBe(0);
+		expect(existsSync(join(dataDir, "agents"))).toBe(false);
+		expect(hosts(dataDir)).toEqual([]);
+	});
+
 	it("pi's entry loaded in OMP (mismatched): nested, it says so instead and notes nothing", async () => {
 		const { root, config, dataDir } = nestedWorld();
 		hostRecord(dataDir, "Atlas", "pi", process.ppid);

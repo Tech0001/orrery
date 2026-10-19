@@ -192,6 +192,33 @@ describe("a pi started inside an agent's session (spec 2026-10-18-agent-permissi
 		expect(existsSync(join(dataDir, "agents"))).toBe(false);
 		expect(hosts(dataDir)).toEqual([`${host}.json`]);
 	});
+
+	it("is decided once for the process: a new session after the outer one ended stays nested, and one started outside stays outside", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		hostRecord(dataDir, "Atlas", "claude-code", process.ppid);
+		const run = await pi(root, join(root, "agent-Birch"), config);
+		const notice = { type: "warning", message: "Orrery: started inside Atlas's session (Claude Code), so this one opens no memory and records nothing." };
+		expect(run.notices).toEqual([notice]);
+		// The outer session ends; this pi outlives it and starts a new session (/new).
+		forgetSession(dataDir, process.ppid);
+		await run.runtime.newSession();
+		expect(run.notices).toEqual([notice, notice]);
+		for (const tool of ["zoom", "date", "search", "agents", "agent_memory"]) expect(run.tool(tool)).toBeUndefined();
+		expect(run.status("orrery")).toBeUndefined();
+		expect(existsSync(join(dataDir, "agents"))).toBe(false);
+		expect(hosts(dataDir)).toEqual([]);
+		await close(run);
+
+		// A pi started outside every session stays outside, whatever is recorded around it later.
+		const { root: other, config: plain, dataDir: data } = nestedWorld();
+		const outside = await pi(other, join(other, "agent-Birch"), plain);
+		expect(outside.status("orrery")).toBe("Orrery · Birch · 0 msgs");
+		hostRecord(data, "Atlas", "claude-code", process.ppid);
+		await outside.runtime.newSession();
+		expect(outside.status("orrery")).toBe("Orrery · Birch · 0 msgs");
+		expect(outside.notices.filter((n) => n.message.includes("started inside"))).toEqual([]);
+		await close(outside);
+	}, 30_000);
 });
 
 describe("a pi session's host record (spec 2026-10-18-agent-permissions §2)", () => {
