@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
-import { linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type HarnessConfig, loadConfig } from "../../src/agent/config.ts";
@@ -264,11 +264,12 @@ describe("the CLI gate (spec 2026-10-18-agent-permissions §3)", () => {
 		mkdirSync(join(t.root, "scratch-home"));
 		writeFileSync(join(t.root, "scratch-home", "config.toml"), agents(t.root, '["*"]'));
 		expect(refusal(() => gateCommand("status", ["status", "."], { config: join(real, "config.toml") }, elsewhere))).toBe(homeChanged);
-		// Nothing changed (the normal case): it runs, with the home's own config.
+		// Nothing changed (the normal case): it runs, with the home's own config, read from the session's real data folder
+		// (on macOS the temporary folder is a link, /var to /private/var).
 		const gated = gateCommand("status", ["status", "."], {}, { HOME: t.home });
 		expect(gated.inside).toMatchObject({ agent: "Atlas", tool: "pi", via: "ancestry" });
-		expect(gated.config?.dataDir).toBe(real);
-		expect(gateCommand("status", ["status", "."], {}, { HOME: t.home, ORRERY_HOME: real }).config?.dataDir).toBe(real);
+		expect(gated.config?.dataDir).toBe(realpathSync(real));
+		expect(gateCommand("status", ["status", "."], {}, { HOME: t.home, ORRERY_HOME: real }).config?.dataDir).toBe(realpathSync(real));
 	});
 
 	it("inside a session the config that holds its memory rules: a made-up --config or ORRERY_CONFIG naming the real data folder is refused", () => {
@@ -485,7 +486,8 @@ describe("the CLI gate (spec 2026-10-18-agent-permissions §3)", () => {
 		const gated = gateCommand("status", ["status", "."], { config: t.configPath }, t.env);
 		expect(gated.inside).toMatchObject({ agent: "Atlas", via: "ancestry" });
 		expect(gated.inside?.config).toBeUndefined();
-		expect(gated.config?.file).toBe(t.configPath);
+		// Read from the session's real data folder (on macOS the temporary folder is a link, /var to /private/var).
+		expect(gated.config?.file).toBe(realpathSync(t.configPath));
 		// A codexSession that is no string: unsure, kept, and a marker pointing at it is a session whose agent is unknown.
 		writeFileSync(file, JSON.stringify({ ...good, codexSession: 7 }));
 		expect(refusal(() => gateCommand("status", ["status"], { config: t.configPath }, { ...t.env, CLAUDE_PID: String(process.ppid) }))).toMatch(/^orrery can't tell which agent's session this is/);

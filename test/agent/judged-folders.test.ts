@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { judgedFolders } from "../../src/agent/sessions.ts";
@@ -25,11 +25,13 @@ function tree() {
 describe("judgedFolders (src/agent/sessions.ts)", () => {
 	it("judges each folder given and every folder above it that holds records, a planted one nearer included", () => {
 		const { data, inner } = tree();
-		expect(judgedFolders([join(inner, "memory.sqlite")])).toEqual([join(inner, "memory.sqlite"), data]);
+		// Each folder given as given; those found above it by their real paths (links followed): on macOS the temporary
+		// folder is a link (/var to /private/var).
+		expect(judgedFolders([join(inner, "memory.sqlite")])).toEqual([join(inner, "memory.sqlite"), realpathSync(data)]);
 		mkdirSync(join(inner, "session-hosts"));
-		expect(judgedFolders([join(inner, "memory.sqlite")])).toEqual([join(inner, "memory.sqlite"), inner, data]);
-		// Shared parents are looked at once; no folder twice.
-		expect(judgedFolders([inner, join(inner, "a"), join(data, "b")])).toEqual([inner, data, join(inner, "a"), join(data, "b")]);
+		expect(judgedFolders([join(inner, "memory.sqlite")])).toEqual([join(inner, "memory.sqlite"), realpathSync(inner), realpathSync(data)]);
+		// Shared parents are looked at once; no folder twice, by either spelling.
+		expect(judgedFolders([inner, join(inner, "a"), join(data, "b")])).toEqual([inner, realpathSync(data), join(inner, "a"), join(data, "b")]);
 	});
 
 	it("a session-hosts that is a link (to this user's real records, from a shared folder), or another user's, or a file, holds no records", () => {
@@ -44,7 +46,7 @@ describe("judgedFolders (src/agent/sessions.ts)", () => {
 		rmSync(join(shared, "session-hosts"));
 		// A real folder, but owned by another user than the one asking.
 		mkdirSync(join(shared, "session-hosts"));
-		expect(judgedFolders([file])).toEqual([file, shared]);
+		expect(judgedFolders([file])).toEqual([file, realpathSync(shared)]);
 		const uid = process.getuid?.();
 		if (uid !== undefined) expect(judgedFolders([file], uid + 1)).toEqual([file]);
 	});

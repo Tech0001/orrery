@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import type { AgentConfig } from "../../src/agent/config.ts";
@@ -346,7 +346,8 @@ describe("recording a Codex session", () => {
 		expect(await run("session-end", input({ reason: "other" }), c)).toBe("");
 		const events = pendingEvents(t.agent.dir, id("s1")).map((event) => readEvent(event.path));
 		const rolloutEvent = events.find((event) => event?.kind === "rollout");
-		expect(rolloutEvent).toMatchObject({ kind: "rollout", claudePid: CODEX, path: homeOf(t).path(id("s1")), home: homeOf(t).home });
+		// Where SessionStart found it, by its real path (on macOS the temporary folder is a link, /var to /private/var).
+		expect(rolloutEvent).toMatchObject({ kind: "rollout", claudePid: CODEX, path: realpathSync(homeOf(t).path(id("s1"))), home: realpathSync(homeOf(t).home) });
 		expect(events.filter((event) => event?.kind !== "rollout").map((event) => ({ ...event, at: 0 }))).toEqual([
 			// Marked Codex's: the holder confirms each against Codex's rollout (src/codex/rollout.ts).
 			{ kind: "prompt", at: 0, claudePid: CODEX, text: "Codename Saffron.", host: "codex", turnId: "t-1" },
