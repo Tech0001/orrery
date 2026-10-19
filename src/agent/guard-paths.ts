@@ -16,7 +16,10 @@
  * and shell text may not name them. The skills of .claude and .agents, which OpenCode loads too, may be written by the
  * file tools, but only where the guard can see the file will not start with front matter that may run as code
  * (guard-rules.ts openCodeSkillRefusal, fail-closed), and shell text may not name them (skills are read with the file
- * tools). Known limits:
+ * tools). Shell text may not run Orrery's commands that change memory or settings (guard-rules.ts runsOrreryCommand), nor
+ * name Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions; guard-rules.ts
+ * transcriptRule), which no tool writes, but a project's memory folder there (Claude Code's auto memory); file tools
+ * may read them. Known limits:
  * - A hard link is another name for the same file, and the guard does not count links: one to another agent's view (the
  *   copy goes stale once Orrery replaces the view on its next write), to the config file in use, or to a file of the
  *   installed program (app/), made before the guard ran or by a spelling it cannot see, reads or writes the file
@@ -84,7 +87,11 @@ import {
 	secretPath,
 	secretText,
 	sensitive,
+	TRANSCRIPT_READ_ONLY,
+	type TranscriptRule,
 	textProtected,
+	transcriptPath,
+	transcriptRule,
 	viewRules,
 	within,
 } from "./guard-rules.ts";
@@ -176,6 +183,7 @@ interface PathRules {
 	readonly protect: Protection;
 	readonly config: string[];
 	readonly openCode: OpenCodeRule;
+	readonly transcripts: TranscriptRule;
 	readonly credentials: string[];
 	readonly foreign: string[];
 	readonly realData: string | undefined;
@@ -213,6 +221,7 @@ export class GuardCall {
 			options.credentials ?? null,
 			options.orreryData ?? null,
 			options.openCode ?? null,
+			options.transcripts === undefined ? null : [options.transcripts.claude, options.transcripts.codex],
 		]);
 		let rules = this.#rules.get(key);
 		if (rules === undefined) {
@@ -623,7 +632,7 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
  * really is) is worked out once, and each call is judged by the same rules.
  */
 export function pathJudge(options: PathGuardOptions): (toolName: string, input: Readonly<Record<string, unknown>>) => string | undefined {
-	const { home, views, protect, config, openCode, credentials, foreign, realData, data, setUp, roots } = options.call?.rules(options, () => pathRules(options)) ?? pathRules(options);
+	const { home, views, protect, config, openCode, transcripts, credentials, foreign, realData, data, setUp, roots } = options.call?.rules(options, () => pathRules(options)) ?? pathRules(options);
 	const fold = (path: string) => path.toLowerCase();
 	return (toolName, input) => {
 		const search = SEARCHES.has(toolName);
@@ -636,7 +645,7 @@ export function pathJudge(options: PathGuardOptions): (toolName: string, input: 
 		if (namedEntry !== undefined) return `${toolName} ${nameKey} "${names}" names ${namedEntry}, ${PROTECTED_BY}.`;
 		const given = typeof input.path === "string" && input.path !== "" ? input.path : undefined;
 		const raw = given ?? (search ? "." : undefined);
-		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode }, views, config, protect);
+		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode, transcripts }, views, config, protect);
 		// All three forms: what the model wrote, where the tool resolves it, and where it really lands.
 		const resolved = (options.resolvePath ?? piToolPath)(raw, options.cwd, home);
 		const named = views.path(resolved);
@@ -681,8 +690,10 @@ export function pathJudge(options: PathGuardOptions): (toolName: string, input: 
 			return `${toolName} on ${target} would search another agent's memory view; search a narrower folder.`;
 		}
 		// The rest, on the real path: the roots, and a command the call may carry beside its path (bash with an extra path
-		// key), judged with every rule its own call would get, [guard] protect included.
-		return checkToolCall({ name: toolName, arguments: { ...input, path: target } }, roots, views, config, protect);
+		// key), judged with every rule its own call would get, [guard] protect included; then a write into the tools'
+		// session records where the tool resolves it (the real path is judged there).
+		const rest = checkToolCall({ name: toolName, arguments: { ...input, path: target } }, roots, views, config, protect);
+		return rest ?? (writes && transcriptPath(resolved, transcripts) ? TRANSCRIPT_READ_ONLY(raw) : undefined);
 	};
 }
 
@@ -695,6 +706,8 @@ function pathRules(options: PathGuardOptions): PathRules {
 	// The config file in use, as given and where it really is: named in no command, written by no tool.
 	const config = configSpellings({ ...options, home }, options.configFile === undefined ? undefined : realTarget(options.configFile));
 	const openCode = openCodeOf(options, home);
+	// Claude Code's and Codex's session records, where they are and where they really are.
+	const transcripts = options.transcripts ?? transcriptRule(process.env, home, realTarget);
 	// The credential locations themselves, symlinks followed (a ~/.ssh linked from a dotfiles folder, say). Compared
 	// ignoring case: on a case-insensitive file system (macOS) ~/.SSH and /USERS are the same folders.
 	const fold = (path: string) => path.toLowerCase();
@@ -703,8 +716,8 @@ function pathRules(options: PathGuardOptions): PathRules {
 	const realData = options.orreryData === undefined ? undefined : realTarget(options.orreryData);
 	const data = realData === undefined ? undefined : fold(realData);
 	const setUp = new Set((options.fileModeViews ?? []).flatMap((view) => [view, realTarget(view)]).map(fold));
-	const roots = { folder: realRoot(options.folder), allowedRoots: options.allowedRoots.map(realRoot), cwd: realRoot(options.cwd), foreignViews: options.foreignViews, openCode };
-	return { home, views, protect, config, openCode, credentials, foreign, realData, data, setUp, roots };
+	const roots = { folder: realRoot(options.folder), allowedRoots: options.allowedRoots.map(realRoot), cwd: realRoot(options.cwd), foreignViews: options.foreignViews, openCode, transcripts };
+	return { home, views, protect, config, openCode, transcripts, credentials, foreign, realData, data, setUp, roots };
 }
 
 /** How many entries filesBelow looks at, at most. */

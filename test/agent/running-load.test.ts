@@ -16,7 +16,7 @@ it("reports the folder the module loaded from, though the link it was loaded thr
 		const folder = join(scratch, version);
 		mkdirSync(join(folder, "agent"), { recursive: true });
 		writeFileSync(join(folder, "VERSION"), `${version}\n`);
-		for (const file of ["running.ts", "guard-rules.ts", "home.ts"]) copyFileSync(join(AGENT, file), join(folder, "agent", file));
+		for (const file of ["running.ts", "guard-rules.ts", "inside-commands.ts", "home.ts"]) copyFileSync(join(AGENT, file), join(folder, "agent", file));
 	}
 	symlinkSync("1.0.0", join(scratch, "current"));
 	const script = `

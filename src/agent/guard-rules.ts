@@ -2,6 +2,7 @@
 
 import { homedir } from "node:os";
 import { posix } from "node:path";
+import { ALLOWED_INSIDE } from "./inside-commands.ts";
 
 export interface GuardOptions {
 	readonly folder: string;
@@ -36,6 +37,11 @@ export interface GuardOptions {
 	 * process's environment and the guard's home.
 	 */
 	readonly openCode?: OpenCodeRule;
+	/**
+	 * Claude Code's and Codex's session records (transcriptRule), which no tool writes and no shell text names; default:
+	 * from this process's environment and the guard's home.
+	 */
+	readonly transcripts?: TranscriptRule;
 	/**
 	 * Codex's own shell only (src/codex/guard.ts), which has no file tool to read with: shell text that is a plain read
 	 * of skill files (skillShellRead) is not refused for naming a skills folder. Every other rule still applies, and the
@@ -193,6 +199,300 @@ function runsPlumbing(form: string): boolean {
 
 /** Why shell text that runs Orrery's hook plumbing is refused (runsPlumbing). */
 export const PLUMBING_REFUSED = "This command runs Orrery's hook plumbing (codex-hook, claude-hook, orrery holder), which only Orrery's own hooks run.";
+
+// ---- Orrery's own commands from an agent's shell (spec 2026-10-18-agent-permissions §4) ----
+//
+// Inside an agent session the CLI runs only the commands that read (ALLOWED_INSIDE); this rule is the second belt, in
+// every gate, in the plumbing rule's blunt style. Shell text is refused where Orrery's program (orrery, orrery.exe, the
+// Claude Code plugin's orrery-run, a path ending in one, or the source's cli/main.ts) is followed, as the first word
+// that is no option, by a command the CLI knows that does not run inside a session (REFUSED_COMMANDS). It matches in
+// any reading of the text, anywhere: a search pattern or a commit message that names one is refused too (CONTRIBUTING:
+// search with a file tool, git commit -F).
+// - The options main.ts knows are skipped, a valued one with its value, and so are redirections. Where the guard can't
+//   tell where the options end (an option main.ts doesn't know, an expansion or a substitution, more words than a
+//   command line has), it fails closed: any refused command named as a word before the next separator (;, |, & or a
+//   newline) refuses. Text that feeds xargs fails closed over all of it.
+// - Bare orrery, orrery before a separator, and orrery followed by a word that is no refused command pass: an agent's
+//   shell has no terminal for the TUI (the CLI's gate refuses it anyway), and a checkout of Orrery is named so too
+//   (cd ~/src/orrery, ls). So does a checkout named as the folder git, make or a package manager works in
+//   (git -C ~/src/orrery remote -v), or as the repository gh works on (gh pr create -R owner/orrery …): those tools run
+//   no program of that name.
+// Limits, as for every shell-text rule: a name built at run time (o=orrery; $o setup), arguments read from a file
+// (xargs -a), a link or alias of another name to Orrery's program, and a quoted separator after an expansion.
+
+/**
+ * Every command the CLI knows: help and the commands with help (src/cli/help.ts HELP_COMMANDS; main.ts answers any other
+ * word "Unknown command"). Pinned by test/agent/guard-orrery-commands.test.ts, so a new command can't slip past.
+ */
+export const ORRERY_COMMANDS: readonly string[] = [
+	...["help", "agent", "run", "status", "import", "compact", "browse", "backup", "restore", "login", "logins", "logout"],
+	...["compactor", "usage", "remote", "trust-host", "update", "tools", "claude-setup", "setup", "install", "uninstall"],
+	...["version", "holder", "claude-mod", "mcp", "claude-hook", "codex-hook"],
+];
+
+/**
+ * The commands shell text may not run: all but those that run inside an agent session (ALLOWED_INSIDE, the hook
+ * plumbing's among them, which runsPlumbing refuses on its own) and version, which main prints before any command runs,
+ * as it does --version.
+ */
+export const REFUSED_COMMANDS: readonly string[] = ORRERY_COMMANDS.filter((command) => !ALLOWED_INSIDE.has(command) && command !== "version");
+const REFUSED = new Set(REFUSED_COMMANDS);
+
+/** main.ts's options (OPTIONS), pinned by the same test: those whose next word is their value, and the flags. */
+export const ORRERY_OPTIONS: { readonly valued: ReadonlySet<string>; readonly flags: ReadonlySet<string> } = {
+	valued: new Set(
+		[
+			...["config", "key", "days", "keep", "from", "to", "commit", "claude", "claude-file", "codex", "codex-file", "notes"],
+			...["paste-threshold", "out", "progress", "session", "cwd", "wait-ms", "agent", "agent-token", "claude-pid", "host-pid"],
+			...["nonce", "since", "prefix", "folder", "tool", "launcher", "ori-model", "summary", "thinking", "view-kb", "summary-kb"],
+			...["jobs", "compact-at", "reads", "server", "cloudflare", "token-file", "code-file"],
+		].map((name) => `--${name}`),
+	),
+	flags: new Set([
+		...[
+			...["api-key", "from-pi", "delete-remote", "dry-run", "no-split", "spool-only", "open", "mod", "manual", "no-browser"],
+			...["new", "json", "yes", "rollback", "list", "purge", "check", "help", "version"],
+		].map((name) => `--${name}`),
+		"-h",
+		"-v",
+	]),
+};
+
+/** Orrery's program as a word (ORRERY_PROGRAM's names and orrery-run), its name in group 1; also after "[" or "!" (code's list, a git alias). */
+const PROGRAM_RUN = new RegExp(`(?:${PLUMBING_START}|[[!])(orrery(?:\\.exe|-run)?|cli/main\\.[cm]?[jt]s)(?=$|[\\s"';|&()<>\`{}$\\\\,\\]])`, "g");
+/** A refused command named as a word, in group 1, with the plumbing's edges: what fails closed looks for. */
+const REFUSED_WORD = new RegExp(`${PLUMBING_START}(${REFUSED_COMMANDS.map(literal).join("|")})${PLUMBING_END}`, "g");
+/** Where a command ends: ;, a pipe, & (but a redirection's, 2>&1 or &>), a newline. */
+const SEPARATOR = /;|\n|(?<!>)\||(?<![<>])&(?!>)/g;
+/** Characters that end a command's words. */
+const COMMAND_ENDS = new Set([";", "|", "&", "(", "\n"]);
+/** A redirection operator, at lastIndex. */
+const REDIRECTION = /[0-9]*(?:&>>?|>>|>&|>\||<<<|<<-?|<>|<&|>|<)/y;
+/** An escape printf or echo -e turns into a blank, at lastIndex. */
+const ESCAPE_AT = new RegExp(ESCAPE_BEFORE, "y");
+/** Text that hands xargs the words it runs: their order is not known. */
+const XARGS = /(?:^|[\s;|&(`])xargs\s/;
+/** How many words a command line may hold before its command; past it the guard fails closed. */
+const MAX_WORDS = 64;
+
+/**
+ * The tools whose folder option may name a checkout of Orrery, and those options (lower case, as the readings are),
+ * GitHub's CLI with its repository's among them (gh … -R owner/orrery).
+ */
+const FOLDER_TOOLS = new Set(["git", "make", "npm", "pnpm", "yarn", "bun", "gh"]);
+const FOLDER_OPTIONS = new Set(["-c", "--prefix", "--cwd", "--dir", "--directory", "-r", "--repo"]);
+/** How far back the guard looks for the command a folder option belongs to. */
+const LOOK_BACK = 256;
+
+const blank = (c: string | undefined) => c === " " || c === "\t" || c === "\r";
+
+/** Past the blanks at `at`: blanks, a line continuation, and an escape that printf or echo -e makes a blank. */
+function skipBlanks(form: string, at: number): number {
+	let i = at;
+	for (;;) {
+		const c = form.charAt(i);
+		if (blank(c)) i++;
+		else if (c === "\\" && form.charAt(i + 1) === "\n") i += 2;
+		else if (c === "\\" && ((ESCAPE_AT.lastIndex = i), ESCAPE_AT.test(form))) i = ESCAPE_AT.lastIndex;
+		else return i;
+	}
+}
+
+/** The shell word at `start`, quotes and backslashes gone; `unclear` when it holds an expansion or a substitution. */
+function wordAt(form: string, start: number, work: { left: number }): { readonly text: string; readonly end: number; readonly unclear: boolean } {
+	let text = "";
+	let i = start;
+	while (i < form.length) {
+		const c = form.charAt(i);
+		if (blank(c) || COMMAND_ENDS.has(c) || c === ")" || c === "<" || c === ">" || c === "`") break;
+		if (c === "$") return { text, end: i, unclear: true };
+		if (c === "\\") {
+			text += form.charAt(i + 1) === "\n" ? "" : form.charAt(i + 1);
+			i += 2;
+		} else if (c === "'") {
+			const close = form.indexOf("'", i + 1);
+			const end = close === -1 ? form.length : close;
+			text += form.slice(i + 1, end);
+			work.left -= end - i;
+			i = end + 1;
+		} else if (c === '"') {
+			let j = i + 1;
+			for (; j < form.length && form[j] !== '"'; j++) {
+				if (form[j] === "$" || form[j] === "`") return { text, end: j, unclear: true };
+				if (form[j] === "\\") j++;
+				text += form.charAt(j);
+			}
+			work.left -= j - i;
+			i = j + 1;
+		} else {
+			text += c;
+			i++;
+		}
+	}
+	work.left -= i - start;
+	return { text, end: i, unclear: false };
+}
+
+/** The refused command a word names (the commands are plain words: setup, not setup.md or remote:/srv), or undefined. */
+function commandName(text: string): string | undefined {
+	const bare = text.replace(/^[[\](){},]+/, "");
+	const name = /^[a-z][a-z0-9-]*/.exec(bare)?.[0];
+	if (name === undefined || /^[._/=:@+~%]/.test(bare.slice(name.length))) return undefined;
+	return REFUSED.has(name) ? name : undefined;
+}
+
+/** What follows Orrery's program (its name ending at `at`): the refused command it runs, where the guard can't tell, or none. */
+type After = { readonly refused: string } | { readonly unclear: number } | undefined;
+
+/**
+ * The command Orrery's program runs in a reading, its name ending at `at` (above): its options and redirections skipped.
+ * `work`: what the reading may still spend, so a long text is read in linear time; past it, unclear.
+ */
+function commandAfter(form: string, at: number, work: { left: number }): After {
+	if (work.left <= 0) return { unclear: at };
+	let i = at;
+	// The rest of the program's word: a quote or a substitution closing around it, an empty string glued to it. A name
+	// that goes on past it (orrery's, orrery"x") is another word, no program.
+	for (; i < form.length; i++, work.left--) {
+		const c = form.charAt(i);
+		if (blank(c) || c === "<" || c === ">" || (c === "&" && form[i + 1] === ">")) break;
+		if (c === "\\") {
+			if (form.charAt(i + 1) === "\n" || ((ESCAPE_AT.lastIndex = i), ESCAPE_AT.test(form))) break;
+			return undefined;
+		}
+		if (c === "$" || c === "`") return { unclear: i };
+		if (c !== "'" && c !== '"' && c !== ")" && c !== "}" && c !== "]" && c !== ",") return undefined;
+	}
+	let words = 0;
+	let value = false;
+	let positional = false;
+	for (;;) {
+		i = skipBlanks(form, i);
+		if (i >= form.length) return undefined;
+		if (--work.left < 0) return { unclear: i };
+		REDIRECTION.lastIndex = i;
+		if (REDIRECTION.test(form)) {
+			i = skipBlanks(form, REDIRECTION.lastIndex);
+			if (i >= form.length || COMMAND_ENDS.has(form.charAt(i))) return undefined;
+			i = Math.max(i + 1, wordAt(form, i, work).end);
+			continue;
+		}
+		const c = form.charAt(i);
+		if (c === ")") {
+			i++;
+			continue;
+		}
+		if (c === "`") return { unclear: i };
+		if (COMMAND_ENDS.has(c)) return undefined;
+		const word = wordAt(form, i, work);
+		if (word.unclear || ++words > MAX_WORDS) return { unclear: i };
+		const start = i;
+		i = Math.max(i + 1, word.end);
+		if (value) {
+			value = false;
+			continue;
+		}
+		const text = word.text;
+		if (!positional && text === "--") {
+			positional = true;
+			continue;
+		}
+		if (!positional && text.length > 1 && text.startsWith("-")) {
+			const equals = text.indexOf("=");
+			const name = equals === -1 ? text : text.slice(0, equals);
+			if (ORRERY_OPTIONS.valued.has(name)) value = equals === -1;
+			else if (equals !== -1 || !ORRERY_OPTIONS.flags.has(name)) return { unclear: start };
+			continue;
+		}
+		const refused = commandName(text);
+		return refused === undefined ? undefined : { refused };
+	}
+}
+
+/**
+ * Whether Orrery's program, its name starting at `start`, is the folder a git, make or package manager command works in
+ * (git -C ~/src/orrery, npm --prefix …, bun --cwd=…) or the repository of a gh command (-R owner/orrery): the word up to
+ * the name is a path, after one of those options, in a command of one of those tools. Looks back LOOK_BACK characters
+ * at most, to the command's start.
+ */
+function folderOf(form: string, start: number): boolean {
+	const from = Math.max(0, start - LOOK_BACK);
+	const before = form.slice(from, start);
+	const cut = Math.max(...[";", "|", "&", "\n", "(", "`"].map((end) => before.lastIndexOf(end)));
+	if (cut === -1 && from > 0) return false;
+	const parts = before.slice(cut + 1).split(/[ \t]+/);
+	const own = parts.pop() ?? "";
+	const glued = /^["']?--(?:prefix|cwd|dir|directory|repo)=/.exec(own);
+	if (!/^["']?(?:[^\s"';|&()<>`=!*?[\]]*\/)?$/.test(glued === null ? own : own.slice(glued[0].length))) return false;
+	if (glued === null && !FOLDER_OPTIONS.has(parts.at(-1) ?? "")) return false;
+	const tool = parts.find((part) => part !== "" && !/^[a-z_][a-z0-9_]*=/.test(part));
+	return tool !== undefined && FOLDER_TOOLS.has(tool.slice(tool.lastIndexOf("/") + 1));
+}
+
+/** First index in an ascending list whose value is at least `at`. */
+function firstFrom(list: readonly number[], at: number): number {
+	let low = 0;
+	let high = list.length;
+	while (low < high) {
+		const middle = (low + high) >> 1;
+		if ((list[middle] as number) < at) low = middle + 1;
+		else high = middle;
+	}
+	return low;
+}
+
+/**
+ * Where a reading fails closed: the refused command named as a word (REFUSED_WORD) between `from` and the next
+ * separator, or anywhere in it (`all`). The words and separators are found once per reading.
+ */
+function namedAfter(form: string): (from: number, all?: boolean) => string | undefined {
+	const named = [...form.matchAll(REFUSED_WORD)];
+	const ends = named.map((match) => match.index + match[0].length);
+	const separators = [...form.matchAll(SEPARATOR)].map((match) => match.index);
+	return (from, all = false) => {
+		const next = firstFrom(ends, from + 1);
+		const stop = all ? form.length : (separators[firstFrom(separators, from)] ?? form.length);
+		return next < ends.length && (ends[next] as number) <= stop ? named[next]?.[1] : undefined;
+	};
+}
+
+/** The refused command a reading runs (above), or undefined. Linear in the reading's length. */
+function refusedCommand(form: string): string | undefined {
+	if (!form.includes("orrery") && !form.includes("cli/main.")) return undefined;
+	const work = { left: 4 * form.length + 4096 };
+	const xargs = XARGS.test(form);
+	let named: ReturnType<typeof namedAfter> | undefined;
+	for (const match of form.matchAll(PROGRAM_RUN)) {
+		const end = match.index + match[0].length;
+		if (folderOf(form, end - (match[1] as string).length)) continue;
+		const fed = xargs ? (named ??= namedAfter(form))(0, true) : undefined;
+		if (fed !== undefined) return fed;
+		const after = commandAfter(form, end, work);
+		if (after === undefined) continue;
+		if ("refused" in after) return after.refused;
+		const found = (named ??= namedAfter(form))(after.unclear);
+		if (found !== undefined) return found;
+	}
+	return undefined;
+}
+
+/** The refused command any of a text's readings runs (above), or undefined. */
+function orreryCommandIn(reading: Reading): string | undefined {
+	for (const form of [...reading.forms, ...reading.pieces]) {
+		const refused = refusedCommand(form);
+		if (refused !== undefined) return refused;
+	}
+	return undefined;
+}
+
+/** The Orrery command that agents may not run which shell text runs, in any reading of it (above), or undefined. */
+export function runsOrreryCommand(text: string): string | undefined {
+	return orreryCommandIn(readings(text));
+}
+
+/** Why shell text that runs one of them is refused (runsOrreryCommand). */
+export const ORRERY_COMMAND_REFUSED = (command: string) =>
+	`orrery ${command} can't run from an agent's shell: agents can't change memory or settings (only orrery help, status, usage, browse and compactor run here). Run it in your own terminal or the TUI. Text that only names it is refused too: search with a file tool, and give git a message that names it from a file (git commit -F).`;
 
 /**
  * How far around a brace group the readings look (Reading.pieces) for the built-in rules: room for the longest fixed
@@ -917,6 +1217,76 @@ export function skillsNamed(text: string): boolean {
 	return inAnyReading(text, (form) => SKILLS_NAMED.test(form));
 }
 
+// ---- Claude Code's and Codex's session records (spec 2026-10-18-agent-permissions §3c) ----
+//
+// Orrery keeps a prompt as the person's words only once the tool's own record of the session has it: Claude Code's
+// transcripts in its projects folder (~/.claude/projects, or $CLAUDE_CONFIG_DIR/projects) and Codex's rollouts in its
+// sessions folder (~/.codex/sessions, or $CODEX_HOME/sessions). An agent that wrote a line there could fake one, so no
+// file tool writes there, in any gate, and no shell text names them; file tools may read them. A project's memory folder
+// there (Claude Code's auto memory, ruling C10) stays writable: it is no record of a session. In shell text they are
+// named by their tails anywhere (.claude/projects, .codex/sessions, $CLAUDE_CONFIG_DIR/projects, $CODEX_HOME/sessions),
+// with the readings every name gets, and by their paths where they are elsewhere (moved, or reached through a link);
+// a file tool's write by its path and by those names. Limits, as for every shell-text rule: a spelling through another
+// variable, a relative one after a cd into them, or a link the guard doesn't know.
+
+/** The session records' folders (transcriptRule). */
+export interface TranscriptRule {
+	/** Claude Code's projects folders, as given and where they really are, folded (lower case, normalized). */
+	readonly claude: readonly string[];
+	/** Codex's sessions folders, the same way. */
+	readonly codex: readonly string[];
+	/** Those of them that their tails don't name, spelt as a [guard] protect path entry is (protection); none for none. */
+	readonly spelled?: Protection;
+}
+
+/** The session records for `env` and `home`; `real` follows links (realTarget), so a folder reached through one counts too. */
+export function transcriptRule(env: NodeJS.ProcessEnv = process.env, home: string = homedir(), real: (path: string) => string = (path) => path): TranscriptRule {
+	const claude = [posix.join(home, ".claude", "projects"), ...(env.CLAUDE_CONFIG_DIR ? [posix.join(posix.resolve(env.CLAUDE_CONFIG_DIR), "projects")] : [])];
+	const codex = [posix.join(home, ".codex", "sessions"), ...(env.CODEX_HOME ? [posix.join(posix.resolve(env.CODEX_HOME), "sessions")] : [])];
+	const both = (paths: readonly string[]) => [...new Set(paths.flatMap((path) => [path, real(path)]).map((path) => posix.normalize(path).toLowerCase().replace(/(.)\/+$/, "$1")))];
+	const folded = { claude: both(claude), codex: both(codex) };
+	const elsewhere = [...folded.claude, ...folded.codex].filter((path) => !/\/\.(?:claude\/projects|codex\/sessions)$/.test(path));
+	return elsewhere.length === 0 ? folded : { ...folded, spelled: protection(elsewhere, home) };
+}
+
+/**
+ * Whether a path (one spelling of it) is in the session records (above): in one of their folders, or below
+ * .claude/projects or .codex/sessions anywhere; not in a project's memory folder in Claude Code's.
+ */
+export function transcriptPath(path: string, rule: TranscriptRule): boolean {
+	const folded = posix.normalize(path).toLowerCase();
+	const parts = folded.split("/");
+	for (let at = 0; at + 1 < parts.length; at++) {
+		if (parts[at] === ".codex" && parts[at + 1] === "sessions") return true;
+		if (parts[at] === ".claude" && parts[at + 1] === "projects" && parts[at + 3] !== "memory") return true;
+	}
+	if (rule.codex.some((folder) => within(folded, folder))) return true;
+	return rule.claude.some((folder) => within(folded, folder) && folded.slice(folder.length + 1).split("/")[1] !== "memory");
+}
+
+/** The session records named in shell text by their tails (readings are lower case). */
+const TRANSCRIPTS_NAMED = new RegExp(
+	`(?:${OC_START}\\.claude|\\$(?:claude_config_dir|\\{claude_config_dir[^}\\s$]*\\}))/+projects${OC_END}|(?:${OC_START}\\.codex|\\$(?:codex_home|\\{codex_home[^}\\s$]*\\}))/+sessions${OC_END}`,
+);
+
+/**
+ * Whether shell text (`command`, with its readings `reading`, made with `reach`) names the session records (above): by
+ * their tails, or by the paths of those elsewhere, read again with room for them when they need more.
+ */
+function transcriptsNamed(command: string, reading: Reading, reach: number, rule: TranscriptRule): boolean {
+	if (reading.forms.some((form) => TRANSCRIPTS_NAMED.test(form)) || reading.pieces.some((piece) => TRANSCRIPTS_NAMED.test(piece))) return true;
+	if (rule.spelled === undefined) return false;
+	return protectedIn(rule.spelled.reach > reach ? readings(command, rule.spelled.reach) : reading, rule.spelled, false) !== undefined;
+}
+
+/** Why shell text naming the session records is refused. */
+export const TRANSCRIPT_COMMAND =
+	"This command names Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions), which Orrery checks prompts against: agents may read them with file tools, not with commands.";
+
+/** Why a write there is refused. */
+export const TRANSCRIPT_READ_ONLY = (path: string) =>
+	`${path} is in Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions), which Orrery checks prompts against: agents may read them, not change them.`;
+
 // ---- A plain read of skill files, for Codex's own shell ----
 //
 // Codex reads files only through its shell, so refusing every command that names a skills folder would leave it no way
@@ -1107,6 +1477,8 @@ export function checkToolCall(
 ): string | undefined {
 	let rule = options.openCode;
 	const openCode = () => (rule ??= openCodeRule(process.env, (options as { readonly home?: string }).home ?? homedir()));
+	let records = options.transcripts;
+	const transcripts = () => (records ??= transcriptRule(process.env, (options as { readonly home?: string }).home ?? homedir()));
 	const command = call.arguments.command;
 	if (call.name === "bash" && typeof command === "string") {
 		// Shell text's readings, made once: sensitive by flagged's rules for shell text and the built-in home secrets spelt
@@ -1121,6 +1493,11 @@ export function checkToolCall(
 		const own = [...openCode().own, ...(openCode().spelled ?? [])];
 		if (inReading((form) => OPENCODE_NAMED.test(form) || namesOpenCodeFolder(form, own))) return OPENCODE_COMMAND;
 		if (inReading((form) => SKILLS_NAMED.test(form)) && !(options.shellReadsSkills === true && skillShellRead(command) !== undefined)) return SKILL_SHELL;
+		// Last, so a command refused before keeps its reason: Orrery's commands that change memory or settings, and the
+		// tools' session records.
+		const orrery = orreryCommandIn(reading);
+		if (orrery !== undefined) return ORRERY_COMMAND_REFUSED(orrery);
+		if (transcriptsNamed(command, reading, protect.reach, transcripts())) return TRANSCRIPT_COMMAND;
 	}
 	const raw = call.arguments.path;
 	if (typeof raw !== "string") return undefined;
@@ -1139,5 +1516,6 @@ export function checkToolCall(
 	if (writes && ![options.folder, ...options.allowedRoots].some((root) => within(path, root))) {
 		return `${path} is outside this agent's folder and allowed roots.`;
 	}
+	if (writes && transcriptPath(path, transcripts())) return TRANSCRIPT_READ_ONLY(path);
 	return undefined;
 }

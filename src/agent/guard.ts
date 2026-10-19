@@ -1,7 +1,9 @@
 /**
  * A seatbelt, not a sandbox (spec §6).
  *
- * - write/edit must land inside the folder and allowed roots, and never in Orrery's config or installed program.
+ * - write/edit must land inside the folder and allowed roots, and never in Orrery's config or installed program, nor in
+ *   Claude Code's or Codex's session records (but a project's memory folder there).
+ * - bash may not run Orrery's commands that change memory or settings, nor name those session records (guard-rules.ts).
  * - No file tool may touch ssh keys or credential stores (tool logins under home such as ~/.npmrc among them), .env
  *   files and the other built-in secret names, what the config's [guard] protect names, or another agent's memory view
  *   (GuardOptions.foreignViews).
@@ -47,6 +49,9 @@ import {
 	protection,
 	secretPath,
 	sensitive,
+	TRANSCRIPT_READ_ONLY,
+	transcriptPath,
+	transcriptRule,
 	viewRules,
 	within,
 } from "./guard-rules.ts";
@@ -168,6 +173,9 @@ export async function checkResolvedPath(
 		}
 		const roots = await Promise.all([options.folder, ...options.allowedRoots].map((root) => realPath(env, root, context)));
 		if (!roots.some((root) => within(real, root))) return `${real} is outside this agent's folder and allowed roots.`;
+		// Claude Code's and Codex's session records (guard-rules.ts transcriptRule), where the tool writes and where that really is.
+		const records = options.transcripts ?? transcriptRule(process.env, options.home ?? homedir());
+		if (transcriptPath(target, records) || transcriptPath(real, records)) return TRANSCRIPT_READ_ONLY(real);
 	}
 	return undefined;
 }

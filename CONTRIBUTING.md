@@ -88,6 +88,12 @@ release).
   parity tests updated in the same pull request.
 - **Credentials and the guard.** Never log, print or send a key to a model. Credential files stay mode 0600. A guard
   change comes with tests for the bypass it closes. The guard is not a sandbox, and the docs say what it covers.
+- **Working on Orrery from an agent session.** The guard reads shell text bluntly, so some commands are refused even
+  when they only name something: Orrery's commands that change memory or settings (`orrery setup`, `orrery import`,
+  `orrery remote` and the like), its hook commands, and Claude Code's and Codex's session folders (`~/.claude/projects`,
+  `~/.codex/sessions`). Search for them with the agent's Grep or file tools rather than `grep` in the shell, and write
+  a commit message that names one to a file and commit with `git commit -F <file>`. Run the refused commands themselves
+  in your own terminal.
 - **The pi extension.** Code under `src/pi/` imports pi-ai only through entry points pi supplies. A test enforces this
   ([adapters and boundaries](docs/architecture.md#adapters-and-boundaries)).
 - **Remote agents.** One machine writes an agent at a time, and memory is encrypted before upload. Storage changes must
