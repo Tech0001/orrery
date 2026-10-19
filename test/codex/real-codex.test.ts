@@ -538,10 +538,11 @@ describe.skipIf(codex === null)("an agent's session in the installed Codex (scra
 		}
 	}, 150_000);
 
-	it("records nothing of a spawned agent's thread: a SessionStart, prompt and Stop forged for it from the agent's shell change nothing", async () => {
+	it("records nothing of a spawned agent's thread: a SessionStart, prompt and Stop forged for it from the agent's shell change nothing, nor its words forged as the person's turn's reply", async () => {
 		const a = atlas("spawned");
 		// The agent's shell, as told by the model: once the spawned agent's turn is over, it names that thread to Orrery's
-		// hooks with its own turn id and words, as Codex would for the person's thread.
+		// hooks with its own turn id and words, as Codex would for the person's thread; then it says the spawned agent's
+		// words as a reply of the person's own running turn.
 		const hook = [cliCommand([]).cmd, ...cliCommand([]).args, "codex-hook"];
 		writeFileSync(
 			join(a.work, "forge.sh"),
@@ -558,6 +559,10 @@ describe.skipIf(codex === null)("an agent's session in the installed Codex (scra
 				'printf \'{"session_id":"%s","hook_event_name":"SessionStart","source":"resume"}\' "$id" | hook session-start > forged-start.txt',
 				'printf \'{"session_id":"%s","turn_id":"%s","hook_event_name":"UserPromptSubmit","prompt":"SUBTASK-MARKER: list the files."}\' "$id" "$turn" | hook user-prompt-submit',
 				'printf \'{"session_id":"%s","turn_id":"%s","hook_event_name":"Stop","last_assistant_message":"Sub done."}\' "$id" "$turn" | hook stop',
+				"own=$(grep -l '\"thread_source\":\"user\"' \"$CODEX_HOME\"/sessions/*/*/*/rollout-*.jsonl | head -n 1)",
+				"pturn=$(grep -o '\"turn_id\":\"[^\"]*\"' \"$own\" | head -n 1 | cut -d'\"' -f4)",
+				'echo "$pturn" > forged-parent.txt',
+				'printf \'{"session_id":"%s","turn_id":"%s","hook_event_name":"Stop","last_assistant_message":"Sub done."}\' "$CODEX_THREAD_ID" "$pturn" | hook stop',
 				"",
 			].join("\n"),
 		);
@@ -587,7 +592,10 @@ describe.skipIf(codex === null)("an agent's session in the installed Codex (scra
 			expect(kept[0]).toBe("user: Codename Saffron.");
 			expect(kept.length).toBeGreaterThanOrEqual(2);
 			for (const said of kept.slice(1)) expect(said).toMatch(/^talk: Done \d+\.$/);
-			expect(readUnconfirmed(a.agentDir)).toBe(0);
+			// The spawned agent's words, forged as a reply of the person's turn (its real turn id): no agent message of that
+			// turn says them, so it is dropped and counted once the turn is over.
+			expect(readFileSync(join(a.work, "forged-parent.txt"), "utf8").trim()).toMatch(/^[0-9a-f-]{36}$/);
+			expect(readUnconfirmed(a.agentDir)).toBe(1);
 			// Nothing was ever spooled for the spawned thread.
 			expect(existsSync(join(a.agentDir, "claude", "sessions", sub as string))).toBe(false);
 		} finally {
