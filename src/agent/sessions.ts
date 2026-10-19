@@ -68,7 +68,7 @@
  * config.ts, and with it smol-toml and the memory module, which pi and OMP load already.
  */
 
-import { lstatSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { namesOrreryPlugin } from "../install/layout.ts";
 import { readPluginOptions } from "../opencode/options.ts";
@@ -440,9 +440,13 @@ function startsOf(path: string): string[] {
  * The folders judged for `dataDirs`: each as given, and every folder from (the nearest existing part of) it up to the root
  * that holds session records. Records live in the data folder of the memory they open, and one data folder may sit
  * inside another (a config whose data_dir is inside the real one): a record in any of them judges. Links are followed,
- * a dangling one to where it points (startsOf). In order, without repeats: the given folders first, nearest first.
+ * a dangling one to where it points (startsOf). In order, without repeats: each folder given, then those above it that
+ * hold records, nearest first.
+ * A folder holds records when its session-hosts is a real folder (no link) of this user's (`uid`, default this
+ * process's), as each record must be: another user's, or a link to this user's records from a shared folder such as
+ * /tmp, judges nothing. Each folder is looked at once, however many of the paths it is above.
  */
-export function judgedFolders(dataDirs: readonly string[]): string[] {
+export function judgedFolders(dataDirs: readonly string[], uid: number | undefined = process.getuid?.()): string[] {
 	const folders: string[] = [];
 	const seen = new Set<string>();
 	const add = (dir: string) => {
@@ -451,15 +455,23 @@ export function judgedFolders(dataDirs: readonly string[]): string[] {
 		seen.add(key);
 		folders.push(dir);
 	};
+	/** Each folder walked so far, and whether it holds records; a folder walked holds its parents walked too. */
+	const walked = new Map<string, boolean>();
+	const holdsRecords = (dir: string): boolean => {
+		try {
+			const stats = lstatSync(folderOf(dir));
+			return stats.isDirectory() && (uid === undefined || stats.uid === uid);
+		} catch {
+			return false;
+		}
+	};
 	for (const dataDir of dataDirs) {
 		add(dataDir);
 		for (const start of startsOf(dataDir)) {
-			for (let dir = start; ; dir = dirname(dir)) {
-				try {
-					if (statSync(folderOf(dir)).isDirectory()) add(dir);
-				} catch {
-					// no records here
-				}
+			for (let dir = start; !walked.has(dir); dir = dirname(dir)) {
+				const holds = holdsRecords(dir);
+				walked.set(dir, holds);
+				if (holds) add(dir);
 				if (dirname(dir) === dir) break;
 			}
 		}

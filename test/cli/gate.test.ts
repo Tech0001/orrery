@@ -431,15 +431,10 @@ describe("the CLI gate (spec 2026-10-18-agent-permissions §3)", () => {
 		const dangling = join(t.root, "page.html");
 		symlinkSync(join(real, "agents", "Atlas", "not-yet", "memory.html"), dangling);
 		expect(refusal(() => gateCommand("browse", ["browse", "Atlas"], { config: t.configPath, out: dangling }, t.env))).toBe(changed);
-		// browse without --out writes into the folder it runs in.
-		const before = process.cwd();
-		process.chdir(birch);
-		try {
-			expect(refusal(() => gateCommand("browse", ["browse", "Atlas"], { config: t.configPath }, t.env))).toBe(changed);
-			expect(refusal(() => gateCommand("import", ["import", "Atlas"], { config: t.configPath, "dry-run": true }, t.env))).toBe(changes("orrery import"));
-		} finally {
-			process.chdir(before);
-		}
+		// browse without --out, and import --dry-run, write into the folder they run in.
+		expect(refusal(() => gateCommand("browse", ["browse", "Atlas"], { config: t.configPath }, t.env, { cwd: birch }))).toBe(changed);
+		expect(refusal(() => gateCommand("import", ["import", "Atlas"], { config: t.configPath, "dry-run": true }, t.env, { cwd: birch }))).toBe(changes("orrery import"));
+		expect(gateCommand("browse", ["browse", "Atlas"], { config: t.configPath }, t.env, { cwd: t.root })).toEqual({});
 		// No session there: the same commands run.
 		forgetSession(real, process.ppid);
 		expect(gateCommand("logins", ["logins"], {}, env)).toEqual({});

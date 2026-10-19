@@ -76,6 +76,8 @@ export interface GateDeps {
 	readonly codexPid?: () => number;
 	/** How processes are read (src/agent/sessions.ts). */
 	readonly sessions?: SessionDeps;
+	/** The folder the command runs in (default process.cwd()): browse without --out and import --dry-run write there. */
+	readonly cwd?: string;
 }
 
 /** The markers, in the order a refusal names them (src/agent/sessions.ts reads them). */
@@ -106,7 +108,7 @@ export function gateCommand(command: string | undefined, positionals: readonly s
 	// is anyone's to write, so inside a session it decides nothing (trustedConfig).
 	const given = readConfig(values, env);
 	const look = deps.insideSession ?? insideSession;
-	const dirs = dataDirs(command, given, values, env);
+	const dirs = dataDirs(command, given, values, env, deps.cwd ?? process.cwd());
 	let asked = deps.sessions ?? {};
 	let inside = look(dirs, env, given, asked);
 	const host = hostOf(command, values, deps);
@@ -248,7 +250,7 @@ function readConfig(values: GateValues, env: NodeJS.ProcessEnv): HarnessConfig |
  * touch (touchedPaths), since every one of those is the caller's to name. insideSession judges each with every folder
  * above it that holds session records (judgedFolders, src/agent/sessions.ts).
  */
-function dataDirs(command: string | undefined, config: HarnessConfig | undefined, values: GateValues, env: NodeJS.ProcessEnv): string[] {
+function dataDirs(command: string | undefined, config: HarnessConfig | undefined, values: GateValues, env: NodeJS.ProcessEnv, cwd: string): string[] {
 	const dirs = config === undefined ? [] : [config.dataDir];
 	try {
 		dirs.push(orreryHome(env));
@@ -256,7 +258,7 @@ function dataDirs(command: string | undefined, config: HarnessConfig | undefined
 		// an ORRERY_HOME that is no absolute path: the home under $HOME still counts
 	}
 	dirs.push(join(env.HOME || homedir(), ".orrery"));
-	dirs.push(...touchedPaths(command, config, values, env));
+	dirs.push(...touchedPaths(command, config, values, env, cwd));
 	return [...new Set(dirs)];
 }
 
@@ -274,7 +276,7 @@ const PATH_OPTIONS = ["config", "from", "out", "commit", "progress", "claude", "
  * identity_file and known_hosts, each agent's data folder, folder and allowed_roots); and the folder it runs in for the
  * two commands that write there (browse without --out, import --dry-run).
  */
-function touchedPaths(command: string | undefined, config: HarnessConfig | undefined, values: GateValues, env: NodeJS.ProcessEnv): string[] {
+function touchedPaths(command: string | undefined, config: HarnessConfig | undefined, values: GateValues, env: NodeJS.ProcessEnv, cwd: string): string[] {
 	const paths: string[] = [];
 	for (const key of PATH_OPTIONS) {
 		const value = values[key];
@@ -282,7 +284,7 @@ function touchedPaths(command: string | undefined, config: HarnessConfig | undef
 		else if (Array.isArray(value)) paths.push(...value);
 	}
 	paths.push(defaultConfigPath(env));
-	if ((command === "browse" && values.out === undefined) || (command === "import" && values["dry-run"] === true)) paths.push(process.cwd());
+	if ((command === "browse" && values.out === undefined) || (command === "import" && values["dry-run"] === true)) paths.push(cwd);
 	if (config === undefined) return paths;
 	paths.push(config.dataDir, config.credentialsPath, config.deviceIdPath, config.sshDir);
 	for (const host of config.hosts.values()) if (host.kind === "ssh") paths.push(host.identityFile, host.knownHostsFile);
