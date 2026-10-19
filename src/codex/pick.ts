@@ -25,6 +25,9 @@
  * a claim: it stays without memory through a compaction or /clear. A resume, which may come in the same process (Codex's
  * /resume), judges it again then: the limit of a data folder where no decision can be written.
  *
+ * A "Codex" that is a live recorded host of another tool's session (Claude Code, pi, …) is that tool, whose shell ran
+ * the hook or the memory server: inside its session, before any decision or claim, with a launch's token or none.
+ *
  * Codex's pid (src/codex/host.ts codexPid) passes over the processes above a hook that are named like shells. A process
  * is anyone's to name, so a pid reached past one must prove itself: a live session record there is this session's only
  * when it is a Codex's, of this very session (the hook's session_id); any other (another Codex session, another tool's,
@@ -81,6 +84,20 @@ function passedOver(config: HarnessConfig, asking: CodexAsker): CodexPicked | un
 		const record = liveSession(config.dataDir, asking.pid);
 		if (record === undefined || (record.tool === "codex" && asking.session !== undefined && record.codexSession === asking.session)) return undefined;
 		return { kind: "nested", outer: record.agent, tool: record.tool };
+	} catch {
+		return UNKNOWN;
+	}
+}
+
+/**
+ * The session another tool's process `pid` hosts, when it does: a Codex hook or memory server that process ran is no
+ * Codex's but that tool's shell's (Claude Code's Bash inherits a launch's ORRERY_AGENT and token, and is the hook's
+ * parent when it execs one), so it is inside that session, token or none (fail closed).
+ */
+function anotherTool(config: HarnessConfig, pid: number): CodexPicked | undefined {
+	try {
+		const record = liveSession(config.dataDir, pid);
+		return record === undefined || record.tool === "codex" ? undefined : { kind: "nested", outer: record.agent, tool: record.tool };
 	} catch {
 		return UNKNOWN;
 	}
@@ -204,7 +221,7 @@ const nestedPick = (decision: Extract<Decision, { kind: "nested" }>): CodexPicke
  * take a dead claim over); every later one reads that decision (module doc).
  */
 export function codexAgent(config: HarnessConfig, asking: CodexAsker): CodexPicked {
-	const unproven = passedOver(config, asking);
+	const unproven = passedOver(config, asking) ?? anotherTool(config, asking.pid);
 	if (unproven !== undefined) return unproven;
 	if (!asking.takeover) {
 		// An event: its own claim, the common case, needs nothing more. Without one, a process decided nested stays so;

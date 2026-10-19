@@ -96,12 +96,13 @@ export function messages(agent: AgentConfig): string[] {
 }
 
 type Spooled =
-	| { kind: "prompt"; text: string; promptId?: string; host?: "codex" }
-	| { kind: "reply"; text: string }
+	| { kind: "prompt"; text: string; promptId?: string; host?: "codex"; turnId?: string }
+	| { kind: "reply"; text: string; host?: "codex"; turnId?: string }
 	| { kind: "command" }
 	| { kind: "end"; reason?: string }
 	| { kind: "compactor"; args: string }
-	| { kind: "transcript"; path: string; projects: string; offset: number };
+	| { kind: "transcript"; path: string; projects: string; offset: number }
+	| { kind: "rollout"; path: string; home: string; offset: number };
 let clock = 0;
 
 /**

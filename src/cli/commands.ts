@@ -36,8 +36,9 @@ function readableOnly(config: HarnessConfig, readable: Readable | undefined): Ha
 }
 
 /**
- * `orrery status [<Name>] [--json]`: one line per agent (or the named one): state, tool, memory, summaries, and the Claude
- * Code prompts its transcript never confirmed, which were not recorded (src/claude/transcript.ts), once there are any.
+ * `orrery status [<Name>] [--json]`: one line per agent (or the named one): state, tool, memory, summaries, and the
+ * messages that Claude Code's transcript or Codex's rollout never confirmed, which were not recorded
+ * (src/claude/transcript.ts, src/codex/rollout.ts), once there are any.
  */
 export function statusCommand(config: HarnessConfig, only?: string, options: { json?: boolean; readable?: Readable } = {}): string {
 	const name = only === undefined ? undefined : findAgent(config, only).name;
@@ -45,14 +46,14 @@ export function statusCommand(config: HarnessConfig, only?: string, options: { j
 		.filter((row) => name === undefined || row.name === name)
 		.map((row) => {
 			const unconfirmed = readUnconfirmed(config.agents.get(row.name)?.dir ?? row.dataDir);
-			return unconfirmed > 0 ? { ...row, unconfirmedPrompts: unconfirmed } : row;
+			return unconfirmed > 0 ? { ...row, unconfirmedMessages: unconfirmed } : row;
 		});
 	if (options.json === true) return `${JSON.stringify({ agents: rows }, null, 2)}\n`;
 	const toolWidth = Math.max(11, ...rows.map((row) => TOOL_LABELS[row.tool].length + (row.launcher === "ori" ? 6 : 0)));
 	let out = "";
 	for (const row of rows) {
 		const memory = row.unreadable !== undefined ? `unreadable: ${row.unreadable}` : row.hasMemory ? `${row.messages} messages, view ${Math.round(row.viewBytes / 1000)}/${Math.round(row.viewBudget / 1000)} KB` : "no memory yet";
-		const unconfirmed = "unconfirmedPrompts" in row ? ` · ${row.unconfirmedPrompts} unconfirmed ${row.unconfirmedPrompts === 1 ? "prompt" : "prompts"} not recorded` : "";
+		const unconfirmed = "unconfirmedMessages" in row ? ` · ${row.unconfirmedMessages} unconfirmed ${row.unconfirmedMessages === 1 ? "message" : "messages"} not recorded` : "";
 		out += `${row.name.padEnd(12)} ${row.state.padEnd(9)} ${`${TOOL_LABELS[row.tool]}${row.launcher === "ori" ? " · Ori" : ""}`.padEnd(toolWidth)} ${memory}  summaries ${summaryText(row)} · ${row.summaryModel.ref} ${row.summaryModel.thinking}${unconfirmed}\n`;
 	}
 	// status.json carries provider and model error text: never pass its control sequences to the terminal.

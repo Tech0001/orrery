@@ -9,23 +9,35 @@
  *   notices as systemMessage, which reaches the person. Before a compaction's view it waits a while for this session's
  *   spool and the summaries (as the Claude Code mod does). At resume (and a fork) the session's history already holds a
  *   view: the holder is started all the same, and only the status is said.
- * - UserPromptSubmit spools the prompt, Stop the turn's last reply, SessionEnd the session's end; each returns quickly.
+ * - UserPromptSubmit spools the prompt and Stop the turn's last reply, each with the turn's id; each returns quickly.
+ *   The holder records them only once Codex's rollout confirms them (src/codex/rollout.ts).
  * - Events of Codex's subagents (agent_id) are not memory.
  * - SessionStart records Codex's process as the agent's session host, with the session's id (src/agent/sessions.ts:
- *   its sandboxed shell, in a pid namespace of its own, is known by CODEX_THREAD_ID), whether or not it records;
- *   SessionEnd forgets it. A Codex started inside an agent's session (src/codex/pick.ts) opens no memory and records
- *   nothing: SessionStart says why (not again after a compaction), and no event spools.
+ *   its sandboxed shell, in a pid namespace of its own, is known by CODEX_THREAD_ID), whether or not it records. A
+ *   Codex started inside an agent's session (src/codex/pick.ts) opens no memory and records nothing: SessionStart says
+ *   why (not again after a compaction), and no event spools.
  * - Their stdout is only their JSON answer (nothing at all when there is none), and they never put message contents on
  *   stderr or in a log.
+ *
+ * Codex runs a hook through a pipe, so the agent's own shell (or another tool's: Claude Code's Bash inherits a launch's
+ * ORRERY_AGENT and token) can run this command with made-up input, and nothing about the caller tells them apart (spec
+ * 2026-10-18-agent-permissions §3c). So no event changes what such a call could abuse:
+ * - SessionStart takes a session only when this Codex holds its rollout open, found by the session's id under Codex's
+ *   own folder, before it decides, claims or records anything: no other process can name a session. One this Codex's
+ *   host record already names changes nothing (no record, no resume note, no new rollout place, the holder kept).
+ * - UserPromptSubmit and Stop spool only for the session this Codex's host record names, and what they spool is held
+ *   until the rollout confirms it, then dropped and counted if it doesn't.
+ * - SessionEnd changes nothing: the host record and the process's decision go stale once Codex is gone, and the holder
+ *   ends when Codex does.
  */
 
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
-import { processAlive } from "../agent/process.ts";
-import { forgetSession, liveSession, nestedNotice, recordSession } from "../agent/sessions.ts";
+import { liveSession, nestedNotice, recordSession, type SessionRecord } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { memorySection } from "../agent/view-text.ts";
 import { noticeShownBefore, waitForMode } from "../claude/hooks.ts";
@@ -35,7 +47,8 @@ import { holderLog, validSession } from "../claude/paths.ts";
 import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
 import { MemoryStore, MemoryView } from "../memory/index.ts";
 import { codexAgent } from "./pick.ts";
-import { recordCodexSession } from "./resume.ts";
+import { codexSessionOf, recordCodexSession } from "./resume.ts";
+import { codexHome, findRollout, holdsOpen, readerStart } from "./rollout.ts";
 
 /** The events `orrery codex-hook` records (pre-tool-use is the guard, src/codex/guard.ts). */
 export const CODEX_RECORD_EVENTS = ["session-start", "user-prompt-submit", "stop", "session-end"] as const;
@@ -43,6 +56,7 @@ export const CODEX_RECORD_EVENTS = ["session-start", "user-prompt-submit", "stop
 /** The fields read from Codex's input; every one is checked before use. */
 export interface CodexHookInput {
 	readonly session_id?: unknown;
+	readonly turn_id?: unknown;
 	readonly agent_id?: unknown;
 	readonly source?: unknown;
 	readonly prompt?: unknown;
@@ -54,6 +68,8 @@ export interface CodexHookInput {
 export interface CodexHookContext {
 	readonly config: HarnessConfig;
 	readonly env: NodeJS.ProcessEnv;
+	/** The home folder ~/.codex is in when CODEX_HOME is not set (default os.homedir()). */
+	readonly home?: string;
 	/** Codex's process (src/codex/host.ts): the token's owner and the holder's host. */
 	readonly codexPid: number;
 	/**
@@ -87,11 +103,22 @@ function agentOf(ctx: CodexHookContext, session: string | undefined, takeover = 
 	});
 }
 
-/** A main-thread event of this Codex's agent, in a session its holder does not run read-only: its events are memory. */
+/** This Codex's host record when it names `session`, the session its SessionStart took as its own (module doc). */
+function hostOf(ctx: CodexHookContext, session: string): SessionRecord | undefined {
+	const record = liveSession(ctx.config.dataDir, ctx.codexPid);
+	return record?.tool === "codex" && record.codexSession === session ? record : undefined;
+}
+
+/**
+ * A main-thread event of this Codex's agent, in the session its host record names, which its holder does not run
+ * read-only: its events are memory.
+ */
 function recordable(input: CodexHookInput, ctx: CodexHookContext): { readonly agent: AgentConfig; readonly session: string } | undefined {
 	if (input.agent_id !== undefined || !validSession(input.session_id)) return undefined;
+	const host = hostOf(ctx, input.session_id);
+	if (host === undefined) return undefined;
 	const pick = agentOf(ctx, input.session_id);
-	if (pick.kind !== "agent") return undefined;
+	if (pick.kind !== "agent" || pick.agent.name !== host.agent) return undefined;
 	if (readMode(pick.agent.dir, input.session_id)?.mode === "read-only") return undefined;
 	return { agent: pick.agent, session: input.session_id };
 }
@@ -115,21 +142,25 @@ function noticeLines(agent: AgentConfig, session: string, ctx: CodexHookContext)
 	return lines;
 }
 
-/** The notices as an answer, for the turn's events (main thread, this Codex's agent). */
+/** The notices as an answer, for the turn's events (main thread, this Codex's agent, the session its host record names). */
 function notices(input: CodexHookInput, ctx: CodexHookContext): object | undefined {
 	if (input.agent_id !== undefined || !validSession(input.session_id)) return undefined;
+	const host = hostOf(ctx, input.session_id);
+	if (host === undefined) return undefined;
 	const pick = agentOf(ctx, input.session_id);
-	if (pick.kind !== "agent") return undefined;
+	if (pick.kind !== "agent" || pick.agent.name !== host.agent) return undefined;
 	const lines = noticeLines(pick.agent, input.session_id, ctx);
 	return lines.length === 0 ? undefined : { systemMessage: lines.join("\n") };
 }
+
+/** The hook's turn id ("" when it has none: the holder then confirms nothing). */
+const turnOf = (input: CodexHookInput) => (typeof input.turn_id === "string" ? input.turn_id : "");
 
 /** UserPromptSubmit: spools the person's prompt. Codex sends its own commands (/compact, /model) to no hook. */
 export function userPromptSubmit(input: CodexHookInput, ctx: CodexHookContext): object | undefined {
 	const at = recordable(input, ctx);
 	if (at !== undefined && typeof input.prompt === "string" && input.prompt.trim()) {
-		// Marked Codex's: the holder confirms a Claude Code prompt against its transcript, and a Codex one as Codex's.
-		spoolEvent(at.agent.dir, at.session, { kind: "prompt", at: Date.now(), claudePid: ctx.codexPid, text: input.prompt, host: "codex" });
+		spoolEvent(at.agent.dir, at.session, { kind: "prompt", at: Date.now(), claudePid: ctx.codexPid, text: input.prompt, host: "codex", turnId: turnOf(input) });
 	}
 	return notices(input, ctx);
 }
@@ -138,20 +169,15 @@ export function userPromptSubmit(input: CodexHookInput, ctx: CodexHookContext): 
 export function stop(input: CodexHookInput, ctx: CodexHookContext): object | undefined {
 	const at = recordable(input, ctx);
 	const text = input.last_assistant_message;
-	if (at !== undefined && typeof text === "string" && text.trim()) spoolEvent(at.agent.dir, at.session, { kind: "reply", at: Date.now(), claudePid: ctx.codexPid, text });
+	if (at !== undefined && typeof text === "string" && text.trim()) spoolEvent(at.agent.dir, at.session, { kind: "reply", at: Date.now(), claudePid: ctx.codexPid, text, host: "codex", turnId: turnOf(input) });
 	return notices(input, ctx);
 }
 
 /**
- * SessionEnd: only drops an "end" in the spool (Codex gives the hook at most 3 s); the holder finishes the rest. The
- * session's host record goes, unless it is already a later session's (a /clear's new one, recorded first).
+ * SessionEnd: changes nothing (module doc). A made-up one would look the same, so the host record and the process's
+ * decision stay until Codex is gone (they are stale then), and the holder ends when Codex does.
  */
-export function sessionEnd(input: CodexHookInput, ctx: CodexHookContext): void {
-	const at = recordable(input, ctx);
-	if (at !== undefined) spoolEvent(at.agent.dir, at.session, { kind: "end", at: Date.now(), claudePid: ctx.codexPid, ...(typeof input.reason === "string" ? { reason: input.reason } : {}) });
-	if (input.agent_id !== undefined || !validSession(input.session_id) || agentOf(ctx, input.session_id).kind !== "agent") return;
-	if (liveSession(ctx.config.dataDir, ctx.codexPid)?.codexSession === input.session_id) forgetSession(ctx.config.dataDir, ctx.codexPid);
-}
+export function sessionEnd(_input: CodexHookInput, _ctx: CodexHookContext): void {}
 
 /** The agent's message count and, when `withSection`, its memory section, read from a read-only snapshot; none yet: {}. */
 function readMemory(agent: AgentConfig, withSection: boolean): { readonly messages?: number; readonly section?: string } {
@@ -165,54 +191,88 @@ function readMemory(agent: AgentConfig, withSection: boolean): { readonly messag
 	}
 }
 
+/** A Codex session's rollout, as this Codex holds it: the file, Codex's folder, and where to read it from. */
+interface OwnRollout {
+	readonly path: string;
+	readonly home: string;
+	readonly offset: number;
+}
+
 /**
- * SessionStart: the holder, then the status and, but at resume and fork, the memory section (module doc). A refused
- * ORRERY_AGENT only tells the person.
+ * Session `session` as this Codex's own: its rollout, found by its id under Codex's folder (never where the input says),
+ * held open by this Codex's process; else why it can't be confirmed.
+ */
+function ownRollout(session: string, ctx: CodexHookContext): OwnRollout | string {
+	const home = codexHome(ctx.env, ctx.home ?? homedir());
+	const path = findRollout(home, session);
+	if (path === undefined) return `no rollout of it under ${home}`;
+	const open = holdsOpen(ctx.codexPid, path);
+	if (open === "unknown") return "this system can't tell which files Codex has open";
+	if (!open) return "Codex doesn't have its rollout open";
+	const offset = readerStart(path);
+	return offset === undefined ? "its rollout can't be read" : { path, home, offset };
+}
+
+/**
+ * SessionStart: the holder, then the status and, but at resume and fork, the memory section (module doc). A session
+ * this Codex doesn't hold the rollout of, or a refused ORRERY_AGENT, only tells the person.
  */
 export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext): Promise<object | undefined> {
 	if (input.agent_id !== undefined || !validSession(input.session_id)) return undefined;
+	const session = input.session_id;
+	// Before anything is decided, claimed or recorded: is this session this Codex's own?
+	const rollout = ownRollout(session, ctx);
+	if (typeof rollout === "string") return { systemMessage: `Orrery: can't confirm this is this Codex's own session (${safeText(rollout)}), so it opens no memory and records nothing.` };
 	// A session's start (or resume) may be the process's first asker: it decides, and may claim the token, unless the
 	// memory server has already. A compaction or /clear never is (src/codex/pick.ts).
-	const pick = agentOf(ctx, input.session_id, input.source === "startup" || input.source === "resume");
+	const pick = agentOf(ctx, session, input.source === "startup" || input.source === "resume");
 	if (pick.kind === "refused") return { systemMessage: pick.notice };
 	// Started inside an agent's session: said to the person, once a session (not again after a compaction).
 	if (pick.kind === "nested") return input.source === "compact" ? undefined : { systemMessage: nestedNotice({ agent: pick.outer, tool: pick.tool, via: "ancestry", dataDir: "" }) };
 	const { agent } = pick;
-	const session = input.session_id;
+	// The session this Codex's host record names already: nothing to record again.
+	const current = hostOf(ctx, session)?.agent === agent.name;
 	// This Codex hosts the agent's session, with this session's id, whether or not it records (spec
 	// 2026-10-18-agent-permissions §2): what its shell starts runs inside the agent's session.
-	const hosted = recordSession(ctx.config.dataDir, { agent: agent.name, tool: "codex", pid: ctx.codexPid, codexSession: session, config: ctx.config.file }) || !processAlive(ctx.codexPid);
+	const hosted = current || recordSession(ctx.config.dataDir, { agent: agent.name, tool: "codex", pid: ctx.codexPid, codexSession: session, config: ctx.config.file });
 	// For the launcher's resume line once Codex ends (src/codex/resume.ts).
-	recordCodexSession(agent.dir, ctx.codexPid, session, ctx.alive);
+	if (codexSessionOf(agent.dir, ctx.codexPid) !== session) recordCodexSession(agent.dir, ctx.codexPid, session, ctx.alive);
 	// The holder's cut-off: this session's events from now on belong to this run.
 	const since = Date.now();
+	// Where the holder reads this session's rollout from: a session new to this Codex's record only.
+	if (hosted && !current) spoolEvent(agent.dir, session, { kind: "rollout", at: since, claudePid: ctx.codexPid, path: rollout.path, home: rollout.home, offset: rollout.offset });
 	// At resume (and a fork) the session's history holds the view it had: another would sit beside it.
 	const withView = input.source !== "resume" && input.source !== "fork";
 	const warnings: string[] = [];
 	let state = "recording";
-	if (!hosted) warnings.push(`Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s.`);
 	// Its own claim keeps this Codex the agent's; each SessionStart decides again, which is said once a session.
 	if (pick.notRecorded !== undefined && input.source !== "compact") warnings.push(`Orrery: which agent this Codex is could not be recorded (${safeText(pick.notRecorded)}), so each SessionStart works it out again.`);
-	const holder = readHolder(agent.dir);
-	let mode: SessionMode | undefined;
-	if (holderFresh(holder) && holder.session === session && holder.state === "recording") mode = readMode(agent.dir, session);
-	else {
-		const nonce = randomUUID();
-		ctx.startHolder(agent, session, nonce, since);
-		mode = await waitForMode(agent.dir, session, nonce, ctx.modeWaitMs ?? 8000);
-	}
-	// The holder notes no reason when the agent is held locally (pi, or another session).
-	const held = mode?.mode === "read-only" && (mode.reason === undefined || mode.reason === "held");
-	if (mode === undefined) {
-		state = "not recording yet";
-		warnings.push(`Orrery: ${agent.name}'s recorder did not answer in time; see ${holderLog(agent.dir)}.`);
-	} else if (mode.mode === "read-only") {
+	if (!hosted) {
+		// Its prompts are confirmed by the session the host record names: with none, nothing records.
 		state = "read-only: this session is not recorded";
-		if (held) warnings.push(`Orrery: ${agent.name} is ${openElsewhere(agent.dir, "codex")}; this session reads memory but is not recorded.`);
+		warnings.push(`Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s, and it isn't recorded.`);
+	} else {
+		const holder = readHolder(agent.dir);
+		let mode: SessionMode | undefined;
+		if (holderFresh(holder) && holder.session === session && holder.state === "recording") mode = readMode(agent.dir, session);
+		else {
+			const nonce = randomUUID();
+			ctx.startHolder(agent, session, nonce, since);
+			mode = await waitForMode(agent.dir, session, nonce, ctx.modeWaitMs ?? 8000);
+		}
+		// The holder notes no reason when the agent is held locally (pi, or another session).
+		const held = mode?.mode === "read-only" && (mode.reason === undefined || mode.reason === "held");
+		if (mode === undefined) {
+			state = "not recording yet";
+			warnings.push(`Orrery: ${agent.name}'s recorder did not answer in time; see ${holderLog(agent.dir)}.`);
+		} else if (mode.mode === "read-only") {
+			state = "read-only: this session is not recorded";
+			if (held) warnings.push(`Orrery: ${agent.name} is ${openElsewhere(agent.dir, "codex")}; this session reads memory but is not recorded.`);
+		}
+		// A recording recorder's notices (memory kept aside, unsaved turns kept) are said once per recorder start, not again
+		// after each compaction that keeps it.
+		if (!held && typeof mode?.reason === "string" && !(mode.mode === "recording" && noticeShownBefore(agent.dir, session, mode.nonce))) warnings.push(safeText(mode.reason));
 	}
-	// A recording recorder's notices (memory kept aside, unsaved turns kept) are said once per recorder start, not again
-	// after each compaction that keeps it.
-	if (!held && typeof mode?.reason === "string" && !(mode.mode === "recording" && noticeShownBefore(agent.dir, session, mode.nonce))) warnings.push(safeText(mode.reason));
 	if (withView && input.source === "compact") {
 		try {
 			await settleView(agent, session, { waitMs: ctx.compactWaitMs ?? 15_000 });

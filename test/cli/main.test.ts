@@ -186,17 +186,17 @@ describe("orrery", () => {
 		expect(JSON.parse(statusCommand(config, undefined, { json: true })).agents[0].lastBackup).toBe("2026-10-07");
 	});
 
-	it("counts the Claude Code prompts dropped because the transcript never confirmed them, once there are any", () => {
+	it("counts the messages dropped because Claude Code's transcript or Codex's rollout never confirmed them, once there are any", () => {
 		const dir = tempDir("orrery-main-");
 		dirs.push(dir);
 		const config = parseConfig(agentConfigToml({ dataDir: join(dir, "data"), folder: join(dir, "ws") }), dir);
 		expect(statusCommand(config)).not.toContain("unconfirmed");
-		expect(JSON.parse(statusCommand(config, undefined, { json: true })).agents[0].unconfirmedPrompts).toBeUndefined();
+		expect(JSON.parse(statusCommand(config, undefined, { json: true })).agents[0].unconfirmedMessages).toBeUndefined();
 		addUnconfirmed(config.agents.get("Test")!.dir);
-		expect(statusCommand(config)).toMatch(/^Test .* · 1 unconfirmed prompt not recorded\n$/);
+		expect(statusCommand(config)).toMatch(/^Test .* · 1 unconfirmed message not recorded\n$/);
 		addUnconfirmed(config.agents.get("Test")!.dir, 2);
-		expect(statusCommand(config)).toContain(" · 3 unconfirmed prompts not recorded\n");
-		expect(JSON.parse(statusCommand(config, undefined, { json: true })).agents[0].unconfirmedPrompts).toBe(3);
+		expect(statusCommand(config)).toContain(" · 3 unconfirmed messages not recorded\n");
+		expect(JSON.parse(statusCommand(config, undefined, { json: true })).agents[0].unconfirmedMessages).toBe(3);
 	});
 
 	it("backs up every agent with memory, and rejects a bad --keep", () => {

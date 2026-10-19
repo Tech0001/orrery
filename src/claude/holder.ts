@@ -9,12 +9,14 @@
  * - It exits once its session has ended (SessionEnd, or the host process is gone) and the summaries have settled,
  *   cannot come (stopped or failing), or took longer than `finishMs`.
  * - Until then, a newcomer may ask it to yield (src/agent/handover.ts).
- * - A Claude Code prompt (any but Codex's) is held until Claude Code's transcript confirms it (spec
- *   2026-10-18-agent-permissions §3c, src/claude/transcript.ts): the user's words are recorded, a peer's report as
- *   "[subagent] …", a task notification not at all. Its session's later events wait behind it, so the order holds. One
- *   not confirmed once its turn is over (a later event of its session, or its Claude Code gone) and `graceMs` have
- *   passed is dropped and counted (unconfirmed.json). Each session's transcript place is kept in memory meta, so a holder
- *   that starts with a prompt still held looks for it first, where its predecessor left off.
+ * - A Claude Code prompt is held until Claude Code's transcript confirms it (spec 2026-10-18-agent-permissions §3c,
+ *   src/claude/transcript.ts): the user's words are recorded, a peer's report as "[subagent] …", a task notification
+ *   not at all. A Codex prompt or reply (marked `host: "codex"`) is held until Codex's rollout confirms it
+ *   (src/codex/rollout.ts): the person's turn's words, and that turn's final reply; anything else is dropped. A held
+ *   event's session's later events wait behind it, so the order holds. One not confirmed once its turn is over (a later
+ *   event of its session, or its host gone) and `graceMs` have passed is dropped and counted (unconfirmed.json). Each
+ *   session's transcript or rollout place is kept in memory meta, so a holder that starts with an event still held looks
+ *   for it first, where its predecessor left off. No prompt, and no Codex reply, is recorded as it comes.
  * It logs lifecycle and errors only, never message contents; its lines name the host (Claude Code or Codex).
  */
 
@@ -32,6 +34,7 @@ import { localIso, type NewMessage } from "../memory/index.ts";
 import { holdWriterLock } from "../memory/store.ts";
 import { remoteFooter, remoteOpenNotice } from "../remote/checkout.ts";
 import { RemoteError, type RemoteStatus, type LockState } from "../remote/types.ts";
+import { type CodexSaid, type CodexVerdict, parseRolloutMark, RolloutReader, rolloutIn } from "../codex/rollout.ts";
 import { holderLog, validSession } from "./paths.ts";
 import { dropEventsSince, listSessions, type Pending, pendingEvents, readEvent, readMode, removeSession, type SpoolEvent, spoolKey, writeMode } from "./spool.ts";
 import { addUnconfirmed, parseMark, type PromptVerdict, TranscriptReader, transcriptIn } from "./transcript.ts";
@@ -39,8 +42,10 @@ import { type ViewGate, writeViewFile } from "./view-file.ts";
 
 /** The meta key holding a session's transcript place (src/claude/transcript.ts TranscriptMark). */
 export const transcriptKey = (session: string) => `claude.transcript.${session}`;
+/** The meta key holding a Codex session's rollout place (src/codex/rollout.ts RolloutMark). */
+export const rolloutKey = (session: string) => `codex.rollout.${session}`;
 
-/** How long a Claude Code prompt may stay unconfirmed once its turn is over (default for HolderOptions.graceMs). */
+/** How long a prompt (or a Codex reply) may stay unconfirmed once its turn is over (default for HolderOptions.graceMs). */
 export const PROMPT_GRACE_MS = 30_000;
 
 /** What a holder records, for whom, with which models, and how patiently. */
@@ -70,7 +75,7 @@ export interface HolderOptions {
 	readonly finishMs?: number;
 	/** How long it waits for a finishing holder to yield the agent (default 5 s). */
 	readonly yieldWaitMs?: number;
-	/** How long a Claude Code prompt may stay unconfirmed once its turn is over (default PROMPT_GRACE_MS). */
+	/** How long a prompt (or a Codex reply) may stay unconfirmed once its turn is over (default PROMPT_GRACE_MS). */
 	readonly graceMs?: number;
 }
 
@@ -99,9 +104,11 @@ export class Holder {
 	readonly #graceMs: number;
 	/** Each session's transcript, as read so far (loaded from memory meta when first needed). */
 	readonly #transcripts = new Map<string, TranscriptReader>();
+	/** Each Codex session's rollout, as read so far (loaded from memory meta when first needed). */
+	readonly #rollouts = new Map<string, RolloutReader>();
 	/** When each held prompt's grace began (its turn was over), by event name. */
 	readonly #graceFrom = new Map<string, number>();
-	/** Whether the last look left a prompt of its own session held. */
+	/** Whether the last look left a prompt (or a Codex reply) of its own session held. */
 	#holding = false;
 	/** The Orrery version this process runs, for the heartbeat: an update leaves it on the old one until the session restarts. */
 	readonly #version = statusVersion();
@@ -291,8 +298,8 @@ export class Holder {
 
 	/**
 	 * Records every pending event this holder owns, oldest first, each with its cursor in one transaction. The reply to
-	 * one of orrery's own commands is not recorded, as in pi: only the cursor moves past it. A Claude Code prompt not yet
-	 * confirmed holds its session's later events back (module doc).
+	 * one of orrery's own commands is not recorded, as in pi: only the cursor moves past it. A prompt, or a Codex reply,
+	 * not yet confirmed holds its session's later events back (module doc).
 	 */
 	#ingest(): void {
 		const held = new Set<string>();
@@ -312,9 +319,27 @@ export class Holder {
 			const items: NewMessage[] = [];
 			const meta: Record<string, string> = { [spoolKey(event.session)]: event.name };
 			const commandReply = parsed?.kind === "reply" && this.#afterCommand.has(event.session);
-			let unconfirmed = false;
-			// Every prompt but Codex's is Claude Code's, recorded only as its transcript confirms it (none without a promptId).
-			if (parsed?.kind === "prompt" && parsed.host !== "codex") {
+			/** What was dropped unconfirmed, for the log (no words). */
+			let unconfirmed: string | undefined;
+			if ((parsed?.kind === "prompt" || parsed?.kind === "reply") && parsed.host === "codex") {
+				// Codex's, recorded only as its rollout confirms it (none without a turn id).
+				const said = { kind: parsed.kind, turnId: parsed.turnId ?? "", text: parsed.text };
+				const { verdict, line } = this.#codexVerdict(event, said, parsed.claudePid, events.slice(index + 1), now);
+				if (verdict === "wait") {
+					held.add(event.session);
+					continue;
+				}
+				this.#graceFrom.delete(event.name);
+				const reader = this.#rollouts.get(event.session);
+				// A line recorded before (a resume or a fork reads history again) is not recorded again.
+				if (verdict === "user" && parsed.text.trim() && !commandReply && (line === undefined || reader?.recordedBefore(line) !== true)) {
+					items.push({ kind: parsed.kind === "prompt" ? "user" : "talk", text: parsed.text, date: localIso(new Date(parsed.at)) });
+					if (line !== undefined) reader?.remember(line);
+				}
+				if (verdict !== "user") unconfirmed = `a ${parsed.kind} Codex's rollout does not confirm`;
+				if (reader !== undefined) meta[rolloutKey(event.session)] = JSON.stringify(reader.mark());
+			} else if (parsed?.kind === "prompt") {
+				// Every other prompt is Claude Code's, recorded only as its transcript confirms it (none without a promptId).
 				const prompt = { promptId: parsed.promptId ?? "", text: parsed.text };
 				const { verdict, line } = this.#verdict(event, prompt, parsed.claudePid, events.slice(index + 1), now);
 				if (verdict === "wait") {
@@ -328,19 +353,23 @@ export class Holder {
 					items.push({ kind: "user", text: verdict === "user" ? parsed.text : `[subagent] ${parsed.text}`, date: localIso(new Date(parsed.at)) });
 					if (line !== undefined) reader?.remember(line);
 				}
-				unconfirmed = verdict === "unconfirmed";
+				if (verdict === "unconfirmed") unconfirmed = "a prompt Claude Code's transcript does not confirm";
 				if (reader !== undefined) meta[transcriptKey(event.session)] = JSON.stringify(reader.mark());
 			} else if (parsed?.kind === "transcript") {
 				const reader = this.#startTranscript(event.session, parsed);
 				meta[transcriptKey(event.session)] = reader === undefined ? "{}" : JSON.stringify(reader.mark());
-			} else if ((parsed?.kind === "prompt" || parsed?.kind === "reply") && parsed.text.trim() && !commandReply) {
-				items.push({ kind: parsed.kind === "prompt" ? "user" : "talk", text: parsed.text, date: localIso(new Date(parsed.at)) });
+			} else if (parsed?.kind === "rollout") {
+				const reader = this.#startRollout(event.session, parsed);
+				meta[rolloutKey(event.session)] = reader === undefined ? "{}" : JSON.stringify(reader.mark());
+			} else if (parsed?.kind === "reply" && parsed.text.trim() && !commandReply) {
+				// Claude Code's: its Stop hook's caller was checked (src/claude/peer.ts).
+				items.push({ kind: "talk", text: parsed.text, date: localIso(new Date(parsed.at)) });
 			}
 			this.agent.view.appendBatch(items, meta);
 			rmSync(event.path, { force: true });
-			if (unconfirmed) {
-				this.#log(`${event.session}: a prompt Claude Code's transcript does not confirm was not recorded`);
-				this.#attempt("counting unconfirmed prompts", () => addUnconfirmed(this.agent.config.dir));
+			if (unconfirmed !== undefined) {
+				this.#log(`${event.session}: ${unconfirmed} was not recorded`);
+				this.#attempt("counting unconfirmed messages", () => addUnconfirmed(this.agent.config.dir));
 			}
 			if (parsed === undefined) this.#log(`${event.session}: skipped an unreadable event ${event.name}`);
 			else if (parsed.kind === "prompt" || parsed.kind === "command") {
@@ -376,12 +405,56 @@ export class Holder {
 		reader.read(now);
 		const confirmed = reader.confirm(prompt);
 		if (confirmed.verdict !== "wait") return confirmed;
+		return { verdict: this.#graceOver(event, host, later, now) ? "unconfirmed" : "wait" };
+	}
+
+	/**
+	 * What a Codex prompt or reply was, by its session's rollout, and the line that said so: "unconfirmed" when nothing
+	 * can confirm it (no rollout for its session, no turn id) or nothing did by the end of its grace.
+	 */
+	#codexVerdict(event: Pending, said: CodexSaid, host: number, later: readonly Pending[], now: number): { verdict: CodexVerdict | "unconfirmed"; line?: string } {
+		const reader = this.#rollout(event.session);
+		if (reader === undefined || said.turnId === "") return { verdict: "unconfirmed" };
+		reader.read(now);
+		const confirmed = reader.confirm(said);
+		if (confirmed.verdict !== "wait") return confirmed;
+		return { verdict: this.#graceOver(event, host, later, now) ? "unconfirmed" : "wait" };
+	}
+
+	/** Whether a held event's grace is over: it begins once its turn is over (a later event of its session, or its host gone). */
+	#graceOver(event: Pending, host: number, later: readonly Pending[], now: number): boolean {
 		let since = this.#graceFrom.get(event.name);
 		if (since === undefined && (later.some((next) => next.session === event.session) || !this.#alive(host))) {
 			since = now;
 			this.#graceFrom.set(event.name, now);
 		}
-		return { verdict: since !== undefined && now - since >= this.#graceMs ? "unconfirmed" : "wait" };
+		return since !== undefined && now - since >= this.#graceMs;
+	}
+
+	/** A Codex session's rollout: as read so far, else where memory meta says the last holder left it, else none. */
+	#rollout(session: string): RolloutReader | undefined {
+		const known = this.#rollouts.get(session);
+		if (known !== undefined) return known;
+		const mark = parseRolloutMark(this.agent.store.getMeta(rolloutKey(session)));
+		if (mark === undefined || rolloutIn(mark.path, mark.home, session) === undefined) return undefined;
+		const reader = new RolloutReader(mark);
+		this.#rollouts.set(session, reader);
+		return reader;
+	}
+
+	/**
+	 * A Codex session's rollout, from its SessionStart: read from where SessionStart said. What was recorded from the
+	 * session before is remembered, so a resume's or a fork's history is not recorded twice. One that is not that session's
+	 * under Codex's folder is none: the session's prompts and replies are not confirmed.
+	 */
+	#startRollout(session: string, event: Extract<SpoolEvent, { kind: "rollout" }>): RolloutReader | undefined {
+		const before = this.#rollout(session)?.mark().recorded;
+		this.#rollouts.delete(session);
+		const path = rolloutIn(event.path, event.home, session);
+		if (path === undefined) return undefined;
+		const reader = new RolloutReader({ path, home: event.home, offset: event.offset, ...(before === undefined ? {} : { recorded: before }) });
+		this.#rollouts.set(session, reader);
+		return reader;
 	}
 
 	/** A session's transcript: as read so far, else where memory meta says the last holder left it, else none. */

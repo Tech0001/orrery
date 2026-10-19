@@ -15,20 +15,24 @@ import { sessionDir, sessionsDir, validSession } from "./paths.ts";
 
 /**
  * One hook event: the user's prompt, the turn's final reply, one of orrery's own commands (text-less: its reply
- * stays out of memory), the session's end, a summary model switch, or the session's transcript.
+ * stays out of memory), the session's end, a summary model switch, or the session's transcript or rollout.
  * - A Claude Code prompt carries the hook's `promptId` ("" when the hook got none): the holder records it only once
- *   Claude Code's transcript confirms it (src/claude/transcript.ts); one without a promptId never is. Codex's hook marks
- *   its prompts `host: "codex"`: those are recorded as they come (until Codex's rollout check).
+ *   Claude Code's transcript confirms it (src/claude/transcript.ts); one without a promptId never is.
+ * - Codex's hook marks its prompts and replies `host: "codex"`, with the hook's `turnId` ("" when it got none): the
+ *   holder records each only once Codex's rollout confirms it (src/codex/rollout.ts); one without a turnId never is.
  * - `transcript`: SessionStart's, once its caller was checked (src/claude/peer.ts): the session's transcript file under
  *   Claude Code's projects folder, and its size then, where the session's prompts are looked for.
+ * - `rollout`: Codex's SessionStart's, once Codex was seen holding it open: the session's rollout under Codex's folder
+ *   (`home`), and where to read it from.
  */
 export type SpoolEvent =
-	| { readonly kind: "prompt"; readonly at: number; readonly claudePid: number; readonly text: string; readonly promptId?: string; readonly host?: "codex" }
-	| { readonly kind: "reply"; readonly at: number; readonly claudePid: number; readonly text: string }
+	| { readonly kind: "prompt"; readonly at: number; readonly claudePid: number; readonly text: string; readonly promptId?: string; readonly host?: "codex"; readonly turnId?: string }
+	| { readonly kind: "reply"; readonly at: number; readonly claudePid: number; readonly text: string; readonly host?: "codex"; readonly turnId?: string }
 	| { readonly kind: "command"; readonly at: number; readonly claudePid: number }
 	| { readonly kind: "end"; readonly at: number; readonly claudePid: number; readonly reason?: string }
 	| { readonly kind: "compactor"; readonly at: number; readonly claudePid: number; readonly args: string }
-	| { readonly kind: "transcript"; readonly at: number; readonly claudePid: number; readonly path: string; readonly projects: string; readonly offset: number };
+	| { readonly kind: "transcript"; readonly at: number; readonly claudePid: number; readonly path: string; readonly projects: string; readonly offset: number }
+	| { readonly kind: "rollout"; readonly at: number; readonly claudePid: number; readonly path: string; readonly home: string; readonly offset: number };
 
 /**
  * What a session's holder chose, from `since` (its start) on. `nonce` comes from SessionStart, so the hook knows this
@@ -54,7 +58,7 @@ export interface Pending {
 	readonly at: number;
 }
 
-const EVENT_NAME = /^(\d{15})-\d{10}-\d{6}-(prompt|reply|command|end|compactor|transcript)\.json$/;
+const EVENT_NAME = /^(\d{15})-\d{10}-\d{6}-(prompt|reply|command|end|compactor|transcript|rollout)\.json$/;
 const MODE = "mode.json";
 /** From here on a local date can have a five-digit year, which memory refuses: such an event would never go in. */
 const LAST_AT = Date.UTC(9999, 11, 31);
@@ -87,13 +91,14 @@ export function readEvent(path: string): SpoolEvent | undefined {
 	}
 	if (typeof value !== "object" || value === null || typeof value.claudePid !== "number") return undefined;
 	if (typeof value.at !== "number" || !(value.at >= 0 && value.at < LAST_AT)) return undefined;
-	if (value.kind === "prompt" && typeof value.text === "string" && (value.promptId === undefined || typeof value.promptId === "string") && (value.host === undefined || value.host === "codex")) {
+	const codex = (value.host === undefined || value.host === "codex") && (value.turnId === undefined || typeof value.turnId === "string");
+	if (value.kind === "prompt" && typeof value.text === "string" && (value.promptId === undefined || typeof value.promptId === "string") && codex) {
 		return value as unknown as SpoolEvent;
 	}
-	if (value.kind === "reply" && typeof value.text === "string") return value as unknown as SpoolEvent;
-	if (value.kind === "transcript" && typeof value.path === "string" && typeof value.projects === "string" && Number.isSafeInteger(value.offset) && (value.offset as number) >= 0) {
-		return value as unknown as SpoolEvent;
-	}
+	if (value.kind === "reply" && typeof value.text === "string" && codex) return value as unknown as SpoolEvent;
+	const offset = Number.isSafeInteger(value.offset) && (value.offset as number) >= 0;
+	if (value.kind === "transcript" && typeof value.path === "string" && typeof value.projects === "string" && offset) return value as unknown as SpoolEvent;
+	if (value.kind === "rollout" && typeof value.path === "string" && typeof value.home === "string" && offset) return value as unknown as SpoolEvent;
 	if (value.kind === "command") return { kind: "command", at: value.at, claudePid: value.claudePid };
 	if (value.kind === "end" || (value.kind === "compactor" && typeof value.args === "string")) return value as unknown as SpoolEvent;
 	return undefined;

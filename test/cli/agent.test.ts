@@ -17,6 +17,7 @@ import { cleanEnv, cliCommand, statusOf } from "../claude/support.ts";
 import { systemCommand } from "../install/support.ts";
 import { tempDir } from "../agent/support.ts";
 import { fakeOpenCode } from "../opencode/fake-opencode.ts";
+import { codexHomeIn } from "../codex/rollout-lines.ts";
 
 const SCRIPT = systemCommand("script");
 const hasScript = process.platform === "linux" && SCRIPT !== undefined && spawnSync(SCRIPT, ["--version"]).status === 0;
@@ -307,6 +308,9 @@ describe("orrery agent", () => {
 		fakeCodex(s, "trusted");
 		for (const [key, value] of Object.entries(s.env)) if (value !== undefined) vi.stubEnv(key, value);
 		const session = "01a146c5-9608-7e51-9376-7ac91c238b48";
+		// Codex's folder, with the session's rollout, which this process (the Codex) holds open.
+		const codexHome = codexHomeIn(s.dir);
+		codexHome.begin(session);
 		const said: string[] = [];
 		const io = { say: (line: string) => said.push(line), confirm: async () => true, askPerson: async () => true };
 		/**
@@ -316,7 +320,14 @@ describe("orrery agent", () => {
 		const codexRun = (prompted: boolean, pid = process.pid) => async (plan: LaunchPlan) => {
 			claimToken(s.agentDir, plan.env.ORRERY_AGENT_TOKEN as string, pid);
 			if (prompted) {
-				const hookCtx = { config: loadConfig(s.config), env: { ...plan.env }, codexPid: pid, modeWaitMs: 100, startHolder: (agent: AgentConfig, sid: string, nonce: string, since: number) => writeMode(agent.dir, sid, { mode: "recording", pid: 1, claudePid: pid, nonce, since }) };
+				const hookCtx = {
+					config: loadConfig(s.config),
+					env: { ...plan.env, CODEX_HOME: codexHome.home },
+					home: s.dir,
+					codexPid: pid,
+					modeWaitMs: 100,
+					startHolder: (agent: AgentConfig, sid: string, nonce: string, since: number) => writeMode(agent.dir, sid, { mode: "recording", pid: 1, claudePid: pid, nonce, since }),
+				};
 				await runCodexHook("session-start", JSON.stringify({ session_id: session, source: "startup" }), hookCtx);
 			}
 			return { code: 0, signal: null };
@@ -339,6 +350,7 @@ describe("orrery agent", () => {
 		expect(said.filter((line) => line.startsWith("To continue"))).toEqual([]);
 		expect(await open(codexRun(true), async () => ({ ok: false as const, text: "Orrery's hooks don't load in Codex 0.162.1: x." }))).toBe(0);
 		expect(said.filter((line) => line.startsWith("To continue"))).toEqual([]);
+		codexHome.close();
 	});
 
 	it.skipIf(!hasScript)("in a terminal, when the hooks don't load: asks, default no; yes starts plain Codex and says it is not recorded", () => {
