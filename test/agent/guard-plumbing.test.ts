@@ -100,6 +100,8 @@ describe("Orrery's hook plumbing in shell text", () => {
 		["the recorder in code's list", `python3 -c 'import subprocess;subprocess.run(["orrery","holder","Atlas"])'`],
 		["the recorder by a glob of the program", "~/.local/bin/orr*y holder Atlas"],
 		["the recorder by a bracket glob of the program", "orre[r]y holder Atlas"],
+		["the recorder by a glob of brackets", "~/.local/bin/[o]* holder Atlas"],
+		["the recorder by a negated bracket naming a capital", "ORRE[!R]Y holder Atlas"],
 		// Text that names both for another reason: the price of reading them in either order.
 		["holder beside one of Orrery's own commands", "orrery status; echo holder"],
 	])("refuses %s in every gate", (_what, command) => {

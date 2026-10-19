@@ -322,7 +322,14 @@ const POSIX_CLASSES: Readonly<Record<string, RegExp>> = {
 /** One unit of a glob: "*", or a test of one character. */
 type GlobUnit = "*" | ((c: string) => boolean);
 
-/** The bracket expression starting at `start` in a glob ([a-z], [!x], [[:alpha:]]), or undefined when it doesn't close. */
+/** The letters a negated bracket expression is checked against (bracketAt). */
+const LETTERS = [..."abcdefghijklmnopqrstuvwxyz"];
+
+/**
+ * The bracket expression starting at `start` in a glob ([a-z], [!x], [[:alpha:]]), or undefined when it doesn't close.
+ * The readings are lower case, so a letter a negated one names may stand for its capital, which the shell lets through
+ * ([!R] matches r): a negated bracket that names any letter matches every letter.
+ */
 function bracketAt(glob: string, start: number): { readonly test: (c: string) => boolean; readonly end: number } | undefined {
 	let i = start + 1;
 	const negate = glob[i] === "!" || glob[i] === "^";
@@ -330,7 +337,11 @@ function bracketAt(glob: string, start: number): { readonly test: (c: string) =>
 	const tests: ((c: string) => boolean)[] = [];
 	for (let first = true; i < glob.length; first = false) {
 		const c = glob.charAt(i);
-		if (c === "]" && !first) return { test: (x) => tests.some((test) => test(x)) !== negate, end: i };
+		if (c === "]" && !first) {
+			const named = (x: string) => tests.some((test) => test(x));
+			const letters = negate && LETTERS.some((letter) => named(letter) || named(letter.toUpperCase()));
+			return { test: (x) => (letters && /^[a-z]$/i.test(x)) || named(x) !== negate, end: i };
+		}
 		if (c === "[" && (glob[i + 1] === ":" || glob[i + 1] === "." || glob[i + 1] === "=")) {
 			const close = glob.indexOf(`${glob[i + 1]}]`, i + 2);
 			if (close === -1) return undefined;
@@ -420,9 +431,9 @@ function globCouldName(glob: string, names: readonly string[]): string | undefin
 const GLOB_WORDS = /[^\s"';|&()<>`]+/g;
 
 /**
- * Each word of a reading whose last path part is a glob that could name Orrery's program, spelling at least one of its
- * letters (orr*y, orre[r]y): where it and that part end. A glob of wildcards alone (*, ***, ??????) is no name: it
- * stands in a patch's headers (*** Update File:), a list's bullets and a shell's every glob.
+ * Each word of a reading whose last path part is a glob that could name Orrery's program (orr*y, orre[r]y, [o]*): where
+ * it and that part end. A glob of "*" and "?" alone (*, ***, ??????) is no name: it stands in a patch's headers (***
+ * Update File:), a list's bullets and a shell's every glob.
  */
 function programGlobs(form: string): { readonly start: number; readonly end: number }[] {
 	if (!GLOB.test(form)) return [];
@@ -431,7 +442,7 @@ function programGlobs(form: string): { readonly start: number; readonly end: num
 		const word = match[0];
 		const part = word.slice(word.lastIndexOf("/") + 1);
 		const end = match.index + word.length;
-		if (!/[a-z]/.test(part.replace(/\[[^\]]*\]?/g, ""))) continue;
+		if (/^[*?]*$/.test(part)) continue;
 		if (globCouldName(part, PROGRAM_NAMES) !== undefined) found.push({ start: end - part.length, end });
 	}
 	return found;
@@ -1406,46 +1417,58 @@ export function skillsNamed(text: string): boolean {
 //
 // Orrery keeps a prompt as the person's words only once the tool's own record of the session has it: Claude Code's
 // transcripts in its projects folder (~/.claude/projects, or $CLAUDE_CONFIG_DIR/projects) and Codex's rollouts in its
-// sessions folder (~/.codex/sessions, or $CODEX_HOME/sessions). An agent that wrote a line there could fake one, so no
-// file tool writes there, in any gate, and no shell text names them; file tools may read them. A project's memory folder
-// there (Claude Code's auto memory, ruling C10) stays writable: it is no record of a session. In shell text they are
-// named by their tails anywhere (.claude/projects, .codex/sessions, $CLAUDE_CONFIG_DIR/projects, $CODEX_HOME/sessions),
-// with the readings every name gets, by a glob that could name one beside its parent's name (~/.claude/pro*,
-// ~/.c*/projects; not ~/.claude/*.json), and by their paths where they are elsewhere (moved, or reached through a link,
-// spelt from home too); a file tool's write by its path and by those names. Limits, as for every shell-text rule: a
-// spelling through another variable, a relative one after a cd into them (cd ~/.claude && … projects/…), a tool that
-// walks a parent folder (find ~/.claude -exec …), or a link the guard doesn't know.
+// sessions folders (~/.codex/sessions and archived_sessions, or under $CODEX_HOME). An agent that wrote a line there
+// could fake one, so no file tool writes there, in any gate, and no shell text names them; file tools may read them. A
+// project's memory folder there (Claude Code's auto memory, ruling C10) stays writable: it is no record of a session. In
+// shell text they are named by their tails anywhere (.claude/projects, .codex/sessions, .codex/archived_sessions, and
+// the same after $CLAUDE_CONFIG_DIR or $CODEX_HOME), with the readings every name gets, by a glob that could name one
+// beside its parent's name (~/.claude/pro*, ~/.c*/projects, ~/.config/claude/pro* where CLAUDE_CONFIG_DIR is
+// ~/.config/claude; not ~/.claude/*.json), and by their paths where they are elsewhere (moved, or reached through a
+// link, spelt from home too); a file tool's write by its path and by those names. Limits, as for every shell-text rule:
+// a spelling through another variable, a relative one after a cd into them (cd ~/.claude && … projects/…), a tool that
+// walks a parent folder (find ~/.claude -exec …), a glob in a moved folder's own path, an extglob or zsh group
+// (~/.claude/@(projects|x)), or a link the guard doesn't know.
 
 /** The session records' folders (transcriptRule). */
 export interface TranscriptRule {
 	/** Claude Code's projects folders, as given and where they really are (normalized; compared ignoring case). */
 	readonly claude: readonly string[];
-	/** Codex's sessions folders, the same way. */
+	/** Codex's sessions and archived sessions folders, the same way. */
 	readonly codex: readonly string[];
 	/** Those of them that their tails don't name, spelt as a [guard] protect path entry is (protection); none for none. */
 	readonly spelled?: Protection;
+	/** Their parent folders, spelt the same way, each entry's folder names in entry order: for a glob beside one. */
+	readonly parents?: { readonly protection: Protection; readonly folders: readonly (readonly string[])[] };
 }
+
+/** Codex's folders of session records under its home. */
+const CODEX_RECORDS = ["sessions", "archived_sessions"];
 
 /** The session records for `env` and `home`; `real` follows links (realTarget), so a folder reached through one counts too. */
 export function transcriptRule(env: NodeJS.ProcessEnv = process.env, home: string = homedir(), real: (path: string) => string = (path) => path): TranscriptRule {
 	const claude = [posix.join(home, ".claude", "projects"), ...(env.CLAUDE_CONFIG_DIR ? [posix.join(posix.resolve(env.CLAUDE_CONFIG_DIR), "projects")] : [])];
-	const codex = [posix.join(home, ".codex", "sessions"), ...(env.CODEX_HOME ? [posix.join(posix.resolve(env.CODEX_HOME), "sessions")] : [])];
+	const codexHomes = [posix.join(home, ".codex"), ...(env.CODEX_HOME ? [posix.resolve(env.CODEX_HOME)] : [])];
+	const codex = codexHomes.flatMap((at) => CODEX_RECORDS.map((name) => posix.join(at, name)));
 	const both = (paths: readonly string[]) => [...new Set(paths.flatMap((path) => [path, real(path)]).map((path) => posix.normalize(path).replace(/(.)\/+$/, "$1")))];
 	const folders = { claude: both(claude), codex: both(codex) };
 	// As written (protection folds them itself, after spelling them from home, which may hold capitals).
-	const elsewhere = [...folders.claude, ...folders.codex].filter((path) => !/\/\.(?:claude\/projects|codex\/sessions)$/i.test(path));
-	return elsewhere.length === 0 ? folders : { ...folders, spelled: protection(elsewhere, home) };
+	const elsewhere = [...folders.claude, ...folders.codex].filter((path) => !/\/\.(?:claude\/projects|codex\/(?:archived_)?sessions)$/i.test(path));
+	if (elsewhere.length === 0) return folders;
+	const parents = new Map<string, string[]>();
+	for (const path of elsewhere) parents.set(posix.dirname(path), [...(parents.get(posix.dirname(path)) ?? []), posix.basename(path).toLowerCase()]);
+	return { ...folders, spelled: protection(elsewhere, home), parents: { protection: protection([...parents.keys()], home), folders: [...parents.values()] } };
 }
 
 /**
  * Whether a path (one spelling of it) is in the session records (above): in one of their folders, or below
- * .claude/projects or .codex/sessions anywhere; not in a project's memory folder in Claude Code's. Ignoring case.
+ * .claude/projects, .codex/sessions or .codex/archived_sessions anywhere; not in a project's memory folder in Claude
+ * Code's. Ignoring case.
  */
 export function transcriptPath(path: string, rule: Pick<TranscriptRule, "claude" | "codex">): boolean {
 	const folded = posix.normalize(path).toLowerCase();
 	const parts = folded.split("/");
 	for (let at = 0; at + 1 < parts.length; at++) {
-		if (parts[at] === ".codex" && parts[at + 1] === "sessions") return true;
+		if (parts[at] === ".codex" && CODEX_RECORDS.includes(parts[at + 1] as string)) return true;
 		if (parts[at] === ".claude" && parts[at + 1] === "projects" && parts[at + 3] !== "memory") return true;
 	}
 	// What follows a folder in the path, or undefined when the path is not in it.
@@ -1462,22 +1485,25 @@ export function transcriptPath(path: string, rule: Pick<TranscriptRule, "claude"
 
 /** The session records named in shell text by their tails (readings are lower case). */
 const TRANSCRIPTS_NAMED = new RegExp(
-	`(?:${OC_START}\\.claude|\\$(?:claude_config_dir|\\{claude_config_dir[^}\\s$]*\\}))/+projects${OC_END}|(?:${OC_START}\\.codex|\\$(?:codex_home|\\{codex_home[^}\\s$]*\\}))/+sessions${OC_END}`,
+	`(?:${OC_START}\\.claude|\\$(?:claude_config_dir|\\{claude_config_dir[^}\\s$]*\\}))/+projects${OC_END}|(?:${OC_START}\\.codex|\\$(?:codex_home|\\{codex_home[^}\\s$]*\\}))/+(?:archived_)?sessions${OC_END}`,
 );
 
-/** The records' parents and folders as a glob may name them: the parent's name (or the variable for it) and the folder's. */
+/** The records' parents and folders as a glob may name them: the parent's name (or the variable for it) and the folders'. */
 const RECORD_FOLDERS = [
-	{ parent: ".claude", variable: /^\$\{?claude_config_dir\}?$/, folder: "projects" },
-	{ parent: ".codex", variable: /^\$\{?codex_home\}?$/, folder: "sessions" },
+	{ parent: ".claude", variable: /^\$\{?claude_config_dir\}?$/, folders: ["projects"] },
+	{ parent: ".codex", variable: /^\$\{?codex_home\}?$/, folders: CODEX_RECORDS },
 ];
 
 /**
  * Whether a reading names the session records with a glob (narrowly): a path part right after .claude/, .codex/,
- * $CLAUDE_CONFIG_DIR/ or $CODEX_HOME/ that could match projects or sessions, or a part that could match .claude or
- * .codex (starting with its dot, as a shell's glob must) before /projects or /sessions. Linear: each word is read once.
+ * $CLAUDE_CONFIG_DIR/ or $CODEX_HOME/ that could match their folders (projects, sessions, archived_sessions), or a part
+ * that could match .claude or .codex (starting with its dot, as a shell's glob must) before one of those; and a part
+ * that could match a moved folder's name right after its parent spelt out (`parents`: ~/.config/claude/pro*). Linear:
+ * each word is read once.
  */
-function recordsGlob(form: string): boolean {
+function recordsGlob(form: string, parents: TranscriptRule["parents"]): boolean {
 	if (!GLOB.test(form)) return false;
+	const moved = parents?.protection.spelled === undefined ? undefined : new RegExp(parents.protection.spelled.source, "g");
 	for (const match of form.matchAll(GLOB_WORDS)) {
 		const word = match[0];
 		if (!GLOB.test(word)) continue;
@@ -1487,8 +1513,14 @@ function recordsGlob(form: string): boolean {
 			if (!GLOB.test(parent) && !GLOB.test(folder)) continue;
 			for (const record of RECORD_FOLDERS) {
 				const parentNamed = parent === record.parent || record.variable.test(parent) || (parent.startsWith(".") && globCouldName(parent, [record.parent]) !== undefined);
-				if (parentNamed && (folder === record.folder || globCouldName(folder, [record.folder]) !== undefined)) return true;
+				if (parentNamed && (record.folders.includes(folder) || globCouldName(folder, record.folders) !== undefined)) return true;
 			}
+		}
+		for (const found of moved === undefined ? [] : word.matchAll(moved)) {
+			// The entry whose group matched (protectedIn's way), and the part after it.
+			const entry = Math.max(0, found.findIndex((group, at) => at > 0 && group !== undefined) - 1);
+			const next = /^\/+([^/]*)/.exec(word.slice(found.index + found[0].length))?.[1];
+			if (next !== undefined && globCouldName(next, parents?.folders[entry] ?? []) !== undefined) return true;
 		}
 	}
 	return false;
@@ -1499,7 +1531,7 @@ function recordsGlob(form: string): boolean {
  * their tails or a glob of them, or by the paths of those elsewhere, read again with room for them when they need more.
  */
 function transcriptsNamed(command: string, reading: Reading, reach: number, rule: TranscriptRule): boolean {
-	const named = (form: string) => TRANSCRIPTS_NAMED.test(form) || recordsGlob(form);
+	const named = (form: string) => TRANSCRIPTS_NAMED.test(form) || recordsGlob(form, rule.parents);
 	if (reading.forms.some(named) || reading.pieces.some(named)) return true;
 	if (rule.spelled === undefined) return false;
 	return protectedIn(rule.spelled.reach > reach ? readings(command, rule.spelled.reach) : reading, rule.spelled, false) !== undefined;
@@ -1507,11 +1539,11 @@ function transcriptsNamed(command: string, reading: Reading, reach: number, rule
 
 /** Why shell text naming the session records is refused. */
 export const TRANSCRIPT_COMMAND =
-	"This command names Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions), which Orrery checks prompts against: agents may read them with file tools, not with commands.";
+	"This command names Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions), which Orrery checks prompts against: agents may read them with file tools, not with commands.";
 
 /** Why a write there is refused. */
 export const TRANSCRIPT_READ_ONLY = (path: string) =>
-	`${path} is in Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions), which Orrery checks prompts against: agents may read them, not change them.`;
+	`${path} is in Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions), which Orrery checks prompts against: agents may read them, not change them.`;
 
 // ---- A plain read of skill files, for Codex's own shell ----
 //

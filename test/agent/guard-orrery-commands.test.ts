@@ -353,6 +353,14 @@ describe("Orrery's commands in shell text", () => {
 		["orrery rest?re Atlas", "restore"],
 		["orrery [r]estore Atlas", "restore"],
 		["orrery --config x upd[a-z]te", "update"],
+		// Letters in brackets are letters; only "*" and "?" alone are no name.
+		["~/.local/bin/[o][r][r][e][r][y] restore", "restore"],
+		["~/.local/bin/[o]* restore", "restore"],
+		// A negated bracket naming a letter lets its capital through ([!R] matches r), so it matches every letter.
+		["orre[!R]y restore", "restore"],
+		["ORRE[!R]Y restore", "restore"],
+		["orre[^R]y restore", "restore"],
+		["orrery re[!S]tore", "restore"],
 		// A separator in quotes is no separator where the guard fails closed.
 		["orrery --config $x ';' restore", "restore"],
 		["orrery $x '|' restore", "restore"],
@@ -401,6 +409,9 @@ describe("Orrery's commands in shell text", () => {
 				`${"o* ".repeat(20000)}`,
 				`orrery ${"[a]".repeat(20000)}`,
 				`~/.c*/${star}/`.repeat(250),
+				`orre[!${"q".repeat(2000)}]y `.repeat(30),
+				`${"[!r]".repeat(16000)}`,
+				`orrery ${"[!s]".repeat(16000)}`,
 			]) {
 				let started = performance.now();
 				expect(runsOrreryCommand(long)).toBeUndefined();
@@ -434,6 +445,8 @@ describe("Claude Code's and Codex's session records", () => {
 		["cat $CLAUDE_CONFIG_DIR/projects/p/s.jsonl"],
 		["ls ${CODEX_HOME}/sessions"],
 		["ls ${CODEX_HOME:-~/.codex}/sessions"],
+		["ls ~/.codex/archived_sessions"],
+		["cat $CODEX_HOME/archived_sessions/x.jsonl"],
 	])("refuses shell text naming them, %s, in every gate", (command) => {
 		expect(verdicts(command)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
 	});
@@ -441,7 +454,12 @@ describe("Claude Code's and Codex's session records", () => {
 	it("refuses shell text naming the moved folders by their paths (the gate's CLAUDE_CONFIG_DIR and CODEX_HOME)", () => {
 		expect(verdicts((w) => `cat ${w.claudeConfig}/projects/p/s.jsonl`)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
 		expect(verdicts((w) => `echo x >> ${w.codexHome}/sessions/2026/r.jsonl`)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
+		expect(verdicts((w) => `ls ${w.codexHome}/archived_sessions`)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
 		expect(verdicts((w) => `ls ${w.claudeConfig} ${w.codexHome}`)).toEqual(Array(GATES).fill(undefined));
+		// A glob beside a moved folder's parent, spelt out.
+		expect(verdicts((w) => `cat ${w.claudeConfig}/pro*/p/s.jsonl`)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
+		expect(verdicts((w) => `ls ${w.codexHome}/arch*`)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
+		expect(verdicts((w) => `ls ${w.claudeConfig}/*.json ${w.codexHome}/*.toml`)).toEqual(Array(GATES).fill(undefined));
 	});
 
 	it.each([["ls ~/.claude/plans ~/.claude ~/.codex"], ["cat docs/projects.md src/sessions.ts"], ["ls ~/.claude/projects-old"], ["grep -rn sessions src"]])("leaves %s alone", (command) => {
@@ -458,6 +476,8 @@ describe("Claude Code's and Codex's session records", () => {
 		["ls ~/.c*/sess*"],
 		["ls $CLAUDE_CONFIG_DIR/proj?cts"],
 		["ls ${CODEX_HOME}/s*"],
+		["ls ~/.codex/archived*"],
+		["ls ~/.codex/*_sessions"],
 	])("refuses a glob that could name them beside their parent's name, %s, in every gate", (command) => {
 		expect(verdicts(command)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
 	});
@@ -480,10 +500,15 @@ describe("Claude Code's and Codex's session records", () => {
 			"cat ${HOME}/.config/claude/projects/p/s.jsonl",
 			(w: World) => `cat ${w.home}/.config/codex/sessions/x.jsonl`,
 			(w: World) => `echo x >> ${w.store}/projects/p/s.jsonl`,
+			// A glob beside a moved folder's parent, spelt from home or by where a link leads.
+			"cat ~/.config/claude/pro*/p/s.jsonl",
+			"ls $HOME/.config/codex/sess*",
+			"ls ~/.config/codex/arch*",
+			(w: World) => `ls ${w.store}/pro*`,
 		]) {
 			expect(verdicts(command, linked)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
 		}
-		expect(verdicts((w: World) => `ls ${w.store} ~/.config`, linked)).toEqual(Array(GATES).fill(undefined));
+		expect(verdicts((w: World) => `ls ${w.store} ~/.config ~/.config/pro* ~/.config/claude/*.json`, linked)).toEqual(Array(GATES).fill(undefined));
 		for (const path of [(w: World) => join(w.store, "projects", "-w", "s.jsonl"), (w: World) => join(w.claudeConfig, "projects", "-w", "s.jsonl"), (w: World) => join(w.home, ".claude", "projects", "-w", "s.jsonl")]) {
 			expect(writes(path, linked)).toEqual(Array(8).fill(expect.stringMatching(SESSION_RECORDS)));
 		}
@@ -510,6 +535,8 @@ describe("Claude Code's and Codex's session records", () => {
 			(w: World) => join(w.claudeConfig, "projects", "-w", "s.jsonl"),
 			(w: World) => join(w.codexHome, "sessions", "2026", "x.jsonl"),
 			(w: World) => join(w.home, ".claude", "projects", "-w", "memory", "..", "s.jsonl"),
+			(w: World) => join(w.home, ".codex", "archived_sessions", "2026", "x.jsonl"),
+			(w: World) => join(w.codexHome, "archived_sessions", "x.jsonl"),
 		]) {
 			expect(writes(path)).toEqual(Array(8).fill(expect.stringMatching(SESSION_RECORDS)));
 		}
@@ -518,6 +545,7 @@ describe("Claude Code's and Codex's session records", () => {
 	it("leaves a file tool's read there open, and a project's memory folder (Claude Code's auto memory) writable", () => {
 		expect(reads((w) => join(w.home, ".claude", "projects", "-w", "s.jsonl"))).toEqual(Array(5).fill(undefined));
 		expect(reads((w) => join(w.codexHome, "sessions", "2026", "x.jsonl"))).toEqual(Array(5).fill(undefined));
+		expect(reads((w) => join(w.home, ".codex", "archived_sessions", "x.jsonl"))).toEqual(Array(5).fill(undefined));
 		expect(writes((w) => join(w.home, ".claude", "projects", "-w", "memory", "MEMORY.md"))).toEqual(Array(8).fill(undefined));
 		expect(writes((w) => join(w.claudeConfig, "projects", "-w", "memory", "notes.md"))).toEqual(Array(8).fill(undefined));
 	});

@@ -17,7 +17,7 @@
  * file tools, but only where the guard can see the file will not start with front matter that may run as code
  * (guard-rules.ts openCodeSkillRefusal, fail-closed), and shell text may not name them (skills are read with the file
  * tools). Shell text may not run Orrery's commands that change memory or settings (guard-rules.ts runsOrreryCommand), nor
- * name Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions; guard-rules.ts
+ * name Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions; guard-rules.ts
  * transcriptRule), which no tool writes, but a project's memory folder there (Claude Code's auto memory); file tools
  * may read them. Known limits:
  * - A hard link is another name for the same file, and the guard does not count links: one to another agent's view (the
