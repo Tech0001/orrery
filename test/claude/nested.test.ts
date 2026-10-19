@@ -236,6 +236,32 @@ describe("a Claude Code session's host record (spec 2026-10-18-agent-permissions
 		expect(hosts(dataDir)).toEqual([]);
 		forgetProcess(config, process.pid);
 	});
+
+	it("forgetProcess forgets only a Claude Code's host record: another tool's session at that pid stays", () => {
+		const { config, dataDir } = nestedWorld();
+		const pi = bystander();
+		hostRecord(dataDir, "Atlas", "pi", pi);
+		forgetProcess(config, pi);
+		expect(liveSession(dataDir, pi)).toMatchObject({ agent: "Atlas", tool: "pi" });
+	});
+
+	it("a folder decision that can't be written: SessionStart says so (not again at a compaction); every hook then judges for itself", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		// The decisions' folder cannot be made: a file stands where it would go.
+		mkdirSync(dataDir, { recursive: true });
+		writeFileSync(join(dataDir, "claude-processes"), "");
+		const dir = join(root, "agent-Atlas");
+		const c = hookCtx(config, root, dir, { startHolder: () => {} });
+		const first = JSON.parse(await runHook("session-start", hookInput("s1", dir, { source: "startup" }), c)) as { systemMessage: string };
+		expect(first.systemMessage).toMatch(/Orrery: which agent this Claude Code is could not be recorded \(.+\), so each of its hooks works it out again\./);
+		const again = JSON.parse(await runHook("session-start", hookInput("s1", dir, { source: "compact" }), c)) as { systemMessage?: string };
+		expect(again.systemMessage ?? "").not.toContain("could not be recorded");
+		// The guard judges by the folder's agent all the same.
+		const write = (path: string) => runHook("pre-tool-use", JSON.stringify({ session_id: "s1", cwd: dir, tool_name: "Write", tool_input: { file_path: join(root, path), content: "x" } }), c);
+		expect(await write(join("agent-Atlas", "here.txt"))).toBe("");
+		expect(await write(join("plain", "birch.txt"))).toMatch(/outside/);
+		forgetSession(dataDir, process.pid);
+	});
 });
 
 describe("claudeHookPid: Claude Code's process for a hook", () => {

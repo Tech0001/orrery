@@ -790,13 +790,24 @@ class OrreryInOpenCode {
 	/**
 	 * The agent session this OpenCode was started inside (src/agent/sessions.ts, the server as `self`, so its own launch's
 	 * config and HOST_ENV are its own), or undefined. A look that fails counts as one whose agent is unknown (fail closed).
+	 * Decided once per server and data folder, in the state its plugins share: another folder's plugin, and a reload
+	 * (cleanup, then setup in the same process), read it, so a server started inside a session stays without memory once
+	 * that session ends.
 	 */
 	#nestedIn(config: HarnessConfig, env: NodeJS.ProcessEnv): Inside | undefined {
+		const self = this.#options.owner ?? process.pid;
+		const decided = shared<{ readonly inside: Inside | undefined }>("nested");
+		const key = `${self}\u0000${resolve(config.dataDir)}`;
+		const found = decided.get(key);
+		if (found !== undefined) return found.inside;
+		let inside: Inside | undefined;
 		try {
-			return insideSession([config.dataDir], env, config, { self: this.#options.owner ?? process.pid });
+			inside = insideSession([config.dataDir], env, config, { self });
 		} catch {
-			return { agent: undefined, tool: undefined, via: "marker", dataDir: config.dataDir };
+			inside = { agent: undefined, tool: undefined, via: "marker", dataDir: config.dataDir };
 		}
+		decided.set(key, { inside });
+		return inside;
 	}
 
 	/** Cleanup: stops listening, waits a little for a reply being recorded, and lets go of the memory (the last plugin closes it). Never throws. */

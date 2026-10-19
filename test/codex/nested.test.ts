@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -147,6 +148,49 @@ describe("a Codex started inside an agent's session (spec 2026-10-18-agent-permi
 		recorded.push({ dataDir: w.dataDir, pid: codex });
 		await run("user-prompt-submit", input("s1", { prompt: "The user's words." }), c);
 		expect(pendingEvents(w.birch.dir, "s1")).toHaveLength(1);
+	});
+});
+
+describe("one decision per Codex process: a nested Codex stays nested", () => {
+	it("after the outer session ends, a later SessionStart (a compaction, /clear) still opens no memory: no claim, no record, nothing spooled", async () => {
+		const w = codexWorld();
+		hostRecord(w.dataDir, "Atlas", "claude-code", process.ppid);
+		const c = hookCtx(w);
+		expect(await run("session-start", input("s1", { source: "startup" }), c)).toEqual({ systemMessage: ATLAS });
+		// The outer session ends: its record goes, and nothing above this Codex is a session any more.
+		forgetSession(w.dataDir, process.ppid);
+		expect(await run("session-start", input("s1", { source: "compact" }), c)).toBe("");
+		expect(await run("session-start", input("s2", { source: "clear" }), c)).toEqual({ systemMessage: ATLAS });
+		await run("user-prompt-submit", input("s2", { prompt: "Still not the user's words." }), c);
+		await run("stop", input("s2", { last_assistant_message: "A reply." }), c);
+		expect(pendingEvents(w.birch.dir, "s2")).toEqual([]);
+		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+		expect(hosts(w.dataDir)).toEqual([]);
+		// Its guard keeps the outer agent's rules too.
+		const ctx: CodexGuardContext = { config: w.config, env: c.env, codexPid: process.pid, codexParent: process.pid, home: join(w.root, "home") };
+		const patch = `*** Begin Patch\n*** Add File: ${join(w.root, "shared", "atlas.txt")}\n+x\n*** End Patch`;
+		expect(runCodexGuard(JSON.stringify({ session_id: "s2", turn_id: "t1", cwd: join(w.root, "elsewhere"), hook_event_name: "PreToolUse", tool_name: "apply_patch", tool_input: { command: patch } }), ctx)).toBeUndefined();
+	});
+
+	it("the memory server's first decision holds for the SessionStart that comes after the outer session ended", async () => {
+		const w = codexWorld();
+		hostRecord(w.dataDir, "Atlas", "pi", process.ppid);
+		const env = { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token };
+		expect(codexAgent(w.config, { env, pid: process.pid, parent: process.pid, takeover: true })).toEqual({ kind: "nested", outer: "Atlas", tool: "pi" });
+		forgetSession(w.dataDir, process.ppid);
+		expect(await run("session-start", input("s1", { source: "startup" }), hookCtx(w))).toEqual({ systemMessage: "Orrery: started inside Atlas's session (pi), so this one opens no memory and records nothing." });
+		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+	});
+
+	it("a decision left under this Codex's pid by a process that started at another time is not this one's: decided anew", async () => {
+		const w = codexWorld();
+		mkdirSync(join(w.dataDir, "codex-processes"), { recursive: true, mode: 0o700 });
+		const digest = createHash("sha256").update(w.token).digest("hex");
+		writeFileSync(join(w.dataDir, "codex-processes", `${process.pid}.json`), JSON.stringify({ agent: "Birch", token: digest, start: "1", kind: "nested", outer: "Atlas", tool: "pi" }));
+		const c = hookCtx(w, { startHolder: () => {} });
+		expect(await run("session-start", input("s1", { source: "startup" }), c)).toMatchObject({ systemMessage: expect.stringMatching(/^Orrery · Birch · /) });
+		expect(claimedBy(w.birch.dir, w.token)).toBe(process.pid);
+		recorded.push({ dataDir: w.dataDir, pid: process.pid });
 	});
 });
 

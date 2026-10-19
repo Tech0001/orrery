@@ -20,8 +20,8 @@
  * nothing. An agent's session records its Claude Code as the agent's host (src/agent/sessions.ts), which the decider
  * keeps up to date and forgetProcess removes.
  *
- * A record of another identity is stale: another process's whose pid this one reuses (pids wrap, at 99999 on a Mac: a
- * decider sees another start time), or an ancestor's whose CLAUDE_PID a descendant inherited. A decider takes it down exclusively and records its own
+ * A record of another identity is stale: another process's whose pid this one reuses (pids wrap, at 99999 on a Mac: its
+ * process started at another time), or an ancestor's whose CLAUDE_PID a descendant inherited. A decider takes it down exclusively and records its own
  * decision in its place (src/agent/exclusive.ts); of two deciders, the loser reads the winner's record. Any other reader
  * is refused.
  *
@@ -29,10 +29,6 @@
  * own for its process, is refused (no memory, nothing recorded, no view, no tools, the guard on with the folder agent's
  * rules), never "none". A crash between a stale record's takedown and the new link leaves no record, so the next event
  * refuses the same way, until a SessionStart decides afresh.
- *
- * Known limit: a reader (not a decider) that comes before its process's first decider, whose pid's old record survived
- * (its process died without SessionEnd, and no decision has pruned it since) and was made under the same ORRERY_AGENT
- * and token, reads that record's pick until the decider replaces it.
  *
  * One rule of Claude Code's own: an agent opened by ORRERY_AGENT in a folder that an agent set up the file way holds (its
  * own or an ancestor's: Claude Code loads every ancestor's CLAUDE.md and CLAUDE.local.md) is refused when that agent is
@@ -67,7 +63,11 @@ export type ClaudeRefused =
 	 */
 	| { readonly kind: "nested"; readonly outer: string | undefined; readonly tool: SessionTool | undefined };
 
-export type ClaudePicked = Exclude<Picked, Refused> | ClaudeRefused;
+/**
+ * A pick, or why there is none. Without ORRERY_AGENT a decision that could not be recorded costs nothing but speed (each
+ * event judges again): the pick says why (`notRecorded`), for SessionStart to tell.
+ */
+export type ClaudePicked = (Exclude<Picked, Refused> & { readonly notRecorded?: string }) | ClaudeRefused;
 
 /**
  * pickAgent, and a by-ORRERY_AGENT pick refused in a folder that another agent, set up the file way, holds: the deepest
@@ -126,9 +126,8 @@ type Decision =
 /**
  * Whose decision a record is: ORRERY_AGENT as set (trimmed, "" without one), the sha256 (hex) of ORRERY_AGENT_TOKEN, or
  * "" without one, and when the process started (src/agent/sessions.ts processStart), where that could be read. A record
- * whose identity is not the asker's is another process's, whose pid this one reuses, or an ancestor's whose CLAUDE_PID a
- * descendant inherited: never this session's. Only a decider reads the process's start (a reader's hook stays quick): a
- * reader trusts the record its process's first decider left, or replaced.
+ * whose identity is not the asker's is another process's, whose pid this one reuses (every process without ORRERY_AGENT
+ * shares the rest of an identity), or an ancestor's whose CLAUDE_PID a descendant inherited: never this session's.
  */
 interface Identity {
 	readonly agent: string;
@@ -311,8 +310,13 @@ const nestedPick = (inside: Inside): ClaudePicked => ({ kind: "nested", outer: i
  */
 function hosted(config: HarnessConfig, pid: number, pick: ClaudePicked): ClaudePicked {
 	if (pick.kind === "agent") recordSession(config.dataDir, { agent: pick.agent.name, tool: "claude-code", pid });
-	else if (pick.kind !== "nested") forgetSession(config.dataDir, pid);
+	else if (pick.kind !== "nested") forgetHost(config, pid);
 	return pick;
+}
+
+/** Forgets `pid`'s host record when it is a Claude Code's: another tool's session there is not this process's to end. */
+function forgetHost(config: HarnessConfig, pid: number): void {
+	if (liveSession(config.dataDir, pid)?.tool === "claude-code") forgetSession(config.dataDir, pid);
 }
 
 /**
@@ -326,7 +330,7 @@ function hosted(config: HarnessConfig, pid: number, pick: ClaudePicked): ClaudeP
 export function claudeSession(config: HarnessConfig, asking: ClaudeProcess): ClaudePicked {
 	const where = { env: asking.env, cwd: asking.cwd, owner: asking.pid, ...(asking.alive === undefined ? {} : { alive: asking.alive }) };
 	const byEnv = Boolean(asking.env[AGENT_ENV]?.trim());
-	const identity = identityOf(asking.env, asking.decide ? processStart(asking.pid) : undefined);
+	const identity = identityOf(asking.env, processStart(asking.pid));
 	const settled = (decision: Decision) => {
 		const pick = fromDecision(config, decision, where);
 		return asking.decide ? hosted(config, asking.pid, pick) : pick;
@@ -346,23 +350,24 @@ export function claudeSession(config: HarnessConfig, asking: ClaudeProcess): Cla
 	const decision: Decision = byEnv || pick.kind === "nested" ? toDecision(pick) : { kind: "folder" };
 	const written = recordDecision(config, asking.pid, { ...identity, ...decision }, recorded !== undefined);
 	if (written === true) return hosted(config, asking.pid, pick);
-	// By its folder, a decision that can't be written is judged again at the next event.
-	if (written !== "exists") return byEnv ? { kind: "unrecorded", why: written } : hosted(config, asking.pid, pick);
+	// By its folder, a decision that can't be written is judged again at each event, which SessionStart says.
+	const unwritten = (why: string) => hosted(config, asking.pid, pick.kind === "agent" ? { ...pick, notRecorded: why } : pick);
+	if (written !== "exists") return byEnv ? { kind: "unrecorded", why: written } : unwritten(written);
 	// Another consumer of this process decided first: its decision holds.
 	const theirs = readRecord(config, asking.pid);
 	if (theirs !== undefined && theirs !== "unreadable" && sameIdentity(theirs.identity, identity)) return settled(theirs.decision);
-	if (!byEnv) return hosted(config, asking.pid, pick);
+	if (!byEnv) return unwritten("its record is another's, or unreadable");
 	return theirs === undefined || theirs === "unreadable" ? { kind: "unrecorded", why: "its record is unreadable" } : { kind: "undecided" };
 }
 
-/** SessionEnd at the process's end: its decision goes, and its host record. */
+/** SessionEnd at the process's end: its decision goes, and its host record (a Claude Code's only). */
 export function forgetProcess(config: HarnessConfig, pid: number): void {
 	try {
 		rmSync(recordFile(config, pid), { force: true });
 	} catch {
 		// a later decision's prune takes it once the process is gone
 	}
-	forgetSession(config.dataDir, pid);
+	forgetHost(config, pid);
 }
 
 /**

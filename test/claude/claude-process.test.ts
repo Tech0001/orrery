@@ -90,7 +90,7 @@ describe("claudeSession: one decision per Claude Code process", () => {
 		expect(readdirSync(records)).toEqual([`${pid}.json`]);
 	});
 
-	it("a decider takes a record of its own identity made for another process with its pid (another start) as stale, and decides anew", () => {
+	it("a record of its own identity made for another process with its pid (another start) is not this process's: a reader judges for itself, a decider decides anew", () => {
 		const t = testAgent();
 		const records = join(t.config.dataDir, "claude-processes");
 		mkdirSync(records, { recursive: true, mode: 0o700 });
@@ -98,8 +98,13 @@ describe("claudeSession: one decision per Claude Code process", () => {
 		const file = join(records, `${pid}.json`);
 		// A dead Claude Code's decision (started inside an agent's session), left under the pid this one now has.
 		writeFileSync(file, JSON.stringify({ agent: "", token: "", start: "1", kind: "nested", outer: "Atlas", tool: "pi" }));
-		// A reader trusts it (only a decider reads the process's start); the process's first decider replaces it.
-		expect(claudeSession(t.config, { env: {}, cwd: t.folder, pid, decide: false })).toEqual({ kind: "nested", outer: "Atlas", tool: "pi" });
+		// Not this process's: a reader judges for itself, recording nothing (under ORRERY_AGENT it would find no decision).
+		expect(claudeSession(t.config, { env: {}, cwd: t.folder, pid, decide: false })).toMatchObject({ kind: "agent", by: "folder" });
+		expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ start: "1" });
+		writeFileSync(file, JSON.stringify({ agent: "Test", token: "", start: "1", kind: "agent", name: "Test", by: "env" }));
+		expect(claudeSession(t.config, { env: { ORRERY_AGENT: "Test" }, cwd: t.folder, pid, decide: false })).toEqual({ kind: "undecided" });
+		writeFileSync(file, JSON.stringify({ agent: "", token: "", start: "1", kind: "nested", outer: "Atlas", tool: "pi" }));
+		// The process's first decider replaces it.
 		expect(claudeSession(t.config, { env: {}, cwd: t.folder, pid, decide: true })).toMatchObject({ kind: "agent", by: "folder" });
 		expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ kind: "folder" });
 		expect(JSON.parse(readFileSync(file, "utf8")).start).not.toBe("1");

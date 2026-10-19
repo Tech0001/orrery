@@ -761,6 +761,22 @@ describe("Orrery's OpenCode plugin: sessions (spec 2026-10-18-agent-permissions 
 		expect(noticesOf(s)).toHaveLength(1);
 	});
 
+	it("a reload (cleanup, then setup in the same server) after the outer session ended does not judge again: still no memory, no claim, no record", async () => {
+		const s = scene();
+		hostRecord(s.config.dataDir, "Birch", "claude-code", process.ppid);
+		const first = await start(s, hostFor(s));
+		expect(noticesOf(s)).toHaveLength(1);
+		forgetSession(s.config.dataDir, process.ppid);
+		await first();
+		const host = hostFor(s);
+		await start(s, host);
+		expect(host.registered).toBe(false);
+		expect(claimedBy(s.atlas.dir, s.token)).toBeUndefined();
+		expect(hosts(s)).toEqual([]);
+		expect(feedOf(s)?.line).toBe("Orrery · no memory");
+		expect(await host.call("write", { path: "/opt/elsewhere/x.md", content: "x" })).toMatch(OUTSIDE);
+	});
+
 	it("started from a shell that inherited another launch's config (its token another live process's): nested in that agent's session", async () => {
 		const s = scene();
 		const outer = bystander();

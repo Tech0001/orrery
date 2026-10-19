@@ -293,6 +293,8 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	gate ??= viewGate(agent);
 	// After the gate, which takes the setup back where git would see the view.
 	const setUp = markedHere(agent);
+	// Without ORRERY_AGENT a decision that could not be recorded is judged again at each event: said once a session.
+	if (pick.notRecorded !== undefined && input.source !== "compact") warnings.push(`Orrery: which agent this Claude Code is could not be recorded (${safeText(pick.notRecorded)}), so each of its hooks works it out again.`);
 	// The decision recorded this Claude Code as the agent's host (src/claude/pick.ts); one that could not be is said.
 	if (liveSession(ctx.config.dataDir, ctx.claudePid) === undefined && processAlive(ctx.claudePid)) {
 		warnings.push(`Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s.`);
