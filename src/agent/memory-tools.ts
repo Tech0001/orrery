@@ -163,7 +163,7 @@ export function readerTools(reader: () => AgentConfig, config: HarnessConfig): R
 		{
 			name: "agents",
 			label: "agents",
-			description: "Every agent: memory or remote save counts, last message date when available, and where it is open now.",
+			description: "This agent, the agents it may read, and remote agents (public facts only): memory or remote save counts, last message date when available, and where each is open now.",
 			parameters: Type.Object({}),
 			long: false,
 			run: () => agentsText(config, reader()),

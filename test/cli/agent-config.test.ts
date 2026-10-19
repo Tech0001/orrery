@@ -242,3 +242,12 @@ describe("orrery agent --reads", () => {
 		expect(readFileSync(fresh, "utf8")).not.toContain("reads =");
 	});
 });
+
+it("agent set --reads with no config file says there is no such agent, not ENOENT", () => {
+	const dir = tempDir("orrery-agent-cli-");
+	dirs.push(dir);
+	const out = orrery(["agent", "set", "Atlas", "--reads", "all"], { ORRERY_CONFIG: join(dir, "none.toml") });
+	expect(out.status).not.toBe(0);
+	expect(out.stderr).toContain("No agent named Atlas");
+	expect(out.stderr).not.toContain("ENOENT");
+});

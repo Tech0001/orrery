@@ -139,7 +139,7 @@ function arrayEnd(rest: string): number {
  */
 export function parseReads(value: string, config: HarnessConfig, self: string): readonly string[] {
 	const text = value.trim();
-	if (/^all$/i.test(text)) return ["*"];
+	if (/^(all|\*)$/i.test(text)) return ["*"];
 	if (/^none$/i.test(text)) return [];
 	const known = [...config.agents.keys()];
 	const out: string[] = [];

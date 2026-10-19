@@ -233,7 +233,7 @@ async function agentArg(config: HarnessConfig, name: string): Promise<string> {
 
 /**
  * `orrery agent add <Name> --folder DIR --tool T --summary provider/id [--thinking L]`, `orrery agent set <Name> --tool T |
- * --folder DIR | --view-kb N | --summary-kb N | --jobs N | --compact-at TOKENS`, `orrery agent archive <Name>`.
+ * --folder DIR | --view-kb N | --summary-kb N | --jobs N | --compact-at TOKENS | --reads all|none|A,B` (`add` takes --reads too), `orrery agent archive <Name>`.
  */
 async function agentCommand(args: string[], values: Record<string, string | boolean | string[] | undefined>): Promise<number> {
 	const [{ addAgent, archiveAgent, configWritable, editConfigFile, parseReads, readOnlyConfigText, setAgentKey, userConfigPath }, { defaultConfigPath, parseConfig }, { homedir }, { existsSync }, { archiveRefusal, agentOverview, TOOL_LABELS }] = await Promise.all([
@@ -286,7 +286,7 @@ async function agentCommand(args: string[], values: Record<string, string | bool
 		if (values["summary-kb"] !== undefined) changes.push(["compactor_context_bytes", kb("summary-kb")]);
 		if (values.jobs !== undefined) changes.push(["compactor_jobs", Number(values.jobs)]);
 		if (values["compact-at"] !== undefined) changes.push(["compact_at", Number(values["compact-at"])]);
-		if (values.reads !== undefined) changes.push(["reads", parseReads(values.reads as string, loadConfig(path), agent)]);
+		if (values.reads !== undefined) changes.push(["reads", parseReads(values.reads as string, existsSync(path) ? loadConfig(path) : parseConfig("", dirname(path)), agent)]);
 		if (changes.length === 0) throw new UsageError("agent set needs one of --launcher, --ori-model, --tool, --folder, --view-kb, --summary-kb, --jobs, --compact-at, --reads.");
 		editConfigFile(path, (text, dir) => changes.reduce((acc, [key, value]) => setAgentKey(acc, dir, agent, key, value), text));
 		for (const [key, value] of changes) process.stdout.write(`Set agents.${agent}.${key} = ${typeof value === "string" || typeof value === "number" ? value : value.length === 0 ? "none" : value.includes("*") ? "all" : value.join(", ")}. It applies when ${agent} next opens.\n`);

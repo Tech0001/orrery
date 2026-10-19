@@ -386,6 +386,7 @@ describe("reads", () => {
 	it("parseReads reads all, none and a comma list, and refuses unknown names and itself", () => {
 		expect(parseReads("all", config, "Atlas")).toEqual(["*"]);
 		expect(parseReads("none", config, "Atlas")).toEqual([]);
+		expect(parseReads("*", config, "Atlas")).toEqual(["*"]);
 		expect(parseReads("birch,Birch", config, "Atlas")).toEqual(["Birch"]);
 		expect(parseReads(" Birch , cedar ", config, "Atlas")).toEqual(["Birch", "Cedar"]);
 		expect(() => parseReads("Nope", config, "Atlas")).toThrow(/Unknown agent: Nope\. Known agents: Atlas, Birch, Cedar/);

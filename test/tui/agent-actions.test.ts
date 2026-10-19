@@ -927,3 +927,11 @@ it("the agent page shows who reads the agent, and which agents read all", () => 
 	keys(app, "i");
 	expect(screen(app)).toContain("Read by           Birch (and every agent that reads all: Dune)");
 });
+
+it("Read by names only the all-readers when no agent lists this one by name", () => {
+	const text = `data_dir = "/d"\n${["Alpha", "Dune"].map((n) => `[agents.${n}]\ncompactor_model = "a/b"\n${n === "Dune" ? 'reads = ["*"]\n' : ""}`).join("")}`;
+	const config = parseConfig(text, "/d");
+	const app = makeApp(fakeDeps({ loadConfig: () => config }, [row({ name: "Alpha" })]), [agentsPage]);
+	keys(app, "i");
+	expect(screen(app)).toContain("Read by           every agent that reads all: Dune");
+});

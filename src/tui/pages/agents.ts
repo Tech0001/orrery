@@ -190,7 +190,7 @@ function detailLines(app: App, row: AgentRow, width: number): string[] {
 	const field = (label: string, value: string) => wrapTextWithAnsi(`${label.padEnd(18)}${value}`, width).map((l) => fit(l, width));
 	const reads = readsText(row.reads);
 	const by = app.config === undefined ? undefined : readBy(app.config, row.name);
-	const readByText = by === undefined ? undefined : `${by.names.length === 0 ? "none" : by.names.map(safeText).join(", ")}${by.everyone.length === 0 ? "" : ` (and every agent that reads all: ${by.everyone.map(safeText).join(", ")})`}`;
+	const readByText = by === undefined ? undefined : `${by.names.map(safeText).join(", ")}${by.everyone.length === 0 ? "" : `${by.names.length === 0 ? "" : " (and "}every agent that reads all: ${by.everyone.map(safeText).join(", ")}${by.names.length === 0 ? "" : ")"}`}`||"none";
 	const usage = pageUsage.get(app)?.get(row.name);
 	const backup = backupText(app, row);
 	return [
