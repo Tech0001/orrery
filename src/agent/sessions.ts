@@ -436,32 +436,34 @@ function byMarkers(config: HarnessConfig, env: NodeJS.ProcessEnv, deps: SessionD
 	// Records: a session, and an agent that stands only when a token proves it too (CLAUDE_PID, ORRERY_HOST and Codex ids
 	// are public). A tool's own record is no outer session; one that can't be judged from here is a session of unknown
 	// identity.
+	// Each record is judged first; only a record known to be numbered here whose pid is `self` is the tool's own. One made
+	// in another namespace under the same number is another process's.
+	const own = (pid: number, found: Standing): boolean => pid === self && (found.kind === "live" || (found.kind === "unsure" && !found.foreign));
 	const claudePid = Number(env.CLAUDE_PID);
-	if (claudePid !== self) {
-		const found = judged(dataDir, claudePid, deps);
-		if (found.kind === "live" && found.record.tool === "claude-code") marks.push({ names: found.record.agent, tool: "claude-code" });
-		else if (found.kind === "unsure" && (found.record === undefined || found.record.tool === "claude-code")) marks.push({ tool: "claude-code" });
+	const claude = judged(dataDir, claudePid, deps);
+	if (!own(claudePid, claude)) {
+		if (claude.kind === "live" && claude.record.tool === "claude-code") marks.push({ names: claude.record.agent, tool: "claude-code" });
+		else if (claude.kind === "unsure" && (claude.record === undefined || claude.record.tool === "claude-code")) marks.push({ tool: "claude-code" });
 	}
 	const hostPid = Number(env[HOST_ENV]);
-	if (hostPid !== self) {
-		const found = judged(dataDir, hostPid, deps);
-		if (found.kind === "live") marks.push({ names: found.record.agent, tool: found.record.tool });
-		else if (found.kind === "unsure") marks.push({ tool: found.record?.tool });
+	const host = judged(dataDir, hostPid, deps);
+	if (!own(hostPid, host)) {
+		if (host.kind === "live") marks.push({ names: host.record.agent, tool: host.record.tool });
+		else if (host.kind === "unsure") marks.push({ tool: host.record?.tool });
 	}
 	const codexIds = [env.CODEX_THREAD_ID, env.CODEX_SESSION_ID].filter((id) => id !== undefined && id !== "");
 	if (codexIds.length > 0) {
 		for (const pid of recordedPids(dataDir)) {
 			const found = judged(dataDir, pid, deps);
 			const record = found.kind === "live" || found.kind === "unsure" ? found.record : undefined;
-			if (record?.codexSession === undefined || !codexIds.includes(record.codexSession)) continue;
-			if (found.kind === "live") {
-				if (pid !== self) marks.push({ names: record.agent, tool: record.tool });
-			} else if (found.kind === "unsure" && (found.foreign || pid !== self)) marks.push({ tool: record.tool });
+			if (record?.codexSession === undefined || !codexIds.includes(record.codexSession) || own(pid, found)) continue;
+			marks.push(found.kind === "live" ? { names: record.agent, tool: record.tool } : { tool: record.tool });
 		}
 	}
 	/**
 	 * Marks for a launch's `token`, from every configured agent's claims: a live claim by another process than `self`
-	 * proves that agent; one numbered in another pid namespace (or read where this one's can't be) says only "a session".
+	 * proves that agent; one numbered in another pid namespace (or read where this one's can't be), or something other
+	 * than a regular file in a claim's place (claimHeld), says only "a session".
 	 */
 	const claimMarks = (token: string | undefined, tool: SessionTool | undefined): Mark[] => {
 		if (token === undefined || token === "") return [];
@@ -469,7 +471,7 @@ function byMarkers(config: HarnessConfig, env: NodeJS.ProcessEnv, deps: SessionD
 		for (const agent of config.agents.values()) {
 			const claim = claimHeld(agent.dir, token);
 			if (claim === undefined) continue;
-			if (claim.ns !== undefined && (here === undefined || claim.ns !== here)) found.push({ tool });
+			if (claim === "unreadable" || (claim.ns !== undefined && (here === undefined || claim.ns !== here))) found.push({ tool });
 			else if (claim.pid !== self && alive(claim.pid)) found.push({ proves: agent.name, tool: tool ?? liveSession(dataDir, claim.pid, deps)?.tool });
 		}
 		return found;

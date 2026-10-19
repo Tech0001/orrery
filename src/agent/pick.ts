@@ -16,10 +16,11 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type HarnessConfig, insideFolder, type AgentConfig, agentForCwd } from "./config.ts";
 import { beingMade, publish, removeStale, stray, temporaryOf } from "./exclusive.ts";
+import { readPrivate } from "./private-file.ts";
 import { pidNamespace, processAlive } from "./process.ts";
 import { safeText } from "./source-labels.ts";
 
@@ -74,22 +75,35 @@ export function pickAgent(config: HarnessConfig, where: Where): Picked {
 
 type Claim = { readonly pid: number; readonly ns?: string };
 
-/** A claim file's pid and, when its second line says (Linux, claimText), the pid namespace; undefined when it holds no pid (unreadable, empty, or not a pid). */
-function readClaim(file: string): Claim | undefined {
+/** The most of a claim file read: a pid and a namespace's name are a few dozen bytes. */
+const CLAIM_MAX = 256;
+
+/**
+ * A claim file's pid and, when its second line says (Linux, claimText), the pid namespace; "none" when it holds no pid
+ * (gone, empty, or not a pid); "unreadable" when it is no regular file of this user's (a FIFO or a link put in its
+ * place), which is read without waiting or following (readPrivate) and which nobody here can judge.
+ */
+function readClaim(file: string): Claim | "none" | "unreadable" {
 	let text: string;
 	try {
-		text = readFileSync(file, "utf8");
-	} catch {
-		return undefined;
+		text = readPrivate(file, CLAIM_MAX);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT" ? "none" : "unreadable";
 	}
 	const pid = Number.parseInt(text, 10);
-	if (!Number.isInteger(pid) || pid < 1) return undefined;
+	if (!Number.isInteger(pid) || pid < 1) return "none";
 	const ns = text.split("\n")[1]?.trim();
 	return ns ? { pid, ns } : { pid };
 }
 
+/** A claim file's pid and namespace, or undefined when it holds none, or can't be read. */
+function claimIn(file: string): Claim | undefined {
+	const claim = readClaim(file);
+	return typeof claim === "object" ? claim : undefined;
+}
+
 /** The pid a claim file holds, or undefined when it holds none. */
-const claimant = (file: string): number | undefined => readClaim(file)?.pid;
+const claimant = (file: string): number | undefined => claimIn(file)?.pid;
 
 /**
  * Whether a claim was made in another pid namespace than this process's, or this one's can't be read to tell: its pid
@@ -104,23 +118,24 @@ function foreign(claim: Claim): boolean {
 
 /** Whether the claim in `file` is `owner`'s, made in this pid namespace. */
 function heldBy(file: string, owner: number): boolean {
-	const claim = readClaim(file);
+	const claim = claimIn(file);
 	return claim !== undefined && claim.pid === owner && !foreign(claim);
 }
 
 /**
  * What a claim file holds: the live process it names; "making" when it names none yet but is young (publish's fallback
- * is still writing it; src/agent/exclusive.ts); "foreign" when it was made in another pid namespace (foreign); else
- * "dead": its process is gone, or it names no pid and is old (a crash's leftover, or an older version's). One rule for
- * pruning and for taking a token over. A foreign claim is never dead: from here it is neither pruned nor taken over, so
- * a tool started in another namespace (`unshare -p` from an agent's shell) can't take a live session's token, and
- * falls through to its folder (src/agent/sessions.ts finds it inside a session). The cost: a really dead claim from
- * another namespace stays until its launcher releases it, or a claimer in that namespace prunes it; tokens are per
- * launch, so no other launch needs it.
+ * is still writing it; src/agent/exclusive.ts); "unsure" when it was made in another pid namespace (foreign), or is no
+ * regular file of this user's (readClaim); else "dead": its process is gone, or it names no pid and is old (a crash's
+ * leftover, or an older version's). One rule for pruning and for taking a token over. An unsure claim is never dead:
+ * from here it is neither pruned nor taken over, so a tool started in another namespace (`unshare -p` from an agent's
+ * shell) can't take a live session's token, and falls through to its folder (src/agent/sessions.ts finds it inside a
+ * session). The cost: a really dead claim from another namespace stays until its launcher releases it, or a claimer in
+ * that namespace prunes it; tokens are per launch, so no other launch needs it.
  */
-function holding(file: string, alive: (pid: number) => boolean): number | "making" | "foreign" | "dead" {
+function holding(file: string, alive: (pid: number) => boolean): number | "making" | "unsure" | "dead" {
 	const claim = readClaim(file);
-	if (claim !== undefined) return foreign(claim) ? "foreign" : alive(claim.pid) ? claim.pid : "dead";
+	if (claim === "unreadable") return "unsure";
+	if (claim !== "none") return foreign(claim) ? "unsure" : alive(claim.pid) ? claim.pid : "dead";
 	return beingMade(file) ? "making" : "dead";
 }
 
@@ -208,11 +223,14 @@ export function claimedBy(agentDir: string, token: string): number | undefined {
 }
 
 /**
- * The claim on `token` for the agent: the pid, and the pid namespace it is numbered in when the claim says (Linux); or
- * undefined when none holds a pid (or the token is no token).
+ * The claim on `token` for the agent: the pid, and the pid namespace it is numbered in when the claim says (Linux);
+ * "unreadable" when something other than a regular file of this user's is in its place (readClaim); or undefined when
+ * none holds a pid (or the token is no token).
  */
-export function claimHeld(agentDir: string, token: string): Claim | undefined {
-	return TOKEN.test(token) ? readClaim(join(agentDir, "claims", token)) : undefined;
+export function claimHeld(agentDir: string, token: string): Claim | "unreadable" | undefined {
+	if (!TOKEN.test(token)) return undefined;
+	const claim = readClaim(join(agentDir, "claims", token));
+	return claim === "none" ? undefined : claim;
 }
 
 /** Removes a claim its launcher made, once its tool has exited. */

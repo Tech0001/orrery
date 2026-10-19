@@ -435,6 +435,27 @@ describe("insideSession by markers", () => {
 		expect(insideSession([config.dataDir], { ORRERY_HOST: "77" }, config, deps)).toBeUndefined();
 	});
 
+	it.skipIf(spawnSync("mkfifo", ["--help"]).error !== undefined)("a FIFO put in a claim's place is read without waiting, and is a session of unknown identity", () => {
+		const { root, toml, config } = world();
+		const claims = join(config.dataDir, "agents", "Atlas", "claims");
+		mkdirSync(claims, { recursive: true });
+		const token = newToken();
+		expect(spawnSync("mkfifo", [join(claims, token)]).status).toBe(0);
+		// In a child with a deadline: a read that waited on the FIFO would hang this test's process for good.
+		const script = `Promise.all([import(${JSON.stringify(SESSIONS)}), import(${JSON.stringify(CONFIG)})]).then(([s, c]) => {
+			const config = c.parseConfig(${JSON.stringify(toml)}, ${JSON.stringify(root)});
+			const token = ${JSON.stringify(token)};
+			process.stdout.write(JSON.stringify({
+				cli: s.insideSession([config.dataDir], { ORRERY_AGENT_TOKEN: token }, config) ?? null,
+				tool: s.insideSession([config.dataDir], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token }, config, { self: process.pid }) ?? null,
+			}));
+		})`;
+		const child = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", "-e", script], { encoding: "utf8", timeout: 10_000 });
+		expect(child.signal, "the claim's read waited on the FIFO").toBeNull();
+		const unknown = { agent: undefined, via: "marker", dataDir: config.dataDir };
+		expect(JSON.parse(child.stdout), child.stderr).toEqual({ cli: unknown, tool: unknown });
+	});
+
 	it("a detached process that copies another agent's CLAUDE_PID or Codex id gets no identity from it", () => {
 		const { config } = world();
 		const table = chain();
@@ -622,6 +643,24 @@ describe("pid namespaces (Linux)", () => {
 		expect(insideSession([config.dataDir], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: old }, config, deps)).toMatchObject({ agent: "Atlas" });
 	});
 
+	it("a record made in another namespace under the asking tool's own number still marks; the tool's own record here, live or unsure, doesn't", () => {
+		const { config } = world();
+		const table = tools();
+		expect(recordSession(config.dataDir, { agent: "Atlas", tool: "claude-code", pid: 60 }, linux(table))).toBe(true);
+		const unknown = { agent: undefined, tool: "claude-code", via: "marker", dataDir: config.dataDir };
+		for (const procfs of ["kept", "remounted"] as const) {
+			const there = { ...elsewhere(table, procfs, 50), self: 60 };
+			expect(insideSession([config.dataDir], { CLAUDE_PID: "60" }, config, there)).toEqual(unknown);
+			expect(insideSession([config.dataDir], { ORRERY_HOST: "60" }, config, there)).toEqual(unknown);
+		}
+		const here = { ...linux(table, 50), self: 60 };
+		for (const deps of [here, { ...here, proc: () => undefined }]) {
+			expect(insideSession([config.dataDir], { CLAUDE_PID: "60" }, config, deps)).toBeUndefined();
+			expect(insideSession([config.dataDir], { ORRERY_HOST: "60" }, config, deps)).toBeUndefined();
+		}
+		expect(existsSync(hostFile(config.dataDir, 60))).toBe(true);
+	});
+
 	const unshare = process.platform === "linux" && spawnSync("unshare", ["-Upf", "true"]).status === 0;
 	it.skipIf(!unshare)("a real process in a new pid namespace (unshare -Upf, with and without --mount-proc) keeps the record and the claim, can't take the claim over, and is inside a session it can't name before and after trying", () => {
 		const { root, toml, config } = world();
@@ -654,7 +693,7 @@ describe("pid namespaces (Linux)", () => {
 			const unknown = { agent: undefined, via: "marker", dataDir: dir };
 			expect(inside.out, `${prefix.join(" ")}: ${inside.err}`).toEqual({ claude: { ...unknown, tool: "claude-code" }, nested: unknown, took: false, after: unknown });
 			expect(liveSession(dir, process.pid)).toMatchObject({ agent: "Atlas" });
-			expect(claimHeld(atlas, token)?.pid).toBe(process.pid);
+			expect(claimHeld(atlas, token)).toMatchObject({ pid: process.pid });
 		}
 	});
 });

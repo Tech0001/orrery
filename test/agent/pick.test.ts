@@ -1,10 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/agent/config.ts";
 import { claimedBy, claimHeld, claimText, claimToken, newToken, pickAgent, refusedNotice, releaseClaim, workArea } from "../../src/agent/pick.ts";
 import { pidNamespace } from "../../src/agent/process.ts";
+
+const PICK = new URL("../../src/agent/pick.ts", import.meta.url).pathname;
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -106,6 +109,31 @@ describe("pickAgent", () => {
 		expect(claimHeld(birch, token)).toEqual({ pid: 4242 });
 		expect(claimedBy(birch, token)).toBe(4242);
 		expect(claimHeld(birch, "not-a-token")).toBeUndefined();
+	});
+
+	it.skipIf(spawnSync("mkfifo", ["--help"]).error !== undefined)("never waits on a FIFO put in a claim's place, nor takes it for dead", () => {
+		const { root, config } = world();
+		const birch = join(config.dataDir, "agents", "Birch");
+		const claims = join(birch, "claims");
+		mkdirSync(claims, { recursive: true });
+		const [fifo, other] = [newToken(), newToken()];
+		expect(spawnSync("mkfifo", [join(claims, fifo)]).status).toBe(0);
+		// In a child with a deadline: a read that waited on the FIFO would hang this test's process for good.
+		const script = `import(${JSON.stringify(PICK)}).then((p) => {
+			const dead = () => false;
+			const env = { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: ${JSON.stringify(fifo)} };
+			const config = { agents: new Map([["Birch", { name: "Birch", dir: ${JSON.stringify(birch)} }]]) };
+			process.stdout.write(JSON.stringify({
+				held: p.claimHeld(${JSON.stringify(birch)}, ${JSON.stringify(fifo)}),
+				fifo: p.claimToken(${JSON.stringify(birch)}, ${JSON.stringify(fifo)}, 4242, dead),
+				other: p.claimToken(${JSON.stringify(birch)}, ${JSON.stringify(other)}, 4242, dead),
+				pick: p.pickAgent(config, { env, cwd: ${JSON.stringify(join(root, "plain"))}, owner: 4242, alive: dead }).kind,
+			}));
+		})`;
+		const child = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", "-e", script], { encoding: "utf8", timeout: 10_000 });
+		expect(child.signal, "the claim's read waited on the FIFO").toBeNull();
+		expect(JSON.parse(child.stdout), child.stderr).toEqual({ held: "unreadable", fifo: false, other: true, pick: "none" });
+		expect(lstatSync(join(claims, fifo)).isFIFO()).toBe(true);
 	});
 
 	it("never takes a claim made in another pid namespace for dead: not pruned, not taken over, and no owner's here", () => {
