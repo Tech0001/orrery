@@ -17,12 +17,12 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type HarnessConfig, insideFolder, type AgentConfig, agentForCwd } from "./config.ts";
 import { beingMade, publish, removeStale, stray, temporaryOf } from "./exclusive.ts";
 import { readPrivate } from "./private-file.ts";
-import { pidNamespace, processAlive, procStat, psOutput } from "./process.ts";
+import { pidNamespace, processAlive, processStart } from "./process.ts";
 import { safeText } from "./source-labels.ts";
 
 export const AGENT_ENV = "ORRERY_AGENT";
@@ -74,7 +74,7 @@ export function pickAgent(config: HarnessConfig, where: Where): Picked {
 	return agent === undefined ? { kind: "none" } : { kind: "agent", agent, by: "folder" };
 }
 
-type Claim = { readonly pid: number; readonly ns?: string; readonly start?: string };
+export type Claim = { readonly pid: number; readonly ns?: string; readonly start?: string };
 
 /** The most of a claim file read: a pid, a namespace's name and a start time are a few dozen bytes. */
 const CLAIM_MAX = 256;
@@ -99,29 +99,13 @@ function readClaim(file: string): Claim | "none" | "unreadable" {
 }
 
 /**
- * When process `pid` started, as src/agent/sessions.ts processStart reads it (Linux: /proc/<pid>/stat field 22; macOS:
- * ps's lstart), or undefined when that can't be read. Read here, not imported: sessions.ts imports this file.
- */
-function startOf(pid: number): string | undefined {
-	if (process.platform === "linux") {
-		try {
-			const start = procStat(readFileSync(`/proc/${pid}/stat`, "utf8"))?.fields[19];
-			return start !== undefined && /^\d+$/.test(start) ? start : undefined;
-		} catch {
-			return undefined; // gone
-		}
-	}
-	if (process.platform === "darwin") return psOutput(["-o", "lstart=", "-p", String(pid)])?.trim() || undefined;
-	return undefined;
-}
-
-/**
  * Whether a claim's pid now names another process than the one that claimed: the claim's start time and the pid's now
- * are both known, and differ (the pid was reused). Either unknown: no, and the claim is judged by pid and namespace.
+ * (processStart, src/agent/process.ts) are both known, and differ (the pid was reused). Either unknown: no, and the claim
+ * is judged by pid and namespace. src/agent/sessions.ts judges a claim's marker the same way.
  */
-function reused(claim: Claim): boolean {
+export function reused(claim: Claim): boolean {
 	if (claim.start === undefined) return false;
-	const now = startOf(claim.pid);
+	const now = processStart(claim.pid);
 	return now !== undefined && now !== claim.start;
 }
 
@@ -247,7 +231,7 @@ export function claimToken(agentDir: string, token: string, owner: number, alive
  */
 export function claimText(owner: number): string {
 	const ns = pidNamespace("self");
-	const start = startOf(owner);
+	const start = processStart(owner);
 	if (start !== undefined) return `${owner}\n${ns ?? ""}\n${start}\n`;
 	return ns === undefined ? `${owner}\n` : `${owner}\n${ns}\n`;
 }

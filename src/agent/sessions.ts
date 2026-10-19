@@ -25,10 +25,12 @@
  * An unsure record is no session to the ancestry: its pid may name another process here, the user's own terminal among
  * others, and that is never refused. A marker pointing at one is a session whose identity is unknown (fail closed).
  *
- * Ancestry. A process is inside a session when one of its ancestors is recorded, live, in a data folder it asks about;
- * the nearest one wins, and its record is the identity. Linux walks /proc one parent at a time; macOS takes one
- * `ps -A -o pid=,ppid=` snapshot. The walk stops at pid 1, at the top of a pid namespace, or after MAX_DEPTH steps. It is
- * skipped when no data folder asked about holds a record, so a hook or a command outside every session costs a readdir.
+ * Ancestry. A process is inside a session when one of its ancestors is recorded, live, in a data folder it asks about, or
+ * in any folder above one that holds records (judgedFolders: a data folder may sit inside another, and a records folder
+ * planted nearer hides none further up); the nearest ancestor wins, and its record is the identity. Linux walks /proc one
+ * parent at a time; macOS takes one `ps -A -o pid=,ppid=` snapshot. The walk stops at pid 1, at the top of a pid
+ * namespace, or after MAX_DEPTH steps. It is skipped when no folder judged holds a record, so a hook or a command outside
+ * every session costs a few stats and a readdir.
  *
  * Markers, the backup when the ancestry is cut (a detached process, a process in another pid namespace). With a config
  * they count only for its data folder, and a name the config doesn't have is ignored (a scratch home's config, a
@@ -66,19 +68,21 @@
  * config.ts, and with it smol-toml and the memory module, which pi and OMP load already.
  */
 
-import { readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { lstatSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { namesOrreryPlugin } from "../install/layout.ts";
 import { readPluginOptions } from "../opencode/options.ts";
 import { launchTokenFile, readTokenFile } from "../opencode/token-file.ts";
 import type { AgentConfig, HarnessConfig } from "./config.ts";
 import { removeStale, stray } from "./exclusive.ts";
-import { AGENT_ENV, agentNamed, claimHeld, TOKEN_ENV } from "./pick.ts";
+import { AGENT_ENV, agentNamed, claimHeld, reused, TOKEN_ENV } from "./pick.ts";
 import { readPrivate, writePrivate } from "./private-file.ts";
-import { bootId, pidNamespace, processAlive, procStat, psOutput } from "./process.ts";
+import { bootId, pidNamespace, processAlive, processStart, procStat, psOutput, readProcStat } from "./process.ts";
 import { safeText } from "./source-labels.ts";
 
 export { ALLOWED_INSIDE } from "./inside-commands.ts";
+/** When a process started (src/agent/process.ts), as session records hold it. */
+export { processStart };
 
 /**
  * The variable a tool sets in its own environment to its host pid when it opens an agent's memory, so its shell, and
@@ -159,8 +163,6 @@ const FOLDER = "session-hosts";
 const RECORD_NAME = /^([1-9]\d*)\.json$/;
 /** The most of a record read: a whole one is a few hundred bytes. */
 const RECORD_MAX = 4096;
-/** /proc/<pid>/stat's start time field (proc(5)). */
-const START_FIELD = 22;
 /** The most ancestors walked: no session nests that deep, and a loop ends here at worst. */
 const MAX_DEPTH = 64;
 
@@ -175,36 +177,11 @@ function pidNamed(name: string): number | undefined {
 	return match === null ? undefined : Number(match[1]);
 }
 
-/** /proc/<pid>/stat, or undefined when it can't be read. */
-function readProc(pid: number): string | undefined {
-	try {
-		return readFileSync(`/proc/${pid}/stat`, "utf8");
-	} catch {
-		return undefined;
-	}
-}
-
-/** When process `pid` started, or undefined when that can't be read (gone, or no way to ask on this system). */
-export function processStart(pid: number, deps: SessionDeps = {}): string | undefined {
-	if (!positive(pid)) return undefined;
-	const platform = deps.platform ?? process.platform;
-	if (platform === "linux") {
-		const stat = (deps.proc ?? readProc)(pid);
-		const start = stat === undefined ? undefined : procStat(stat)?.fields[START_FIELD - 3];
-		return start !== undefined && /^\d+$/.test(start) ? start : undefined;
-	}
-	if (platform === "darwin") {
-		const start = (deps.ps ?? psOutput)(["-o", "lstart=", "-p", String(pid)])?.trim();
-		return start === undefined || start === "" ? undefined : start;
-	}
-	return undefined;
-}
-
 /** Each process's parent, as this system tells it: Linux reads /proc at each step; macOS reads one snapshot of all. */
 function parents(deps: SessionDeps): (pid: number) => number | undefined {
 	const platform = deps.platform ?? process.platform;
 	if (platform === "linux") {
-		const proc = deps.proc ?? readProc;
+		const proc = deps.proc ?? readProcStat;
 		return (pid) => {
 			const stat = proc(pid);
 			const ppid = Number(stat === undefined ? undefined : procStat(stat)?.fields[1]);
@@ -237,24 +214,30 @@ export function ancestors(from: number = process.pid, deps: SessionDeps = {}): n
 	return found;
 }
 
-/** `value` as the record of `pid`, or undefined when it is none. */
-function recordOf(value: unknown, pid: number): SessionRecord | undefined {
+/**
+ * `value` as the record of `pid`, or undefined when it is none: its agent, tool, pid or start can't be read.
+ * - `doubtful` when its codexSession, ns or boot is there but no non-empty string: the record is judged unsure (module
+ *   doc: fail closed), never taken for none, and those fields are left out.
+ * - A config without its real path, or either not an absolute path, is left out: only the config is untrusted, and the
+ *   CLI takes the data folder's own (src/cli/gate.ts).
+ */
+function recordOf(value: unknown, pid: number): { readonly record: SessionRecord; readonly doubtful: boolean } | undefined {
 	const { agent, tool, pid: own, start, codexSession, ns, boot, config, configReal } = (value ?? {}) as Record<string, unknown>;
 	if (typeof agent !== "string" || agent === "" || typeof tool !== "string" || !TOOLS.has(tool) || own !== pid || typeof start !== "string" || start === "") return undefined;
-	// Each optional field is absent, or a non-empty string; the config and its real path, both or neither, absolute paths.
-	const text = (field: unknown): field is string | undefined => field === undefined || (typeof field === "string" && field !== "");
-	if (!text(codexSession) || !text(ns) || !text(boot) || !text(config) || !text(configReal)) return undefined;
-	if ((config === undefined) !== (configReal === undefined) || (config !== undefined && !(isAbsolute(config) && isAbsolute(configReal as string)))) return undefined;
-	return {
+	const text = (field: unknown): field is string => typeof field === "string" && field !== "";
+	const doubtful = [codexSession, ns, boot].some((field) => field !== undefined && !text(field));
+	const configured = text(config) && text(configReal) && isAbsolute(config) && isAbsolute(configReal);
+	const record: SessionRecord = {
 		agent,
 		tool: tool as SessionTool,
 		pid,
 		start,
-		...(codexSession === undefined ? {} : { codexSession }),
-		...(ns === undefined ? {} : { ns }),
-		...(boot === undefined ? {} : { boot }),
-		...(config === undefined || configReal === undefined ? {} : { config, configReal }),
+		...(text(codexSession) ? { codexSession } : {}),
+		...(text(ns) ? { ns } : {}),
+		...(text(boot) ? { boot } : {}),
+		...(configured ? { config, configReal } : {}),
 	};
+	return { record, doubtful };
 }
 
 /**
@@ -277,12 +260,13 @@ function standing(file: string, pid: number, deps: SessionDeps): Standing {
 		// A link or a FIFO in a record's place, or a file that can't be read: kept, and judged by nobody.
 		return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "none" } : { kind: "unsure", foreign: true };
 	}
-	let record: SessionRecord | undefined;
+	let parsed: ReturnType<typeof recordOf>;
 	try {
-		record = recordOf(JSON.parse(text), pid);
+		parsed = recordOf(JSON.parse(text), pid);
 	} catch {
 		// no JSON: no record this version reads
 	}
+	const record = parsed?.record;
 	if (onLinux(deps)) {
 		// Judged only from the namespace its pid is numbered in (module doc); from anywhere else, kept.
 		const here = namespaceOf(deps, "self");
@@ -293,6 +277,8 @@ function standing(file: string, pid: number, deps: SessionDeps): Standing {
 	}
 	if (!(deps.alive ?? processAlive)(pid)) return { kind: "stale" };
 	if (record === undefined) return { kind: "unsure", foreign: false };
+	// A field it holds but that can't be read: kept, and judged unsure.
+	if (parsed?.doubtful === true) return { kind: "unsure", record, foreign: false };
 	const start = processStart(pid, deps);
 	if (start === undefined) return { kind: "unsure", record, foreign: false };
 	return start === record.start ? { kind: "live", record } : { kind: "stale" };
@@ -381,8 +367,9 @@ export function recordSession(dataDir: string, record: Omit<SessionRecord, "star
 			// no config to name: the CLI then takes only one in the data folder (src/cli/gate.ts)
 		}
 	}
-	const full = recordOf({ ...record, config: undefined, ...configured, start, ...place }, record.pid);
-	if (full === undefined) return false;
+	const parsed = recordOf({ ...record, config: undefined, ...configured, start, ...place }, record.pid);
+	if (parsed === undefined || parsed.doubtful) return false;
+	const full = parsed.record;
 	pruneSessions(dataDir, full.pid, deps);
 	try {
 		writePrivate(fileOf(dataDir, full.pid), `${JSON.stringify(full)}\n`);
@@ -406,17 +393,89 @@ export function forgetSession(dataDir: string, pid: number): void {
 /** The variables that mark a session, OPENCODE_CONFIG_CONTENT aside (it marks one only when it names Orrery's plugin). */
 const MARKERS = [AGENT_ENV, TOKEN_ENV, HOST_ENV, "CLAUDE_PID", "CODEX_THREAD_ID", "CODEX_SESSION_ID"] as const;
 
+/** The most links followed from a dangling one to the folder its target would be in. */
+const MAX_LINKS = 8;
+
+/** A path with its links resolved, or undefined when it can't be (it isn't there). */
+function realOrNone(path: string): string | undefined {
+	try {
+		return realpathSync(path);
+	} catch {
+		return undefined;
+	}
+}
+
+/** The nearest part of `path` that exists, links resolved (the root at worst). */
+function nearestExisting(path: string): string {
+	let dir = resolve(path);
+	for (;;) {
+		const found = realOrNone(dir);
+		if (found !== undefined) return found;
+		const parent = dirname(dir);
+		if (parent === dir) return dir;
+		dir = parent;
+	}
+}
+
+/**
+ * Where judging `path` starts: the nearest part of it that exists; and when `path` is a link to nothing (yet), also the
+ * nearest existing part of where it points, followed up to MAX_LINKS links: a write through it lands there.
+ */
+function startsOf(path: string): string[] {
+	const starts = [nearestExisting(path)];
+	let link = resolve(path);
+	for (let hop = 0; hop < MAX_LINKS; hop++) {
+		try {
+			if (!lstatSync(link).isSymbolicLink() || realOrNone(link) !== undefined) break;
+			link = resolve(dirname(link), readlinkSync(link));
+		} catch {
+			break;
+		}
+		starts.push(nearestExisting(link));
+	}
+	return starts;
+}
+
+/**
+ * The folders judged for `dataDirs`: each as given, and every folder from (the nearest existing part of) it up to the root
+ * that holds session records. Records live in the data folder of the memory they open, and one data folder may sit
+ * inside another (a config whose data_dir is inside the real one): a record in any of them judges. Links are followed,
+ * a dangling one to where it points (startsOf). In order, without repeats: the given folders first, nearest first.
+ */
+export function judgedFolders(dataDirs: readonly string[]): string[] {
+	const folders: string[] = [];
+	const seen = new Set<string>();
+	const add = (dir: string) => {
+		const key = realOrNone(dir) ?? resolve(dir);
+		if (seen.has(key)) return;
+		seen.add(key);
+		folders.push(dir);
+	};
+	for (const dataDir of dataDirs) {
+		add(dataDir);
+		for (const start of startsOf(dataDir)) {
+			for (let dir = start; ; dir = dirname(dir)) {
+				try {
+					if (statSync(folderOf(dir)).isDirectory()) add(dir);
+				} catch {
+					// no records here
+				}
+				if (dirname(dir) === dir) break;
+			}
+		}
+	}
+	return folders;
+}
+
 /**
  * The session this process (or deps.from, or deps.self) runs in: the nearest ancestor recorded, live, in any of
- * `dataDirs`, else what the markers in `env` say for `config`'s data folder; with no config, any marker is a session of
- * unknown identity, except to a tool asking with `self` (module doc). Undefined: no session.
+ * `dataDirs` or any folder above one that holds records (judgedFolders), else what the markers in `env` say for
+ * `config`'s data folder; with no config, any marker is a session of unknown identity, except to a tool asking with
+ * `self` (module doc). Undefined: no session.
  */
 export function insideSession(dataDirs: readonly string[], env: NodeJS.ProcessEnv, config: HarnessConfig | undefined, deps: SessionDeps = {}): Inside | undefined {
-	const seen = new Set<string>();
 	const recorded: { readonly dataDir: string; readonly pids: ReadonlySet<number> }[] = [];
-	for (const dataDir of dataDirs) {
-		if (seen.has(resolve(dataDir))) continue;
-		seen.add(resolve(dataDir));
+	for (const dataDir of judgedFolders(dataDirs)) {
 		const pids = recordedPids(dataDir);
 		if (pids.size > 0) recorded.push({ dataDir, pids });
 	}
@@ -498,7 +557,9 @@ function byMarkers(config: HarnessConfig, env: NodeJS.ProcessEnv, deps: SessionD
 			const claim = claimHeld(agent.dir, token);
 			if (claim === undefined) continue;
 			if (claim === "unreadable" || (claim.ns !== undefined && (here === undefined || claim.ns !== here))) found.push({ tool });
-			else if (claim.pid !== self && alive(claim.pid)) {
+			// A live claimant, and the process that claimed: a pid reused since (its start now not the claim's, read as the
+			// claim was written: pick.ts reused) is a dead claim.
+			else if (claim.pid !== self && alive(claim.pid) && !reused(claim)) {
 				// The claimant's own record, when it hosts the session: its tool, and the config it loaded.
 				const record = liveSession(dataDir, claim.pid, deps);
 				found.push({ proves: agent.name, tool: tool ?? record?.tool, ...(record?.agent === agent.name ? configOf(record) : {}) });

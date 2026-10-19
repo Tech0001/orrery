@@ -101,6 +101,20 @@ describe("a pi started inside an agent's session (spec 2026-10-18-agent-permissi
 		expect(hosts(dataDir)).toEqual([`${process.ppid}.json`]);
 	}, 30_000);
 
+	it("given a config whose data folder is inside the outer session's: still nested, and records nothing there", async () => {
+		const { root, dataDir } = nestedWorld();
+		hostRecord(dataDir, "Atlas", "claude-code", process.ppid);
+		// A config of the agent's making, to open and record into a data folder of its own inside the real one.
+		const inner = join(dataDir, "agents", "Birch");
+		const planted = parseConfig(readFileSync(join(dataDir, "config.toml"), "utf8").replace(JSON.stringify(dataDir), JSON.stringify(inner)), root);
+		expect(planted.dataDir).toBe(inner);
+		const run = await pi(root, join(root, "agent-Birch"), planted);
+		expect(run.notices).toEqual([{ type: "warning", message: "Orrery: started inside Atlas's session (Claude Code), so this one opens no memory and records nothing." }]);
+		for (const tool of ["zoom", "date", "search", "agents", "agent_memory"]) expect(run.tool(tool)).toBeUndefined();
+		await close(run);
+		expect(hosts(inner)).toEqual([]);
+	}, 30_000);
+
 	it("in a plain folder too, the outer agent's guard is on, where plain pi has none", async () => {
 		const { root, config, dataDir } = nestedWorld();
 		hostRecord(dataDir, "Atlas", "pi", process.ppid);

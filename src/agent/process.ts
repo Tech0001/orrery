@@ -1,8 +1,8 @@
 /**
  * Processes, asked about once for the whole agent code: whether one lives (status files, the CLI, Claude Code's holder),
- * its parent and name (Codex's own process, src/codex/host.ts), and on Linux the pid namespace it is numbered in and
- * this boot's id (session records, src/agent/sessions.ts; token claims, src/agent/pick.ts). Node built-ins only: pi and
- * OMP load this file.
+ * its parent and name (Codex's own process, src/codex/host.ts), when it started, and on Linux the pid namespace it is
+ * numbered in and this boot's id (session records, src/agent/sessions.ts; token claims, src/agent/pick.ts). Node
+ * built-ins only: pi and OMP load this file.
  */
 
 import { spawnSync } from "node:child_process";
@@ -71,6 +71,49 @@ export interface ProcessInfo {
 export function procStat(stat: string): { readonly name: string; readonly fields: readonly string[] } | undefined {
 	const end = stat.lastIndexOf(")");
 	return end > 0 ? { name: stat.slice(stat.indexOf("(") + 1, end), fields: stat.slice(end + 2).split(" ") } : undefined;
+}
+
+/** /proc/<pid>/stat's start time field (proc(5)). */
+const START_FIELD = 22;
+
+/** Linux: process `pid`'s /proc/<pid>/stat line, or undefined when it can't be read (gone). */
+export function readProcStat(pid: number): string | undefined {
+	try {
+		return readFileSync(`/proc/${pid}/stat`, "utf8");
+	} catch {
+		return undefined;
+	}
+}
+
+/** How processStart reads a process: each defaults to this system's own way (tests give fakes). */
+export interface StartDeps {
+	/** Linux: a process's /proc/<pid>/stat line (default readProcStat). */
+	readonly proc?: (pid: number) => string | undefined;
+	/** macOS: ps's output for `args` (default psOutput). */
+	readonly ps?: (args: readonly string[]) => string | undefined;
+	/** Which system's way to ask (default this one's). */
+	readonly platform?: NodeJS.Platform;
+}
+
+/**
+ * When process `pid` started, or undefined when that can't be read (gone, or no way to ask on this system): Linux's
+ * /proc/<pid>/stat field 22 (clock ticks since boot), macOS's `ps -o lstart=` (to the second, in UTC and the C locale:
+ * psOutput). Session records (src/agent/sessions.ts) and token claims (src/agent/pick.ts) hold it, so a reused pid is
+ * never taken for the process that recorded or claimed.
+ */
+export function processStart(pid: number, deps: StartDeps = {}): string | undefined {
+	if (!Number.isInteger(pid) || pid < 1) return undefined;
+	const platform = deps.platform ?? process.platform;
+	if (platform === "linux") {
+		const stat = (deps.proc ?? readProcStat)(pid);
+		const start = stat === undefined ? undefined : procStat(stat)?.fields[START_FIELD - 3];
+		return start !== undefined && /^\d+$/.test(start) ? start : undefined;
+	}
+	if (platform === "darwin") {
+		const start = (deps.ps ?? psOutput)(["-o", "lstart=", "-p", String(pid)])?.trim();
+		return start === undefined || start === "" ? undefined : start;
+	}
+	return undefined;
 }
 
 /** A process's parent and name, or undefined when it cannot be read (gone, or no way to ask here). */

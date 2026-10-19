@@ -11,7 +11,7 @@ import { pidNamespace } from "../../src/agent/process.ts";
 import { modView } from "../../src/claude/mod-view.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { browseCommand, compactorCliCommand, statusCommand, usageCommand } from "../../src/cli/commands.ts";
-import { GateRefusal, gateCommand, readableBy } from "../../src/cli/gate.ts";
+import { GateRefusal, gateCommand, readableBy, vouched } from "../../src/cli/gate.ts";
 import { HELP_COMMANDS } from "../../src/cli/help.ts";
 import { fauxModels, tempDir } from "../agent/support.ts";
 
@@ -422,10 +422,81 @@ describe("the CLI gate (spec 2026-10-18-agent-permissions §3)", () => {
 		// From the scratch config, path options naming the real data folder: browse --out over its config, restore --from.
 		expect(refusal(() => gateCommand("browse", ["browse", "Atlas"], { config: t.configPath, out: join(real, "config.toml") }, t.env))).toBe("--config and ORRERY_CONFIG can't be changed inside an agent session.");
 		expect(refusal(() => gateCommand("restore", ["restore", "Atlas"], { config: t.configPath, from: join(real, "backups", "2026-01-01") }, t.env))).toBe(changes("orrery restore"));
+		const changed = "--config and ORRERY_CONFIG can't be changed inside an agent session.";
+		// A records folder planted nearer the file (a pi given a data_dir inside the real one leaves one) hides nothing above it.
+		const birch = join(real, "agents", "Birch");
+		mkdirSync(join(birch, "session-hosts"), { recursive: true });
+		expect(refusal(() => gateCommand("browse", ["browse", "Atlas"], { config: t.configPath, out: join(birch, "memory.sqlite") }, t.env))).toBe(changed);
+		// A link to nothing yet: judged where it points.
+		const dangling = join(t.root, "page.html");
+		symlinkSync(join(real, "agents", "Atlas", "not-yet", "memory.html"), dangling);
+		expect(refusal(() => gateCommand("browse", ["browse", "Atlas"], { config: t.configPath, out: dangling }, t.env))).toBe(changed);
+		// browse without --out writes into the folder it runs in.
+		const before = process.cwd();
+		process.chdir(birch);
+		try {
+			expect(refusal(() => gateCommand("browse", ["browse", "Atlas"], { config: t.configPath }, t.env))).toBe(changed);
+			expect(refusal(() => gateCommand("import", ["import", "Atlas"], { config: t.configPath, "dry-run": true }, t.env))).toBe(changes("orrery import"));
+		} finally {
+			process.chdir(before);
+		}
 		// No session there: the same commands run.
 		forgetSession(real, process.ppid);
 		expect(gateCommand("logins", ["logins"], {}, env)).toEqual({});
 		expect(gateCommand("browse", ["browse", "Atlas"], { config: t.configPath, out: join(real, "config.toml") }, t.env)).toEqual({});
+		expect(gateCommand("browse", ["browse", "Atlas"], { config: t.configPath, out: dangling }, t.env)).toEqual({});
+	});
+
+	it("a token claim whose pid now names a process started at another time proves nothing", () => {
+		const t = scratch();
+		const host = sleeper();
+		const token = newToken();
+		const dir = t.config.agents.get("Atlas")!.dir;
+		expect(claimToken(dir, token, host)).toBe(true);
+		const env = { ...t.env, ORRERY_AGENT_TOKEN: token };
+		expect(gateCommand("status", ["status", "."], { config: t.configPath }, env)).toMatchObject({ inside: { agent: "Atlas", via: "marker" } });
+		const [pid, ns] = readFileSync(join(dir, "claims", token), "utf8").split("\n");
+		writeFileSync(join(dir, "claims", token), `${pid}\n${ns}\n1\n`);
+		expect(gateCommand("status", ["status", "."], { config: t.configPath }, env)).toEqual({});
+	});
+
+	it("a record with a field that can't be read is unsure and kept; a broken config pair untrusts only the config", () => {
+		const t = scratch();
+		const file = join(t.config.dataDir, "session-hosts", `${process.ppid}.json`);
+		record(t.config.dataDir, { agent: "Atlas", tool: "claude-code", pid: process.ppid });
+		const good = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+		// A config without its real path: the record stands (its session found by ancestry); the data folder's config rules.
+		writeFileSync(file, JSON.stringify({ ...good, config: join(t.root, "elsewhere.toml") }));
+		const gated = gateCommand("status", ["status", "."], { config: t.configPath }, t.env);
+		expect(gated.inside).toMatchObject({ agent: "Atlas", via: "ancestry" });
+		expect(gated.inside?.config).toBeUndefined();
+		expect(gated.config?.file).toBe(t.configPath);
+		// A codexSession that is no string: unsure, kept, and a marker pointing at it is a session whose agent is unknown.
+		writeFileSync(file, JSON.stringify({ ...good, codexSession: 7 }));
+		expect(refusal(() => gateCommand("status", ["status"], { config: t.configPath }, { ...t.env, CLAUDE_PID: String(process.ppid) }))).toMatch(/^orrery can't tell which agent's session this is/);
+		expect(readdirSync(join(t.config.dataDir, "session-hosts"))).toContain(`${process.ppid}.json`);
+	});
+
+	it.runIf(process.platform === "linux")("a holder's named host vouches only by ancestry, or a claim holding its start, made in this pid namespace", () => {
+		const t = scratch();
+		const host = sleeper();
+		const atlas: Inside = { agent: "Atlas", tool: "claude-code", via: "ancestry", dataDir: t.config.dataDir };
+		const claims = join(t.config.agents.get("Atlas")!.dir, "claims");
+		const token = newToken();
+		const env = { ORRERY_AGENT_TOKEN: token };
+		// An ancestor vouches without a claim.
+		expect(vouched(process.ppid, atlas, {})).toBe(true);
+		expect(vouched(host, atlas, env)).toBe(false);
+		// A claim by the host, holding its start, in this namespace.
+		expect(claimToken(t.config.agents.get("Atlas")!.dir, token, host)).toBe(true);
+		expect(vouched(host, atlas, env)).toBe(true);
+		// Seen from another pid namespace; or a claim without a start, or with another start.
+		expect(vouched(host, atlas, env, { sessions: { ns: (pid) => (pid === "self" ? "pid:[1]" : pidNamespace(pid)) } })).toBe(false);
+		const [pid, ns] = readFileSync(join(claims, token), "utf8").split("\n");
+		writeFileSync(join(claims, token), `${pid}\n${ns}\n`);
+		expect(vouched(host, atlas, env)).toBe(false);
+		writeFileSync(join(claims, token), `${pid}\n${ns}\n1\n`);
+		expect(vouched(host, atlas, env)).toBe(false);
 	});
 
 	it("a recorded config reached through a link counts only while the link leads to the file it led to then", () => {
@@ -437,6 +508,16 @@ describe("the CLI gate (spec 2026-10-18-agent-permissions §3)", () => {
 		symlinkSync(target, link);
 		record(data, { agent: "Atlas", tool: "pi", pid: process.ppid, config: link });
 		expect(gateCommand("status", ["status", "."], { config: link }, t.env).config?.file).toBe(link);
+		// A config with a relative data_dir, through a link in another folder: read from its file, as the host read it.
+		const home = join(t.root, "linked-home");
+		mkdirSync(join(home, "data"), { recursive: true });
+		const relative = join(t.root, "relative.toml");
+		writeFileSync(relative, `data_dir = "data"\n${agents(t.root)}`);
+		const homeLink = join(home, "config.toml");
+		symlinkSync(relative, homeLink);
+		record(join(home, "data"), { agent: "Atlas", tool: "pi", pid: process.ppid, config: homeLink });
+		expect(gateCommand("status", ["status", "."], { config: homeLink }, t.env).config?.dataDir).toBe(join(home, "data"));
+		forgetSession(join(home, "data"), process.ppid);
 		// Re-pointed at a config of the agent's making, naming the same data folder and reading every agent.
 		const fake = join(t.root, "fake.toml");
 		writeFileSync(fake, `data_dir = ${JSON.stringify(data)}\n${agents(t.root, '["*"]')}`);
