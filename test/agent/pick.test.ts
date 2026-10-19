@@ -6,8 +6,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/agent/config.ts";
 import { claimedBy, claimHeld, claimText, claimToken, newToken, pickAgent, refusedNotice, releaseClaim, workArea } from "../../src/agent/pick.ts";
 import { pidNamespace } from "../../src/agent/process.ts";
+import { processStart } from "../../src/agent/sessions.ts";
 
 const PICK = new URL("../../src/agent/pick.ts", import.meta.url).pathname;
+
+/** A pid no process has now: a child's, after it has exited. */
+const gonePid = (): number => spawnSync(process.execPath, ["-e", ""]).pid as number;
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -95,20 +99,70 @@ describe("pickAgent", () => {
 		expect(existsSync(join(birch, "claims", token))).toBe(false);
 	});
 
-	it("a claim holds its owner's pid, then on Linux this process's pid namespace; a one-line claim reads as before", () => {
+	it("a claim holds its owner's pid, then on Linux this process's pid namespace, then the owner's start time; shorter claims read as before", () => {
 		const { config } = world();
 		const birch = join(config.dataDir, "agents", "Birch");
 		const token = newToken();
 		expect(claimToken(birch, token, me)).toBe(true);
 		const ns = pidNamespace("self");
+		const start = processStart(me);
 		expect(ns === undefined).toBe(process.platform !== "linux");
-		expect(readFileSync(join(birch, "claims", token), "utf8")).toBe(ns === undefined ? `${me}\n` : `${me}\n${ns}\n`);
-		expect(claimHeld(birch, token)).toEqual(ns === undefined ? { pid: me } : { pid: me, ns });
+		expect(start).toMatch(/\S/);
+		expect(readFileSync(join(birch, "claims", token), "utf8")).toBe(`${me}\n${ns ?? ""}\n${start}\n`);
+		expect(claimHeld(birch, token)).toEqual(ns === undefined ? { pid: me, start } : { pid: me, ns, start });
 		expect(claimedBy(birch, token)).toBe(me);
+		// A process whose start can't be read: no third line.
+		const gone = gonePid();
+		expect(claimText(gone)).toBe(ns === undefined ? `${gone}\n` : `${gone}\n${ns}\n`);
 		writeFileSync(join(birch, "claims", token), "4242\n");
 		expect(claimHeld(birch, token)).toEqual({ pid: 4242 });
 		expect(claimedBy(birch, token)).toBe(4242);
+		writeFileSync(join(birch, "claims", token), "4242\n\nThu Oct 15 08:00:00 2026\n");
+		expect(claimHeld(birch, token)).toEqual({ pid: 4242, start: "Thu Oct 15 08:00:00 2026" });
 		expect(claimHeld(birch, "not-a-token")).toBeUndefined();
+	});
+
+	it("a claim whose pid now names a process started at another time (a reused pid) is a dead process's: never the owner's, and taken over", () => {
+		const { root, config } = world();
+		const birch = join(config.dataDir, "agents", "Birch");
+		const claims = join(birch, "claims");
+		mkdirSync(claims, { recursive: true });
+		const ns = pidNamespace("self") ?? "";
+		const [reused, later] = [newToken(), newToken()];
+		// Made by a process that had this one's pid before (so `alive` says yes), and started at another time.
+		writeFileSync(join(claims, reused), `${me}\n${ns}\n1\n`);
+		expect(claimToken(birch, reused, me, undefined, false)).toBe(false);
+		expect(pickAgent(config, { env: { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: reused }, cwd: join(root, "plain"), owner: me, takeover: false })).toEqual({ kind: "none" });
+		expect(claimToken(birch, reused, me)).toBe(true);
+		expect(readFileSync(join(claims, reused), "utf8")).toBe(claimText(me));
+		// Another claimer takes it over too, and another token's claim prunes it.
+		writeFileSync(join(claims, reused), `${me}\n${ns}\n1\n`);
+		expect(claimToken(birch, reused, 4242, (pid) => pid === me)).toBe(true);
+		writeFileSync(join(claims, reused), `${me}\n${ns}\n1\n`);
+		expect(claimToken(birch, later, 4242, (pid) => pid === me)).toBe(true);
+		expect(existsSync(join(claims, reused))).toBe(false);
+	});
+
+	it("a claim's start time or its pid's that can't be read leaves the claim judged as before; so do the namespace rules", () => {
+		const { config } = world();
+		const birch = join(config.dataDir, "agents", "Birch");
+		const claims = join(birch, "claims");
+		mkdirSync(claims, { recursive: true });
+		const ns = pidNamespace("self") ?? "";
+		const gone = gonePid();
+		const [held, noStart, foreign] = [newToken(), newToken(), newToken()];
+		// The claimant's pid has no start to read now, but `alive` says it lives: its claim stands.
+		writeFileSync(join(claims, held), `${gone}\n${ns}\n1\n`);
+		const alive = (pid: number) => pid === gone || pid === me;
+		expect(claimToken(birch, held, me, alive)).toBe(false);
+		expect(claimToken(birch, held, gone, alive, false)).toBe(true);
+		// A claim with no start line: this owner's own, as before.
+		writeFileSync(join(claims, noStart), `${me}\n${ns}\n`);
+		expect(claimToken(birch, noStart, me, alive, false)).toBe(true);
+		// Made in another namespace, whatever its start: neither the owner's nor dead.
+		writeFileSync(join(claims, foreign), `${me}\npid:[4026533000]\n1\n`);
+		expect(claimToken(birch, foreign, me, () => false)).toBe(false);
+		expect(readFileSync(join(claims, foreign), "utf8")).toBe(`${me}\npid:[4026533000]\n1\n`);
 	});
 
 	it.skipIf(spawnSync("mkfifo", ["--help"]).error !== undefined)("never waits on a FIFO put in a claim's place, nor takes it for dead", () => {

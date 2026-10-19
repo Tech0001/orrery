@@ -273,6 +273,8 @@ describe("one decision per Claude Code process (src/claude/pick.ts)", () => {
 		const token = newToken();
 		const agent = live();
 		expect(claimToken(t.agent.dir, token, agent.pid)).toBe(true);
+		// What the claim holds, read while the agent lives (its start time is in it).
+		const claim = claimText(agent.pid);
 		// A Claude Code the agent started, with the same variables: started inside its session, so not the agent.
 		const started: string[] = [];
 		const env = { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token };
@@ -288,7 +290,7 @@ describe("one decision per Claude Code process (src/claude/pick.ts)", () => {
 		expect(await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "The child's words." }), child)).toBe("");
 		expect(spooled(t.agent, "s1")).toEqual([]);
 		expect(started).toEqual([]);
-		expect(readFileSync(join(t.agent.dir, "claims", token), "utf8")).toBe(claimText(agent.pid));
+		expect(readFileSync(join(t.agent.dir, "claims", token), "utf8")).toBe(claim);
 		// `claude --resume` starts a new process: its first decision may take the dead claim over.
 		const resumed = at(t, dir, env, { claudePid: live().pid, startHolder: recording(started) });
 		expect(JSON.parse(await runHook("session-start", hookInput("s1", dir, { source: "resume" }), resumed)).hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · /);

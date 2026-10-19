@@ -8,20 +8,21 @@
  *    to 2. A dead owner's claim is taken over only at a session's start (`takeover`); a session's later picks (Claude
  *    Code asks at every hook) keep what its start decided, so it never changes agents midway. A claim holds the owner's
  *    pid, then on Linux the pid namespace that pid is numbered in (claimText), so a reader in another namespace can tell
- *    it can't judge the claim (src/agent/sessions.ts), and never takes it for dead (holding). A one-line claim, an older
- *    version's, reads as before.
+ *    it can't judge the claim (src/agent/sessions.ts), and never takes it for dead (holding); then the owner's start
+ *    time when it can be read, so a claim whose pid was reused is a dead process's. Shorter claims, an older version's,
+ *    read as before.
  * 2. The agent whose folder holds the folder (agentForCwd).
  * 3. None.
  * Node built-ins and relative imports only: pi and OMP load this file.
  */
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type HarnessConfig, insideFolder, type AgentConfig, agentForCwd } from "./config.ts";
 import { beingMade, publish, removeStale, stray, temporaryOf } from "./exclusive.ts";
 import { readPrivate } from "./private-file.ts";
-import { pidNamespace, processAlive } from "./process.ts";
+import { pidNamespace, processAlive, procStat, psOutput } from "./process.ts";
 import { safeText } from "./source-labels.ts";
 
 export const AGENT_ENV = "ORRERY_AGENT";
@@ -73,15 +74,16 @@ export function pickAgent(config: HarnessConfig, where: Where): Picked {
 	return agent === undefined ? { kind: "none" } : { kind: "agent", agent, by: "folder" };
 }
 
-type Claim = { readonly pid: number; readonly ns?: string };
+type Claim = { readonly pid: number; readonly ns?: string; readonly start?: string };
 
-/** The most of a claim file read: a pid and a namespace's name are a few dozen bytes. */
+/** The most of a claim file read: a pid, a namespace's name and a start time are a few dozen bytes. */
 const CLAIM_MAX = 256;
 
 /**
- * A claim file's pid and, when its second line says (Linux, claimText), the pid namespace; "none" when it holds no pid
- * (gone, empty, or not a pid); "unreadable" when it is no regular file of this user's (a FIFO or a link put in its
- * place), which is read without waiting or following (readPrivate) and which nobody here can judge.
+ * A claim file's pid and, when its second and third lines say (claimText), the pid namespace (Linux) and the owner's
+ * start time; "none" when it holds no pid (gone, empty, or not a pid); "unreadable" when it is no regular file of this
+ * user's (a FIFO or a link put in its place), which is read without waiting or following (readPrivate) and which nobody
+ * here can judge.
  */
 function readClaim(file: string): Claim | "none" | "unreadable" {
 	let text: string;
@@ -92,8 +94,35 @@ function readClaim(file: string): Claim | "none" | "unreadable" {
 	}
 	const pid = Number.parseInt(text, 10);
 	if (!Number.isInteger(pid) || pid < 1) return "none";
-	const ns = text.split("\n")[1]?.trim();
-	return ns ? { pid, ns } : { pid };
+	const [, ns, start] = text.split("\n").map((line) => line.trim());
+	return { pid, ...(ns ? { ns } : {}), ...(start ? { start } : {}) };
+}
+
+/**
+ * When process `pid` started, as src/agent/sessions.ts processStart reads it (Linux: /proc/<pid>/stat field 22; macOS:
+ * ps's lstart), or undefined when that can't be read. Read here, not imported: sessions.ts imports this file.
+ */
+function startOf(pid: number): string | undefined {
+	if (process.platform === "linux") {
+		try {
+			const start = procStat(readFileSync(`/proc/${pid}/stat`, "utf8"))?.fields[19];
+			return start !== undefined && /^\d+$/.test(start) ? start : undefined;
+		} catch {
+			return undefined; // gone
+		}
+	}
+	if (process.platform === "darwin") return psOutput(["-o", "lstart=", "-p", String(pid)])?.trim() || undefined;
+	return undefined;
+}
+
+/**
+ * Whether a claim's pid now names another process than the one that claimed: the claim's start time and the pid's now
+ * are both known, and differ (the pid was reused). Either unknown: no, and the claim is judged by pid and namespace.
+ */
+function reused(claim: Claim): boolean {
+	if (claim.start === undefined) return false;
+	const now = startOf(claim.pid);
+	return now !== undefined && now !== claim.start;
 }
 
 /** A claim file's pid and namespace, or undefined when it holds none, or can't be read. */
@@ -116,17 +145,18 @@ function foreign(claim: Claim): boolean {
 	return here === undefined || claim.ns !== here;
 }
 
-/** Whether the claim in `file` is `owner`'s, made in this pid namespace. */
+/** Whether the claim in `file` is `owner`'s, made in this pid namespace, and not by a process that had its pid before. */
 function heldBy(file: string, owner: number): boolean {
 	const claim = claimIn(file);
-	return claim !== undefined && claim.pid === owner && !foreign(claim);
+	return claim !== undefined && claim.pid === owner && !foreign(claim) && !reused(claim);
 }
 
 /**
  * What a claim file holds: the live process it names; "making" when it names none yet but is young (publish's fallback
  * is still writing it; src/agent/exclusive.ts); "unsure" when it was made in another pid namespace (foreign), or is no
- * regular file of this user's (readClaim); else "dead": its process is gone, or it names no pid and is old (a crash's
- * leftover, or an older version's). One rule for pruning and for taking a token over. An unsure claim is never dead:
+ * regular file of this user's (readClaim); else "dead": its process is gone, or its pid now names a process started at
+ * another time than the claim says (reused), or it names no pid and is old (a crash's leftover, or an older version's).
+ * One rule for pruning and for taking a token over. An unsure claim is never dead:
  * from here it is neither pruned nor taken over, so a tool started in another namespace (`unshare -p` from an agent's
  * shell) can't take a live session's token, and falls through to its folder (src/agent/sessions.ts finds it inside a
  * session). The cost: a really dead claim from another namespace stays until its launcher releases it, or a claimer in
@@ -135,7 +165,7 @@ function heldBy(file: string, owner: number): boolean {
 function holding(file: string, alive: (pid: number) => boolean): number | "making" | "unsure" | "dead" {
 	const claim = readClaim(file);
 	if (claim === "unreadable") return "unsure";
-	if (claim !== "none") return foreign(claim) ? "unsure" : alive(claim.pid) ? claim.pid : "dead";
+	if (claim !== "none") return foreign(claim) ? "unsure" : alive(claim.pid) && !reused(claim) ? claim.pid : "dead";
 	return beingMade(file) ? "making" : "dead";
 }
 
@@ -211,9 +241,14 @@ export function claimToken(agentDir: string, token: string, owner: number, alive
 	}
 }
 
-/** What a claim by `owner` holds: its pid, then on Linux the pid namespace of this process, the one `owner` is numbered in. */
+/**
+ * What a claim by `owner` holds: its pid; then on Linux the pid namespace of this process, the one `owner` is numbered
+ * in (an empty line elsewhere); then `owner`'s start time, when it can be read. Lines with nothing after them are left out.
+ */
 export function claimText(owner: number): string {
 	const ns = pidNamespace("self");
+	const start = startOf(owner);
+	if (start !== undefined) return `${owner}\n${ns ?? ""}\n${start}\n`;
 	return ns === undefined ? `${owner}\n` : `${owner}\n${ns}\n`;
 }
 
