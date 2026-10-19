@@ -180,7 +180,7 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 	const session = input.session_id;
 	// This Codex hosts the agent's session, with this session's id, whether or not it records (spec
 	// 2026-10-18-agent-permissions §2): what its shell starts runs inside the agent's session.
-	const hosted = recordSession(ctx.config.dataDir, { agent: agent.name, tool: "codex", pid: ctx.codexPid, codexSession: session }) || !processAlive(ctx.codexPid);
+	const hosted = recordSession(ctx.config.dataDir, { agent: agent.name, tool: "codex", pid: ctx.codexPid, codexSession: session, config: ctx.config.file }) || !processAlive(ctx.codexPid);
 	// For the launcher's resume line once Codex ends (src/codex/resume.ts).
 	recordCodexSession(agent.dir, ctx.codexPid, session, ctx.alive);
 	// The holder's cut-off: this session's events from now on belong to this run.

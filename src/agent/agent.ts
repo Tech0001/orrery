@@ -263,7 +263,7 @@ export class Agent {
 			});
 			// Before any run resumes: what the agent's tools start runs inside its session from here on, a detached one too
 			// (its shell inherits HOST_ENV, src/agent/host-env.ts).
-			if (recordSession(options.config.dataDir, { agent: config.name, tool: "run", pid: process.pid })) {
+			if (recordSession(options.config.dataDir, { agent: config.name, tool: "run", pid: process.pid, config: options.config.file })) {
 				agent.#hosted = options.config.dataDir;
 				agent.#hostEnv = leaveHostEnv(process.pid);
 			} else agent.report(`Orrery: this session could not be recorded as ${config.name}'s, so tools and commands started from it are not known as ${config.name}'s.`);

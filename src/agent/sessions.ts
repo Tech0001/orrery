@@ -5,8 +5,10 @@
  *
  * Session records. A tool session that opens an agent's memory records its host process in the data folder that holds
  * that memory, and forgets it when the session closes: <data>/session-hosts/<pid>.json, holding
- * {"agent","tool","pid","start"}, for Codex "codexSession", and on Linux "ns" and "boot"; 0600 in a 0700 folder, written
- * whole (src/agent/private-file.ts), and read only as a small regular file of this user's, never through a link.
+ * {"agent","tool","pid","start"}, for Codex "codexSession", on Linux "ns" and "boot", and "config", the config file the
+ * host loaded (HarnessConfig.file), when it loaded one; 0600 in a 0700 folder, written whole (src/agent/private-file.ts),
+ * and read only as a small regular file of this user's, never through a link. The CLI takes that config, and no other,
+ * for a command run inside the session (src/cli/gate.ts).
  * `start` is when the process started, so a reused pid is no session: Linux's /proc/<pid>/stat field 22 (clock ticks
  * since boot), macOS's `ps -o lstart=` (to the second, asked in UTC and the C locale so every process spells it alike).
  * On Linux a pid means a process only in the pid namespace it is numbered in: from another one (`unshare -p`, a
@@ -65,7 +67,7 @@
  */
 
 import { readdirSync, readFileSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { namesOrreryPlugin } from "../install/layout.ts";
 import { readPluginOptions } from "../opencode/options.ts";
 import { launchTokenFile, readTokenFile } from "../opencode/token-file.ts";
@@ -88,8 +90,8 @@ export const HOST_ENV = "ORRERY_HOST";
 /** The tool a session runs in: `run` is `orrery run`. */
 export type SessionTool = "pi" | "omp" | "claude-code" | "codex" | "opencode" | "run";
 
-/** Each tool as a notice names it. */
-const TOOL_NAMES: Readonly<Record<SessionTool, string>> = { pi: "pi", omp: "OMP", "claude-code": "Claude Code", codex: "Codex", opencode: "OpenCode", run: "orrery run" };
+/** Each tool as a notice (and the CLI's refusal, src/cli/gate.ts) names it. */
+export const TOOL_NAMES: Readonly<Record<SessionTool, string>> = { pi: "pi", omp: "OMP", "claude-code": "Claude Code", codex: "Codex", opencode: "OpenCode", run: "orrery run" };
 const TOOLS: ReadonlySet<string> = new Set(Object.keys(TOOL_NAMES));
 
 export interface SessionRecord {
@@ -105,6 +107,8 @@ export interface SessionRecord {
 	readonly ns?: string;
 	/** Linux: the boot's id. */
 	readonly boot?: string;
+	/** The config file the host loaded (HarnessConfig.file, an absolute path), when it loaded one from a file. */
+	readonly config?: string;
 }
 
 /** The session a process runs in. */
@@ -115,6 +119,8 @@ export interface Inside {
 	readonly via: "ancestry" | "marker";
 	/** The data folder whose record or config found it; with no config, the first data folder asked about ("" for none). */
 	readonly dataDir: string;
+	/** The config file the record of the session's agent names (SessionRecord.config), when one does. */
+	readonly config?: string;
 }
 
 /** How processes are read; each defaults to this system's own way (tests give fakes). */
@@ -227,11 +233,11 @@ export function ancestors(from: number = process.pid, deps: SessionDeps = {}): n
 
 /** `value` as the record of `pid`, or undefined when it is none. */
 function recordOf(value: unknown, pid: number): SessionRecord | undefined {
-	const { agent, tool, pid: own, start, codexSession, ns, boot } = (value ?? {}) as Record<string, unknown>;
+	const { agent, tool, pid: own, start, codexSession, ns, boot, config } = (value ?? {}) as Record<string, unknown>;
 	if (typeof agent !== "string" || agent === "" || typeof tool !== "string" || !TOOLS.has(tool) || own !== pid || typeof start !== "string" || start === "") return undefined;
-	// Each optional field is absent, or a non-empty string.
+	// Each optional field is absent, or a non-empty string; the config, an absolute path.
 	const text = (field: unknown): field is string | undefined => field === undefined || (typeof field === "string" && field !== "");
-	if (!text(codexSession) || !text(ns) || !text(boot)) return undefined;
+	if (!text(codexSession) || !text(ns) || !text(boot) || !text(config) || (config !== undefined && !isAbsolute(config))) return undefined;
 	return {
 		agent,
 		tool: tool as SessionTool,
@@ -240,6 +246,7 @@ function recordOf(value: unknown, pid: number): SessionRecord | undefined {
 		...(codexSession === undefined ? {} : { codexSession }),
 		...(ns === undefined ? {} : { ns }),
 		...(boot === undefined ? {} : { boot }),
+		...(config === undefined ? {} : { config }),
 	};
 }
 
@@ -404,7 +411,7 @@ export function insideSession(dataDirs: readonly string[], env: NodeJS.ProcessEn
 			if (pid === deps.self) continue;
 			for (const { dataDir, pids } of recorded) {
 				const record = pids.has(pid) ? liveSession(dataDir, pid, deps) : undefined;
-				if (record !== undefined) return { agent: record.agent, tool: record.tool, via: "ancestry", dataDir };
+				if (record !== undefined) return { agent: record.agent, tool: record.tool, via: "ancestry", dataDir, ...configOf(record) };
 			}
 		}
 	}
@@ -424,6 +431,8 @@ interface Mark {
 	readonly proves?: string;
 	readonly names?: string;
 	readonly tool: SessionTool | undefined;
+	/** The config file the record behind the mark names, if any. */
+	readonly config?: string;
 }
 
 /** The session the markers in `env` name for `config`'s data folder (module doc), or undefined when none does. */
@@ -442,13 +451,13 @@ function byMarkers(config: HarnessConfig, env: NodeJS.ProcessEnv, deps: SessionD
 	const claudePid = Number(env.CLAUDE_PID);
 	const claude = judged(dataDir, claudePid, deps);
 	if (!own(claudePid, claude)) {
-		if (claude.kind === "live" && claude.record.tool === "claude-code") marks.push({ names: claude.record.agent, tool: "claude-code" });
+		if (claude.kind === "live" && claude.record.tool === "claude-code") marks.push({ names: claude.record.agent, tool: "claude-code", ...configOf(claude.record) });
 		else if (claude.kind === "unsure" && (claude.record === undefined || claude.record.tool === "claude-code")) marks.push({ tool: "claude-code" });
 	}
 	const hostPid = Number(env[HOST_ENV]);
 	const host = judged(dataDir, hostPid, deps);
 	if (!own(hostPid, host)) {
-		if (host.kind === "live") marks.push({ names: host.record.agent, tool: host.record.tool });
+		if (host.kind === "live") marks.push({ names: host.record.agent, tool: host.record.tool, ...configOf(host.record) });
 		else if (host.kind === "unsure") marks.push({ tool: host.record?.tool });
 	}
 	const codexIds = [env.CODEX_THREAD_ID, env.CODEX_SESSION_ID].filter((id) => id !== undefined && id !== "");
@@ -457,7 +466,7 @@ function byMarkers(config: HarnessConfig, env: NodeJS.ProcessEnv, deps: SessionD
 			const found = judged(dataDir, pid, deps);
 			const record = found.kind === "live" || found.kind === "unsure" ? found.record : undefined;
 			if (record?.codexSession === undefined || !codexIds.includes(record.codexSession) || own(pid, found)) continue;
-			marks.push(found.kind === "live" ? { names: record.agent, tool: record.tool } : { tool: record.tool });
+			marks.push(found.kind === "live" ? { names: record.agent, tool: record.tool, ...configOf(record) } : { tool: record.tool });
 		}
 	}
 	/**
@@ -472,7 +481,11 @@ function byMarkers(config: HarnessConfig, env: NodeJS.ProcessEnv, deps: SessionD
 			const claim = claimHeld(agent.dir, token);
 			if (claim === undefined) continue;
 			if (claim === "unreadable" || (claim.ns !== undefined && (here === undefined || claim.ns !== here))) found.push({ tool });
-			else if (claim.pid !== self && alive(claim.pid)) found.push({ proves: agent.name, tool: tool ?? liveSession(dataDir, claim.pid, deps)?.tool });
+			else if (claim.pid !== self && alive(claim.pid)) {
+				// The claimant's own record, when it hosts the session: its tool, and the config it loaded.
+				const record = liveSession(dataDir, claim.pid, deps);
+				found.push({ proves: agent.name, tool: tool ?? record?.tool, ...(record?.agent === agent.name ? configOf(record) : {}) });
+			}
 		}
 		return found;
 	};
@@ -494,8 +507,13 @@ function byMarkers(config: HarnessConfig, env: NodeJS.ProcessEnv, deps: SessionD
 	const one = proven.size === 1 ? [...proven][0] : undefined;
 	const agent = one !== undefined && marks.every((mark) => mark.names === undefined || mark.names === one) ? one : undefined;
 	const tool = marks.find((mark) => (agent === undefined || mark.proves === agent || mark.names === agent) && mark.tool !== undefined)?.tool;
-	return { agent, tool, via: "marker", dataDir };
+	// The config a record of that agent's names; none for a session whose agent is unknown.
+	const recorded = agent === undefined ? undefined : marks.find((mark) => (mark.proves === agent || mark.names === agent) && mark.config !== undefined)?.config;
+	return { agent, tool, via: "marker", dataDir, ...(recorded === undefined ? {} : { config: recorded }) };
 }
+
+/** A record's config, as an Inside or a Mark carries it. */
+const configOf = (record: SessionRecord): { config?: string } => (record.config === undefined ? {} : { config: record.config });
 
 /**
  * The options given to each of Orrery's plugin entries in an OPENCODE_CONFIG_CONTENT, as a launch writes them

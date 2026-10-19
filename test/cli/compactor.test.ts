@@ -1,5 +1,5 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,7 +9,8 @@ import { compactorCliCommand } from "../../src/cli/commands.ts";
 import { type HarnessConfig, parseModelChoice } from "../../src/agent/config.ts";
 import { FileCredentialStore } from "../../src/agent/credentials.ts";
 import { sessionDir } from "../../src/claude/paths.ts";
-import { writeSetupMarker } from "../../src/claude/view-file.ts";
+import { forgetProcess } from "../../src/claude/pick.ts";
+import { processStart } from "../../src/agent/sessions.ts";
 import { writeHolder } from "../../src/agent/handover.ts";
 import { takeRequest } from "../../src/agent/settings-request.ts";
 import { agentModelSource } from "../../src/agent/model-source.ts";
@@ -145,21 +146,31 @@ describe("orrery compactor", () => {
 });
 
 describe("`.`, this session's agent (Claude Code's commands)", () => {
-	it("is the agent ORRERY_AGENT names, in any folder: in Claude Code the one its process decided on; else the folder's", async () => {
+	// Since 2026-10-18-agent-permissions (src/cli/gate.ts): inside an agent's session "." is that session's agent, from its
+	// record, whatever ORRERY_AGENT, a token or CLAUDE_PID say. ORRERY_AGENT naming a configured agent is itself a marker of
+	// a session, so outside one "." comes from the folder, or from the decision of the Claude Code that runs the command.
+	// (ORRERY_AGENT in another agent's file-mode folder is the hooks' refusal: test/claude/agent-pick.test.ts.)
+	it("is the session's agent inside one, whatever ORRERY_AGENT, the token or CLAUDE_PID say; outside one, the folder's or its Claude Code's decision", async () => {
 		const t = testAgent();
 		const elsewhere = join(t.dir, "elsewhere");
 		mkdirSync(elsewhere);
 		const status = (env: Record<string, string>) => orrery(["status", "."], { ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: elsewhere, ...env });
-		expect(status({ ORRERY_AGENT: "Test" }).stdout).toMatch(/^Test\s/);
-		expect(status({ ORRERY_AGENT: "test" }).stdout).toMatch(/^Test\s/);
+		// ORRERY_AGENT naming a configured agent, with no token a live process claimed: a session, and nothing says whose.
+		const dead = newToken();
+		mkdirSync(join(t.agent.dir, "claims"), { recursive: true });
+		writeFileSync(join(t.agent.dir, "claims", dead), `${spawnSync("true").pid}\n`);
+		const unprovens: Record<string, string>[] = [{ ORRERY_AGENT: "Test" }, { ORRERY_AGENT: "test" }, { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: dead }];
+		for (const env of unprovens) {
+			const unproven = status(env);
+			expect([unproven.status, unproven.stdout], JSON.stringify(env)).toEqual([1, ""]);
+			expect(unproven.stderr).toMatch(/^orrery can't tell which agent's session this is, so inside it only help and the version run\. The session is known only by ORRERY_AGENT\. /);
+		}
 		const nowhere = status({});
 		expect([nowhere.status, nowhere.stderr]).toEqual([1, `${elsewhere} is in no agent's folder.\n`]);
 		const unknown = status({ ORRERY_AGENT: "Nobody" });
 		expect([unknown.status, unknown.stderr]).toEqual([1, "Orrery: ORRERY_AGENT names Nobody, which is not a configured agent; this session runs without memory.\n"]);
-		// A skill's command runs with Claude Code's CLAUDE_PID: "." is what that process decided (here this test's
-		// SessionStart) under the same ORRERY_AGENT and token; a command never decides.
+		// A skill's command in Test's Claude Code (this test: its SessionStart records it as Test's host).
 		const token = newToken();
-		const record = join(t.config.dataDir, "claude-processes", `${process.pid}.json`);
 		try {
 			await runHook("session-start", JSON.stringify({ session_id: "s1", cwd: elsewhere }), {
 				config: t.config,
@@ -169,36 +180,28 @@ describe("`.`, this session's agent (Claude Code's commands)", () => {
 				modeWaitMs: 100,
 				home: join(t.dir, "home"),
 			});
-			expect(status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: String(process.pid) }).stdout).toMatch(/^Test\s/);
-			const refusedHere = [1, "Orrery: ORRERY_AGENT is set, but no choice of agent is recorded for this Claude Code under this ORRERY_AGENT; this session runs without memory.\n"];
-			// A descendant that inherited CLAUDE_PID but runs under another ORRERY_AGENT, or without the token: the record is
-			// not its own, so it is refused rather than given the ancestor's agent.
-			const descendant = status({ ORRERY_AGENT: "Other", CLAUDE_PID: String(process.pid) });
-			expect([descendant.status, descendant.stderr]).toEqual(refusedHere);
-			const tokenless = status({ ORRERY_AGENT: "Test", CLAUDE_PID: String(process.pid) });
-			expect([tokenless.status, tokenless.stderr]).toEqual(refusedHere);
-			// A Claude Code process that decided nothing: refused, never its folder's.
-			const undecided = status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: String(process.ppid) });
-			expect([undecided.status, undecided.stderr]).toEqual(refusedHere);
-			// Outside Claude Code "." is picked there, and its parent (this test, which claimed the token) is the claimant.
-			expect(status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token }).stdout).toMatch(/^Test\s/);
-			// It never takes a dead agent's claim over (only a Claude Code process's first decision may).
-			const dead = newToken();
-			writeFileSync(join(t.agent.dir, "claims", dead), `${spawnSync("true").pid}\n`);
-			const late = status({ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: dead });
-			expect([late.status, late.stderr]).toEqual([1, `${elsewhere} is in no agent's folder.\n`]);
+			const envs: Record<string, string>[] = [{ ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: String(process.pid) }, { ORRERY_AGENT: "Other", CLAUDE_PID: String(process.pid) }, { ORRERY_AGENT: "Test", CLAUDE_PID: String(process.pid) }, { CLAUDE_PID: String(process.ppid) }, {}];
+			for (const env of envs) expect(status(env).stdout, JSON.stringify(env)).toMatch(/^Test\s/);
 		} finally {
-			rmSync(record, { force: true });
+			forgetProcess(t.config, process.pid);
 		}
-		// In another agent's folder set up the file way, the agent is refused, as in the hooks.
-		const other = join(t.dir, "other");
-		mkdirSync(other);
-		writeFileSync(t.configPath, `${readFileSync(t.configPath, "utf8")}\n[agents.Other]\nfolder = ${JSON.stringify(other)}\ncompactor_model = "faux-compactor/faux-1"\n`);
-		writeSetupMarker(join(t.dir, "data", "agents", "Other"), other, "CLAUDE.md");
-		const refused = orrery(["status", "."], { ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: other, ORRERY_AGENT: "Test" });
-		expect([refused.status, refused.stderr]).toEqual([
-			1,
-			"Orrery: this folder is Other's, set up to load Other's memory view into Claude Code, so Test does not open here (Other's memory would be in its session); this session runs without memory. Open Test in another folder, or switch Other to the mod (`orrery claude-setup Other --mod`).\n",
-		]);
+		// Outside every session CLAUDE_PID counts only as this command's own Claude Code (its parent, as a hook checks it):
+		// one inherited from another Claude Code with a decision of its own decides nothing, and the folder does.
+		const nested = (pid: number) => {
+			mkdirSync(join(t.config.dataDir, "claude-processes"), { recursive: true });
+			writeFileSync(join(t.config.dataDir, "claude-processes", `${pid}.json`), `${JSON.stringify({ agent: "", token: "", start: processStart(pid), kind: "nested" })}\n`);
+		};
+		const other = spawn("sleep", ["120"], { stdio: "ignore" });
+		try {
+			nested(other.pid as number);
+			nested(process.pid);
+			const inherited = orrery(["status", "."], { ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: t.folder, CLAUDE_PID: String(other.pid) });
+			expect(inherited.stdout).toMatch(/^Test\s/);
+			const own = orrery(["status", "."], { ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: t.folder, CLAUDE_PID: String(process.pid) });
+			expect([own.status, own.stderr]).toEqual([1, "Orrery: started inside an agent's session, so this one opens no memory and records nothing.\n"]);
+		} finally {
+			other.kill();
+			forgetProcess(t.config, process.pid);
+		}
 	}, 60_000);
 });

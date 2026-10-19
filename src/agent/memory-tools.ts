@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type TSchema, Type } from "typebox";
 import { formatHits, MemoryStore, MemoryView, searchLog } from "../memory/index.ts";
-import { findAgent, type HarnessConfig, type AgentConfig } from "./config.ts";
+import { findAgent, type HarnessConfig, type AgentConfig, mayRead } from "./config.ts";
 import { openStorage } from "../remote/index.ts";
 import { agentOpenHere, readCopyPath } from "../remote/read-copy.ts";
 import type { LaneEntry } from "../remote/types.ts";
@@ -105,10 +105,6 @@ function remoteList(config: HarnessConfig, remote: string): Promise<LaneEntry[] 
 	};
 	remotes.set(remote, entry);
 	return entry.result;
-}
-
-function mayRead(reader: AgentConfig, agent: AgentConfig): boolean {
-	return reader.reads.includes("*") || reader.reads.includes(agent.name) || agent.name === reader.name;
 }
 
 /** Message counts for readable agents; other remote agents expose only their cached public listing. */

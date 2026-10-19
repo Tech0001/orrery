@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end check of orrery's Claude Code plugin with the real `claude -p` (spec §9). Run it by hand.
+# - Run it from your own terminal, not from an agent's shell: it needs your real HOME (Claude Code's login), and a
+#   Claude Code started inside an agent's session opens no memory, so the run would fail.
 # - It spends Claude usage (about a dozen short sessions) and needs Claude Code logged in.
 # - It never touches real agents: a temp agent with its own ORRERY_CONFIG, data folder and credentials path, and only
 #   made-up content. That data folder has no orrery login; messages are kept short, so summaries are the messages

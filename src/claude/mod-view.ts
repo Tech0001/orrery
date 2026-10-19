@@ -3,7 +3,8 @@
  * session's agent (src/claude/pick.ts: ORRERY_AGENT's, as the mod passes it on, else the folder's), as one JSON
  * document. It runs within a session, so it never decides: under ORRERY_AGENT it reads the decision the MCP server or
  * SessionStart recorded for its parent, the Claude Code that runs it, and with none it answers no agent. A Claude Code
- * started inside an agent's session gets no agent and the notice that says so (src/claude/pick.ts). The reply keeps
+ * started inside an agent's session gets no agent and the notice that says so (src/claude/pick.ts). Run inside an
+ * agent's session (src/cli/gate.ts), it gives that agent's view or none, never another agent's. The reply keeps
  * its names (`lane`): a cached older mod reads it. It opens memory read-only, so it works while the holder, pi or nothing
  * holds the agent; the holder stays the single writer. It never prints message contents anywhere but the section.
  * It runs at every Claude Code session start and compaction, so it imports nothing heavy (not agent/overview.ts).
@@ -24,8 +25,8 @@ import { readStatus } from "../agent/status-file.ts";
 import { memorySection } from "../agent/view-text.ts";
 import { MemoryStore, MemoryView } from "../memory/index.ts";
 import { validSession } from "./paths.ts";
-import { claudeRefusedNotice, claudeSession } from "./pick.ts";
-import { pendingEvents, readMode, type SessionMode } from "./spool.ts";
+import { claudeRefusedNotice, claudeSession, UNCONFIRMED_NOTICE } from "./pick.ts";
+import { listSessions, pendingEvents, readMode, type SessionMode } from "./spool.ts";
 import { type AgentMode, agentMode } from "./view-file.ts";
 
 const POLL_MS = 250;
@@ -76,6 +77,11 @@ export interface ModViewOptions {
 	 */
 	readonly env?: NodeJS.ProcessEnv;
 	readonly owner?: number;
+	/**
+	 * Inside an agent's session (src/cli/gate.ts), that session's agent: the view is its or none, whatever the folder,
+	 * --agent or the environment pick (spec 2026-10-18-agent-permissions §3).
+	 */
+	readonly only?: string;
 }
 
 /** Runs `use` on a read-only open of the agent's memory, closed again after. */
@@ -178,6 +184,20 @@ function remoteFields(agent: AgentConfig, session: string | undefined, now: numb
 	}
 }
 
+/**
+ * Whether Claude Code process `claudePid` was found unconfirmed at a SessionStart of `agent`'s (src/claude/hooks.ts
+ * markUnconfirmed: the session's mode is read-only for that reason): for `session` when given, as its hooks judge it;
+ * else for any of the agent's sessions, as the MCP server, which knows no session, must. Such a session gets no view and
+ * no memory tools, even once the process's start can be read.
+ */
+export function markedUnconfirmed(agent: AgentConfig, claudePid: number, session?: string): boolean {
+	const marked = (id: string) => {
+		const mode = readMode(agent.dir, id);
+		return mode?.mode === "read-only" && mode.reason === UNCONFIRMED_NOTICE && mode.claudePid === claudePid;
+	};
+	return session === undefined ? listSessions(agent.dir).some(marked) : marked(session);
+}
+
 export async function modView(config: HarnessConfig | undefined, options: ModViewOptions): Promise<ModViewReply> {
 	try {
 		if (config === undefined) return { lane: null };
@@ -185,13 +205,17 @@ export async function modView(config: HarnessConfig | undefined, options: ModVie
 		// the decision recorded for this Claude Code process; else the folder's.
 		const base = options.env ?? process.env;
 		const env = options.agent === undefined ? base : { ...base, [AGENT_ENV]: options.agent, [TOKEN_ENV]: options.agentToken ?? base[TOKEN_ENV] };
-		const picked = claudeSession(config, { env, cwd: options.cwd, pid: options.owner ?? process.ppid, decide: false });
-		// Started inside an agent's session: no memory, and why.
-		if (picked.kind === "nested") return { lane: null, notice: claudeRefusedNotice(picked) };
+		const owner = options.owner ?? process.ppid;
+		const picked = claudeSession(config, { env, cwd: options.cwd, pid: owner, decide: false });
+		// Started inside an agent's session, or a process that can't be confirmed: no memory, and why.
+		if (picked.kind === "nested" || picked.kind === "unconfirmed") return { lane: null, notice: claudeRefusedNotice(picked) };
 		if (picked.kind !== "agent") return { lane: null };
 		const { agent } = picked;
+		if (options.only !== undefined && agent.name !== options.only) return { lane: null };
 		const { session } = options;
 		if (session !== undefined && !validSession(session)) return { error: "not a Claude Code session id" };
+		// Its SessionStart found this process unconfirmed: the session stays without memory, though the start can be read now.
+		if (markedUnconfirmed(agent, owner, session)) return { lane: null, notice: UNCONFIRMED_NOTICE };
 		const mode = agentMode(agent);
 		// Only the mod puts them in the prompt; in file mode the view file carries them.
 		const found = mode === "mod" ? readInstructions(agent.dir) : undefined;

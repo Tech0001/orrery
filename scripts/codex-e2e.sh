@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end check of Orrery in the real Codex, on the real model (docs/codex.md). Run it by hand.
+# - Run it from your own terminal, not from an agent's shell: it needs your real HOME (Codex's login), and inside an
+#   agent's session Orrery refuses `orrery agent` (a scratch ORRERY_HOME doesn't hide the session your default home holds).
 # - It spends Codex usage (about eight short sessions on your default model, at low reasoning effort) and needs Codex
 #   logged in. ORRERY_E2E_MODEL picks another model (passed as -m); ORRERY_E2E_CODEX_ARGS adds arguments to every
 #   `codex exec` (split at spaces), such as `-p <profile>`, or a local fake model's -c flags for a dry run of the script.

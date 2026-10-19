@@ -259,7 +259,7 @@ function nestedGuard(inside: Inside, cwd: string, config: HarnessConfig, options
  */
 function recordHost(state: OrreryState, ctx: ExtensionContext, config: HarnessConfig, agent: AgentConfig, tool: "pi" | "omp", options: OrreryOptions): void {
 	const pid = hostPid(options);
-	if (!recordSession(config.dataDir, { agent: agent.name, tool, pid })) {
+	if (!recordSession(config.dataDir, { agent: agent.name, tool, pid, config: config.file })) {
 		warn(ctx, `Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s.`);
 		return;
 	}

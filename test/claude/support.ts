@@ -38,16 +38,19 @@ export interface TestAgent {
 }
 
 /**
- * Agent "Test": folder, data folder and config file in one temp folder. Its summary model (faux-compactor) is
- * unknown to orrery's real registry, so a holder process runs with summaries off. `setup` does what claude-setup does:
- * a CLAUDE.md that imports the view, and the marker in the agent's data folder.
+ * Agent "Test": folder, data folder and config file in one temp folder, the config in the data folder as ~/.orrery
+ * keeps it (from inside an agent's session the CLI takes only the config that holds the session's memory:
+ * src/cli/gate.ts). Its summary model (faux-compactor) is unknown to orrery's real registry, so a holder process runs
+ * with summaries off. `setup` does what claude-setup does: a CLAUDE.md that imports the view, and the marker in the
+ * agent's data folder.
  */
 export function testAgent(options: { setup?: boolean } = {}): TestAgent {
 	const dir = tempDir("orrery-claude-");
 	dirs.push(dir);
 	const folder = join(dir, "ws");
 	mkdirSync(folder);
-	const configPath = join(dir, "config.toml");
+	mkdirSync(join(dir, "data"));
+	const configPath = join(dir, "data", "config.toml");
 	writeFileSync(configPath, agentConfigToml({ dataDir: join(dir, "data"), folder }));
 	const config = parseConfig(readFileSync(configPath, "utf8"), dir);
 	const agent = config.agents.get("Test") as AgentConfig & { readonly folder: string };

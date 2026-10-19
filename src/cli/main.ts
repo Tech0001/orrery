@@ -1,12 +1,14 @@
 #!/usr/bin/env -S node --disable-warning=ExperimentalWarning
 /**
  * orrery: run and inspect agents. Each command loads its modules when it runs. The short-lived processes Claude Code
- * starts several times a turn (claude-hook) must not load pi-durable and every model provider first.
+ * starts several times a turn (claude-hook) must not load pi-durable and every model provider first. Every command but
+ * the hooks first passes the gate (src/cli/gate.ts): inside an agent's session only a few run, as that agent.
  */
 
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
 import type { ReaderTool } from "../agent/memory-tools.ts";
+import type { Inside } from "../agent/sessions.ts";
 import { defaultConfigPath, findAgent, type HarnessConfig, type AgentConfig, loadConfig } from "../agent/config.ts";
 import { armCodexGuard, CODEX_GUARD_DEADLINE_MS, isCodexGuard } from "../codex/guard-exit.ts";
 import { exitWhenFlushed } from "./exit.ts";
@@ -211,19 +213,23 @@ async function uninstallCommand(values: { purge?: boolean }): Promise<number> {
 }
 
 /**
- * An agent name as given, or "." for this session's agent (Claude Code's commands use it): the one ORRERY_AGENT names, as
- * the hooks pick it (src/claude/pick.ts), else the one whose folder holds the project folder. In Claude Code
- * (CLAUDE_PID, which it sets for the commands it runs) that is the decision recorded for its process; a command runs
- * within a session, so it never decides. Elsewhere it is picked here, never claiming a token: a tool an agent started
- * with the same variables falls back to its folder.
+ * An agent name as given, or "." for this session's agent (Claude Code's commands use it). Inside an agent's session
+ * that is the session's agent, as its record says (src/cli/gate.ts), whatever ORRERY_AGENT, CLAUDE_PID or the folder
+ * say. Elsewhere: the one ORRERY_AGENT names, as the hooks pick it (src/claude/pick.ts), else the one whose folder holds
+ * the project folder. In Claude Code (CLAUDE_PID, which it sets for the commands it runs, checked against this
+ * process's place in the tree as a hook's is: claudeHookPid) that is the decision recorded for its process; a command
+ * runs within a session, so it never decides. Elsewhere it is picked here, never claiming a token: a tool an agent
+ * started with the same variables falls back to its folder.
  */
-async function agentArg(config: HarnessConfig, name: string): Promise<string> {
+async function agentArg(config: HarnessConfig, name: string, inside: Inside | undefined): Promise<string> {
 	if (name !== ".") return name;
-	const { claudePick, claudeRefusedNotice, claudeSession } = await import("../claude/pick.ts");
+	if (inside?.agent !== undefined) return inside.agent;
+	const { claudeHookPid, claudePick, claudeRefusedNotice, claudeSession } = await import("../claude/pick.ts");
 	const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-	const claudePid = Number(process.env.CLAUDE_PID);
+	// An inherited CLAUDE_PID (one that names no Claude Code above this command) is no session's: the folder decides.
+	const claudePid = process.env.CLAUDE_PID?.trim() ? claudeHookPid(config, process.env) : undefined;
 	const pick =
-		Number.isInteger(claudePid) && claudePid > 0
+		claudePid !== undefined
 			? claudeSession(config, { env: process.env, cwd: dir, pid: claudePid, decide: false })
 			: claudePick(config, { env: process.env, cwd: dir, owner: process.ppid, takeover: false });
 	if (pick.kind === "agent") return pick.agent.name;
@@ -476,8 +482,22 @@ async function unknownCommand(command: string): Promise<number> {
 /** Runs the command: everything but help and the version. */
 async function dispatch(positionals: string[], values: ReturnType<typeof parseCommandLine>["values"], updateVersion: string | undefined, toolArgs: string[]): Promise<number> {
 	const [command, arg] = positionals;
-	// Claude Code's and Codex's hooks run several times a turn and never sign in or call a model.
-	if (command !== "claude-hook" && command !== "codex-hook") await registerReleaseOAuthFlows();
+	// Claude Code's and Codex's hooks run several times a turn and never sign in or call a model; their own per-process
+	// decision governs them, so they skip the gate's look at the process tree.
+	if (command === "claude-hook") return claudeHook(arg, values.config);
+	if (command === "codex-hook") return codexHook(arg, values.config);
+	const { GateRefusal, gateCommand, readableBy } = await import("./gate.ts");
+	let inside: Inside | undefined;
+	// Inside a session, the config that holds its memory (src/cli/gate.ts): every command there runs with it.
+	let trusted: HarnessConfig | undefined;
+	try {
+		({ inside, config: trusted } = gateCommand(command, positionals, values, process.env));
+	} catch (error) {
+		// The mod reads one JSON line, never stderr (claudeModCommand).
+		if (command === "claude-mod" && error instanceof GateRefusal) return modReply({ error: modError(error) });
+		throw error;
+	}
+	await registerReleaseOAuthFlows();
 	if (command === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true) {
 		const { runTui } = await import("../tui/run.ts");
 		return runTui(values.config);
@@ -486,10 +506,8 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 		process.stdout.write(shortHelp(await helpVersion()));
 		return 0;
 	}
-	if (command === "claude-hook") return claudeHook(arg, values.config);
-	if (command === "codex-hook") return codexHook(arg, values.config);
-	if (command === "claude-mod") return claudeModCommand(arg, values);
-	if (command === "mcp") return mcpServer(values.config, values.tool);
+	if (command === "claude-mod") return claudeModCommand(arg, values, inside, trusted);
+	if (command === "mcp") return mcpServer(values.config, values.tool, inside, trusted);
 	if (command === "remote") {
 		const { remoteCommand } = await import("./remote.ts");
 		process.stdout.write(await remoteCommand(values.config, positionals.slice(1), { json: values.json === true, yes: values.yes === true, server: values.server, cloudflare: values.cloudflare, "token-file": values["token-file"], "code-file": values["code-file"], new: values.new === true }));
@@ -520,18 +538,20 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 			takeover: (name) => agentRemoteCommand(values.config, ["takeover", name], { yes: true }),
 		});
 	}
-	const config = loadConfig(values.config);
+	const config = trusted ?? loadConfig(values.config);
+	// Inside an agent's session status and usage list only what that agent may read.
+	const readable = inside?.agent === undefined ? {} : { readable: readableBy(config, inside.agent) };
 	switch (command) {
 		case "status": {
 			const { statusCommand } = await import("./commands.ts");
-			process.stdout.write(statusCommand(config, arg === undefined ? undefined : await agentArg(config, arg), { json: values.json === true }));
+			process.stdout.write(statusCommand(config, arg === undefined ? undefined : await agentArg(config, arg, inside), { json: values.json === true, ...readable }));
 			return 0;
 		}
 		case "usage": {
 			const { usageCommand } = await import("./commands.ts");
 			const days = Number(values.days ?? "7");
 			if (!Number.isInteger(days) || days < 1) throw new Error("--days must be a whole number of days, at least 1");
-			process.stdout.write(usageCommand(config, arg === undefined ? undefined : await agentArg(config, arg), days, { json: values.json === true }));
+			process.stdout.write(usageCommand(config, arg === undefined ? undefined : await agentArg(config, arg, inside), days, { json: values.json === true, ...readable }));
 			return 0;
 		}
 		case "login": {
@@ -623,7 +643,7 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 		}
 		case "browse": {
 			const { browseCommand } = await import("./commands.ts");
-			const agent = findAgent(config, await agentArg(config, required(arg, "agent")));
+			const agent = findAgent(config, await agentArg(config, required(arg, "agent"), inside));
 			// --open writes where pi's /browse does (the agent's data folder), not into the folder Claude Code runs in.
 			const path = browseCommand(config, agent.name, values.out ?? (values.open === true ? join(agent.dir, "memory.html") : undefined));
 			if (values.open !== true) {
@@ -640,7 +660,9 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 		case "compactor": {
 			const [{ compactorCliCommand }, { configureHttp }] = await Promise.all([import("./commands.ts"), import("../agent/http.ts")]);
 			configureHttp(); // a switch makes a test call to the model
-			process.stdout.write(await compactorCliCommand(config, await agentArg(config, required(arg, "agent")), positionals.slice(2), values.prefix === undefined ? {} : { prefix: values.prefix }));
+			// Inside an agent's session it starts no sign-in: it chooses among the user's existing logins, keys and endpoints.
+			const options = { ...(values.prefix === undefined ? {} : { prefix: values.prefix }), ...(inside === undefined ? {} : { interactive: false }) };
+			process.stdout.write(await compactorCliCommand(config, await agentArg(config, required(arg, "agent"), inside), positionals.slice(2), options));
 			return 0;
 		}
 		case "run": {
@@ -701,7 +723,7 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 		}
 		case "claude-setup": {
 			const setup = await import("../claude/setup.ts");
-			const agent = findAgent(config, await agentArg(config, required(arg, "agent")));
+			const agent = findAgent(config, await agentArg(config, required(arg, "agent"), inside));
 			process.stdout.write(values.mod === true ? setup.modSetupReport(setup.claudeSetupMod(agent)) : setup.setupReport(setup.claudeSetup(agent)));
 			return 0;
 		}
@@ -744,21 +766,29 @@ const denyToolCall = (reason: string) =>
  * CLAUDE_PID, which a claude started from an agent's Bash inherits from the agent.
  * With --tool codex it is Codex's (src/codex/launch.ts): the agent ORRERY_AGENT names, with its token, and nothing else
  * (src/codex/pick.ts), claimed for the Codex that started it, at its start, before any SessionStart.
+ * Inside an agent's session (`inside`, src/cli/gate.ts) it serves that agent or nothing, with the config that holds the
+ * session's memory (`trusted`); and when its parent is that session's recorded host (a restarted server, or the agent's
+ * shell exec'ing `orrery mcp`), it only reads the decision the host made, so no folder or variable given to it can
+ * change whose session the host is. A Claude Code that one of its SessionStarts found unconfirmed (src/claude/hooks.ts:
+ * its start couldn't be read) gets no tools, as its view gets none (markedUnconfirmed, src/claude/mod-view.ts).
  */
-async function mcpServer(configPath: string | undefined, tool: string | undefined): Promise<number> {
+async function mcpServer(configPath: string | undefined, tool: string | undefined, inside: Inside | undefined, trusted: HarnessConfig | undefined): Promise<number> {
 	if (tool !== undefined && tool !== "claude-code" && tool !== "codex") throw new UsageError(`mcp: --tool takes claude-code or codex (not ${tool}).`);
 	const { agentTools, runMcp } = await import("../claude/mcp.ts");
 	let tools: ReaderTool[] = [];
-	const config = optionalConfig(configPath, "orrery mcp");
+	const config = trusted ?? optionalConfig(configPath, "orrery mcp");
+	const ours = (agent: AgentConfig) => inside === undefined || agent.name === inside.agent;
 	if (config !== undefined && tool === "codex") {
 		const [{ codexAgent }, { codexPid }] = await Promise.all([import("../codex/pick.ts"), import("../codex/host.ts")]);
 		// Codex starts its servers itself: codexPid() is this server's parent, unless it passed over one by its name.
 		const pick = codexAgent(config, { env: process.env, pid: codexPid(), parent: process.ppid, takeover: true });
-		if (pick.kind === "agent") tools = agentTools(config, pick.agent);
+		if (pick.kind === "agent" && ours(pick.agent)) tools = agentTools(config, pick.agent);
 	} else if (config !== undefined) {
-		const { claudeSession } = await import("../claude/pick.ts");
-		const pick = claudeSession(config, { env: process.env, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), pid: process.ppid, decide: true });
-		if (pick.kind === "agent") tools = agentTools(config, pick.agent);
+		const [{ claudeSession }, { liveSession }, { markedUnconfirmed }] = await Promise.all([import("../claude/pick.ts"), import("../agent/sessions.ts"), import("../claude/mod-view.ts")]);
+		const decided = inside !== undefined && liveSession(config.dataDir, process.ppid) !== undefined;
+		const pick = claudeSession(config, { env: process.env, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), pid: process.ppid, decide: !decided });
+		// A Claude Code a SessionStart found unconfirmed (src/claude/hooks.ts) gets no tools, even once its start can be read.
+		if (pick.kind === "agent" && ours(pick.agent) && !markedUnconfirmed(pick.agent, process.ppid)) tools = agentTools(config, pick.agent);
 	}
 	await runMcp(process.stdin, process.stdout, tools);
 	return 0;
@@ -882,12 +912,16 @@ async function codexHook(event: string | undefined, configPath: string | undefin
  * `orrery claude-mod view --cwd DIR [--session ID] [--agent NAME [--agent-token T]] [--wait-ms N [--spool-only]]`: the
  * Orrery mod's one call (src/claude/mod-view.ts). --agent and --agent-token are ORRERY_AGENT and its token as the mod
  * read them from Claude Code's environment.
- * It prints one JSON line; exit 1 with { error } when the config or memory cannot be read. Nothing goes to stderr.
- * No config at all (none named, none at the default paths) is not an error: the reply is { lane: null }.
+ * It prints one JSON line; exit 1 with { error } when the config or memory cannot be read, or the gate refused it.
+ * Nothing goes to stderr. No config at all (none named, none at the default paths) is not an error: the reply is
+ * { lane: null }. Inside an agent's session (`inside`, src/cli/gate.ts) it gives that agent's view or none, with the
+ * config that holds the session's memory (`trusted`).
  */
 async function claudeModCommand(
 	action: string | undefined,
 	values: { config?: string; cwd?: string; session?: string; "wait-ms"?: string; "spool-only"?: boolean; agent?: string; "agent-token"?: string },
+	inside: Inside | undefined,
+	trusted: HarnessConfig | undefined,
 ): Promise<number> {
 	let reply: object;
 	try {
@@ -895,18 +929,29 @@ async function claudeModCommand(
 		const { modView } = await import("../claude/mod-view.ts");
 		const waitMs = values["wait-ms"] === undefined ? 0 : Number(values["wait-ms"]);
 		if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > 120_000) throw new Error("--wait-ms takes 0 to 120000");
-		let config: HarnessConfig | undefined;
-		try {
-			config = loadConfig(values.config);
-		} catch (error) {
-			const absent = (error as { code?: unknown }).code === "ENOENT" && values.config === undefined && !process.env.ORRERY_CONFIG;
-			if (!absent) throw error;
+		let config = trusted;
+		if (config === undefined) {
+			try {
+				config = loadConfig(values.config);
+			} catch (error) {
+				const absent = (error as { code?: unknown }).code === "ENOENT" && values.config === undefined && !process.env.ORRERY_CONFIG;
+				if (!absent) throw error;
+			}
 		}
 		const agent = values.agent === undefined ? {} : { agent: values.agent, ...(values["agent-token"] === undefined ? {} : { agentToken: values["agent-token"] }) };
-		reply = await modView(config, { cwd: values.cwd ?? process.cwd(), ...(values.session === undefined ? {} : { session: values.session }), waitMs, spoolOnly: values["spool-only"] === true, ...agent });
+		const only = inside?.agent === undefined ? {} : { only: inside.agent };
+		reply = await modView(config, { cwd: values.cwd ?? process.cwd(), ...(values.session === undefined ? {} : { session: values.session }), waitMs, spoolOnly: values["spool-only"] === true, ...agent, ...only });
 	} catch (error) {
-		reply = { error: errorText(error).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, 300) };
+		reply = { error: modError(error) };
 	}
+	return modReply(reply);
+}
+
+/** An error as the mod's reply carries it: one line, no control characters, at most 300 characters. */
+const modError = (error: unknown) => errorText(error).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, 300);
+
+/** Prints the mod's one JSON line: exit 1 for an error. */
+function modReply(reply: object): number {
 	process.stdout.write(`${JSON.stringify(reply)}\n`);
 	return "error" in reply ? 1 : 0;
 }

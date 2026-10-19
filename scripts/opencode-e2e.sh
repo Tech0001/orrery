@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end check of Orrery in the real OpenCode, on a real model (docs/opencode.md). Run it by hand.
+# - Run it from your own terminal, not from an agent's shell: inside an agent's session Orrery refuses `orrery agent`
+#   (and a tool started there opens no memory), so the run would fail.
 # - It spends model usage: about nine short sessions. OpenCode runs in a scratch HOME and XDG folders made for the run
 #   (no login, no config, no plugins and no AGENTS.md of yours; its background service off), so it chats with OpenCode's
 #   default model there, one of the free models of OpenCode's Zen gateway, under that model's data terms. Only made-up

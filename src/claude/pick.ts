@@ -329,7 +329,7 @@ const nestedPick = (inside: Inside): ClaudePicked => ({ kind: "nested", outer: i
  * touches no record.
  */
 function hosted(config: HarnessConfig, pid: number, pick: ClaudePicked): ClaudePicked {
-	if (pick.kind === "agent") recordSession(config.dataDir, { agent: pick.agent.name, tool: "claude-code", pid });
+	if (pick.kind === "agent") recordSession(config.dataDir, { agent: pick.agent.name, tool: "claude-code", pid, config: config.file });
 	else if (pick.kind !== "nested") forgetHost(config, pid);
 	return pick;
 }

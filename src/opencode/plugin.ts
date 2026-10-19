@@ -330,7 +330,7 @@ class AgentInServer {
 	 */
 	#recordHost(): void {
 		const pid = this.#options.owner ?? process.pid;
-		if (!recordSession(this.config.dataDir, { agent: this.agent.name, tool: "opencode", pid })) {
+		if (!recordSession(this.config.dataDir, { agent: this.agent.name, tool: "opencode", pid, config: this.config.file })) {
 			this.feed.say(`Orrery: this session could not be recorded as ${this.agent.name}'s, so tools and commands started from it are not known as ${this.agent.name}'s.`, "warning");
 			return;
 		}
