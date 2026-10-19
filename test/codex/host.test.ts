@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { codexPid, type ProcessInfo, processInfo } from "../../src/codex/host.ts";
+import { type ProcessInfo, processInfo } from "../../src/agent/process.ts";
+import { codexPid } from "../../src/codex/host.ts";
 
 const HOST = new URL("../../src/codex/host.ts", import.meta.url).pathname;
 
