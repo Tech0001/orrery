@@ -314,6 +314,7 @@ export function summaryWaitMs(host: "pi" | "omp", elapsedMs: number, override?: 
 
 const registeredOn = new WeakSet<ExtensionAPI>();
 const guardedOn = new WeakSet<ExtensionAPI>();
+const DEBUG_SOCKET_NOTICE = "Orrery: OMP_TUI_DEBUG is set, so anything sent through OMP's debug socket would count as typed; this session opens memory read-only and records nothing.";
 const OPEN_CANCELLED = new Error("The session left while its memory was opening");
 
 export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
@@ -437,6 +438,12 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			guard(pi, state, host);
 			// OMP loads the extension again in each subagent (its task tool): a subagent gets the guard, never the memory.
 			if (omp && subagent(ctx)) return;
+			// OMP's debug socket (OMP_TUI_DEBUG) types for the user: nothing it sends could be told from the user's words, so
+			// the memory stays shut, as for an agent held elsewhere, and nothing is recorded, host included. The guard stays on.
+			if (omp && (options.env ?? process.env).OMP_TUI_DEBUG) {
+				warn(ctx, DEBUG_SOCKET_NOTICE);
+				return;
+			}
 			// The session is this agent's, whether or not its memory opens: what it starts runs inside the agent's session.
 			noteRun(state, ctx);
 			recordHost(state, ctx, config, agent, host, options);
