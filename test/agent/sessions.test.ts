@@ -384,6 +384,79 @@ describe("insideSession by markers", () => {
 	});
 });
 
+describe("insideSession for a tool asking about itself (self)", () => {
+	/** chain() plus 60, a tool started at the top (no recorded ancestor), 61, a process it started (a hook), and 88. */
+	const tools = (): Table => ({ ...chain(), 60: { ppid: 1, start: "600" }, 61: { ppid: 60, start: "610" }, 88: { ppid: 1, start: "880" } });
+
+	it("a top-level launch's own markers are no session, before and after it claims its token; the CLI still counts them", () => {
+		const { root, config } = world();
+		const table = tools();
+		const self = { ...linux(table), self: 60 };
+		const atlas = join(config.dataDir, "agents", "Atlas");
+		const token = newToken();
+		const env = { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token };
+		expect(insideSession([config.dataDir], env, config, self)).toBeUndefined();
+		expect(insideSession([config.dataDir], env, config, linux(table, 60))).toMatchObject({ agent: undefined, via: "marker" });
+		expect(claimToken(atlas, token, 60, self.alive)).toBe(true);
+		expect(insideSession([config.dataDir], env, config, self)).toBeUndefined();
+		// Its own record, named by its own CLAUDE_PID or Codex id, asked from itself or from a process it started.
+		expect(recordSession(config.dataDir, { agent: "Atlas", tool: "codex", pid: 60, codexSession: "019a-own" }, linux(table))).toBe(true);
+		const own = { ...env, CLAUDE_PID: "60", CODEX_THREAD_ID: "019a-own" };
+		expect(insideSession([config.dataDir], own, config, self)).toBeUndefined();
+		expect(insideSession([config.dataDir], own, config, { ...self, from: 61 })).toBeUndefined();
+		// OpenCode's server: its launch's token file, unclaimed or claimed by itself.
+		const home = { ORRERY_HOME: join(root, "home") };
+		const tokenFile = join(orreryHome(home), "tokens", "opencode-123-0123456789ab");
+		const birch = newToken();
+		writePrivate(tokenFile, birch);
+		const opencode = { ...home, OPENCODE_CONFIG_CONTENT: configContent(join(root, "app", "current", "extensions", "opencode"), { agent: "Birch", tokenFile }) };
+		expect(insideSession([config.dataDir], opencode, config, self)).toBeUndefined();
+		expect(claimToken(join(config.dataDir, "agents", "Birch"), birch, 60, self.alive)).toBe(true);
+		expect(insideSession([config.dataDir], opencode, config, self)).toBeUndefined();
+		// No config to check them against: they are taken as its own.
+		expect(insideSession([config.dataDir], own, undefined, self)).toBeUndefined();
+	});
+
+	it("a nested tool (a `claude -p` from an agent's shell) whose inherited token the outer live host claimed is inside that agent's session, before and after its own claim", () => {
+		const { root, config } = world();
+		const table = tools();
+		const self = { ...linux(table), self: 60 };
+		const atlas = join(config.dataDir, "agents", "Atlas");
+		const token = newToken();
+		claimToken(atlas, token, 77, self.alive);
+		expect(recordSession(config.dataDir, { agent: "Atlas", tool: "claude-code", pid: 77 }, linux(table))).toBe(true);
+		// Claude Code sets CLAUDE_PID to the nested one itself.
+		const env = { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token, CLAUDE_PID: "60" };
+		const outer = { agent: "Atlas", tool: "claude-code", via: "marker", dataDir: config.dataDir };
+		expect(insideSession([config.dataDir], env, config, self)).toEqual(outer);
+		expect(claimToken(atlas, token, 60, self.alive)).toBe(false);
+		expect(insideSession([config.dataDir], env, config, self)).toEqual(outer);
+		// OpenCode's token file, claimed by another live process.
+		const home = { ORRERY_HOME: join(root, "home") };
+		const tokenFile = join(orreryHome(home), "tokens", "opencode-123-0123456789ab");
+		writePrivate(tokenFile, token);
+		const opencode = { ...home, OPENCODE_CONFIG_CONTENT: configContent(join(root, "app", "current", "extensions", "opencode"), { agent: "Atlas", tokenFile }) };
+		expect(insideSession([config.dataDir], opencode, config, self)).toEqual({ ...outer, tool: "opencode" });
+		// The outer host gone: its claim is dead, and the token the nested tool's own to take.
+		delete table[77];
+		expect(insideSession([config.dataDir], env, config, self)).toBeUndefined();
+		// Ancestry is as without `self`: the walk starts above it.
+		expect(recordSession(config.dataDir, { agent: "Birch", tool: "pi", pid: 30 }, linux(table))).toBe(true);
+		expect(insideSession([config.dataDir], {}, config, { ...linux(table), self: 50 })).toEqual({ agent: "Birch", tool: "pi", via: "ancestry", dataDir: config.dataDir });
+	});
+
+	it("a nested tool that inherited another live Codex's thread id is inside a session of unknown identity, unless a token proves whose", () => {
+		const { config } = world();
+		const table = tools();
+		const self = { ...linux(table), self: 60 };
+		expect(recordSession(config.dataDir, { agent: "Birch", tool: "codex", pid: 88, codexSession: "019a-thread" }, linux(table))).toBe(true);
+		expect(insideSession([config.dataDir], { CODEX_THREAD_ID: "019a-thread" }, config, self)).toEqual({ agent: undefined, tool: "codex", via: "marker", dataDir: config.dataDir });
+		const token = newToken();
+		claimToken(join(config.dataDir, "agents", "Birch"), token, 88, self.alive);
+		expect(insideSession([config.dataDir], { CODEX_THREAD_ID: "019a-thread", ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: token }, config, self)).toEqual({ agent: "Birch", tool: "codex", via: "marker", dataDir: config.dataDir });
+	});
+});
+
 describe("nestedNotice", () => {
 	it("names the outer session's agent and tool, or says an agent's, and leaves out a tool it doesn't know", () => {
 		const inside = (agent: string | undefined, tool: SessionTool | undefined): Inside => ({ agent, tool, via: "ancestry", dataDir: "/data" });

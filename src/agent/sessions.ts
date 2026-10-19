@@ -34,6 +34,13 @@
  * a config nothing can be checked, so any marker (ORRERY_AGENT, ORRERY_AGENT_TOKEN, CLAUDE_PID, a Codex id, or an
  * OPENCODE_CONFIG_CONTENT naming Orrery's plugin) is a session of unknown identity.
  *
+ * A tool asking whether it was itself started inside a session (`self`, its host process) carries its own launch's
+ * markers: the ORRERY_AGENT and token its launcher gave it, OpenCode's config, its own CLAUDE_PID or Codex thread id.
+ * For it a marker counts only when it points at another live process: a token claimed by a live process other than
+ * `self` (an unclaimed one, one whose claimant is dead, or its own claim is its own launch's, so asking before or after
+ * claiming gives one answer), a record whose pid isn't `self`. The walk starts above `self`, and passes it over, so its
+ * own record never matches. Without a config its markers are taken as its own: such a tool opens no memory anyway.
+ *
  * Nothing here throws: a record that can't be written makes recordSession false, for its caller to say so, and a
  * folder or file that can't be read holds no session.
  * Node built-ins and relative imports only: pi and OMP load this file.
@@ -92,8 +99,14 @@ export interface SessionDeps {
 	readonly alive?: (pid: number) => boolean;
 	/** Which system's way to ask: Linux's, macOS's, or none elsewhere (default this one's). */
 	readonly platform?: NodeJS.Platform;
-	/** insideSession: the process whose ancestors are walked (default this one). */
+	/** insideSession: the process whose ancestors are walked (default `self`, else this one). */
 	readonly from?: number;
+	/**
+	 * insideSession, asked by a tool about its own session (pi's or OMP's extension, Claude Code's or Codex's hooks, the
+	 * OpenCode plugin, `orrery run`): the tool's host process. Its own launch's markers are then no evidence (module doc);
+	 * unset for the CLI.
+	 */
+	readonly self?: number;
 }
 
 /** The folder in a data folder that holds session records. */
@@ -309,9 +322,9 @@ export function forgetSession(dataDir: string, pid: number): void {
 const MARKERS = [AGENT_ENV, TOKEN_ENV, "CLAUDE_PID", "CODEX_THREAD_ID", "CODEX_SESSION_ID"] as const;
 
 /**
- * The session this process (or deps.from) runs in: the nearest ancestor recorded in any of `dataDirs`, else what the
- * markers in `env` say for `config`'s data folder; with no config, any marker is a session of unknown identity (module
- * doc). Undefined: no session.
+ * The session this process (or deps.from, or deps.self) runs in: the nearest ancestor recorded in any of `dataDirs`,
+ * else what the markers in `env` say for `config`'s data folder; with no config, any marker is a session of unknown
+ * identity, except to a tool asking with `self` (module doc). Undefined: no session.
  */
 export function insideSession(dataDirs: readonly string[], env: NodeJS.ProcessEnv, config: HarnessConfig | undefined, deps: SessionDeps = {}): Inside | undefined {
 	const seen = new Set<string>();
@@ -324,7 +337,9 @@ export function insideSession(dataDirs: readonly string[], env: NodeJS.ProcessEn
 	}
 	// No records anywhere: no walk (and on macOS no ps).
 	if (recorded.length > 0) {
-		for (const pid of ancestors(deps.from ?? process.pid, deps)) {
+		for (const pid of ancestors(deps.from ?? deps.self ?? process.pid, deps)) {
+			// A tool's own record, above a process it started (`from`), is no outer session.
+			if (pid === deps.self) continue;
 			for (const { dataDir, pids } of recorded) {
 				const record = pids.has(pid) ? liveSession(dataDir, pid, deps) : undefined;
 				if (record !== undefined) return { agent: record.agent, tool: record.tool, via: "ancestry", dataDir };
@@ -332,6 +347,8 @@ export function insideSession(dataDirs: readonly string[], env: NodeJS.ProcessEn
 		}
 	}
 	if (config !== undefined) return byMarkers(config, env, deps);
+	// A tool's markers with nothing to check them against are its own launch's, as far as anyone can tell.
+	if (deps.self !== undefined) return undefined;
 	// Nothing to check markers against: any of them is a session, whose agent nobody can say.
 	const marked = MARKERS.some((key) => (env[key]?.trim() ?? "") !== "") || orreryPluginOptions(env.OPENCODE_CONFIG_CONTENT).length > 0;
 	return marked ? { agent: undefined, tool: undefined, via: "marker", dataDir: dataDirs[0] ?? "" } : undefined;
@@ -351,33 +368,39 @@ interface Mark {
 function byMarkers(config: HarnessConfig, env: NodeJS.ProcessEnv, deps: SessionDeps): Inside | undefined {
 	const dataDir = config.dataDir;
 	const alive = deps.alive ?? processAlive;
+	const self = deps.self;
 	const marks: Mark[] = [];
 	// Records: a session, and an agent that stands only when a token proves it too (CLAUDE_PID and Codex ids are public).
-	const claude = liveSession(dataDir, Number(env.CLAUDE_PID), deps);
+	// A tool's own record is no outer session.
+	const claudePid = Number(env.CLAUDE_PID);
+	const claude = claudePid === self ? undefined : liveSession(dataDir, claudePid, deps);
 	if (claude?.tool === "claude-code") marks.push({ names: claude.agent, tool: claude.tool });
 	const codexIds = [env.CODEX_THREAD_ID, env.CODEX_SESSION_ID].filter((id) => id !== undefined && id !== "");
 	if (codexIds.length > 0) {
 		for (const record of liveSessions(dataDir, deps)) {
-			if (record.codexSession !== undefined && codexIds.includes(record.codexSession)) marks.push({ names: record.agent, tool: record.tool });
+			if (record.pid !== self && record.codexSession !== undefined && codexIds.includes(record.codexSession)) marks.push({ names: record.agent, tool: record.tool });
 		}
 	}
-	// A name alone says there is a session; its token, claimed by a live process in the agent's claims, says whose.
+	// A name alone says there is a session; its token, claimed by a live process in the agent's claims, says whose. To a
+	// tool asking about itself, a token no other live process claimed is its own launch's, and no marker at all.
 	const claimant = (agent: AgentConfig, token: string | undefined): number | undefined => {
 		const pid = token === undefined ? undefined : claimedBy(agent.dir, token);
-		return pid !== undefined && alive(pid) ? pid : undefined;
+		return pid !== undefined && pid !== self && alive(pid) ? pid : undefined;
 	};
 	const name = env[AGENT_ENV]?.trim();
 	const named = name ? agentNamed(config, name) : undefined;
 	if (named !== undefined) {
 		const pid = claimant(named, env[TOKEN_ENV]);
-		marks.push(pid === undefined ? { tool: undefined } : { proves: named.name, tool: liveSession(dataDir, pid, deps)?.tool });
+		if (pid !== undefined) marks.push({ proves: named.name, tool: liveSession(dataDir, pid, deps)?.tool });
+		else if (self === undefined) marks.push({ tool: undefined });
 	}
 	for (const given of orreryPluginOptions(env.OPENCODE_CONFIG_CONTENT)) {
 		const options = readPluginOptions(given);
 		if ("problem" in options) continue;
 		const agent = agentNamed(config, options.agent);
 		if (agent === undefined) continue;
-		marks.push(claimant(agent, launchToken(options.tokenFile, env)) === undefined ? { tool: "opencode" } : { proves: agent.name, tool: "opencode" });
+		if (claimant(agent, launchToken(options.tokenFile, env)) !== undefined) marks.push({ proves: agent.name, tool: "opencode" });
+		else if (self === undefined) marks.push({ tool: "opencode" });
 	}
 	if (marks.length === 0) return undefined;
 	// One agent proven, and no record naming another.
