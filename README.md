@@ -269,8 +269,12 @@ orrery install --rollback  # go back to the previous version
 orrery uninstall           # remove the program; memory, config and logins stay
 ```
 
-Agents that are open keep their version until they restart. The Agents page says when one is waiting, and the pi, OMP,
-Claude Code, Codex or OpenCode session says once: "Orrery was updated to 0.6.2; restart this session to use it." Orrery
+Agents that are open keep their version until they restart. An update says `Restart open agent sessions now: sessions
+left open across the update aren't recorded until they restart.`: a Claude Code or Codex session left open may stop
+being recorded, or be recorded without the new checks, until it restarts (the [Claude
+Code](docs/claude-code.md#install-once-per-machine) and [Codex](docs/codex.md#troubleshooting) guides say exactly
+what happens). The Agents page says when one is waiting, and the pi, OMP, Claude Code, Codex or OpenCode session says
+once: "Orrery was updated to 0.6.2; restart this session to use it." Orrery
 checks for a new release at most once a day, shared by the TUI and every agent's session (pi, OMP, OpenCode, and the
 recorder of Claude Code and Codex sessions); the TUI header and each session then say once that it is out. A session
 never waits on the check: it shows what the last one found, and a newer answer when it comes. The check is one request to `github.com`,
@@ -353,7 +357,8 @@ only:
 - `help` and `--version`;
 - `status`, `usage` and `browse` (without `--out`), for the agent itself and the agents it may read;
 - `compactor` for the agent itself: it shows the summary model and switches among the sign-ins, keys and local
-  servers already saved, with no new sign-in (so `/orrery:compactor` keeps working);
+  servers already saved, with no new sign-in (so `/orrery:compactor` keeps working). An agent may therefore switch
+  its own summary model to any provider already in your config and logins, but it can add no provider and no login;
 - the commands the plugins run, for the session's own agent.
 
 Everything else is refused, with a message that says to run it in your own terminal or the TUI: `orrery agent` (open,
@@ -419,8 +424,9 @@ through its shell, one plain `cat`, `head`, `tail`, `sed -n`, `ls` or `wc` of sk
 around it; the [architecture guide](docs/architecture.md#the-credential-guard) lists the known limits, and
 [Codex's](docs/codex.md#its-limits-in-codex) and [OpenCode's](docs/opencode.md#its-limits-in-opencode) guides the ones
 that are their own. The session rules above are a seatbelt too: an agent that deliberately detaches a process from
-its session, clears its markers and hides Orrery's name from the guard can still run any `orrery` command, and a
-process of yours can still write into a tool's own records. Only an operating-system sandbox closes that; the
+its session, clears or sidesteps its markers (pointing `ORRERY_CONFIG` at a scratch config, say) and hides Orrery's
+name from the guard can still run any `orrery` command, and a process of yours can still write into a tool's own
+records. Only an operating-system sandbox closes that; the
 [limits](docs/architecture.md#limits) are listed in full.
 
 Logins are kept in private files (mode 0600), never in the config. Your agents' memory on disk is not encrypted;

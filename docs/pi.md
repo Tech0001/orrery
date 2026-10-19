@@ -299,7 +299,9 @@ still applies to it. Close the first one, or work in it.
   See the README's Safety.
 - A pi started from an agent's session (`pi -p` in its bash, in its folder or another agent's) opens no memory and
   records nothing, and says so (`Orrery: started inside Atlas's session (pi), so this one opens no memory and records
-  nothing.`); its guard keeps that agent's rules, and in another agent's folder both agents' rules at once.
+  nothing.`); its guard keeps that agent's rules, and in another agent's folder both agents' rules at once. pi
+  decides this once per run: such a pi stays without memory for the rest of its run (after `/new`, or once that
+  agent's session has ended), and a pi started outside any agent's session is never made nested later.
 - bash text that names Claude Code's or Codex's session records (`~/.claude/projects`, `~/.codex/sessions`) is refused,
   and no tool writes there: Orrery checks those tools' prompts against them. `read` may read them.
 - The guard knows pi's built-in tools only. Tools added by other pi packages (for example context-mode's

@@ -353,7 +353,7 @@ Codex's ids, so there `orrery` runs only `help` and the version.
 | `help`, `--help`, `--version` | runs |
 | `status`, `usage` (a name, `.`, or none) | the agent itself and the agents it may read; with no name, only those rows |
 | `browse <Name>` or `.` (`--open`; not `--out`) | the agent itself and the agents it may read |
-| `compactor .` or the agent's own name | shows, and switches among the sign-ins, keys and local servers already saved; no new sign-in |
+| `compactor .` or the agent's own name | shows, and switches the agent's own summary model among the providers, sign-ins, keys and local servers already saved; no new provider or sign-in |
 | `mcp`, `claude-mod`, `holder` | the plugins' own commands, for the session's own agent only |
 | everything else, and the TUI | refused |
 
@@ -379,8 +379,9 @@ started inside Atlas's session (Claude Code), so this one opens no memory and re
 the agent, not the person. Its guard stays on with the outer agent's rules, and where it runs in another agent's folder,
 with both agents' rules at once (only what both allow). pi's and OMP's extension, Claude Code's hooks, MCP server and
 mod, Codex's hooks and MCP server, OpenCode's plugin and `orrery run` all check, keyed by data folder as the CLI is, so
-tests that start real tools against a scratch home are not affected. Claude Code, Codex and OpenCode decide once per
-process, so a nested session stays nested after the outer one ends. A tool started without Orrery loaded at all (a
+tests that start real tools against a scratch home are not affected. Every tool decides once per process (pi and OMP
+too, through `/new`, subagents and reloads), so a nested session stays nested after the outer one ends, and one
+started outside stays outside. A tool started without Orrery loaded at all (a
 plain `codex exec`) is beyond Orrery's reach, and has no agent's memory anyway.
 
 ### Prompts checked against the tool's record
@@ -428,10 +429,18 @@ files; only an operating-system sandbox closes what follows. They stop the reali
 command it was told to run.
 
 - An agent that detaches a process from its session (`setsid`, a running tmux server, `systemd-run`, `at`, cron, or a
-  new process space such as `unshare -p` or bubblewrap), clears the markers, and hides Orrery's name from the guard (a
-  name built at run time, a wildcard-only glob, a script file) can still run any `orrery` command. Inside Codex's
-  sandbox, clearing the markers and hiding the name is enough, with no detach, and reads of other agents may work there.
+  new process space such as `unshare -p` or bubblewrap), clears or sidesteps the markers (pointing `ORRERY_CONFIG` at a
+  scratch config, say), and hides Orrery's name from the guard (a name built at run time, a wildcard-only glob, a
+  script file) can still run any `orrery` command. Inside Codex's sandbox, clearing or sidestepping the markers and
+  hiding the name is enough, with no detach, and reads of other agents may work there.
 - A tool's `!` passthrough is the agent's shell: a command the person types there is refused like the agent's.
+- `orrery compactor` for the session's own agent runs inside it, by design (so `/orrery:compactor` works): an agent can
+  switch its own summary model among the providers, sign-ins and keys already saved in the config. It can add no
+  provider and no login.
+- Sessions left open across an update: Claude Code sessions opened with `orrery agent` keep recording through the
+  previous version's recorder, without the transcript check, until their next session start; other Claude Code
+  sessions record nothing until they restart; a Codex session records nothing, or only through the previous version's
+  recorder without the rollout check, until it restarts ([Claude Code](claude-code.md), [Codex](codex.md)).
 - Same-user writes the guard doesn't see by name: a line appended to a Claude Code transcript or, under Codex's full
   access, a rollout; session records planted or deleted; keystrokes sent into the agent's terminal (tmux `send-keys`),
   which look typed by every check.

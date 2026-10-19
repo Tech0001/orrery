@@ -49,6 +49,14 @@ recorder makes the daily check in the background (README, Updating and uninstall
 answer. Both notices are messages to you, not the model. Without that
 launcher the hooks do nothing: they exit quietly and print nothing. Claude Code then lists the `orrery` MCP server as failed to connect.
 
+**Sessions open across the update to 0.9.0.** The update says `Restart open agent sessions now: sessions left open
+across the update aren't recorded until they restart.` Restart them. Until then:
+
+- a session opened with `orrery agent <Name>` (it has a launch token) keeps recording through the previous version's
+  recorder, without the transcript check, until its next session start;
+- a session the folder picked, or one started with `ORRERY_AGENT` but no token, stops recording, and says so once at
+  a prompt or a turn's end: `Orrery was updated while this session was open; restart it to keep recording.`
+
 After a change to `claude-plugin/` itself, bump `version` in `claude-plugin/.claude-plugin/plugin.json` (a fixed
 version can keep a cached copy), then refresh the copy Claude Code installed. `claude plugin update orrery@orrery`
 may do it in one step; otherwise:
@@ -459,6 +467,8 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
 - `/orrery:compactor` for an agent pi holds: use `/compactor` in pi.
 - "can't check who calls its hooks here" or "can't confirm prompts in this Claude Code version": see Daily use; the
   session is not recorded.
+- "Orrery was updated while this session was open; restart it to keep recording.": restart the session (see Install,
+  once per machine).
 - "unconfirmed messages not recorded" in `orrery status`: prompts the transcript never showed as yours. A prompt whose
   words in the transcript differ from what the hook got is counted there too.
 - "can't run inside an agent session" from a `!` command or the model's Bash: run that command in another terminal;
@@ -503,8 +513,9 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
   guide](architecture.md#limits) lists the session rules' limits in full.
 - The `/orrery:*` command events are not checked against the transcript: an injected one can only drop the agent's
   own reply.
-- Sessions started before an update to 0.9.0 with `ORRERY_AGENT` but no token record nothing until their next
-  session start: restart them.
+- Sessions left open across the update to 0.9.0: one opened with `orrery agent` keeps recording without the
+  transcript check until its next session start, and the others stop recording until they restart (see Install,
+  once per machine).
 - On macOS the caller check (`LOCAL_PEERPID`) is not yet verified with a real Claude Code.
 
 For launching this tool through Ori, see [Ori](ori.md).

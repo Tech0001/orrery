@@ -255,8 +255,9 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
   that would make it possible (see What happens at launch).
 - **A name built from a variable** (`f=.en; cat ${f}v`), read from a file, or printed by another program gets through
   the shell-text rules, as in every tool.
-- **Inside the sandbox, no detach is needed.** An agent that clears the session's markers in its sandboxed shell and
-  hides Orrery's name from the guard can run any `orrery` command there, and reads of other agents may work.
+- **Inside the sandbox, no detach is needed.** An agent that clears or sidesteps the session's markers in its
+  sandboxed shell (pointing `ORRERY_CONFIG` at a scratch config, say) and hides Orrery's name from the guard can run
+  any `orrery` command there, and reads of other agents may work.
 - **Under full access, a rollout can be written.** Codex's workspace-write sandbox keeps the shell out of its session
   files; with full access (`--dangerously-bypass-approvals-and-sandbox`, or `danger-full-access`) a program that
   appends to a rollout can fake a turn Orrery then records.
@@ -299,10 +300,15 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
 - "doesn't record who started a turn; Orrery needs Codex 0.162.1 or later": update Codex.
 - "unconfirmed messages not recorded" in `orrery status`: prompts or replies the rollout never confirmed, such as
   words that came from outside your own turns.
-- After updating Orrery, restart open Codex sessions. One started before the update keeps recording through its old
-  recorder, without the rollout check, until that recorder exits; its own compaction doesn't bring the check in, a
-  `/clear` or a restart does. Prompts and replies the old version queued but had not saved are dropped and counted, as
-  far as Orrery can tell them apart.
+- After updating Orrery, restart open Codex sessions; the update says `Restart open agent sessions now: sessions left
+  open across the update aren't recorded until they restart.` A Codex session open across the update to 0.9.0 records
+  nothing until its next session start (a compaction, `/clear` or resume), and after that the previous version's
+  recorder, while it still runs, records it without the rollout check. Prompts and replies the old version queued but
+  had not saved are dropped and counted, as far as Orrery can tell them apart.
+- `Orrery: this Codex hasn't started or resumed a session yet, and only those claim <Name>'s token, so this session
+  runs without memory. Resume it, or open <Name> with orrery agent <Name> --tool codex.`: the first session start
+  Orrery saw in this Codex was a compaction, `/clear` or a fork, which don't claim the agent's token, and nothing holds
+  it. Resume the session (`orrery agent <Name> --tool codex -- resume`), or open the agent again.
 - `orrery status .` or `browse` refused in the agent's shell, "only help and the version run": that is Codex's
   sandbox (see The guard). Run them in your own terminal.
 - Summaries failing: check `orrery login`; switch the source with `orrery compactor <Name>`.

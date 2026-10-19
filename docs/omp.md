@@ -82,8 +82,10 @@ Everything in [pi.md](pi.md)'s Daily use holds, with these differences:
 - With `/collab` and write access, a guest you invited can send prompts that are recorded as yours: the invitation is
   yours to give.
 - An OMP started from an agent's session (from its `bash`, in its folder or another agent's) opens no memory and
-  records nothing, and says so; its guard keeps that agent's rules. `orrery` run from the agent's `bash` (or a `!`
-  command you type) runs only what reads, as in pi: see the README's Safety.
+  records nothing, and says so; its guard keeps that agent's rules. As in pi, this is decided once per run: such an
+  OMP stays without memory after `/new`, in its subagents and after a reload, even once that agent's session has
+  ended. `orrery` run from the agent's `bash` (or a `!` command you type) runs only what reads, as in pi: see the
+  README's Safety.
 - The reader tools (`agents`, `agent_memory`) come once per run, as in pi: an OMP that first opened an agent with no
   reads gets them only after a restart.
 
