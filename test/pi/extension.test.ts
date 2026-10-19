@@ -281,16 +281,20 @@ describe("an agent named by ORRERY_AGENT", () => {
 		expect(existsSync(join(root, "data", "agents", "Atlas"))).toBe(false);
 	});
 
-	it("a pi the agent started (same variables, another process) gets its folder's agent, or none", async () => {
+	it("a pi the agent started (same variables, another process) is inside the agent's session: no agent's memory, in another agent's folder or a plain one (spec 2026-10-18-agent-permissions §3b)", async () => {
 		const { root, config } = world();
 		const env = { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: newToken() };
 		const parent = await pi(root, join(root, "plain"), config, undefined, { env, owner: process.pid });
 		expect(parent.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
+		const nested = "Orrery: started inside Atlas's session (pi), so this one opens no memory and records nothing.";
 		const inBirch = await pi(root, join(root, "agent-Birch"), config, undefined, { env, owner: process.ppid });
-		expect(inBirch.status("orrery")).toBe("Orrery · Birch · 0 msgs");
+		expect(inBirch.status("orrery")).toBeUndefined();
+		expect(inBirch.tool("zoom")).toBeUndefined();
+		expect(inBirch.notices).toEqual([{ type: "warning", message: nested }]);
+		expect(existsSync(join(root, "data", "agents", "Birch"))).toBe(false);
 		const inPlain = await pi(root, join(root, "plain"), config, undefined, { env, owner: process.ppid });
 		expect(inPlain.tool("zoom")).toBeUndefined();
-		expect(inPlain.notices).toEqual([]);
+		expect(inPlain.notices).toEqual([{ type: "warning", message: nested }]);
 	});
 
 	it("resuming a session recorded in another agent's folder copies none of its turns, only what comes after", async () => {

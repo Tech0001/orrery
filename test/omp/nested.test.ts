@@ -1,0 +1,174 @@
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { parseConfig } from "../../src/agent/config.ts";
+import { agentModelSource } from "../../src/agent/model-source.ts";
+import { forgetSession, liveSession, recordSession, type SessionTool } from "../../src/agent/sessions.ts";
+import { Holder } from "../../src/claude/holder.ts";
+import { createOrrery } from "../../src/pi/index.ts";
+import { fauxModels } from "../agent/support.ts";
+import { cleanup, scratchHome, world } from "../pi/world.ts";
+import { type FakeOmp, fakeOmp, ompCleanup, ompOrrery, track } from "./world.ts";
+
+const recorded: { dataDir: string; pid: number }[] = [];
+afterEach(async () => {
+	for (const { dataDir, pid } of recorded.splice(0)) forgetSession(dataDir, pid);
+	await ompCleanup();
+	await cleanup();
+});
+
+/** The pi world (Atlas and Birch), with Atlas allowed one more folder, `shared`, and no other (see test/pi/nested.test.ts). */
+function nestedWorld() {
+	const { root, configPath } = world();
+	mkdirSync(join(root, "shared"));
+	const toml = readFileSync(configPath, "utf8").replace("[agents.Atlas]\n", `[agents.Atlas]\nallowed_roots = [${JSON.stringify(join(root, "shared"))}]\n`);
+	const config = parseConfig(toml, root);
+	return { root, config, dataDir: config.dataDir };
+}
+
+function hostRecord(dataDir: string, agent: string, tool: SessionTool, pid: number): void {
+	expect(recordSession(dataDir, { agent, tool, pid })).toBe(true);
+	recorded.push({ dataDir, pid });
+}
+
+const hosts = (dataDir: string): string[] => (existsSync(join(dataDir, "session-hosts")) ? readdirSync(join(dataDir, "session-hosts")) : []);
+const write = async (omp: FakeOmp, path: string) => (await omp.emit("tool_call", { toolName: "write", toolCallId: "t1", input: { path, content: "x" } }))[0];
+const refusedOutside = { block: true, reason: expect.stringMatching(/outside/) };
+
+/** One turn as OMP runs it (test/omp/extension.test.ts). */
+async function turn(omp: FakeOmp, user: string, reply: string) {
+	omp.say("user", user);
+	const [result] = await omp.emit("before_agent_start", { prompt: user, systemPrompt: ["OMP base"] });
+	omp.say("assistant", reply);
+	await omp.emit("message_end", { message: {} });
+	await omp.emit("agent_end", { messages: [] });
+	return result;
+}
+
+/** /resume of a saved session from `cwd`: OMP moves the session there, then says session_switch "resume". */
+async function resume(omp: FakeOmp, cwd: string, id: string) {
+	omp.cwd = cwd;
+	omp.session = { id, entries: [] };
+	await omp.emit("session_switch", { reason: "resume", previousSessionFile: "/sessions/s1.jsonl" });
+}
+
+describe("an OMP started inside an agent's session (spec 2026-10-18-agent-permissions §3b)", () => {
+	it("under a recorded ancestor: no memory, no tools, nothing recorded, one notice, the outer agent's guard; a switch or a move keeps it so", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		hostRecord(dataDir, "Atlas", "pi", process.ppid);
+		const omp = await ompOrrery(join(root, "agent-Birch"), config);
+		expect(omp.notices).toEqual([{ type: "warning", message: "Orrery: started inside Atlas's session (pi), so this one opens no memory and records nothing." }]);
+		expect(omp.tools.size).toBe(0);
+		expect(omp.status("orrery")).toBeUndefined();
+		// Atlas's rules in Birch's folder: the folder, and Atlas's one allowed root; not Birch's root (the world's folder).
+		expect(await write(omp, join(root, "agent-Birch", "x.txt"))).toBeUndefined();
+		expect(await write(omp, join(root, "shared", "x.txt"))).toBeUndefined();
+		expect(await write(omp, join(root, "plain", "x.txt"))).toEqual(refusedOutside);
+		expect(await turn(omp, "Question.", "Answer.")).toBeUndefined();
+		await omp.run("orrery");
+		expect(omp.notices.at(-1)).toEqual({ message: "Orrery: no agent memory is open in this OMP", type: "warning" });
+
+		// /resume of a session in Atlas's own folder: still inside Atlas's session, its guard following the folder.
+		await resume(omp, join(root, "agent-Atlas"), "s2");
+		expect(omp.tools.size).toBe(0);
+		expect(await write(omp, join(root, "agent-Atlas", "x.txt"))).toBeUndefined();
+		expect(await write(omp, join(root, "agent-Birch", "x.txt"))).toEqual(refusedOutside);
+		// /move (no session event) into a plain folder: the next message finds it, and nothing opens.
+		omp.cwd = join(root, "plain");
+		expect(await turn(omp, "Moved.", "Answer.")).toBeUndefined();
+		expect(await write(omp, join(root, "plain", "y.txt"))).toBeUndefined();
+		expect(await write(omp, join(root, "agent-Atlas", "y.txt"))).toEqual(refusedOutside);
+
+		expect(omp.notices.filter((notice) => notice.message.includes("started inside"))).toHaveLength(1);
+		expect(existsSync(join(dataDir, "agents"))).toBe(false);
+		expect(existsSync(join(dataDir, "session-owners"))).toBe(false);
+		await omp.emit("session_shutdown");
+		expect(hosts(dataDir)).toEqual([`${process.ppid}.json`]);
+	});
+
+	it("an OMP subagent of a nested session gets the same guard and says nothing", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		hostRecord(dataDir, "Atlas", "pi", process.ppid);
+		const sub = await ompOrrery(join(root, "agent-Birch"), config, { agent: "sub" });
+		expect(sub.notices).toEqual([]);
+		expect(sub.tools.size).toBe(0);
+		expect(await write(sub, join(root, "plain", "x.txt"))).toEqual(refusedOutside);
+		expect(hosts(dataDir)).toEqual([`${process.ppid}.json`]);
+	});
+
+	it("pi's entry loaded in OMP (mismatched): nested, it says so instead and notes nothing", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		hostRecord(dataDir, "Atlas", "pi", process.ppid);
+		const omp = track(fakeOmp(join(root, "agent-Birch"), [createOrrery({ config, ...scratchHome(dirname(config.dataDir)) })]));
+		await omp.emit("session_start");
+		expect(omp.notices).toEqual([{ type: "warning", message: "Orrery: started inside Atlas's session (pi), so this one opens no memory and records nothing." }]);
+		expect(await write(omp, join(root, "plain", "x.txt"))).toEqual(refusedOutside);
+		await omp.emit("message_end", { message: {} });
+		await omp.emit("session_shutdown");
+		expect(existsSync(join(dataDir, "session-owners"))).toBe(false);
+		expect(hosts(dataDir)).toEqual([`${process.ppid}.json`]);
+	});
+});
+
+describe("an OMP session's host record (spec 2026-10-18-agent-permissions §2)", () => {
+	it("records OMP as the agent's host, follows a switch into another agent's folder (same pid), and forgets it when the session leaves agents", async () => {
+		const { root, config } = world();
+		const omp = await ompOrrery(join(root, "agent-Atlas"), config);
+		expect(omp.notices).toEqual([]);
+		expect(liveSession(config.dataDir, process.pid)).toMatchObject({ agent: "Atlas", tool: "omp", pid: process.pid });
+		await resume(omp, join(root, "agent-Birch"), "birch-1");
+		expect(omp.status("orrery")).toMatch(/^Orrery · Birch/);
+		expect(liveSession(config.dataDir, process.pid)).toMatchObject({ agent: "Birch", tool: "omp", pid: process.pid });
+		expect(hosts(config.dataDir)).toEqual([`${process.pid}.json`]);
+		await resume(omp, join(root, "plain"), "plain-1");
+		expect(liveSession(config.dataDir, process.pid)).toBeUndefined();
+		// Back into an agent's folder by /move: the next message opens it, and records the host again.
+		omp.cwd = join(root, "agent-Atlas");
+		await turn(omp, "Back.", "Yes.");
+		expect(liveSession(config.dataDir, process.pid)).toMatchObject({ agent: "Atlas", tool: "omp" });
+		await omp.emit("session_shutdown");
+		expect(liveSession(config.dataDir, process.pid)).toBeUndefined();
+	});
+
+	it("a switch into an agent held elsewhere records that agent, which this OMP runs without memory", async () => {
+		const { root, config } = world();
+		const birch = config.agents.get("Birch")!;
+		const holder = await Holder.start({ agent: birch, session: "s1", claudePid: 111, nonce: "n", models: agentModelSource(fauxModels().models), alive: () => true, tickMs: 20 });
+		try {
+			const omp = await ompOrrery(join(root, "agent-Atlas"), config);
+			await resume(omp, join(root, "agent-Birch"), "birch-1");
+			expect(omp.notices).toContainEqual({ message: "Birch is open in Claude Code; this OMP runs without memory.", type: "warning" });
+			expect(omp.tools.size).toBe(3); // registered once per runtime, when Atlas opened
+			expect(liveSession(config.dataDir, process.pid)).toMatchObject({ agent: "Birch", tool: "omp" });
+			await omp.emit("session_shutdown");
+			expect(liveSession(config.dataDir, process.pid)).toBeUndefined();
+		} finally {
+			await holder?.stop("test over");
+		}
+	});
+
+	it("an ORRERY_AGENT session keeps its record wherever OMP moves it", async () => {
+		const { root, config } = world();
+		const omp = await ompOrrery(join(root, "plain"), config, { env: { ORRERY_AGENT: "Atlas" } });
+		expect(liveSession(config.dataDir, process.pid)).toMatchObject({ agent: "Atlas", tool: "omp" });
+		await resume(omp, join(root, "agent-Birch"), "s2");
+		expect(liveSession(config.dataDir, process.pid)).toMatchObject({ agent: "Atlas", tool: "omp" });
+	});
+
+	it("a subagent records nothing, and its end leaves the main session's record", async () => {
+		const { root, config } = world();
+		await ompOrrery(join(root, "agent-Atlas"), config);
+		const sub = await ompOrrery(join(root, "agent-Atlas"), config, { agent: "sub" });
+		await sub.emit("session_shutdown");
+		expect(liveSession(config.dataDir, process.pid)).toMatchObject({ agent: "Atlas", tool: "omp" });
+	});
+
+	it("pi's entry loaded in OMP records OMP as the folder agent's host, and forgets it at shutdown", async () => {
+		const { root, config } = world();
+		const omp = track(fakeOmp(join(root, "agent-Atlas"), [createOrrery({ config, ...scratchHome(dirname(config.dataDir)) })]));
+		await omp.emit("session_start");
+		expect(liveSession(config.dataDir, process.pid)).toMatchObject({ agent: "Atlas", tool: "omp" });
+		await omp.emit("session_shutdown");
+		expect(liveSession(config.dataDir, process.pid)).toBeUndefined();
+	});
+});

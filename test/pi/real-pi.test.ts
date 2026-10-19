@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
-import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { installFrom, listVersions, removeVersion } from "../../src/install/install.ts";
 import { newToken } from "../../src/agent/pick.ts";
+import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
 import { readStatus } from "../../src/agent/status-file.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { assertPiWhenRequired, builtRelease, changedSince, installRelease, REPO, releaseReady, removeBuiltRelease } from "../release/support.ts";
@@ -299,6 +300,8 @@ describe.skipIf(pi === null)("ORRERY_AGENT inside a real pi", () => {
 					await tool.send({ type: "prompt", message: "Said by a tool the agent started." });
 					await tool.waitFor((f) => f.type === "agent_end");
 					expect(tool.frames.filter((f) => f.method === "setStatus" && f.statusKey === "orrery")).toEqual([]);
+					// Inside the agent's session by its markers (the token the agent's pi claimed): spec 2026-10-18-agent-permissions §3b.
+					expect(tool.frames).toContainEqual(expect.objectContaining({ method: "notify", message: "Orrery: started inside Probe's session (pi), so this one opens no memory and records nothing." }));
 				} finally {
 					await stop(tool);
 				}
@@ -309,6 +312,75 @@ describe.skipIf(pi === null)("ORRERY_AGENT inside a real pi", () => {
 			}
 			expect(readStatus(agentDir)?.open).toBe(false);
 		} finally {
+			model.close();
+			rmSync(root, { recursive: true, force: true });
+		}
+	}, 90_000);
+});
+
+/**
+ * spec 2026-10-18-agent-permissions §3b: a real pi started from a process recorded as an agent's session (here this test's
+ * own process, recorded as Probe's Claude Code in the scratch data folder) opens no memory, in Probe's own folder too, and
+ * says why. Its environment is the scratch one: no marker reaches it, only its ancestry.
+ */
+describe.skipIf(pi === null)("a pi started inside an agent's session, as a real pi", () => {
+	it("gets the notice and no memory, and records nothing", async () => {
+		const root = mkdtempSync(join(tmpdir(), "orrery-nested-pi-"));
+		const model = await fakeModel("pong");
+		const data = join(root, "data");
+		try {
+			const home = join(root, "home");
+			const folder = join(root, "agent-Probe");
+			const piAgentDir = join(home, ".pi", "agent");
+			const orreryHome = join(home, ".orrery");
+			for (const dir of [piAgentDir, folder, orreryHome]) mkdirSync(dir, { recursive: true });
+			writeModels(piAgentDir, "pi", model.baseUrl);
+			writeFileSync(
+				join(orreryHome, "config.toml"),
+				[
+					`data_dir = ${JSON.stringify(data)}`,
+					"[[providers]]",
+					'id = "local"',
+					`base_url = ${JSON.stringify(model.baseUrl)}`,
+					"[[providers.models]]",
+					'id = "m"',
+					'name = "m"',
+					"context_window = 128000",
+					"max_tokens = 4096",
+					"reasoning = false",
+					"[agents.Probe]",
+					`folder = ${JSON.stringify(folder)}`,
+					'tool = "pi"',
+					'compactor_model = "local/m"',
+					'compactor_thinking = "off"',
+					"",
+				].join("\n"),
+				{ mode: 0o600 },
+			);
+			expect(recordSession(data, { agent: "Probe", tool: "claude-code", pid: process.pid })).toBe(true);
+			const env = { ...isolated(home), ORRERY_HOME: orreryHome, PI_CODING_AGENT_DIR: piAgentDir };
+			const child = spawn(pi as string, ["--mode", "rpc", "--provider", "local", "--model", "m", "--thinking", "off", "-ne", "-e", join(PI_DIR, "index.ts")], { cwd: folder, env });
+			const exited = new Promise<void>((done) => child.on("close", () => done()));
+			const { frames, send, waitFor, stderr } = rpc(child);
+			try {
+				await waitFor((f) => f.method === "notify" && f.message === "Orrery: started inside Probe's session (Claude Code), so this one opens no memory and records nothing.");
+				await send({ type: "prompt", message: "Said by a tool the agent started." });
+				await waitFor((f) => f.type === "agent_end");
+				expect(frames.filter((f) => f.method === "setStatus" && f.statusKey === "orrery")).toEqual([]);
+				const system = model.calls.find((call) => call.users.some((text) => text.includes("Said by a tool")))?.system ?? "";
+				expect(system).not.toContain("# Memory");
+				expect(`${stderr()}\n${JSON.stringify(frames)}`).not.toMatch(/Cannot find (package|module)|ResolveMessage/);
+			} finally {
+				child.stdin.end();
+				const stop = setTimeout(() => child.kill("SIGKILL"), 10_000);
+				await exited;
+				clearTimeout(stop);
+			}
+			expect(existsSync(join(data, "agents", "Probe"))).toBe(false);
+			expect(existsSync(join(data, "session-owners"))).toBe(false);
+			expect(readdirSync(join(data, "session-hosts"))).toEqual([`${process.pid}.json`]);
+		} finally {
+			forgetSession(data, process.pid);
 			model.close();
 			rmSync(root, { recursive: true, force: true });
 		}
