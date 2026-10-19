@@ -15,6 +15,18 @@ export const rollout = {
 	/** The first line: the session's own record, a person's own thread ("user": the TUI and `codex exec` alike). */
 	meta: (session: string) =>
 		JSON.stringify({ timestamp: at(), type: "session_meta", payload: { session_id: session, id: session, timestamp: at(), cwd: "/w", originator: "codex_exec", cli_version: "0.163.0", source: "exec", thread_source: "user" } }),
+	/**
+	 * The first line as an older Codex writes it (0.161.0, captured: `cli_version` its own; with `version` null, a line
+	 * that names no version at all).
+	 */
+	oldMeta: (session: string, version: string | null = "0.161.0") =>
+		JSON.stringify({
+			timestamp: at(),
+			type: "session_meta",
+			payload: { session_id: session, id: session, timestamp: at(), cwd: "/w", originator: "codex_exec", ...(version === null ? {} : { cli_version: version }), source: "exec", thread_source: "user", model_provider: "fake", history_mode: "paginated" },
+		}),
+	/** A turn's start as Codex 0.153.4 to 0.161.0 write it (captured): no `turn_attribution`, so nothing says who started it. */
+	oldStarted: (turnId: string) => event({ type: "task_started", turn_id: turnId, root_turn_id: turnId, started_at: 1, model_context_window: 258400, collaboration_mode_kind: "default" }),
 	/** The first line of a spawned agent's thread (spawn_agent), as 0.163.0 writes it. */
 	subagentMeta: (session: string, parent: string) =>
 		JSON.stringify({

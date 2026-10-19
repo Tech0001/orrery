@@ -5,8 +5,9 @@ An agent can run in Codex as well as in pi, OMP, Claude Code and OpenCode, on th
 its memory view at the start and after each compaction, the memory tools, and Orrery's guard on every tool call, and
 each turn is recorded into the agent's memory.
 
-Tested with Codex 0.163.0 (`codex --version` says `codex-cli 0.163.0`), whose session files Orrery reads to confirm
-what it records (see What's recorded).
+Needs Codex 0.162.1 or later (tested with 0.163.0: `codex --version` says `codex-cli 0.163.0`), whose session files
+Orrery reads to confirm what it records (see What's recorded). An older Codex doesn't record who started a turn, so a
+session in it is not recorded, and Orrery says so when it starts.
 
 ## Install
 

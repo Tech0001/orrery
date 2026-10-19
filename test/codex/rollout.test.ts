@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
-import { codexHome, confirmCodex, findRollout, holdsOpen, openFiles, parseLsof, parseRolloutMark, readerStart, RolloutReader, rolloutIn, rolloutThread } from "../../src/codex/rollout.ts";
+import { attributesTurns, codexHome, confirmCodex, findRollout, holdsOpen, MIN_CODEX, openFiles, parseLsof, parseRolloutMark, readerStart, RolloutReader, rolloutIn, rolloutThread } from "../../src/codex/rollout.ts";
 import { tempDir } from "../agent/support.ts";
 import { type CodexHome, codexHomeIn, codexSession, rollout } from "./rollout-lines.ts";
 
@@ -163,12 +163,37 @@ describe("codexHome and findRollout: a session's rollout, by its id, under Codex
 	});
 });
 
-describe("rolloutThread: a rollout's session_meta", () => {
-	it("says the session and the kind of thread: a person's own (user), or a spawned agent's (subagent)", () => {
+describe("an older Codex (before 0.162.1), whose turn starts don't say who started them", () => {
+	it("attributesTurns: 0.162.1 and later do; 0.153.4 to 0.162.0 don't; no version says nothing", () => {
+		for (const version of ["0.162.1", "0.163.0", "0.170.2-alpha.1", "1.0.0", " 0.162.1 "]) expect(attributesTurns(version), version).toBe(true);
+		for (const version of ["0.161.0", "0.153.4", "0.162.0", "0.9.99"]) expect(attributesTurns(version), version).toBe(false);
+		for (const version of [undefined, "", "v1", 162, null]) expect(attributesTurns(version), String(version)).toBeUndefined();
+		expect(MIN_CODEX).toBe("0.162.1");
+	});
+
+	it("its turns are never the person's, and readerStart says the running turn's start names no one", () => {
+		const lines = [rollout.oldStarted("t-1"), rollout.user("t-1", "Hello."), rollout.agent("t-1", "Hi."), rollout.complete("t-1", "Hi.")];
+		expect(confirmCodex(lines, { kind: "prompt", turnId: "t-1", text: "Hello." })).toBe("drop");
+		expect(confirmCodex(lines, { kind: "reply", turnId: "t-1", text: "Hi." })).toBe("drop");
 		const home = homeIn();
-		const [s1, sub] = [codexSession(), codexSession()];
-		expect(rolloutThread(home.begin(s1, { open: false }))).toEqual({ id: s1, threadSource: "user" });
-		expect(rolloutThread(home.begin(sub, { open: false, meta: rollout.subagentMeta(sub, s1) }))).toEqual({ id: sub, threadSource: "subagent" });
+		const [old, current] = [codexSession(), codexSession()];
+		const oldFile = home.begin(old, { meta: rollout.oldMeta(old) });
+		home.add(old, rollout.oldStarted("t-1"));
+		expect(readerStart(oldFile)).toMatchObject({ running: true, attributed: false });
+		const file = home.begin(current);
+		home.add(current, rollout.started("t-2", "user"));
+		expect(readerStart(file)).toMatchObject({ running: true, attributed: true });
+	});
+});
+
+describe("rolloutThread: a rollout's session_meta", () => {
+	it("says the session, the kind of thread (a person's own, user, or a spawned agent's, subagent), and the Codex that wrote it", () => {
+		const home = homeIn();
+		const [s1, sub, old, bare] = [codexSession(), codexSession(), codexSession(), codexSession()];
+		expect(rolloutThread(home.begin(s1, { open: false }))).toEqual({ id: s1, threadSource: "user", version: "0.163.0" });
+		expect(rolloutThread(home.begin(sub, { open: false, meta: rollout.subagentMeta(sub, s1) }))).toEqual({ id: sub, threadSource: "subagent", version: "0.163.0" });
+		expect(rolloutThread(home.begin(old, { open: false, meta: rollout.oldMeta(old) }))).toEqual({ id: old, threadSource: "user", version: "0.161.0" });
+		expect(rolloutThread(home.begin(bare, { open: false, meta: rollout.oldMeta(bare, null) }))).toEqual({ id: bare, threadSource: "user", version: undefined });
 	});
 
 	it("is none for a first line that is no session_meta, or not whole yet", () => {
@@ -234,7 +259,7 @@ describe("readerStart: where a session's rollout is read from, at its SessionSta
 		const done = readerStart(file);
 		expect(done?.running).toBe(false);
 		home.add(s1, rollout.started("t-2", "user"), rollout.responseUser("t-2", "Two."));
-		expect(readerStart(file)).toEqual({ offset: done?.offset, running: true });
+		expect(readerStart(file)).toEqual({ offset: done?.offset, running: true, attributed: true });
 		home.add(s1, rollout.aborted("t-2"));
 		const aborted = readerStart(file);
 		expect(aborted?.running).toBe(false);

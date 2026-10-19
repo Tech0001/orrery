@@ -24,7 +24,8 @@
  * 2026-10-18-agent-permissions §3c). So no event changes what such a call could abuse:
  * - SessionStart takes a session only when this Codex holds its rollout open, found by the session's id under Codex's
  *   own folder, and the rollout says it is a person's own thread (not a spawned agent's), before it decides, claims or
- *   records anything: no other process can name a session. Moving this Codex to another session than its host record
+ *   records anything: no other process can name a session. A Codex older than 0.162.1 doesn't say who started a turn,
+ *   so nothing of it could be confirmed: its session is refused, and said so. Moving this Codex to another session than its host record
  *   names takes a turn of that session running: Codex starts the turn before SessionStart (startup, /clear, /resume,
  *   /fork, `codex resume` and `codex fork` alike), so an earlier session it still holds open can't be named again. One
  *   this Codex's host record already names changes nothing (no record, no resume note, no new rollout place, the
@@ -52,7 +53,8 @@ import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
 import { MemoryStore, MemoryView } from "../memory/index.ts";
 import { codexAgent } from "./pick.ts";
 import { codexSessionOf, recordCodexSession } from "./resume.ts";
-import { codexHome, findRollout, holdsOpen, type OpenFile, readerStart, rolloutThread } from "./rollout.ts";
+import { readCodexCheck } from "./check.ts";
+import { attributesTurns, codexHome, findRollout, holdsOpen, MIN_CODEX, type OpenFile, readerStart, rolloutThread } from "./rollout.ts";
 
 /** The events `orrery codex-hook` records (pre-tool-use is the guard, src/codex/guard.ts). */
 export const CODEX_RECORD_EVENTS = ["session-start", "user-prompt-submit", "stop", "session-end"] as const;
@@ -206,27 +208,42 @@ interface OwnRollout {
 	readonly running: boolean;
 }
 
+/** A Codex too old to say who started a turn (before MIN_CODEX): its version, when it is known. */
+interface OldCodex {
+	readonly old: string | undefined;
+}
+
 /**
  * Session `session` as this Codex's own: its rollout, found by its id under Codex's folder (never where the input says),
- * a person's own thread by its session_meta, held open by this Codex's process; else why it can't be confirmed.
+ * a person's own thread by its session_meta, held open by this Codex's process; else why it can't be confirmed, or a
+ * Codex too old to confirm anything by. The version is the one the session_meta names, else the one the launch's check
+ * verified (src/codex/check.ts); with neither, the turn that brought the session on says whether it names who started it.
  */
-function ownRollout(session: string, ctx: CodexHookContext): OwnRollout | string {
+function ownRollout(session: string, ctx: CodexHookContext): OwnRollout | OldCodex | string {
 	const home = codexHome(ctx.env, ctx.home ?? homedir());
 	const path = findRollout(home, session);
 	if (path === undefined) return `no rollout of it under ${home}`;
 	const thread = rolloutThread(path);
 	if (thread?.id !== session) return "its rollout doesn't say it is this session";
 	if (thread.threadSource !== "user") return "it is no thread of the person's own, but a spawned agent's or another kind";
+	const version = attributesTurns(thread.version) === undefined ? launchCheckedCodex(ctx) : (thread.version as string);
+	if (attributesTurns(version) === false) return { old: version };
 	const file = holdsOpen(ctx.codexPid, path, ctx.openFiles);
 	if (file === "unknown") return "this system can't tell which files Codex has open";
 	if (file === false) return "Codex doesn't have its rollout open";
 	const start = readerStart(path);
 	if (start === undefined) return "its rollout can't be read";
+	if (attributesTurns(version) === undefined && start.attributed === false) return { old: undefined };
 	try {
-		return { path: realpathSync(path), home: realpathSync(home), file, ...start };
+		return { path: realpathSync(path), home: realpathSync(home), file, offset: start.offset, running: start.running };
 	} catch {
 		return "its rollout can't be read";
 	}
+}
+
+/** The Codex version the launch's check last verified, read from Orrery's home as the hook's environment names it. */
+function launchCheckedCodex(ctx: CodexHookContext): string | undefined {
+	return readCodexCheck({ ...ctx.env, ...(ctx.env.HOME ? {} : { HOME: ctx.home ?? homedir() }) })?.codex;
 }
 
 /**
@@ -240,6 +257,11 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 	// Before anything is decided, claimed or recorded: is this session this Codex's own?
 	const rollout = ownRollout(session, ctx);
 	if (typeof rollout === "string") return refuse(rollout);
+	if ("old" in rollout) {
+		// Said once a session: not again after a compaction.
+		if (input.source === "compact") return undefined;
+		return { systemMessage: `Orrery: this Codex (${safeText(rollout.old ?? "version unknown")}) doesn't record who started a turn; Orrery needs Codex ${MIN_CODEX} or later, so this session isn't recorded.` };
+	}
 	// Moving this Codex to another session than its record names: Codex starts that session's turn before SessionStart.
 	const recorded = liveSession(ctx.config.dataDir, ctx.codexPid);
 	if (recorded?.tool === "codex" && recorded.codexSession !== session && !rollout.running) return refuse("Codex moves to a session with a turn of it running, and none is");

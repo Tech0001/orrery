@@ -540,6 +540,61 @@ describe("hook calls forged by the agent's own shell (spec 2026-10-18-agent-perm
 	});
 });
 
+describe("a Codex older than 0.162.1 (it doesn't record who started a turn): refused, and said so", () => {
+	const OLD = (version: string) => `Orrery: this Codex (${version}) doesn't record who started a turn; Orrery needs Codex 0.162.1 or later, so this session isn't recorded.`;
+
+	it("by its session_meta's version: says so, records nothing; not again at a compaction; at /clear, the same cause", async () => {
+		const t = testAgent();
+		const started: string[] = [];
+		const c = ctx(t, { startHolder: answer("recording", started), compactWaitMs: 0 });
+		homeOf(t).begin(id("s1"), { meta: rollout.oldMeta(id("s1")) });
+		homeOf(t).add(id("s1"), rollout.oldStarted("t-1"));
+		const before = state(t);
+		expect(await forged("session-start", input({ source: "startup" }), c)).toEqual({ systemMessage: OLD("0.161.0") });
+		expect(await forged("session-start", input({ source: "compact" }), c)).toBe("");
+		await forged("user-prompt-submit", input({ prompt: "Hello.", turn_id: "t-1" }), c);
+		expect(state(t)).toEqual(before);
+		expect(started).toEqual([]);
+		// Its /clear names the same cause, not a switch with no turn running, even where a record names another session.
+		expect(recordSession(t.config.dataDir, { agent: "Test", tool: "codex", pid: CODEX, codexSession: id("s0") })).toBe(true);
+		homeOf(t).begin(id("s2"), { meta: rollout.oldMeta(id("s2"), "0.153.4") });
+		expect(await forged("session-start", input({ session: "s2", source: "clear" }), c)).toEqual({ systemMessage: OLD("0.153.4") });
+		forgetSession(t.config.dataDir, CODEX);
+	});
+
+	it("with no version in its session_meta: the one the launch's check verified; with neither, its turn's start that names no one", async () => {
+		const t = testAgent();
+		const started: string[] = [];
+		const orreryHome = join(t.dir, "orrery-home");
+		const c = ctx(t, { startHolder: answer("recording", started), compactWaitMs: 0 });
+		const withCheck = { ...c, env: { ...c.env, ORRERY_HOME: orreryHome } };
+		mkdirSync(orreryHome, { recursive: true });
+		writeFileSync(join(orreryHome, "codex-check.json"), JSON.stringify({ codex: "0.160.1", orrery: "0.9.0", ok: true, at: "2026-10-19T00:00:00Z" }));
+		homeOf(t).begin(id("s1"), { meta: rollout.oldMeta(id("s1"), null) });
+		homeOf(t).add(id("s1"), rollout.started("t-1", "user"));
+		expect(await forged("session-start", input({ source: "startup" }), withCheck)).toEqual({ systemMessage: OLD("0.160.1") });
+		// No check either: the turn that brought the session on says nothing of who started it.
+		homeOf(t).begin(id("s2"), { meta: rollout.oldMeta(id("s2"), null) });
+		homeOf(t).add(id("s2"), rollout.oldStarted("t-2"));
+		expect(await forged("session-start", input({ session: "s2", source: "startup" }), c)).toEqual({ systemMessage: OLD("version unknown") });
+		expect(started).toEqual([]);
+		// One whose turn says who started it records as ever.
+		homeOf(t).begin(id("s3"), { meta: rollout.oldMeta(id("s3"), null) });
+		homeOf(t).add(id("s3"), rollout.started("t-3", "user"));
+		expect(((await forged("session-start", input({ session: "s3", source: "startup" }), c)) as Answer).systemMessage).toMatch(/· recording$/);
+		expect(started).toEqual([id("s3")]);
+	});
+
+	it("records a Codex of 0.162.1 as ever", async () => {
+		const t = testAgent();
+		const started: string[] = [];
+		homeOf(t).begin(id("s1"), { meta: rollout.oldMeta(id("s1"), "0.162.1") });
+		homeOf(t).add(id("s1"), rollout.started("t-1", "exec"));
+		expect(((await forged("session-start", input({ source: "startup" }), ctx(t, { startHolder: answer("recording", started) }))) as Answer).systemMessage).toMatch(/· recording$/);
+		expect(started).toEqual([id("s1")]);
+	});
+});
+
 describe("runCodexHook", () => {
 	it("answers unreadable input with nothing, and refuses an event it does not record", async () => {
 		const t = testAgent();

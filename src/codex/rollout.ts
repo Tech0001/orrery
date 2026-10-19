@@ -6,8 +6,9 @@
  * - a prompt is the user's when an `event_msg` `item_completed` of `item.type` "UserMessage" has the hook's `turn_id`
  *   and the same words, in a turn whose `task_started` says `turn_attribution.turn_trigger` "user" (the TUI) or "exec"
  *   (`codex exec`) and names no parent turn or initiating agent. Another trigger (a guardian's review, `codex queue`'s
- *   "queue" from outside the session) or a spawned agent's turn drops it; a `response_item` of role user proves nothing
- *   (the environment context is one too);
+ *   "queue" from outside the session), a spawned agent's turn, or a turn whose start names no one (Codex before
+ *   0.162.1, whose sessions SessionStart refuses) drops it; a `response_item` of role user proves nothing (the
+ *   environment context is one too);
  * - a reply is the turn's when an `item_completed` "AgentMessage" of that person's turn has those words (a turn's Stop
  *   can come more than once: a spawned agent's report wakes the turn again), or its `task_complete` `last_agent_message`
  *   does when no agent message of the turn did; each line confirms one reply, so a made-up Stop can only repeat words
@@ -70,6 +71,20 @@ const record = (value: unknown): Line | undefined => (typeof value === "object" 
  * spawned agent's turns say "exec" or "user" too (0.163.0: "exec"), so they are told by their parent, not their trigger.
  */
 const SPAWNED = Symbol("spawned");
+/** The trigger of a turn whose start says nothing of who started it (Codex before 0.162.1): never the person's, as known. */
+const UNATTRIBUTED = Symbol("unattributed");
+
+/** The oldest Codex that says who started a turn (`task_started.turn_attribution`): 0.153.4 to 0.161.0 don't. */
+export const MIN_CODEX = "0.162.1";
+
+/** Whether Codex `version` ("0.161.0", "0.163.0-alpha.1") says who started a turn; undefined when it is no version. */
+export function attributesTurns(version: unknown): boolean | undefined {
+	const parts = typeof version === "string" ? /^(\d+)\.(\d+)\.(\d+)/.exec(version.trim())?.slice(1).map(Number) : undefined;
+	if (parts === undefined) return undefined;
+	const least = MIN_CODEX.split(".").map(Number);
+	for (const [index, part] of parts.entries()) if (part !== least[index]) return part > (least[index] as number);
+	return true;
+}
 
 /** What one rollout line says, of what the check reads. */
 type Said =
@@ -100,7 +115,9 @@ function sayOf(text: string): Said | undefined {
 	if (line?.type !== "event_msg" || payload === undefined) return undefined;
 	if (payload.type === "task_started") {
 		const attribution = record(payload.turn_attribution);
-		const turnId = attribution?.turn_id;
+		// An older Codex's start: the turn is known, who started it isn't.
+		if (attribution === undefined) return typeof payload.turn_id === "string" ? { kind: "start", turnId: payload.turn_id, trigger: UNATTRIBUTED } : undefined;
+		const turnId = attribution.turn_id;
 		if (typeof turnId !== "string" || (payload.turn_id !== undefined && payload.turn_id !== turnId)) return undefined;
 		const spawned = (attribution?.parent_turn_id ?? null) !== null || (attribution?.initiating_agent_path ?? null) !== null;
 		return { kind: "start", turnId, trigger: spawned ? SPAWNED : attribution?.turn_trigger };
@@ -301,10 +318,14 @@ export function holdsOpen(pid: number, path: string, files: (pid: number) => rea
 	return open.some((held) => (held.file !== undefined ? held.file === id : held.path === real || held.path === path)) ? id : false;
 }
 
-/** A rollout's first line, its `session_meta`: the session it records and the kind of thread ("user": a person's own). */
+/**
+ * A rollout's first line, its `session_meta`: the session it records, the kind of thread ("user": a person's own), and
+ * the Codex that wrote it (`cli_version`, there since 0.153.4 at least).
+ */
 export interface RolloutThread {
 	readonly id: unknown;
 	readonly threadSource: unknown;
+	readonly version: unknown;
 }
 
 /** The most of a rollout's first line read (its session_meta holds the session's instructions: some 20 KB). */
@@ -326,7 +347,7 @@ export function rolloutThread(path: string): RolloutThread | undefined {
 		const line = record(JSON.parse(buffer.toString("utf8", 0, end)));
 		const payload = record(line?.payload);
 		if (line?.type !== "session_meta" || payload === undefined) return undefined;
-		return { id: payload.id, threadSource: payload.thread_source };
+		return { id: payload.id, threadSource: payload.thread_source, version: payload.cli_version };
 	} catch {
 		return undefined;
 	} finally {
@@ -339,9 +360,10 @@ const TAIL = 4 * 1024 * 1024;
 
 /**
  * Where a session's rollout is read from, at its SessionStart: the start of a turn still running (its `task_started`,
- * with no end after it; `running`), else the end of its last whole line. Undefined when it can't be read.
+ * with no end after it; `running`, and `attributed`: whether that start says who started the turn), else the end of
+ * its last whole line. Undefined when it can't be read.
  */
-export function readerStart(path: string): { readonly offset: number; readonly running: boolean } | undefined {
+export function readerStart(path: string): { readonly offset: number; readonly running: boolean; readonly attributed?: boolean } | undefined {
 	let fd: number;
 	try {
 		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -363,7 +385,7 @@ export function readerStart(path: string): { readonly offset: number; readonly r
 			const start = buffer.lastIndexOf(10, stop - 1) + 1;
 			const say = sayOf(buffer.toString("utf8", Math.max(start, first), stop));
 			if (say?.kind === "final" || say?.kind === "aborted") break;
-			if (say?.kind === "start") return { offset: from + Math.max(start, first), running: true };
+			if (say?.kind === "start") return { offset: from + Math.max(start, first), running: true, attributed: say.trigger !== UNATTRIBUTED };
 			stop = start - 1;
 		}
 		return { offset: from + end + 1, running: false };
