@@ -40,11 +40,11 @@ async function kill(process: ChildProcess): Promise<void> {
 	if (process.exitCode === null && process.signalCode === null) await once(process, "exit");
 }
 
-/** A hook's context in `dir` (CLAUDE_PROJECT_DIR), with `env` added and Claude Code's pid 4242. */
+/** A hook's context in `dir` (CLAUDE_PROJECT_DIR), with `env` added, and this test's process as the Claude Code. */
 const ctx = (config: HarnessConfig, home: string, dir: string, env: NodeJS.ProcessEnv, extra: Partial<HookContext> = {}): HookContext => ({
 	config,
 	env: { CLAUDE_PROJECT_DIR: dir, ...env },
-	claudePid: 4242,
+	claudePid: process.pid,
 	startHolder: () => {},
 	modeWaitMs: 200,
 	home,
@@ -54,7 +54,7 @@ const at = (t: TestAgent, dir: string, env: NodeJS.ProcessEnv, extra: Partial<Ho
 /** A startHolder that answers as a recording holder would, and notes which agent it was for. */
 const recording = (started: string[]) => (agent: AgentConfig, session: string, nonce: string, since: number) => {
 	started.push(agent.name);
-	writeMode(agent.dir, session, { mode: "recording", pid: 1, claudePid: 4242, nonce, since });
+	writeMode(agent.dir, session, { mode: "recording", pid: 1, claudePid: process.pid, nonce, since });
 };
 /** A folder of no agent's, in a temp folder of its own (so no agent's allowed roots hold it). */
 const elsewhere = () => {
@@ -204,7 +204,7 @@ describe("a Claude Code session another agent recorded, resumed by ORRERY_AGENT"
 		const asAtlas = ctx(config, home, folder, { ORRERY_AGENT: "Atlas" }, {
 			startHolder: (agent, session, nonce, since) => {
 				started.push(agent.name);
-				void Holder.start({ agent, session, nonce, since, claudePid: 4242, models: agentModelSource(fauxModels().models), alive: () => true, tickMs: 20 }).then((h) => h && holders.push(h));
+				void Holder.start({ agent, session, nonce, since, claudePid: process.pid, models: agentModelSource(fauxModels().models), alive: () => true, tickMs: 20 }).then((h) => h && holders.push(h));
 			},
 			modeWaitMs: 5000,
 		});

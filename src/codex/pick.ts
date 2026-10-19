@@ -15,9 +15,11 @@
  * (0600 in a 0700 folder, published whole and exclusively): whose (ORRERY_AGENT and its token's sha256), when the
  * process started, and what. Every later asker reads it: a later SessionStart (a compaction, /clear, resume) neither
  * judges again nor takes a claim over, so a Codex started inside an agent's session stays without memory once that
- * session ends. A record of another identity, or another start (a reused pid), is not this process's: the first asker
- * replaces it. A new decision prunes the records of processes that are gone. A decision that can't be recorded leaves
- * the session without memory (a later asker would judge again).
+ * session ends. A record is this process's only when it names the process's identity and start, both known; any other
+ * (another identity, another start: a reused pid) the first asker replaces. A process whose start can't be read decides
+ * nothing and claims nothing: no memory (fail closed). A new decision prunes the records of processes that are gone. An
+ * agent whose decision can't be recorded stays the agent (its claim of the token is durable) and SessionStart says so;
+ * a nested or refused one never claims, so nothing is lost by judging it again.
  *
  * Codex's pid (src/codex/host.ts codexPid) passes over the processes above a hook that are named like shells. A process
  * is anyone's to name, so a pid reached past one must prove itself: a live session record there is this session's only
@@ -38,8 +40,13 @@ import { insideSession, liveSession, processStart, type SessionTool } from "../a
 import { safeText } from "../agent/source-labels.ts";
 
 export type CodexPicked =
-	| { readonly kind: "agent"; readonly agent: AgentConfig }
-	| { readonly kind: "refused"; readonly notice: string }
+	/** `notRecorded`: why the process's decision could not be recorded (its own claim keeps it the agent's). */
+	| { readonly kind: "agent"; readonly agent: AgentConfig; readonly notRecorded?: string }
+	/**
+	 * `undecided`: the process made no decision of its own (a Codex started before this version), so whether it runs
+	 * inside an agent's session is not known yet; only the guard looks that up, for its rules.
+	 */
+	| { readonly kind: "refused"; readonly notice: string; readonly undecided?: true }
 	/** Started inside `outer`'s session in `tool` (either undefined when nothing proves it): no memory, nothing recorded. */
 	| { readonly kind: "nested"; readonly outer: string | undefined; readonly tool: SessionTool | undefined };
 
@@ -92,22 +99,23 @@ type Decision = { readonly kind: "agent" } | { readonly kind: "refused" } | { re
 interface Identity {
 	readonly agent: string;
 	readonly token: string;
-	readonly start?: string;
+	readonly start: string;
 }
 
 const TOOLS: ReadonlySet<string> = new Set<SessionTool>(["pi", "omp", "claude-code", "codex", "opencode", "run"]);
 const decisionsDir = (config: HarnessConfig) => join(config.dataDir, "codex-processes");
 const decisionFile = (config: HarnessConfig, pid: number) => join(decisionsDir(config), `${pid}.json`);
 
-function identityOf(env: NodeJS.ProcessEnv, pid: number): Identity {
-	const token = env[TOKEN_ENV];
+/** Process `pid`'s identity, or undefined when its start can't be read. */
+function identityOf(env: NodeJS.ProcessEnv, pid: number): Identity | undefined {
 	const start = processStart(pid);
-	return { agent: env[AGENT_ENV]?.trim() ?? "", token: token === undefined ? "" : createHash("sha256").update(token).digest("hex"), ...(start === undefined ? {} : { start }) };
+	if (start === undefined) return undefined;
+	const token = env[TOKEN_ENV];
+	return { agent: env[AGENT_ENV]?.trim() ?? "", token: token === undefined ? "" : createHash("sha256").update(token).digest("hex"), start };
 }
 
-/** The same agent and token, and the same start where both are known. */
-const sameIdentity = (recorded: Identity, asker: Identity) =>
-	recorded.agent === asker.agent && recorded.token === asker.token && (recorded.start === undefined || asker.start === undefined || recorded.start === asker.start);
+/** The same agent, token and start. */
+const sameIdentity = (recorded: Identity, asker: Identity) => recorded.agent === asker.agent && recorded.token === asker.token && recorded.start === asker.start;
 
 /** A decision file's record: undefined when there is none; "unreadable" when there is one that is no record. */
 function readDecision(file: string): { readonly identity: Identity; readonly decision: Decision } | "unreadable" | undefined {
@@ -117,8 +125,8 @@ function readDecision(file: string): { readonly identity: Identity; readonly dec
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : "unreadable";
 	}
-	if (typeof value !== "object" || value === null || typeof value.agent !== "string" || typeof value.token !== "string") return "unreadable";
-	const identity: Identity = { agent: value.agent, token: value.token, ...(typeof value.start === "string" ? { start: value.start } : {}) };
+	if (typeof value !== "object" || value === null || typeof value.agent !== "string" || typeof value.token !== "string" || typeof value.start !== "string") return "unreadable";
+	const identity: Identity = { agent: value.agent, token: value.token, start: value.start };
 	if (value.kind === "agent" || value.kind === "refused") return { identity, decision: { kind: value.kind } };
 	if (value.kind === "nested" && (value.outer === undefined || typeof value.outer === "string") && (value.tool === undefined || (typeof value.tool === "string" && TOOLS.has(value.tool)))) {
 		return { identity, decision: { kind: "nested", ...(value.outer === undefined ? {} : { outer: value.outer }), ...(value.tool === undefined ? {} : { tool: value.tool as SessionTool }) } };
@@ -130,11 +138,6 @@ function readDecision(file: string): { readonly identity: Identity; readonly dec
 function ownDecision(config: HarnessConfig, pid: number, identity: Identity): Decision | undefined {
 	const found = readDecision(decisionFile(config, pid));
 	return found !== undefined && found !== "unreadable" && sameIdentity(found.identity, identity) ? found.decision : undefined;
-}
-
-/** Whether Codex process `pid` (with `env`) has made its decision: then nothing judges it again. */
-export function codexDecided(config: HarnessConfig, env: NodeJS.ProcessEnv, pid: number): boolean {
-	return ownDecision(config, pid, identityOf(env, pid)) !== undefined;
 }
 
 /**
@@ -149,9 +152,10 @@ function recordDecision(config: HarnessConfig, pid: number, identity: Identity, 
 		const content = `${JSON.stringify({ ...identity, ...decision })}\n`;
 		writeFileSync(temporary, content, { flag: "wx", mode: 0o600 });
 		if (replace) {
+			// Another identity's, or one this version can't read (no start): stale.
 			removeStale(file, (moved) => {
 				const found = readDecision(moved);
-				return found === undefined || (found !== "unreadable" && !sameIdentity(found.identity, identity));
+				return found === undefined || found === "unreadable" || !sameIdentity(found.identity, identity);
 			});
 		}
 		return publish(temporary, file, content);
@@ -199,13 +203,18 @@ export function codexAgent(config: HarnessConfig, asking: CodexAsker): CodexPick
 	const unproven = passedOver(config, asking);
 	if (unproven !== undefined) return unproven;
 	if (!asking.takeover) {
-		// An event: its own claim, the common case, needs nothing more. Without one, a process decided nested stays so.
+		// An event: its own claim, the common case, needs nothing more. Without one, a process decided nested stays so;
+		// one whose start can't be read is judged by nothing more (fail closed).
 		const pick = claimed(config, asking, false);
 		if (pick.kind === "agent") return pick;
-		const decided = ownDecision(config, asking.pid, identityOf(asking.env, asking.pid));
-		return decided?.kind === "nested" ? nestedPick(decided) : pick;
+		const asker = identityOf(asking.env, asking.pid);
+		const decided = asker === undefined ? undefined : ownDecision(config, asking.pid, asker);
+		if (decided?.kind === "nested") return nestedPick(decided);
+		return asker !== undefined && decided === undefined && pick.kind === "refused" ? { ...pick, undecided: true } : pick;
 	}
 	const identity = identityOf(asking.env, asking.pid);
+	// It could not tell its own decision from a dead process's under its pid, nor record one: no memory, and no claim.
+	if (identity === undefined) return { kind: "refused", notice: "Orrery: this Codex's start time can't be read, so which agent it is can't be recorded; this session runs without memory." };
 	const recorded = readDecision(decisionFile(config, asking.pid));
 	const read = (found: typeof recorded) => (found !== undefined && found !== "unreadable" && sameIdentity(found.identity, identity) ? found.decision : undefined);
 	const settled = (decision: Decision) => (decision.kind === "nested" ? nestedPick(decision) : claimed(config, asking, false));
@@ -221,9 +230,10 @@ export function codexAgent(config: HarnessConfig, asking: CodexAsker): CodexPick
 		const theirs = read(readDecision(decisionFile(config, asking.pid)));
 		if (theirs !== undefined) return settled(theirs);
 	}
-	// Not recorded, a later asker would judge again: no memory now (fail closed).
+	// Not recorded: an agent's own claim keeps it the agent's (SessionStart says so); a nested or refused one claimed
+	// nothing, so judging it again loses nothing.
 	const why = written === "exists" ? "its record is another's, or unreadable" : written;
-	return pick.kind === "agent" ? { kind: "refused", notice: `Orrery: which agent this Codex is could not be recorded (${safeText(why)}); this session runs without memory.` } : pick;
+	return pick.kind === "agent" ? { ...pick, notRecorded: why } : pick;
 }
 
 /** ORRERY_AGENT's agent, with its token claimed for this Codex (`takeover`: taking a dead process's claim over). */

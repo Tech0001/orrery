@@ -50,7 +50,7 @@ import { nestedRules, type WriteRules } from "../agent/nested-rules.ts";
 import { workArea } from "../agent/pick.ts";
 import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from "../claude/guard.ts";
 import { TOOL_INPUT_MAX } from "../claude/hooks.ts";
-import { codexAgent, codexDecided, type CodexPicked, codexNested } from "./pick.ts";
+import { codexAgent, type CodexPicked, codexNested } from "./pick.ts";
 
 /** How long the guard may judge one call, in ms, at most (CodexGuardContext.deadline may leave it less). */
 const JUDGE_MS = 2000;
@@ -413,12 +413,13 @@ export function runCodexGuard(stdin: string | undefined, ctx: CodexGuardContext)
 /**
  * Where a call of a session may write: its agent's rules. A nested one's (its process's decision, src/codex/pick.ts):
  * the outer agent's, never looser than the folder's own (src/agent/nested-rules.ts). A session that is no agent's and
- * whose process made no decision (a Codex started before this version) is looked up only then, so an agent's call never
- * walks the process tree. Else, or when whose session it was can't be told, no agent's: only where it runs.
+ * whose process made no decision (`undecided`: a Codex started before this version) is looked up only then, so an
+ * agent's call never walks the process tree. Else, or when whose session it was can't be told, no agent's: only where
+ * it runs.
  */
 function writeRules(pick: CodexPicked, ctx: CodexGuardContext, cwd: string): WriteRules {
 	if (pick.kind === "agent") return { workArea: workArea(pick.agent, cwd), allowedRoots: pick.agent.allowedRoots };
-	const nested = pick.kind === "nested" ? pick : codexDecided(ctx.config, ctx.env, ctx.codexPid) ? undefined : codexNested(ctx.config, ctx.env, ctx.codexPid);
+	const nested = pick.kind === "nested" ? pick : pick.undecided === true ? codexNested(ctx.config, ctx.env, ctx.codexPid) : undefined;
 	const outer = nested?.kind === "nested" ? nestedRules(ctx.config, nested.outer, cwd) : undefined;
 	return outer ?? { workArea: workArea({}, cwd), allowedRoots: [] };
 }

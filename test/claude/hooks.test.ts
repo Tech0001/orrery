@@ -19,10 +19,13 @@ afterEach(async () => {
 	cleanupDirs();
 });
 
+/** The Claude Code these hooks run for: this test's process (a live one, whose start time Orrery reads). */
+const CLAUDE = process.pid;
+
 const ctx = (t: TestAgent, extra: Partial<HookContext> = {}): HookContext => ({
 	config: t.config,
 	env: { CLAUDE_PROJECT_DIR: t.folder },
-	claudePid: 4242,
+	claudePid: CLAUDE,
 	startHolder: () => {},
 	modeWaitMs: 200,
 	// The guard's home: a scratch one, so no test lists or stats the real ~/.omp.
@@ -32,7 +35,7 @@ const ctx = (t: TestAgent, extra: Partial<HookContext> = {}): HookContext => ({
 const input = (t: TestAgent, extra: object = {}) => JSON.stringify({ session_id: "s1", cwd: t.folder, ...extra });
 /** A startHolder that answers as a holder would, without one. */
 const answer = (mode: "recording" | "read-only") => (agent: AgentConfig, session: string, nonce: string, since: number) =>
-	writeMode(agent.dir, session, { mode, pid: 1, claudePid: 4242, nonce, since, ...(mode === "read-only" ? { reason: "held" } : {}) });
+	writeMode(agent.dir, session, { mode, pid: 1, claudePid: CLAUDE, nonce, since, ...(mode === "read-only" ? { reason: "held" } : {}) });
 
 describe("SessionStart in mod mode", () => {
 	it("says memory comes from the mod, tells the model to check, and gives no view warnings", async () => {
@@ -99,12 +102,12 @@ describe("UserPromptSubmit, Stop and SessionEnd", () => {
 		];
 		for (const [event, extra] of calls) expect(await runHook(event, input(t, extra), c)).toBe("");
 		expect(pendingEvents(t.agent.dir, "s1").map((e) => readEvent(e.path))).toEqual([
-			{ kind: "prompt", at: expect.any(Number), claudePid: 4242, text: "Ship the bridge fix." },
-			{ kind: "prompt", at: expect.any(Number), claudePid: 4242, text: "/tmp is full, clean it." },
+			{ kind: "prompt", at: expect.any(Number), claudePid: CLAUDE, text: "Ship the bridge fix." },
+			{ kind: "prompt", at: expect.any(Number), claudePid: CLAUDE, text: "/tmp is full, clean it." },
 			// orrery's own commands leave a text-less mark, so the holder keeps their replies out of memory.
-			{ kind: "command", at: expect.any(Number), claudePid: 4242 },
-			{ kind: "command", at: expect.any(Number), claudePid: 4242 },
-			{ kind: "reply", at: expect.any(Number), claudePid: 4242, text: "Fixed and pushed." },
+			{ kind: "command", at: expect.any(Number), claudePid: CLAUDE },
+			{ kind: "command", at: expect.any(Number), claudePid: CLAUDE },
+			{ kind: "reply", at: expect.any(Number), claudePid: CLAUDE, text: "Fixed and pushed." },
 		]);
 		const started = Date.now();
 		expect(await runHook("session-end", input(t, { reason: "other" }), c)).toBe("");
@@ -116,7 +119,7 @@ describe("UserPromptSubmit, Stop and SessionEnd", () => {
 
 	it("spool nothing for a read-only session, or for a session id that is no id", async () => {
 		const t = testAgent({ setup: true });
-		writeMode(t.agent.dir, "s1", { mode: "read-only", pid: 1, claudePid: 4242, nonce: "n", since: 0 });
+		writeMode(t.agent.dir, "s1", { mode: "read-only", pid: 1, claudePid: CLAUDE, nonce: "n", since: 0 });
 		await runHook("user-prompt-submit", input(t, { prompt: "not recorded" }), ctx(t));
 		await runHook("user-prompt-submit", input(t, { session_id: "../../escape", prompt: "nowhere" }), ctx(t));
 		expect(pendingEvents(t.agent.dir, "s1")).toEqual([]);
@@ -175,7 +178,7 @@ describe("SessionStart", () => {
 		const c = ctx(t, {
 			startHolder: (agent, session, nonce, since) => {
 				started.push(session);
-				void Holder.start({ agent, session, nonce, since, claudePid: 4242, models: agentModelSource(fauxModels().models), alive: () => true, tickMs: 20 }).then(
+				void Holder.start({ agent, session, nonce, since, claudePid: CLAUDE, models: agentModelSource(fauxModels().models), alive: () => true, tickMs: 20 }).then(
 					(h) => h && holders.push(h),
 				);
 			},
@@ -359,7 +362,7 @@ describe("SessionStart holder reasons", () => {
 	] as const)("shows the %s holder's reason: %s", async (mode, reason) => {
 		const t = testAgent();
 		claudeSetupMod(t.agent);
-		const out = JSON.parse(await runHook("session-start", input(t), ctx(t, { startHolder: (agent, session, nonce, since) => writeMode(agent.dir, session, { mode, pid: 1, claudePid: 4242, nonce, since, reason }) })));
+		const out = JSON.parse(await runHook("session-start", input(t), ctx(t, { startHolder: (agent, session, nonce, since) => writeMode(agent.dir, session, { mode, pid: 1, claudePid: CLAUDE, nonce, since, reason }) })));
 		expect(out.systemMessage).toContain(reason);
 		expect(out.hookSpecificOutput.additionalContext).toContain(reason);
 		expect(out.systemMessage).not.toContain("this session reads memory but is not recorded");

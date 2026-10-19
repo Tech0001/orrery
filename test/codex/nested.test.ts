@@ -192,6 +192,50 @@ describe("one decision per Codex process: a nested Codex stays nested", () => {
 		expect(claimedBy(w.birch.dir, w.token)).toBe(process.pid);
 		recorded.push({ dataDir: w.dataDir, pid: process.pid });
 	});
+
+	it("a decision with no start (none this version writes) is not this process's: decided anew", async () => {
+		const w = codexWorld();
+		mkdirSync(join(w.dataDir, "codex-processes"), { recursive: true, mode: 0o700 });
+		const digest = createHash("sha256").update(w.token).digest("hex");
+		writeFileSync(join(w.dataDir, "codex-processes", `${process.pid}.json`), JSON.stringify({ agent: "Birch", token: digest, kind: "nested", outer: "Atlas", tool: "pi" }));
+		await run("session-start", input("s1", { source: "startup" }), hookCtx(w, { startHolder: () => {} }));
+		expect(claimedBy(w.birch.dir, w.token)).toBe(process.pid);
+		recorded.push({ dataDir: w.dataDir, pid: process.pid });
+	});
+
+	it("a Codex whose start can't be read decides nothing and claims nothing: no memory (fail closed)", async () => {
+		const w = codexWorld();
+		// A pid whose process is gone, though the test says it lives: its start can't be read.
+		const gone = await new Promise<number>((resolve) => {
+			const exited = spawn("sleep", ["0"], { stdio: "ignore" });
+			exited.on("exit", () => resolve(exited.pid as number));
+		});
+		const c = hookCtx(w, { codexPid: gone, codexParent: gone, alive: () => true });
+		expect(await run("session-start", input("s1", { source: "startup" }), c)).toEqual({
+			systemMessage: "Orrery: this Codex's start time can't be read, so which agent it is can't be recorded; this session runs without memory.",
+		});
+		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+		expect(existsSync(join(w.dataDir, "codex-processes", `${gone}.json`))).toBe(false);
+		await run("user-prompt-submit", input("s1", { prompt: "Not memory." }), c);
+		expect(pendingEvents(w.birch.dir, "s1")).toEqual([]);
+	});
+
+	it("an agent whose decision can't be recorded stays the agent (its claim holds), says so once a session, and records its events once", async () => {
+		const w = codexWorld();
+		// The decisions' folder cannot be made: a file stands where it would go. Claims can be written.
+		mkdirSync(w.dataDir, { recursive: true });
+		writeFileSync(join(w.dataDir, "codex-processes"), "");
+		const c = hookCtx(w, { startHolder: () => {} });
+		const NOTE = /Orrery: which agent this Codex is could not be recorded \(.+\), so each SessionStart works it out again\./;
+		const first = (await run("session-start", input("s1", { source: "startup" }), c)) as Answer;
+		expect(first.systemMessage).toMatch(/^Orrery · Birch · /);
+		expect(first.systemMessage).toMatch(NOTE);
+		expect(claimedBy(w.birch.dir, w.token)).toBe(process.pid);
+		expect(((await run("session-start", input("s1", { source: "compact" }), c)) as Answer).systemMessage ?? "").not.toMatch(NOTE);
+		await run("user-prompt-submit", input("s1", { prompt: "The user's words." }), c);
+		expect(pendingEvents(w.birch.dir, "s1")).toHaveLength(1);
+		recorded.push({ dataDir: w.dataDir, pid: process.pid });
+	});
 });
 
 describe("a Codex session's host record (spec 2026-10-18-agent-permissions §2)", () => {

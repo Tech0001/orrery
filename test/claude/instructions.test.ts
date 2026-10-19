@@ -29,10 +29,10 @@ function hookContext(t: ReturnType<typeof testAgent>, dir = t.folder, env: NodeJ
 	return {
 		config: t.config,
 		env: { CLAUDE_PROJECT_DIR: dir, ...env },
-		claudePid: 4242,
+		claudePid: process.pid,
 		modeWaitMs: 200,
 		home: join(t.dir, "home"),
-		startHolder: (agent, session, nonce, since) => writeMode(agent.dir, session, { mode: "recording", pid: 1, claudePid: 4242, nonce, since }),
+		startHolder: (agent, session, nonce, since) => writeMode(agent.dir, session, { mode: "recording", pid: 1, claudePid: process.pid, nonce, since }),
 	};
 }
 

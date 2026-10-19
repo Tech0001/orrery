@@ -189,6 +189,8 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 	const warnings: string[] = [];
 	let state = "recording";
 	if (!hosted) warnings.push(`Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s.`);
+	// Its own claim keeps this Codex the agent's; each SessionStart decides again, which is said once a session.
+	if (pick.notRecorded !== undefined && input.source !== "compact") warnings.push(`Orrery: which agent this Codex is could not be recorded (${safeText(pick.notRecorded)}), so each SessionStart works it out again.`);
 	const holder = readHolder(agent.dir);
 	let mode: SessionMode | undefined;
 	if (holderFresh(holder) && holder.session === session && holder.state === "recording") mode = readMode(agent.dir, session);

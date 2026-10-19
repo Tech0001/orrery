@@ -1,5 +1,6 @@
+import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import type { AgentConfig } from "../../src/agent/config.ts";
 import { readHolder } from "../../src/agent/handover.ts";
 import { agentModelSource } from "../../src/agent/model-source.ts";
@@ -17,10 +18,12 @@ afterEach(async () => {
 	cleanupDirs();
 });
 
-/** This test's processes: two Claude Codes and one Codex, alive while the test says so. */
-const CLAUDE = 4242;
-const CLAUDE_2 = 4244;
-const CODEX = 4343;
+/** This test's processes: two Claude Codes and one Codex, live ones (Orrery reads their start times), alive to the recorders while the test says so. */
+const sleepers = [0, 1, 2].map(() => spawn("sleep", ["600"], { stdio: "ignore" }));
+afterAll(() => {
+	for (const sleeper of sleepers) sleeper.kill();
+});
+const [CLAUDE, CLAUDE_2, CODEX] = sleepers.map((sleeper) => sleeper.pid as number) as [number, number, number];
 
 type Answer = { systemMessage?: string; hookSpecificOutput?: { additionalContext: string } };
 

@@ -1,6 +1,7 @@
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import type { AgentConfig } from "../../src/agent/config.ts";
 import { holderFile, readHolder, writeHolder } from "../../src/agent/handover.ts";
 import { agentModelSource } from "../../src/agent/model-source.ts";
@@ -19,8 +20,14 @@ afterEach(async () => {
 	cleanupDirs();
 });
 
-/** This test's Codex: a pid no process has, alive by the test's word. */
-const CODEX = 4343;
+/** This test's Codex: this test's process (a live one, whose start time Orrery reads). */
+const CODEX = process.pid;
+/** Another Codex, started from the agent's shell: a live process of its own. */
+const other = spawn("sleep", ["600"], { stdio: "ignore" });
+const OTHER = other.pid as number;
+afterAll(() => {
+	other.kill();
+});
 
 const ctx = (t: TestAgent, extra: Partial<CodexHookContext> = {}, token = tokens.get(t) ?? tokenOf(t)): CodexHookContext => ({
 	config: t.config,
@@ -180,9 +187,9 @@ describe("SessionStart for a Codex session", () => {
 		await run("session-start", input({ session_id: "s1", source: "resume" }), c);
 		expect(codexSessionOf(t.agent.dir, CODEX)).toBe("s1");
 		// A Codex that is not the agent notes nothing.
-		const other = { ...c, codexPid: 5151, alive: (pid: number) => pid === CODEX || pid === 5151 };
+		const other = { ...c, codexPid: OTHER, alive: (pid: number) => pid === CODEX || pid === OTHER };
 		await run("session-start", input({ session_id: "s9" }), other);
-		expect(codexSessionOf(t.agent.dir, 5151)).toBeUndefined();
+		expect(codexSessionOf(t.agent.dir, OTHER)).toBeUndefined();
 	});
 
 	it("is said nothing by a subagent's start, and nothing is started", async () => {
@@ -220,10 +227,11 @@ describe("the agent of a Codex session: ORRERY_AGENT and its token, never a fold
 		const token = newToken();
 		const mine = ctx(t, { startHolder: answer("recording") }, token);
 		expect(((await run("session-start", input(), mine)) as Answer).systemMessage).toBe("Orrery · Test · no memory yet · recording");
-		// A Codex the agent's own shell started inherits both variables; its pid is another, and the claim is not its.
-		const other = { ...mine, codexPid: 5151, alive: (pid: number) => pid === CODEX || pid === 5151 };
+		// A Codex the agent's own shell started inherits both variables; its pid is another, and the claim is not its: it
+		// was started inside the agent's session (the token a live other process claimed says whose), so no memory.
+		const other = { ...mine, codexPid: OTHER, alive: (pid: number) => pid === CODEX || pid === OTHER };
 		expect(await run("session-start", input({ session_id: "s9" }), other)).toEqual({
-			systemMessage: "Orrery: Test's token belongs to another process, so this Codex is not Test; it runs without memory.",
+			systemMessage: "Orrery: started inside Test's session (Codex), so this one opens no memory and records nothing.",
 		});
 		await run("user-prompt-submit", input({ session_id: "s9", prompt: "Not memory." }), other);
 		expect(listSessions(t.agent.dir)).toEqual(["s1"]);

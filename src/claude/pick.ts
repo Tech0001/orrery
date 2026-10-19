@@ -125,8 +125,8 @@ type Decision =
 
 /**
  * Whose decision a record is: ORRERY_AGENT as set (trimmed, "" without one), the sha256 (hex) of ORRERY_AGENT_TOKEN, or
- * "" without one, and when the process started (src/agent/sessions.ts processStart), where that could be read. A record
- * whose identity is not the asker's is another process's, whose pid this one reuses (every process without ORRERY_AGENT
+ * "" without one, and when the process started (src/agent/sessions.ts processStart). A record whose identity is not the
+ * asker's is another process's, whose pid this one reuses (every process without ORRERY_AGENT
  * shares the rest of an identity), or an ancestor's whose CLAUDE_PID a descendant inherited: never this session's.
  */
 interface Identity {
@@ -135,9 +135,9 @@ interface Identity {
 	readonly start?: string;
 }
 
-function identityOf(env: NodeJS.ProcessEnv, start: string | undefined): Identity {
+function identityOf(env: NodeJS.ProcessEnv, start: string): Identity {
 	const token = env[TOKEN_ENV];
-	return { agent: env[AGENT_ENV]?.trim() ?? "", token: token === undefined ? "" : createHash("sha256").update(token).digest("hex"), ...(start === undefined ? {} : { start }) };
+	return { agent: env[AGENT_ENV]?.trim() ?? "", token: token === undefined ? "" : createHash("sha256").update(token).digest("hex"), start };
 }
 
 const processesDir = (config: HarnessConfig) => join(config.dataDir, "claude-processes");
@@ -219,9 +219,17 @@ function readRecordFile(file: string): Recorded | "unreadable" | undefined {
 	return "unreadable";
 }
 
-/** The same agent and token, and the same start where both are known (a record from before starts has none). */
-const sameIdentity = (recorded: Identity | undefined, asker: Identity) =>
-	recorded !== undefined && recorded.agent === asker.agent && recorded.token === asker.token && (recorded.start === undefined || asker.start === undefined || recorded.start === asker.start);
+/**
+ * Whether a record is the asker's: the same agent and token, and the same start, both known. A record made before start
+ * times (none in it) stands only for an ORRERY_AGENT launch's token, whose digest alone tells its process apart from
+ * others: a session running across the update keeps its decision. One without a token (a folder's, or an ORRERY_AGENT
+ * with no token) and no start is no one's.
+ */
+function sameIdentity(recorded: Identity | undefined, asker: Identity): boolean {
+	if (recorded === undefined || recorded.agent !== asker.agent || recorded.token !== asker.token) return false;
+	if (recorded.start === undefined) return recorded.agent !== "" && recorded.token !== "";
+	return asker.start !== undefined && recorded.start === asker.start;
+}
 
 /**
  * A readable record of another identity: never this session's, and a decider's to replace. A missing one is stale too:
@@ -330,7 +338,11 @@ function forgetHost(config: HarnessConfig, pid: number): void {
 export function claudeSession(config: HarnessConfig, asking: ClaudeProcess): ClaudePicked {
 	const where = { env: asking.env, cwd: asking.cwd, owner: asking.pid, ...(asking.alive === undefined ? {} : { alive: asking.alive }) };
 	const byEnv = Boolean(asking.env[AGENT_ENV]?.trim());
-	const identity = identityOf(asking.env, processStart(asking.pid));
+	const start = processStart(asking.pid);
+	// A process whose start can't be read can't tell its own decision from a dead one's under its pid, and never records
+	// one: no memory (fail closed).
+	if (start === undefined) return byEnv ? { kind: "unrecorded", why: "this Claude Code's start time can't be read" } : { kind: "nested", outer: undefined, tool: undefined };
+	const identity = identityOf(asking.env, start);
 	const settled = (decision: Decision) => {
 		const pick = fromDecision(config, decision, where);
 		return asking.decide ? hosted(config, asking.pid, pick) : pick;
