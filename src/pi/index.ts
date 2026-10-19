@@ -314,7 +314,7 @@ export function summaryWaitMs(host: "pi" | "omp", elapsedMs: number, override?: 
 
 const registeredOn = new WeakSet<ExtensionAPI>();
 const guardedOn = new WeakSet<ExtensionAPI>();
-const DEBUG_SOCKET_NOTICE = "Orrery: OMP_TUI_DEBUG is set, so anything sent through OMP's debug socket would count as typed; this session opens memory read-only and records nothing.";
+const DEBUG_SOCKET_NOTICE = "Orrery: OMP_TUI_DEBUG is set, so anything sent through OMP's debug socket would count as typed; this session opens no memory and records nothing.";
 const OPEN_CANCELLED = new Error("The session left while its memory was opening");
 
 export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {

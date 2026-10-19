@@ -11,7 +11,7 @@ afterEach(async () => {
 	await cleanup();
 });
 
-const NOTICE = "Orrery: OMP_TUI_DEBUG is set, so anything sent through OMP's debug socket would count as typed; this session opens memory read-only and records nothing.";
+const NOTICE = "Orrery: OMP_TUI_DEBUG is set, so anything sent through OMP's debug socket would count as typed; this session opens no memory and records nothing.";
 const DEBUG = { OMP_TUI_DEBUG: "/some/socket" };
 
 const hosts = (dataDir: string): string[] => (existsSync(join(dataDir, "session-hosts")) ? readdirSync(join(dataDir, "session-hosts")) : []);
