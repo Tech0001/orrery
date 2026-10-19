@@ -299,7 +299,15 @@ export class Holder {
 		const events = this.#eligible();
 		const now = Date.now();
 		for (const [index, event] of events.entries()) {
-			if (held.has(event.session)) continue;
+			if (held.has(event.session)) {
+				// Its own session's end, waiting behind a held prompt, still ends the session: the holder finishes as before,
+				// and yields to whoever opens the agent next; what it holds stays in the spool for the next recorder.
+				if (event.session === this.session && !this.#ended && event.name.endsWith("-end.json")) {
+					const end = readEvent(event.path);
+					if (end?.kind === "end" && end.at >= this.#since) this.#ended = true;
+				}
+				continue;
+			}
 			const parsed = readEvent(event.path);
 			const items: NewMessage[] = [];
 			const meta: Record<string, string> = { [spoolKey(event.session)]: event.name };

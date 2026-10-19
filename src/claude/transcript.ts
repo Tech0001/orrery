@@ -22,7 +22,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, readSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { writePrivate } from "../agent/private-file.ts";
 import { unconfirmedFile } from "./paths.ts";
@@ -104,6 +104,21 @@ export function confirmPrompt(lines: readonly string[], prompt: SpooledPrompt): 
 /** Claude Code's projects folder: $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects. */
 export function projectsFolder(env: NodeJS.ProcessEnv, home: string): string {
 	return join(env.CLAUDE_CONFIG_DIR || join(home, ".claude"), "projects");
+}
+
+/**
+ * Why a transcript can't be read here, or undefined when it can: on Linux the reader judges the file it opened by
+ * /proc/self/fd (TranscriptReader.read), so without /proc it could read none, and every prompt would go unconfirmed.
+ * `proc`: the folder asked (tests pass another).
+ */
+export function unreadableHere(proc = "/proc/self/fd"): string | undefined {
+	if (process.platform !== "linux") return undefined;
+	try {
+		readdirSync(proc);
+		return undefined;
+	} catch {
+		return `${proc} can't be read, and Orrery reads Claude Code's transcript only through it`;
+	}
 }
 
 /** `path` with its longest existing part's links followed: where it is, or would be once made. */

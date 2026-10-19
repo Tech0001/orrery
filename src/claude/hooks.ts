@@ -46,7 +46,7 @@ import { nestedRules, type WriteRules } from "../agent/nested-rules.ts";
 import { AGENT_ENV, agentNamed, workArea } from "../agent/pick.ts";
 import { writePrivate } from "../agent/private-file.ts";
 import { processAlive } from "../agent/process.ts";
-import { liveSession } from "../agent/sessions.ts";
+import { liveSession, processStart } from "../agent/sessions.ts";
 import { selfCommand } from "../agent/running.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { type HolderHost, holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
@@ -56,7 +56,7 @@ import { holderLog, samePath, validSession } from "./paths.ts";
 import { type CallerCheck, checkCaller, type StdinPeer, stdinPeer, unsupportedCause } from "./peer.ts";
 import { type ClaudePicked, claudeRefusedNotice, claudeSession, forgetProcess, UNCONFIRMED_NOTICE } from "./pick.ts";
 import { readMode, type SessionMode, spoolEvent, writeMode } from "./spool.ts";
-import { projectsFolder, transcriptIn } from "./transcript.ts";
+import { projectsFolder, transcriptIn, unreadableHere } from "./transcript.ts";
 import { markedHere, refreshViewFile, type ViewGate, viewGate } from "./view-file.ts";
 
 /**
@@ -137,6 +137,8 @@ export interface HookContext {
 	 * CLI asks before it reads stdin and passes the answer; tests pass their own.
 	 */
 	readonly peer?: () => StdinPeer;
+	/** Why a transcript can't be read here (default unreadableHere, src/claude/transcript.ts); tests pass their own. */
+	readonly transcriptsUnreadable?: () => string | undefined;
 	/**
 	 * Starts the session's holder (spawnHolder), with SessionStart's time as its read-only cut-off; tests start one
 	 * in-process or answer for it.
@@ -309,18 +311,27 @@ interface TranscriptAt {
 	readonly offset: number;
 }
 
+/** Why a SessionStart's prompts can't be confirmed: its notice, and whether only this transcript's place is at fault. */
+interface Unconfirmable {
+	readonly notice: string;
+	/** Only the transcript path is not where Claude Code keeps them: a /compact may keep the transcript it had. */
+	readonly transcript: boolean;
+}
+
 /**
  * The session's transcript (input.transcript_path, under Claude Code's projects folder: src/claude/transcript.ts) with
- * its size now, once this SessionStart's Claude Code is the recorded one (its pick just recorded it); else what the
- * session says (callerNotice).
+ * its size now, once this SessionStart's Claude Code is the recorded one (its pick just recorded it) and a transcript can
+ * be read here; else why not.
  */
-function confirmable(input: HookInput, ctx: HookContext): TranscriptAt | string {
+function confirmable(input: HookInput, ctx: HookContext): TranscriptAt | Unconfirmable {
 	const peer = (ctx.peer ?? stdinPeer)();
 	const check = checkCaller(ctx.config, ctx.claudePid, peer, { recorded: true, ...(ctx.processStart === undefined ? {} : { start: ctx.processStart }) });
-	if (check !== "ok") return callerNotice(check);
+	if (check !== "ok") return { notice: callerNotice(check), transcript: false };
+	const unreadable = (ctx.transcriptsUnreadable ?? unreadableHere)();
+	if (unreadable !== undefined) return { notice: `Orrery can't read Claude Code's transcript here (${unreadable}), so this session isn't recorded.`, transcript: false };
 	const projects = projectsFolder(ctx.env, ctx.home ?? homedir());
 	const path = transcriptIn(input.transcript_path, projects);
-	if (path === undefined) return CALLER_NOTICE;
+	if (path === undefined) return { notice: CALLER_NOTICE, transcript: true };
 	let offset = 0;
 	try {
 		offset = statSync(path).size;
@@ -435,24 +446,32 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	// Where the session's prompts are confirmed (src/claude/transcript.ts), or why they can't be. Subagents' events are
 	// not memory.
 	const confirm = setUp && input.agent_id === undefined ? confirmable(input, ctx) : undefined;
-	let unconfirmable = typeof confirm === "string" ? confirm : undefined;
-	if (confirm !== undefined && typeof confirm !== "string") {
+	let unconfirmable = confirm !== undefined && "notice" in confirm ? confirm : undefined;
+	if (confirm !== undefined && !("notice" in confirm)) {
 		try {
 			spoolEvent(agent.dir, session, { kind: "transcript", at: Date.now(), claudePid: ctx.claudePid, ...confirm });
 		} catch (error) {
-			unconfirmable = `Orrery: ${agent.name}'s spool could not be written (${errorText(error)}), so this session is not recorded.`;
+			unconfirmable = { notice: `Orrery: ${agent.name}'s spool could not be written (${errorText(error)}), so this session is not recorded.`, transcript: false };
 		}
 	}
 	const holder = readHolder(agent.dir);
 	const recordingHere = holderFresh(holder) && holder.session === session && holder.state === "recording";
-	// A /compact of a session its recorder records keeps the transcript the recorder has.
-	const keep = unconfirmable !== undefined && input.source === "compact" && recordingHere;
-	// Said once a session (again only for another reason), not at every compaction.
-	if (unconfirmable !== undefined && !noticeShownBefore(agent.dir, `${session}:caller`, unconfirmable)) warnings.push(unconfirmable);
+	// A /compact whose new transcript path is not where Claude Code keeps them, in a session its recorder records, keeps
+	// the transcript the recorder has: recording goes on.
+	const keep = unconfirmable?.transcript === true && input.source === "compact" && recordingHere;
+	const said = keep
+		? "Orrery: this compaction's transcript is not where Claude Code keeps them, so this session goes on recording against the transcript it already had."
+		: unconfirmable?.notice;
+	// Said once a session in this Claude Code process (again for another reason, or in another process: a resume), not at
+	// every compaction.
+	if (said !== undefined) {
+		const claudeProcess = `${ctx.claudePid}:${(ctx.processStart ?? processStart)(ctx.claudePid) ?? ""}`;
+		if (!noticeShownBefore(agent.dir, `${session}:caller`, `${claudeProcess}:${said}`)) warnings.push(said);
+	}
 	if (!setUp) state = `not set up for Claude Code here, so this session is not recorded; run \`orrery claude-setup ${agent.name}\` to record it`;
 	else if (unconfirmable !== undefined && !keep) {
 		// Its prompts can't be confirmed: none of it is recorded, whatever comes later.
-		markNotConfirmable(agent, session, ctx, unconfirmable);
+		markNotConfirmable(agent, session, ctx, unconfirmable.notice);
 		state = "read-only: this session is not recorded";
 	} else {
 		let mode: SessionMode | undefined;

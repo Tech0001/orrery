@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,12 +9,12 @@ import { claudeSetup, claudeSetupMod } from "../../src/claude/setup.ts";
 import { claudeSession } from "../../src/claude/pick.ts";
 import { listSessions, pendingEvents, readEvent, readMode, writeMode } from "../../src/claude/spool.ts";
 import { VIEW_IMPORT, writeSetupMarker } from "../../src/claude/view-file.ts";
-import { forgetSession, liveSession } from "../../src/agent/sessions.ts";
+import { forgetSession, liveSession, processStart } from "../../src/agent/sessions.ts";
 import { type AgentConfig, parseConfig } from "../../src/agent/config.ts";
 import { holderFile, writeHolder } from "../../src/agent/handover.ts";
 import { agentModelSource } from "../../src/agent/model-source.ts";
 import { fauxModels } from "../agent/support.ts";
-import { brokenGit, cleanupDirs, gitIn, seed, statusOf, type TestAgent, testAgent, withGit } from "./support.ts";
+import { brokenGit, cleanupDirs, gitIn, seed, statusOf, type TestAgent, testAgent, waitUntil, withGit } from "./support.ts";
 import { transcriptIn } from "./transcript-lines.ts";
 
 const holders: Holder[] = [];
@@ -357,7 +358,8 @@ describe("the caller check (spec 2026-10-18-agent-permissions 3c): a writing hoo
 		writeHolder(t.agent.dir, { pid: process.pid, session: "s1", claudePid: CLAUDE, state: "recording", startedAt: Date.now(), updatedAt: Date.now() });
 		const compact = () => runHook("session-start", JSON.stringify({ session_id: "s1", cwd: t.folder, source: "compact" }), { ...c, startHolder: () => { throw new Error("must not start"); } });
 		const first = JSON.parse(await compact());
-		expect(first.systemMessage).toBe(CALLER_NOTICE);
+		// It says what is true: recording goes on, against the transcript the recorder had.
+		expect(first.systemMessage).toBe("Orrery: this compaction's transcript is not where Claude Code keeps them, so this session goes on recording against the transcript it already had.");
 		expect(first.hookSpecificOutput.additionalContext).toMatch(/· recording$/m);
 		expect(readMode(t.agent.dir, "s1")?.mode).toBe("recording");
 		const second = JSON.parse(await compact());
@@ -365,6 +367,37 @@ describe("the caller check (spec 2026-10-18-agent-permissions 3c): a writing hoo
 		// Prompts still spool, against the transcript the recorder has.
 		await runHook("user-prompt-submit", input(t, { prompt: "Still recorded.", prompt_id: "p-1" }), c);
 		expect(spooled(t)).toEqual(["transcript", "prompt"]);
+	});
+
+	it("says it again when the same unconfirmable session is resumed in another Claude Code process", async () => {
+		const t = testAgent({ setup: true });
+		const noPath = (source: string) => JSON.stringify({ session_id: "s1", cwd: t.folder, source });
+		const first = ctx(t, { startHolder: () => { throw new Error("must not start"); } });
+		expect(JSON.parse(await runHook("session-start", noPath("startup"), first)).systemMessage).toBe(CALLER_NOTICE);
+		expect(JSON.parse(await runHook("session-start", noPath("compact"), first)).systemMessage).toBeUndefined();
+		// The first Claude Code exits (its host record goes); `claude --resume s1` later: another process, the same session.
+		forgetSession(t.config.dataDir, CLAUDE);
+		const other = spawn("sleep", ["60"], { stdio: "ignore" });
+		try {
+			const pid = other.pid as number;
+			await waitUntil(() => processStart(pid) !== undefined);
+			const second = ctx(t, { claudePid: pid, peer: () => pid, startHolder: () => { throw new Error("must not start"); } });
+			expect(JSON.parse(await runHook("session-start", noPath("resume"), second)).systemMessage).toBe(CALLER_NOTICE);
+		} finally {
+			other.kill();
+		}
+	});
+
+	it("where a transcript can't be read (no /proc on Linux), SessionStart says so, by its cause, and records nothing", async () => {
+		const t = testAgent({ setup: true });
+		const cause = "/proc/self/fd can't be read, and Orrery reads Claude Code's transcript only through it";
+		const c = ctx(t, { transcriptsUnreadable: () => cause, startHolder: () => { throw new Error("must not start"); } });
+		const out = JSON.parse(await runHook("session-start", input(t, { source: "startup" }), c));
+		const notice = `Orrery can't read Claude Code's transcript here (${cause}), so this session isn't recorded.`;
+		expect(out.systemMessage).toBe(notice);
+		expect(readMode(t.agent.dir, "s1")).toMatchObject({ mode: "read-only", reason: notice });
+		await runHook("user-prompt-submit", input(t, { prompt: "Not recorded.", prompt_id: "p-1" }), c);
+		expect(pendingEvents(t.agent.dir, "s1")).toEqual([]);
 	});
 });
 

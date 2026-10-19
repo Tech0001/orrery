@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { confirmPrompt, projectsFolder, TranscriptReader, transcriptIn } from "../../src/claude/transcript.ts";
+import { confirmPrompt, projectsFolder, TranscriptReader, transcriptIn, unreadableHere } from "../../src/claude/transcript.ts";
 import { tempDir } from "../agent/support.ts";
 import { cleanupDirs, testAgent } from "./support.ts";
 import { line } from "./transcript-lines.ts";
@@ -100,6 +100,11 @@ describe("transcriptIn: a transcript path only under Claude Code's projects fold
 		writeFileSync(join(dir, "outside", "real.jsonl"), "");
 		symlinkSync(join(dir, "outside", "real.jsonl"), join(projects, "p", "link.jsonl"));
 		expect(transcriptIn(join(projects, "p", "link.jsonl"), projects)).toBeUndefined();
+	});
+
+	it.skipIf(process.platform !== "linux")("on Linux, says why when /proc/self/fd can't be read, through which a transcript is judged", () => {
+		expect(unreadableHere()).toBeUndefined();
+		expect(unreadableHere("/nonexistent/fd")).toBe("/nonexistent/fd can't be read, and Orrery reads Claude Code's transcript only through it");
 	});
 
 	it("follows a projects folder that is itself a link (a ~/.claude kept elsewhere)", () => {
