@@ -1,21 +1,25 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/agent/config.ts";
 import { orreryHome } from "../../src/agent/home.ts";
+import { ALLOWED_INSIDE as ALLOWED_ALONE } from "../../src/agent/inside-commands.ts";
 import { claimToken, newToken } from "../../src/agent/pick.ts";
 import { writePrivate } from "../../src/agent/private-file.ts";
 import {
 	ALLOWED_INSIDE,
 	ancestors,
 	forgetSession,
+	type Inside,
 	insideSession,
 	liveSession,
+	nestedNotice,
 	processStart,
 	recordSession,
 	type SessionDeps,
+	type SessionTool,
 } from "../../src/agent/sessions.ts";
 import { configContent } from "../../src/opencode/options.ts";
 
@@ -269,32 +273,49 @@ describe("insideSession by markers", () => {
 		expect(insideSession([config.dataDir], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token }, config, linux(table, 50))).toEqual({ agent: "Atlas", tool: "omp", via: "marker", dataDir: config.dataDir });
 	});
 
-	it("an ORRERY_AGENT that names no configured agent is no marker; with no config there are none", () => {
+	it("an ORRERY_AGENT that names no agent of a loaded config is no marker (a scratch home's config)", () => {
 		const { config } = world();
 		const deps = linux(chain(), 50);
 		expect(insideSession([config.dataDir], { ORRERY_AGENT: "Ghost", ORRERY_AGENT_TOKEN: newToken() }, config, deps)).toBeUndefined();
-		expect(insideSession([config.dataDir], { ORRERY_AGENT: "Atlas" }, undefined, deps)).toBeUndefined();
 	});
 
-	it("CODEX_THREAD_ID or CODEX_SESSION_ID naming a live record's Codex session is that agent", () => {
+	it("with no config, any marker is a session of unknown identity", () => {
+		const { root } = world();
+		const deps = linux(chain(), 50);
+		const dir = join(root, "data");
+		const unknown = { agent: undefined, tool: undefined, via: "marker", dataDir: dir };
+		const plugin = configContent(join(root, "app", "current", "extensions", "opencode"), { agent: "Atlas", tokenFile: join(root, "token") });
+		const markers = [{ ORRERY_AGENT: "Atlas" }, { ORRERY_AGENT_TOKEN: newToken() }, { CLAUDE_PID: "77" }, { CODEX_THREAD_ID: "019a-thread" }, { CODEX_SESSION_ID: "019a-thread" }, { OPENCODE_CONFIG_CONTENT: plugin }];
+		for (const env of markers) expect(insideSession([dir], env, undefined, deps), JSON.stringify(env)).toEqual(unknown);
+		// No marker: an empty or blank one, or a config content without Orrery's plugin.
+		for (const env of [{}, { ORRERY_AGENT: " " }, { CLAUDE_PID: "" }, { OPENCODE_CONFIG_CONTENT: JSON.stringify({ plugins: ["their-plugin"] }) }]) expect(insideSession([dir], env, undefined, deps), JSON.stringify(env)).toBeUndefined();
+	});
+
+	it("CODEX_THREAD_ID or CODEX_SESSION_ID naming a live record's Codex session is a session; whose, only a claimed token says", () => {
 		const { config } = world();
 		const table = chain();
 		expect(recordSession(config.dataDir, { agent: "Birch", tool: "codex", pid: 77, codexSession: "019a-thread" }, linux(table))).toBe(true);
 		const deps = linux(table, 50);
-		const birch = { agent: "Birch", tool: "codex", via: "marker", dataDir: config.dataDir };
-		expect(insideSession([config.dataDir], { CODEX_THREAD_ID: "019a-thread" }, config, deps)).toEqual(birch);
-		expect(insideSession([config.dataDir], { CODEX_SESSION_ID: "019a-thread" }, config, deps)).toEqual(birch);
+		const unknown = { agent: undefined, tool: "codex", via: "marker", dataDir: config.dataDir };
+		expect(insideSession([config.dataDir], { CODEX_THREAD_ID: "019a-thread" }, config, deps)).toEqual(unknown);
+		expect(insideSession([config.dataDir], { CODEX_SESSION_ID: "019a-thread" }, config, deps)).toEqual(unknown);
+		const token = newToken();
+		claimToken(join(config.dataDir, "agents", "Birch"), token, 77, deps.alive);
+		expect(insideSession([config.dataDir], { CODEX_THREAD_ID: "019a-thread", ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: token }, config, deps)).toEqual({ agent: "Birch", tool: "codex", via: "marker", dataDir: config.dataDir });
 		expect(insideSession([config.dataDir], { CODEX_THREAD_ID: "019b-other" }, config, deps)).toBeUndefined();
 		delete table[77];
 		expect(insideSession([config.dataDir], { CODEX_THREAD_ID: "019a-thread" }, config, deps)).toBeUndefined();
 	});
 
-	it("CLAUDE_PID naming a live Claude Code record is that agent; one naming another tool's record, or none, is no marker", () => {
+	it("CLAUDE_PID naming a live Claude Code record is a session; whose, only a claimed token says; another tool's record, or none, is no marker", () => {
 		const { config } = world();
 		const table = chain();
 		const deps = linux(table, 50);
 		expect(recordSession(config.dataDir, { agent: "Atlas", tool: "claude-code", pid: 77 }, linux(table))).toBe(true);
-		expect(insideSession([config.dataDir], { CLAUDE_PID: "77" }, config, deps)).toEqual({ agent: "Atlas", tool: "claude-code", via: "marker", dataDir: config.dataDir });
+		expect(insideSession([config.dataDir], { CLAUDE_PID: "77" }, config, deps)).toEqual({ agent: undefined, tool: "claude-code", via: "marker", dataDir: config.dataDir });
+		const token = newToken();
+		claimToken(join(config.dataDir, "agents", "Atlas"), token, 77, deps.alive);
+		expect(insideSession([config.dataDir], { CLAUDE_PID: "77", ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token }, config, deps)).toEqual({ agent: "Atlas", tool: "claude-code", via: "marker", dataDir: config.dataDir });
 		forgetSession(config.dataDir, 77);
 		expect(recordSession(config.dataDir, { agent: "Atlas", tool: "pi", pid: 77 }, linux(table))).toBe(true);
 		expect(insideSession([config.dataDir], { CLAUDE_PID: "77" }, config, deps)).toBeUndefined();
@@ -327,20 +348,57 @@ describe("insideSession by markers", () => {
 		expect(insideSession([config.dataDir], { ...env, OPENCODE_CONFIG_CONTENT: configContent(plugin, { agent: "Atlas", tokenFile: stray }) }, config, deps)).toMatchObject({ agent: undefined, via: "marker" });
 	});
 
-	it("markers that name different agents leave the identity unknown; one with no identity yields to one with", () => {
+	it("a detached process that copies another agent's CLAUDE_PID or Codex id gets no identity from it", () => {
 		const { config } = world();
 		const table = chain();
 		const deps = linux(table, 50);
+		// Atlas's Claude Code (77) and Birch's Codex (88) are running, neither above 50; the process proves only Birch's token, its own.
+		table[88] = { ppid: 1, start: "880" };
 		expect(recordSession(config.dataDir, { agent: "Atlas", tool: "claude-code", pid: 77 }, linux(table))).toBe(true);
-		const token = newToken();
-		claimToken(join(config.dataDir, "agents", "Birch"), token, 30, deps.alive);
-		expect(insideSession([config.dataDir], { CLAUDE_PID: "77", ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: token }, config, deps)).toMatchObject({ agent: undefined, via: "marker" });
-		expect(insideSession([config.dataDir], { CLAUDE_PID: "77", ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: newToken() }, config, deps)).toEqual({ agent: "Atlas", tool: "claude-code", via: "marker", dataDir: config.dataDir });
+		expect(recordSession(config.dataDir, { agent: "Birch", tool: "codex", pid: 88, codexSession: "019a-thread" }, linux(table))).toBe(true);
+		const birch = newToken();
+		claimToken(join(config.dataDir, "agents", "Birch"), birch, 88, deps.alive);
+		expect(insideSession([config.dataDir], { CLAUDE_PID: "77" }, config, deps)).toMatchObject({ agent: undefined, via: "marker" });
+		expect(insideSession([config.dataDir], { CLAUDE_PID: "77", ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: birch }, config, deps)).toMatchObject({ agent: undefined, via: "marker" });
+		// And the other way: Atlas, proven, copying Birch's Codex id.
+		const atlas = newToken();
+		claimToken(join(config.dataDir, "agents", "Atlas"), atlas, 77, deps.alive);
+		expect(insideSession([config.dataDir], { CODEX_THREAD_ID: "019a-thread", ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: atlas }, config, deps)).toMatchObject({ agent: undefined, via: "marker" });
+		// An unproven ORRERY_AGENT naming the record's agent proves nothing either.
+		expect(insideSession([config.dataDir], { CLAUDE_PID: "77", ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: newToken() }, config, deps)).toMatchObject({ agent: undefined, via: "marker" });
+	});
+
+	it("tokens proving different agents leave the identity unknown; a marker with no identity yields to one with", () => {
+		const { root, config } = world();
+		const table = chain();
+		const deps = linux(table, 50);
+		const env = { ORRERY_HOME: join(root, "home") };
+		const [atlas, birch] = [newToken(), newToken()];
+		const tokenFile = join(orreryHome(env), "tokens", "opencode-123-0123456789ab");
+		writePrivate(tokenFile, atlas);
+		claimToken(join(config.dataDir, "agents", "Atlas"), atlas, 77, deps.alive);
+		claimToken(join(config.dataDir, "agents", "Birch"), birch, 30, deps.alive);
+		const opencode = configContent(join(root, "app", "current", "extensions", "opencode"), { agent: "Atlas", tokenFile });
+		expect(insideSession([config.dataDir], { ...env, OPENCODE_CONFIG_CONTENT: opencode, ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: birch }, config, deps)).toMatchObject({ agent: undefined, via: "marker" });
+		expect(insideSession([config.dataDir], { ...env, OPENCODE_CONFIG_CONTENT: opencode, ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: newToken() }, config, deps)).toEqual({ agent: "Atlas", tool: "opencode", via: "marker", dataDir: config.dataDir });
+	});
+});
+
+describe("nestedNotice", () => {
+	it("names the outer session's agent and tool, or says an agent's, and leaves out a tool it doesn't know", () => {
+		const inside = (agent: string | undefined, tool: SessionTool | undefined): Inside => ({ agent, tool, via: "ancestry", dataDir: "/data" });
+		expect(nestedNotice(inside("Atlas", "claude-code"))).toBe("Orrery: started inside Atlas's session (Claude Code), so this one opens no memory and records nothing.");
+		expect(nestedNotice(inside("Atlas", "run"))).toBe("Orrery: started inside Atlas's session (orrery run), so this one opens no memory and records nothing.");
+		expect(nestedNotice(inside(undefined, "pi"))).toBe("Orrery: started inside an agent's session (pi), so this one opens no memory and records nothing.");
+		expect(nestedNotice(inside("Birch", undefined))).toBe("Orrery: started inside Birch's session, so this one opens no memory and records nothing.");
+		expect(nestedNotice(inside(undefined, undefined))).toBe("Orrery: started inside an agent's session, so this one opens no memory and records nothing.");
 	});
 });
 
 describe("ALLOWED_INSIDE", () => {
-	it("names the commands that run inside an agent session", () => {
+	it("names the commands that run inside an agent session, in a module of its own with no imports, which sessions.ts re-exports", () => {
+		expect(ALLOWED_INSIDE).toBe(ALLOWED_ALONE);
+		expect(readFileSync(new URL("../../src/agent/inside-commands.ts", import.meta.url), "utf8")).not.toMatch(/^import /m);
 		expect([...ALLOWED_INSIDE].sort()).toEqual(["browse", "claude-hook", "claude-mod", "codex-hook", "compactor", "help", "holder", "mcp", "status", "usage"]);
 	});
 });

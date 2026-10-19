@@ -7,9 +7,8 @@
  * this Orrery has not seen is checked first (src/opencode/check.ts).
  */
 
-import { resolve } from "node:path";
 import { wiringRoot } from "../agent/running.ts";
-import { endsWithSegments, ENTRY_TAILS, entries } from "../install/layout.ts";
+import { entries, namesOrreryPlugin } from "../install/layout.ts";
 
 /** OpenCode 2.0.30's subcommands that open a session and take --standalone of their own: it goes after their name. */
 const SESSION_SUBCOMMANDS: ReadonlySet<string> = new Set(["run", "mini"]);
@@ -39,11 +38,6 @@ export function inheritsOrreryPlugin(env: NodeJS.ProcessEnv): boolean {
 	} catch {
 		return false; // not JSON (OpenCode also reads JSONC): the person's own
 	}
-}
-
-/** Whether a plugin entry's target (a path) is an Orrery plugin folder, of a release or a checkout. */
-function namesOrreryPlugin(target: string): boolean {
-	return ENTRY_TAILS.opencode.some((tail) => endsWithSegments(resolve(target), tail));
 }
 
 /**

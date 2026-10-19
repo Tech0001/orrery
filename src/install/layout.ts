@@ -56,6 +56,14 @@ export function endsWithSegments(path: string, tail: string): boolean {
 	return path === tail || path.endsWith(`${sep}${tail}`);
 }
 
+/**
+ * Whether a plugin entry's target (a path) in OpenCode's config is an Orrery plugin folder, of a release or a checkout:
+ * what the launch drops from an inherited config (src/opencode/launch.ts) and what marks a session (src/agent/sessions.ts).
+ */
+export function namesOrreryPlugin(target: string): boolean {
+	return ENTRY_TAILS.opencode.some((tail) => endsWithSegments(resolve(target), tail));
+}
+
 /** Whether `path` is `<app>/<one folder>/<tail>` for one of `tails` (by app's literal or real path): an entry in current or a version. */
 export function inApp(app: string, path: string, tails: readonly string[]): boolean {
 	let real = resolve(app);

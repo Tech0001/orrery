@@ -3,9 +3,8 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 
 // A guard: it passes trivially in a plain shell, and matters in a run started inside an agent (`orrery agent`).
-it("starts every test file without ORRERY_AGENT or ORRERY_AGENT_TOKEN (test/setup-env.ts)", () => {
-	expect(process.env.ORRERY_AGENT).toBeUndefined();
-	expect(process.env.ORRERY_AGENT_TOKEN).toBeUndefined();
+it("starts every test file without an agent session's markers (test/setup-env.ts)", () => {
+	for (const key of ["ORRERY_AGENT", "ORRERY_AGENT_TOKEN", "CLAUDE_PID", "CODEX_THREAD_ID", "CODEX_SESSION_ID", "OPENCODE_CONFIG_CONTENT"]) expect(process.env[key], key).toBeUndefined();
 });
 
 it("points every test's update check at a closed local port (test/setup-env.ts)", () => {

@@ -11,7 +11,9 @@
  * locale so every process spells it alike). A record whose process is gone, or started at another time, is stale: the
  * look that finds it takes it down exclusively (removeStale, src/agent/exclusive.ts), so a fresh record that took the
  * name meanwhile stays, and each new record takes out the dead ones beside it. A record of a live process that can't
- * be judged now (its start can't be read, or the file is no record this version reads) is kept and counts for nothing.
+ * be judged now (its start can't be read, or the file is no record this version reads) is kept, since it may be a real
+ * session's, and counts for nothing: its pid may be reused by now, by the user's own terminal among others, and that is
+ * never refused.
  *
  * Ancestry. A process is inside a session when one of its ancestors is recorded in a data folder it asks about; the
  * nearest one wins, and its record is the identity. Linux walks /proc one parent at a time; macOS takes one
@@ -19,14 +21,18 @@
  * skipped when no data folder asked about holds a record, so a hook or a command outside every session costs a readdir.
  *
  * Markers, the backup when the ancestry is cut (a detached process; Codex's sandboxed shell, in its own pid namespace).
- * They count only for the config's data folder, and one naming an agent the config doesn't have is ignored:
- * - ORRERY_AGENT naming a configured agent: that agent when ORRERY_AGENT_TOKEN is claimed by a live process in the
- *   agent's claims (src/agent/pick.ts), else a session whose identity is unknown.
+ * With a config they count only for its data folder, and one naming an agent the config doesn't have is ignored (a
+ * scratch home's config, a developer's). Each says there is a session; only a secret says whose:
+ * - ORRERY_AGENT naming a configured agent: that agent when ORRERY_AGENT_TOKEN, the launch's secret, is claimed by a
+ *   live process in the agent's claims (src/agent/pick.ts).
  * - OPENCODE_CONFIG_CONTENT carrying Orrery's plugin for a configured agent (src/opencode/options.ts): that agent when the
- *   token in the launch's token file (src/opencode/token-file.ts) is claimed so, else unknown.
+ *   token in the launch's token file (src/opencode/token-file.ts) is claimed so.
  * - CLAUDE_PID naming a live Claude Code record, or CODEX_THREAD_ID / CODEX_SESSION_ID equal to a live record's Codex
- *   session: that record's agent.
- * Markers naming different agents leave the identity unknown; one with no identity yields to one with.
+ *   session: never an identity by itself. Pids and Codex ids are anyone's to read, so a detached process could copy
+ *   another agent's; the record's agent stands only when a token proves the same agent.
+ * Tokens proving different agents, or a record naming another agent than the token, leave the identity unknown. Without
+ * a config nothing can be checked, so any marker (ORRERY_AGENT, ORRERY_AGENT_TOKEN, CLAUDE_PID, a Codex id, or an
+ * OPENCODE_CONFIG_CONTENT naming Orrery's plugin) is a session of unknown identity.
  *
  * Nothing here throws: a record that can't be written makes recordSession false, for its caller to say so, and a
  * folder or file that can't be read holds no session.
@@ -36,25 +42,24 @@
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { endsWithSegments, ENTRY_TAILS } from "../install/layout.ts";
-import { type PluginOptions, readPluginOptions } from "../opencode/options.ts";
+import { namesOrreryPlugin } from "../install/layout.ts";
+import { readPluginOptions } from "../opencode/options.ts";
 import { launchTokenFile, readTokenFile } from "../opencode/token-file.ts";
 import type { AgentConfig, HarnessConfig } from "./config.ts";
 import { removeStale, stray } from "./exclusive.ts";
 import { AGENT_ENV, agentNamed, claimedBy, TOKEN_ENV } from "./pick.ts";
 import { writePrivate } from "./private-file.ts";
 import { processAlive, procStat } from "./process.ts";
+import { safeText } from "./source-labels.ts";
 
-/**
- * The `orrery` commands that run inside an agent session (spec §3); every other one is refused there. Kept here, beside
- * the lookup, for the CLI's gate and the guard alike: the guard loads in pi and OMP, and can't import the CLI.
- */
-export const ALLOWED_INSIDE: ReadonlySet<string> = new Set(["help", "status", "usage", "browse", "compactor", "claude-hook", "codex-hook", "holder", "mcp", "claude-mod"]);
+export { ALLOWED_INSIDE } from "./inside-commands.ts";
 
 /** The tool a session runs in: `run` is `orrery run`. */
 export type SessionTool = "pi" | "omp" | "claude-code" | "codex" | "opencode" | "run";
 
-const TOOLS: ReadonlySet<string> = new Set<SessionTool>(["pi", "omp", "claude-code", "codex", "opencode", "run"]);
+/** Each tool as a notice names it. */
+const TOOL_NAMES: Readonly<Record<SessionTool, string>> = { pi: "pi", omp: "OMP", "claude-code": "Claude Code", codex: "Codex", opencode: "OpenCode", run: "orrery run" };
+const TOOLS: ReadonlySet<string> = new Set(Object.keys(TOOL_NAMES));
 
 export interface SessionRecord {
 	readonly agent: string;
@@ -73,7 +78,7 @@ export interface Inside {
 	readonly agent: string | undefined;
 	readonly tool: SessionTool | undefined;
 	readonly via: "ancestry" | "marker";
-	/** The data folder whose record or config found it. */
+	/** The data folder whose record or config found it; with no config, the first data folder asked about ("" for none). */
 	readonly dataDir: string;
 }
 
@@ -213,7 +218,11 @@ function standing(file: string, pid: number, deps: SessionDeps): SessionRecord |
 	return record.start === start ? record : "stale";
 }
 
-/** The session process `pid` hosts for `dataDir`'s memory: only while it lives and started when its record says. A stale record goes. */
+/**
+ * The session process `pid` hosts for `dataDir`'s memory: only while it lives and started when its record says. A stale
+ * record goes. A live process whose start can't be read now is no session, though its record stays (it may be a real
+ * session's): the pid may by now be another process's, the user's own terminal among others, and that is never refused.
+ */
 export function liveSession(dataDir: string, pid: number, deps: SessionDeps = {}): SessionRecord | undefined {
 	if (!positive(pid)) return undefined;
 	const file = fileOf(dataDir, pid);
@@ -296,9 +305,13 @@ export function forgetSession(dataDir: string, pid: number): void {
 	}
 }
 
+/** The variables that mark a session, OPENCODE_CONFIG_CONTENT aside (it marks one only when it names Orrery's plugin). */
+const MARKERS = [AGENT_ENV, TOKEN_ENV, "CLAUDE_PID", "CODEX_THREAD_ID", "CODEX_SESSION_ID"] as const;
+
 /**
  * The session this process (or deps.from) runs in: the nearest ancestor recorded in any of `dataDirs`, else what the
- * markers in `env` say for `config`'s data folder (none without a config). Undefined: no session.
+ * markers in `env` say for `config`'s data folder; with no config, any marker is a session of unknown identity (module
+ * doc). Undefined: no session.
  */
 export function insideSession(dataDirs: readonly string[], env: NodeJS.ProcessEnv, config: HarnessConfig | undefined, deps: SessionDeps = {}): Inside | undefined {
 	const seen = new Set<string>();
@@ -318,12 +331,19 @@ export function insideSession(dataDirs: readonly string[], env: NodeJS.ProcessEn
 			}
 		}
 	}
-	return config === undefined ? undefined : byMarkers(config, env, deps);
+	if (config !== undefined) return byMarkers(config, env, deps);
+	// Nothing to check markers against: any of them is a session, whose agent nobody can say.
+	const marked = MARKERS.some((key) => (env[key]?.trim() ?? "") !== "") || orreryPluginOptions(env.OPENCODE_CONFIG_CONTENT).length > 0;
+	return marked ? { agent: undefined, tool: undefined, via: "marker", dataDir: dataDirs[0] ?? "" } : undefined;
 }
 
-/** What one marker says: the agent it proves (undefined: none proven) and the tool, when known. */
+/**
+ * What one marker says: the agent a secret proves (`proves`), or the agent a record names unproven (`names`), and the
+ * tool, when known.
+ */
 interface Mark {
-	readonly agent: string | undefined;
+	readonly proves?: string;
+	readonly names?: string;
 	readonly tool: SessionTool | undefined;
 }
 
@@ -332,11 +352,15 @@ function byMarkers(config: HarnessConfig, env: NodeJS.ProcessEnv, deps: SessionD
 	const dataDir = config.dataDir;
 	const alive = deps.alive ?? processAlive;
 	const marks: Mark[] = [];
-	// Records name the agent themselves.
+	// Records: a session, and an agent that stands only when a token proves it too (CLAUDE_PID and Codex ids are public).
 	const claude = liveSession(dataDir, Number(env.CLAUDE_PID), deps);
-	if (claude?.tool === "claude-code") marks.push(claude);
+	if (claude?.tool === "claude-code") marks.push({ names: claude.agent, tool: claude.tool });
 	const codexIds = [env.CODEX_THREAD_ID, env.CODEX_SESSION_ID].filter((id) => id !== undefined && id !== "");
-	if (codexIds.length > 0) marks.push(...liveSessions(dataDir, deps).filter((record) => record.codexSession !== undefined && codexIds.includes(record.codexSession)));
+	if (codexIds.length > 0) {
+		for (const record of liveSessions(dataDir, deps)) {
+			if (record.codexSession !== undefined && codexIds.includes(record.codexSession)) marks.push({ names: record.agent, tool: record.tool });
+		}
+	}
 	// A name alone says there is a session; its token, claimed by a live process in the agent's claims, says whose.
 	const claimant = (agent: AgentConfig, token: string | undefined): number | undefined => {
 		const pid = token === undefined ? undefined : claimedBy(agent.dir, token);
@@ -346,27 +370,30 @@ function byMarkers(config: HarnessConfig, env: NodeJS.ProcessEnv, deps: SessionD
 	const named = name ? agentNamed(config, name) : undefined;
 	if (named !== undefined) {
 		const pid = claimant(named, env[TOKEN_ENV]);
-		marks.push(pid === undefined ? { agent: undefined, tool: undefined } : { agent: named.name, tool: liveSession(dataDir, pid, deps)?.tool });
+		marks.push(pid === undefined ? { tool: undefined } : { proves: named.name, tool: liveSession(dataDir, pid, deps)?.tool });
 	}
-	for (const options of orreryPlugins(env.OPENCODE_CONFIG_CONTENT)) {
+	for (const given of orreryPluginOptions(env.OPENCODE_CONFIG_CONTENT)) {
+		const options = readPluginOptions(given);
+		if ("problem" in options) continue;
 		const agent = agentNamed(config, options.agent);
 		if (agent === undefined) continue;
-		marks.push({ agent: claimant(agent, launchToken(options.tokenFile, env)) === undefined ? undefined : agent.name, tool: "opencode" });
+		marks.push(claimant(agent, launchToken(options.tokenFile, env)) === undefined ? { tool: "opencode" } : { proves: agent.name, tool: "opencode" });
 	}
 	if (marks.length === 0) return undefined;
-	const agents = new Set(marks.map((mark) => mark.agent).filter((agent) => agent !== undefined));
-	const agent = agents.size === 1 ? [...agents][0] : undefined;
-	const tool = marks.find((mark) => (agent === undefined || mark.agent === agent) && mark.tool !== undefined)?.tool;
+	// One agent proven, and no record naming another.
+	const proven = new Set(marks.flatMap((mark) => (mark.proves === undefined ? [] : [mark.proves])));
+	const one = proven.size === 1 ? [...proven][0] : undefined;
+	const agent = one !== undefined && marks.every((mark) => mark.names === undefined || mark.names === one) ? one : undefined;
+	const tool = marks.find((mark) => (agent === undefined || mark.proves === agent || mark.names === agent) && mark.tool !== undefined)?.tool;
 	return { agent, tool, via: "marker", dataDir };
 }
 
 /**
- * The options of Orrery's plugin entries in an OPENCODE_CONFIG_CONTENT, as a launch writes them (configContent,
- * src/opencode/options.ts): entries whose package is an Orrery plugin folder, of a release or a checkout (as
- * src/opencode/launch.ts tells them), with options the plugin takes. JSON only, as Orrery writes it: JSONC is the
- * person's own.
+ * The options given to each of Orrery's plugin entries in an OPENCODE_CONFIG_CONTENT, as a launch writes them
+ * (configContent, src/opencode/options.ts): entries whose package is an Orrery plugin folder (namesOrreryPlugin), one
+ * item each, as given (undefined for none). JSON only, as Orrery writes it: JSONC is the person's own.
  */
-function orreryPlugins(content: string | undefined): PluginOptions[] {
+function orreryPluginOptions(content: string | undefined): unknown[] {
 	if (content === undefined || content === "") return [];
 	let plugins: unknown;
 	try {
@@ -375,14 +402,18 @@ function orreryPlugins(content: string | undefined): PluginOptions[] {
 		return [];
 	}
 	if (!Array.isArray(plugins)) return [];
-	const found: PluginOptions[] = [];
+	const found: unknown[] = [];
 	for (const entry of plugins as ({ package?: unknown; options?: unknown } | null)[]) {
-		const target = entry?.package;
-		if (typeof target !== "string" || !ENTRY_TAILS.opencode.some((tail) => endsWithSegments(resolve(target), tail))) continue;
-		const options = readPluginOptions(entry?.options);
-		if (!("problem" in options)) found.push(options);
+		if (typeof entry?.package === "string" && namesOrreryPlugin(entry.package)) found.push(entry.options);
 	}
 	return found;
+}
+
+/** What a tool session started inside an agent's session says: it opens no memory and records nothing. */
+export function nestedNotice(inside: Inside): string {
+	const outer = inside.agent === undefined ? "an agent" : safeText(inside.agent);
+	const tool = inside.tool === undefined ? "" : ` (${TOOL_NAMES[inside.tool]})`;
+	return `Orrery: started inside ${outer}'s session${tool}, so this one opens no memory and records nothing.`;
 }
 
 /** The token in a launch's token file, or undefined when the file is no launch's (src/opencode/token-file.ts) or can't be read. */
