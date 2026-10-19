@@ -84,16 +84,29 @@ The instructions travel on Codex's command line, so they show in `ps`, like ever
 
 ## What's recorded
 
-- Your prompts, and the final reply of each turn. Tool calls, their output, the model's reasoning, and subagents'
-  turns are not kept. Codex's own commands (`/compact`, `/model`) never reach the hooks.
+- Your prompts, and the agent's reply each time a turn ends (a turn that a spawned agent's report wakes again ends
+  twice, and both replies are kept). Tool calls, their output, the model's reasoning, and spawned agents' threads are
+  not kept. Codex's own commands (`/compact`, `/model`) never reach the hooks.
 - Only what Codex's own record of the session confirms. Codex runs its hooks through a pipe, so any program could feed
-  Orrery's hook command a made-up prompt; the session's rollout (Codex's session file under `~/.codex/sessions`, found
-  by the session's id, never by what the hook says) is the proof. A session start counts only when this Codex holds
-  that rollout open; a prompt once the rollout has your message for that turn, with the same words, in a turn you
-  started (in the TUI or with `codex exec`); a reply once it is the turn's final message. What the rollout never
-  confirms (within 30 seconds of the turn's end) is dropped, and `orrery status` counts it: `N unconfirmed messages not
-  recorded`. A session start that can't be confirmed says so and records nothing: `Orrery: can't confirm this is this
-  Codex's own session (…), so it opens no memory and records nothing.`
+  Orrery's hook command made-up words; the session's rollout (Codex's session file under `~/.codex/sessions`, found by
+  the session's id, never by what the hook says) is the proof:
+  - a session counts only when its rollout says it is your own thread (a spawned agent's thread is never recorded)
+    and this Codex holds that rollout open;
+  - a prompt counts once the rollout has your message for that turn, with the same words, in a turn you started (in
+    the TUI or with `codex exec`). A turn another agent started, or one put in from outside (`codex queue`), is not
+    yours;
+  - a reply counts once the rollout shows the agent wrote those words in that turn.
+
+  What the rollout never confirms is dropped after a grace of 30 seconds, and `orrery status` counts it: `N
+  unconfirmed messages not recorded` (`unconfirmedMessages` in `orrery status --json`). A session start that can't be
+  confirmed says so and records nothing: `Orrery: can't confirm this is this Codex's own session (…), so it opens no
+  memory and records nothing.` A Codex older than 0.162.1 doesn't record who started a turn, so its session isn't
+  recorded either: `Orrery: this Codex (<version>) doesn't record who started a turn; Orrery needs Codex 0.162.1 or
+  later, so this session isn't recorded.`
+- Moving to another session in Codex's window (`/clear`, `/resume`, `/fork`) moves the recording with it: Codex starts
+  a turn of the new session first, and Orrery takes the session only then. A session start for another session with
+  no turn of it running is refused (`… Codex moves to a session with a turn of it running, and none is …`), and
+  nothing changes.
 - The hooks only drop each event in a spool; a recorder in the background holds the agent for the session, records the
   spool into memory, runs the summaries, and leaves once the session has ended and the summaries are done (at most 10
   minutes). It is the same recorder Claude Code uses.
@@ -249,8 +262,13 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
   appends to a rollout can fake a turn Orrery then records.
 - **A process's decision that can't be saved** (which agent this Codex is): resuming inside Codex's own window can then
   decide again in the same process.
-- **macOS is not yet verified.** There Orrery asks `lsof` which files Codex holds open; if that fails, the session
-  start says so and records nothing.
+- **`codex queue` adds a turn to a live session.** Any process of yours, the agent's own shell included, can put a
+  message into the agent's running Codex session that way. Orrery doesn't record it as yours (Codex marks the turn as
+  queued from outside), but the model acts on it, as on anything a process of yours sends.
+- **One thread per Codex process.** A Codex process that runs several threads at once (in an editor, or through its app
+  server) records only the one its host record names; the others aren't recorded.
+- **macOS is not yet verified.** There Orrery asks `lsof` which files Codex holds open, and checks the file at that
+  path; if that fails, the session start says so and records nothing.
 
 ## Your own Codex settings still apply
 
@@ -274,12 +292,17 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
 - No status line and no memory: the session was a plain `codex`. Open the agent with `orrery agent <Name> --tool codex`.
 - "read-only": the agent is open elsewhere, in the tool the notice names. `orrery status` shows it.
 - "not recording yet", or "did not answer": read `holder.log` in the agent's data folder, under `claude/`.
-- "can't confirm this is this Codex's own session": Orrery could not find the session's rollout open in this Codex (the
-  reason follows in brackets), so the session is not recorded. Open the agent again with `orrery agent`.
-- "unconfirmed messages not recorded" in `orrery status`: prompts or replies the rollout never confirmed.
-- After updating Orrery, restart open Codex sessions. One started before the update records the old way, without the
-  rollout check, while its old recorder runs, and its prompts are dropped once a new recorder takes over; a compaction
-  doesn't change that, only `/clear` or a restart does.
+- "can't confirm this is this Codex's own session": the reason follows in brackets. Its rollout isn't there or can't
+  be read, isn't your own thread (a spawned agent's), isn't open in this Codex (or the system can't say which files
+  Codex has open), or Codex moved to a session with no turn of it running. The session is not recorded; open the agent
+  again with `orrery agent`.
+- "doesn't record who started a turn; Orrery needs Codex 0.162.1 or later": update Codex.
+- "unconfirmed messages not recorded" in `orrery status`: prompts or replies the rollout never confirmed, such as
+  words that came from outside your own turns.
+- After updating Orrery, restart open Codex sessions. One started before the update keeps recording through its old
+  recorder, without the rollout check, until that recorder exits; its own compaction doesn't bring the check in, a
+  `/clear` or a restart does. Prompts and replies the old version queued but had not saved are dropped and counted, as
+  far as Orrery can tell them apart.
 - `orrery status .` or `browse` refused in the agent's shell, "only help and the version run": that is Codex's
   sandbox (see The guard). Run them in your own terminal.
 - Summaries failing: check `orrery login`; switch the source with `orrery compactor <Name>`.

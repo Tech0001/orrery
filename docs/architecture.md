@@ -400,11 +400,17 @@ any process of the person's can run, so what a hook says is checked against the 
   development run under Node, a system Orrery doesn't know, a C library that won't load) or the transcript can't be
   read (no `/proc` on Linux), the session says why and records nothing; if Claude Code stops handing its hooks a socket,
   recording stops with `can't confirm prompts in this Claude Code version`, never by falling back.
-- **Codex.** Its hooks come through a pipe, so the session's rollout is the proof. A session start counts only when
-  the Codex process holds that session's rollout open (Linux `/proc/<pid>/fd`, macOS `lsof`). A prompt counts once the
-  rollout has a user message with the hook's turn id and the same words, in a turn a person started (the TUI or `codex
-  exec`); a reply once the turn's final message has the same words. The rollout is found by the recorded session id
-  under Codex's own folder, never where the hook's input says.
+- **Codex.** Its hooks come through a pipe, so the session's rollout is the proof. The rollout is found by the session
+  id under Codex's own folder, never where the hook's input says. A session start counts only when the rollout says it
+  is the person's own top-level thread (a spawned agent's thread never is) and the Codex process holds that very file
+  open (Linux `/proc/<pid>/fd`, matched by inode; macOS `lsof`). A prompt counts once the rollout has a user message
+  with the hook's turn id and the same words, in a turn the person started (`turn_trigger` `user` in the TUI or `exec`
+  for `codex exec`, and no parent turn): a turn another agent started, or one `codex queue` put in from outside, is
+  not the person's. A reply counts once an agent message of that turn has the same words (a turn can end more than
+  once, when a spawned agent's report wakes it), each line confirming one reply. Moving a Codex process to another
+  session takes a turn of that session running, which Codex starts before the session start. Codex before 0.162.1
+  doesn't say who started a turn, so its sessions are refused at the start, with a notice (Orrery needs 0.162.1 or
+  later); the field names are 0.163.0's.
 
 A prompt or reply not confirmed within a grace (30 seconds) after its turn ends is dropped and counted, in
 `claude/unconfirmed.json` in the agent's data folder; `orrery status` shows the count (`unconfirmedMessages` in its
@@ -436,11 +442,15 @@ command it was told to run.
 - Real files kept outside every Orrery data folder (credentials or an SSH identity elsewhere, in a layout of the
   person's own) are not judged by the CLI's check.
 - A second Orrery home inside the real data folder: tools started there from inside an agent's session count as nested.
-- macOS: Claude Code's caller check and Codex's checks are not yet verified on a Mac.
+- macOS: Claude Code's caller check and Codex's checks (`lsof`, the file at that path) are not yet verified on a Mac.
 - Claude Code's `/orrery:*` command events are not checked against the transcript: an injected one can only drop the
   agent's own reply.
 - Codex: when Orrery can't save a process's decision, resuming inside Codex's own window can decide again in the same
   process.
+- Codex: `codex queue` lets any process of the same user, the agent's own shell included, add a turn to a live session.
+  Orrery doesn't record it as the person's (its trigger is `queue`), but the model acts on it.
+- Codex: a Codex process that runs several threads at once (an editor, or its app server) records only the one its
+  host record names.
 - Shell-text gaps: `cd ~/.claude` and then relative paths; tools that walk a folder (`find ~/.claude -exec …`);
   `find … -exec orrery {}`, which takes its arguments from file names; extglob and zsh alternation, a gap in every
   shell-text rule (`cat ~/.(orrery|x)/config.toml`), with a fix planned.

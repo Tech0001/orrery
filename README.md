@@ -53,7 +53,7 @@ from pi to Claude Code, open the agent in another project or carry on from anoth
 
 You need:
 - Linux or macOS, x64 or arm64. On Windows, use WSL. Alpine and other musl Linux is not supported yet.
-- At least one coding tool: pi, OMP, Claude Code, Codex or OpenCode, installed on its own.
+- At least one coding tool: pi, OMP, Claude Code, Codex (0.162.1 or later) or OpenCode, installed on its own.
 - A way to make summaries: a ChatGPT or OpenRouter account, an API key, or a local model server (see
   [Summaries](#summaries)).
 
@@ -381,9 +381,11 @@ words. `orrery run` and `orrery agent` are refused there.
 any program of yours could run, so Orrery checks what they say. In Claude Code, a hook counts only when Claude Code
 itself called it, and a prompt only once Claude Code's transcript shows it as yours (typed, queued, or given to
 `claude -p`); a message another process sent into the session, such as a subagent's report, is kept as
-`[subagent] …`, never as your words, and a task notification is dropped. In Codex, a prompt or reply counts only once
-the session's rollout file has it. What is never confirmed is dropped and counted: `orrery status` shows "N unconfirmed
-messages not recorded" (`unconfirmedMessages` in `orrery status --json`). Agents may read Claude Code's and Codex's
+`[subagent] …`, never as your words, and a task notification is dropped. In Codex (0.162.1 or later; an older one's
+session isn't recorded, and Orrery says so), a prompt or reply counts only once the session's rollout file has it, in
+your own thread and a turn you started: a spawned agent's thread, and a turn another agent or `codex queue` started,
+are never recorded. What is never confirmed is dropped and counted: `orrery status` shows "N unconfirmed messages not
+recorded" (`unconfirmedMessages` in `orrery status --json`). Agents may read Claude Code's and Codex's
 session records with file tools, but no tool may change them, and shell text that names those folders
 (`~/.claude/projects`, `~/.codex/sessions`) is refused; Claude Code's own memory folder for the project stays writable.
 pi, OMP and OpenCode record inside their own process, so there is no hook to fake. Where Orrery can't make the check
