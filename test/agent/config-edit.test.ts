@@ -2,8 +2,8 @@ import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSyn
 import { join } from "node:path";
 import { parse } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
-import { ConfigError, parseConfig } from "../../src/agent/config.ts";
-import { addAgent, addRemote, removeRemote, archiveAgent, configWritable, editConfigFile, newConfigText, saveConfigText, setAgentKey } from "../../src/agent/config-edit.ts";
+import { ConfigError, parseConfig, readBy } from "../../src/agent/config.ts";
+import { addAgent, addRemote, removeRemote, archiveAgent, configWritable, editConfigFile, newConfigText, parseReads, saveConfigText, setAgentKey } from "../../src/agent/config-edit.ts";
 import { tempDir } from "./support.ts";
 
 const dirs: string[] = [];
@@ -353,5 +353,49 @@ describe("remote config edits", () => {
 		expect(next).toContain("# keep this\r\n[remotes.other]");
 		expect(next.replaceAll("\r\n", "")).not.toContain("\n");
 		expect(next.endsWith('url = "https://other.example.com"')).toBe(true);
+	});
+});
+
+describe("reads", () => {
+	const TEXT = `# agents\n[agents.Atlas]\nfolder = "/w/atlas"   # home\ncompactor_model = "openai/gpt-6.1-sol"\n\n[agents.Birch]\ncompactor_model = "openai/gpt-6.1-sol"\nreads = ["Atlas"]  # who\n\n[agents.Cedar]\ncompactor_model = "openai/gpt-6.1-sol"\n`;
+	const config = parseConfig(TEXT, "/c");
+
+	it("setAgentKey writes a list of names, replacing an existing array and keeping comments", () => {
+		const added = setAgentKey(TEXT, "/c", "Atlas", "reads", ["Birch"]);
+		expect(added).toContain('folder = "/w/atlas"   # home\ncompactor_model = "openai/gpt-6.1-sol"\nreads = ["Birch"]\n');
+		expect(added.startsWith("# agents\n")).toBe(true);
+		const replaced = setAgentKey(TEXT, "/c", "Birch", "reads", ["Atlas", "Cedar"]);
+		expect(replaced).toContain('reads = ["Atlas", "Cedar"]  # who\n');
+		expect(parseConfig(replaced, "/c").agents.get("Birch")?.reads).toEqual(["Atlas", "Cedar"]);
+		expect(parseConfig(setAgentKey(TEXT, "/c", "Cedar", "reads", ["*"]), "/c").agents.get("Cedar")?.reads).toEqual(["*"]);
+	});
+
+	it("an empty list removes the key, keeping its comment", () => {
+		const cleared = setAgentKey(TEXT, "/c", "Birch", "reads", []);
+		expect(cleared).not.toContain("reads");
+		expect(cleared).toContain("# who\n");
+		expect(parseConfig(cleared, "/c").agents.get("Birch")?.reads).toEqual([]);
+		expect(setAgentKey(TEXT, "/c", "Cedar", "reads", [])).toBe(TEXT);
+	});
+
+	it("refuses an array that spans several lines", () => {
+		const multi = `[agents.A]\ncompactor_model = "a/b"\nreads = [\n  "B",\n]\n[agents.B]\ncompactor_model = "a/b"\n`;
+		expect(() => setAgentKey(multi, "/c", "A", "reads", ["B"])).toThrow(/by hand/);
+	});
+
+	it("parseReads reads all, none and a comma list, and refuses unknown names and itself", () => {
+		expect(parseReads("all", config, "Atlas")).toEqual(["*"]);
+		expect(parseReads("none", config, "Atlas")).toEqual([]);
+		expect(parseReads("birch,Birch", config, "Atlas")).toEqual(["Birch"]);
+		expect(parseReads(" Birch , cedar ", config, "Atlas")).toEqual(["Birch", "Cedar"]);
+		expect(() => parseReads("Nope", config, "Atlas")).toThrow(/Unknown agent: Nope\. Known agents: Atlas, Birch, Cedar/);
+		expect(() => parseReads("Atlas", config, "Atlas")).toThrow("an agent always reads itself");
+		expect(() => parseReads("Birch,atlas", config, "Atlas")).toThrow("an agent always reads itself");
+	});
+
+	it("readBy lists the agents naming one, apart from those reading all", () => {
+		const text = `${TEXT}[agents.Dune]\ncompactor_model = "a/b"\nreads = ["*"]\n`;
+		expect(readBy(parseConfig(text, "/c"), "Atlas")).toEqual({ names: ["Birch"], everyone: ["Dune"] });
+		expect(readBy(parseConfig(text, "/c"), "Cedar")).toEqual({ names: [], everyone: ["Dune"] });
 	});
 });

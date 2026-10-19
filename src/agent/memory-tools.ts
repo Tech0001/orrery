@@ -119,7 +119,8 @@ function agentsText(config: HarnessConfig, reader: AgentConfig): string | Promis
 		try { return `${agent.name}: ${store.root.length} messages, last ${store.root.at(-1)?.date.slice(0, 10) ?? "never"}, ${state}`; }
 		finally { store.close(); }
 	};
-	const lines = [...config.agents.values()].map((agent) => {
+	// A local agent the caller may not read is not listed; a remote one shows only its cached public facts.
+	const lines = [...config.agents.values()].filter((agent) => agent.remote !== undefined || mayRead(reader, agent)).map((agent) => {
 		const file = join(agent.dir, "memory.sqlite");
 		if (agent.remote !== undefined) {
 			return (async () => {

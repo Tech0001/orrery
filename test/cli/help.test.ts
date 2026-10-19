@@ -98,6 +98,7 @@ describe("orrery help", () => {
 		const agent = orrery(env, "agent", "Atlas", "--help");
 		expect(agent.status, agent.stderr).toBe(0);
 		for (const usage of ["agent <Name> [--tool", "agent add <Name>", "agent set <Name>", "agent push <Name>", "agent local <Name>"]) expect(agent.stdout).toContain(`  ${usage}`);
+		expect(agent.stdout).toContain("--reads all|none|A,B");
 		expect(orrery(env, "help", "status").stdout).toContain('An agent named "."');
 		expect(orrery(env, "help", "compact").stdout).not.toContain('An agent named "."');
 		// No config was read or written, no folder made.

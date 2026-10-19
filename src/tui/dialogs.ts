@@ -314,6 +314,72 @@ export class ChatListModal extends Modal<readonly Chat[] | undefined> {
 	}
 }
 
+/** One row of a CheckListModal. */
+export interface CheckRow<T> {
+	readonly label: string;
+	readonly value: T;
+	readonly checked: boolean;
+}
+
+/**
+ * A list to tick several from. With `all`, a first row stands for every row (also those added later): while it is ticked
+ * the others show as included, and Enter answers "all". Space or Tab ticks the row under the cursor; Enter answers the
+ * ticked values (none ticked: an empty list); Esc answers undefined.
+ */
+export class CheckListModal<T> extends Modal<T[] | "all" | undefined> {
+	readonly #rows: readonly CheckRow<T>[];
+	readonly #ticked: boolean[];
+	readonly #all: string | undefined;
+	#allTicked: boolean;
+	#cursor = 0;
+
+	constructor(title: string, rows: readonly CheckRow<T>[], options: { readonly all?: { readonly label: string; readonly checked: boolean } } = {}) {
+		super(title);
+		this.#rows = rows;
+		this.#ticked = rows.map((row) => row.checked);
+		this.#all = options.all?.label;
+		this.#allTicked = options.all?.checked ?? false;
+	}
+
+	#count(): number {
+		return this.#rows.length + (this.#all === undefined ? 0 : 1);
+	}
+
+	render(width: number, height: number, theme: Theme): string[] {
+		const head = titleLines(this.title, width, theme);
+		const labels = [
+			...(this.#all === undefined ? [] : [`${this.#allTicked ? "[x]" : "[ ]"} ${this.#all}`]),
+			...this.#rows.map((row, k) => `${this.#allTicked || this.#ticked[k] ? "[x]" : "[ ]"} ${row.label}`),
+		];
+		const room = Math.max(1, height - head.length - 1);
+		const start = this.#cursor >= room ? this.#cursor - room + 1 : 0;
+		const rows = labels.slice(start, start + room).map((label, k) => {
+			const text = fit(`${start + k === this.#cursor ? "› " : "  "}${label}`, width);
+			return start + k === this.#cursor ? theme.inverse(text) : text;
+		});
+		return [...head, ...rows, theme.dim(fit("↑↓ choose · space or Tab tick · Enter accept · Esc back", width))].slice(0, height);
+	}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, "escape")) return this.cancel();
+		if (matchesKey(data, "enter")) {
+			if (this.#allTicked) return this.finish("all");
+			return this.finish(this.#rows.filter((_, k) => this.#ticked[k]).map((row) => row.value));
+		}
+		if (matchesKey(data, "up")) this.#cursor = Math.max(0, this.#cursor - 1);
+		else if (matchesKey(data, "down")) this.#cursor = Math.min(Math.max(0, this.#count() - 1), this.#cursor + 1);
+		else if (matchesKey(data, "tab") || data === " ") {
+			const at = this.#all === undefined ? this.#cursor : this.#cursor - 1;
+			if (at === -1) this.#allTicked = !this.#allTicked;
+			else if (!this.#allTicked) this.#ticked[at] = !this.#ticked[at];
+		}
+	}
+
+	cancel(): void {
+		this.finish(undefined);
+	}
+}
+
 /** Work in progress: one line the work updates; Esc cancels it (its `signal` aborts) and closes it. */
 export class ProgressModal extends Modal<void> {
 	readonly #controller = new AbortController();

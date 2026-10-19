@@ -197,3 +197,48 @@ describe("orrery tools", () => {
 		expect(again.stdout).toBe(`Already installed: pi, ${join(home, ".pi", "agent", "extensions", "orrery.ts")}.\n`);
 	});
 });
+
+describe("orrery agent --reads", () => {
+	const base = `[agents.Atlas]\nfolder = "/w/a"\ncompactor_model = "a/b"\n[agents.Birch]\nfolder = "/w/b"\ncompactor_model = "a/b"\n[agents.Cedar]\nfolder = "/w/c"\ncompactor_model = "a/b"\n`;
+
+	it("sets the agents one reads, then clears them", () => {
+		const dir = tempDir("orrery-agent-cli-");
+		dirs.push(dir);
+		const config = join(dir, "config.toml");
+		writeFileSync(config, base);
+		const set = orrery(["agent", "set", "Atlas", "--reads", "birch,Cedar"], { ORRERY_CONFIG: config });
+		expect(set.stderr).toBe("");
+		expect(set.stdout).toBe("Set agents.Atlas.reads = Birch, Cedar. It applies when Atlas next opens.\n");
+		expect(readFileSync(config, "utf8")).toContain('reads = ["Birch", "Cedar"]');
+		const none = orrery(["agent", "set", "Atlas", "--reads", "none"], { ORRERY_CONFIG: config });
+		expect(none.stdout).toBe("Set agents.Atlas.reads = none. It applies when Atlas next opens.\n");
+		expect(readFileSync(config, "utf8")).toBe(base);
+	});
+
+	it("refuses unknown names and itself, leaving the config alone", () => {
+		const dir = tempDir("orrery-agent-cli-");
+		dirs.push(dir);
+		const config = join(dir, "config.toml");
+		writeFileSync(config, base);
+		const unknown = orrery(["agent", "set", "Atlas", "--reads", "Nope"], { ORRERY_CONFIG: config });
+		expect(unknown.status).not.toBe(0);
+		expect(unknown.stderr).toContain("Known agents: Atlas, Birch, Cedar");
+		const self = orrery(["agent", "set", "Atlas", "--reads", "Atlas"], { ORRERY_CONFIG: config });
+		expect(self.stderr).toContain("an agent always reads itself");
+		expect(readFileSync(config, "utf8")).toBe(base);
+	});
+
+	it("agent add --reads all writes [\"*\"]", () => {
+		const dir = tempDir("orrery-agent-cli-");
+		dirs.push(dir);
+		const config = join(dir, "config.toml");
+		writeFileSync(config, base);
+		const add = orrery(["agent", "add", "Dune", "--folder", "/w/d", "--tool", "pi", "--summary", "a/b", "--reads", "all"], { ORRERY_CONFIG: config });
+		expect(add.stderr).toBe("");
+		expect(readFileSync(config, "utf8")).toContain('reads = ["*"]');
+		const fresh = join(dir, "new", "config.toml");
+		const second = orrery(["agent", "add", "Eve", "--folder", "/w/e", "--tool", "pi", "--summary", "a/b", "--reads", "none"], { ORRERY_CONFIG: fresh });
+		expect(second.stderr).toBe("");
+		expect(readFileSync(fresh, "utf8")).not.toContain("reads =");
+	});
+});

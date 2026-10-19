@@ -13,9 +13,9 @@ import { ConfigError, type HarnessConfig, agentNameProblem, type AgentTool, type
 import { orreryHome } from "./home.ts";
 
 /** The agent keys the TUI and `orrery agent set` may change. */
-export const EDITABLE_KEYS = ["remote", "launcher", "ori_model", "tool", "folder", "view_bytes", "compactor_context_bytes", "compactor_jobs", "compact_at", "compactor_model", "compactor_thinking"] as const;
+export const EDITABLE_KEYS = ["remote", "launcher", "ori_model", "tool", "folder", "view_bytes", "compactor_context_bytes", "compactor_jobs", "compact_at", "compactor_model", "compactor_thinking", "reads"] as const;
 export type EditableKey = (typeof EDITABLE_KEYS)[number];
-export type ConfigValue = string | number;
+export type ConfigValue = string | number | readonly string[];
 
 export interface NewAgent {
 	readonly name: string;
@@ -37,7 +37,8 @@ export interface NewAgent {
 const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 type Table = Record<string, unknown>;
 
-function tomlValue(value: ConfigValue | readonly string[]): string {
+function tomlValue(value: ConfigValue): string {
+	if (Array.isArray(value)) return `[${value.map((item) => JSON.stringify(item)).join(", ")}]`;
 	if (typeof value === "number") {
 		if (!Number.isInteger(value) || value < 1) throw new ConfigError("a number setting must be a positive whole number");
 		return String(value);
@@ -119,6 +120,41 @@ function checked(old: string, next: string, configDir: string, agent: string, ta
 	return next;
 }
 
+/** The end of a one-line array at the start of `rest` (strings may hold a `]`), or -1 when the line does not close it. */
+function arrayEnd(rest: string): number {
+	let quoted = false;
+	for (let i = 1; i < rest.length; i++) {
+		if (quoted) {
+			if (rest[i] === "\\") i++;
+			else if (rest[i] === '"') quoted = false;
+		} else if (rest[i] === '"') quoted = true;
+		else if (rest[i] === "]") return i + 1;
+	}
+	return -1;
+}
+
+/**
+ * The agents a `--reads` value names: "all" is every agent (["*"]), "none" is no other agent ([]), else a comma list of
+ * agent names, spelled as the config spells them. An agent always reads itself, so its own name is refused.
+ */
+export function parseReads(value: string, config: HarnessConfig, self: string): readonly string[] {
+	const text = value.trim();
+	if (/^all$/i.test(text)) return ["*"];
+	if (/^none$/i.test(text)) return [];
+	const known = [...config.agents.keys()];
+	const out: string[] = [];
+	const unknown: string[] = [];
+	for (const item of text.split(",").map((part) => part.trim()).filter(Boolean)) {
+		if (item.toLowerCase() === self.toLowerCase()) throw new ConfigError("an agent always reads itself");
+		const name = known.find((other) => other.toLowerCase() === item.toLowerCase());
+		if (name === undefined) unknown.push(item);
+		else if (!out.includes(name)) out.push(name);
+	}
+	if (unknown.length > 0) throw new ConfigError(`Unknown ${unknown.length === 1 ? "agent" : "agents"}: ${unknown.join(", ")}. Known agents: ${known.join(", ") || "none"}.`);
+	if (out.length === 0) throw new ConfigError("reads takes all, none, or agent names separated by commas.");
+	return out;
+}
+
 /** Sets one key of one agent: replaces its value (keeping the comment after it) or adds the line after the block's last key. */
 export function setAgentKey(text: string, configDir: string, agent: string, key: EditableKey, value: ConfigValue): string {
 	const cr = text.includes("\r\n") ? "\r" : "";
@@ -130,7 +166,7 @@ export function setAgentKey(text: string, configDir: string, agent: string, key:
 	if (start === -1) throw new ConfigError(`No agent named ${agent} in the config.`);
 	let end = start + 1;
 	while (end < lines.length && !/^\s*\[/.test(lines[end])) end++;
-	const clear = value === "" && (key === "launcher" || key === "ori_model" || key === "remote" || key === "folder");
+	const clear = (value === "" && (key === "launcher" || key === "ori_model" || key === "remote" || key === "folder")) || (key === "reads" && Array.isArray(value) && value.length === 0);
 	const written = tomlValue(value);
 	const keyLine = new RegExp(`^(\\s*)${key}(\\s*=\\s*)(.*)$`);
 	const change = (before: Table | undefined) => {
@@ -144,14 +180,15 @@ export function setAgentKey(text: string, configDir: string, agent: string, key:
 		if (/^\s*[A-Za-z0-9_"'-]+\s*=/.test(bare)) lastKey = i;
 		const m = keyLine.exec(bare);
 		if (m === null) continue;
-		if (/^("""|'''|\[|\{)/.test(m[3])) throw new ConfigError(`agents.${agent}.${key} spans several lines or is not a single value; change it by hand.`);
+		const array = key === "reads" && m[3].startsWith("[") ? arrayEnd(m[3]) : -1;
+		if (array === -1 && /^("""|'''|\[|\{)/.test(m[3])) throw new ConfigError(`agents.${agent}.${key} spans several lines or is not a single value; change it by hand.`);
 		if (clear) {
-			const comment = splitValue(m[3]).tail.trimStart();
+			const comment = (array === -1 ? splitValue(m[3]).tail : m[3].slice(array)).trimStart();
 			if (comment) lines[i] = `${m[1]}${comment}${cr}`;
 			else lines.splice(i, 1);
 			return checked(text, finish(lines.join("\n")), configDir, agent, change);
 		}
-		lines[i] = `${m[1]}${key}${m[2]}${written}${splitValue(m[3]).tail}${lines[i].endsWith("\r") ? "\r" : ""}`;
+		lines[i] = `${m[1]}${key}${m[2]}${written}${array === -1 ? splitValue(m[3]).tail : m[3].slice(array)}${lines[i].endsWith("\r") ? "\r" : ""}`;
 		return checked(text, finish(lines.join("\n")), configDir, agent, change);
 	}
 	if (clear) return checked(text, text, configDir, agent, change);
@@ -177,7 +214,7 @@ export function addAgent(text: string, configDir: string, agent: NewAgent): stri
 		...(agent.contextBytes === undefined ? {} : { compactor_context_bytes: agent.contextBytes }),
 		...(agent.compactorJobs === undefined ? {} : { compactor_jobs: agent.compactorJobs }),
 		...(agent.compactAt === undefined ? {} : { compact_at: agent.compactAt }),
-		...(agent.reads === undefined ? {} : { reads: agent.reads }),
+		...(agent.reads === undefined || agent.reads.length === 0 ? {} : { reads: agent.reads }),
 	};
 	const block = [`[agents.${agent.name}]`, ...Object.entries(table).map(([key, value]) => `${key} = ${tomlValue(value)}`)].join(eol);
 	const sep = text === "" ? "" : text.endsWith("\n") ? eol : eol + eol;

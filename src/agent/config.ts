@@ -579,6 +579,15 @@ export function loadConfig(file: string = defaultConfigPath()): HarnessConfig {
 }
 
 /** Finds an agent by name, ignoring case; an exact match wins. Throws ConfigError listing the agents otherwise. */
+/** Who reads `name`'s memory: the agents listing it by name, and (apart) the agents that read every agent. */
+export function readBy(config: HarnessConfig, name: string): { readonly names: readonly string[]; readonly everyone: readonly string[] } {
+	const others = [...config.agents.values()].filter((agent) => agent.name !== name);
+	return {
+		names: others.filter((agent) => agent.reads.includes(name) && !agent.reads.includes("*")).map((agent) => agent.name),
+		everyone: others.filter((agent) => agent.reads.includes("*")).map((agent) => agent.name),
+	};
+}
+
 export function findAgent(config: HarnessConfig, name: string): AgentConfig {
 	const exact = config.agents.get(name);
 	if (exact !== undefined) return exact;

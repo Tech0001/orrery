@@ -4,7 +4,7 @@
  * starts several times a turn (claude-hook) must not load pi-durable and every model provider first.
  */
 
-import { join, resolve as resolvePath } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
 import type { ReaderTool } from "../agent/memory-tools.ts";
 import { defaultConfigPath, findAgent, type HarnessConfig, type AgentConfig, loadConfig } from "../agent/config.ts";
@@ -236,7 +236,7 @@ async function agentArg(config: HarnessConfig, name: string): Promise<string> {
  * --folder DIR | --view-kb N | --summary-kb N | --jobs N | --compact-at TOKENS`, `orrery agent archive <Name>`.
  */
 async function agentCommand(args: string[], values: Record<string, string | boolean | string[] | undefined>): Promise<number> {
-	const [{ addAgent, archiveAgent, configWritable, editConfigFile, readOnlyConfigText, setAgentKey, userConfigPath }, { defaultConfigPath }, { homedir }, { existsSync }, { archiveRefusal, agentOverview, TOOL_LABELS }] = await Promise.all([
+	const [{ addAgent, archiveAgent, configWritable, editConfigFile, parseReads, readOnlyConfigText, setAgentKey, userConfigPath }, { defaultConfigPath, parseConfig }, { homedir }, { existsSync }, { archiveRefusal, agentOverview, TOOL_LABELS }] = await Promise.all([
 		import("../agent/config-edit.ts"),
 		import("../agent/config.ts"),
 		import("node:os"),
@@ -264,14 +264,15 @@ async function agentCommand(args: string[], values: Record<string, string | bool
 		const thinking = (values.thinking as string | undefined) ?? "low";
 		const tool = required(values.tool as string | undefined, "--tool pi|omp|claude-code|codex|opencode");
 		const folder = fullPath(required(values.folder as string | undefined, "--folder DIR"));
-		editConfigFile(path, (text, dir) => addAgent(text, dir, { name: agent, folder, tool: tool as never, compactorModel: summary, compactorThinking: thinking as never }));
+		const reads = values.reads === undefined ? undefined : parseReads(values.reads as string, existsSync(path) ? loadConfig(path) : parseConfig("", dirname(path)), agent);
+		editConfigFile(path, (text, dir) => addAgent(text, dir, { name: agent, folder, tool: tool as never, compactorModel: summary, compactorThinking: thinking as never, ...(reads === undefined ? {} : { reads }) }));
 		process.stdout.write(`Added agent ${agent}: ${folder}, ${(TOOL_LABELS as Record<string, string>)[tool] ?? tool}, summaries ${summary} (${thinking}).\n`);
 		return 0;
 	}
 	if (action === "set") {
 		// The name as the config spells it (`orrery agent set rowan` finds Rowan), as every other command does.
 		const agent = existsSync(path) ? findAgent(loadConfig(path), required(name, "agent name")).name : required(name, "agent name");
-		const changes: [Parameters<typeof setAgentKey>[3], string | number][] = [];
+		const changes: [Parameters<typeof setAgentKey>[3], Parameters<typeof setAgentKey>[4]][] = [];
 		if (args.length > 2) {
 			const key = args[2];
 			if (args.length !== 4 || (key !== "launcher" && key !== "ori_model")) throw new Error("Use agent set <Name> launcher direct|ori or ori_model <id> (empty value clears).");
@@ -285,9 +286,10 @@ async function agentCommand(args: string[], values: Record<string, string | bool
 		if (values["summary-kb"] !== undefined) changes.push(["compactor_context_bytes", kb("summary-kb")]);
 		if (values.jobs !== undefined) changes.push(["compactor_jobs", Number(values.jobs)]);
 		if (values["compact-at"] !== undefined) changes.push(["compact_at", Number(values["compact-at"])]);
-		if (changes.length === 0) throw new UsageError("agent set needs one of --launcher, --ori-model, --tool, --folder, --view-kb, --summary-kb, --jobs, --compact-at.");
+		if (values.reads !== undefined) changes.push(["reads", parseReads(values.reads as string, loadConfig(path), agent)]);
+		if (changes.length === 0) throw new UsageError("agent set needs one of --launcher, --ori-model, --tool, --folder, --view-kb, --summary-kb, --jobs, --compact-at, --reads.");
 		editConfigFile(path, (text, dir) => changes.reduce((acc, [key, value]) => setAgentKey(acc, dir, agent, key, value), text));
-		for (const [key, value] of changes) process.stdout.write(`Set agents.${agent}.${key} = ${value}. It applies when ${agent} next opens.\n`);
+		for (const [key, value] of changes) process.stdout.write(`Set agents.${agent}.${key} = ${typeof value === "string" || typeof value === "number" ? value : value.length === 0 ? "none" : value.includes("*") ? "all" : value.join(", ")}. It applies when ${agent} next opens.\n`);
 		return 0;
 	}
 	if (action === "archive") {
@@ -353,6 +355,7 @@ const OPTIONS = {
 	"summary-kb": { type: "string" },
 	jobs: { type: "string" },
 	"compact-at": { type: "string" },
+	reads: { type: "string" },
 	server: { type: "string" },
 	cloudflare: { type: "string" },
 	"token-file": { type: "string" },

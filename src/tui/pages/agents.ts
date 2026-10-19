@@ -5,7 +5,7 @@
 
 import { join } from "node:path";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { AgentTool } from "../../agent/config.ts";
+import { type AgentTool, readBy } from "../../agent/config.ts";
 import { ago, type AgentRow, summaryText, TOOL_LABELS } from "../../agent/overview.ts";
 import { needsRestart } from "../../install/update.ts";
 import { safeText } from "../../agent/source-labels.ts";
@@ -13,7 +13,7 @@ import { localIso } from "../../memory/index.ts";
 import type { UsageRow } from "../../memory/types.ts";
 import type { App, Page } from "../app.ts";
 import { type Column, compactCount, fit, renderTable } from "../table.ts";
-import { archiveAgentAction, browseAgent, chooseSummaryModel, editInstructions, editAgent, launchAgent } from "./agent-actions.ts";
+import { archiveAgentAction, browseAgent, chooseSummaryModel, editInstructions, editAgent, launchAgent, readsText } from "./agent-actions.ts";
 import { newAgent } from "./new-agent.ts";
 
 /**
@@ -188,7 +188,9 @@ const pageUsage = new WeakMap<App, Map<string, string>>();
 function detailLines(app: App, row: AgentRow, width: number): string[] {
 	const { theme } = app.deps;
 	const field = (label: string, value: string) => wrapTextWithAnsi(`${label.padEnd(18)}${value}`, width).map((l) => fit(l, width));
-	const reads = row.reads.length === 0 ? "none" : row.reads.includes("*") ? "all agents" : row.reads.join(", ");
+	const reads = readsText(row.reads);
+	const by = app.config === undefined ? undefined : readBy(app.config, row.name);
+	const readByText = by === undefined ? undefined : `${by.names.length === 0 ? "none" : by.names.map(safeText).join(", ")}${by.everyone.length === 0 ? "" : ` (and every agent that reads all: ${by.everyone.map(safeText).join(", ")})`}`;
 	const usage = pageUsage.get(app)?.get(row.name);
 	const backup = backupText(app, row);
 	return [
@@ -206,6 +208,7 @@ function detailLines(app: App, row: AgentRow, width: number): string[] {
 		...(row.building === undefined ? [] : field("Memory build", row.building)),
 		...field("Summary model", `${row.summaryModel.ref} ${row.summaryModel.thinking} (${row.summaryModel.source === "chat" ? "chosen in chat" : "from the config"})`),
 		...field("Reads", reads),
+		...(readByText === undefined ? [] : field("Read by", readByText)),
 		...field("Last message", row.lastMessageAt === undefined ? "—" : `${ago(row.lastMessageAt, app.deps.now())} ago`),
 		...field("Last backup", backup.text).map((line) => (backup.stale ? theme.yellow(line) : line)),
 		...field("Tokens, 7 days", usage ?? "—"),
