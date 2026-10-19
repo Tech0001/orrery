@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { forgetSession } from "../../src/agent/sessions.ts";
+import { forgetSession, HOST_ENV } from "../../src/agent/sessions.ts";
 import { createOrrery } from "../../src/pi/index.ts";
 import { cleanup, scratchHome, summarySourcesFor, world } from "../pi/world.ts";
 import { type FakeOmp, fakeOmp, ompCleanup, ompOrrery, track } from "./world.ts";
@@ -26,7 +26,7 @@ async function turn(host: FakeOmp, user: string, reply: string) {
 }
 
 describe("OMP_TUI_DEBUG (OMP's debug socket types for the user)", () => {
-	it("OMP with it set: one notice, no memory written, no host record, the guard still on", async () => {
+	it("OMP with it set: one notice, no memory written, host record kept while open, the guard still on", async () => {
 		const { root, config, configPath } = world();
 		const dataDir = dirname(configPath);
 		const omp = await ompOrrery(join(root, "agent-Atlas"), config, { env: DEBUG });
@@ -36,11 +36,15 @@ describe("OMP_TUI_DEBUG (OMP's debug socket types for the user)", () => {
 		await omp.emit("session_switch", { reason: "new" });
 		expect(omp.notices).toHaveLength(1);
 		expect(existsSync(join(dataDir, "agents"))).toBe(false);
-		expect(hosts(dataDir)).toEqual([]);
+		// Still the agent's session for the CLI gate: a host record and ORRERY_HOST, gone at shutdown.
+		expect(hosts(dataDir)).toEqual([`${process.pid}.json`]);
+		expect(process.env[HOST_ENV]).toBe(String(process.pid));
 		const [blocked] = await omp.emit("tool_call", { toolName: "write", toolCallId: "t1", input: { path: `${root}-escape.txt`, content: "x" } });
 		expect(blocked).toMatchObject({ block: true });
 		await omp.emit("session_shutdown");
 		expect(existsSync(join(dataDir, "agents"))).toBe(false);
+		expect(hosts(dataDir)).toEqual([]);
+		expect(process.env[HOST_ENV]).toBeUndefined();
 	});
 
 	it("OMP with it empty or unset: unchanged, memory opens and records", async () => {

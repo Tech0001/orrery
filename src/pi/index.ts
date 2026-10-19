@@ -441,6 +441,9 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			// OMP's debug socket (OMP_TUI_DEBUG) types for the user: nothing it sends could be told from the user's words, so
 			// the memory stays shut, as for an agent held elsewhere, and nothing is recorded, host included. The guard stays on.
 			if (omp && (options.env ?? process.env).OMP_TUI_DEBUG) {
+				// The host record stays (and ORRERY_HOST with it): the agent's shell is inside its session for the CLI gate. No
+				// noteRun: that is for copying the session's log, which a session recording nothing needs not.
+				recordHost(state, ctx, config, agent, host, options);
 				warn(ctx, DEBUG_SOCKET_NOTICE);
 				return;
 			}
