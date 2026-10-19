@@ -1,9 +1,9 @@
-import { mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { describe, expect, it } from "vitest";
 import { checkResolvedPath, durablePreCheck } from "../../src/agent/guard.ts";
-import { guardOmpToolCall, guardToolCall, type PathGuardOptions } from "../../src/agent/guard-paths.ts";
+import { guardOmpToolCall, guardToolCall, type PathGuardOptions, realTarget } from "../../src/agent/guard-paths.ts";
 import {
 	ORRERY_COMMAND_REFUSED,
 	ORRERY_COMMANDS,
@@ -33,25 +33,31 @@ const SESSION_RECORDS = /Claude Code's or Codex's session records/;
 /**
  * A scratch home, an agent's folder, a moved Claude Code config folder and Codex home (the gate's CLAUDE_CONFIG_DIR and
  * CODEX_HOME), and the guard's options: writes allowed under home, so only the session-records rule refuses one there.
+ * `linked`: a home with capitals, as macOS's (/Users/Alex), the moved folders under it, and its ~/.claude a link to a
+ * folder elsewhere (store), the rule made with links followed, as the gates make it.
  */
-function world() {
+function world(linked = false) {
 	const root = realpathSync(tempDir("orrery-commands-"));
 	const folder = join(root, "ws");
-	const home = join(root, "home");
-	const claudeConfig = join(root, "cc");
-	const codexHome = join(root, "codex-home");
-	for (const dir of [folder, home, join(claudeConfig, "projects"), join(codexHome, "sessions")]) mkdirSync(dir, { recursive: true });
-	const transcripts = transcriptRule({ CLAUDE_CONFIG_DIR: claudeConfig, CODEX_HOME: codexHome }, home);
-	const options: PathGuardOptions = { folder, allowedRoots: [home, claudeConfig, codexHome], cwd: folder, home, foreignViews: [], transcripts };
-	return { root, folder, home, claudeConfig, codexHome, options };
+	const home = linked ? join(root, "Users", "Alex") : join(root, "home");
+	const store = join(root, "Store", "Claude");
+	const claudeConfig = linked ? join(home, ".config", "claude") : join(root, "cc");
+	const codexHome = linked ? join(home, ".config", "codex") : join(root, "codex-home");
+	for (const dir of [folder, home, join(store, "projects"), join(claudeConfig, "projects"), join(codexHome, "sessions")]) mkdirSync(dir, { recursive: true });
+	if (linked) symlinkSync(store, join(home, ".claude"));
+	const transcripts = transcriptRule({ CLAUDE_CONFIG_DIR: claudeConfig, CODEX_HOME: codexHome }, home, linked ? realTarget : undefined);
+	const options: PathGuardOptions = { folder, allowedRoots: [home, claudeConfig, codexHome, join(root, "Store")], cwd: folder, home, foreignViews: [], transcripts };
+	return { root, folder, home, store, claudeConfig, codexHome, options };
 }
+
+type World = ReturnType<typeof world>;
 
 /**
  * Every gate's verdict on one command line: pi's bash (with and without a path), OMP's bash and eval, Claude Code's Bash
  * and an MCP shell, Codex's shell, orrery run, OpenCode's shell, Code Mode program and an MCP shell.
  */
-function verdicts(command: string | ((w: ReturnType<typeof world>) => string)): (string | undefined)[] {
-	const w = world();
+function verdicts(command: string | ((w: World) => string), make: () => World = world): (string | undefined)[] {
+	const w = make();
 	const text = typeof command === "string" ? command : command(w);
 	const { options } = w;
 	try {
@@ -76,8 +82,8 @@ function verdicts(command: string | ((w: ReturnType<typeof world>) => string)): 
 const GATES = 11;
 
 /** Every file tool's write of `path` in every gate: pi's write and edit, OMP's write, Claude Code's Write and Edit, Codex's patch, orrery run's, OpenCode's write. */
-function writes(path: string | ((w: ReturnType<typeof world>) => string)): (string | undefined)[] {
-	const w = world();
+function writes(path: string | ((w: World) => string), make: () => World = world): (string | undefined)[] {
+	const w = make();
 	const file = typeof path === "string" ? path : path(w);
 	const { options } = w;
 	try {
@@ -97,7 +103,7 @@ function writes(path: string | ((w: ReturnType<typeof world>) => string)): (stri
 }
 
 /** Every file tool's read of `path` in every gate. */
-function reads(path: (w: ReturnType<typeof world>) => string): (string | undefined)[] {
+function reads(path: (w: World) => string): (string | undefined)[] {
 	const w = world();
 	const file = path(w);
 	const { options } = w;
@@ -296,17 +302,118 @@ describe("Orrery's commands in shell text", () => {
 		expect(verdicts("orrery holder Atlas --session s")).toEqual(Array(GATES).fill(expect.stringMatching(/hook plumbing/)));
 	});
 
-	it("still refuses a command past a folder option that is not the git, make or package manager's", () => {
-		expect(verdicts("git -C x orrery setup")).toEqual(Array(GATES).fill(ORRERY_COMMAND_REFUSED("setup")));
-		expect(verdicts("npm --prefix x exec orrery setup")).toEqual(Array(GATES).fill(ORRERY_COMMAND_REFUSED("setup")));
-		expect(verdicts("env -C /tmp orrery setup")).toEqual(Array(GATES).fill(ORRERY_COMMAND_REFUSED("setup")));
+	it.each([
+		// A folder option takes Orrery's name only as the tool's own: git's and make's -C, npm's --prefix, pnpm's --dir,
+		// yarn's and bun's --cwd, gh's -R and --repo. Another tool's -c runs a command (npm exec -c, pnpm exec -c).
+		["git -C x orrery setup", "setup"],
+		["npm --prefix x exec orrery setup", "setup"],
+		["env -C /tmp orrery setup", "setup"],
+		["npm exec -c 'orrery restore Atlas --from x'", "restore"],
+		['npm exec -c "orrery remote key home"', "remote"],
+		["npm -c 'orrery setup --yes' exec", "setup"],
+		["pnpm exec -c 'orrery restore Atlas'", "restore"],
+		["pnpm exec -c orrery restore Atlas", "restore"],
+		["pnpm exec -r orrery restore Atlas", "restore"],
+		["bun -r orrery restore", "restore"],
+		["yarn -c orrery restore", "restore"],
+		["make -r orrery restore", "restore"],
+		["npm -C ~/src/orrery run check", "run"],
+		["pnpm --prefix ~/src/orrery run check", "run"],
+		["gh --cwd owner/orrery run list", "run"],
+	])("refuses %s past a folder option that is not that tool's, in every gate", (command, refused) => {
+		expect(verdicts(command)).toEqual(Array(GATES).fill(ORRERY_COMMAND_REFUSED(refused)));
 	});
 
-	it("judges a long command line in time", () => {
-		const long = `${"orrery --config orrery ".repeat(2000)}status; ${"orrery '".repeat(2000)}; ${"orrery $(orrery ".repeat(1500)}`;
-		const started = performance.now();
-		expect(runsOrreryCommand(long)).toBeUndefined();
-		expect(performance.now() - started).toBeLessThan(2000);
+	it.each([
+		["pnpm --dir ~/src/orrery install"],
+		["yarn --cwd ~/src/orrery run build"],
+		["make --directory=orrery install"],
+		["gh pr view 12 --repo owner/orrery"],
+		["gh run list -R owner/orrery"],
+	])("leaves %s alone (the tool's own folder option)", (command) => {
+		expect(verdicts(command)).toEqual(Array(GATES).fill(undefined));
+	});
+
+	it.each([
+		// A list: a brace group, or code's list of arguments without a blank after the comma.
+		["{orrery,restore}", "restore"],
+		["{~/.local/bin/orrery,remote,key,home}", "remote"],
+		["{orrery,--config,x,setup,--yes}", "setup"],
+		[`python3 -c 'import subprocess;subprocess.run(["orrery","restore"])'`, "restore"],
+		[`node -e 'require("child_process").execFileSync("orrery",["restore"])'`, "restore"],
+		[`python3 -c 'import os;os.execvp("orrery",["orrery","restore"])'`, "restore"],
+		[`perl -e 'exec "orrery","restore"'`, "restore"],
+		[`ruby -e 'system("orrery","restore")'`, "restore"],
+		// A glob that could name the program, or a refused command in the command's place.
+		["~/.local/bin/orr*y restore", "restore"],
+		["orre[r]y restore", "restore"],
+		["orrer? restore", "restore"],
+		["/usr/local/bin/orrery-r?n setup", "setup"],
+		["orrery re*ore", "restore"],
+		["orrery rest?re Atlas", "restore"],
+		["orrery [r]estore Atlas", "restore"],
+		["orrery --config x upd[a-z]te", "update"],
+		// A separator in quotes is no separator where the guard fails closed.
+		["orrery --config $x ';' restore", "restore"],
+		["orrery $x '|' restore", "restore"],
+		// A redirection from a named file descriptor; parallel, as xargs.
+		["orrery {fd}>/dev/null restore", "restore"],
+		["parallel orrery ::: restore", "restore"],
+	])("refuses %s in every gate", (command, refused) => {
+		expect(verdicts(command)).toEqual(Array(GATES).fill(ORRERY_COMMAND_REFUSED(refused)));
+	});
+
+	it.each([
+		["ls *.ts && orrery status"],
+		["orrery status *"],
+		["tr '[:upper:]' '[:lower:]' < setup.txt"],
+		["grep -n '[[:space:]]$' install.sh"],
+		["jq '.[] | .name' setup.json"],
+		["ls ~/.local/bin/orrery* && orrery --version"],
+		["cp * backup/"],
+		// Wildcards alone are no name of the program: a patch's headers (Codex sends its patches through the shell), bullets.
+		["apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: notes.md\n@@\n-a\n+b\n*** End Patch\nEOF"],
+		["printf '%s\\n' '* install the tools' '* update the docs'"],
+		["ls ?????? run"],
+	])("leaves %s alone (globs that can't name a refused command)", (command) => {
+		expect(verdicts(command)).toEqual(Array(GATES).fill(undefined));
+	});
+
+	it("refuses the plumbing by a list or a glob of the program, with its own message", () => {
+		for (const command of ["{orrery,holder,Atlas}", "~/.local/bin/orr*y holder Atlas"]) {
+			expect(verdicts(command)).toEqual(Array(GATES).fill(expect.stringMatching(/hook plumbing/)));
+		}
+	});
+
+	it("names --version among what runs, in its message", () => {
+		expect(ORRERY_COMMAND_REFUSED("setup")).toMatch(/help, status, usage, browse, compactor and --version run here/);
+	});
+
+	it("judges a long command line in time: the rule, and one gate's whole call (Claude Code's hook gives a call 2 s)", () => {
+		const star = "*a".repeat(127);
+		const w = world();
+		try {
+			for (const long of [
+				`${"orrery --config orrery ".repeat(2000)}status; ${"orrery '".repeat(2000)}; ${"orrery $(orrery ".repeat(1500)}`,
+				`${star} `.repeat(250),
+				`${"[".repeat(256)} `.repeat(250),
+				`${"[[:".repeat(20000)}`,
+				`${"o* ".repeat(20000)}`,
+				`orrery ${"[a]".repeat(20000)}`,
+				`~/.c*/${star}/`.repeat(250),
+			]) {
+				let started = performance.now();
+				expect(runsOrreryCommand(long)).toBeUndefined();
+				expect(performance.now() - started).toBeLessThan(2000);
+				started = performance.now();
+				expect(guardToolCall("bash", { command: long }, w.options)).toBeUndefined();
+				expect(performance.now() - started).toBeLessThan(2000);
+			}
+		} finally {
+			rmSync(w.root, { recursive: true, force: true });
+		}
+		// Past the length any name has, a glob still names the program where it could.
+		expect(runsOrreryCommand(`${"x/".repeat(30000)}orr${"*".repeat(300)}y setup`)).toBe("setup");
 	});
 });
 
@@ -341,13 +448,68 @@ describe("Claude Code's and Codex's session records", () => {
 		expect(verdicts(command)).toEqual(Array(GATES).fill(undefined));
 	});
 
+	it.each([
+		["cat ~/.claude/pro*/p/s.jsonl"],
+		["echo x >> ~/.c*/projects/p/s.jsonl"],
+		["ls ~/.codex/sess*"],
+		["ls ~/.claude/*"],
+		["ls ~/.claude/[p]rojects"],
+		["ls ~/.cl?ude/projects"],
+		["ls ~/.c*/sess*"],
+		["ls $CLAUDE_CONFIG_DIR/proj?cts"],
+		["ls ${CODEX_HOME}/s*"],
+	])("refuses a glob that could name them beside their parent's name, %s, in every gate", (command) => {
+		expect(verdicts(command)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
+	});
+
+	it.each([
+		["ls ~/.claude/*.json ~/.codex/*.toml"],
+		["ls ~/*/projects"],
+		["ls ~/.claude/plans/*"],
+		["ls ~/projects/* ~/sessions/*"],
+		["ls ~/.claude/pro*.md"],
+	])("leaves %s alone (a glob that can't name them there; text naming both is no reason)", (command) => {
+		expect(verdicts(command)).toEqual(Array(GATES).fill(undefined));
+	});
+
+	it("spells moved folders from a home with capitals (macOS's /Users/…), and a ~/.claude that is a link by where it leads", () => {
+		const linked = () => world(true);
+		for (const command of [
+			"cat ~/.config/claude/projects/p/s.jsonl",
+			"cat $HOME/.config/codex/sessions/x.jsonl",
+			"cat ${HOME}/.config/claude/projects/p/s.jsonl",
+			(w: World) => `cat ${w.home}/.config/codex/sessions/x.jsonl`,
+			(w: World) => `echo x >> ${w.store}/projects/p/s.jsonl`,
+		]) {
+			expect(verdicts(command, linked)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
+		}
+		expect(verdicts((w: World) => `ls ${w.store} ~/.config`, linked)).toEqual(Array(GATES).fill(undefined));
+		for (const path of [(w: World) => join(w.store, "projects", "-w", "s.jsonl"), (w: World) => join(w.claudeConfig, "projects", "-w", "s.jsonl"), (w: World) => join(w.home, ".claude", "projects", "-w", "s.jsonl")]) {
+			expect(writes(path, linked)).toEqual(Array(8).fill(expect.stringMatching(SESSION_RECORDS)));
+		}
+		expect(writes((w: World) => join(w.store, "projects", "-w", "memory", "MEMORY.md"), linked)).toEqual(Array(8).fill(undefined));
+	});
+
+	it("refuses a write through a linked ~/.claude in orrery run's own check, where it leads", async () => {
+		const w = world(true);
+		try {
+			const env = new NodeExecutionEnv({ cwd: w.folder });
+			// No rule handed in: orrery run makes its own, the folders followed where they lead.
+			const { transcripts: _, ...options } = w.options;
+			expect(await checkResolvedPath(env, join(w.store, "projects", "-w", "s.jsonl"), "write", options, ctx)).toMatch(SESSION_RECORDS);
+			expect(await checkResolvedPath(env, join(w.store, "projects", "-w", "memory", "MEMORY.md"), "write", options, ctx)).toBeUndefined();
+		} finally {
+			rmSync(w.root, { recursive: true, force: true });
+		}
+	});
+
 	it("refuses a file tool's write there in every gate", () => {
 		for (const path of [
-			(w: ReturnType<typeof world>) => join(w.home, ".claude", "projects", "-w", "s.jsonl"),
-			(w: ReturnType<typeof world>) => join(w.home, ".codex", "sessions", "2026", "x.jsonl"),
-			(w: ReturnType<typeof world>) => join(w.claudeConfig, "projects", "-w", "s.jsonl"),
-			(w: ReturnType<typeof world>) => join(w.codexHome, "sessions", "2026", "x.jsonl"),
-			(w: ReturnType<typeof world>) => join(w.home, ".claude", "projects", "-w", "memory", "..", "s.jsonl"),
+			(w: World) => join(w.home, ".claude", "projects", "-w", "s.jsonl"),
+			(w: World) => join(w.home, ".codex", "sessions", "2026", "x.jsonl"),
+			(w: World) => join(w.claudeConfig, "projects", "-w", "s.jsonl"),
+			(w: World) => join(w.codexHome, "sessions", "2026", "x.jsonl"),
+			(w: World) => join(w.home, ".claude", "projects", "-w", "memory", "..", "s.jsonl"),
 		]) {
 			expect(writes(path)).toEqual(Array(8).fill(expect.stringMatching(SESSION_RECORDS)));
 		}

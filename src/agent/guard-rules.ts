@@ -163,7 +163,8 @@ const CREDENTIALS = [...SENSITIVE, HOME_NAMED];
  *   expansion glued to either end (${x}codex-hook, codex-hook$x), which may be empty, does not hide it;
  * - the recorder, `orrery holder`: the word holder anywhere in text that also names Orrery's program as a word
  *   (orrery, a path ending in it, or the source's cli/main.ts), in either order, so neither an argument list fed in
- *   (`echo holder | xargs orrery`) nor a quoted separator between them (`orrery --config ';' holder`) splits them.
+ *   (`echo holder | xargs orrery`) nor a quoted separator between them (`orrery --config ';' holder`) splits them, nor
+ *   a list ({orrery,holder}). A glob that could name the program counts as it does (~/.local/bin/orr*y: programGlobs).
  *   Text that names both for other reasons (`cd ~/orrery && grep holder src`) is refused too.
  * A word may also start or end at an escape that printf or echo -e turns into a separator (`printf 'A\nholder'`).
  * Orrery's other commands (orrery status, orrery help…) stay open; `orrery claude-mod view` only reads. As with every
@@ -174,7 +175,7 @@ const ESCAPE_BEFORE = "\\\\(?:[a-z]|x[0-9a-f]{1,2}|[0-7]{1,3})";
 const PLUMBING_START = `(?:^|[\\s"'=:/~<>;|&()\`{},*@]|(?:^|[\\s"'])-[a-z]+|${ESCAPE_BEFORE})`;
 const PLUMBING_END = "(?=$|[\\s\"'/:;|&()<>`,{}*?\\[$\\\\])";
 const HOOK_COMMAND = new RegExp(`${PLUMBING_START}(?:codex|claude)-hook${PLUMBING_END}`);
-const ORRERY_PROGRAM = new RegExp(`${PLUMBING_START}(?:orrery(?:\\.exe)?|cli/main\\.[cm]?[jt]s)(?=$|[\\s"';|&()<>\`{}$\\\\])`);
+const ORRERY_PROGRAM = new RegExp(`${PLUMBING_START}(?:orrery(?:\\.exe)?|cli/main\\.[cm]?[jt]s)(?=$|[\\s"';|&()<>\`{}$\\\\,])`);
 const HOLDER_WORD = new RegExp(`(?:^|[\\s"'<>;|&()\`{},]|${ESCAPE_BEFORE})holder${PLUMBING_END}`);
 
 /**
@@ -192,9 +193,9 @@ export function inAnyReading(text: string, test: (form: string) => boolean): boo
 	return reading.forms.some(test) || reading.pieces.some(test);
 }
 
-/** Whether a reading runs Orrery's hook plumbing (HOOK_COMMAND; ORRERY_PROGRAM with HOLDER_WORD). Linear. */
+/** Whether a reading runs Orrery's hook plumbing (HOOK_COMMAND; ORRERY_PROGRAM, or a glob of it, with HOLDER_WORD). Linear. */
 function runsPlumbing(form: string): boolean {
-	return HOOK_COMMAND.test(form) || (form.includes("holder") && ORRERY_PROGRAM.test(form) && HOLDER_WORD.test(form));
+	return HOOK_COMMAND.test(form) || (form.includes("holder") && HOLDER_WORD.test(form) && (ORRERY_PROGRAM.test(form) || programGlobs(form).length > 0));
 }
 
 /** Why shell text that runs Orrery's hook plumbing is refused (runsPlumbing). */
@@ -209,16 +210,19 @@ export const PLUMBING_REFUSED = "This command runs Orrery's hook plumbing (codex
 // any reading of the text, anywhere: a search pattern or a commit message that names one is refused too (CONTRIBUTING:
 // search with a file tool, git commit -F).
 // - The options main.ts knows are skipped, a valued one with its value, and so are redirections. Where the guard can't
-//   tell where the options end (an option main.ts doesn't know, an expansion or a substitution, more words than a
-//   command line has), it fails closed: any refused command named as a word before the next separator (;, |, & or a
-//   newline) refuses. Text that feeds xargs fails closed over all of it.
+//   tell where the options end (an option main.ts doesn't know, an expansion or a substitution, a list in code, more
+//   words than a command line has), it fails closed: any refused command named as a word before the next separator
+//   (;, |, & or a newline, outside quotes) refuses. Text that feeds xargs or parallel fails closed over all of it.
+// - A glob counts as what it could match: one that could name the program (~/.local/bin/orr*y) is the program, and one
+//   in the command's place that could name a refused command (re*ore) is that command.
 // - Bare orrery, orrery before a separator, and orrery followed by a word that is no refused command pass: an agent's
 //   shell has no terminal for the TUI (the CLI's gate refuses it anyway), and a checkout of Orrery is named so too
-//   (cd ~/src/orrery, ls). So does a checkout named as the folder git, make or a package manager works in
-//   (git -C ~/src/orrery remote -v), or as the repository gh works on (gh pr create -R owner/orrery …): those tools run
-//   no program of that name.
+//   (cd ~/src/orrery, ls). So does a checkout named as the folder git, make or a package manager works in, by that
+//   tool's own folder option (git -C ~/src/orrery remote -v, npm --prefix …), or as the repository gh works on
+//   (gh pr create -R owner/orrery …): those tools run no program of that name.
 // Limits, as for every shell-text rule: a name built at run time (o=orrery; $o setup), arguments read from a file
-// (xargs -a), a link or alias of another name to Orrery's program, and a quoted separator after an expansion.
+// (xargs -a) or file names a command hands on (find … -exec orrery {}), a link or alias of another name to Orrery's
+// program, and scripts that run it (npm scripts, Makefile targets, git aliases made before).
 
 /**
  * Every command the CLI knows: help and the commands with help (src/cli/help.ts HELP_COMMANDS; main.ts answers any other
@@ -262,29 +266,176 @@ export const ORRERY_OPTIONS: { readonly valued: ReadonlySet<string>; readonly fl
 const PROGRAM_RUN = new RegExp(`(?:${PLUMBING_START}|[[!])(orrery(?:\\.exe|-run)?|cli/main\\.[cm]?[jt]s)(?=$|[\\s"';|&()<>\`{}$\\\\,\\]])`, "g");
 /** A refused command named as a word, in group 1, with the plumbing's edges: what fails closed looks for. */
 const REFUSED_WORD = new RegExp(`${PLUMBING_START}(${REFUSED_COMMANDS.map(literal).join("|")})${PLUMBING_END}`, "g");
-/** Where a command ends: ;, a pipe, & (but a redirection's, 2>&1 or &>), a newline. */
-const SEPARATOR = /;|\n|(?<!>)\||(?<![<>])&(?!>)/g;
 /** Characters that end a command's words. */
 const COMMAND_ENDS = new Set([";", "|", "&", "(", "\n"]);
-/** A redirection operator, at lastIndex. */
-const REDIRECTION = /[0-9]*(?:&>>?|>>|>&|>\||<<<|<<-?|<>|<&|>|<)/y;
+/** A redirection operator, after a file descriptor's number or a {name} for one, at lastIndex. */
+const REDIRECTION = /(?:[0-9]*|\{[a-z_][a-z0-9_]*\})(?:&>>?|>>|>&|>\||<<<|<<-?|<>|<&|>|<)/y;
 /** An escape printf or echo -e turns into a blank, at lastIndex. */
 const ESCAPE_AT = new RegExp(ESCAPE_BEFORE, "y");
-/** Text that hands xargs the words it runs: their order is not known. */
-const XARGS = /(?:^|[\s;|&(`])xargs\s/;
+/** Text that hands xargs or parallel the words it runs: their order is not known. */
+const XARGS = /(?:^|[\s;|&(`])(?:xargs|parallel)\s/;
 /** How many words a command line may hold before its command; past it the guard fails closed. */
 const MAX_WORDS = 64;
 
 /**
- * The tools whose folder option may name a checkout of Orrery, and those options (lower case, as the readings are),
- * GitHub's CLI with its repository's among them (gh … -R owner/orrery).
+ * The tools whose own folder option may name a checkout of Orrery, each with those options (lower case, as the readings
+ * are: git's and make's -c is their -C), and GitHub's CLI with its repository's (gh … -R owner/orrery).
  */
-const FOLDER_TOOLS = new Set(["git", "make", "npm", "pnpm", "yarn", "bun", "gh"]);
-const FOLDER_OPTIONS = new Set(["-c", "--prefix", "--cwd", "--dir", "--directory", "-r", "--repo"]);
+const FOLDER_OPTIONS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+	["git", new Set(["-c"])],
+	["make", new Set(["-c", "--directory"])],
+	["npm", new Set(["--prefix"])],
+	["pnpm", new Set(["--dir"])],
+	["yarn", new Set(["--cwd"])],
+	["bun", new Set(["--cwd"])],
+	["gh", new Set(["-r", "--repo"])],
+]);
 /** How far back the guard looks for the command a folder option belongs to. */
 const LOOK_BACK = 256;
 
 const blank = (c: string | undefined) => c === " " || c === "\t" || c === "\r";
+
+// ---- Globs: what a word with *, ? or [ in it could match ----
+
+/** A glob character. */
+const GLOB = /[*?[]/;
+/** Orrery's program by the names a glob could match. */
+const PROGRAM_NAMES = ["orrery", "orrery-run", "orrery.exe"];
+
+/** The POSIX classes a bracket expression may hold ([[:alpha:]]); one the guard doesn't know matches anything. */
+const POSIX_CLASSES: Readonly<Record<string, RegExp>> = {
+	alpha: /[a-z]/i,
+	alnum: /[a-z0-9]/i,
+	digit: /[0-9]/,
+	xdigit: /[0-9a-f]/i,
+	lower: /[a-z]/,
+	upper: /[A-Z]/,
+	space: /\s/,
+	blank: /[ \t]/,
+	punct: /[!-/:-@[-`{-~]/,
+	word: /\w/,
+	print: /[ -~]/,
+	graph: /[!-~]/,
+	cntrl: /[\x00-\x1f\x7f]/,
+};
+
+/** One unit of a glob: "*", or a test of one character. */
+type GlobUnit = "*" | ((c: string) => boolean);
+
+/** The bracket expression starting at `start` in a glob ([a-z], [!x], [[:alpha:]]), or undefined when it doesn't close. */
+function bracketAt(glob: string, start: number): { readonly test: (c: string) => boolean; readonly end: number } | undefined {
+	let i = start + 1;
+	const negate = glob[i] === "!" || glob[i] === "^";
+	if (negate) i++;
+	const tests: ((c: string) => boolean)[] = [];
+	for (let first = true; i < glob.length; first = false) {
+		const c = glob.charAt(i);
+		if (c === "]" && !first) return { test: (x) => tests.some((test) => test(x)) !== negate, end: i };
+		if (c === "[" && (glob[i + 1] === ":" || glob[i + 1] === "." || glob[i + 1] === "=")) {
+			const close = glob.indexOf(`${glob[i + 1]}]`, i + 2);
+			if (close === -1) return undefined;
+			const named = glob[i + 1] === ":" ? POSIX_CLASSES[glob.slice(i + 2, close)] : undefined;
+			tests.push(named === undefined ? () => true : (x) => named.test(x));
+			i = close + 2;
+			continue;
+		}
+		const from = c === "\\" ? glob.charAt(++i) : c;
+		const dash = i + 1;
+		if (glob[dash] === "-" && dash + 1 < glob.length && glob[dash + 1] !== "]") {
+			const to = glob[dash + 1] === "\\" ? glob.charAt(dash + 2) : glob.charAt(dash + 1);
+			tests.push((x) => x >= from && x <= to);
+			i = glob[dash + 1] === "\\" ? dash + 3 : dash + 2;
+			continue;
+		}
+		tests.push((x) => x === from);
+		i++;
+	}
+	return undefined;
+}
+
+/**
+ * A glob read into units; a "[" that doesn't close and an escaped character stand for themselves. Once a "[" doesn't
+ * close, no later one is tried, so a word is read in linear time. Undefined once it holds more than `most` units that
+ * test a character: it can match no name that short.
+ */
+function globUnits(glob: string, most: number): GlobUnit[] | undefined {
+	const units: GlobUnit[] = [];
+	let tests = 0;
+	let brackets = true;
+	for (let i = 0; i < glob.length; i++) {
+		const c = glob.charAt(i);
+		if (c === "*") {
+			if (units.at(-1) !== "*") units.push("*");
+			continue;
+		}
+		if (++tests > most) return undefined;
+		const bracket = c === "[" && brackets ? bracketAt(glob, i) : undefined;
+		if (c === "[" && bracket === undefined) brackets = false;
+		if (c === "?") units.push(() => true);
+		else if (bracket !== undefined) {
+			units.push(bracket.test);
+			i = bracket.end;
+		} else {
+			const same = c === "\\" && i + 1 < glob.length ? glob.charAt(++i) : c;
+			units.push((x) => x === same);
+		}
+	}
+	return units;
+}
+
+/** Whether a glob's units match `name` whole: one pass with the last "*" to go back to, so its time is the product of their lengths at most. */
+function globMatches(units: readonly GlobUnit[], name: string): boolean {
+	let unit = 0;
+	let at = 0;
+	let star = -1;
+	let starAt = 0;
+	while (at < name.length) {
+		const next = units[unit];
+		if (next !== undefined && next !== "*" && next(name.charAt(at))) {
+			unit++;
+			at++;
+		} else if (next === "*") {
+			star = unit++;
+			starAt = at;
+		} else if (star !== -1) {
+			unit = star + 1;
+			at = ++starAt;
+		} else return false;
+	}
+	while (units[unit] === "*") unit++;
+	return unit === units.length;
+}
+
+/**
+ * Which of `names` a glob (a word with a glob character) could match first, or undefined. Read in linear time; one with
+ * more single-character tests than the longest name has characters matches none, so only short ones are matched.
+ */
+function globCouldName(glob: string, names: readonly string[]): string | undefined {
+	if (!GLOB.test(glob)) return undefined;
+	const units = globUnits(glob, Math.max(...names.map((name) => name.length)));
+	return units === undefined ? undefined : names.find((name) => globMatches(units, name));
+}
+
+/** The words of a reading that hold a glob character: shell words split at blanks, quotes and operators. */
+const GLOB_WORDS = /[^\s"';|&()<>`]+/g;
+
+/**
+ * Each word of a reading whose last path part is a glob that could name Orrery's program, spelling at least one of its
+ * letters (orr*y, orre[r]y): where it and that part end. A glob of wildcards alone (*, ***, ??????) is no name: it
+ * stands in a patch's headers (*** Update File:), a list's bullets and a shell's every glob.
+ */
+function programGlobs(form: string): { readonly start: number; readonly end: number }[] {
+	if (!GLOB.test(form)) return [];
+	const found: { start: number; end: number }[] = [];
+	for (const match of form.matchAll(GLOB_WORDS)) {
+		const word = match[0];
+		const part = word.slice(word.lastIndexOf("/") + 1);
+		const end = match.index + word.length;
+		if (!/[a-z]/.test(part.replace(/\[[^\]]*\]?/g, ""))) continue;
+		if (globCouldName(part, PROGRAM_NAMES) !== undefined) found.push({ start: end - part.length, end });
+	}
+	return found;
+}
 
 /** Past the blanks at `at`: blanks, a line continuation, and an escape that printf or echo -e makes a blank. */
 function skipBlanks(form: string, at: number): number {
@@ -333,8 +484,13 @@ function wordAt(form: string, start: number, work: { left: number }): { readonly
 	return { text, end: i, unclear: false };
 }
 
-/** The refused command a word names (the commands are plain words: setup, not setup.md or remote:/srv), or undefined. */
+/**
+ * The refused command a word names (the commands are plain words: setup, not setup.md or remote:/srv), or one a glob
+ * could match (re*ore), or undefined.
+ */
 function commandName(text: string): string | undefined {
+	const globbed = globCouldName(text, REFUSED_COMMANDS);
+	if (globbed !== undefined) return globbed;
 	const bare = text.replace(/^[[\](){},]+/, "");
 	const name = /^[a-z][a-z0-9-]*/.exec(bare)?.[0];
 	if (name === undefined || /^[._/=:@+~%]/.test(bare.slice(name.length))) return undefined;
@@ -352,7 +508,8 @@ function commandAfter(form: string, at: number, work: { left: number }): After {
 	if (work.left <= 0) return { unclear: at };
 	let i = at;
 	// The rest of the program's word: a quote or a substitution closing around it, an empty string glued to it. A name
-	// that goes on past it (orrery's, orrery"x") is another word, no program.
+	// that goes on past it (orrery's, orrery"x") is another word, no program. A "," makes it one of a list (a brace
+	// group, code's ["orrery","setup"]), whose next item the guard can't place: unclear.
 	for (; i < form.length; i++, work.left--) {
 		const c = form.charAt(i);
 		if (blank(c) || c === "<" || c === ">" || (c === "&" && form[i + 1] === ">")) break;
@@ -360,8 +517,8 @@ function commandAfter(form: string, at: number, work: { left: number }): After {
 			if (form.charAt(i + 1) === "\n" || ((ESCAPE_AT.lastIndex = i), ESCAPE_AT.test(form))) break;
 			return undefined;
 		}
-		if (c === "$" || c === "`") return { unclear: i };
-		if (c !== "'" && c !== '"' && c !== ")" && c !== "}" && c !== "]" && c !== ",") return undefined;
+		if (c === "$" || c === "`" || c === ",") return { unclear: i };
+		if (c !== "'" && c !== '"' && c !== ")" && c !== "}" && c !== "]") return undefined;
 	}
 	let words = 0;
 	let value = false;
@@ -412,8 +569,8 @@ function commandAfter(form: string, at: number, work: { left: number }): After {
 /**
  * Whether Orrery's program, its name starting at `start`, is the folder a git, make or package manager command works in
  * (git -C ~/src/orrery, npm --prefix …, bun --cwd=…) or the repository of a gh command (-R owner/orrery): the word up to
- * the name is a path, after one of those options, in a command of one of those tools. Looks back LOOK_BACK characters
- * at most, to the command's start.
+ * the name is a path, after that tool's own option for it (FOLDER_OPTIONS), in a command of that tool. Looks back
+ * LOOK_BACK characters at most, to the command's start.
  */
 function folderOf(form: string, start: number): boolean {
 	const from = Math.max(0, start - LOOK_BACK);
@@ -422,11 +579,12 @@ function folderOf(form: string, start: number): boolean {
 	if (cut === -1 && from > 0) return false;
 	const parts = before.slice(cut + 1).split(/[ \t]+/);
 	const own = parts.pop() ?? "";
-	const glued = /^["']?--(?:prefix|cwd|dir|directory|repo)=/.exec(own);
-	if (!/^["']?(?:[^\s"';|&()<>`=!*?[\]]*\/)?$/.test(glued === null ? own : own.slice(glued[0].length))) return false;
-	if (glued === null && !FOLDER_OPTIONS.has(parts.at(-1) ?? "")) return false;
 	const tool = parts.find((part) => part !== "" && !/^[a-z_][a-z0-9_]*=/.test(part));
-	return tool !== undefined && FOLDER_TOOLS.has(tool.slice(tool.lastIndexOf("/") + 1));
+	const options = tool === undefined ? undefined : FOLDER_OPTIONS.get(tool.slice(tool.lastIndexOf("/") + 1));
+	if (options === undefined) return false;
+	const glued = /^["']?(--[a-z]+)=/.exec(own);
+	if (!/^["']?(?:[^\s"';|&()<>`=!*?[\]]*\/)?$/.test(glued === null ? own : own.slice(glued[0].length))) return false;
+	return options.has(glued === null ? (parts.at(-1) ?? "") : (glued[1] as string));
 }
 
 /** First index in an ascending list whose value is at least `at`. */
@@ -442,13 +600,36 @@ function firstFrom(list: readonly number[], at: number): number {
 }
 
 /**
+ * Where a reading's commands end, in one pass: ;, a pipe, & (but a redirection's, 2>&1 or &>) and a newline, outside
+ * quotes ('…', $'…' and "…", with their escapes). A quote left open runs to the end.
+ */
+function separatorsOf(form: string): number[] {
+	const found: number[] = [];
+	let quote: "'" | "$'" | '"' | undefined;
+	for (let i = 0; i < form.length; i++) {
+		const c = form.charAt(i);
+		if (quote === "'") {
+			if (c === "'") quote = undefined;
+		} else if (c === "\\") i++;
+		else if (quote === "$'") {
+			if (c === "'") quote = undefined;
+		} else if (quote === '"') {
+			if (c === '"') quote = undefined;
+		} else if (c === "'") quote = form[i - 1] === "$" ? "$'" : "'";
+		else if (c === '"') quote = '"';
+		else if (c === ";" || c === "\n" || (c === "|" && form[i - 1] !== ">") || (c === "&" && form[i - 1] !== ">" && form[i - 1] !== "<" && form[i + 1] !== ">")) found.push(i);
+	}
+	return found;
+}
+
+/**
  * Where a reading fails closed: the refused command named as a word (REFUSED_WORD) between `from` and the next
- * separator, or anywhere in it (`all`). The words and separators are found once per reading.
+ * separator (separatorsOf), or anywhere in it (`all`). The words and separators are found once per reading.
  */
 function namedAfter(form: string): (from: number, all?: boolean) => string | undefined {
 	const named = [...form.matchAll(REFUSED_WORD)];
 	const ends = named.map((match) => match.index + match[0].length);
-	const separators = [...form.matchAll(SEPARATOR)].map((match) => match.index);
+	const separators = separatorsOf(form);
 	return (from, all = false) => {
 		const next = firstFrom(ends, from + 1);
 		const stop = all ? form.length : (separators[firstFrom(separators, from)] ?? form.length);
@@ -458,13 +639,17 @@ function namedAfter(form: string): (from: number, all?: boolean) => string | und
 
 /** The refused command a reading runs (above), or undefined. Linear in the reading's length. */
 function refusedCommand(form: string): string | undefined {
-	if (!form.includes("orrery") && !form.includes("cli/main.")) return undefined;
+	if (!form.includes("orrery") && !form.includes("cli/main.") && !GLOB.test(form)) return undefined;
 	const work = { left: 4 * form.length + 4096 };
 	const xargs = XARGS.test(form);
 	let named: ReturnType<typeof namedAfter> | undefined;
-	for (const match of form.matchAll(PROGRAM_RUN)) {
-		const end = match.index + match[0].length;
-		if (folderOf(form, end - (match[1] as string).length)) continue;
+	// Orrery's program by name, and by a glob that could match it, in the order they stand.
+	const programs = [
+		...[...form.matchAll(PROGRAM_RUN)].map((match) => ({ start: match.index + match[0].length - (match[1] as string).length, end: match.index + match[0].length })),
+		...programGlobs(form),
+	].sort((a, b) => a.end - b.end);
+	for (const { start, end } of programs) {
+		if (folderOf(form, start)) continue;
 		const fed = xargs ? (named ??= namedAfter(form))(0, true) : undefined;
 		if (fed !== undefined) return fed;
 		const after = commandAfter(form, end, work);
@@ -492,7 +677,7 @@ export function runsOrreryCommand(text: string): string | undefined {
 
 /** Why shell text that runs one of them is refused (runsOrreryCommand). */
 export const ORRERY_COMMAND_REFUSED = (command: string) =>
-	`orrery ${command} can't run from an agent's shell: agents can't change memory or settings (only orrery help, status, usage, browse and compactor run here). Run it in your own terminal or the TUI. Text that only names it is refused too: search with a file tool, and give git a message that names it from a file (git commit -F).`;
+	`orrery ${command} can't run from an agent's shell: agents can't change memory or settings (only orrery help, status, usage, browse, compactor and --version run here). Run it in your own terminal or the TUI. Text that only names it is refused too: search with a file tool, and give git a message that names it from a file (git commit -F).`;
 
 /**
  * How far around a brace group the readings look (Reading.pieces) for the built-in rules: room for the longest fixed
@@ -1225,13 +1410,15 @@ export function skillsNamed(text: string): boolean {
 // file tool writes there, in any gate, and no shell text names them; file tools may read them. A project's memory folder
 // there (Claude Code's auto memory, ruling C10) stays writable: it is no record of a session. In shell text they are
 // named by their tails anywhere (.claude/projects, .codex/sessions, $CLAUDE_CONFIG_DIR/projects, $CODEX_HOME/sessions),
-// with the readings every name gets, and by their paths where they are elsewhere (moved, or reached through a link);
-// a file tool's write by its path and by those names. Limits, as for every shell-text rule: a spelling through another
-// variable, a relative one after a cd into them, or a link the guard doesn't know.
+// with the readings every name gets, by a glob that could name one beside its parent's name (~/.claude/pro*,
+// ~/.c*/projects; not ~/.claude/*.json), and by their paths where they are elsewhere (moved, or reached through a link,
+// spelt from home too); a file tool's write by its path and by those names. Limits, as for every shell-text rule: a
+// spelling through another variable, a relative one after a cd into them (cd ~/.claude && … projects/…), a tool that
+// walks a parent folder (find ~/.claude -exec …), or a link the guard doesn't know.
 
 /** The session records' folders (transcriptRule). */
 export interface TranscriptRule {
-	/** Claude Code's projects folders, as given and where they really are, folded (lower case, normalized). */
+	/** Claude Code's projects folders, as given and where they really are (normalized; compared ignoring case). */
 	readonly claude: readonly string[];
 	/** Codex's sessions folders, the same way. */
 	readonly codex: readonly string[];
@@ -1243,25 +1430,34 @@ export interface TranscriptRule {
 export function transcriptRule(env: NodeJS.ProcessEnv = process.env, home: string = homedir(), real: (path: string) => string = (path) => path): TranscriptRule {
 	const claude = [posix.join(home, ".claude", "projects"), ...(env.CLAUDE_CONFIG_DIR ? [posix.join(posix.resolve(env.CLAUDE_CONFIG_DIR), "projects")] : [])];
 	const codex = [posix.join(home, ".codex", "sessions"), ...(env.CODEX_HOME ? [posix.join(posix.resolve(env.CODEX_HOME), "sessions")] : [])];
-	const both = (paths: readonly string[]) => [...new Set(paths.flatMap((path) => [path, real(path)]).map((path) => posix.normalize(path).toLowerCase().replace(/(.)\/+$/, "$1")))];
-	const folded = { claude: both(claude), codex: both(codex) };
-	const elsewhere = [...folded.claude, ...folded.codex].filter((path) => !/\/\.(?:claude\/projects|codex\/sessions)$/.test(path));
-	return elsewhere.length === 0 ? folded : { ...folded, spelled: protection(elsewhere, home) };
+	const both = (paths: readonly string[]) => [...new Set(paths.flatMap((path) => [path, real(path)]).map((path) => posix.normalize(path).replace(/(.)\/+$/, "$1")))];
+	const folders = { claude: both(claude), codex: both(codex) };
+	// As written (protection folds them itself, after spelling them from home, which may hold capitals).
+	const elsewhere = [...folders.claude, ...folders.codex].filter((path) => !/\/\.(?:claude\/projects|codex\/sessions)$/i.test(path));
+	return elsewhere.length === 0 ? folders : { ...folders, spelled: protection(elsewhere, home) };
 }
 
 /**
  * Whether a path (one spelling of it) is in the session records (above): in one of their folders, or below
- * .claude/projects or .codex/sessions anywhere; not in a project's memory folder in Claude Code's.
+ * .claude/projects or .codex/sessions anywhere; not in a project's memory folder in Claude Code's. Ignoring case.
  */
-export function transcriptPath(path: string, rule: TranscriptRule): boolean {
+export function transcriptPath(path: string, rule: Pick<TranscriptRule, "claude" | "codex">): boolean {
 	const folded = posix.normalize(path).toLowerCase();
 	const parts = folded.split("/");
 	for (let at = 0; at + 1 < parts.length; at++) {
 		if (parts[at] === ".codex" && parts[at + 1] === "sessions") return true;
 		if (parts[at] === ".claude" && parts[at + 1] === "projects" && parts[at + 3] !== "memory") return true;
 	}
-	if (rule.codex.some((folder) => within(folded, folder))) return true;
-	return rule.claude.some((folder) => within(folded, folder) && folded.slice(folder.length + 1).split("/")[1] !== "memory");
+	// What follows a folder in the path, or undefined when the path is not in it.
+	const inside = (folder: string) => {
+		const root = posix.normalize(folder.toLowerCase()).replace(/(.)\/+$/, "$1");
+		return within(folded, root) ? folded.slice(root.length + 1) : undefined;
+	};
+	if (rule.codex.some((folder) => inside(folder) !== undefined)) return true;
+	return rule.claude.some((folder) => {
+		const rest = inside(folder);
+		return rest !== undefined && rest.split("/")[1] !== "memory";
+	});
 }
 
 /** The session records named in shell text by their tails (readings are lower case). */
@@ -1269,12 +1465,42 @@ const TRANSCRIPTS_NAMED = new RegExp(
 	`(?:${OC_START}\\.claude|\\$(?:claude_config_dir|\\{claude_config_dir[^}\\s$]*\\}))/+projects${OC_END}|(?:${OC_START}\\.codex|\\$(?:codex_home|\\{codex_home[^}\\s$]*\\}))/+sessions${OC_END}`,
 );
 
+/** The records' parents and folders as a glob may name them: the parent's name (or the variable for it) and the folder's. */
+const RECORD_FOLDERS = [
+	{ parent: ".claude", variable: /^\$\{?claude_config_dir\}?$/, folder: "projects" },
+	{ parent: ".codex", variable: /^\$\{?codex_home\}?$/, folder: "sessions" },
+];
+
+/**
+ * Whether a reading names the session records with a glob (narrowly): a path part right after .claude/, .codex/,
+ * $CLAUDE_CONFIG_DIR/ or $CODEX_HOME/ that could match projects or sessions, or a part that could match .claude or
+ * .codex (starting with its dot, as a shell's glob must) before /projects or /sessions. Linear: each word is read once.
+ */
+function recordsGlob(form: string): boolean {
+	if (!GLOB.test(form)) return false;
+	for (const match of form.matchAll(GLOB_WORDS)) {
+		const word = match[0];
+		if (!GLOB.test(word)) continue;
+		const parts = word.split("/").filter((part) => part !== "");
+		for (let at = 0; at + 1 < parts.length; at++) {
+			const [parent, folder] = [parts[at] as string, parts[at + 1] as string];
+			if (!GLOB.test(parent) && !GLOB.test(folder)) continue;
+			for (const record of RECORD_FOLDERS) {
+				const parentNamed = parent === record.parent || record.variable.test(parent) || (parent.startsWith(".") && globCouldName(parent, [record.parent]) !== undefined);
+				if (parentNamed && (folder === record.folder || globCouldName(folder, [record.folder]) !== undefined)) return true;
+			}
+		}
+	}
+	return false;
+}
+
 /**
  * Whether shell text (`command`, with its readings `reading`, made with `reach`) names the session records (above): by
- * their tails, or by the paths of those elsewhere, read again with room for them when they need more.
+ * their tails or a glob of them, or by the paths of those elsewhere, read again with room for them when they need more.
  */
 function transcriptsNamed(command: string, reading: Reading, reach: number, rule: TranscriptRule): boolean {
-	if (reading.forms.some((form) => TRANSCRIPTS_NAMED.test(form)) || reading.pieces.some((piece) => TRANSCRIPTS_NAMED.test(piece))) return true;
+	const named = (form: string) => TRANSCRIPTS_NAMED.test(form) || recordsGlob(form);
+	if (reading.forms.some(named) || reading.pieces.some(named)) return true;
 	if (rule.spelled === undefined) return false;
 	return protectedIn(rule.spelled.reach > reach ? readings(command, rule.spelled.reach) : reading, rule.spelled, false) !== undefined;
 }
