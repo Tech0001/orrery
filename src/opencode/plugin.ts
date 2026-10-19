@@ -21,6 +21,11 @@
  * - One memory per agent in a server: OpenCode makes a plugin for each folder it serves (a session moved with
  *   opencode_session_move gets its new folder's), and they share the agent's memory, its status and its feed
  *   (AgentInServer), so recording goes on wherever the session runs.
+ * - Sessions (spec 2026-10-18-agent-permissions §2, §3b): the agent's memory in this server records the server as the
+ *   agent's session host (the process that runs the model's shell commands) and leaves its pid to their environment
+ *   (HOST_ENV), until the last plugin lets go. An OpenCode started inside an agent's session (a recorded ancestor, or
+ *   markers such as an inherited launch config whose token another live process holds) opens no memory, claims and
+ *   records nothing, says why once, and keeps the guard with the outer agent's rules (src/agent/nested-rules.ts).
  * Every hook body is wrapped: a failure says so in a notice and the turn goes on (a throw in the context hook would fail
  * the person's turn). The last plugin's cleanup releases the writer lock: a reload runs cleanup, then setup again, in the
  * same process.
@@ -38,7 +43,10 @@ import { agentModelSource } from "../agent/model-source.ts";
 import { noticeKey, noticeText, type TroubleState } from "../agent/notices.ts";
 import { compactorCommandIn, isOpenCodeChoice } from "../agent/opencode-source.ts";
 import { COMPACTOR_MODEL_KEY, storedChoice } from "../agent/choices.ts";
+import { leaveHostEnv } from "../agent/host-env.ts";
+import { nestedRules } from "../agent/nested-rules.ts";
 import { AGENT_ENV, pickAgent, TOKEN_ENV } from "../agent/pick.ts";
+import { forgetSession, type Inside, insideSession, nestedNotice, recordSession } from "../agent/sessions.ts";
 import { runningVersion } from "../agent/running.ts";
 import { statusVersion } from "../agent/status-file.ts";
 import { takeRequest } from "../agent/settings-request.ts";
@@ -65,8 +73,13 @@ export interface OpenCodePluginOptions {
 	readonly config?: HarnessConfig;
 	/** The environment that says where Orrery's home and config are (default process.env). Tests pass a scratch one. */
 	readonly env?: NodeJS.ProcessEnv;
-	/** The process the token is claimed for (default this one, OpenCode's server). Tests pass another. */
+	/**
+	 * The process the token is claimed for, and the session's host (default this one, OpenCode's server, which runs the
+	 * model's shell commands). Tests pass another.
+	 */
 	readonly owner?: number;
+	/** The environment OpenCode's shell commands inherit, where the session leaves its host pid (default process.env). */
+	readonly shellEnv?: NodeJS.ProcessEnv;
 	/** The TUI this server serves (default its parent: --standalone starts the server from the TUI). */
 	readonly tui?: number;
 	/** orrery's logins and models for summaries; default openSummarySources. Tests pass a faux one. */
@@ -268,6 +281,10 @@ class AgentInServer {
 	readonly opencode: OpenCodeSummaries;
 	/** Orrery's own logins and models for summaries, once the memory has opened. */
 	sources: SummarySources | undefined;
+	/** Whether this server is recorded as the agent's session host (#recordHost). */
+	#hosted = false;
+	/** Takes back the HOST_ENV left in the shell's environment (#recordHost). */
+	#hostEnv: (() => void) | undefined;
 
 	private constructor(key: string, config: HarnessConfig, agent: AgentConfig, feed: FeedWriter, options: OpenCodePluginOptions) {
 		this.#key = key;
@@ -299,10 +316,26 @@ class AgentInServer {
 
 	/** Starts opening the memory, and the ticks. */
 	#begin(): void {
+		this.#recordHost();
 		this.status();
 		this.opening = this.#open();
 		this.#timer = setInterval(() => this.tick(), this.#options.tickMs ?? 5000);
 		this.#timer.unref?.();
+	}
+
+	/**
+	 * Records this server as the agent's session host, whether or not the memory opens (held elsewhere, it is still the
+	 * agent's session), and leaves its pid to the shell's environment (HOST_ENV), for a tool started from it and detached.
+	 * One that can't be recorded is said.
+	 */
+	#recordHost(): void {
+		const pid = this.#options.owner ?? process.pid;
+		if (!recordSession(this.config.dataDir, { agent: this.agent.name, tool: "opencode", pid })) {
+			this.feed.say(`Orrery: this session could not be recorded as ${this.agent.name}'s, so tools and commands started from it are not known as ${this.agent.name}'s.`, "warning");
+			return;
+		}
+		this.#hosted = true;
+		this.#hostEnv = leaveHostEnv(pid, this.#options.shellEnv ?? process.env);
 	}
 
 	/** One more plugin uses it. */
@@ -321,6 +354,11 @@ class AgentInServer {
 		if (access !== undefined) this.opencode.removeHost(access);
 		if (--this.#users > 0) return;
 		shared<AgentInServer>("agents").delete(this.#key);
+		// No longer the agent's session: what the shell starts from now on is not the agent's.
+		if (this.#hosted) forgetSession(this.config.dataDir, this.#options.owner ?? process.pid);
+		this.#hosted = false;
+		this.#hostEnv?.();
+		this.#hostEnv = undefined;
 		this.stopped = true;
 		this.stopping.abort();
 		this.#openAbort.abort(new Error("OpenCode closed the plugin"));
@@ -633,8 +671,11 @@ class OrreryInOpenCode {
 		if (!this.#guard.decided) this.#guard.decide({ blind: `Orrery's plugin could not start (${why}), so no call can be checked; nothing was run.` });
 	}
 
-	/** The guard's rules for `agent` (or no agent's), from `config`; rules that can't be made refuse every call. */
-	#guardRules(config: HarnessConfig, agent: AgentConfig | undefined, env: NodeJS.ProcessEnv): void {
+	/**
+	 * The guard's rules for `agent` (or no agent's; or, `nested`, the outer agent's), from `config`; rules that can't be
+	 * made refuse every call.
+	 */
+	#guardRules(config: HarnessConfig, agent: AgentConfig | undefined, env: NodeJS.ProcessEnv, nested?: Inside): void {
 		// Without the folder OpenCode places paths from, no path can be judged where it lands.
 		if (this.#directory === undefined) {
 			this.#guard.decide({ blind: "OpenCode did not say which folder this session works in, so no call can be checked; nothing was run." });
@@ -642,7 +683,8 @@ class OrreryInOpenCode {
 		}
 		try {
 			const configFile = this.#options.config === undefined ? resolve(defaultConfigPath(env)) : undefined;
-			this.#guard.decide({ options: openCodeGuardOptions(config, agent, this.#directory, { env, ...(configFile === undefined ? {} : { configFile }) }) });
+			const rules = nested === undefined ? undefined : nestedRules(config, nested.agent, this.#directory);
+			this.#guard.decide({ options: openCodeGuardOptions(config, agent, this.#directory, { env, ...(configFile === undefined ? {} : { configFile }), ...(rules === undefined ? {} : { rules }) }) });
 		} catch (error) {
 			this.#guard.decide({ blind: `the guard's rules could not be made (${firstLine(error)}), so no call can be checked; nothing was run.` });
 		}
@@ -691,6 +733,16 @@ class OrreryInOpenCode {
 			this.#refuse(`Orrery: Orrery's config could not be read (${safeText(errorText(error))}); this session runs without memory, and its guard refuses every tool call.`);
 			return;
 		}
+		// Started inside an agent's session: before the token is read or claimed. No memory, no tools, nothing recorded; the
+		// outer agent's guard (no agent's when whose session it is can't be told), and why, once in this server.
+		const inside = this.#nestedIn(config, env);
+		if (inside !== undefined) {
+			this.#guardRules(config, undefined, env, inside);
+			this.#feed = feed;
+			feed.line = "Orrery · no memory";
+			feed.once("nested", nestedNotice(inside));
+			return;
+		}
 		let token: string;
 		try {
 			token = readTokenFile(options.tokenFile);
@@ -733,6 +785,18 @@ class OrreryInOpenCode {
 		this.#held = AgentInServer.take(config, pick.agent, feed, this.#options);
 		await this.#register();
 		void this.#listen();
+	}
+
+	/**
+	 * The agent session this OpenCode was started inside (src/agent/sessions.ts, the server as `self`, so its own launch's
+	 * config and HOST_ENV are its own), or undefined. A look that fails counts as one whose agent is unknown (fail closed).
+	 */
+	#nestedIn(config: HarnessConfig, env: NodeJS.ProcessEnv): Inside | undefined {
+		try {
+			return insideSession([config.dataDir], env, config, { self: this.#options.owner ?? process.pid });
+		} catch {
+			return { agent: undefined, tool: undefined, via: "marker", dataDir: config.dataDir };
+		}
 	}
 
 	/** Cleanup: stops listening, waits a little for a reply being recorded, and lets go of the memory (the last plugin closes it). Never throws. */

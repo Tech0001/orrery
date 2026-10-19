@@ -1,6 +1,6 @@
 /** Shared pieces of the Claude Code adapter's tests. Everything lives in temp folders, never ~/.orrery. */
 
-import { execFileSync, type SpawnSyncReturns, spawnSync } from "node:child_process";
+import { execFileSync, type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll } from "vitest";
@@ -152,6 +152,60 @@ export function hookCli(event: string, input: object, env: Record<string, string
 		encoding: "utf8",
 		timeout: 20_000,
 	});
+}
+
+/** A stand-in for a Claude Code process, alive until killed, that runs hooks as its own children. */
+export interface FakeClaude {
+	readonly pid: number;
+	/** `orrery claude-hook <event>` as Claude Code runs it: its child, with CLAUDE_PID its pid, the input on stdin. */
+	hook(event: string, input: object, env: Record<string, string>): Promise<{ readonly status: number | null; readonly stdout: string; readonly stderr: string }>;
+	kill(): void;
+}
+
+const FAKE_CLAUDE = `
+const { spawnSync } = require("node:child_process");
+let buffer = "";
+process.stdin.setEncoding("utf8").on("data", (chunk) => {
+	buffer += chunk;
+	for (let at = buffer.indexOf("\\n"); at >= 0; at = buffer.indexOf("\\n")) {
+		const { id, cmd, args, env, input } = JSON.parse(buffer.slice(0, at));
+		buffer = buffer.slice(at + 1);
+		const run = spawnSync(cmd, args, { env, input, encoding: "utf8", timeout: 20000 });
+		process.stdout.write(JSON.stringify({ id, status: run.status, stdout: run.stdout, stderr: run.stderr }) + "\\n");
+	}
+});
+`;
+
+/**
+ * A stand-in for a Claude Code process: hooks are its children, as Claude Code's are, so their parent and their
+ * CLAUDE_PID are its pid (src/claude/pick.ts claudeHookPid checks that). Kill it when done.
+ */
+export function fakeClaude(): FakeClaude {
+	const child = spawn(process.execPath, ["-e", FAKE_CLAUDE], { env: cleanEnv({}), stdio: ["pipe", "pipe", "ignore"] });
+	const pid = child.pid as number;
+	const waiting = new Map<number, (answer: { status: number | null; stdout: string; stderr: string }) => void>();
+	let next = 0;
+	let buffer = "";
+	child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+		buffer += chunk;
+		for (let at = buffer.indexOf("\n"); at >= 0; at = buffer.indexOf("\n")) {
+			const answer = JSON.parse(buffer.slice(0, at)) as { id: number; status: number | null; stdout: string; stderr: string };
+			buffer = buffer.slice(at + 1);
+			waiting.get(answer.id)?.(answer);
+			waiting.delete(answer.id);
+		}
+	});
+	return {
+		pid,
+		hook: (event, input, env) =>
+			new Promise((resolve) => {
+				const id = next++;
+				waiting.set(id, resolve);
+				const c = cliCommand(["claude-hook", event]);
+				child.stdin.write(`${JSON.stringify({ id, cmd: c.cmd, args: c.args, env: cleanEnv({ ...env, CLAUDE_PID: String(pid) }), input: JSON.stringify(input) })}\n`);
+			}),
+		kill: () => child.kill(),
+	};
 }
 
 /**

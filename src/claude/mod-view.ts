@@ -2,7 +2,8 @@
  * `orrery claude-mod view` (spec 2026-10-08-claude-code-mod §4.2): what the Orrery mod in Claude Code needs from the
  * session's agent (src/claude/pick.ts: ORRERY_AGENT's, as the mod passes it on, else the folder's), as one JSON
  * document. It runs within a session, so it never decides: under ORRERY_AGENT it reads the decision the MCP server or
- * SessionStart recorded for its parent, the Claude Code that runs it, and with none it answers no agent. The reply keeps
+ * SessionStart recorded for its parent, the Claude Code that runs it, and with none it answers no agent. A Claude Code
+ * started inside an agent's session gets no agent and the notice that says so (src/claude/pick.ts). The reply keeps
  * its names (`lane`): a cached older mod reads it. It opens memory read-only, so it works while the holder, pi or nothing
  * holds the agent; the holder stays the single writer. It never prints message contents anywhere but the section.
  * It runs at every Claude Code session start and compaction, so it imports nothing heavy (not agent/overview.ts).
@@ -23,7 +24,7 @@ import { readStatus } from "../agent/status-file.ts";
 import { memorySection } from "../agent/view-text.ts";
 import { MemoryStore, MemoryView } from "../memory/index.ts";
 import { validSession } from "./paths.ts";
-import { claudeSession } from "./pick.ts";
+import { claudeRefusedNotice, claudeSession } from "./pick.ts";
 import { pendingEvents, readMode, type SessionMode } from "./spool.ts";
 import { type AgentMode, agentMode } from "./view-file.ts";
 
@@ -32,7 +33,8 @@ const POLL_MS = 250;
 const STATUS_FRESH_MS = 30_000;
 
 export type ModViewReply =
-	| { readonly lane: null }
+	/** No agent; `notice`: why, for a session started inside an agent's session (spec 2026-10-18-agent-permissions §3b). */
+	| { readonly lane: null; readonly notice?: string }
 	| {
 			readonly lane: string;
 			readonly mode: AgentMode;
@@ -184,6 +186,8 @@ export async function modView(config: HarnessConfig | undefined, options: ModVie
 		const base = options.env ?? process.env;
 		const env = options.agent === undefined ? base : { ...base, [AGENT_ENV]: options.agent, [TOKEN_ENV]: options.agentToken ?? base[TOKEN_ENV] };
 		const picked = claudeSession(config, { env, cwd: options.cwd, pid: options.owner ?? process.ppid, decide: false });
+		// Started inside an agent's session: no memory, and why.
+		if (picked.kind === "nested") return { lane: null, notice: claudeRefusedNotice(picked) };
 		if (picked.kind !== "agent") return { lane: null };
 		const { agent } = picked;
 		const { session } = options;

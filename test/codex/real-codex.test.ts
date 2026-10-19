@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir, userInfo } from "node:os";
@@ -7,7 +7,8 @@ import { basename, delimiter, dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { readHolder } from "../../src/agent/handover.ts";
 import { instructionsSection, readInstructions, writeInstructions } from "../../src/agent/instructions.ts";
-import { newToken } from "../../src/agent/pick.ts";
+import { claimedBy, newToken } from "../../src/agent/pick.ts";
+import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
 import { listHooks, probeHooks, readCodexCheck } from "../../src/codex/check.ts";
 import { CODEX_HOOKS, type CodexEvent, type CodexHook, codexLaunch, shellWords, tomlString, trustHash, trustKey } from "../../src/codex/launch.ts";
 import { checkHookShell, hookShell } from "../../src/codex/shell.ts";
@@ -506,6 +507,57 @@ describe.skipIf(codex === null)("an agent's session in the installed Codex (scra
 			expect(memory(a.agentDir).slice(2)).toEqual(["user: What was the codename?", "talk: Reply 2."]);
 			await settled(a.agentDir);
 		} finally {
+			model.close();
+		}
+	}, 120_000);
+
+	it("records Codex as the agent's session host with its session's id: its shell runs under it and carries that id as CODEX_THREAD_ID", async () => {
+		const a = atlas("host");
+		const hosts = join(a.agentDir, "..", "..", "session-hosts");
+		// What the shell sees of its session, written where the test reads it (the guard judges the command, not the script).
+		writeFileSync(
+			join(a.work, "probe.sh"),
+			[
+				'echo "$CODEX_THREAD_ID" > thread.txt',
+				`cat ${JSON.stringify(hosts)}/*.json > hosts.txt`,
+				'p=$$; : > ancestors.txt; while [ "$p" -gt 1 ]; do echo "$p" >> ancestors.txt; p=$(ps -o ppid= -p "$p" | tr -d " "); done',
+				"",
+			].join("\n"),
+		);
+		const model = await scriptedModel((n) => (n === 1 ? { shell: "sh probe.sh" } : { reply: "Done." }));
+		try {
+			const run = await exec(a, model.port, ["Look around."]);
+			expect(run.status, run.stderr).toBe(0);
+			const session = /session id: ([0-9a-f-]{36})/.exec(run.stderr)?.[1];
+			const record = JSON.parse(readFileSync(join(a.work, "hosts.txt"), "utf8")) as { agent: string; tool: string; pid: number; codexSession: string };
+			expect(record).toMatchObject({ agent: "Atlas", tool: "codex", codexSession: session });
+			expect(readFileSync(join(a.work, "thread.txt"), "utf8").trim()).toBe(session);
+			expect(readFileSync(join(a.work, "ancestors.txt"), "utf8").trim().split("\n")).toContain(String(record.pid));
+			await settled(a.agentDir);
+		} finally {
+			model.close();
+		}
+	}, 120_000);
+
+	it("started inside an agent's session (a recorded ancestor): no memory, no view, no memory tools, nothing recorded", async () => {
+		const a = atlas("nested");
+		const dataDir = join(a.agentDir, "..", "..");
+		// This test's process stands for a pi session of Atlas's that started Codex from its shell.
+		expect(recordSession(dataDir, { agent: "Atlas", tool: "pi", pid: process.pid })).toBe(true);
+		const model = await scriptedModel(() => ({ reply: "Hello." }));
+		try {
+			const run = await exec(a, model.port, ["Not the user's words."]);
+			expect(run.status, run.stderr).toBe(0);
+			expect(orreryContext(model.requests[0])).toEqual([]);
+			const namespace = (model.requests[0]?.tools ?? []).find((tool) => tool.type === "namespace" && tool.name === "mcp__orrery");
+			expect(namespace?.tools ?? []).toEqual([]);
+			// Its SessionStart ran (and said why to the person: Codex shows that in its TUI, not in exec's output).
+			expect(run.stderr).toContain("hook: SessionStart Completed");
+			expect(existsSync(join(a.agentDir, "memory.sqlite"))).toBe(false);
+			expect(claimedBy(a.agentDir, a.env.ORRERY_AGENT_TOKEN as string)).toBeUndefined();
+			expect(readdirSync(join(dataDir, "session-hosts"))).toEqual([`${process.pid}.json`]);
+		} finally {
+			forgetSession(dataDir, process.pid);
 			model.close();
 		}
 	}, 120_000);

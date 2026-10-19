@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { claimedBy, newToken } from "../../src/agent/pick.ts";
+import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
 import { readStatus } from "../../src/agent/status-file.ts";
 import { opencodeVersionOutput } from "../../src/agent/tools.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
@@ -284,6 +285,57 @@ const sessionIn = (stdout: string) => /"sessionID":"(ses_[A-Za-z0-9]+)"/.exec(st
 
 describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("an Orrery agent in the installed OpenCode (packed plugin, fake model, scratch homes)", () => {
 	afterAll(removeBuiltRelease);
+
+	it("records its server as the agent's session host: the model's shell runs under it and inherits its pid as ORRERY_HOST; the record goes with the server", async () => {
+		const world = await agentWorld();
+		const hosts = join(world.base, "data", "session-hosts");
+		// What the shell sees of its session, written where the test reads it (the guard judges the command, not the script).
+		writeFileSync(
+			join(world.ws, "probe.sh"),
+			[
+				'echo "${ORRERY_HOST:-none}" > host.txt',
+				`ls ${JSON.stringify(hosts)} > hosts.txt`,
+				'p=$$; : > ancestors.txt; while [ "$p" -gt 1 ]; do echo "$p" >> ancestors.txt; p=$(ps -o ppid= -p "$p" | tr -d " "); done',
+				"",
+			].join("\n"),
+		);
+		try {
+			const run = await opencodeRun(["run", "--standalone", "--format", "json", `TOOL64 shell ${Buffer.from(JSON.stringify({ command: "sh probe.sh" })).toString("base64")}`], world.ws, world.env);
+			expect(run.status, run.stderr).toBe(0);
+			const host = readFileSync(join(world.ws, "host.txt"), "utf8").trim();
+			expect(host).toMatch(/^\d+$/);
+			expect(readFileSync(join(world.ws, "hosts.txt"), "utf8").trim()).toBe(`${host}.json`);
+			expect(readFileSync(join(world.ws, "ancestors.txt"), "utf8").trim().split("\n")).toContain(host);
+			// The process that claimed the launch's token: the plugin's own.
+			expect(String(claimedBy(world.agentDir, world.token))).toBe(host);
+			expect(readdirSync(hosts)).toEqual([]);
+		} finally {
+			await world.model.close();
+		}
+	}, 90_000);
+
+	it("started inside an agent's session (a recorded ancestor): opens no memory, claims nothing, records nothing, and says why", async () => {
+		const world = await agentWorld();
+		const dataDir = join(world.base, "data");
+		// This test's process stands for a pi session of Atlas's that started OpenCode from its shell.
+		expect(recordSession(dataDir, { agent: "Atlas", tool: "pi", pid: process.pid })).toBe(true);
+		try {
+			const run = await opencodeRun(["run", "--standalone", "--format", "json", "TEXT Not the user's words."], world.ws, world.env);
+			expect(run.status, run.stderr).toBe(0);
+			const system = systemOf(world.model.requests[0] as FakeRequest);
+			expect(system).not.toContain("# Memory");
+			expect(system).not.toContain("# Agent: Atlas");
+			expect(existsSync(join(world.agentDir, "memory.sqlite"))).toBe(false);
+			expect(claimedBy(world.agentDir, world.token)).toBeUndefined();
+			const feed = readFeed(feedFileOf(world.tokenFile));
+			expect(feed?.line).toBe("Orrery · no memory");
+			expect(feed?.notices.map((notice) => notice.text)).toEqual(["Orrery: started inside Atlas's session (pi), so this one opens no memory and records nothing."]);
+			expect(readdirSync(join(dataDir, "session-hosts"))).toEqual([`${process.pid}.json`]);
+		} finally {
+			forgetSession(dataDir, process.pid);
+			await world.model.close();
+		}
+	}, 90_000);
 
 	it("records the prompt and its reply, ends the request's system prompt with the instructions and the memory section, and asks no model for a title", async () => {
 		const world = await agentWorld();

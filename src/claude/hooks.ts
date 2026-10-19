@@ -12,6 +12,10 @@
  * - They record only where `orrery claude-setup` ran: in mod mode in any folder, in file mode for the agent's
  *   folder. In any other agent they start no holder and spool nothing, SessionStart says the session is not recorded,
  *   and the guard still applies.
+ * - A Claude Code started inside an agent's session (spec 2026-10-18-agent-permissions §3b: the process's decision,
+ *   src/claude/pick.ts), or whose CLAUDE_PID is not its own (claudeHookPid), opens no memory and records nothing:
+ *   SessionStart says why (not again at a compaction), nothing is spooled, no holder starts, and the guard keeps the
+ *   outer agent's rules, never looser than the folder's own (src/agent/nested-rules.ts).
  * - Their stdout is only their JSON answer, and they never put message contents on stderr.
  */
 
@@ -24,8 +28,11 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { type HarnessConfig, type AgentConfig, agentForCwd } from "../agent/config.ts";
 import { agentViews, GuardCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials } from "../agent/guard-paths.ts";
 import { cutNotice, readInstructions } from "../agent/instructions.ts";
+import { nestedRules, type WriteRules } from "../agent/nested-rules.ts";
 import { workArea } from "../agent/pick.ts";
 import { writePrivate } from "../agent/private-file.ts";
+import { processAlive } from "../agent/process.ts";
+import { liveSession } from "../agent/sessions.ts";
 import { selfCommand } from "../agent/running.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { type HolderHost, holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
@@ -96,8 +103,13 @@ export interface HookInput {
 export interface HookContext {
 	readonly config: HarnessConfig;
 	readonly env: NodeJS.ProcessEnv;
-	/** Claude Code's process: CLAUDE_PID, else the hook's parent. */
+	/** Claude Code's process: CLAUDE_PID, as claudeHookPid checks it, else the hook's parent. */
 	readonly claudePid: number;
+	/**
+	 * CLAUDE_PID named a process that is not this hook's Claude Code (claudeHookPid): whose session this is can't be
+	 * told, so it is taken as one started inside an agent's session, whose agent is unknown (fail closed).
+	 */
+	readonly hostUnverified?: boolean;
 	/**
 	 * Starts the session's holder (spawnHolder), with SessionStart's time as its read-only cut-off; tests start one
 	 * in-process or answer for it.
@@ -130,6 +142,7 @@ interface Here {
  * agents midway (a Claude Code an agent started, picked by its folder, does not become the agent when the agent exits).
  */
 function pickFor(ctx: HookContext, projectDir: string, start = false): ClaudePicked {
+	if (ctx.hostUnverified === true) return { kind: "nested", outer: undefined, tool: undefined };
 	return claudeSession(ctx.config, { env: ctx.env, cwd: projectDir, pid: ctx.claudePid, decide: start });
 }
 
@@ -219,7 +232,7 @@ export function stop(input: HookInput, ctx: HookContext): object | undefined {
 export function sessionEnd(input: HookInput, ctx: HookContext): void {
 	const at = recordable(input, ctx);
 	if (at !== undefined) spoolEvent(at.agent.dir, at.session, { kind: "end", at: Date.now(), claudePid: ctx.claudePid, ...(typeof input.reason === "string" ? { reason: input.reason } : {}) });
-	if (input.agent_id === undefined && (input.reason === "prompt_input_exit" || input.reason === "other")) forgetProcess(ctx.config, ctx.claudePid);
+	if (input.agent_id === undefined && ctx.hostUnverified !== true && (input.reason === "prompt_input_exit" || input.reason === "other")) forgetProcess(ctx.config, ctx.claudePid);
 }
 
 /** The mode the holder started with `nonce` chose for `session`, once it has, or undefined after `ms`. */
@@ -253,6 +266,8 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	if (picked === undefined) return undefined;
 	const { pick, projectDir } = picked;
 	if (pick.kind === "none") return undefined;
+	// Started inside an agent's session: said to the person, once a session (not again at a compaction); nothing recorded.
+	if (pick.kind === "nested") return input.agent_id === undefined && input.source !== "compact" ? { systemMessage: claudeRefusedNotice(pick) } : undefined;
 	// A refused ORRERY_AGENT: said once, to the person, in the main session; nothing is recorded.
 	if (pick.kind !== "agent") return input.agent_id === undefined ? { systemMessage: claudeRefusedNotice(pick) } : undefined;
 	const { agent } = pick;
@@ -278,6 +293,10 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	gate ??= viewGate(agent);
 	// After the gate, which takes the setup back where git would see the view.
 	const setUp = markedHere(agent);
+	// The decision recorded this Claude Code as the agent's host (src/claude/pick.ts); one that could not be is said.
+	if (liveSession(ctx.config.dataDir, ctx.claudePid) === undefined && processAlive(ctx.claudePid)) {
+		warnings.push(`Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s.`);
+	}
 	let state = "recording";
 	if (!setUp) state = `not set up for Claude Code here, so this session is not recorded; run \`orrery claude-setup ${agent.name}\` to record it`;
 	else {
@@ -374,14 +393,14 @@ export function preToolUse(input: HookInput, ctx: HookContext): object | undefin
 		const found = pickHere(input, ctx);
 		if (found === undefined || found.pick.kind === "none" || typeof input.tool_name !== "string") return undefined;
 		const { pick, projectDir } = found;
-		const rules = pick.kind === "agent" ? pick.agent : agentForCwd(ctx.config, projectDir);
+		const rules = writeRules(pick, ctx.config, projectDir);
 		const toolInput = typeof input.tool_input === "object" && input.tool_input !== null ? (input.tool_input as Record<string, unknown>) : {};
 		const home = ctx.home ?? homedir();
 		reason = claudeGuard(input.tool_name, toolInput, {
 			// One guard call: the rules every path it names is judged by are worked out once (guard-paths.ts GuardCall).
 			call: new GuardCall(),
-			folder: workArea(rules ?? {}, projectDir),
-			allowedRoots: [...(rules?.allowedRoots ?? []), ...claudeStateRoots(projectDir, home, ctx.env)],
+			folder: rules.workArea,
+			allowedRoots: [...rules.allowedRoots, ...claudeStateRoots(projectDir, home, ctx.env)],
 			cwd: typeof input.cwd === "string" ? input.cwd : projectDir,
 			credentials: [ctx.config.credentialsPath, ...movedAgentDirCredentials(ctx.env, home), ...movedConfigDirCredentials(ctx.env), ...ompCredentials(ctx.env, home), ...openCodeCredentials(ctx.env, home)],
 			orreryData: ctx.config.dataDir,
@@ -394,6 +413,19 @@ export function preToolUse(input: HookInput, ctx: HookContext): object | undefin
 		reason = `this call could not be checked (${errorText(error)}).`;
 	}
 	return reason === undefined ? undefined : deny(reason);
+}
+
+/**
+ * Where a session's tool calls may write: its agent's rules; a nested one's, the outer agent's, never looser than the
+ * folder's own (src/agent/nested-rules.ts); a refused one's, or a nested one whose outer agent is unknown, those of the
+ * agent whose folder it runs in, else of an agent with no folder.
+ */
+function writeRules(pick: ClaudePicked, config: HarnessConfig, projectDir: string): WriteRules {
+	if (pick.kind === "agent") return { workArea: workArea(pick.agent, projectDir), allowedRoots: pick.agent.allowedRoots };
+	const nested = pick.kind === "nested" ? nestedRules(config, pick.outer, projectDir) : undefined;
+	if (nested !== undefined) return nested;
+	const here = agentForCwd(config, projectDir);
+	return { workArea: workArea(here ?? {}, projectDir), allowedRoots: here?.allowedRoots ?? [] };
 }
 
 /**

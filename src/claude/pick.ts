@@ -2,18 +2,26 @@
  * Which agent a Claude Code session belongs to: one answer for its hooks, the MCP server, `claude-mod view` and the
  * commands' "." (src/agent/pick.ts), decided once per Claude Code process.
  *
- * Without ORRERY_AGENT the folder decides, at each event, as it always has. With ORRERY_AGENT set, the first consumer
- * to pick for a Claude Code process (the MCP server at its start, or the first SessionStart, whichever comes first)
- * records that process's pick in <data>/claude-processes/<pid>.json, made exclusively (0600, in a 0700 folder), and
- * every later event of the process reads it and never picks again: later SessionStarts (compact, clear, an in-process
- * resume), the other hooks, the mod view, a restarted MCP server and ".". So a dead agent's token claim is taken over
- * only in that first decision, and the hooks, the view and the tools never split between agents. The record holds names
- * only: whose decision it is (ORRERY_AGENT, and a sha256 digest of ORRERY_AGENT_TOKEN), the kind of pick, the agent, and
- * how it was decided. SessionEnd at the process's end removes it (forgetProcess); a new decision first prunes the
- * records of processes that are gone.
+ * The first consumer to pick for a Claude Code process (the MCP server at its start, or the first SessionStart,
+ * whichever comes first) records that process's decision in <data>/claude-processes/<pid>.json, made exclusively (0600,
+ * in a 0700 folder), and every later event of the process reads it and never decides again: later SessionStarts
+ * (compact, clear, an in-process resume), the other hooks, the mod view, a restarted MCP server and ".". So a dead
+ * agent's token claim is taken over only in that first decision, and the hooks, the view and the tools never split
+ * between agents. The record holds names only: whose decision it is (ORRERY_AGENT, and a sha256 digest of
+ * ORRERY_AGENT_TOKEN), when its process started, the kind of pick, the agent, and how it was decided. SessionEnd at the
+ * process's end removes it (forgetProcess); a new decision first prunes the records of processes that are gone.
  *
- * A record of another identity is stale: another process's whose pid this one reuses (pids wrap, at 99999 on a Mac), or
- * an ancestor's whose CLAUDE_PID a descendant inherited. A decider takes it down exclusively and records its own
+ * Started inside an agent's session (spec 2026-10-18-agent-permissions §3b): the first decision asks, before any pick,
+ * whether the Claude Code runs under an agent's session (src/agent/sessions.ts, the process as `self`). If so that is
+ * its decision ("nested"), whatever ORRERY_AGENT or the folder says: no memory, no token claimed, nothing recorded, no
+ * view, no tools, the guard on with the outer agent's rules. Without ORRERY_AGENT the decision is only that it is not
+ * ("folder"): the folder still decides at each event, as it always has, but no hook walks the process tree. A reader
+ * that finds no decision for its process (a Claude Code started before this version) judges it itself, recording
+ * nothing. An agent's session records its Claude Code as the agent's host (src/agent/sessions.ts), which the decider
+ * keeps up to date and forgetProcess removes.
+ *
+ * A record of another identity is stale: another process's whose pid this one reuses (pids wrap, at 99999 on a Mac: a
+ * decider sees another start time), or an ancestor's whose CLAUDE_PID a descendant inherited. A decider takes it down exclusively and records its own
  * decision in its place (src/agent/exclusive.ts); of two deciders, the loser reads the winner's record. Any other reader
  * is refused.
  *
@@ -22,8 +30,9 @@
  * rules), never "none". A crash between a stale record's takedown and the new link leaves no record, so the next event
  * refuses the same way, until a SessionStart decides afresh.
  *
- * Known limit: a reused pid whose old record survived (its process died without SessionEnd, and no decision has pruned
- * it since) and was made under the same ORRERY_AGENT and token inherits that record's pick.
+ * Known limit: a reader (not a decider) that comes before its process's first decider, whose pid's old record survived
+ * (its process died without SessionEnd, and no decision has pruned it since) and was made under the same ORRERY_AGENT
+ * and token, reads that record's pick until the decider replaces it.
  *
  * One rule of Claude Code's own: an agent opened by ORRERY_AGENT in a folder that an agent set up the file way holds (its
  * own or an ancestor's: Claude Code loads every ancestor's CLAUDE.md and CLAUDE.local.md) is refused when that agent is
@@ -33,12 +42,13 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type HarnessConfig, insideFolder } from "../agent/config.ts";
 import { beingMade, publish, removeStale, stray, temporaryOf } from "../agent/exclusive.ts";
 import { AGENT_ENV, type Picked, pickAgent, type Refused, refusedNotice, TOKEN_ENV, type Where } from "../agent/pick.ts";
-import { processAlive } from "../agent/process.ts";
+import { processAlive, processInfo } from "../agent/process.ts";
+import { forgetSession, type Inside, insideSession, liveSession, nestedNotice, processStart, recordSession, type SessionTool } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { agentMode } from "./view-file.ts";
 
@@ -50,7 +60,12 @@ export type ClaudeRefused =
 	/** The first decision could not be recorded (`why`). */
 	| { readonly kind: "unrecorded"; readonly why: string }
 	/** A later event found no recorded decision of its own (its ORRERY_AGENT and token) for its process. */
-	| { readonly kind: "undecided" };
+	| { readonly kind: "undecided" }
+	/**
+	 * The Claude Code was started inside an agent's session (spec 2026-10-18-agent-permissions §3b): `outer`'s, in `tool`,
+	 * either undefined when nothing proves it. It opens no memory and records nothing.
+	 */
+	| { readonly kind: "nested"; readonly outer: string | undefined; readonly tool: SessionTool | undefined };
 
 export type ClaudePicked = Exclude<Picked, Refused> | ClaudeRefused;
 
@@ -78,6 +93,8 @@ export function claudeRefusedNotice(pick: ClaudeRefused): string {
 			return `Orrery: ORRERY_AGENT is set, but which agent this Claude Code is could not be recorded (${safeText(pick.why)}); this session runs without memory.`;
 		case "undecided":
 			return "Orrery: ORRERY_AGENT is set, but no choice of agent is recorded for this Claude Code under this ORRERY_AGENT; this session runs without memory.";
+		case "nested":
+			return nestedNotice({ agent: pick.outer, tool: pick.tool, via: "ancestry", dataDir: "" });
 		default:
 			return refusedNotice(pick);
 	}
@@ -100,21 +117,28 @@ export interface ClaudeProcess {
 type Decision =
 	| { readonly kind: "agent"; readonly name: string; readonly by: "env" | "folder" }
 	| { readonly kind: "none" }
-	| { readonly kind: "refused"; readonly why: "unknown" | "bad-token" | "in-view-folder"; readonly name: string; readonly host?: string };
+	| { readonly kind: "refused"; readonly why: "unknown" | "bad-token" | "in-view-folder"; readonly name: string; readonly host?: string }
+	/** Started inside `outer`'s session in `tool` (either left out when unknown): no memory. */
+	| { readonly kind: "nested"; readonly outer?: string; readonly tool?: SessionTool }
+	/** No ORRERY_AGENT, and started inside no agent's session: the folder decides, at each event. */
+	| { readonly kind: "folder" };
 
 /**
- * Whose decision a record is: ORRERY_AGENT as set (trimmed), and the sha256 (hex) of ORRERY_AGENT_TOKEN, or "" without
- * one. A record whose identity is not the asker's is another process's, whose pid this one reuses, or an ancestor's
- * whose CLAUDE_PID a descendant inherited: never this session's.
+ * Whose decision a record is: ORRERY_AGENT as set (trimmed, "" without one), the sha256 (hex) of ORRERY_AGENT_TOKEN, or
+ * "" without one, and when the process started (src/agent/sessions.ts processStart), where that could be read. A record
+ * whose identity is not the asker's is another process's, whose pid this one reuses, or an ancestor's whose CLAUDE_PID a
+ * descendant inherited: never this session's. Only a decider reads the process's start (a reader's hook stays quick): a
+ * reader trusts the record its process's first decider left, or replaced.
  */
 interface Identity {
 	readonly agent: string;
 	readonly token: string;
+	readonly start?: string;
 }
 
-function identityOf(env: NodeJS.ProcessEnv): Identity {
+function identityOf(env: NodeJS.ProcessEnv, start: string | undefined): Identity {
 	const token = env[TOKEN_ENV];
-	return { agent: env[AGENT_ENV]?.trim() ?? "", token: token === undefined ? "" : createHash("sha256").update(token).digest("hex") };
+	return { agent: env[AGENT_ENV]?.trim() ?? "", token: token === undefined ? "" : createHash("sha256").update(token).digest("hex"), ...(start === undefined ? {} : { start }) };
 }
 
 const processesDir = (config: HarnessConfig) => join(config.dataDir, "claude-processes");
@@ -130,12 +154,15 @@ function toDecision(pick: ClaudePicked): Decision {
 			return { kind: "refused", why: pick.kind, name: pick.name };
 		case "in-view-folder":
 			return { kind: "refused", why: pick.kind, name: pick.name, host: pick.host };
+		case "nested":
+			return { kind: "nested", ...(pick.outer === undefined ? {} : { outer: pick.outer }), ...(pick.tool === undefined ? {} : { tool: pick.tool }) };
 		default:
 			return { kind: "none" };
 	}
 }
 
-function fromDecision(config: HarnessConfig, decision: Decision): ClaudePicked {
+/** A decision as the pick it stands for; "folder" is the folder's pick, now. */
+function fromDecision(config: HarnessConfig, decision: Decision, where: Where): ClaudePicked {
 	switch (decision.kind) {
 		case "agent": {
 			const agent = config.agents.get(decision.name);
@@ -146,6 +173,10 @@ function fromDecision(config: HarnessConfig, decision: Decision): ClaudePicked {
 			return { kind: "none" };
 		case "refused":
 			return decision.why === "in-view-folder" ? { kind: "in-view-folder", name: decision.name, host: decision.host ?? "" } : { kind: decision.why, name: decision.name };
+		case "nested":
+			return { kind: "nested", outer: decision.outer, tool: decision.tool };
+		case "folder":
+			return claudePick(config, { ...where, takeover: false });
 	}
 }
 
@@ -157,6 +188,8 @@ interface Recorded {
 
 /** The process's record: undefined when there is none; "unreadable" when there is one that cannot be read as one. */
 const readRecord = (config: HarnessConfig, pid: number) => readRecordFile(recordFile(config, pid));
+
+const TOOLS: ReadonlySet<string> = new Set<SessionTool>(["pi", "omp", "claude-code", "codex", "opencode", "run"]);
 
 function readRecordFile(file: string): Recorded | "unreadable" | undefined {
 	let text: string;
@@ -172,17 +205,24 @@ function readRecordFile(file: string): Recorded | "unreadable" | undefined {
 		return "unreadable";
 	}
 	if (typeof value !== "object" || value === null) return "unreadable";
-	const identity = typeof value.agent === "string" && typeof value.token === "string" ? { agent: value.agent, token: value.token } : undefined;
+	const identity =
+		typeof value.agent === "string" && typeof value.token === "string" ? { agent: value.agent, token: value.token, ...(typeof value.start === "string" ? { start: value.start } : {}) } : undefined;
 	const recorded = (decision: Decision): Recorded => ({ ...(identity === undefined ? {} : { identity }), decision });
 	if (value.kind === "none") return recorded({ kind: "none" });
+	if (value.kind === "folder") return recorded({ kind: "folder" });
 	if (value.kind === "agent" && typeof value.name === "string" && (value.by === "env" || value.by === "folder")) return recorded({ kind: "agent", name: value.name, by: value.by });
 	if (value.kind === "refused" && typeof value.name === "string" && (value.why === "unknown" || value.why === "bad-token" || value.why === "in-view-folder")) {
 		return recorded({ kind: "refused", why: value.why, name: value.name, ...(typeof value.host === "string" ? { host: value.host } : {}) });
 	}
+	if (value.kind === "nested" && (value.outer === undefined || typeof value.outer === "string") && (value.tool === undefined || (typeof value.tool === "string" && TOOLS.has(value.tool)))) {
+		return recorded({ kind: "nested", ...(value.outer === undefined ? {} : { outer: value.outer }), ...(value.tool === undefined ? {} : { tool: value.tool as SessionTool }) });
+	}
 	return "unreadable";
 }
 
-const sameIdentity = (recorded: Identity | undefined, asker: Identity) => recorded !== undefined && recorded.agent === asker.agent && recorded.token === asker.token;
+/** The same agent and token, and the same start where both are known (a record from before starts has none). */
+const sameIdentity = (recorded: Identity | undefined, asker: Identity) =>
+	recorded !== undefined && recorded.agent === asker.agent && recorded.token === asker.token && (recorded.start === undefined || asker.start === undefined || recorded.start === asker.start);
 
 /**
  * A readable record of another identity: never this session's, and a decider's to replace. A missing one is stale too:
@@ -245,33 +285,105 @@ function prune(config: HarnessConfig, alive: (pid: number) => boolean): void {
 	}
 }
 
-/** The session's agent for Claude Code process `asking`: its recorded decision, made here when it may (module doc). */
-export function claudeSession(config: HarnessConfig, asking: ClaudeProcess): ClaudePicked {
-	const where = { env: asking.env, cwd: asking.cwd, owner: asking.pid, ...(asking.alive === undefined ? {} : { alive: asking.alive }) };
-	// No ORRERY_AGENT: no token, and nothing to decide once; the folder decides, as it always has.
-	if (!asking.env[AGENT_ENV]?.trim()) return claudePick(config, { ...where, takeover: false });
-	const identity = identityOf(asking.env);
-	const recorded = readRecord(config, asking.pid);
-	if (recorded === "unreadable") return { kind: "unrecorded", why: "its record is unreadable" };
-	if (recorded !== undefined && sameIdentity(recorded.identity, identity)) return fromDecision(config, recorded.decision);
-	// No record, or a stale one (another identity's): only a decider makes this process's decision.
-	if (!asking.decide) return { kind: "undecided" };
-	prune(config, asking.alive ?? processAlive);
-	const pick = claudePick(config, { ...where, takeover: true });
-	const written = recordDecision(config, asking.pid, { ...identity, ...toDecision(pick) }, recorded !== undefined);
-	if (written === true) return pick;
-	if (written !== "exists") return { kind: "unrecorded", why: written };
-	// Another consumer of this process decided first: its decision holds.
-	const theirs = readRecord(config, asking.pid);
-	if (theirs === undefined || theirs === "unreadable") return { kind: "unrecorded", why: "its record is unreadable" };
-	return sameIdentity(theirs.identity, identity) ? fromDecision(config, theirs.decision) : { kind: "undecided" };
+/**
+ * The agent session Claude Code process `asking.pid` was started inside (src/agent/sessions.ts, with the process as
+ * `self`, so its own launch's markers are its own), or undefined. Its pid hosting another tool's live session (a pi's, a
+ * Codex's) makes it no Claude Code of its own: inside that session. A look that fails counts as a session whose agent is
+ * unknown: a check that can't judge refuses.
+ */
+function nestedIn(config: HarnessConfig, asking: ClaudeProcess): Inside | undefined {
+	try {
+		const own = liveSession(config.dataDir, asking.pid);
+		if (own !== undefined && own.tool !== "claude-code") return { agent: own.agent, tool: own.tool, via: "ancestry", dataDir: config.dataDir };
+		return insideSession([config.dataDir], asking.env, config, { self: asking.pid });
+	} catch {
+		return { agent: undefined, tool: undefined, via: "marker", dataDir: config.dataDir };
+	}
 }
 
-/** SessionEnd at the process's end: its decision goes. */
+const nestedPick = (inside: Inside): ClaudePicked => ({ kind: "nested", outer: inside.agent, tool: inside.tool });
+
+/**
+ * A decider's pick, with the process's host record (spec 2026-10-18-agent-permissions §2) to match: an agent's session
+ * records the Claude Code as its host in the config's data folder, so what its shell starts is known as the agent's; a
+ * session that is no agent's has none (one a former pick of the process left goes). A nested one records nothing, and
+ * touches no record.
+ */
+function hosted(config: HarnessConfig, pid: number, pick: ClaudePicked): ClaudePicked {
+	if (pick.kind === "agent") recordSession(config.dataDir, { agent: pick.agent.name, tool: "claude-code", pid });
+	else if (pick.kind !== "nested") forgetSession(config.dataDir, pid);
+	return pick;
+}
+
+/**
+ * The session's agent for Claude Code process `asking`: its recorded decision, made here when it may (module doc). The
+ * first decider of a process asks whether it was started inside an agent's session, before any pick (which may claim a
+ * token): if so, that is its decision, in the agent's folder too, and it opens no memory. Without ORRERY_AGENT the
+ * decision is only that ("folder": the folder decides at each event, as it always has), so no hook walks the process's
+ * ancestry; a reader that finds no decision for its process (one started before this version, or whose decision could
+ * not be written) judges it itself, and records nothing.
+ */
+export function claudeSession(config: HarnessConfig, asking: ClaudeProcess): ClaudePicked {
+	const where = { env: asking.env, cwd: asking.cwd, owner: asking.pid, ...(asking.alive === undefined ? {} : { alive: asking.alive }) };
+	const byEnv = Boolean(asking.env[AGENT_ENV]?.trim());
+	const identity = identityOf(asking.env, asking.decide ? processStart(asking.pid) : undefined);
+	const settled = (decision: Decision) => {
+		const pick = fromDecision(config, decision, where);
+		return asking.decide ? hosted(config, asking.pid, pick) : pick;
+	};
+	const recorded = readRecord(config, asking.pid);
+	if (recorded !== undefined && recorded !== "unreadable" && sameIdentity(recorded.identity, identity)) return settled(recorded.decision);
+	if (recorded === "unreadable" && byEnv) return { kind: "unrecorded", why: "its record is unreadable" };
+	// No record of its own (none, or a stale one: another identity's): only a decider makes this process's decision.
+	if (!asking.decide) {
+		if (byEnv) return { kind: "undecided" };
+		const inside = nestedIn(config, asking);
+		return inside === undefined ? claudePick(config, { ...where, takeover: false }) : nestedPick(inside);
+	}
+	prune(config, asking.alive ?? processAlive);
+	const inside = nestedIn(config, asking);
+	const pick = inside === undefined ? claudePick(config, { ...where, takeover: byEnv }) : nestedPick(inside);
+	const decision: Decision = byEnv || pick.kind === "nested" ? toDecision(pick) : { kind: "folder" };
+	const written = recordDecision(config, asking.pid, { ...identity, ...decision }, recorded !== undefined);
+	if (written === true) return hosted(config, asking.pid, pick);
+	// By its folder, a decision that can't be written is judged again at the next event.
+	if (written !== "exists") return byEnv ? { kind: "unrecorded", why: written } : hosted(config, asking.pid, pick);
+	// Another consumer of this process decided first: its decision holds.
+	const theirs = readRecord(config, asking.pid);
+	if (theirs !== undefined && theirs !== "unreadable" && sameIdentity(theirs.identity, identity)) return settled(theirs.decision);
+	if (!byEnv) return hosted(config, asking.pid, pick);
+	return theirs === undefined || theirs === "unreadable" ? { kind: "unrecorded", why: "its record is unreadable" } : { kind: "undecided" };
+}
+
+/** SessionEnd at the process's end: its decision goes, and its host record. */
 export function forgetProcess(config: HarnessConfig, pid: number): void {
 	try {
 		rmSync(recordFile(config, pid), { force: true });
 	} catch {
 		// a later decision's prune takes it once the process is gone
 	}
+	forgetSession(config.dataDir, pid);
+}
+
+/**
+ * Claude Code's process, for a hook it runs: CLAUDE_PID, which Claude Code sets to its own pid for its hooks over any it
+ * inherited (2.1.302 seen), checked against the hook's place in the process tree, since an environment is anyone's to
+ * set. Claude Code starts a hook through a shell that execs it, so the hook's parent is Claude Code; past one shell that
+ * did not exec (an older /bin/sh), its grandparent, when that shell is no session's host and no Claude Code with a
+ * decision of its own. Without CLAUDE_PID (an older Claude Code), the parent. Undefined when CLAUDE_PID names any other
+ * process: the hook can't tell whose it is, and opens no memory (fail closed).
+ */
+export function claudeHookPid(
+	config: HarnessConfig,
+	env: NodeJS.ProcessEnv,
+	parent: number = process.ppid,
+	parentOf: (pid: number) => number | undefined = (pid) => processInfo(pid)?.ppid,
+): number | undefined {
+	const named = env.CLAUDE_PID?.trim();
+	if (named === undefined || named === "") return parent;
+	const pid = /^\d+$/.test(named) ? Number(named) : Number.NaN;
+	if (!Number.isSafeInteger(pid) || pid <= 1) return undefined;
+	if (pid === parent) return pid;
+	if (parentOf(parent) !== pid) return undefined;
+	return existsSync(recordFile(config, parent)) || liveSession(config.dataDir, parent) !== undefined ? undefined : pid;
 }

@@ -752,7 +752,8 @@ async function mcpServer(configPath: string | undefined, tool: string | undefine
 	const config = optionalConfig(configPath, "orrery mcp");
 	if (config !== undefined && tool === "codex") {
 		const [{ codexAgent }, { codexPid }] = await Promise.all([import("../codex/pick.ts"), import("../codex/host.ts")]);
-		const pick = codexAgent(config, { env: process.env, pid: codexPid(), takeover: true });
+		// Codex starts its servers itself: codexPid() is this server's parent, unless it passed over one by its name.
+		const pick = codexAgent(config, { env: process.env, pid: codexPid(), parent: process.ppid, takeover: true });
 		if (pick.kind === "agent") tools = agentTools(config, pick.agent);
 	} else if (config !== undefined) {
 		const { claudeSession } = await import("../claude/pick.ts");
@@ -792,14 +793,16 @@ async function claudeHook(event: string | undefined, configPath: string | undefi
 			if (guarding && broken) process.stdout.write(denyToolCall("Orrery's config could not be read, so no call can be checked; nothing was run. Fix the config file."));
 			return 0;
 		}
-		const hooks = await import("../claude/hooks.ts");
+		const [hooks, { claudeHookPid }] = await Promise.all([import("../claude/hooks.ts"), import("../claude/pick.ts")]);
 		// A PreToolUse input over 1 MB is read but not kept (hookInputMax): the guard refuses it unread.
 		const stdin = await readStdin(hooks.hookInputMax(event ?? ""));
-		const claudePid = Number(process.env.CLAUDE_PID) || process.ppid;
+		// CLAUDE_PID, checked against this hook's parent; one that names another process is no session's (fail closed).
+		const host = claudeHookPid(config, process.env);
+		const claudePid = host ?? process.ppid;
 		const startHolder = (agent: AgentConfig, session: string, nonce: string, since: number) => hooks.spawnHolder(agent, session, nonce, claudePid, since, configPath);
 		// The file the config came from, as loadConfig found it: the guard keeps it read-only, wherever it is.
 		const configFile = resolvePath(configPath ?? defaultConfigPath());
-		const answer = await hooks.runHook(event ?? "", stdin, { config, env: process.env, claudePid, startHolder, configFile, updateNotices: true });
+		const answer = await hooks.runHook(event ?? "", stdin, { config, env: process.env, claudePid, ...(host === undefined ? { hostUnverified: true } : {}), startHolder, configFile, updateNotices: true });
 		process.stdout.write(answer);
 	} catch (error) {
 		process.stderr.write(`Orrery: ${event ?? "claude-hook"}: ${errorText(error)}\n`);
@@ -840,7 +843,7 @@ async function codexGuardHook(configPath: string | undefined): Promise<number> {
 		const { codexPid } = await import("../codex/host.ts");
 		// The file the config came from, as loadConfig found it: the guard keeps it read-only, wherever it is.
 		const configFile = resolvePath(configPath ?? defaultConfigPath());
-		const refusal = guard.runCodexGuard(stdin, { config, env: process.env, codexPid: codexPid(), configFile, deadline: CODEX_GUARD_DEADLINE_MS });
+		const refusal = guard.runCodexGuard(stdin, { config, env: process.env, codexPid: codexPid(), codexParent: process.ppid, configFile, deadline: CODEX_GUARD_DEADLINE_MS });
 		return refusal === undefined ? 0 : denyCodexCall(refusal);
 	} catch (error) {
 		return denyCodexCall(`Orrery guard: this call could not be checked (${errorText(error).replace(/\.+$/, "")}); nothing was run`);
@@ -868,7 +871,7 @@ async function codexHook(event: string | undefined, configPath: string | undefin
 		const [{ codexPid }, { spawnHolder }] = await Promise.all([import("../codex/host.ts"), import("../claude/hooks.ts")]);
 		const pid = codexPid();
 		const startHolder = (agent: AgentConfig, session: string, nonce: string, since: number) => spawnHolder(agent, session, nonce, pid, since, configPath, "codex");
-		process.stdout.write(await hooks.runCodexHook(event ?? "", stdin, { config, env: process.env, codexPid: pid, startHolder, updateNotices: true }));
+		process.stdout.write(await hooks.runCodexHook(event ?? "", stdin, { config, env: process.env, codexPid: pid, codexParent: process.ppid, startHolder, updateNotices: true }));
 	} catch (error) {
 		process.stderr.write(`Orrery: ${event ?? "codex-hook"}: ${errorText(error)}\n`);
 	}

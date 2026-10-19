@@ -11,6 +11,10 @@
  *   view: the holder is started all the same, and only the status is said.
  * - UserPromptSubmit spools the prompt, Stop the turn's last reply, SessionEnd the session's end; each returns quickly.
  * - Events of Codex's subagents (agent_id) are not memory.
+ * - SessionStart records Codex's process as the agent's session host, with the session's id (src/agent/sessions.ts:
+ *   its sandboxed shell, in a pid namespace of its own, is known by CODEX_THREAD_ID), whether or not it records;
+ *   SessionEnd forgets it. A Codex started inside an agent's session (src/codex/pick.ts) opens no memory and records
+ *   nothing: SessionStart says why (not again after a compaction), and no event spools.
  * - Their stdout is only their JSON answer (nothing at all when there is none), and they never put message contents on
  *   stderr or in a log.
  */
@@ -20,6 +24,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
+import { processAlive } from "../agent/process.ts";
+import { forgetSession, liveSession, nestedNotice, recordSession } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { memorySection } from "../agent/view-text.ts";
 import { noticeShownBefore, waitForMode } from "../claude/hooks.ts";
@@ -50,6 +56,11 @@ export interface CodexHookContext {
 	readonly env: NodeJS.ProcessEnv;
 	/** Codex's process (src/codex/host.ts): the token's owner and the holder's host. */
 	readonly codexPid: number;
+	/**
+	 * The process codexPid() started from (the hook's parent): when codexPid is another, it was reached past processes
+	 * named like shells, and must prove itself (src/codex/pick.ts). Undefined: no check (tests).
+	 */
+	readonly codexParent?: number;
 	/** Starts the session's holder (spawnHolder for Codex); tests start one in-process or answer for it. */
 	readonly startHolder: (agent: AgentConfig, session: string, nonce: string, since: number) => void;
 	/** How long SessionStart waits for the holder to choose recording or read-only (default 8 s). */
@@ -64,15 +75,22 @@ export interface CodexHookContext {
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-/** The agent of an event (never the first decision: only SessionStart claims the token). */
-function agentOf(ctx: CodexHookContext, takeover = false) {
-	return codexAgent(ctx.config, { env: ctx.env, pid: ctx.codexPid, takeover, ...(ctx.alive === undefined ? {} : { alive: ctx.alive }) });
+/** The agent of an event of `session` (never the first decision: only SessionStart claims the token). */
+function agentOf(ctx: CodexHookContext, session: string | undefined, takeover = false) {
+	return codexAgent(ctx.config, {
+		env: ctx.env,
+		pid: ctx.codexPid,
+		takeover,
+		...(ctx.codexParent === undefined ? {} : { parent: ctx.codexParent }),
+		...(session === undefined ? {} : { session }),
+		...(ctx.alive === undefined ? {} : { alive: ctx.alive }),
+	});
 }
 
 /** A main-thread event of this Codex's agent, in a session its holder does not run read-only: its events are memory. */
 function recordable(input: CodexHookInput, ctx: CodexHookContext): { readonly agent: AgentConfig; readonly session: string } | undefined {
 	if (input.agent_id !== undefined || !validSession(input.session_id)) return undefined;
-	const pick = agentOf(ctx);
+	const pick = agentOf(ctx, input.session_id);
 	if (pick.kind !== "agent") return undefined;
 	if (readMode(pick.agent.dir, input.session_id)?.mode === "read-only") return undefined;
 	return { agent: pick.agent, session: input.session_id };
@@ -100,7 +118,7 @@ function noticeLines(agent: AgentConfig, session: string, ctx: CodexHookContext)
 /** The notices as an answer, for the turn's events (main thread, this Codex's agent). */
 function notices(input: CodexHookInput, ctx: CodexHookContext): object | undefined {
 	if (input.agent_id !== undefined || !validSession(input.session_id)) return undefined;
-	const pick = agentOf(ctx);
+	const pick = agentOf(ctx, input.session_id);
 	if (pick.kind !== "agent") return undefined;
 	const lines = noticeLines(pick.agent, input.session_id, ctx);
 	return lines.length === 0 ? undefined : { systemMessage: lines.join("\n") };
@@ -123,10 +141,15 @@ export function stop(input: CodexHookInput, ctx: CodexHookContext): object | und
 	return notices(input, ctx);
 }
 
-/** SessionEnd: only drops an "end" in the spool (Codex gives the hook at most 3 s); the holder finishes the rest. */
+/**
+ * SessionEnd: only drops an "end" in the spool (Codex gives the hook at most 3 s); the holder finishes the rest. The
+ * session's host record goes, unless it is already a later session's (a /clear's new one, recorded first).
+ */
 export function sessionEnd(input: CodexHookInput, ctx: CodexHookContext): void {
 	const at = recordable(input, ctx);
 	if (at !== undefined) spoolEvent(at.agent.dir, at.session, { kind: "end", at: Date.now(), claudePid: ctx.codexPid, ...(typeof input.reason === "string" ? { reason: input.reason } : {}) });
+	if (input.agent_id !== undefined || !validSession(input.session_id) || agentOf(ctx, input.session_id).kind !== "agent") return;
+	if (liveSession(ctx.config.dataDir, ctx.codexPid)?.codexSession === input.session_id) forgetSession(ctx.config.dataDir, ctx.codexPid);
 }
 
 /** The agent's message count and, when `withSection`, its memory section, read from a read-only snapshot; none yet: {}. */
@@ -148,10 +171,15 @@ function readMemory(agent: AgentConfig, withSection: boolean): { readonly messag
 export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext): Promise<object | undefined> {
 	if (input.agent_id !== undefined || !validSession(input.session_id)) return undefined;
 	// The session's start claims the token for this Codex, unless the memory server has already.
-	const pick = agentOf(ctx, true);
+	const pick = agentOf(ctx, input.session_id, true);
 	if (pick.kind === "refused") return { systemMessage: pick.notice };
+	// Started inside an agent's session: said to the person, once a session (not again after a compaction).
+	if (pick.kind === "nested") return input.source === "compact" ? undefined : { systemMessage: nestedNotice({ agent: pick.outer, tool: pick.tool, via: "ancestry", dataDir: "" }) };
 	const { agent } = pick;
 	const session = input.session_id;
+	// This Codex hosts the agent's session, with this session's id, whether or not it records (spec
+	// 2026-10-18-agent-permissions §2): what its shell starts runs inside the agent's session.
+	const hosted = recordSession(ctx.config.dataDir, { agent: agent.name, tool: "codex", pid: ctx.codexPid, codexSession: session }) || !processAlive(ctx.codexPid);
 	// For the launcher's resume line once Codex ends (src/codex/resume.ts).
 	recordCodexSession(agent.dir, ctx.codexPid, session, ctx.alive);
 	// The holder's cut-off: this session's events from now on belong to this run.
@@ -160,6 +188,7 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 	const withView = input.source !== "resume" && input.source !== "fork";
 	const warnings: string[] = [];
 	let state = "recording";
+	if (!hosted) warnings.push(`Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s.`);
 	const holder = readHolder(agent.dir);
 	let mode: SessionMode | undefined;
 	if (holderFresh(holder) && holder.session === session && holder.state === "recording") mode = readMode(agent.dir, session);

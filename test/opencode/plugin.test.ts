@@ -1,3 +1,4 @@
+import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
@@ -6,7 +7,8 @@ import { type AgentConfig, type HarnessConfig, parseConfig } from "../../src/age
 import { FileCredentialStore } from "../../src/agent/credentials.ts";
 import { MemoryAgent } from "../../src/agent/memory-agent.ts";
 import { agentModelSource } from "../../src/agent/model-source.ts";
-import { claimedBy, newToken } from "../../src/agent/pick.ts";
+import { claimedBy, claimText, newToken } from "../../src/agent/pick.ts";
+import { forgetSession, liveSession, recordSession, type SessionTool } from "../../src/agent/sessions.ts";
 import { writeRequest } from "../../src/agent/settings-request.ts";
 import { readStatus } from "../../src/agent/status-file.ts";
 import type { SummarySources } from "../../src/agent/summary-sources.ts";
@@ -17,6 +19,7 @@ import { FREE_REASON } from "../../src/agent/opencode-source.ts";
 import type { MenuData } from "../../src/opencode/summary-menu.ts";
 import { type Feed, readFeed } from "../../src/opencode/feed.ts";
 import { COMPACTION_SUMMARY, openCodePlugin, type OpenCodePluginOptions, sessionTitle } from "../../src/opencode/plugin.ts";
+import { configContent } from "../../src/opencode/options.ts";
 import { feedFileOf } from "../../src/opencode/token-file.ts";
 import { fauxModels, tempDir } from "../agent/support.ts";
 import { messages, seed, waitUntil } from "../claude/support.ts";
@@ -68,7 +71,8 @@ const fauxSources = (config: HarnessConfig) => async (): Promise<SummarySources>
 
 /** The plugin set up in `host` (cleaned up after the test); the cleanup is returned too. */
 async function start(s: ReturnType<typeof scene>, host: FakeHost, options: OpenCodePluginOptions = {}, make: typeof openCodePlugin = openCodePlugin): Promise<() => Promise<void>> {
-	const plugin = make({ config: s.config, env: s.env, owner: process.pid, tui: TUI, summarySources: fauxSources(s.config), tickMs: 30, memoryWaitMs: 2000, log: () => {}, ...options });
+	// A shell environment of its own (HOST_ENV goes there), not this process's.
+	const plugin = make({ config: s.config, env: s.env, owner: process.pid, tui: TUI, shellEnv: {}, summarySources: fauxSources(s.config), tickMs: 30, memoryWaitMs: 2000, log: () => {}, ...options });
 	const cleanup = await plugin.setup(host);
 	let done = false;
 	const once = async () => {
@@ -709,6 +713,85 @@ describe("Orrery's OpenCode plugin: its life in OpenCode's server", () => {
 		await waitUntil(() => noticesOf(s).length > 0);
 		await new Promise((wait) => setTimeout(wait, 100));
 		expect(noticesOf(s)).toEqual(["Orrery was updated to 0.9.0; restart this session to use it."]);
+	});
+});
+
+describe("Orrery's OpenCode plugin: sessions (spec 2026-10-18-agent-permissions §2, §3b)", () => {
+	const recorded: { dataDir: string; pid: number }[] = [];
+	const children: ChildProcess[] = [];
+	afterEach(() => {
+		for (const { dataDir, pid } of recorded.splice(0)) forgetSession(dataDir, pid);
+		for (const child of children.splice(0)) child.kill("SIGKILL");
+	});
+	/** Records `pid` as hosting `agent`'s session in `tool`, as that tool's integration would; forgotten after the test. */
+	const hostRecord = (dataDir: string, agent: string, tool: SessionTool, pid: number) => {
+		expect(recordSession(dataDir, { agent, tool, pid })).toBe(true);
+		recorded.push({ dataDir, pid });
+	};
+	/** A live process that is no ancestor of this one. */
+	const bystander = (): number => {
+		const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+		children.push(child);
+		return child.pid as number;
+	};
+	const hosts = (s: ReturnType<typeof scene>): string[] => (existsSync(join(s.config.dataDir, "session-hosts")) ? readdirSync(join(s.config.dataDir, "session-hosts")) : []);
+	const OUTSIDE = /^Orrery guard: .*outside this agent's folder and allowed roots/;
+
+	it("started inside an agent's session, in the launch's own folder: no memory, no claim, no tools, nothing recorded, why said once, and the guard on", async () => {
+		const s = scene();
+		hostRecord(s.config.dataDir, "Birch", "claude-code", process.ppid);
+		const shell: NodeJS.ProcessEnv = {};
+		const host = hostFor(s);
+		await start(s, host, { shellEnv: shell });
+		expect(claimedBy(s.atlas.dir, s.token)).toBeUndefined();
+		expect(host.registered).toBe(false);
+		expect(host.guarded).toBe(true);
+		expect(feedOf(s)?.line).toBe("Orrery · no memory");
+		expect(noticesOf(s)).toEqual(["Orrery: started inside Birch's session (Claude Code), so this one opens no memory and records nothing."]);
+		expect(hosts(s)).toEqual([`${process.ppid}.json`]);
+		expect(shell.ORRERY_HOST).toBeUndefined();
+		expect(existsSync(join(s.atlas.dir, "memory.sqlite"))).toBe(false);
+		// Birch's rules and Atlas's (the folder's) at once; every agent's view is another's, Atlas's own too.
+		expect(await host.call("write", { path: "notes.md", content: "x" })).toBeUndefined();
+		expect(await host.call("write", { path: "/opt/elsewhere/x.md", content: "x" })).toMatch(OUTSIDE);
+		expect(await host.call("read", { path: join(s.ws, ".orrery", "view.md") })).toMatch(/^Orrery guard: .*sensitive/);
+		expect(await host.call("read", { path: join(s.dir, "birch", ".orrery", "view.md") })).toMatch(/^Orrery guard: .*sensitive/);
+		// A second folder's plugin in the same server says nothing more.
+		await start(s, hostFor(s, s.plain));
+		expect(noticesOf(s)).toHaveLength(1);
+	});
+
+	it("started from a shell that inherited another launch's config (its token another live process's): nested in that agent's session", async () => {
+		const s = scene();
+		const outer = bystander();
+		hostRecord(s.config.dataDir, "Atlas", "opencode", outer);
+		const token = newToken();
+		const tokenFile = join(s.dir, "home", "tokens", "opencode-2-bbbbbbbbbbbb");
+		writeFileSync(tokenFile, token, { mode: 0o600 });
+		mkdirSync(join(s.atlas.dir, "claims"), { recursive: true, mode: 0o700 });
+		writeFileSync(join(s.atlas.dir, "claims", token), claimText(outer), { mode: 0o600 });
+		const env = { ...s.env, OPENCODE_CONFIG_CONTENT: configContent(join(s.dir, "release", "extensions", "opencode"), { agent: "Atlas", tokenFile }) };
+		const host = hostFor(s, s.plain);
+		await start(s, host, { env });
+		expect(host.registered).toBe(false);
+		expect(noticesOf(s)).toEqual(["Orrery: started inside Atlas's session (OpenCode), so this one opens no memory and records nothing."]);
+		expect(claimedBy(s.atlas.dir, s.token)).toBeUndefined();
+	});
+
+	it("opened normally: records this OpenCode as the agent's host and leaves its pid to the shell (ORRERY_HOST) until the last plugin lets go", async () => {
+		const s = scene();
+		const shell: NodeJS.ProcessEnv = { ORRERY_HOST: "1" };
+		const first = await start(s, hostFor(s), { shellEnv: shell });
+		expect(liveSession(s.config.dataDir, process.pid)).toMatchObject({ agent: "Atlas", tool: "opencode", pid: process.pid });
+		expect(shell.ORRERY_HOST).toBe(String(process.pid));
+		// Another folder's plugin of the same server shares the agent's memory: the record stays until both have let go.
+		const second = await start(s, hostFor(s, s.plain), { shellEnv: shell });
+		await first();
+		expect(liveSession(s.config.dataDir, process.pid)).toBeDefined();
+		await second();
+		expect(liveSession(s.config.dataDir, process.pid)).toBeUndefined();
+		expect(hosts(s)).toEqual([]);
+		expect(shell.ORRERY_HOST).toBe("1");
 	});
 });
 

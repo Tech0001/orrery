@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,7 +8,9 @@ import { handleMessage, agentTools, MAX_LINE_CHARS, runMcp } from "../../src/cla
 import { MemoryStore } from "../../src/memory/index.ts";
 import type { ReaderTool } from "../../src/agent/memory-tools.ts";
 import { claimToken, newToken } from "../../src/agent/pick.ts";
+import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
 import { runHook } from "../../src/claude/hooks.ts";
+import { forgetProcess } from "../../src/claude/pick.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { seedAtlas } from "../agent/support.ts";
 import { cleanup, isolatedHome, pi, world } from "../pi/world.ts";
@@ -165,7 +167,7 @@ describe("Orrery's MCP server", () => {
 		expect(outside.err).toBe("");
 		// Under ORRERY_AGENT the server's parent (this test) records the process's decision; each case below is a new
 		// Claude Code process, so the last one's decision goes first, as its SessionEnd would take it.
-		const ended = () => rmSync(join(config.dataDir, "claude-processes", `${process.pid}.json`), { force: true });
+		const ended = () => forgetProcess(config, process.pid);
 		// ORRERY_AGENT names the agent wherever Claude Code runs; one that names no agent serves none, in an agent folder too.
 		const named = await session(join(root, "plain"), { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas" });
 		expect(named.replies.get(2).result.tools.map((tool: { name: string }) => tool.name)).toEqual(["zoom", "date", "search"]);
@@ -188,6 +190,31 @@ describe("Orrery's MCP server", () => {
 		expect((await session(join(root, "agent-Birch"))).replies.get(2).result.tools.map((tool: { name: string }) => tool.name)).toEqual(expect.arrayContaining(["zoom", "date", "search"]));
 		// No config anywhere: quiet, no tools.
 		if (!existsSync("/etc/orrery/config.toml")) expect((await session(join(root, "agent-Atlas"), {})).replies.get(2).result.tools).toEqual([]);
+	});
+
+	it("serves no tools in a Claude Code started inside an agent's session, in an agent's folder too (spec 2026-10-18-agent-permissions §3b)", { timeout: 60_000 }, async () => {
+		const { root, config, configPath } = world();
+		seedAtlas(root);
+		// The server's parent (this test) stands for the Claude Code; its parent hosts Birch's pi session.
+		expect(recordSession(config.dataDir, { agent: "Birch", tool: "pi", pid: process.ppid })).toBe(true);
+		try {
+			const c = cliCommand(["mcp"]);
+			const child = spawn(c.cmd, c.args, { env: cleanEnv({ ORRERY_CONFIG: configPath, CLAUDE_PROJECT_DIR: join(root, "agent-Atlas"), HOME: root }), cwd: root });
+			let out = "";
+			child.stdout.setEncoding("utf8").on("data", (chunk: string) => (out += chunk));
+			const exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
+			child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" })}\n`);
+			child.stdin.end(`${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "search", arguments: { query: "garden-plants" } } })}\n`);
+			expect(await exited).toBe(0);
+			const replies = new Map(out.trim().split("\n").map((line) => JSON.parse(line)).map((reply) => [reply.id, reply]));
+			expect(replies.get(2).result.tools).toEqual([]);
+			expect(replies.get(3).result.isError).toBe(true);
+			// The process's decision, which its hooks read.
+			expect(JSON.parse(readFileSync(join(config.dataDir, "claude-processes", `${process.pid}.json`), "utf8"))).toMatchObject({ kind: "nested", outer: "Birch", tool: "pi" });
+		} finally {
+			forgetSession(config.dataDir, process.ppid);
+			forgetProcess(config, process.pid);
+		}
 	});
 
 	it("shares one decision per Claude Code process with the hooks: a restarted server, and a SessionStart before or after it, keep the first pick after the agent died", { timeout: 60_000 }, async () => {
@@ -226,17 +253,19 @@ describe("Orrery's MCP server", () => {
 			};
 			return { env: { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token }, gone };
 		};
-		// The server first: the agent lives, so this Claude Code is not it. After the agent's exit, a restarted server
-		// and a SessionStart of the same process read that decision; neither takes the dead claim over.
+		// The server first: the agent lives, so this Claude Code was started inside its session (its variables, the token
+		// another live process claimed). After the agent's exit, a restarted server and a SessionStart of the same process
+		// read that decision; neither takes the dead claim over.
+		const nested = JSON.stringify({ systemMessage: "Orrery: started inside Atlas's session, so this one opens no memory and records nothing." });
 		const first = agent();
 		expect(await served(first.env)).toEqual([]);
 		await first.gone();
 		expect(await served(first.env)).toEqual([]);
-		expect(await sessionStart(first.env)).toBe("");
+		expect(await sessionStart(first.env)).toBe(nested);
 		rmSync(join(config.dataDir, "claude-processes", `${process.pid}.json`), { force: true });
 		// SessionStart first: the server started after the agent's exit reads its decision.
 		const second = agent();
-		expect(await sessionStart(second.env)).toBe("");
+		expect(await sessionStart(second.env)).toBe(nested);
 		await second.gone();
 		expect(await served(second.env)).toEqual([]);
 		rmSync(join(config.dataDir, "claude-processes", `${process.pid}.json`), { force: true });

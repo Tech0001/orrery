@@ -48,11 +48,15 @@ describe("claudeSession: one decision per Claude Code process", () => {
 		expect(readFileSync(join(records, `${pid}.json`), "utf8")).toBe(recorded);
 		expect(claudeSession(t.config, { env, cwd: dir, pid, decide: false })).toMatchObject({ kind: "agent", agent: { name: "Test" } });
 		expect(claudeSession(t.config, { env, cwd: dir, pid: livePid(), decide: false })).toEqual({ kind: "undecided" });
-		// Without ORRERY_AGENT nothing is recorded: the folder decides.
-		expect(claudeSession(t.config, { env: {}, cwd: t.folder, pid: livePid(), decide: true })).toMatchObject({ kind: "agent", by: "folder" });
-		expect(readdirSync(records)).toEqual([`${pid}.json`]);
-		// Names only, and whose decision it is: ORRERY_AGENT and its token's digest ("" with none).
-		expect(JSON.parse(recorded)).toEqual({ agent: "Test", token: "", kind: "agent", name: "Test", by: "env" });
+		// Without ORRERY_AGENT the decision is only that the folder decides (at each event), and the process was started
+		// inside no agent's session.
+		const plain = livePid();
+		expect(claudeSession(t.config, { env: {}, cwd: t.folder, pid: plain, decide: true })).toMatchObject({ kind: "agent", by: "folder" });
+		expect(readdirSync(records).sort()).toEqual([`${pid}.json`, `${plain}.json`].sort());
+		expect(JSON.parse(readFileSync(join(records, `${plain}.json`), "utf8"))).toEqual({ agent: "", token: "", start: expect.any(String), kind: "folder" });
+		forgetProcess(t.config, plain);
+		// Names only, whose decision it is (ORRERY_AGENT and its token's digest, "" with none) and when its process started.
+		expect(JSON.parse(recorded)).toEqual({ agent: "Test", token: "", start: expect.any(String), kind: "agent", name: "Test", by: "env" });
 		forgetProcess(t.config, pid);
 		expect(readdirSync(records)).toEqual([]);
 		const token = newToken();
@@ -82,8 +86,24 @@ describe("claudeSession: one decision per Claude Code process", () => {
 		expect(claudeSession(t.config, { env: { ORRERY_AGENT: "Test" }, cwd: dir, pid, decide: false })).toEqual({ kind: "undecided" });
 		// A decider replaces it with its own decision.
 		expect(claudeSession(t.config, { env: { ORRERY_AGENT: "Nobody" }, cwd: dir, pid, decide: true })).toEqual({ kind: "unknown", name: "Nobody" });
-		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ agent: "Nobody", token: "", kind: "refused", why: "unknown", name: "Nobody" });
+		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ agent: "Nobody", token: "", start: expect.any(String), kind: "refused", why: "unknown", name: "Nobody" });
 		expect(readdirSync(records)).toEqual([`${pid}.json`]);
+	});
+
+	it("a decider takes a record of its own identity made for another process with its pid (another start) as stale, and decides anew", () => {
+		const t = testAgent();
+		const records = join(t.config.dataDir, "claude-processes");
+		mkdirSync(records, { recursive: true, mode: 0o700 });
+		const pid = livePid();
+		const file = join(records, `${pid}.json`);
+		// A dead Claude Code's decision (started inside an agent's session), left under the pid this one now has.
+		writeFileSync(file, JSON.stringify({ agent: "", token: "", start: "1", kind: "nested", outer: "Atlas", tool: "pi" }));
+		// A reader trusts it (only a decider reads the process's start); the process's first decider replaces it.
+		expect(claudeSession(t.config, { env: {}, cwd: t.folder, pid, decide: false })).toEqual({ kind: "nested", outer: "Atlas", tool: "pi" });
+		expect(claudeSession(t.config, { env: {}, cwd: t.folder, pid, decide: true })).toMatchObject({ kind: "agent", by: "folder" });
+		expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ kind: "folder" });
+		expect(JSON.parse(readFileSync(file, "utf8")).start).not.toBe("1");
+		forgetProcess(t.config, pid);
 	});
 
 	it("prunes a dead process's record, but not an empty one younger than 60 s (being made), nor young temporary or graveyard files", async () => {
