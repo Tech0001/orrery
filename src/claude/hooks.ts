@@ -16,6 +16,10 @@
  *   src/claude/pick.ts), or whose CLAUDE_PID is not its own (claudeHookPid), opens no memory and records nothing:
  *   SessionStart says why (not again at a compaction), nothing is spooled, no holder starts, and the guard keeps the
  *   outer agent's rules, never looser than the folder's own (src/agent/nested-rules.ts).
+ * - One whose process can't be confirmed at SessionStart (its start time can't be read) opens no memory either, and its
+ *   SessionStart marks the session read-only for the agent it would be (markUnconfirmed): its later events are not
+ *   spooled, no holder takes them in, and a later SessionStart of the session in the same process starts none, even
+ *   once the start can be read.
  * - Their stdout is only their JSON answer, and they never put message contents on stderr.
  */
 
@@ -29,7 +33,7 @@ import { type HarnessConfig, type AgentConfig, agentForCwd } from "../agent/conf
 import { agentViews, GuardCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials } from "../agent/guard-paths.ts";
 import { cutNotice, readInstructions } from "../agent/instructions.ts";
 import { nestedRules, type WriteRules } from "../agent/nested-rules.ts";
-import { workArea } from "../agent/pick.ts";
+import { AGENT_ENV, agentNamed, workArea } from "../agent/pick.ts";
 import { writePrivate } from "../agent/private-file.ts";
 import { processAlive } from "../agent/process.ts";
 import { liveSession } from "../agent/sessions.ts";
@@ -39,8 +43,8 @@ import { type HolderHost, holderFresh, openElsewhere, readHolder } from "../agen
 import { claudeGuard, claudeStateRoots, movedConfigDirCredentials } from "./guard.ts";
 import { summaryNotice, updateNotice } from "./notices.ts";
 import { holderLog, samePath, validSession } from "./paths.ts";
-import { type ClaudePicked, claudeRefusedNotice, claudeSession, forgetProcess } from "./pick.ts";
-import { readMode, type SessionMode, spoolEvent } from "./spool.ts";
+import { type ClaudePicked, claudeRefusedNotice, claudeSession, forgetProcess, UNCONFIRMED_NOTICE } from "./pick.ts";
+import { readMode, type SessionMode, spoolEvent, writeMode } from "./spool.ts";
 import { markedHere, refreshViewFile, type ViewGate, viewGate } from "./view-file.ts";
 
 /**
@@ -110,6 +114,8 @@ export interface HookContext {
 	 * told, so it is taken as one started inside an agent's session, whose agent is unknown (fail closed).
 	 */
 	readonly hostUnverified?: boolean;
+	/** How Claude Code's start time is read (default processStart, src/agent/sessions.ts); tests pass their own. */
+	readonly processStart?: (pid: number) => string | undefined;
 	/**
 	 * Starts the session's holder (spawnHolder), with SessionStart's time as its read-only cut-off; tests start one
 	 * in-process or answer for it.
@@ -143,7 +149,7 @@ interface Here {
  */
 function pickFor(ctx: HookContext, projectDir: string, start = false): ClaudePicked {
 	if (ctx.hostUnverified === true) return { kind: "nested", outer: undefined, tool: undefined };
-	return claudeSession(ctx.config, { env: ctx.env, cwd: projectDir, pid: ctx.claudePid, decide: start });
+	return claudeSession(ctx.config, { env: ctx.env, cwd: projectDir, pid: ctx.claudePid, decide: start, ...(ctx.processStart === undefined ? {} : { start: ctx.processStart }) });
 }
 
 function pickHere(input: HookInput, ctx: HookContext, start = false): { readonly pick: ClaudePicked; readonly projectDir: string } | undefined {
@@ -235,6 +241,28 @@ export function sessionEnd(input: HookInput, ctx: HookContext): void {
 	if (input.agent_id === undefined && ctx.hostUnverified !== true && (input.reason === "prompt_input_exit" || input.reason === "other")) forgetProcess(ctx.config, ctx.claudePid);
 }
 
+/**
+ * Marks `session` read-only for the agent this session would be (ORRERY_AGENT's, else the folder's), where Claude Code is
+ * set up to record it: its hooks then spool nothing (recordable), a holder takes none of its events in (none came before
+ * the mark), and unconfirmedHere keeps a later SessionStart of it in this process from starting one. Never throws.
+ */
+function markUnconfirmed(id: string, projectDir: string, ctx: HookContext): void {
+	try {
+		const name = ctx.env[AGENT_ENV]?.trim();
+		const agent = name ? agentNamed(ctx.config, name) : agentForCwd(ctx.config, projectDir);
+		if (agent === undefined || !markedHere(agent)) return;
+		writeMode(agent.dir, id, { mode: "read-only", pid: process.pid, claudePid: ctx.claudePid, nonce: randomUUID(), since: Date.now(), reason: UNCONFIRMED_NOTICE });
+	} catch {
+		// unmarked: its later hooks judge it as they can
+	}
+}
+
+/** Whether this Claude Code process marked `id` unconfirmed in `agent` (markUnconfirmed). */
+const unconfirmedHere = (agent: AgentConfig, id: string, ctx: HookContext): boolean => {
+	const mode = readMode(agent.dir, id);
+	return mode?.mode === "read-only" && mode.reason === UNCONFIRMED_NOTICE && mode.claudePid === ctx.claudePid;
+};
+
 /** The mode the holder started with `nonce` chose for `session`, once it has, or undefined after `ms`. */
 export async function waitForMode(agentDir: string, session: string, nonce: string, ms: number): Promise<SessionMode | undefined> {
 	const deadline = Date.now() + ms;
@@ -268,9 +296,16 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	if (pick.kind === "none") return undefined;
 	// Started inside an agent's session: said to the person, once a session (not again at a compaction); nothing recorded.
 	if (pick.kind === "nested") return input.agent_id === undefined && input.source !== "compact" ? { systemMessage: claudeRefusedNotice(pick) } : undefined;
+	// A process that can't be confirmed: the session is marked not recorded, so nothing of it is, whatever comes later.
+	if (pick.kind === "unconfirmed") {
+		if (input.agent_id === undefined) markUnconfirmed(input.session_id, projectDir, ctx);
+		return input.agent_id === undefined && input.source !== "compact" ? { systemMessage: claudeRefusedNotice(pick) } : undefined;
+	}
 	// A refused ORRERY_AGENT: said once, to the person, in the main session; nothing is recorded.
 	if (pick.kind !== "agent") return input.agent_id === undefined ? { systemMessage: claudeRefusedNotice(pick) } : undefined;
 	const { agent } = pick;
+	// Marked unconfirmed by this process's SessionStart: stays unrecorded, though the start can be read now.
+	if (unconfirmedHere(agent, input.session_id, ctx)) return input.agent_id === undefined && input.source !== "compact" ? { systemMessage: UNCONFIRMED_NOTICE } : undefined;
 	// The holder's cut-off: this session's events from now on belong to this run.
 	const since = Date.now();
 	// Outside the agent's folder only the mod puts memory into the prompt: no CLAUDE.md there loads a view of this agent.

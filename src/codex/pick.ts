@@ -10,16 +10,20 @@
  * pointing at another live session, src/agent/sessions.ts) is no agent's either: the first to ask checks before it
  * claims, so a nested Codex never claims its token, and every later event finds no claim of its own.
  *
- * One decision per Codex process: the first to ask (`takeover`: the memory server's start or the first SessionStart)
- * decides whether this Codex is the agent's, refused, or nested, and records it in <data>/codex-processes/<pid>.json
- * (0600 in a 0700 folder, published whole and exclusively): whose (ORRERY_AGENT and its token's sha256), when the
- * process started, and what. Every later asker reads it: a later SessionStart (a compaction, /clear, resume) neither
- * judges again nor takes a claim over, so a Codex started inside an agent's session stays without memory once that
- * session ends. A record is this process's only when it names the process's identity and start, both known; any other
- * (another identity, another start: a reused pid) the first asker replaces. A process whose start can't be read decides
- * nothing and claims nothing: no memory (fail closed). A new decision prunes the records of processes that are gone. An
- * agent whose decision can't be recorded stays the agent (its claim of the token is durable) and SessionStart says so;
- * a nested or refused one never claims, so nothing is lost by judging it again.
+ * One decision per Codex process: the first to ask decides whether this Codex is the agent's, refused, or nested. Only
+ * an asker that may be a process's first may decide, and take a claim (`takeover`): the memory server's start, and a
+ * SessionStart of a session's start or resume; a compaction or /clear never is, whether or not a decision is recorded.
+ * The decision is recorded in <data>/codex-processes/<pid>.json (0600 in a 0700 folder, published whole and
+ * exclusively): whose (ORRERY_AGENT and its token's sha256), when the process started, and what. Every later asker
+ * reads it: a later SessionStart (a compaction, /clear, resume) neither judges again nor takes a claim over, so a Codex
+ * started inside an agent's session stays without memory once that session ends. A record is this process's only when
+ * it names the process's identity and start, both known; any other (another identity, another start: a reused pid) the
+ * first asker replaces. A process whose start can't be read decides nothing and claims nothing: no memory (fail closed).
+ * A new decision prunes the records of processes that are gone. An agent whose decision can't be recorded stays the
+ * agent (its claim of the token is durable) and SessionStart says so.
+ * A nested or refused one whose decision can't be recorded claims nothing, and an asker that is no first one only finds
+ * a claim: it stays without memory through a compaction or /clear. A resume, which may come in the same process (Codex's
+ * /resume), judges it again then: the limit of a data folder where no decision can be written.
  *
  * Codex's pid (src/codex/host.ts codexPid) passes over the processes above a hook that are named like shells. A process
  * is anyone's to name, so a pid reached past one must prove itself: a live session record there is this session's only
@@ -230,8 +234,8 @@ export function codexAgent(config: HarnessConfig, asking: CodexAsker): CodexPick
 		const theirs = read(readDecision(decisionFile(config, asking.pid)));
 		if (theirs !== undefined) return settled(theirs);
 	}
-	// Not recorded: an agent's own claim keeps it the agent's (SessionStart says so); a nested or refused one claimed
-	// nothing, so judging it again loses nothing.
+	// Not recorded: an agent's own claim keeps it the agent's (SessionStart says so). A nested or refused one claimed
+	// nothing; an asker that is no first one (a compaction, /clear) can only find a claim, so it stays without memory.
 	const why = written === "exists" ? "its record is another's, or unreadable" : written;
 	return pick.kind === "agent" ? { ...pick, notRecorded: why } : pick;
 }

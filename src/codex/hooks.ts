@@ -170,8 +170,9 @@ function readMemory(agent: AgentConfig, withSection: boolean): { readonly messag
  */
 export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext): Promise<object | undefined> {
 	if (input.agent_id !== undefined || !validSession(input.session_id)) return undefined;
-	// The session's start claims the token for this Codex, unless the memory server has already.
-	const pick = agentOf(ctx, input.session_id, true);
+	// A session's start (or resume) may be the process's first asker: it decides, and may claim the token, unless the
+	// memory server has already. A compaction or /clear never is (src/codex/pick.ts).
+	const pick = agentOf(ctx, input.session_id, input.source === "startup" || input.source === "resume");
 	if (pick.kind === "refused") return { systemMessage: pick.notice };
 	// Started inside an agent's session: said to the person, once a session (not again after a compaction).
 	if (pick.kind === "nested") return input.source === "compact" ? undefined : { systemMessage: nestedNotice({ agent: pick.outer, tool: pick.tool, via: "ancestry", dataDir: "" }) };

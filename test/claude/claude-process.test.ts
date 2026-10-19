@@ -111,16 +111,24 @@ describe("claudeSession: one decision per Claude Code process", () => {
 		forgetProcess(t.config, pid);
 	});
 
-	it("a process whose start can't be read decides nothing and records nothing: refused under ORRERY_AGENT, nested (whose unknown) by its folder", async () => {
+	it("a process whose start can't be read can't be confirmed: unconfirmed, under ORRERY_AGENT and by its folder, and nothing recorded; a decider reads it twice", async () => {
 		const t = testAgent();
 		const gone = await deadPid();
-		expect(claudeSession(t.config, { env: { ORRERY_AGENT: "Test" }, cwd: t.folder, pid: gone, decide: true, alive: () => true })).toEqual({
-			kind: "unrecorded",
-			why: "this Claude Code's start time can't be read",
-		});
-		expect(claudeSession(t.config, { env: {}, cwd: t.folder, pid: gone, decide: true, alive: () => true })).toEqual({ kind: "nested", outer: undefined, tool: undefined });
-		expect(claudeSession(t.config, { env: {}, cwd: t.folder, pid: gone, decide: false })).toEqual({ kind: "nested", outer: undefined, tool: undefined });
+		for (const env of [{ ORRERY_AGENT: "Test" }, {}]) {
+			expect(claudeSession(t.config, { env, cwd: t.folder, pid: gone, decide: true, alive: () => true })).toEqual({ kind: "unconfirmed" });
+			expect(claudeSession(t.config, { env, cwd: t.folder, pid: gone, decide: false })).toEqual({ kind: "unconfirmed" });
+		}
 		expect(existsSync(join(t.config.dataDir, "claude-processes"))).toBe(false);
+		// A read that fails once: a decider's second read succeeds, and it decides as ever; a reader doesn't read twice.
+		const pid = livePid();
+		const flaky = () => {
+			let reads = 0;
+			return (asked: number) => (reads++ === 0 ? undefined : String(asked));
+		};
+		expect(claudeSession(t.config, { env: {}, cwd: t.folder, pid, decide: false, start: flaky() })).toEqual({ kind: "unconfirmed" });
+		expect(claudeSession(t.config, { env: {}, cwd: t.folder, pid, decide: true, start: flaky() })).toMatchObject({ kind: "agent", by: "folder" });
+		expect(JSON.parse(readFileSync(join(t.config.dataDir, "claude-processes", `${pid}.json`), "utf8"))).toMatchObject({ start: String(pid), kind: "folder" });
+		forgetProcess(t.config, pid);
 	});
 
 	it("a record made before start times stands for an ORRERY_AGENT launch's token alone; one without a token, or a folder's, is no one's", () => {

@@ -44,7 +44,8 @@ const tokenOf = (t: TestAgent) => {
 	tokens.set(t, token);
 	return token;
 };
-const input = (extra: object = {}) => JSON.stringify({ session_id: "s1", cwd: "/tmp/anywhere", hook_event_name: "x", ...extra });
+/** A hook's input; a SessionStart's is a session's start unless `extra` says otherwise (a compaction, /clear, resume). */
+const input = (extra: object = {}) => JSON.stringify({ session_id: "s1", cwd: "/tmp/anywhere", hook_event_name: "x", source: "startup", ...extra });
 /** A startHolder that answers as a holder would, without one. */
 const answer = (mode: "recording" | "read-only", started: string[] = []) => (agent: AgentConfig, session: string, nonce: string, since: number) => {
 	started.push(session);

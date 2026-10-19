@@ -220,6 +220,31 @@ describe("one decision per Codex process: a nested Codex stays nested", () => {
 		expect(pendingEvents(w.birch.dir, "s1")).toEqual([]);
 	});
 
+	it("a nested Codex whose decision can't be recorded stays nested through a compaction and /clear after the outer session ends: no claim, no memory", async () => {
+		const w = codexWorld();
+		mkdirSync(w.dataDir, { recursive: true });
+		writeFileSync(join(w.dataDir, "codex-processes"), "");
+		hostRecord(w.dataDir, "Atlas", "claude-code", process.ppid);
+		const c = hookCtx(w);
+		expect(await run("session-start", input("s1", { source: "startup" }), c)).toEqual({ systemMessage: ATLAS });
+		forgetSession(w.dataDir, process.ppid);
+		await run("session-start", input("s1", { source: "compact" }), c);
+		await run("session-start", input("s2", { source: "clear" }), c);
+		await run("user-prompt-submit", input("s2", { prompt: "Not the user's words." }), c);
+		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+		expect(pendingEvents(w.birch.dir, "s2")).toEqual([]);
+		expect(hosts(w.dataDir)).toEqual([]);
+	});
+
+	it("a compaction or /clear is never a process's first asker: with no decision and no claim, it claims nothing", async () => {
+		const w = codexWorld();
+		for (const source of ["compact", "clear"]) {
+			expect(await run("session-start", input("s1", { source }), hookCtx(w))).toMatchObject({ systemMessage: expect.stringContaining("token belongs to another process") });
+			expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+		}
+		expect(existsSync(join(w.dataDir, "codex-processes"))).toBe(false);
+	});
+
 	it("an agent whose decision can't be recorded stays the agent (its claim holds), says so once a session, and records its events once", async () => {
 		const w = codexWorld();
 		// The decisions' folder cannot be made: a file stands where it would go. Claims can be written.

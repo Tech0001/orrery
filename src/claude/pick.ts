@@ -61,7 +61,15 @@ export type ClaudeRefused =
 	 * The Claude Code was started inside an agent's session (spec 2026-10-18-agent-permissions §3b): `outer`'s, in `tool`,
 	 * either undefined when nothing proves it. It opens no memory and records nothing.
 	 */
-	| { readonly kind: "nested"; readonly outer: string | undefined; readonly tool: SessionTool | undefined };
+	| { readonly kind: "nested"; readonly outer: string | undefined; readonly tool: SessionTool | undefined }
+	/**
+	 * The Claude Code's process can't be confirmed: its start time can't be read, so its own decision can't be told from a
+	 * dead process's under its pid, nor recorded. No memory, nothing recorded; the guard keeps the folder's agent's rules.
+	 */
+	| { readonly kind: "unconfirmed" };
+
+/** What an unconfirmed session (ClaudeRefused "unconfirmed") says, and the reason its SessionStart marks it read-only with. */
+export const UNCONFIRMED_NOTICE = "Orrery: this Claude Code's process can't be confirmed (its start time can't be read), so this session opens no memory and records nothing.";
 
 /**
  * A pick, or why there is none. Without ORRERY_AGENT a decision that could not be recorded costs nothing but speed (each
@@ -95,6 +103,8 @@ export function claudeRefusedNotice(pick: ClaudeRefused): string {
 			return "Orrery: ORRERY_AGENT is set, but no choice of agent is recorded for this Claude Code under this ORRERY_AGENT; this session runs without memory.";
 		case "nested":
 			return nestedNotice({ agent: pick.outer, tool: pick.tool, via: "ancestry", dataDir: "" });
+		case "unconfirmed":
+			return UNCONFIRMED_NOTICE;
 		default:
 			return refusedNotice(pick);
 	}
@@ -111,6 +121,8 @@ export interface ClaudeProcess {
 	readonly decide: boolean;
 	/** Whether a pid lives (default processAlive); tests pass their own. */
 	readonly alive?: (pid: number) => boolean;
+	/** How the process's start time is read (default processStart, src/agent/sessions.ts); tests pass their own. */
+	readonly start?: (pid: number) => string | undefined;
 }
 
 /** A decision, as recorded: names only. */
@@ -338,10 +350,11 @@ function forgetHost(config: HarnessConfig, pid: number): void {
 export function claudeSession(config: HarnessConfig, asking: ClaudeProcess): ClaudePicked {
 	const where = { env: asking.env, cwd: asking.cwd, owner: asking.pid, ...(asking.alive === undefined ? {} : { alive: asking.alive }) };
 	const byEnv = Boolean(asking.env[AGENT_ENV]?.trim());
-	const start = processStart(asking.pid);
 	// A process whose start can't be read can't tell its own decision from a dead one's under its pid, and never records
-	// one: no memory (fail closed).
-	if (start === undefined) return byEnv ? { kind: "unrecorded", why: "this Claude Code's start time can't be read" } : { kind: "nested", outer: undefined, tool: undefined };
+	// one: no memory (fail closed). A decider, which may record, reads it twice before it gives up.
+	const startOf = asking.start ?? processStart;
+	const start = startOf(asking.pid) ?? (asking.decide ? startOf(asking.pid) : undefined);
+	if (start === undefined) return { kind: "unconfirmed" };
 	const identity = identityOf(asking.env, start);
 	const settled = (decision: Decision) => {
 		const pick = fromDecision(config, decision, where);

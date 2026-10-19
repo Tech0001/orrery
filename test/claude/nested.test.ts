@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type HarnessConfig, parseConfig } from "../../src/agent/config.ts";
 import { claimedBy, newToken } from "../../src/agent/pick.ts";
-import { forgetSession, liveSession, nestedNotice, recordSession, type SessionTool } from "../../src/agent/sessions.ts";
+import { forgetSession, liveSession, nestedNotice, processStart, recordSession, type SessionTool } from "../../src/agent/sessions.ts";
 import { type HookContext, runHook } from "../../src/claude/hooks.ts";
 import { modView } from "../../src/claude/mod-view.ts";
-import { claudeHookPid, claudeRefusedNotice, claudeSession, forgetProcess } from "../../src/claude/pick.ts";
-import { pendingEvents } from "../../src/claude/spool.ts";
+import { claudeHookPid, claudeRefusedNotice, claudeSession, forgetProcess, UNCONFIRMED_NOTICE } from "../../src/claude/pick.ts";
+import { pendingEvents, readMode } from "../../src/claude/spool.ts";
 import { claudeSetupMod } from "../../src/claude/setup.ts";
 import { seed } from "./support.ts";
 import { cleanup, world } from "../pi/world.ts";
@@ -243,6 +243,42 @@ describe("a Claude Code session's host record (spec 2026-10-18-agent-permissions
 		hostRecord(dataDir, "Atlas", "pi", pi);
 		forgetProcess(config, pi);
 		expect(liveSession(dataDir, pi)).toMatchObject({ agent: "Atlas", tool: "pi" });
+	});
+
+	it("a Claude Code whose start can't be read at SessionStart: the honest notice, and nothing of the session is recorded, even once the start can be read", async () => {
+		const { root, config } = nestedWorld();
+		for (const [dir, env, agent] of [
+			[join(root, "agent-Atlas"), {}, "Atlas"],
+			[join(root, "elsewhere"), { ORRERY_AGENT: "Birch" }, "Birch"],
+		] as const) {
+			const memory = config.agents.get(agent);
+			if (memory === undefined) throw new Error(`no ${agent}`);
+			claudeSetupMod(memory);
+			const at = (extra: Partial<HookContext> = {}) => hookCtx(config, root, dir, { env: { CLAUDE_PROJECT_DIR: dir, ...env }, ...extra });
+			// Both reads fail at SessionStart.
+			expect(JSON.parse(await runHook("session-start", hookInput("s1", dir, { source: "startup" }), at({ processStart: () => undefined })))).toEqual({ systemMessage: UNCONFIRMED_NOTICE });
+			// From here on the start can be read: the session stays unrecorded, and no holder starts for it (startHolder throws).
+			await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "Not recorded." }), at());
+			expect(await runHook("session-start", hookInput("s1", dir, { source: "compact" }), at())).toBe("");
+			expect(JSON.parse(await runHook("session-start", hookInput("s1", dir, { source: "resume" }), at()))).toEqual({ systemMessage: UNCONFIRMED_NOTICE });
+			await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "Still not recorded." }), at());
+			await runHook("stop", hookInput("s1", dir, { last_assistant_message: "A reply." }), at());
+			expect(pendingEvents(memory.dir, "s1")).toEqual([]);
+			expect(readMode(memory.dir, "s1")).toMatchObject({ mode: "read-only", claudePid: process.pid, reason: UNCONFIRMED_NOTICE });
+			// Another session of the process (/clear) is decided as ever.
+			expect(JSON.parse(await runHook("session-start", hookInput("s2", dir, { source: "clear" }), at({ startHolder: () => {} }))).hookSpecificOutput.additionalContext).toMatch(new RegExp(`^Orrery · ${agent} · `));
+			forgetProcess(config, process.pid);
+		}
+	});
+
+	it("a SessionStart whose first read of the start fails and second succeeds decides as ever", async () => {
+		const { root, config } = nestedWorld();
+		const dir = join(root, "agent-Atlas");
+		let reads = 0;
+		const flaky = (pid: number) => (reads++ === 0 ? undefined : processStart(pid));
+		const out = JSON.parse(await runHook("session-start", hookInput("s1", dir, { source: "startup" }), hookCtx(config, root, dir, { processStart: flaky, startHolder: () => {} })));
+		expect(out.hookSpecificOutput.additionalContext).toMatch(/^Orrery · Atlas · /);
+		forgetProcess(config, process.pid);
 	});
 
 	it("a folder decision that can't be written: SessionStart says so (not again at a compaction); every hook then judges for itself", async () => {
