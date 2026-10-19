@@ -108,6 +108,33 @@ describe("pickAgent", () => {
 		expect(claimHeld(birch, "not-a-token")).toBeUndefined();
 	});
 
+	it("never takes a claim made in another pid namespace for dead: not pruned, not taken over, and no owner's here", () => {
+		const { root, config } = world();
+		const birch = join(config.dataDir, "agents", "Birch");
+		const claims = join(birch, "claims");
+		mkdirSync(claims, { recursive: true });
+		// Made where 4242, and this owner's own number, name other processes; from here every pid looks dead.
+		const [theirs, sameNumber, other, old] = [newToken(), newToken(), newToken(), newToken()];
+		const elsewhere = "pid:[4026533000]";
+		writeFileSync(join(claims, theirs), `4242\n${elsewhere}\n`);
+		writeFileSync(join(claims, sameNumber), `${me}\n${elsewhere}\n`);
+		const dead = () => false;
+		expect(claimToken(birch, theirs, me, dead)).toBe(false);
+		expect(readFileSync(join(claims, theirs), "utf8")).toBe(`4242\n${elsewhere}\n`);
+		expect(claimToken(birch, sameNumber, me, dead)).toBe(false);
+		expect(claimToken(birch, sameNumber, me, dead, false)).toBe(false);
+		expect(readFileSync(join(claims, sameNumber), "utf8")).toBe(`${me}\n${elsewhere}\n`);
+		// Another token's claim prunes around them, and leaves them.
+		expect(claimToken(birch, other, me, dead)).toBe(true);
+		expect(readdirSync(claims).sort()).toEqual([theirs, sameNumber, other].sort());
+		// pickAgent falls through to the folder.
+		expect(pickAgent(config, { env: { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: theirs }, cwd: join(root, "plain"), owner: me, alive: dead })).toEqual({ kind: "none" });
+		// An older one-line claim of a dead pid is taken over as before.
+		writeFileSync(join(claims, old), "4243\n");
+		expect(claimToken(birch, old, me, dead)).toBe(true);
+		expect(readFileSync(join(claims, old), "utf8")).toBe(claimText(me));
+	});
+
 	it("never prunes a live owner's claim, however old; prunes a dead owner's claim of another token", () => {
 		const { config } = world();
 		const birch = join(config.dataDir, "agents", "Birch");

@@ -26,6 +26,7 @@ import { configContent } from "../../src/opencode/options.ts";
 
 const SESSIONS = new URL("../../src/agent/sessions.ts", import.meta.url).pathname;
 const CONFIG = new URL("../../src/agent/config.ts", import.meta.url).pathname;
+const PICK = new URL("../../src/agent/pick.ts", import.meta.url).pathname;
 const real = process.platform === "linux" || process.platform === "darwin";
 
 const dirs: string[] = [];
@@ -584,18 +585,22 @@ describe("pid namespaces (Linux)", () => {
 	});
 
 	const unshare = process.platform === "linux" && spawnSync("unshare", ["-Upf", "true"]).status === 0;
-	it.skipIf(!unshare)("a real process in a new pid namespace (unshare -Upf, with and without --mount-proc) keeps the record and the claim, and is inside a session it can't name", () => {
+	it.skipIf(!unshare)("a real process in a new pid namespace (unshare -Upf, with and without --mount-proc) keeps the record and the claim, can't take the claim over, and is inside a session it can't name before and after trying", () => {
 		const { root, toml, config } = world();
 		const dir = config.dataDir;
 		const token = newToken();
 		const atlas = join(dir, "agents", "Atlas");
 		expect(recordSession(dir, { agent: "Atlas", tool: "claude-code", pid: process.pid })).toBe(true);
 		expect(claimToken(atlas, token, process.pid)).toBe(true);
-		const script = `Promise.all([import(${JSON.stringify(SESSIONS)}), import(${JSON.stringify(CONFIG)})]).then(([s, c]) => {
+		// A nested tool asks about itself, tries to claim the token it inherited (as pickAgent would), and asks again.
+		const script = `Promise.all([import(${JSON.stringify(SESSIONS)}), import(${JSON.stringify(CONFIG)}), import(${JSON.stringify(PICK)})]).then(([s, c, p]) => {
 			const config = c.parseConfig(${JSON.stringify(toml)}, ${JSON.stringify(root)});
 			const claude = s.insideSession([config.dataDir], { CLAUDE_PID: ${JSON.stringify(String(process.pid))} }, config) ?? null;
-			const nested = s.insideSession([config.dataDir], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: ${JSON.stringify(token)} }, config, { self: process.pid }) ?? null;
-			process.stdout.write(JSON.stringify({ claude, nested }));
+			const env = { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: ${JSON.stringify(token)} };
+			const nested = s.insideSession([config.dataDir], env, config, { self: process.pid }) ?? null;
+			const took = p.claimToken(${JSON.stringify(atlas)}, ${JSON.stringify(token)}, process.pid);
+			const after = s.insideSession([config.dataDir], env, config, { self: process.pid }) ?? null;
+			process.stdout.write(JSON.stringify({ claude, nested, took, after }));
 		})`;
 		const node = [process.execPath, "--disable-warning=ExperimentalWarning", "-e", script];
 		const run = (prefix: string[]) => {
@@ -605,10 +610,11 @@ describe("pid namespaces (Linux)", () => {
 		// In this namespace the child finds this process, its parent, by ancestry.
 		const same = run([]);
 		const found = { agent: "Atlas", tool: "claude-code", via: "ancestry", dataDir: dir };
-		expect(same.out, same.err).toEqual({ claude: found, nested: found });
+		expect(same.out, same.err).toEqual({ claude: found, nested: found, took: false, after: found });
 		for (const prefix of [["unshare", "-Upf"], ["unshare", "-Upf", "--mount-proc"]]) {
 			const inside = run(prefix);
-			expect(inside.out, `${prefix.join(" ")}: ${inside.err}`).toEqual({ claude: { agent: undefined, tool: "claude-code", via: "marker", dataDir: dir }, nested: { agent: undefined, via: "marker", dataDir: dir } });
+			const unknown = { agent: undefined, via: "marker", dataDir: dir };
+			expect(inside.out, `${prefix.join(" ")}: ${inside.err}`).toEqual({ claude: { ...unknown, tool: "claude-code" }, nested: unknown, took: false, after: unknown });
 			expect(liveSession(dir, process.pid)).toMatchObject({ agent: "Atlas" });
 			expect(claimHeld(atlas, token)?.pid).toBe(process.pid);
 		}

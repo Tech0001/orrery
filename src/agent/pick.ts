@@ -8,7 +8,8 @@
  *    to 2. A dead owner's claim is taken over only at a session's start (`takeover`); a session's later picks (Claude
  *    Code asks at every hook) keep what its start decided, so it never changes agents midway. A claim holds the owner's
  *    pid, then on Linux the pid namespace that pid is numbered in (claimText), so a reader in another namespace can tell
- *    it can't judge the claim (src/agent/sessions.ts). A one-line claim, an older version's, reads as before.
+ *    it can't judge the claim (src/agent/sessions.ts), and never takes it for dead (holding). A one-line claim, an older
+ *    version's, reads as before.
  * 2. The agent whose folder holds the folder (agentForCwd).
  * 3. None.
  * Node built-ins and relative imports only: pi and OMP load this file.
@@ -71,29 +72,55 @@ export function pickAgent(config: HarnessConfig, where: Where): Picked {
 	return agent === undefined ? { kind: "none" } : { kind: "agent", agent, by: "folder" };
 }
 
-/** The pid a claim's text starts with, or undefined when it starts with none. */
-function pidIn(text: string): number | undefined {
-	const pid = Number.parseInt(text, 10);
-	return Number.isInteger(pid) && pid > 0 ? pid : undefined;
-}
+type Claim = { readonly pid: number; readonly ns?: string };
 
-/** The pid a claim file holds, or undefined when it holds none (unreadable, empty, or not a pid). */
-function claimant(file: string): number | undefined {
+/** A claim file's pid and, when its second line says (Linux, claimText), the pid namespace; undefined when it holds no pid (unreadable, empty, or not a pid). */
+function readClaim(file: string): Claim | undefined {
+	let text: string;
 	try {
-		return pidIn(readFileSync(file, "utf8"));
+		text = readFileSync(file, "utf8");
 	} catch {
 		return undefined;
 	}
+	const pid = Number.parseInt(text, 10);
+	if (!Number.isInteger(pid) || pid < 1) return undefined;
+	const ns = text.split("\n")[1]?.trim();
+	return ns ? { pid, ns } : { pid };
+}
+
+/** The pid a claim file holds, or undefined when it holds none. */
+const claimant = (file: string): number | undefined => readClaim(file)?.pid;
+
+/**
+ * Whether a claim was made in another pid namespace than this process's, or this one's can't be read to tell: its pid
+ * names another process here, or none, and kill(0) can't judge its owner. A one-line claim (an older version's, or
+ * macOS's) names no namespace and is judged as before.
+ */
+function foreign(claim: Claim): boolean {
+	if (claim.ns === undefined) return false;
+	const here = pidNamespace("self");
+	return here === undefined || claim.ns !== here;
+}
+
+/** Whether the claim in `file` is `owner`'s, made in this pid namespace. */
+function heldBy(file: string, owner: number): boolean {
+	const claim = readClaim(file);
+	return claim !== undefined && claim.pid === owner && !foreign(claim);
 }
 
 /**
  * What a claim file holds: the live process it names; "making" when it names none yet but is young (publish's fallback
- * is still writing it; src/agent/exclusive.ts); else "dead": its process is gone, or it names no pid and is old (a
- * crash's leftover, or an older version's). One rule for pruning and for taking a token over.
+ * is still writing it; src/agent/exclusive.ts); "foreign" when it was made in another pid namespace (foreign); else
+ * "dead": its process is gone, or it names no pid and is old (a crash's leftover, or an older version's). One rule for
+ * pruning and for taking a token over. A foreign claim is never dead: from here it is neither pruned nor taken over, so
+ * a tool started in another namespace (`unshare -p` from an agent's shell) can't take a live session's token, and
+ * falls through to its folder (src/agent/sessions.ts finds it inside a session). The cost: a really dead claim from
+ * another namespace stays until its launcher releases it, or a claimer in that namespace prunes it; tokens are per
+ * launch, so no other launch needs it.
  */
-function holding(file: string, alive: (pid: number) => boolean): number | "making" | "dead" {
-	const pid = claimant(file);
-	if (pid !== undefined) return alive(pid) ? pid : "dead";
+function holding(file: string, alive: (pid: number) => boolean): number | "making" | "foreign" | "dead" {
+	const claim = readClaim(file);
+	if (claim !== undefined) return foreign(claim) ? "foreign" : alive(claim.pid) ? claim.pid : "dead";
 	return beingMade(file) ? "making" : "dead";
 }
 
@@ -141,7 +168,7 @@ export function claimToken(agentDir: string, token: string, owner: number, alive
 	const dir = join(agentDir, "claims");
 	const file = join(dir, token);
 	// The owner's own claim, the common case (Claude Code asks at every hook): nothing to prune or write.
-	if (claimant(file) === owner) return true;
+	if (heldBy(file, owner)) return true;
 	if (!takeover) return false;
 	let temporary: string | undefined;
 	try {
@@ -156,7 +183,7 @@ export function claimToken(agentDir: string, token: string, owner: number, alive
 		if (held !== "dead") return held === owner;
 		removeStale(file, dead(alive));
 		if (publish(temporary, file, content) === true) return true;
-		return claimant(file) === owner;
+		return heldBy(file, owner);
 	} catch {
 		// A claim that cannot be recorded never costs the session its agent.
 		return true;
@@ -184,17 +211,8 @@ export function claimedBy(agentDir: string, token: string): number | undefined {
  * The claim on `token` for the agent: the pid, and the pid namespace it is numbered in when the claim says (Linux); or
  * undefined when none holds a pid (or the token is no token).
  */
-export function claimHeld(agentDir: string, token: string): { readonly pid: number; readonly ns?: string } | undefined {
-	if (!TOKEN.test(token)) return undefined;
-	let text: string;
-	try {
-		text = readFileSync(join(agentDir, "claims", token), "utf8");
-	} catch {
-		return undefined;
-	}
-	const pid = pidIn(text);
-	const ns = text.split("\n")[1]?.trim();
-	return pid === undefined ? undefined : ns ? { pid, ns } : { pid };
+export function claimHeld(agentDir: string, token: string): Claim | undefined {
+	return TOKEN.test(token) ? readClaim(join(agentDir, "claims", token)) : undefined;
 }
 
 /** Removes a claim its launcher made, once its tool has exited. */
