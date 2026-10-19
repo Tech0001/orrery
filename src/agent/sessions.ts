@@ -37,18 +37,21 @@
  * - OPENCODE_CONFIG_CONTENT carrying Orrery's plugin (src/opencode/options.ts): the agent in whose claims a live
  *   process holds the token in the launch's token file (src/opencode/token-file.ts); for a configured agent whose token
  *   proves nothing, a session of unknown identity.
- * - CLAUDE_PID naming a live Claude Code record, or CODEX_THREAD_ID / CODEX_SESSION_ID equal to a live record's Codex
- *   session: never an identity by itself. Pids and Codex ids are anyone's to read, so a detached process could copy
- *   another agent's; the record's agent stands only when a token proves the same agent.
+ * - CLAUDE_PID naming a live Claude Code record, ORRERY_HOST (HOST_ENV, which every tool sets for its shell) naming a
+ *   live record of any tool, or CODEX_THREAD_ID / CODEX_SESSION_ID equal to a live record's Codex session: never an
+ *   identity by itself. Pids and Codex ids are anyone's to read, so a detached process could copy another agent's; the
+ *   record's agent stands only when a token proves the same agent. ORRERY_HOST is what a session opened by its folder
+ *   (no token) leaves a merely detached process (`setsid -f pi -p …`).
  * - A claim numbered in another pid namespace than this process's can't be judged here: a session of unknown identity.
- *   So can a record a CLAUDE_PID or a Codex id points at from there: Codex's sandboxed shell, in a pid namespace of its
- *   own, is inside a session whose agent it can't name, and only `help` runs there.
+ *   So can a record a CLAUDE_PID, an ORRERY_HOST or a Codex id points at from there: Codex's sandboxed shell, in a pid
+ *   namespace of its own, is inside a session whose agent it can't name, and only `help` runs there.
  * Tokens proving different agents, or a record naming another agent than the token, leave the identity unknown. Without
- * a config nothing can be checked, so any marker (ORRERY_AGENT, ORRERY_AGENT_TOKEN, CLAUDE_PID, a Codex id, or an
- * OPENCODE_CONFIG_CONTENT naming Orrery's plugin) is a session of unknown identity.
+ * a config nothing can be checked, so any marker (ORRERY_AGENT, ORRERY_AGENT_TOKEN, ORRERY_HOST, CLAUDE_PID, a Codex id,
+ * or an OPENCODE_CONFIG_CONTENT naming Orrery's plugin) is a session of unknown identity.
  *
  * A tool asking whether it was itself started inside a session (`self`, its host process) carries its own launch's
- * markers: the ORRERY_AGENT and token its launcher gave it, OpenCode's config, its own CLAUDE_PID or Codex thread id.
+ * markers: the ORRERY_AGENT and token its launcher gave it, OpenCode's config, its own ORRERY_HOST, CLAUDE_PID or Codex
+ * thread id.
  * For it a marker counts only when it points at another process: a token claimed by a live process other than `self`,
  * or by one in another namespace (an unclaimed token, one whose claimant is dead, or its own claim is its own launch's,
  * so asking before or after claiming gives one answer), a record whose pid isn't `self`. The walk starts above `self`,
@@ -74,6 +77,13 @@ import { bootId, pidNamespace, processAlive, procStat, psOutput } from "./proces
 import { safeText } from "./source-labels.ts";
 
 export { ALLOWED_INSIDE } from "./inside-commands.ts";
+
+/**
+ * The variable a tool sets in its own environment to its host pid when it opens an agent's memory, so its shell, and
+ * whatever is started from it, carries it: a marker for a process detached from the tool (module doc). Its value is
+ * public, like CLAUDE_PID's: it says there is a session, never whose.
+ */
+export const HOST_ENV = "ORRERY_HOST";
 
 /** The tool a session runs in: `run` is `orrery run`. */
 export type SessionTool = "pi" | "omp" | "claude-code" | "codex" | "opencode" | "run";
@@ -371,7 +381,7 @@ export function forgetSession(dataDir: string, pid: number): void {
 }
 
 /** The variables that mark a session, OPENCODE_CONFIG_CONTENT aside (it marks one only when it names Orrery's plugin). */
-const MARKERS = [AGENT_ENV, TOKEN_ENV, "CLAUDE_PID", "CODEX_THREAD_ID", "CODEX_SESSION_ID"] as const;
+const MARKERS = [AGENT_ENV, TOKEN_ENV, HOST_ENV, "CLAUDE_PID", "CODEX_THREAD_ID", "CODEX_SESSION_ID"] as const;
 
 /**
  * The session this process (or deps.from, or deps.self) runs in: the nearest ancestor recorded, live, in any of
@@ -423,13 +433,20 @@ function byMarkers(config: HarnessConfig, env: NodeJS.ProcessEnv, deps: SessionD
 	const self = deps.self;
 	const here = onLinux(deps) ? namespaceOf(deps, "self") : undefined;
 	const marks: Mark[] = [];
-	// Records: a session, and an agent that stands only when a token proves it too (CLAUDE_PID and Codex ids are public).
-	// A tool's own record is no outer session; one that can't be judged from here is a session of unknown identity.
+	// Records: a session, and an agent that stands only when a token proves it too (CLAUDE_PID, ORRERY_HOST and Codex ids
+	// are public). A tool's own record is no outer session; one that can't be judged from here is a session of unknown
+	// identity.
 	const claudePid = Number(env.CLAUDE_PID);
 	if (claudePid !== self) {
 		const found = judged(dataDir, claudePid, deps);
 		if (found.kind === "live" && found.record.tool === "claude-code") marks.push({ names: found.record.agent, tool: "claude-code" });
 		else if (found.kind === "unsure" && (found.record === undefined || found.record.tool === "claude-code")) marks.push({ tool: "claude-code" });
+	}
+	const hostPid = Number(env[HOST_ENV]);
+	if (hostPid !== self) {
+		const found = judged(dataDir, hostPid, deps);
+		if (found.kind === "live") marks.push({ names: found.record.agent, tool: found.record.tool });
+		else if (found.kind === "unsure") marks.push({ tool: found.record?.tool });
 	}
 	const codexIds = [env.CODEX_THREAD_ID, env.CODEX_SESSION_ID].filter((id) => id !== undefined && id !== "");
 	if (codexIds.length > 0) {

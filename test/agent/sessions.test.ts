@@ -13,6 +13,7 @@ import {
 	ALLOWED_INSIDE,
 	ancestors,
 	forgetSession,
+	HOST_ENV,
 	type Inside,
 	insideSession,
 	liveSession,
@@ -348,7 +349,7 @@ describe("insideSession by markers", () => {
 		const dir = join(root, "data");
 		const unknown = { agent: undefined, tool: undefined, via: "marker", dataDir: dir };
 		const plugin = configContent(join(root, "app", "current", "extensions", "opencode"), { agent: "Atlas", tokenFile: join(root, "token") });
-		const markers = [{ ORRERY_AGENT: "Atlas" }, { ORRERY_AGENT_TOKEN: newToken() }, { CLAUDE_PID: "77" }, { CODEX_THREAD_ID: "019a-thread" }, { CODEX_SESSION_ID: "019a-thread" }, { OPENCODE_CONFIG_CONTENT: plugin }];
+		const markers = [{ ORRERY_AGENT: "Atlas" }, { ORRERY_AGENT_TOKEN: newToken() }, { CLAUDE_PID: "77" }, { CODEX_THREAD_ID: "019a-thread" }, { CODEX_SESSION_ID: "019a-thread" }, { ORRERY_HOST: "77" }, { OPENCODE_CONFIG_CONTENT: plugin }];
 		for (const env of markers) expect(insideSession([dir], env, undefined, deps), JSON.stringify(env)).toEqual(unknown);
 		// No marker: an empty or blank one, or a config content without Orrery's plugin.
 		for (const env of [{}, { ORRERY_AGENT: " " }, { CLAUDE_PID: "" }, { OPENCODE_CONFIG_CONTENT: JSON.stringify({ plugins: ["their-plugin"] }) }]) expect(insideSession([dir], env, undefined, deps), JSON.stringify(env)).toBeUndefined();
@@ -414,6 +415,26 @@ describe("insideSession by markers", () => {
 		expect(insideSession([config.dataDir], { ...env, OPENCODE_CONFIG_CONTENT: configContent(plugin, { agent: "Atlas", tokenFile: stray }) }, config, deps)).toMatchObject({ agent: undefined, via: "marker" });
 	});
 
+	it("ORRERY_HOST naming a live record, of any tool, is a session; whose, only a claimed token says; a dead or unrecorded pid is no marker", () => {
+		const { config } = world();
+		const table = chain();
+		const deps = linux(table, 50);
+		expect(HOST_ENV).toBe("ORRERY_HOST");
+		expect(recordSession(config.dataDir, { agent: "Atlas", tool: "pi", pid: 77 }, linux(table))).toBe(true);
+		expect(insideSession([config.dataDir], { ORRERY_HOST: "77" }, config, deps)).toEqual({ agent: undefined, tool: "pi", via: "marker", dataDir: config.dataDir });
+		const token = newToken();
+		claimToken(join(config.dataDir, "agents", "Atlas"), token, 77, deps.alive);
+		expect(insideSession([config.dataDir], { ORRERY_HOST: "77", ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token }, config, deps)).toEqual({ agent: "Atlas", tool: "pi", via: "marker", dataDir: config.dataDir });
+		// A token proving another agent than the record's: unknown.
+		const birch = newToken();
+		claimToken(join(config.dataDir, "agents", "Birch"), birch, 30, deps.alive);
+		expect(insideSession([config.dataDir], { ORRERY_HOST: "77", ORRERY_AGENT_TOKEN: birch }, config, deps)).toMatchObject({ agent: undefined, via: "marker" });
+		expect(insideSession([config.dataDir], { ORRERY_HOST: "1234" }, config, deps)).toBeUndefined();
+		expect(insideSession([config.dataDir], { ORRERY_HOST: "not a pid" }, config, deps)).toBeUndefined();
+		delete table[77];
+		expect(insideSession([config.dataDir], { ORRERY_HOST: "77" }, config, deps)).toBeUndefined();
+	});
+
 	it("a detached process that copies another agent's CLAUDE_PID or Codex id gets no identity from it", () => {
 		const { config } = world();
 		const table = chain();
@@ -453,6 +474,22 @@ describe("insideSession by markers", () => {
 describe("insideSession for a tool asking about itself (self)", () => {
 	/** chain() plus 60, a tool started at the top (no recorded ancestor), 61, a process it started (a hook), and 88. */
 	const tools = (): Table => ({ ...chain(), 60: { ppid: 1, start: "600" }, 61: { ppid: 60, start: "610" }, 88: { ppid: 1, start: "880" } });
+
+	it("a detached nested tool (`setsid -f pi -p …`) with only the outer host's ORRERY_HOST is inside, identity unknown; a tool's own ORRERY_HOST is not", () => {
+		const { config } = world();
+		const table = tools();
+		// Atlas's pi, opened by its folder (no token), is 77; the nested pi, 60, is no descendant of it.
+		expect(recordSession(config.dataDir, { agent: "Atlas", tool: "pi", pid: 77 }, linux(table))).toBe(true);
+		const self = { ...linux(table), self: 60 };
+		expect(insideSession([config.dataDir], { ORRERY_HOST: "77" }, config, self)).toEqual({ agent: undefined, tool: "pi", via: "marker", dataDir: config.dataDir });
+		// Once open, the nested tool would set its own: no outer session in that.
+		expect(recordSession(config.dataDir, { agent: "Birch", tool: "pi", pid: 60 }, linux(table))).toBe(true);
+		expect(insideSession([config.dataDir], { ORRERY_HOST: "60" }, config, self)).toBeUndefined();
+		expect(insideSession([config.dataDir], { ORRERY_HOST: "60" }, config, { ...self, from: 61 })).toBeUndefined();
+		// The outer host gone: no marker.
+		delete table[77];
+		expect(insideSession([config.dataDir], { ORRERY_HOST: "77" }, config, self)).toBeUndefined();
+	});
 
 	it("a top-level launch's own markers are no session, before and after it claims its token; the CLI still counts them", () => {
 		const { root, config } = world();
@@ -544,6 +581,7 @@ describe("pid namespaces (Linux)", () => {
 				expect(insideSession([config.dataDir], {}, config, deps)).toBeUndefined();
 				expect(insideSession([config.dataDir], { CLAUDE_PID: "77" }, config, deps)).toEqual({ agent: undefined, tool: "claude-code", via: "marker", dataDir: config.dataDir });
 				expect(insideSession([config.dataDir], { CODEX_THREAD_ID: "019a-thread" }, config, deps)).toEqual({ agent: undefined, tool: "codex", via: "marker", dataDir: config.dataDir });
+				expect(insideSession([config.dataDir], { ORRERY_HOST: "30" }, config, deps)).toEqual({ agent: undefined, tool: "pi", via: "marker", dataDir: config.dataDir });
 				// A new record made there doesn't take them out either (nor is made: its host isn't numbered here).
 				expect(recordSession(config.dataDir, { agent: "Birch", tool: "pi", pid: 60 }, deps)).toBe(false);
 				expect(kept()).toBe(true);
