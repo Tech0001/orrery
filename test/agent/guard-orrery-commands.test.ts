@@ -410,6 +410,8 @@ describe("Orrery's commands in shell text", () => {
 				`orrery ${"[a]".repeat(20000)}`,
 				`~/.c*/${star}/`.repeat(250),
 				`orre[!${"q".repeat(2000)}]y `.repeat(30),
+				// Words just short of the length past which brace groups get no reading (readings): each found whole, once.
+				`${"o".repeat(4096)} `.repeat(16),
 				`${"[!r]".repeat(16000)}`,
 				`orrery ${"[!s]".repeat(16000)}`,
 			]) {

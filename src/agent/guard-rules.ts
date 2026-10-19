@@ -956,13 +956,17 @@ function readings(text: string, reach = ENV_REACH): Reading {
 		// a brace group is refused if it spells "orr" anywhere (the bare name stands for it); otherwise it gets no reading.
 		let base = full;
 		if (full.length > MAX_BRACE_WORD) {
-			for (const word of full.match(LONG_WORD) ?? []) {
-				if (!BRACE_ONE.test(word)) continue;
-				if (word.includes("orr")) forms.push("/.orrery");
-				const padded = ` ${word} `;
-				for (const group of padded.matchAll(BRACE)) piecesOf(padded, group.index, group[0], reach, pieces);
-			}
-			base = full.replace(LONG_WORD, " ");
+			// Each word whole, in one pass (WORD), its length checked after: a pattern for a long word alone ({4097,}) is tried
+			// again from every character of a shorter one, which is quadratic in that word's length.
+			base = full.replace(WORD, (word) => {
+				if (word.length <= MAX_BRACE_WORD) return word;
+				if (BRACE_ONE.test(word)) {
+					if (word.includes("orr")) forms.push("/.orrery");
+					const padded = ` ${word} `;
+					for (const group of padded.matchAll(BRACE)) piecesOf(padded, group.index, group[0], reach, pieces);
+				}
+				return " ";
+			});
 		}
 		let widest = 0;
 		for (const group of base.matchAll(BRACE)) {
@@ -1067,7 +1071,8 @@ function collapse(word: string): string {
 // A brace expansion: one word with a comma inside the braces. Braces holding spaces or no comma (jq, JSON, code) are not.
 const MAX_ALTERNATIVES = 64;
 const MAX_BRACE_WORD = 4096;
-const LONG_WORD = new RegExp(`[^\\s;|&()<>\`]{${MAX_BRACE_WORD + 1},}`, "g");
+/** A word as the brace readings take one: up to a blank, ;, |, &, a parenthesis, < or >, or a backquote. */
+const WORD = /[^\s;|&()<>`]+/g;
 const BRACE_ONE = /\{[^{}\s,]*(?:,[^{}\s,]*)+\}/;
 const BRACE = /\{([^{}\s,]*(?:,[^{}\s,]*)+)\}/g;
 
