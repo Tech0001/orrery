@@ -6,6 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { Models } from "@earendil-works/pi-ai";
 import { acceptHostKey, scanHostKey } from "@earendil-works/pi-env";
+import { readUnconfirmed } from "../claude/transcript.ts";
 import { checkClaudeFiles, claudeProjectDir, claudeSessionFiles } from "../import/claude.ts";
 import { checkCodexFiles, findCodexSessions } from "../import/codex.ts";
 import { dryRun } from "../import/dry-run.ts";
@@ -34,16 +35,25 @@ function readableOnly(config: HarnessConfig, readable: Readable | undefined): Ha
 	return readable === undefined ? config : { ...config, agents: new Map([...config.agents].filter(([, agent]) => readable(agent))) };
 }
 
-/** `orrery status [<Name>] [--json]`: one line per agent (or the named one): state, tool, memory, summaries. */
+/**
+ * `orrery status [<Name>] [--json]`: one line per agent (or the named one): state, tool, memory, summaries, and the Claude
+ * Code prompts its transcript never confirmed, which were not recorded (src/claude/transcript.ts), once there are any.
+ */
 export function statusCommand(config: HarnessConfig, only?: string, options: { json?: boolean; readable?: Readable } = {}): string {
 	const name = only === undefined ? undefined : findAgent(config, only).name;
-	const rows = agentOverview(readableOnly(config, options.readable)).filter((row) => name === undefined || row.name === name);
+	const rows = agentOverview(readableOnly(config, options.readable))
+		.filter((row) => name === undefined || row.name === name)
+		.map((row) => {
+			const unconfirmed = readUnconfirmed(config.agents.get(row.name)?.dir ?? row.dataDir);
+			return unconfirmed > 0 ? { ...row, unconfirmedPrompts: unconfirmed } : row;
+		});
 	if (options.json === true) return `${JSON.stringify({ agents: rows }, null, 2)}\n`;
 	const toolWidth = Math.max(11, ...rows.map((row) => TOOL_LABELS[row.tool].length + (row.launcher === "ori" ? 6 : 0)));
 	let out = "";
 	for (const row of rows) {
 		const memory = row.unreadable !== undefined ? `unreadable: ${row.unreadable}` : row.hasMemory ? `${row.messages} messages, view ${Math.round(row.viewBytes / 1000)}/${Math.round(row.viewBudget / 1000)} KB` : "no memory yet";
-		out += `${row.name.padEnd(12)} ${row.state.padEnd(9)} ${`${TOOL_LABELS[row.tool]}${row.launcher === "ori" ? " · Ori" : ""}`.padEnd(toolWidth)} ${memory}  summaries ${summaryText(row)} · ${row.summaryModel.ref} ${row.summaryModel.thinking}\n`;
+		const unconfirmed = "unconfirmedPrompts" in row ? ` · ${row.unconfirmedPrompts} unconfirmed ${row.unconfirmedPrompts === 1 ? "prompt" : "prompts"} not recorded` : "";
+		out += `${row.name.padEnd(12)} ${row.state.padEnd(9)} ${`${TOOL_LABELS[row.tool]}${row.launcher === "ori" ? " · Ori" : ""}`.padEnd(toolWidth)} ${memory}  summaries ${summaryText(row)} · ${row.summaryModel.ref} ${row.summaryModel.thinking}${unconfirmed}\n`;
 	}
 	// status.json carries provider and model error text: never pass its control sequences to the terminal.
 	return clean(out) || "No agents configured.\n";

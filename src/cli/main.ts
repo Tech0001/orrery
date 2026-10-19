@@ -823,7 +823,10 @@ async function claudeHook(event: string | undefined, configPath: string | undefi
 			if (guarding && broken) process.stdout.write(denyToolCall("Orrery's config could not be read, so no call can be checked; nothing was run. Fix the config file."));
 			return 0;
 		}
-		const [hooks, { claudeHookPid }] = await Promise.all([import("../claude/hooks.ts"), import("../claude/pick.ts")]);
+		const [hooks, { claudeHookPid }, { stdinPeer }] = await Promise.all([import("../claude/hooks.ts"), import("../claude/pick.ts"), import("../claude/peer.ts")]);
+		// Who is on the other end of stdin, for a writing hook (src/claude/peer.ts): asked first, before stdin is read, since
+		// macOS answers only while the writer's end is still connected. PreToolUse never asks.
+		const peer = guarding ? "unsupported" : stdinPeer();
 		// A PreToolUse input over 1 MB is read but not kept (hookInputMax): the guard refuses it unread.
 		const stdin = await readStdin(hooks.hookInputMax(event ?? ""));
 		// CLAUDE_PID, checked against this hook's parent; one that names another process is no session's (fail closed).
@@ -832,7 +835,7 @@ async function claudeHook(event: string | undefined, configPath: string | undefi
 		const startHolder = (agent: AgentConfig, session: string, nonce: string, since: number) => hooks.spawnHolder(agent, session, nonce, claudePid, since, configPath);
 		// The file the config came from, as loadConfig found it: the guard keeps it read-only, wherever it is.
 		const configFile = resolvePath(configPath ?? defaultConfigPath());
-		const answer = await hooks.runHook(event ?? "", stdin, { config, env: process.env, claudePid, ...(host === undefined ? { hostUnverified: true } : {}), startHolder, configFile, updateNotices: true });
+		const answer = await hooks.runHook(event ?? "", stdin, { config, env: process.env, claudePid, ...(host === undefined ? { hostUnverified: true } : {}), peer: () => peer, startHolder, configFile, updateNotices: true });
 		process.stdout.write(answer);
 	} catch (error) {
 		process.stderr.write(`Orrery: ${event ?? "claude-hook"}: ${errorText(error)}\n`);

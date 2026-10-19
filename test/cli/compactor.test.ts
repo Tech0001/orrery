@@ -176,6 +176,8 @@ describe("`.`, this session's agent (Claude Code's commands)", () => {
 				config: t.config,
 				env: { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PROJECT_DIR: elsewhere },
 				claudePid: process.pid,
+				// On its stdin's other end: its Claude Code (src/claude/peer.ts).
+				peer: () => process.pid,
 				startHolder: () => {},
 				modeWaitMs: 100,
 				home: join(t.dir, "home"),

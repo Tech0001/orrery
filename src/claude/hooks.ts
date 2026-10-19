@@ -21,11 +21,20 @@
  *   spooled, no holder takes them in, and a later SessionStart of the session in the same process starts none, even
  *   once the start can be read.
  * - Their stdout is only their JSON answer, and they never put message contents on stderr.
+ * - A writing hook (all but PreToolUse) changes nothing unless its caller is its Claude Code (spec
+ *   2026-10-18-agent-permissions §3c, src/claude/peer.ts): its stdin's peer must be the Claude Code process, and, past
+ *   SessionStart, the one recorded with its start time. An agent's shell that runs the hook command itself (a pipe, a
+ *   socket pair of its own) gets nothing written, decided, forgotten or started; a SessionStart that looks like a real one
+ *   says the session isn't recorded (CALLER_NOTICE).
+ * - SessionStart spools where the session's transcript is (only under Claude Code's projects folder), and each prompt
+ *   carries its promptId: the holder records a prompt only once that transcript confirms it (src/claude/transcript.ts).
+ *   A session whose transcript can't be found there, or whose Claude Code isn't recorded, is marked read-only with
+ *   CALLER_NOTICE, and nothing of it is recorded.
  */
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -43,8 +52,10 @@ import { type HolderHost, holderFresh, openElsewhere, readHolder } from "../agen
 import { claudeGuard, claudeStateRoots, movedConfigDirCredentials } from "./guard.ts";
 import { summaryNotice, updateNotice } from "./notices.ts";
 import { holderLog, samePath, validSession } from "./paths.ts";
+import { checkCaller, type StdinPeer, stdinPeer } from "./peer.ts";
 import { type ClaudePicked, claudeRefusedNotice, claudeSession, forgetProcess, UNCONFIRMED_NOTICE } from "./pick.ts";
 import { readMode, type SessionMode, spoolEvent, writeMode } from "./spool.ts";
+import { projectsFolder, transcriptIn } from "./transcript.ts";
 import { markedHere, refreshViewFile, type ViewGate, viewGate } from "./view-file.ts";
 
 /**
@@ -96,6 +107,10 @@ export interface HookInput {
 	readonly agent_id?: unknown;
 	readonly source?: unknown;
 	readonly prompt?: unknown;
+	/** The turn's id (UserPromptSubmit, Stop): the transcript's promptId of the prompt. */
+	readonly prompt_id?: unknown;
+	/** Claude Code's transcript file: trusted from a SessionStart whose caller was checked, under its projects folder. */
+	readonly transcript_path?: unknown;
 	readonly slash_command?: unknown;
 	readonly last_assistant_message?: unknown;
 	readonly reason?: unknown;
@@ -116,6 +131,11 @@ export interface HookContext {
 	readonly hostUnverified?: boolean;
 	/** How Claude Code's start time is read (default processStart, src/agent/sessions.ts); tests pass their own. */
 	readonly processStart?: (pid: number) => string | undefined;
+	/**
+	 * Who is on the other end of the hook's stdin (default stdinPeer, src/claude/peer.ts): asked by writing hooks only. The
+	 * CLI asks before it reads stdin and passes the answer; tests pass their own.
+	 */
+	readonly peer?: () => StdinPeer;
 	/**
 	 * Starts the session's holder (spawnHolder), with SessionStart's time as its read-only cut-off; tests start one
 	 * in-process or answer for it.
@@ -215,7 +235,9 @@ function notice(input: HookInput, ctx: HookContext): object | undefined {
 export function userPromptSubmit(input: HookInput, ctx: HookContext): object | undefined {
 	const at = recordable(input, ctx);
 	if (at !== undefined && typeof input.prompt === "string" && input.prompt.trim()) {
-		if (!slashCommand(input)) spoolEvent(at.agent.dir, at.session, { kind: "prompt", at: Date.now(), claudePid: ctx.claudePid, text: input.prompt });
+		// With the turn's id, which the holder confirms against Claude Code's transcript ("" never confirms).
+		const promptId = typeof input.prompt_id === "string" ? input.prompt_id : "";
+		if (!slashCommand(input)) spoolEvent(at.agent.dir, at.session, { kind: "prompt", at: Date.now(), claudePid: ctx.claudePid, text: input.prompt, promptId });
 		else if (ORRERY_COMMAND.test(input.prompt)) spoolEvent(at.agent.dir, at.session, { kind: "command", at: Date.now(), claudePid: ctx.claudePid });
 	}
 	return notice(input, ctx);
@@ -262,6 +284,69 @@ const unconfirmedHere = (agent: AgentConfig, id: string, ctx: HookContext): bool
 	const mode = readMode(agent.dir, id);
 	return mode?.mode === "read-only" && mode.reason === UNCONFIRMED_NOTICE && mode.claudePid === ctx.claudePid;
 };
+
+/**
+ * What a session whose prompts can't be confirmed says (spec 2026-10-18-agent-permissions §3c): its hooks' caller can't be
+ * told from an agent's shell (no socket on stdin, or this runtime can't ask), its Claude Code isn't recorded, or its
+ * transcript is not where Claude Code keeps them. Nothing of it is recorded, never by falling back.
+ */
+export const CALLER_NOTICE = "Orrery: can't confirm prompts in this Claude Code version, so this session isn't recorded.";
+
+/** Where the session's prompts are confirmed: its transcript and how long it was, from a SessionStart its caller sent. */
+interface TranscriptAt {
+	readonly path: string;
+	readonly projects: string;
+	readonly offset: number;
+}
+
+/**
+ * The session's transcript (input.transcript_path, under Claude Code's projects folder: src/claude/transcript.ts) with
+ * its size now, once this SessionStart's Claude Code is the recorded one (its pick just recorded it); else undefined.
+ */
+function confirmable(input: HookInput, ctx: HookContext): TranscriptAt | undefined {
+	const peer = (ctx.peer ?? stdinPeer)();
+	if (checkCaller(ctx.config, ctx.claudePid, peer, { recorded: true, ...(ctx.processStart === undefined ? {} : { start: ctx.processStart }) }) !== "ok") return undefined;
+	const projects = projectsFolder(ctx.env, ctx.home ?? homedir());
+	const path = transcriptIn(input.transcript_path, projects);
+	if (path === undefined) return undefined;
+	let offset = 0;
+	try {
+		offset = statSync(path).size;
+	} catch {
+		// a new session's file: not there yet
+	}
+	return { path, projects, offset };
+}
+
+/**
+ * Marks `session` read-only with CALLER_NOTICE: its later hooks spool nothing (recordable) and no holder adopts it. Only
+ * a SessionStart whose caller was checked marks: a forged one changes nothing. Never throws.
+ */
+function markNotConfirmable(agent: AgentConfig, session: string, ctx: HookContext): void {
+	try {
+		writeMode(agent.dir, session, { mode: "read-only", pid: process.pid, claudePid: ctx.claudePid, nonce: randomUUID(), since: Date.now(), reason: CALLER_NOTICE });
+	} catch {
+		// unmarked: its prompts are dropped unconfirmed, and counted
+	}
+}
+
+/**
+ * A SessionStart whose caller is not its Claude Code changes nothing: no decision, no host record, no mode, no holder, no
+ * view. Where it would have recorded the session (an agent set up here, the main thread, not a compaction) it says
+ * CALLER_NOTICE: a Claude Code that stopped handing hooks a socket stops recording visibly.
+ */
+function refusedStart(input: HookInput, ctx: HookContext): object | undefined {
+	if (input.agent_id !== undefined || input.source === "compact" || !validSession(input.session_id)) return undefined;
+	const projectDir = ctx.env.CLAUDE_PROJECT_DIR || (typeof input.cwd === "string" ? input.cwd : undefined);
+	if (projectDir === undefined) return undefined;
+	try {
+		const name = ctx.env[AGENT_ENV]?.trim();
+		const agent = name ? agentNamed(ctx.config, name) : agentForCwd(ctx.config, projectDir);
+		return agent !== undefined && markedHere(agent) ? { systemMessage: CALLER_NOTICE } : undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 /** The mode the holder started with `nonce` chose for `session`, once it has, or undefined after `ms`. */
 export async function waitForMode(agentDir: string, session: string, nonce: string, ms: number): Promise<SessionMode | undefined> {
@@ -335,8 +420,24 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 		warnings.push(`Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s.`);
 	}
 	let state = "recording";
+	// Where the session's prompts are confirmed (src/claude/transcript.ts). Subagents' events are not memory.
+	const transcript = setUp && input.agent_id === undefined ? confirmable(input, ctx) : undefined;
+	let spooled = true;
+	if (transcript !== undefined) {
+		try {
+			spoolEvent(agent.dir, session, { kind: "transcript", at: Date.now(), claudePid: ctx.claudePid, ...transcript });
+		} catch (error) {
+			spooled = false;
+			warnings.push(`Orrery: ${agent.name}'s spool could not be written (${errorText(error)}), so this session is not recorded.`);
+		}
+	}
 	if (!setUp) state = `not set up for Claude Code here, so this session is not recorded; run \`orrery claude-setup ${agent.name}\` to record it`;
-	else {
+	else if (input.agent_id === undefined && (transcript === undefined || !spooled)) {
+		// Its prompts can't be confirmed: none of it is recorded, whatever comes later.
+		markNotConfirmable(agent, session, ctx);
+		state = "read-only: this session is not recorded";
+		if (spooled) warnings.push(CALLER_NOTICE);
+	} else {
 		const holder = readHolder(agent.dir);
 		let mode: SessionMode | undefined;
 		if (holderFresh(holder) && holder.session === session && holder.state === "recording") mode = readMode(agent.dir, session);
@@ -484,6 +585,17 @@ export async function runHook(event: string, stdin: string | undefined, ctx: Hoo
 	} catch {
 		// Never pass on the parser's message: it quotes the input, which holds the user's words.
 		return "";
+	}
+	// A writing hook's caller must be its Claude Code (src/claude/peer.ts), before anything is decided or written; past
+	// SessionStart, the one recorded. PreToolUse only asks the guard, and keeps its speed.
+	if (event !== "pre-tool-use") {
+		const peer = (ctx.peer ?? stdinPeer)();
+		const caller = checkCaller(ctx.config, ctx.claudePid, peer, { recorded: event !== "session-start", ...(ctx.processStart === undefined ? {} : { start: ctx.processStart }) });
+		if (caller !== "ok") {
+			const refused = event === "session-start" ? refusedStart(input, ctx) : undefined;
+			return refused === undefined ? "" : JSON.stringify(refused);
+		}
+		ctx = { ...ctx, peer: () => peer };
 	}
 	let output: object | undefined;
 	switch (event) {

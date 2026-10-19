@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { Holder } from "../../src/claude/holder.ts";
 import { type HookContext, runHook } from "../../src/claude/hooks.ts";
 import { modView } from "../../src/claude/mod-view.ts";
@@ -15,8 +15,12 @@ import { agentModelSource } from "../../src/agent/model-source.ts";
 import { claimText, claimToken, newToken } from "../../src/agent/pick.ts";
 import { fauxModels, tempDir } from "../agent/support.ts";
 import { cleanupDirs, messages, seed, type TestAgent, testAgent } from "./support.ts";
+import { line, transcriptIn } from "./transcript-lines.ts";
 
 const dirs: string[] = [];
+/** The scratch folder whose Claude Code config folder keeps this file's sessions' transcripts. */
+const transcripts = transcriptIn(tempDir("orrery-claude-config-"));
+afterAll(() => rmSync(dirname(transcripts.configDir), { recursive: true, force: true }));
 const holders: Holder[] = [];
 const sleepers: ChildProcess[] = [];
 afterEach(async () => {
@@ -40,11 +44,15 @@ async function kill(process: ChildProcess): Promise<void> {
 	if (process.exitCode === null && process.signalCode === null) await once(process, "exit");
 }
 
-/** A hook's context in `dir` (CLAUDE_PROJECT_DIR), with `env` added, and this test's process as the Claude Code. */
+/**
+ * A hook's context in `dir` (CLAUDE_PROJECT_DIR), with `env` added, and this test's process as the Claude Code: the
+ * peer on the hook's stdin is the Claude Code (src/claude/peer.ts), whichever pid `extra` gives it, unless `extra` says.
+ */
 const ctx = (config: HarnessConfig, home: string, dir: string, env: NodeJS.ProcessEnv, extra: Partial<HookContext> = {}): HookContext => ({
 	config,
-	env: { CLAUDE_PROJECT_DIR: dir, ...env },
+	env: { CLAUDE_PROJECT_DIR: dir, CLAUDE_CONFIG_DIR: transcripts.configDir, ...env },
 	claudePid: process.pid,
+	peer: () => extra.claudePid ?? process.pid,
 	startHolder: () => {},
 	modeWaitMs: 200,
 	home,
@@ -62,7 +70,8 @@ const elsewhere = () => {
 	dirs.push(dir);
 	return dir;
 };
-const hookInput = (session: string, cwd: string, extra: object = {}) => JSON.stringify({ session_id: session, cwd, ...extra });
+/** A hook's input for `session` in `cwd`, with where Claude Code keeps the session's transcript. */
+const hookInput = (session: string, cwd: string, extra: object = {}) => JSON.stringify({ session_id: session, cwd, transcript_path: transcripts.path(session), ...extra });
 /** What is spooled for `session` in `agent`, oldest first: "kind: text", or the kind alone. */
 const spooled = (agent: AgentConfig, session: string) =>
 	pendingEvents(agent.dir, session).map((pending) => {
@@ -93,7 +102,8 @@ describe("Claude Code outside the agent's folder, by ORRERY_AGENT", () => {
 		expect(out.systemMessage).toBeUndefined();
 		await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "A question asked elsewhere." }), c);
 		await runHook("stop", hookInput("s1", dir, { last_assistant_message: "An answer given elsewhere." }), c);
-		expect(spooled(t.agent, "s1")).toEqual(["prompt: A question asked elsewhere.", "reply: An answer given elsewhere."]);
+		// After where the session's transcript is, which confirms its prompts (src/claude/transcript.ts).
+		expect(spooled(t.agent, "s1")).toEqual(["transcript", "prompt: A question asked elsewhere.", "reply: An answer given elsewhere."]);
 	});
 
 	it("in file mode: records, and says only the mod brings memory into this folder", async () => {
@@ -210,13 +220,14 @@ describe("a Claude Code session another agent recorded, resumed by ORRERY_AGENT"
 		});
 		await runHook("session-start", hookInput("s-b", folder, { source: "resume" }), asAtlas);
 		expect(started).toEqual(["Atlas"]);
-		await runHook("user-prompt-submit", hookInput("s-b", folder, { prompt: "Atlas question." }), asAtlas);
+		await runHook("user-prompt-submit", hookInput("s-b", folder, { prompt: "Atlas question.", prompt_id: "p-a" }), asAtlas);
+		transcripts.add("s-b", line.typed("p-a", "Atlas question."));
 		await runHook("stop", hookInput("s-b", folder, { last_assistant_message: "Atlas answer." }), asAtlas);
 		await runHook("session-end", hookInput("s-b", folder, { reason: "other" }), asAtlas);
 		for (const holder of holders.splice(0)) await holder.stop("test over");
 		expect(messages(atlas)).toEqual(["user: Atlas question.", "talk: Atlas answer."]);
 		// Birch's spool holds only Birch's own turn; Atlas's never went there.
-		expect(spooled(birch, "s-b")).toEqual(["prompt: Birch secret question.", "reply: Birch secret answer."]);
+		expect(spooled(birch, "s-b")).toEqual(["transcript", "prompt: Birch secret question.", "reply: Birch secret answer."]);
 	});
 });
 
@@ -245,7 +256,7 @@ describe("Claude Code by ORRERY_AGENT in another agent's folder", () => {
 		expect(await tool("Read", { file_path: config.credentialsPath })).toContain("Orrery guard");
 		// With Birch in mod mode there, nothing of Birch's is loaded: a new Claude Code opens Atlas.
 		claudeSetupMod(birch);
-		const opened = JSON.parse(await runHook("session-start", hookInput("s2", folder), { ...c, claudePid: second }));
+		const opened = JSON.parse(await runHook("session-start", hookInput("s2", folder), { ...c, claudePid: second, peer: () => second }));
 		expect(opened.hookSpecificOutput.additionalContext).toMatch(/^Orrery · Atlas · /);
 		expect(started).toEqual(["Atlas"]);
 	});
@@ -354,7 +365,7 @@ describe("one decision per Claude Code process (src/claude/pick.ts)", () => {
 		expect(JSON.parse(await runHook("session-start", hookInput("s1", dir), c)).hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · /);
 		expect(await runHook("pre-tool-use", hookInput("s1", dir, { tool_name: "Read", tool_input: { file_path: t.config.credentialsPath } }), c)).toContain("Orrery guard");
 		await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "Kept by the agent." }), c);
-		expect(spooled(t.agent, "s1")).toEqual(["prompt: Kept by the agent."]);
+		expect(spooled(t.agent, "s1")).toEqual(["transcript", "prompt: Kept by the agent."]);
 	});
 
 	it("SessionEnd at the process's end removes its decision (not at /clear); a new decision prunes a dead process's", async () => {

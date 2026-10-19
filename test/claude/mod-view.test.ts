@@ -364,6 +364,8 @@ describe("the CLI", () => {
 				config: t.config,
 				env: { ...env, CLAUDE_PROJECT_DIR: elsewhere },
 				claudePid: process.pid,
+				// On its stdin's other end: its Claude Code (src/claude/peer.ts).
+				peer: () => process.pid,
 				startHolder: () => {},
 				modeWaitMs: 100,
 				home: join(t.dir, "home"),

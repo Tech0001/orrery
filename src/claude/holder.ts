@@ -9,6 +9,12 @@
  * - It exits once its session has ended (SessionEnd, or the host process is gone) and the summaries have settled,
  *   cannot come (stopped or failing), or took longer than `finishMs`.
  * - Until then, a newcomer may ask it to yield (src/agent/handover.ts).
+ * - A Claude Code prompt (one with a promptId) is held until Claude Code's transcript confirms it (spec
+ *   2026-10-18-agent-permissions §3c, src/claude/transcript.ts): the user's words are recorded, a peer's report as
+ *   "[subagent] …", a task notification not at all. Its session's later events wait behind it, so the order holds. One
+ *   not confirmed once its turn is over (a later event of its session, or its Claude Code gone) and `graceMs` have
+ *   passed is dropped and counted (unconfirmed.json). Each session's transcript place is kept in memory meta, so a holder
+ *   that starts with a prompt still held looks for it first, where its predecessor left off.
  * It logs lifecycle and errors only, never message contents; its lines name the host (Claude Code or Codex).
  */
 
@@ -27,8 +33,15 @@ import { holdWriterLock } from "../memory/store.ts";
 import { remoteFooter, remoteOpenNotice } from "../remote/checkout.ts";
 import { RemoteError, type RemoteStatus, type LockState } from "../remote/types.ts";
 import { holderLog, validSession } from "./paths.ts";
-import { dropEventsSince, listSessions, type Pending, pendingEvents, readEvent, readMode, removeSession, spoolKey, writeMode } from "./spool.ts";
+import { dropEventsSince, listSessions, type Pending, pendingEvents, readEvent, readMode, removeSession, type SpoolEvent, spoolKey, writeMode } from "./spool.ts";
+import { addUnconfirmed, parseMark, type PromptVerdict, TranscriptReader, transcriptIn } from "./transcript.ts";
 import { type ViewGate, writeViewFile } from "./view-file.ts";
+
+/** The meta key holding a session's transcript place (src/claude/transcript.ts TranscriptMark). */
+export const transcriptKey = (session: string) => `claude.transcript.${session}`;
+
+/** How long a Claude Code prompt may stay unconfirmed once its turn is over (default for HolderOptions.graceMs). */
+export const PROMPT_GRACE_MS = 30_000;
 
 /** What a holder records, for whom, with which models, and how patiently. */
 export interface HolderOptions {
@@ -57,6 +70,8 @@ export interface HolderOptions {
 	readonly finishMs?: number;
 	/** How long it waits for a finishing holder to yield the agent (default 5 s). */
 	readonly yieldWaitMs?: number;
+	/** How long a Claude Code prompt may stay unconfirmed once its turn is over (default PROMPT_GRACE_MS). */
+	readonly graceMs?: number;
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -81,6 +96,13 @@ export class Holder {
 	readonly #alive: (pid: number) => boolean;
 	readonly #log: (line: string) => void;
 	readonly #finishMs: number;
+	readonly #graceMs: number;
+	/** Each session's transcript, as read so far (loaded from memory meta when first needed). */
+	readonly #transcripts = new Map<string, TranscriptReader>();
+	/** When each held prompt's grace began (its turn was over), by event name. */
+	readonly #graceFrom = new Map<string, number>();
+	/** Whether the last look left a prompt of its own session held. */
+	#holding = false;
 	/** The Orrery version this process runs, for the heartbeat: an update leaves it on the old one until the session restarts. */
 	readonly #version = statusVersion();
 	#state: "recording" | "finishing" = "recording";
@@ -111,6 +133,7 @@ export class Holder {
 		this.#alive = options.alive ?? processAlive;
 		this.#log = options.log ?? (() => {});
 		this.#finishMs = options.finishMs ?? 600_000;
+		this.#graceMs = options.graceMs ?? PROMPT_GRACE_MS;
 		this.done = new Promise((resolve) => {
 			this.#release = resolve;
 		});
@@ -225,7 +248,8 @@ export class Holder {
 			void this.stop(YIELDED);
 			return;
 		}
-		const over = this.agent.view.settled || this.agent.summaryTrouble() !== undefined || now - this.#finishingSince >= this.#finishMs;
+		// A prompt of its own still held finishes first: within its grace, it is confirmed or dropped.
+		const over = ((this.agent.view.settled || this.agent.summaryTrouble() !== undefined) && !this.#holding) || now - this.#finishingSince >= this.#finishMs;
 		if (this.#state === "finishing" && over) {
 			void this.stop("session over");
 			return;
@@ -267,18 +291,48 @@ export class Holder {
 
 	/**
 	 * Records every pending event this holder owns, oldest first, each with its cursor in one transaction. The reply to
-	 * one of orrery's own commands is not recorded, as in pi: only the cursor moves past it.
+	 * one of orrery's own commands is not recorded, as in pi: only the cursor moves past it. A Claude Code prompt not yet
+	 * confirmed holds its session's later events back (module doc).
 	 */
 	#ingest(): void {
-		for (const event of this.#eligible()) {
+		const held = new Set<string>();
+		const events = this.#eligible();
+		const now = Date.now();
+		for (const [index, event] of events.entries()) {
+			if (held.has(event.session)) continue;
 			const parsed = readEvent(event.path);
 			const items: NewMessage[] = [];
+			const meta: Record<string, string> = { [spoolKey(event.session)]: event.name };
 			const commandReply = parsed?.kind === "reply" && this.#afterCommand.has(event.session);
-			if ((parsed?.kind === "prompt" || parsed?.kind === "reply") && parsed.text.trim() && !commandReply) {
+			let unconfirmed = false;
+			if (parsed?.kind === "prompt" && parsed.promptId !== undefined) {
+				const prompt = { promptId: parsed.promptId, text: parsed.text };
+				const verdict = this.#verdict(event, prompt, parsed.claudePid, events.slice(index + 1), now);
+				if (verdict === "wait") {
+					held.add(event.session);
+					continue;
+				}
+				this.#graceFrom.delete(event.name);
+				const reader = this.#transcripts.get(event.session);
+				// A replay (a resume, a fork) of a prompt recorded before is not recorded again.
+				if ((verdict === "user" || verdict === "report") && parsed.text.trim() && reader?.recordedBefore(verdict, prompt) !== true) {
+					items.push({ kind: "user", text: verdict === "user" ? parsed.text : `[subagent] ${parsed.text}`, date: localIso(new Date(parsed.at)) });
+					reader?.remember(verdict, prompt);
+				}
+				unconfirmed = verdict === "unconfirmed";
+				if (reader !== undefined) meta[transcriptKey(event.session)] = JSON.stringify(reader.mark());
+			} else if (parsed?.kind === "transcript") {
+				const reader = this.#startTranscript(event.session, parsed);
+				meta[transcriptKey(event.session)] = reader === undefined ? "{}" : JSON.stringify(reader.mark());
+			} else if ((parsed?.kind === "prompt" || parsed?.kind === "reply") && parsed.text.trim() && !commandReply) {
 				items.push({ kind: parsed.kind === "prompt" ? "user" : "talk", text: parsed.text, date: localIso(new Date(parsed.at)) });
 			}
-			this.agent.view.appendBatch(items, { [spoolKey(event.session)]: event.name });
+			this.agent.view.appendBatch(items, meta);
 			rmSync(event.path, { force: true });
+			if (unconfirmed) {
+				this.#log(`${event.session}: a prompt Claude Code's transcript does not confirm was not recorded`);
+				this.#attempt("counting unconfirmed prompts", () => addUnconfirmed(this.agent.config.dir));
+			}
 			if (parsed === undefined) this.#log(`${event.session}: skipped an unreadable event ${event.name}`);
 			else if (parsed.kind === "prompt" || parsed.kind === "command") {
 				this.#busy = true;
@@ -299,6 +353,52 @@ export class Holder {
 				this.#ended = true;
 			} else if (parsed.kind === "compactor") this.#applyCompactor(parsed.args);
 		}
+		this.#holding = held.has(this.session);
+	}
+
+	/**
+	 * What a Claude Code prompt was, by its session's transcript: "unconfirmed" when nothing can confirm it (no transcript
+	 * for its session, no promptId) or nothing did by the end of its grace, which begins once its turn is over (a later
+	 * event of its session, or its Claude Code gone).
+	 */
+	#verdict(event: Pending, prompt: { promptId: string; text: string }, host: number, later: readonly Pending[], now: number): PromptVerdict | "unconfirmed" {
+		const reader = this.#transcript(event.session);
+		if (reader === undefined || prompt.promptId === "") return "unconfirmed";
+		reader.read(now);
+		const verdict = reader.confirm(prompt);
+		if (verdict !== "wait") return verdict;
+		let since = this.#graceFrom.get(event.name);
+		if (since === undefined && (later.some((next) => next.session === event.session) || !this.#alive(host))) {
+			since = now;
+			this.#graceFrom.set(event.name, now);
+		}
+		return since !== undefined && now - since >= this.#graceMs ? "unconfirmed" : "wait";
+	}
+
+	/** A session's transcript: as read so far, else where memory meta says the last holder left it, else none. */
+	#transcript(session: string): TranscriptReader | undefined {
+		const known = this.#transcripts.get(session);
+		if (known !== undefined) return known;
+		const mark = parseMark(this.agent.store.getMeta(transcriptKey(session)));
+		if (mark === undefined || transcriptIn(mark.path, mark.projects) === undefined) return undefined;
+		const reader = new TranscriptReader(mark);
+		this.#transcripts.set(session, reader);
+		return reader;
+	}
+
+	/**
+	 * A session's (new) transcript, from its SessionStart: read from the offset SessionStart saw. What was recorded from
+	 * the session before is remembered, so a resume's replay is not recorded twice. One not under Claude Code's projects
+	 * folder is none: the session's prompts are not confirmed.
+	 */
+	#startTranscript(session: string, event: Extract<SpoolEvent, { kind: "transcript" }>): TranscriptReader | undefined {
+		const before = this.#transcript(session)?.mark().recorded;
+		this.#transcripts.delete(session);
+		const path = transcriptIn(event.path, event.projects);
+		if (path === undefined) return undefined;
+		const reader = new TranscriptReader({ path, projects: event.projects, offset: event.offset, ...(before === undefined ? {} : { recorded: before }) });
+		this.#transcripts.set(session, reader);
+		return reader;
 	}
 
 	/** Pending events this holder records, oldest first: its own session's, and those no other holder will come back for. */

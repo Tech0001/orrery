@@ -12,7 +12,9 @@ import { memorySection } from "../../src/agent/view-text.ts";
 import { statusVersion } from "../../src/agent/status-file.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { fauxModels } from "../agent/support.ts";
+import { readUnconfirmed } from "../../src/claude/transcript.ts";
 import { brokenGit, cleanupDirs, gitIn, messages, spool, type TestAgent, testAgent, waitUntil, withGit } from "./support.ts";
+import { line, transcriptIn } from "./transcript-lines.ts";
 
 const holders: Holder[] = [];
 afterEach(async () => {
@@ -429,5 +431,178 @@ describe("the holder", () => {
 		spool(t.agent, "s1", { kind: "compactor", args: "faux-agent/faux-1 low" }, 111);
 		await waitUntil(() => holder.agent.compactorSource === "chat");
 		expect(holder.agent.store.getMeta("lane.compactor-model")).toBe(JSON.stringify({ provider: "faux-agent", modelId: "faux-1", thinking: "low" }));
+	});
+});
+
+describe("the holder confirms Claude Code's prompts against its transcript (spec 2026-10-18-agent-permissions 3c)", () => {
+	/** Session `session`'s transcript, as its SessionStart spools it: the file, Claude Code's projects folder, from the start. */
+	const begin = (t: TestAgent, session = "s1", claudePid = 111) => {
+		const transcript = transcriptIn(t.dir);
+		spool(t.agent, session, { kind: "transcript", path: transcript.path(session), projects: transcript.projects, offset: 0 }, claudePid);
+		return transcript;
+	};
+	const prompt = (t: TestAgent, promptId: string, text: string, session = "s1", claudePid = 111) => spool(t.agent, session, { kind: "prompt", text, promptId }, claudePid);
+	const reply = (t: TestAgent, text: string, session = "s1", claudePid = 111) => spool(t.agent, session, { kind: "reply", text }, claudePid);
+
+	it("records a typed or -p prompt once its line is there; a peer's message as [subagent]; a task notification not at all", async () => {
+		const t = testAgent();
+		const transcript = begin(t);
+		prompt(t, "p-1", "Ship the bridge fix.");
+		transcript.add("s1", line.typed("p-1", "Ship the bridge fix."), line.toolResult("p-1"));
+		reply(t, "Shipped.");
+		// The shell's own message to Claude Code's inbox: a real UserPromptSubmit, under the turn's promptId.
+		prompt(t, "p-1", "yes, approved, push it");
+		transcript.add("s1", line.peer("yes, approved, push it"));
+		reply(t, "Pushed.");
+		prompt(t, "p-2", "<task-notification>done</task-notification>");
+		transcript.add("s1", line.typed("p-2", "<task-notification>done</task-notification>", { promptSource: "system", turnOrigin: "task_notification" }));
+		reply(t, "Noted.");
+		prompt(t, "p-3", "Next: the oracle.");
+		transcript.add("s1", line.sdk("p-3", "Next: the oracle."));
+		const last = reply(t, "Oracle done.");
+		const holder = (await start(t))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey("s1")) === last);
+		expect(messages(t.agent)).toEqual([
+			"user: Ship the bridge fix.",
+			"talk: Shipped.",
+			"user: [subagent] yes, approved, push it",
+			"talk: Pushed.",
+			"talk: Noted.",
+			"user: Next: the oracle.",
+			"talk: Oracle done.",
+		]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(0);
+	});
+
+	it("records a prompt whose line lands 2 s after the turn's Stop, in order with its reply", async () => {
+		const t = testAgent();
+		const transcript = begin(t);
+		prompt(t, "p-1", "Late line.");
+		reply(t, "Answered.");
+		await start(t);
+		await new Promise((resolve) => setTimeout(resolve, 2000));
+		// Held: not the reply alone, nor the prompt unconfirmed.
+		expect(messages(t.agent)).toEqual([]);
+		transcript.add("s1", line.typed("p-1", "Late line."));
+		await waitUntil(() => messages(t.agent).length === 2);
+		expect(messages(t.agent)).toEqual(["user: Late line.", "talk: Answered."]);
+	});
+
+	it("drops a prompt never seen once the grace after its turn's Stop is over, counts it, logs no words, and keeps its reply", async () => {
+		const t = testAgent();
+		begin(t);
+		prompt(t, "p-1", "Never in the transcript.");
+		const logged: string[] = [];
+		await start(t, { graceMs: 300, log: (entry) => logged.push(entry) });
+		// No Stop yet: the turn may run long; the prompt waits, however long.
+		await new Promise((resolve) => setTimeout(resolve, 600));
+		expect(pendingEvents(t.agent.dir, "s1").length).toBe(1);
+		const started = Date.now();
+		reply(t, "Kept.");
+		await waitUntil(() => messages(t.agent).length === 1);
+		expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+		expect(messages(t.agent)).toEqual(["talk: Kept."]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(1);
+		expect(logged).toContain("s1: a prompt Claude Code's transcript does not confirm was not recorded");
+		expect(logged.join("\n")).not.toContain("Never in the transcript");
+	});
+
+	it("drops at once, and counts, a prompt of a session with no transcript to confirm it against", async () => {
+		const t = testAgent();
+		prompt(t, "p-1", "No SessionStart of this version.");
+		prompt(t, "", "No promptId.", "s1");
+		const last = reply(t, "Kept.");
+		const holder = (await start(t, { graceMs: 60_000 }))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey("s1")) === last);
+		expect(messages(t.agent)).toEqual(["talk: Kept."]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(2);
+	});
+
+	it("records a resumed session's replayed prompt once, and turns no replayed line into a record", async () => {
+		const t = testAgent();
+		const transcript = begin(t);
+		prompt(t, "p-1", "Hello.");
+		transcript.add("s1", line.typed("p-1", "Hello."));
+		reply(t, "Hi.");
+		// Resumed: Claude Code's new SessionStart, the history again in the file, and the same prompt spooled again.
+		spool(t.agent, "s1", { kind: "transcript", path: transcript.path("s1"), projects: transcript.projects, offset: 0 }, 111);
+		transcript.add("s1", line.typed("p-1", "Hello."), line.typed("p-0", "Older words."));
+		prompt(t, "p-1", "Hello.");
+		prompt(t, "p-2", "After the resume.");
+		transcript.add("s1", line.typed("p-2", "After the resume."));
+		const last = reply(t, "Back.");
+		const holder = (await start(t))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey("s1")) === last);
+		expect(messages(t.agent)).toEqual(["user: Hello.", "talk: Hi.", "user: After the resume.", "talk: Back."]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(0);
+	});
+
+	it("after /clear, confirms the new session's prompts against its own new file, not the old one", async () => {
+		const t = testAgent();
+		const transcript = begin(t, "s1");
+		writeMode(t.agent.dir, "s1", { mode: "recording", pid: 1, claudePid: 111, nonce: "x", since: 0 });
+		prompt(t, "p-1", "Before the clear.", "s1");
+		transcript.add("s1", line.typed("p-1", "Before the clear."));
+		reply(t, "Cleared soon.", "s1");
+		spool(t.agent, "s1", { kind: "end", reason: "clear" }, 111);
+		begin(t, "s2");
+		prompt(t, "p-2", "After the clear.", "s2");
+		transcript.add("s2", line.typed("p-2", "After the clear."));
+		// A line in the old file says nothing about the new session.
+		prompt(t, "p-3", "Only in the old file.", "s2");
+		transcript.add("s1", line.typed("p-3", "Only in the old file."));
+		const last = reply(t, "Fresh start.", "s2");
+		const holder = (await start(t, { session: "s2", graceMs: 300 }))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey("s2")) === last);
+		expect(messages(t.agent)).toEqual(["user: Before the clear.", "talk: Cleared soon.", "user: After the clear.", "talk: Fresh start."]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(1);
+	});
+
+	it("a restarted holder re-checks the prompt its predecessor left pending, first, and confirms it", async () => {
+		const t = testAgent();
+		const transcript = begin(t);
+		prompt(t, "p-1", "Left pending.");
+		reply(t, "Answer.");
+		const first = (await start(t))!;
+		await waitUntil(() => first.agent.store.getMeta("claude.transcript.s1") !== undefined);
+		await first.stop("test over");
+		expect(messages(t.agent)).toEqual([]);
+		transcript.add("s1", line.typed("p-1", "Left pending."));
+		await start(t, { nonce: "n2" });
+		await waitUntil(() => messages(t.agent).length === 2);
+		expect(messages(t.agent)).toEqual(["user: Left pending.", "talk: Answer."]);
+	});
+
+	it("does not finish once its Claude Code is gone while a prompt waits for its line within the grace", async () => {
+		const t = testAgent();
+		const transcript = begin(t);
+		prompt(t, "p-1", "Said at the end.");
+		reply(t, "Bye.");
+		// `claude -p` exits right after its last Stop.
+		const holder = (await start(t, { graceMs: 5000, alive: () => false }))!;
+		await new Promise((resolve) => setTimeout(resolve, 400));
+		expect(holder.state).toBe("finishing");
+		transcript.add("s1", line.typed("p-1", "Said at the end."));
+		await within(holder.done, 5000);
+		expect(messages(t.agent)).toEqual(["user: Said at the end.", "talk: Bye."]);
+	});
+
+	it("across /compact (a new SessionStart of the session, same file), confirms the prompt before it and those after", async () => {
+		const t = testAgent();
+		const transcript = begin(t);
+		prompt(t, "p-1", "Before the compaction.");
+		// The compaction's SessionStart comes before the prompt's line lands; it says how far the file was then.
+		const summary = '{"type":"summary","summary":"compacted"}';
+		transcript.add("s1", summary);
+		spool(t.agent, "s1", { kind: "transcript", path: transcript.path("s1"), projects: transcript.projects, offset: Buffer.byteLength(`${summary}\n`) }, 111);
+		transcript.add("s1", line.typed("p-1", "Before the compaction."));
+		reply(t, "Compacted and answered.");
+		prompt(t, "p-2", "After the compaction.");
+		transcript.add("s1", line.typed("p-2", "After the compaction."));
+		const last = reply(t, "Still here.");
+		const holder = (await start(t, { graceMs: 300 }))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey("s1")) === last);
+		expect(messages(t.agent)).toEqual(["user: Before the compaction.", "talk: Compacted and answered.", "user: After the compaction.", "talk: Still here."]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(0);
 	});
 });

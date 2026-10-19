@@ -7,10 +7,12 @@ import { pendingEvents } from "../../src/claude/spool.ts";
 import { readHolder } from "../../src/agent/handover.ts";
 import { cleanup, close, isolatedHome, lastAgent, pi, world } from "../pi/world.ts";
 import { fakeClaude, messages, waitUntil } from "./support.ts";
+import { line, transcriptIn } from "./transcript-lines.ts";
 
 afterEach(cleanup);
 
-describe("one agent in pi and in Claude Code", () => {
+// Its hooks run as processes: only the built binary can confirm their caller (src/claude/peer.ts); under Node they record nothing.
+describe.skipIf(!process.env.ORRERY_TEST_BIN)("one agent in pi and in Claude Code", () => {
 	const home = isolatedHome();
 
 	it("keeps one memory across both, and the second runs read-only while the first holds the agent", async () => {
@@ -25,8 +27,10 @@ describe("one agent in pi and in Claude Code", () => {
 		const piHost = spawn("sleep", ["60"], { stdio: "ignore" });
 		const host = { owner: piHost.pid as number };
 		// The hook processes get the scratch home too (said here anyway).
-		const env = { ORRERY_CONFIG: configPath, CLAUDE_PROJECT_DIR: ws, HOME: home() };
-		const hookCli = async (event: string, input: object, vars: Record<string, string>) => claude.hook(event, input, vars);
+		const transcript = transcriptIn(root);
+		const env = { ORRERY_CONFIG: configPath, CLAUDE_PROJECT_DIR: ws, HOME: home(), CLAUDE_CONFIG_DIR: transcript.configDir };
+		const hookCli = async (event: string, input: { session_id: string } & Record<string, unknown>, vars: Record<string, string>) =>
+			claude.hook(event, { transcript_path: transcript.path(input.session_id), ...input }, vars);
 		try {
 			const first = await pi(root, ws, config, undefined, host);
 			first.setResponses([fauxAssistantMessage("pi reply")]);
@@ -38,7 +42,8 @@ describe("one agent in pi and in Claude Code", () => {
 			await close(first);
 			const recording = JSON.parse((await hookCli("session-start", { session_id: "c2", cwd: ws, source: "startup" }, env)).stdout);
 			expect(recording.hookSpecificOutput.additionalContext).toMatch(/2 msgs · recording/);
-			await hookCli("user-prompt-submit", { session_id: "c2", cwd: ws, prompt: "claude says hello" }, env);
+			await hookCli("user-prompt-submit", { session_id: "c2", cwd: ws, prompt: "claude says hello", prompt_id: "p-1" }, env);
+			transcript.add("c2", line.typed("p-1", "claude says hello"));
 			await hookCli("stop", { session_id: "c2", cwd: ws, last_assistant_message: "claude reply" }, env);
 			await waitUntil(() => messages(atlas).length === 4);
 			const second = await pi(root, ws, config, undefined, host);

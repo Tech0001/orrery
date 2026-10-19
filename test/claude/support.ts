@@ -93,7 +93,13 @@ export function messages(agent: AgentConfig): string[] {
 	}
 }
 
-type Spooled = { kind: "prompt" | "reply"; text: string } | { kind: "command" } | { kind: "end"; reason?: string } | { kind: "compactor"; args: string };
+type Spooled =
+	| { kind: "prompt"; text: string; promptId?: string }
+	| { kind: "reply"; text: string }
+	| { kind: "command" }
+	| { kind: "end"; reason?: string }
+	| { kind: "compactor"; args: string }
+	| { kind: "transcript"; path: string; projects: string; offset: number };
 let clock = 0;
 
 /**
@@ -160,7 +166,10 @@ export function hookCli(event: string, input: object, env: Record<string, string
 /** A stand-in for a Claude Code process, alive until killed, that runs hooks as its own children. */
 export interface FakeClaude {
 	readonly pid: number;
-	/** `orrery claude-hook <event>` as Claude Code runs it: its child, with CLAUDE_PID its pid, the input on stdin. */
+	/**
+	 * `orrery claude-hook <event>` as Claude Code runs it: its child, with CLAUDE_PID its pid (unless `env` names one), the
+	 * input on stdin (a socket pair whose peer is this stand-in, as Claude Code's is).
+	 */
 	hook(event: string, input: object, env: Record<string, string>): Promise<{ readonly status: number | null; readonly stdout: string; readonly stderr: string }>;
 	kill(): void;
 }
@@ -205,7 +214,8 @@ export function fakeClaude(): FakeClaude {
 				const id = next++;
 				waiting.set(id, resolve);
 				const c = cliCommand(["claude-hook", event]);
-				child.stdin.write(`${JSON.stringify({ id, cmd: c.cmd, args: c.args, env: cleanEnv({ ...env, CLAUDE_PID: String(pid) }), input: JSON.stringify(input) })}\n`);
+				// CLAUDE_PID is its own pid unless `env` names another (the shell of another Claude Code, forging a hook call).
+				child.stdin.write(`${JSON.stringify({ id, cmd: c.cmd, args: c.args, env: cleanEnv({ CLAUDE_PID: String(pid), ...env }), input: JSON.stringify(input) })}\n`);
 			}),
 		kill: () => child.kill(),
 	};

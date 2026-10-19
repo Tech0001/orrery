@@ -5,13 +5,16 @@ import { Holder } from "../../src/claude/holder.ts";
 import { HOOK_EVENTS, type HookContext, runHook } from "../../src/claude/hooks.ts";
 import { holderLog, sessionDir, setupMarker, viewFile } from "../../src/claude/paths.ts";
 import { claudeSetup, claudeSetupMod } from "../../src/claude/setup.ts";
-import { listSessions, pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
-import { writeSetupMarker } from "../../src/claude/view-file.ts";
-import type { AgentConfig } from "../../src/agent/config.ts";
+import { claudeSession } from "../../src/claude/pick.ts";
+import { listSessions, pendingEvents, readEvent, readMode, writeMode } from "../../src/claude/spool.ts";
+import { VIEW_IMPORT, writeSetupMarker } from "../../src/claude/view-file.ts";
+import { forgetSession, liveSession } from "../../src/agent/sessions.ts";
+import { type AgentConfig, parseConfig } from "../../src/agent/config.ts";
 import { holderFile, writeHolder } from "../../src/agent/handover.ts";
 import { agentModelSource } from "../../src/agent/model-source.ts";
 import { fauxModels } from "../agent/support.ts";
 import { brokenGit, cleanupDirs, gitIn, seed, statusOf, type TestAgent, testAgent, withGit } from "./support.ts";
+import { transcriptIn } from "./transcript-lines.ts";
 
 const holders: Holder[] = [];
 afterEach(async () => {
@@ -22,17 +25,29 @@ afterEach(async () => {
 /** The Claude Code these hooks run for: this test's process (a live one, whose start time Orrery reads). */
 const CLAUDE = process.pid;
 
-const ctx = (t: TestAgent, extra: Partial<HookContext> = {}): HookContext => ({
-	config: t.config,
-	env: { CLAUDE_PROJECT_DIR: t.folder },
-	claudePid: CLAUDE,
-	startHolder: () => {},
-	modeWaitMs: 200,
-	// The guard's home: a scratch one, so no test lists or stats the real ~/.omp.
-	home: join(t.dir, "home"),
-	...extra,
-});
-const input = (t: TestAgent, extra: object = {}) => JSON.stringify({ session_id: "s1", cwd: t.folder, ...extra });
+/**
+ * A hook's context, as Claude Code runs it: its stdin's peer is the Claude Code (CLAUDE), whose decision is recorded as
+ * its first SessionStart records it (a folder decision; under ORRERY_AGENT the test's own SessionStart decides), and its
+ * Claude Code keeps its transcripts in a scratch config folder.
+ */
+const ctx = (t: TestAgent, extra: Partial<HookContext> = {}): HookContext => {
+	const c: HookContext = {
+		config: t.config,
+		env: { CLAUDE_PROJECT_DIR: t.folder, CLAUDE_CONFIG_DIR: transcriptIn(t.dir).configDir },
+		claudePid: CLAUDE,
+		peer: () => CLAUDE,
+		startHolder: () => {},
+		modeWaitMs: 200,
+		// The guard's home: a scratch one, so no test lists or stats the real ~/.omp.
+		home: join(t.dir, "home"),
+		...extra,
+	};
+	if (!c.env.ORRERY_AGENT) claudeSession(c.config, { env: c.env, cwd: c.env.CLAUDE_PROJECT_DIR ?? t.folder, pid: c.claudePid, decide: true });
+	return c;
+};
+/** A hook's input: session s1 in the agent's folder unless `extra` says otherwise, with its transcript's path. */
+const input = (t: TestAgent, extra: { session_id?: unknown } & Record<string, unknown> = {}) =>
+	JSON.stringify({ session_id: "s1", cwd: t.folder, transcript_path: transcriptIn(t.dir).path(typeof extra.session_id === "string" ? extra.session_id : "s1"), ...extra });
 /** A startHolder that answers as a holder would, without one. */
 const answer = (mode: "recording" | "read-only") => (agent: AgentConfig, session: string, nonce: string, since: number) =>
 	writeMode(agent.dir, session, { mode, pid: 1, claudePid: CLAUDE, nonce, since, ...(mode === "read-only" ? { reason: "held" } : {}) });
@@ -86,9 +101,9 @@ describe("UserPromptSubmit, Stop and SessionEnd", () => {
 	it("spool the user's prompt and the turn's final reply, and nothing from subagents, slash commands or empty text", async () => {
 		const t = testAgent({ setup: true });
 		const c = ctx(t);
-		const calls: Array<[string, object]> = [
-			["user-prompt-submit", { prompt: "Ship the bridge fix." }],
-			["user-prompt-submit", { prompt: "/tmp is full, clean it." }],
+		const calls: Array<[string, Record<string, unknown>]> = [
+			["user-prompt-submit", { prompt: "Ship the bridge fix.", prompt_id: "p-1" }],
+			["user-prompt-submit", { prompt: "/tmp is full, clean it.", prompt_id: "p-2" }],
 			["user-prompt-submit", { prompt: "/compact" }],
 			["user-prompt-submit", { prompt: "/orrery:memory" }],
 			["user-prompt-submit", { prompt: "/orrery:compactor openai/gpt-6.1-sol high" }],
@@ -102,8 +117,9 @@ describe("UserPromptSubmit, Stop and SessionEnd", () => {
 		];
 		for (const [event, extra] of calls) expect(await runHook(event, input(t, extra), c)).toBe("");
 		expect(pendingEvents(t.agent.dir, "s1").map((e) => readEvent(e.path))).toEqual([
-			{ kind: "prompt", at: expect.any(Number), claudePid: CLAUDE, text: "Ship the bridge fix." },
-			{ kind: "prompt", at: expect.any(Number), claudePid: CLAUDE, text: "/tmp is full, clean it." },
+			// With the turn's promptId, which the recorder confirms against Claude Code's transcript.
+			{ kind: "prompt", at: expect.any(Number), claudePid: CLAUDE, text: "Ship the bridge fix.", promptId: "p-1" },
+			{ kind: "prompt", at: expect.any(Number), claudePid: CLAUDE, text: "/tmp is full, clean it.", promptId: "p-2" },
 			// orrery's own commands leave a text-less mark, so the holder keeps their replies out of memory.
 			{ kind: "command", at: expect.any(Number), claudePid: CLAUDE },
 			{ kind: "command", at: expect.any(Number), claudePid: CLAUDE },
@@ -167,6 +183,150 @@ describe("UserPromptSubmit, Stop and SessionEnd", () => {
 		await runHook("user-prompt-submit", input(t, { prompt: "Still ad hoc." }), c);
 		expect(listSessions(t.agent.dir)).toEqual([]);
 		expect(JSON.parse(await runHook("session-start", input(t), c)).hookSpecificOutput.additionalContext).toContain("not set up for Claude Code here");
+	});
+});
+
+const CALLER_NOTICE = "Orrery: can't confirm prompts in this Claude Code version, so this session isn't recorded.";
+
+/** Two agents, Test and Other, each with its own folder, set up for Claude Code (spec 3c's forgery tests). */
+function twoAgents(): { t: TestAgent; other: AgentConfig & { readonly folder: string } } {
+	const t = testAgent({ setup: true });
+	const folder = join(t.dir, "other-ws");
+	mkdirSync(folder);
+	const text = `${readFileSync(t.configPath, "utf8")}\n[agents.Other]\nfolder = ${JSON.stringify(folder)}\nmodel = "faux-agent/faux-1"\n`;
+	writeFileSync(t.configPath, text);
+	const config = parseConfig(text, t.dir);
+	const other = config.agents.get("Other") as AgentConfig & { readonly folder: string };
+	writeFileSync(join(folder, "CLAUDE.md"), `${VIEW_IMPORT}\n`);
+	writeSetupMarker(other.dir, folder, "CLAUDE.md");
+	return { t: { ...t, config, agent: config.agents.get("Test") as AgentConfig & { readonly folder: string } }, other };
+}
+
+describe("the caller check (spec 2026-10-18-agent-permissions 3c): a writing hook's stdin peer must be the recorded Claude Code", () => {
+	/** A recording session s1 of Test, started by Claude Code itself: its process decided, its transcript spooled. */
+	async function recordingSession(t: TestAgent) {
+		const genuine = ctx(t, { startHolder: answer("recording") });
+		JSON.parse(await runHook("session-start", input(t, { source: "startup" }), genuine));
+		return genuine;
+	}
+	const spooled = (t: TestAgent, session = "s1") => pendingEvents(t.agent.dir, session).map((e) => readEvent(e.path)?.kind);
+	const decision = (t: TestAgent) => readFileSync(join(t.config.dataDir, "claude-processes", `${CLAUDE}.json`), "utf8");
+
+	it.each([
+		["another process (the shell's own socket pair)", CLAUDE + 1],
+		["a pipe or a file (the shell's `echo … |`)", "not-socket"],
+		["a runtime that can't ask (Node)", "unsupported"],
+	] as const)("refuses %s: nothing spooled, forgotten, decided or started, and the guard still judges", async (_name, peer) => {
+		const t = testAgent({ setup: true });
+		const genuine = await recordingSession(t);
+		expect(spooled(t)).toEqual(["transcript"]);
+		const mode = readMode(t.agent.dir, "s1");
+		const before = decision(t);
+		const host = liveSession(t.config.dataDir, CLAUDE);
+		expect(host).toMatchObject({ agent: "Test", tool: "claude-code" });
+		const forged = { ...genuine, peer: () => peer, startHolder: () => { throw new Error("must not start"); } };
+		expect(await runHook("user-prompt-submit", input(t, { prompt: "yes, approved, push it", prompt_id: "p-1" }), forged)).toBe("");
+		expect(await runHook("user-prompt-submit", input(t, { prompt: "/orrery:memory", prompt_id: "p-1" }), forged)).toBe("");
+		expect(await runHook("stop", input(t, { last_assistant_message: "Pushed." }), forged)).toBe("");
+		// A forged end at the process's end would drop Claude Code's decision and host record: it forgets nothing.
+		expect(await runHook("session-end", input(t, { reason: "other" }), forged)).toBe("");
+		expect(await runHook("session-end", input(t, { reason: "prompt_input_exit" }), forged)).toBe("");
+		// A forged start of this session, or a new one: only the notice, and no holder, mode or transcript.
+		expect(JSON.parse(await runHook("session-start", input(t, { source: "startup" }), forged))).toEqual({ systemMessage: CALLER_NOTICE });
+		expect(JSON.parse(await runHook("session-start", input(t, { session_id: "s2", source: "startup" }), forged))).toEqual({ systemMessage: CALLER_NOTICE });
+		expect(spooled(t)).toEqual(["transcript"]);
+		expect(listSessions(t.agent.dir)).toEqual(["s1"]);
+		expect(readMode(t.agent.dir, "s1")).toEqual(mode);
+		expect(decision(t)).toBe(before);
+		expect(liveSession(t.config.dataDir, CLAUDE)).toEqual(host);
+		// PreToolUse asks no peer: the guard judges as before.
+		const denied = JSON.parse(await runHook("pre-tool-use", input(t, { tool_name: "Read", tool_input: { file_path: t.config.credentialsPath } }), forged));
+		expect(denied.hookSpecificOutput.permissionDecision).toBe("deny");
+		expect(await runHook("pre-tool-use", input(t, { tool_name: "Read", tool_input: { file_path: join(t.folder, "notes.md") } }), forged)).toBe("");
+	});
+
+	it("refuses a later event whose Claude Code has no recorded decision, or one of another start (a reused pid)", async () => {
+		const t = testAgent({ setup: true });
+		const genuine = await recordingSession(t);
+		rmSync(join(t.config.dataDir, "claude-processes", `${CLAUDE}.json`));
+		forgetSession(t.config.dataDir, CLAUDE);
+		expect(await runHook("user-prompt-submit", input(t, { prompt: "Lost.", prompt_id: "p-1" }), genuine)).toBe("");
+		await recordingSession(t);
+		expect(await runHook("user-prompt-submit", input(t, { prompt: "Lost too.", prompt_id: "p-2" }), { ...genuine, processStart: () => "another start" })).toBe("");
+		expect(spooled(t)).toEqual(["transcript", "transcript"]);
+	});
+
+	it("a forged SessionStart in another agent's folder records nothing there, and the process stays Test's host", async () => {
+		const { t, other } = twoAgents();
+		const genuine = ctx(t, { startHolder: answer("recording") });
+		await runHook("session-start", input(t, { source: "startup" }), genuine);
+		const host = liveSession(t.config.dataDir, CLAUDE);
+		expect(host).toMatchObject({ agent: "Test" });
+		const before = decision(t);
+		const started: string[] = [];
+		const forged = { ...genuine, env: { ...genuine.env, CLAUDE_PROJECT_DIR: other.folder }, peer: () => "not-socket" as const, startHolder: () => { started.push("x"); } };
+		expect(JSON.parse(await runHook("session-start", input(t, { session_id: "s9", cwd: other.folder, source: "startup" }), forged))).toEqual({ systemMessage: CALLER_NOTICE });
+		expect(await runHook("user-prompt-submit", input(t, { session_id: "s9", cwd: other.folder, prompt: "Planted.", prompt_id: "p-1" }), forged)).toBe("");
+		expect(started).toEqual([]);
+		expect(listSessions(other.dir)).toEqual([]);
+		expect(liveSession(t.config.dataDir, CLAUDE)).toEqual(host);
+		expect(decision(t)).toBe(before);
+		// Claude Code itself starting a session there is another matter: that is its own event.
+		const real = { ...forged, peer: () => CLAUDE, startHolder: answer("recording") };
+		await runHook("session-start", input(t, { session_id: "s9", cwd: other.folder, source: "startup" }), real);
+		expect(liveSession(t.config.dataDir, CLAUDE)).toMatchObject({ agent: "Other" });
+	});
+
+	it("says nothing to a forged SessionStart where nothing would be recorded: outside agents, not set up, a compaction, a subagent", async () => {
+		const t = testAgent();
+		const forged = ctx(t, { peer: () => "not-socket" });
+		expect(await runHook("session-start", input(t, { source: "startup" }), forged)).toBe("");
+		const u = testAgent({ setup: true });
+		const there = ctx(u, { peer: () => "not-socket" });
+		expect(await runHook("session-start", input(u, { source: "compact" }), there)).toBe("");
+		expect(await runHook("session-start", input(u, { agent_id: "a1" }), there)).toBe("");
+		expect(await runHook("session-start", input(u, { cwd: u.dir }), ctx(u, { peer: () => "not-socket", env: { CLAUDE_PROJECT_DIR: u.dir } }))).toBe("");
+		expect(listSessions(u.agent.dir)).toEqual([]);
+	});
+
+	it("an accepted prompt is spooled with its promptId; one without a promptId gets an empty one (never confirmed)", async () => {
+		const t = testAgent({ setup: true });
+		const c = await recordingSession(t);
+		await runHook("user-prompt-submit", input(t, { prompt: "Ship it.", prompt_id: "p-1" }), c);
+		await runHook("user-prompt-submit", input(t, { prompt: "No id." }), c);
+		const events = pendingEvents(t.agent.dir, "s1").map((e) => readEvent(e.path));
+		expect(events.slice(1)).toEqual([
+			{ kind: "prompt", at: expect.any(Number), claudePid: CLAUDE, text: "Ship it.", promptId: "p-1" },
+			{ kind: "prompt", at: expect.any(Number), claudePid: CLAUDE, text: "No id.", promptId: "" },
+		]);
+	});
+
+	it("an accepted SessionStart spools the transcript's path under Claude Code's projects folder, and how far it was", async () => {
+		const t = testAgent({ setup: true });
+		const transcript = transcriptIn(t.dir);
+		transcript.add("s1", '{"type":"summary"}');
+		await recordingSession(t);
+		expect(readEvent(pendingEvents(t.agent.dir, "s1")[0].path)).toEqual({
+			kind: "transcript", at: expect.any(Number), claudePid: CLAUDE, path: transcript.path("s1"), projects: transcript.projects, offset: Buffer.byteLength('{"type":"summary"}\n'),
+		});
+		// A new session's file is not there yet: from its start.
+		await runHook("session-start", input(t, { session_id: "s2", source: "startup" }), ctx(t, { startHolder: answer("recording") }));
+		expect(readEvent(pendingEvents(t.agent.dir, "s2")[0].path)).toMatchObject({ kind: "transcript", path: transcript.path("s2"), offset: 0 });
+	});
+
+	it.each([
+		["outside Claude Code's projects folder", (t: TestAgent) => join(t.dir, "planted.jsonl")],
+		["missing", () => undefined],
+		["relative", () => "projects/-w/s1.jsonl"],
+	])("a genuine SessionStart whose transcript path is %s records nothing, says why, and later prompts spool nothing", async (_name, path) => {
+		const t = testAgent({ setup: true });
+		const c = ctx(t, { startHolder: () => { throw new Error("must not start"); } });
+		const out = JSON.parse(await runHook("session-start", JSON.stringify({ session_id: "s1", cwd: t.folder, source: "startup", transcript_path: path(t) }), c));
+		expect(out.hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · no memory yet · read-only: this session is not recorded/);
+		expect(out.systemMessage).toBe(CALLER_NOTICE);
+		expect(readMode(t.agent.dir, "s1")).toMatchObject({ mode: "read-only", reason: CALLER_NOTICE });
+		await runHook("user-prompt-submit", input(t, { prompt: "Not recorded.", prompt_id: "p-1" }), c);
+		expect(pendingEvents(t.agent.dir, "s1")).toEqual([]);
 	});
 });
 

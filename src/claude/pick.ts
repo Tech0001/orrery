@@ -385,6 +385,15 @@ export function claudeSession(config: HarnessConfig, asking: ClaudeProcess): Cla
 	return theirs === undefined || theirs === "unreadable" ? { kind: "unrecorded", why: "its record is unreadable" } : { kind: "undecided" };
 }
 
+/**
+ * When the Claude Code process `pid` started, as its decision record says (src/claude/peer.ts checks a hook's caller
+ * against it); undefined without a readable record, or one that holds no start.
+ */
+export function decisionStart(config: HarnessConfig, pid: number): string | undefined {
+	const recorded = readRecord(config, pid);
+	return recorded === undefined || recorded === "unreadable" ? undefined : recorded.identity?.start;
+}
+
 /** SessionEnd at the process's end: its decision goes, and its host record (a Claude Code's only). */
 export function forgetProcess(config: HarnessConfig, pid: number): void {
 	try {

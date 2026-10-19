@@ -11,6 +11,7 @@ import { listSessions, pendingEvents, readMode } from "../../src/claude/spool.ts
 import { type CodexHookContext, runCodexHook } from "../../src/codex/hooks.ts";
 import { fauxModels } from "../agent/support.ts";
 import { cleanupDirs, messages, spool, type TestAgent, testAgent, waitUntil } from "../claude/support.ts";
+import { line, transcriptIn } from "../claude/transcript-lines.ts";
 
 const holders: Holder[] = [];
 afterEach(async () => {
@@ -36,10 +37,14 @@ function scene(t: TestAgent) {
 	const holderFor = (pid: number, host: "claude-code" | "codex") => (agent: AgentConfig, session: string, nonce: string, since: number) => {
 		void Holder.start({ agent, session, nonce, since, claudePid: pid, ...(host === "codex" ? { host } : {}), models, alive: isAlive, tickMs: 20 }).then((h) => h && holders.push(h));
 	};
+	// Claude Code's transcripts, which confirm its prompts (src/claude/transcript.ts).
+	const transcript = transcriptIn(t.dir);
 	const claude = (pid: number): HookContext => ({
 		config: t.config,
-		env: { CLAUDE_PROJECT_DIR: t.folder },
+		env: { CLAUDE_PROJECT_DIR: t.folder, CLAUDE_CONFIG_DIR: transcript.configDir },
 		claudePid: pid,
+		// On its hooks' stdin's other end: the Claude Code (src/claude/peer.ts).
+		peer: () => pid,
 		startHolder: holderFor(pid, "claude-code"),
 		modeWaitMs: 5000,
 		home: join(t.dir, "home"),
@@ -53,26 +58,28 @@ function scene(t: TestAgent) {
 		compactWaitMs: 0,
 		alive: isAlive,
 	};
-	const inClaude = async (pid: number, event: string, input: object): Promise<Answer> => {
-		const out = await runHook(event, JSON.stringify({ cwd: t.folder, ...input }), claude(pid));
+	const inClaude = async (pid: number, event: string, input: { session_id: string } & Record<string, unknown>): Promise<Answer> => {
+		const out = await runHook(event, JSON.stringify({ cwd: t.folder, transcript_path: transcript.path(input.session_id), ...input }), claude(pid));
+		// Claude Code writes a prompt into its transcript once its hook has run.
+		if (event === "user-prompt-submit" && typeof input.prompt_id === "string") transcript.add(input.session_id, line.typed(input.prompt_id, String(input.prompt)));
 		return out === "" ? {} : (JSON.parse(out) as Answer);
 	};
 	const inCodex = async (event: string, input: object): Promise<Answer> => {
 		const out = await runCodexHook(event, JSON.stringify({ cwd: t.folder, ...input }), codex);
 		return out === "" ? {} : (JSON.parse(out) as Answer);
 	};
-	return { alive, inClaude, inCodex };
+	return { alive, inClaude, inCodex, transcript };
 }
 
 describe("one agent in Claude Code and in Codex", () => {
 	it("records from one at a time; the other reads memory, says which tool holds it, and records nothing; leftovers go to the next recorder", async () => {
 		const t = testAgent({ setup: true });
-		const { alive, inClaude, inCodex } = scene(t);
+		const { alive, inClaude, inCodex, transcript } = scene(t);
 
 		// Claude Code records first.
 		const c1 = await inClaude(CLAUDE, "session-start", { session_id: "c1", source: "startup" });
 		expect(c1.hookSpecificOutput?.additionalContext).toMatch(/· recording$/m);
-		await inClaude(CLAUDE, "user-prompt-submit", { session_id: "c1", prompt: "From Claude Code." });
+		await inClaude(CLAUDE, "user-prompt-submit", { session_id: "c1", prompt: "From Claude Code.", prompt_id: "p-1" });
 		await inClaude(CLAUDE, "stop", { session_id: "c1", last_assistant_message: "Claude Code's reply." });
 		await waitUntil(() => messages(t.agent).length === 2);
 		expect(readHolder(t.agent.dir)).toMatchObject({ session: "c1", claudePid: CLAUDE, state: "recording" });
@@ -95,7 +102,8 @@ describe("one agent in Claude Code and in Codex", () => {
 		// Claude Code's recorder dies; Claude Code spools one more prompt, then exits too: a leftover in its session.
 		const recorder = holders.find((h) => h.session === "c1");
 		await recorder?.stop("test: the recorder crashed");
-		spool(t.agent, "c1", { kind: "prompt", text: "Left by Claude Code." }, CLAUDE);
+		spool(t.agent, "c1", { kind: "prompt", text: "Left by Claude Code.", promptId: "p-2" }, CLAUDE);
+		transcript.add("c1", line.typed("p-2", "Left by Claude Code."));
 		alive.delete(CLAUDE);
 
 		// Codex's next session (a /clear) finds the agent free: it records, and takes Claude Code's leftover first.
@@ -112,7 +120,7 @@ describe("one agent in Claude Code and in Codex", () => {
 		const c2 = await inClaude(CLAUDE_2, "session-start", { session_id: "c2", source: "startup" });
 		expect(c2.hookSpecificOutput?.additionalContext).toMatch(/^Orrery · Test · 5 msgs · read-only: this session is not recorded$/m);
 		expect(c2.systemMessage).toBe("Orrery: Test is open in Codex; this session reads memory but is not recorded.");
-		await inClaude(CLAUDE_2, "user-prompt-submit", { session_id: "c2", prompt: "Not memory: Claude Code is read-only." });
+		await inClaude(CLAUDE_2, "user-prompt-submit", { session_id: "c2", prompt: "Not memory: Claude Code is read-only.", prompt_id: "p-3" });
 		expect(pendingEvents(t.agent.dir, "c2")).toEqual([]);
 
 		// Codex ends; its recorder only finishes, so the next Claude Code session takes the agent over and records.
@@ -120,7 +128,7 @@ describe("one agent in Claude Code and in Codex", () => {
 		await waitUntil(() => readHolder(t.agent.dir)?.state !== "recording", 10_000);
 		const c3 = await inClaude(CLAUDE_2, "session-start", { session_id: "c3", source: "clear" });
 		expect(c3.hookSpecificOutput?.additionalContext).toMatch(/^Orrery · Test · 5 msgs · recording$/m);
-		await inClaude(CLAUDE_2, "user-prompt-submit", { session_id: "c3", prompt: "Claude Code again." });
+		await inClaude(CLAUDE_2, "user-prompt-submit", { session_id: "c3", prompt: "Claude Code again.", prompt_id: "p-4" });
 		await inClaude(CLAUDE_2, "stop", { session_id: "c3", last_assistant_message: "Claude Code's second reply." });
 		await waitUntil(() => messages(t.agent).length === 7);
 

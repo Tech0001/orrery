@@ -2,6 +2,7 @@ import { execFileSync, type SpawnSyncReturns, spawn, spawnSync } from "node:chil
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { addUnconfirmed } from "../../src/claude/transcript.ts";
 import { statusCommand } from "../../src/cli/commands.ts";
 import { parseConfig } from "../../src/agent/config.ts";
 import { runningRoot, versionLine, versionNumber } from "../../src/agent/running.ts";
@@ -183,6 +184,19 @@ describe("orrery", () => {
 		expect(parsed.agents[0].lastBackup).toBeUndefined();
 		mkdirSync(join(dir, "data", "backups", "2026-10-07", "Test"), { recursive: true });
 		expect(JSON.parse(statusCommand(config, undefined, { json: true })).agents[0].lastBackup).toBe("2026-10-07");
+	});
+
+	it("counts the Claude Code prompts dropped because the transcript never confirmed them, once there are any", () => {
+		const dir = tempDir("orrery-main-");
+		dirs.push(dir);
+		const config = parseConfig(agentConfigToml({ dataDir: join(dir, "data"), folder: join(dir, "ws") }), dir);
+		expect(statusCommand(config)).not.toContain("unconfirmed");
+		expect(JSON.parse(statusCommand(config, undefined, { json: true })).agents[0].unconfirmedPrompts).toBeUndefined();
+		addUnconfirmed(config.agents.get("Test")!.dir);
+		expect(statusCommand(config)).toMatch(/^Test .* · 1 unconfirmed prompt not recorded\n$/);
+		addUnconfirmed(config.agents.get("Test")!.dir, 2);
+		expect(statusCommand(config)).toContain(" · 3 unconfirmed prompts not recorded\n");
+		expect(JSON.parse(statusCommand(config, undefined, { json: true })).agents[0].unconfirmedPrompts).toBe(3);
 	});
 
 	it("backs up every agent with memory, and rejects a bad --keep", () => {

@@ -11,6 +11,7 @@ import { claudeHookPid, claudeRefusedNotice, claudeSession, forgetProcess, UNCON
 import { pendingEvents, readMode } from "../../src/claude/spool.ts";
 import { claudeSetupMod } from "../../src/claude/setup.ts";
 import { seed } from "./support.ts";
+import { transcriptIn } from "./transcript-lines.ts";
 import { cleanup, world } from "../pi/world.ts";
 
 const recorded: { dataDir: string; pid: number }[] = [];
@@ -61,11 +62,15 @@ const decided = (dataDir: string): string[] => (existsSync(join(dataDir, "claude
 
 const ATLAS_PI = "Orrery: started inside Atlas's session (pi), so this one opens no memory and records nothing.";
 
-/** A hook's context: this test's process is the Claude Code (CLAUDE_PID), in `dir`. */
+/**
+ * A hook's context: this test's process is the Claude Code (CLAUDE_PID, and the peer on the hook's stdin), in `dir`,
+ * keeping its transcripts under `root`'s scratch Claude Code config folder.
+ */
 const hookCtx = (config: HarnessConfig, root: string, dir: string, extra: Partial<HookContext> = {}): HookContext => ({
 	config,
-	env: { CLAUDE_PROJECT_DIR: dir },
+	env: { CLAUDE_PROJECT_DIR: dir, CLAUDE_CONFIG_DIR: transcriptIn(root).configDir },
 	claudePid: process.pid,
+	peer: () => process.pid,
 	startHolder: () => {
 		throw new Error("no holder may start");
 	},

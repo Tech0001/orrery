@@ -304,6 +304,8 @@ describe("Orrery's MCP server", () => {
 				config,
 				env: { ...env, CLAUDE_PROJECT_DIR: plain },
 				claudePid: process.pid,
+				// On its stdin's other end: its Claude Code (src/claude/peer.ts).
+				peer: () => process.pid,
 				startHolder: () => {},
 				modeWaitMs: 200,
 				home: join(root, "home"),
