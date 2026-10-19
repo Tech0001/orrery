@@ -567,7 +567,7 @@ describe.skipIf(codex === null)("an agent's session in the installed Codex (scra
 			// The spawned agent's own requests carry its task, not the person's prompt.
 			if (!text.includes("Codename Saffron.")) return { reply: "Sub done." };
 			parent += 1;
-			return parent === 1 ? { spawn: "SUBTASK-MARKER: list the files." } : parent === 2 ? { shell: "sh forge.sh" } : { reply: "Done." };
+			return parent === 1 ? { spawn: "SUBTASK-MARKER: list the files." } : parent === 2 ? { shell: "sh forge.sh" } : { reply: `Done ${parent}.` };
 		});
 		try {
 			const run = await exec(a, model.port, ["Codename Saffron."]);
@@ -581,7 +581,13 @@ describe.skipIf(codex === null)("an agent's session in the installed Codex (scra
 			});
 			await waitUntil(() => memory(a.agentDir).length >= 2, 60_000);
 			await waitUntil(() => readHolder(a.agentDir) === undefined, 60_000);
-			expect(memory(a.agentDir)).toEqual(["user: Codename Saffron.", "talk: Done."]);
+			// The person's turn, and each of its Stops (the spawned agent's report may wake the turn again): the agent's
+			// words, none of the spawned thread's.
+			const kept = memory(a.agentDir);
+			expect(kept[0]).toBe("user: Codename Saffron.");
+			expect(kept.length).toBeGreaterThanOrEqual(2);
+			for (const said of kept.slice(1)) expect(said).toMatch(/^talk: Done \d+\.$/);
+			expect(readUnconfirmed(a.agentDir)).toBe(0);
 			// Nothing was ever spooled for the spawned thread.
 			expect(existsSync(join(a.agentDir, "claude", "sessions", sub as string))).toBe(false);
 		} finally {

@@ -12,11 +12,12 @@
  * - A Claude Code prompt is held until Claude Code's transcript confirms it (spec 2026-10-18-agent-permissions §3c,
  *   src/claude/transcript.ts): the user's words are recorded, a peer's report as "[subagent] …", a task notification
  *   not at all. A Codex prompt or reply (marked `host: "codex"`) is held until Codex's rollout confirms it
- *   (src/codex/rollout.ts): the person's turn's words, and that turn's final reply; anything else is dropped. A held
- *   event's session's later events wait behind it, so the order holds. One not confirmed once its turn is over (a later
- *   event of its session, or its host gone) and `graceMs` have passed is dropped and counted (unconfirmed.json). Each
- *   session's transcript or rollout place is kept in memory meta, so a holder that starts with an event still held looks
- *   for it first, where its predecessor left off. No prompt, and no Codex reply, is recorded as it comes.
+ *   (src/codex/rollout.ts): the person's turn's words, and replies the agent said in that turn; anything else is
+ *   dropped. A held event's session's later events wait behind it, so the order holds. One not confirmed once its own
+ *   turn is over (a later event of its session, or its host gone; judged for each event, waiting behind another or not)
+ *   and `graceMs` have passed is dropped and counted (unconfirmed.json). Each session's transcript or rollout place is
+ *   kept in memory meta, so a holder that starts with an event still held looks for it first, where its predecessor left
+ *   off. No prompt, and no Codex reply, is recorded as it comes.
  * It logs lifecycle and errors only, never message contents; its lines name the host (Claude Code or Codex).
  */
 
@@ -316,6 +317,9 @@ export class Holder {
 					const end = readEvent(event.path);
 					if (end?.kind === "end" && end.at >= this.#since) this.#ended = true;
 				}
+				// Waiting behind it, its own grace begins by its own rule, so a run of events nothing confirms waits one grace
+				// together, not one each, and none waits less than it would alone.
+				this.#beginGrace(event, events.slice(index + 1), now);
 				continue;
 			}
 			const parsed = readEvent(event.path);
@@ -330,7 +334,6 @@ export class Holder {
 				const { verdict, line } = this.#codexVerdict(event, said, parsed.claudePid, events.slice(index + 1), now);
 				if (verdict === "wait") {
 					held.add(event.session);
-					this.#graceTogether(event, events.slice(index + 1));
 					continue;
 				}
 				this.#graceFrom.delete(event.name);
@@ -348,7 +351,6 @@ export class Holder {
 				const { verdict, line } = this.#verdict(event, prompt, parsed.claudePid, events.slice(index + 1), now);
 				if (verdict === "wait") {
 					held.add(event.session);
-					this.#graceTogether(event, events.slice(index + 1));
 					continue;
 				}
 				this.#graceFrom.delete(event.name);
@@ -432,24 +434,20 @@ export class Holder {
 		return { verdict: this.#graceOver(event, host, later, now) ? "unconfirmed" : "wait" };
 	}
 
-	/** Whether a held event's grace is over: it begins once its turn is over (a later event of its session, or its host gone). */
+	/** Whether a held event's grace is over (#beginGrace). */
 	#graceOver(event: Pending, host: number, later: readonly Pending[], now: number): boolean {
-		let since = this.#graceFrom.get(event.name);
-		if (since === undefined && (later.some((next) => next.session === event.session) || !this.#alive(host))) {
-			since = now;
-			this.#graceFrom.set(event.name, now);
-		}
+		this.#beginGrace(event, later, now, host);
+		const since = this.#graceFrom.get(event.name);
 		return since !== undefined && now - since >= this.#graceMs;
 	}
 
 	/**
-	 * A held event's session's later events begin their grace with it, so a run of events nothing confirms (a flood of
-	 * made-up ones) waits one grace, not one each. One whose line comes is still confirmed when its turn comes.
+	 * Begins an event's grace once its own turn is over: a later event of its session, or its host gone (`host`, else
+	 * read from the event when that is all that's left to judge). Never earlier, and never from another event's.
 	 */
-	#graceTogether(event: Pending, later: readonly Pending[]): void {
-		const since = this.#graceFrom.get(event.name);
-		if (since === undefined) return;
-		for (const next of later) if (next.session === event.session && !this.#graceFrom.has(next.name)) this.#graceFrom.set(next.name, since);
+	#beginGrace(event: Pending, later: readonly Pending[], now: number, host?: number): void {
+		if (this.#graceFrom.has(event.name)) return;
+		if (later.some((next) => next.session === event.session) || !this.#alive(host ?? readEvent(event.path)?.claudePid ?? 0)) this.#graceFrom.set(event.name, now);
 	}
 
 	/**

@@ -8,7 +8,10 @@
  *   (`codex exec`) and names no parent turn or initiating agent. Another trigger (a guardian's review, `codex queue`'s
  *   "queue" from outside the session) or a spawned agent's turn drops it; a `response_item` of role user proves nothing
  *   (the environment context is one too);
- * - a reply is the turn's when its `task_complete` says `last_agent_message` is those words; other words drop it;
+ * - a reply is the turn's when an `item_completed` "AgentMessage" of that person's turn has those words (a turn's Stop
+ *   can come more than once: a spawned agent's report wakes the turn again), or its `task_complete` `last_agent_message`
+ *   does when no agent message of the turn did; each line confirms one reply, so a made-up Stop can only repeat words
+ *   the agent said in that turn, and only words no reply took yet. Once the turn is over, other words drop it;
  * - not seen yet: the holder waits, until the turn is over plus a grace (src/claude/holder.ts), then drops it and counts it.
  * Field names are Codex 0.163.0's, from real `codex exec` and TUI runs. Codex writes the user's message about 50 ms
  * after UserPromptSubmit and the turn's end just after Stop.
@@ -72,6 +75,7 @@ const SPAWNED = Symbol("spawned");
 type Said =
 	| { readonly kind: "start"; readonly turnId: string; readonly trigger: unknown }
 	| { readonly kind: "user"; readonly turnId: string; readonly id: string; readonly words: readonly string[] }
+	| { readonly kind: "agent"; readonly turnId: string; readonly id: string; readonly text: string }
 	| { readonly kind: "final"; readonly turnId: string; readonly text: string | undefined }
 	| { readonly kind: "aborted"; readonly turnId: string };
 
@@ -104,37 +108,48 @@ function sayOf(text: string): Said | undefined {
 	if (typeof payload.turn_id !== "string") return undefined;
 	if (payload.type === "item_completed") {
 		const item = record(payload.item);
+		const id = typeof item?.id === "string" ? item.id : "";
+		if (item?.type === "AgentMessage") {
+			// The agent's words: its text parts ("Text", 0.163.0), joined.
+			const texts = Array.isArray(item.content) ? item.content.map(record).filter((part) => (part?.type === "Text" || part?.type === "text") && typeof part.text === "string") : [];
+			return texts.length === 0 ? undefined : { kind: "agent", turnId: payload.turn_id, id, text: texts.map((part) => part?.text as string).join("") };
+		}
 		const words = item?.type === "UserMessage" ? wordsOf(item.content) : undefined;
-		return words === undefined ? undefined : { kind: "user", turnId: payload.turn_id, id: typeof item?.id === "string" ? item.id : "", words };
+		return words === undefined ? undefined : { kind: "user", turnId: payload.turn_id, id, words };
 	}
 	if (payload.type === "task_complete") return { kind: "final", turnId: payload.turn_id, text: typeof payload.last_agent_message === "string" ? payload.last_agent_message : undefined };
 	if (payload.type === "turn_aborted") return { kind: "aborted", turnId: payload.turn_id };
 	return undefined;
 }
 
-/** The verdict on `said` from what lines said, with the index of the line that decided it. */
-function verdictIn(says: readonly (Said | undefined)[], said: CodexSaid, triggerOf: (turnId: string) => unknown): { verdict: CodexVerdict; index?: number } {
+/**
+ * The verdict on `said` from what lines said (those not used yet), with the index of the line that confirmed it.
+ * `triggerOf` says a turn's trigger (undefined: its start unseen); `overOf` whether the turn is over.
+ */
+function verdictIn(says: readonly (Said | undefined)[], said: CodexSaid, triggerOf: (turnId: string) => unknown, overOf: (turnId: string) => boolean): { verdict: CodexVerdict; index?: number } {
 	if (said.turnId === "") return { verdict: "wait" };
 	const trigger = triggerOf(said.turnId);
 	// A turn not the person's: nothing of it is theirs, nor a reply to them.
 	if (trigger !== undefined && !PERSON.has(trigger)) return { verdict: "drop" };
 	for (const [index, say] of says.entries()) {
 		if (say === undefined || say.turnId !== said.turnId) continue;
-		if (said.kind === "prompt" && say.kind === "user" && say.words.includes(said.text)) return trigger === undefined ? { verdict: "wait" } : { verdict: "user", index };
-		if (said.kind === "reply" && say.kind === "final") {
-			if (say.text !== said.text) return { verdict: "drop", index };
-			return trigger === undefined ? { verdict: "wait" } : { verdict: "user", index };
-		}
+		const confirms = said.kind === "prompt" ? say.kind === "user" && say.words.includes(said.text) : (say.kind === "agent" || say.kind === "final") && say.text === said.text;
+		if (confirms) return trigger === undefined ? { verdict: "wait" } : { verdict: "user", index };
 	}
-	return { verdict: "wait" };
+	// A reply to a turn that is over, in words the agent didn't say in it (or that a reply took already).
+	return { verdict: said.kind === "reply" && overOf(said.turnId) ? "drop" : "wait" };
 }
 
 /** What Codex's rollout `lines` say a spooled prompt or reply of a turn was (module doc). */
 export function confirmCodex(lines: readonly string[], said: CodexSaid): CodexVerdict {
 	const says = lines.map(sayOf);
 	const triggers = new Map<string, unknown>();
-	for (const say of says) if (say?.kind === "start") triggers.set(say.turnId, say.trigger);
-	return verdictIn(says, said, (turnId) => (triggers.has(turnId) ? (triggers.get(turnId) ?? null) : undefined)).verdict;
+	const over = new Set<string>();
+	for (const say of says) {
+		if (say?.kind === "start") triggers.set(say.turnId, say.trigger);
+		if (say?.kind === "final" || say?.kind === "aborted") over.add(say.turnId);
+	}
+	return verdictIn(says, said, (turnId) => (triggers.has(turnId) ? (triggers.get(turnId) ?? null) : undefined), (turnId) => over.has(turnId)).verdict;
 }
 
 /** Codex's folder: $CODEX_HOME, else ~/.codex. */
@@ -424,6 +439,9 @@ export class RolloutReader {
 	#kept: Kept[] = [];
 	/** Each turn's trigger, and where its start line is. */
 	#turns = new Map<string, { readonly trigger: unknown; readonly at: number }>();
+	/** The turns seen over (ended or aborted), and the words of each turn's agent messages (its final one says them again). */
+	readonly #over = new Set<string>();
+	readonly #agentSaid = new Map<string, Set<string>>();
 	/** Where the start line of a turn still running is (a reader restarted from the mark reads it again). */
 	#running: number | undefined;
 	readonly #recorded: string[];
@@ -500,11 +518,23 @@ export class RolloutReader {
 			this.#running = at;
 			return;
 		}
-		const turn = this.#turns.get(say.turnId);
-		if (turn !== undefined && turn.at === this.#running && say.kind !== "user") this.#running = undefined;
-		if (say.kind === "aborted") return;
-		const id = say.kind === "user" ? `${say.turnId}/${say.id === "" ? `at:${at}` : say.id}` : `${say.turnId}/final`;
-		this.#kept.push({ say, id, at, readAt: now });
+		if (say.kind === "final" || say.kind === "aborted") {
+			const turn = this.#turns.get(say.turnId);
+			if (turn !== undefined && turn.at === this.#running) this.#running = undefined;
+			this.#over.add(say.turnId);
+			while (this.#over.size > TURNS_KEPT) this.#over.delete(this.#over.values().next().value as string);
+			// The final message is the turn's last agent message again: one line, not a second one for the same words.
+			if (say.kind === "aborted" || say.text === undefined || this.#agentSaid.get(say.turnId)?.has(say.text) === true) return;
+			this.#kept.push({ say, id: `${say.turnId}/final`, at, readAt: now });
+			return;
+		}
+		if (say.kind === "agent") {
+			const said = this.#agentSaid.get(say.turnId) ?? new Set<string>();
+			said.add(say.text);
+			this.#agentSaid.set(say.turnId, said);
+			while (this.#agentSaid.size > TURNS_KEPT) this.#agentSaid.delete(this.#agentSaid.keys().next().value as string);
+		}
+		this.#kept.push({ say, id: `${say.turnId}/${say.id === "" ? `at:${at}` : say.id}`, at, readAt: now });
 	}
 
 	/** What the lines read so far say of `said`, and which line confirmed it; that line is used up (one that drops it isn't). */
@@ -516,6 +546,7 @@ export class RolloutReader {
 				const turn = this.#turns.get(turnId);
 				return turn === undefined ? undefined : (turn.trigger ?? null);
 			},
+			(turnId) => this.#over.has(turnId),
 		);
 		if (index === undefined || verdict !== "user") return { verdict };
 		const [kept] = this.#kept.splice(index, 1);

@@ -68,14 +68,17 @@ describe("confirmCodex: what Codex's rollout says a hook's prompt or reply was",
 		expect(confirmCodex([rollout.started("t-1"), rollout.user("t-1", "Hello.")], { kind: "prompt", turnId: "", text: "Hello." })).toBe("wait");
 	});
 
-	it("drops a reply that differs from the turn's final message; an earlier message of the turn is not its final one", () => {
+	it("confirms a reply that is any of the agent's messages in the person's turn; other words wait while it runs, and drop once it is over", () => {
 		const lines = [rollout.started("t-1"), rollout.user("t-1", "Go."), rollout.agent("t-1", "Let me look."), rollout.agent("t-1", "Done.")];
-		// The turn isn't over: its final message isn't known yet.
-		expect(confirmCodex(lines, { kind: "reply", turnId: "t-1", text: "Let me look." })).toBe("wait");
+		// A turn's Stop can come more than once (a spawned agent's report wakes the turn again): an earlier message is one.
+		expect(confirmCodex(lines, { kind: "reply", turnId: "t-1", text: "Let me look." })).toBe("user");
+		expect(confirmCodex(lines, { kind: "reply", turnId: "t-1", text: "Done." })).toBe("user");
+		expect(confirmCodex(lines, { kind: "reply", turnId: "t-1", text: "Pushed to main." })).toBe("wait");
 		const over = [...lines, rollout.complete("t-1", "Done.")];
-		expect(confirmCodex(over, { kind: "reply", turnId: "t-1", text: "Let me look." })).toBe("drop");
 		expect(confirmCodex(over, { kind: "reply", turnId: "t-1", text: "Pushed to main." })).toBe("drop");
 		expect(confirmCodex(over, { kind: "reply", turnId: "t-1", text: "Done." })).toBe("user");
+		// The final message alone says the reply too (a turn whose agent message line isn't there).
+		expect(confirmCodex([rollout.started("t-3"), rollout.complete("t-3", "Only here.")], { kind: "reply", turnId: "t-3", text: "Only here." })).toBe("user");
 		// A turn that ended with no message of the agent's confirms no reply.
 		expect(confirmCodex([rollout.started("t-2"), rollout.complete("t-2", null)], { kind: "reply", turnId: "t-2", text: "Anything." })).toBe("drop");
 	});
@@ -286,16 +289,27 @@ describe("RolloutReader: one session's rollout, read as Codex appends to it", ()
 		expect(again.recordedBefore(first.line as string)).toBe(true);
 	});
 
-	it("a reply that the turn's final message drops doesn't use it up: the real reply after it still confirms", () => {
+	it("a dropped reply uses nothing up; each agent message confirms one reply, and the final message is no second line for the same words", () => {
 		const home = homeIn();
 		const s1 = codexSession();
 		home.begin(s1);
 		const r = reader(home, s1, 0);
-		home.add(s1, ...rollout.turn("t-1", "Go.", "Done."));
+		home.add(s1, rollout.started("t-1"), rollout.user("t-1", "Go."), rollout.agent("t-1", "Reply 2."), rollout.agent("t-1", "Reply 4."));
+		r.read();
+		// Two Stops of one turn: both are the agent's words.
+		expect(r.confirm(reply("t-1", "Reply 2.")).verdict).toBe("user");
+		expect(r.confirm(reply("t-1", "Pushed to main.")).verdict).toBe("wait");
+		home.add(s1, rollout.complete("t-1", "Reply 4."));
 		r.read();
 		expect(r.confirm(reply("t-1", "Pushed to main.")).verdict).toBe("drop");
-		expect(r.confirm(reply("t-1", "Done.")).verdict).toBe("user");
-		expect(r.confirm(reply("t-1", "Done.")).verdict).toBe("wait");
+		const last = r.confirm(reply("t-1", "Reply 4."));
+		expect(last.verdict).toBe("user");
+		// Words a reply took already, said once: a made-up Stop repeating them takes nothing.
+		expect(r.confirm(reply("t-1", "Reply 4.")).verdict).toBe("drop");
+		expect(r.confirm(reply("t-1", "Reply 2.")).verdict).toBe("drop");
+		// Each line has its own identity (its item's id).
+		expect(last.line).toMatch(/^t-1\//);
+		expect(last.line).not.toBe("t-1/final");
 	});
 
 	it("a reader restarted from its mark still knows a running turn's trigger, and a kept line it didn't use", () => {
@@ -361,7 +375,8 @@ describe("RolloutReader: one session's rollout, read as Codex appends to it", ()
 		r.read(now + 11 * 60_000, true);
 		expect(r.confirm(prompt("t-1", "Kept a long while.")).verdict).toBe("user");
 		r.read(now + 22 * 60_000);
-		expect(r.confirm(reply("t-1", "Yes.")).verdict).toBe("wait");
+		// Its line let go, the turn over: nothing confirms the reply any more.
+		expect(r.confirm(reply("t-1", "Yes.")).verdict).toBe("drop");
 	});
 
 	it("parseRolloutMark takes only a whole mark", () => {
