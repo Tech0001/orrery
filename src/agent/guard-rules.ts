@@ -1437,8 +1437,12 @@ export interface TranscriptRule {
 	readonly codex: readonly string[];
 	/** Those of them that their tails don't name, spelt as a [guard] protect path entry is (protection); none for none. */
 	readonly spelled?: Protection;
-	/** Their parent folders, spelt the same way, each entry's folder names in entry order: for a glob beside one. */
-	readonly parents?: { readonly protection: Protection; readonly folders: readonly (readonly string[])[] };
+	/**
+	 * Their parent folders, each spelt on its own the same way, with the names of its folders: for a glob beside one. One
+	 * pattern per parent, so a parent spelt inside or over another's spelling (CODEX_HOME under CLAUDE_CONFIG_DIR) is
+	 * still found.
+	 */
+	readonly parents?: readonly { readonly protection: Protection; readonly folders: readonly string[] }[];
 }
 
 /** Codex's folders of session records under its home. */
@@ -1456,7 +1460,7 @@ export function transcriptRule(env: NodeJS.ProcessEnv = process.env, home: strin
 	if (elsewhere.length === 0) return folders;
 	const parents = new Map<string, string[]>();
 	for (const path of elsewhere) parents.set(posix.dirname(path), [...(parents.get(posix.dirname(path)) ?? []), posix.basename(path).toLowerCase()]);
-	return { ...folders, spelled: protection(elsewhere, home), parents: { protection: protection([...parents.keys()], home), folders: [...parents.values()] } };
+	return { ...folders, spelled: protection(elsewhere, home), parents: [...parents].map(([parent, names]) => ({ protection: protection([parent], home), folders: names })) };
 }
 
 /**
@@ -1498,12 +1502,12 @@ const RECORD_FOLDERS = [
  * Whether a reading names the session records with a glob (narrowly): a path part right after .claude/, .codex/,
  * $CLAUDE_CONFIG_DIR/ or $CODEX_HOME/ that could match their folders (projects, sessions, archived_sessions), or a part
  * that could match .claude or .codex (starting with its dot, as a shell's glob must) before one of those; and a part
- * that could match a moved folder's name right after its parent spelt out (`parents`: ~/.config/claude/pro*). Linear:
- * each word is read once.
+ * that could match a moved folder's name right after its parent spelt out (`parents`: ~/.config/claude/pro*), each
+ * parent on its own and at every place it is spelt. Each word is read once per pattern.
  */
 function recordsGlob(form: string, parents: TranscriptRule["parents"]): boolean {
 	if (!GLOB.test(form)) return false;
-	const moved = parents?.protection.spelled === undefined ? undefined : new RegExp(parents.protection.spelled.source, "g");
+	const moved = (parents ?? []).flatMap((entry) => (entry.protection.spelled === undefined ? [] : [{ pattern: new RegExp(entry.protection.spelled.source, "g"), folders: entry.folders }]));
 	for (const match of form.matchAll(GLOB_WORDS)) {
 		const word = match[0];
 		if (!GLOB.test(word)) continue;
@@ -1516,15 +1520,22 @@ function recordsGlob(form: string, parents: TranscriptRule["parents"]): boolean 
 				if (parentNamed && (record.folders.includes(folder) || globCouldName(folder, record.folders) !== undefined)) return true;
 			}
 		}
-		for (const found of moved === undefined ? [] : word.matchAll(moved)) {
-			// The entry whose group matched (protectedIn's way), and the part after it.
-			const entry = Math.max(0, found.findIndex((group, at) => at > 0 && group !== undefined) - 1);
-			const next = /^\/+([^/]*)/.exec(word.slice(found.index + found[0].length))?.[1];
-			if (next !== undefined && globCouldName(next, parents?.folders[entry] ?? []) !== undefined) return true;
+		for (const { pattern, folders } of moved) {
+			// Every place this parent is spelt, one starting inside another's included, and the part after it.
+			pattern.lastIndex = 0;
+			for (let found = pattern.exec(word); found !== null; found = pattern.exec(word)) {
+				NEXT_PART.lastIndex = found.index + found[0].length;
+				const next = NEXT_PART.exec(word)?.[1];
+				if (next !== undefined && globCouldName(next, folders) !== undefined) return true;
+				pattern.lastIndex = found.index + 1;
+			}
 		}
 	}
 	return false;
 }
+
+/** The path part after a "/" (or several), at lastIndex. */
+const NEXT_PART = /\/+([^/]*)/y;
 
 /**
  * Whether shell text (`command`, with its readings `reading`, made with `reach`) names the session records (above): by

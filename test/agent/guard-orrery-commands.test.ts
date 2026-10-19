@@ -462,6 +462,22 @@ describe("Claude Code's and Codex's session records", () => {
 		expect(verdicts((w) => `ls ${w.claudeConfig}/*.json ${w.codexHome}/*.toml`)).toEqual(Array(GATES).fill(undefined));
 	});
 
+	it("tests each moved parent on its own: a glob beside CODEX_HOME inside CLAUDE_CONFIG_DIR's folder", () => {
+		// CLAUDE_CONFIG_DIR's spelling is the start of CODEX_HOME's: only the second, inner parent's glob names its records.
+		const nested = (): World => {
+			const w = world();
+			const claudeConfig = join(w.root, "cfg");
+			const codexHome = join(claudeConfig, "codex");
+			mkdirSync(join(codexHome, "sessions"), { recursive: true });
+			const transcripts = transcriptRule({ CLAUDE_CONFIG_DIR: claudeConfig, CODEX_HOME: codexHome }, w.home);
+			return { ...w, claudeConfig, codexHome, options: { ...w.options, allowedRoots: [...w.options.allowedRoots, claudeConfig], transcripts } };
+		};
+		expect(verdicts((w) => `ls ${w.codexHome}/sess*`, nested)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
+		expect(verdicts((w) => `cat ${w.codexHome}/arch*/x.jsonl`, nested)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
+		expect(verdicts((w) => `ls ${w.claudeConfig}/pro*`, nested)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
+		expect(verdicts((w) => `ls ${w.claudeConfig}/codex/*.toml ${w.claudeConfig}/*.json`, nested)).toEqual(Array(GATES).fill(undefined));
+	});
+
 	it.each([["ls ~/.claude/plans ~/.claude ~/.codex"], ["cat docs/projects.md src/sessions.ts"], ["ls ~/.claude/projects-old"], ["grep -rn sessions src"]])("leaves %s alone", (command) => {
 		expect(verdicts(command)).toEqual(Array(GATES).fill(undefined));
 	});
