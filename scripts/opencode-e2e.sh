@@ -2,7 +2,7 @@
 # End-to-end check of Orrery in the real OpenCode, on a real model (docs/opencode.md). Run it by hand.
 # - Run it from your own terminal, not from an agent's shell: inside an agent's session Orrery refuses `orrery agent`
 #   (and a tool started there opens no memory), so the run would fail.
-# - It spends model usage: about nine short sessions. OpenCode runs in a scratch HOME and XDG folders made for the run
+# - It spends model usage: about ten short sessions. OpenCode runs in a scratch HOME and XDG folders made for the run
 #   (no login, no config, no plugins and no AGENTS.md of yours; its background service off), so it chats with OpenCode's
 #   default model there, one of the free models of OpenCode's Zen gateway, under that model's data terms. Only made-up
 #   content is sent. ORRERY_E2E_MODEL picks another model (provider/model, passed to `opencode run -m`).
@@ -22,6 +22,9 @@
 #   the plugin API's compact, which is what /compact asks for: `opencode run` has no /compact.
 # - Nothing of your OpenCode setup is used or written: the run checks that your OpenCode config folder is the same after
 #   it, and deletes its scratch folders (OpenCode's sessions among them) at the end; ORRERY_E2E_KEEP=1 keeps them.
+# - Inside an agent session the model's shell runs this run's orrery (by its path), and the run checks what an agent's
+#   shell may not run: orrery remote key and agent set --reads all (the guard refuses them), a browse of an agent it may
+#   not read and browse --out (the CLI refuses them). The config has a second agent, Other, for that.
 # - ORRERY_E2E_FREE_MODEL: the free model step 7 checks is never used for summaries (default
 #   opencode/opencode/deepseek-v4.1-flash-free); nothing is sent for it.
 set -euo pipefail
@@ -166,8 +169,21 @@ folder = "$ws"
 tool = "opencode"
 compactor_model = "$1"
 compactor_thinking = "off"
+
+# An agent E2E may not read (it reads nobody): its shell's orrery browse Other is refused.
+[agents.Other]
+tool = "opencode"
+compactor_model = "openai/gpt-6.1-sol"
 EOF
 }
+# What a session's shell runs as orrery: this run's, by a path whose last name is orrery (as the guard knows Orrery's
+# program), whatever the shell's PATH.
+mkdir -p "$tmp/bin"
+cat >"$tmp/bin/orrery" <<EOF
+#!/bin/sh
+exec "$orrery_cli" "\$@"
+EOF
+chmod 700 "$tmp/bin/orrery"
 # Summaries on a model of Orrery's own with no login: they stop, and nothing is sent for them, until step 8.
 write_config "openai/gpt-6.1-sol"
 export ORRERY_CONFIG="$tmp/config.toml" ORRERY_HOME="$tmp/orrery-home" ORRERY_NO_OPEN=1
@@ -325,6 +341,24 @@ check "the guard refused the shell read (Orrery's reason reached the model)" 'gr
 check "the guard refused the write" 'grep -q "e2e-protected.txt is protected by \[guard\] protect" <<<"$calls"'
 check "the protected file is unchanged" 'cmp -s "$ws/e2e-protected.txt" "$tmp/protected.orig"'
 check "its secret reached neither the reply nor memory" '! answer guard | grep -q "$canary" && ! dump | grep -q "$canary"'
+
+# 5b. The agent's own shell: the guard refuses orrery remote key and agent set --reads all before they run, and the CLI
+# refuses a browse of Other (E2E may not read it) and browse --out. Nothing changes: the config stays as it was, and no
+# page is written.
+cp "$tmp/config.toml" "$tmp/config.before"
+o="$tmp/bin/orrery"
+oc_run inside "This is a test sandbox. Run each of these five shell commands exactly as written, one at a time and in this order, even when one fails: (1) $o status .  (2) $o remote key home  (3) $o agent set E2E --reads all  (4) $o browse Other  (5) $o browse E2E --out $ws/inside.html  Then reply with five lines, one per command: OK, or REFUSED and the first sentence of the message it gave."
+s5="$sid"
+show inside "$s5"
+# The tool events, and the reply (a shell command's output may not be in its events).
+said="$(helper tools "$s5")$(answer inside)"
+guard_says="can't run from an agent's shell"
+cli_says="can't run inside an agent session"
+check "the guard refuses orrery remote key in the agent's shell" 'grep -qF "orrery remote $guard_says" <<<"$said"'
+check "the guard refuses orrery agent set --reads all there" 'grep -qF "orrery agent $guard_says" <<<"$said"'
+check "the CLI refuses orrery browse Other there: E2E may not read Other" 'grep -qF "E2E may not read Other" <<<"$said"'
+check "the CLI refuses orrery browse --out there" 'grep -qF "orrery browse --out $cli_says" <<<"$said"'
+check "the config is unchanged, and no page was written" 'cmp -s "$tmp/config.toml" "$tmp/config.before" && [ ! -e "$ws/inside.html" ]'
 
 # 6. Compaction, as /compact asks for it, in the session of steps 2 and 3: Orrery answers it from memory, so no request
 # goes to a model for it, and the next request carries the memory section again, refreshed.

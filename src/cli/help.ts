@@ -182,9 +182,13 @@ const FOOTER: readonly Line[] = [
 /** The commands that take "." for this session's agent (main's agentArg). */
 const DOT_COMMANDS = ["status", "usage", "browse", "compactor", "claude-setup"];
 
-const DOT_NOTE = `An agent named "." (${DOT_COMMANDS.join(", ")}) is this session's agent: ORRERY_AGENT, else the agent whose folder holds the current folder.`;
+const DOT_NOTE = `An agent named "." (${DOT_COMMANDS.join(", ")}) is this session's agent: inside an agent's session, the agent it was opened as; elsewhere ORRERY_AGENT, else the agent whose folder holds the current folder.`;
 
 const CONFIG_NOTE = "Config: --config FILE, $ORRERY_CONFIG, ~/.orrery/config.toml (or under $ORRERY_HOME), or /etc/orrery/config.toml.";
+
+/** What runs inside an agent's session (src/cli/gate.ts): `orrery help all` says it last. */
+const INSIDE_NOTE =
+	"Inside an agent's session (its shell, or a ! command typed in its tool) only help, --version, status, usage, browse (no --out) and compactor run, as that agent and for the agents it may read, besides what the plugins run; run the rest in your own terminal or the TUI.";
 
 /** Where a line's text starts, on every page. */
 const COLUMN = 28;
@@ -277,7 +281,7 @@ export function shortHelp(version: string | undefined): string {
 export function allHelp(version: string | undefined): string {
 	const lines = [header(version), "", ...render(TOP, WIDTH)];
 	for (const group of GROUPS) lines.push("", group.title, ...group.detail.flatMap((line) => render(line, WIDTH)));
-	lines.push("", ...FOOTER.flatMap((line) => render(line, WIDTH, 0)), "", ...fill(DOT_NOTE, false, WIDTH), ...fill(CONFIG_NOTE, false, WIDTH));
+	lines.push("", ...FOOTER.flatMap((line) => render(line, WIDTH, 0)), "", ...fill(DOT_NOTE, false, WIDTH), ...fill(CONFIG_NOTE, false, WIDTH), ...fill(INSIDE_NOTE, false, WIDTH));
 	return page(lines);
 }
 

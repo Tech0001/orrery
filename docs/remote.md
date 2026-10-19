@@ -2,6 +2,9 @@
 
 ## Commands
 
+Run these in your own terminal or the TUI: inside an agent's session, `orrery remote` (`remote key` included) and
+`orrery agent push`, `pull`, `takeover` and `local` are refused (README, Safety).
+
 Register a remote with `orrery remote add home --server home:orrery-memory` or
 `orrery remote add cloud --cloudflare https://your-worker.example.com`.
 Tokens and existing recovery codes are entered at hidden prompts. Without a terminal,

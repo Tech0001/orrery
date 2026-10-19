@@ -30,7 +30,8 @@ from pi to Claude Code, open the agent in another project or carry on from anoth
 - **Choose how summaries are paid for.** Sign in with your ChatGPT account (the one Codex uses) or OpenRouter, use an
   OpenAI, Anthropic or OpenRouter API key, or run a local model server. In OpenCode, a paid or own-key model of
   OpenCode's can make them too. See [Summaries](#summaries).
-- **Let agents read each other.** An agent you allow can look up other agents' memory, read-only.
+- **Let agents read each other.** An agent you allow can look up other agents' memory, read-only. New agents read
+  nobody until you say so, in the TUI or with `orrery agent set`.
 - **Compact Claude Code and OpenCode sessions for free.** OpenCode's compaction, and Claude Code's with the optional
   mod, is answered from the agent's memory: no model call, no additional tokens.
 - **Take an agent to another computer.** Keep its memory on your own SSH server or a Cloudflare Worker, encrypted
@@ -120,8 +121,17 @@ background, the agents list shows the progress, and the agent opens once the bui
 snapshot: anything said in those chats later is not in the agent. From the command line, `orrery import` can also
 gather a whole project's Claude Code and Codex history; see `orrery help import`.
 
-**Reading other agents.** In the agent's `[agents.<Name>]` section of `config.toml`, `reads = ["Atlas", "Birch"]`
-(or `["*"]` for all) lets it use the `agents` and `agent_memory` tools to look into those agents' memory, read-only.
+**Reading other agents.** An agent reads its own memory and nobody else's until you allow more. Press **C** on the
+Agents page and choose **Reads**: a checklist of your other agents, with "All agents, including ones added later"
+first (Space or Tab ticks a row, Enter saves, Esc goes back). From the command line, `orrery agent set Atlas --reads
+Birch,Cedar` replaces the list, `--reads all` allows every agent (`*` works too) and `--reads none` clears it;
+`orrery agent add` takes `--reads` as well. An agent always reads itself, so it is never on its own list. In
+`config.toml` it is `reads = ["Birch", "Cedar"]` (or `["*"]`) in the agent's `[agents.<Name>]` section. An agent
+allowed to read others gets the `agents` and `agent_memory` tools to look into their memory, read-only, and
+`orrery status`, `usage` and `browse` run from its shell show them too. An agent's details (**i**) show both sides:
+**Reads** (whom it reads) and **Read by** (who reads it). The memory tools take a change when the agent next opens.
+pi and OMP add those tools once per run, so a pi or OMP that first opened an agent with no reads gets them only after
+a restart.
 
 **One session at a time.** An agent records from one session. A second session on the same agent runs without its
 memory in pi and OMP, and read-only in Claude Code, Codex and OpenCode.
@@ -188,7 +198,15 @@ cloud and can't reach the memory on your machine.
 
 ## If you are an agent helping someone with Orrery
 
-The TUI is for people; you have the command line. `orrery help all` lists every command and option. Start here:
+The TUI is for people; you have the command line. `orrery help all` lists every command and option.
+
+**In an agent's own session** (a tool Orrery opened as an agent, `!` commands typed in it included), `orrery` only
+reads, and only as that agent: `help` and `--version`; `status`, `usage` and `browse` (without `--out`) for the agent
+itself and the agents it may read; and `compactor` for the agent itself, choosing among the sign-ins, keys and local
+servers already saved. Everything else, the TUI included, is refused there with a message: the person runs it in
+their own terminal or the TUI (see [Safety](#safety)).
+
+Outside an agent's session, start here:
 
 | To | Run |
 | --- | --- |
@@ -212,8 +230,11 @@ Leave these to the person, in their own terminal:
 
 Orrery's own files are off-limits to agents: your tools are refused anywhere in `~/.orrery`, except that file tools may
 read the config and the installed program, and shell commands that name `.orrery` are refused. Ask the CLI instead.
-Shell commands that name Orrery's hook plumbing (`codex-hook`, `claude-hook`, or `orrery` with `holder`) are refused
-too, even in a `grep` or a commit message: leave those to the person. So are shell commands that name OpenCode's
+Shell commands that name Orrery's hook plumbing (`codex-hook`, `claude-hook`, or `orrery` with `holder`), or run an
+`orrery` command an agent's session may not run (`orrery setup`, `orrery remote` and the like), are refused too, even
+in a `grep` or a commit message: leave those to the person, search with your file tools, and write a commit message
+that names one to a file (`git commit -F`). So are shell commands that name Claude Code's or Codex's session records
+(`~/.claude/projects`, `~/.codex/sessions`), which you may read with your file tools but not change, and OpenCode's
 config (`opencode.json`, a `.opencode` folder, OpenCode's own folders) or a skills folder (`.claude/skills`,
 `.agents/skills`): read those with your file tools. You can't write OpenCode's config, so ask the person to set up
 OpenCode for a project; skills you may write with your file tools, with plain YAML front matter. Your own memory has
@@ -326,6 +347,49 @@ of the file reads cleanly; if it does not (the TOML is broken around it, or an e
 tool call until the config is fixed, as Claude Code does for any config it cannot read. A `[guard] protect` that lists
 nothing, as a new config has it, counts as no entries even when the TOML is broken elsewhere.
 
+**Agents can't change memory or settings from their shell.** Inside an agent's session, the `orrery` command runs
+only:
+
+- `help` and `--version`;
+- `status`, `usage` and `browse` (without `--out`), for the agent itself and the agents it may read;
+- `compactor` for the agent itself: it shows the summary model and switches among the sign-ins, keys and local
+  servers already saved, with no new sign-in (so `/orrery:compactor` keeps working);
+- the commands the plugins run, for the session's own agent.
+
+Everything else is refused, with a message that says to run it in your own terminal or the TUI: `orrery agent` (open,
+add, set, edit, archive, push, pull and the rest), `run`, `import` (the dry run too), `compact`, `backup`, `restore`,
+`login`, `logins`, `logout`, `remote` (`remote key` among them), `trust-host`, `claude-setup`, `tools`, `setup`,
+`install`, `update`, `uninstall`, and the TUI. A read of an agent it may not read says how to allow it:
+`Atlas may not read Birch. Allow it in the TUI (C, Reads) or with: orrery agent set Atlas --reads Birch`. Inside a
+session, `orrery` uses the config that holds that session's memory: `--config`, `ORRERY_CONFIG` and `ORRERY_HOME`
+can't point it at another. A command you type through a tool's own shell passthrough (such as `!` in Claude Code or
+pi) runs in the agent's session too, and gets the same answer: use another terminal. Orrery knows an agent's session by the process that opened its memory, which
+each tool records in the data folder while it is open, and by the markers that process gives its shell; see
+[agent sessions](docs/architecture.md#agent-sessions).
+
+The guard adds a second belt in every tool: shell text that runs `orrery` with a command agents may not run is refused
+before it runs, wherever it stands in the text, so a `grep` for `orrery restore` or a commit message that names
+`orrery setup` is refused too ([CONTRIBUTING.md](CONTRIBUTING.md) lists the workarounds).
+
+**A tool an agent starts is no agent's.** A `claude -p`, `codex exec`, `opencode run`, `pi -p` or OMP that an agent
+starts from its shell opens no memory, records nothing and says so (`Orrery: started inside Atlas's session (pi), so
+this one opens no memory and records nothing.`). Its guard keeps that agent's rules, and both agents' at once when it
+runs in another agent's folder. Its prompts come from the agent, not from you, so they never enter memory as your
+words. `orrery run` and `orrery agent` are refused there.
+
+**Prompts are checked against the tool's own record.** Claude Code and Codex record through hooks, which are commands
+any program of yours could run, so Orrery checks what they say. In Claude Code, a hook counts only when Claude Code
+itself called it, and a prompt only once Claude Code's transcript shows it as yours (typed, queued, or given to
+`claude -p`); a message another process sent into the session, such as a subagent's report, is kept as
+`[subagent] …`, never as your words, and a task notification is dropped. In Codex, a prompt or reply counts only once
+the session's rollout file has it. What is never confirmed is dropped and counted: `orrery status` shows "N unconfirmed
+messages not recorded" (`unconfirmedMessages` in `orrery status --json`). Agents may read Claude Code's and Codex's
+session records with file tools, but no tool may change them, and shell text that names those folders
+(`~/.claude/projects`, `~/.codex/sessions`) is refused; Claude Code's own memory folder for the project stays writable.
+pi, OMP and OpenCode record inside their own process, so there is no hook to fake. Where Orrery can't make the check
+(see the [Claude Code](docs/claude-code.md#daily-use) and [Codex](docs/codex.md#whats-recorded) guides), the session
+says why and records nothing.
+
 **Agents can't run Orrery's hook plumbing.** Shell text that names the hook commands (`codex-hook`, `claude-hook`) or
 Orrery's program with `holder` is refused, so an agent cannot feed a hook made-up input and put words in your mouth in
 its memory. The cost: an agent's `grep` for those names, or a commit message that mentions one, is refused too.
@@ -352,10 +416,32 @@ through its shell, one plain `cat`, `head`, `tail`, `sed -n`, `ls` or `wc` of sk
 **It is a guard, not a sandbox.** It checks file paths and the text of shell commands, so a determined program can get
 around it; the [architecture guide](docs/architecture.md#the-credential-guard) lists the known limits, and
 [Codex's](docs/codex.md#its-limits-in-codex) and [OpenCode's](docs/opencode.md#its-limits-in-opencode) guides the ones
-that are their own.
+that are their own. The session rules above are a seatbelt too: an agent that deliberately detaches a process from
+its session, clears its markers and hides Orrery's name from the guard can still run any `orrery` command, and a
+process of yours can still write into a tool's own records. Only an operating-system sandbox closes that; the
+[limits](docs/architecture.md#limits) are listed in full.
 
 Logins are kept in private files (mode 0600), never in the config. Your agents' memory on disk is not encrypted;
 copies sent to a remote are. Model providers see whatever context is sent to them, memory included.
+
+### Leftover markers
+
+`orrery` may refuse in a terminal of your own, saying `The session is known only by ORRERY_HOST` (or another of the
+variables below) and pointing here. The terminal carries an agent session's markers, though no agent's session runs
+above it. The usual cause is a tmux server first started from an agent's shell: tmux keeps the environment it started
+with as its global environment, so every pane you open later inherits that session's markers: `ORRERY_HOST`,
+`ORRERY_AGENT` and `ORRERY_AGENT_TOKEN`, `CLAUDE_PID` from Claude Code, `OPENCODE_CONFIG_CONTENT` from OpenCode, and
+`CODEX_THREAD_ID` from Codex (that refusal blames Codex's sandbox instead, but the fix is the same). Most count only
+while that agent's session runs; `ORRERY_AGENT` naming one of
+your agents, and an `OPENCODE_CONFIG_CONTENT` that carries Orrery's plugin, count for as long as they are set, so one
+set by hand in your shell profile does the same. Clear each variable the message names, in tmux and in the pane:
+
+```bash
+tmux setenv -gu ORRERY_HOST   # tmux's global environment, for the panes you open later
+unset ORRERY_HOST             # this pane
+```
+
+Or open a terminal outside that tmux server.
 
 ## Development
 

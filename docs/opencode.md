@@ -55,8 +55,9 @@ plugin (the installed program's `extensions/opencode` folder), the agent, and th
   launch). The plugin claims the token for this OpenCode's server. Orrery's part of `OPENCODE_CONFIG_CONTENT` holds only
   the plugin folder, the agent's name and that path, and the model's shell can see it. `ORRERY_AGENT` and
   `ORRERY_AGENT_TOKEN` are taken out of OpenCode's environment, so a tool the model starts is not the agent; an OpenCode
-  it starts inherits the config, finds the token already claimed, and runs as no agent's session, with the guard and
-  without memory.
+  it starts (`opencode run` from the agent's shell) inherits the config, but runs inside the agent's session: it opens
+  no memory, records nothing and says so, and its guard keeps the agent's rules (both agents' rules, in another agent's
+  folder).
 - `orrery agent` refuses an agent whose memory is still being built, and asks before opening an agent that is already
   open elsewhere (a second session is read-only), as for every tool.
 - **Ori** does not open OpenCode agents yet: an agent with `launcher = "ori"` is refused in OpenCode, with how to
@@ -281,6 +282,12 @@ The guard also refuses shell text that runs Orrery's hook plumbing: the hook com
 named anywhere, or Orrery's program with the word `holder`. The cost: a shell command that only names them is refused
 too, such as a `grep` for them or a commit message that mentions one. A name built at run time still gets through.
 
+The same goes for Orrery's commands that agents may not run (all but `help`, `--version`, `status`, `usage`, `browse`
+and `compactor`; README, Safety): a shell command that runs `orrery` with one of them, or only names it, is refused,
+and the CLI refuses them inside the session too. Shell text that names Claude Code's or Codex's session records
+(`~/.claude/projects`, `~/.codex/sessions`) is refused, and no tool writes there; `read`, `glob` and `grep` may read
+them.
+
 ### Its limits in OpenCode
 
 It is a seatbelt, not a sandbox. On top of the limits every tool has (see
@@ -295,7 +302,12 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
 - **A command run in another folder** (`workdir`) that names a file relative to that folder: the rules on names still
   hold (`.env`, a protected name), but the rules on paths read it from the session's folder, as after a `cd`. The same
   goes for a relative path in an MCP tool's patch text.
-- **The `!` commands you type** in OpenCode are yours, not tool calls: the guard doesn't see them.
+- **The `!` commands you type** in OpenCode are yours, not tool calls: the guard doesn't see them. An `orrery` command
+  typed there still runs inside the agent's session, and gets the same answer as the agent's.
+- **A prompt sent to OpenCode's server.** The private server of each launch takes prompts over HTTP, behind a password
+  made for that launch. A prompt sent that way looks exactly like a typed one, and a process of yours that gets the
+  password (it stays readable in the server process's environment) can plant a message Orrery records as yours.
+  Orrery's plugin can't tell them apart.
 - **A name built from a variable** (`f=.en; cat ${f}v`), read from a file, or printed by another program gets through
   the shell-text rules, as in every tool.
 
@@ -338,11 +350,13 @@ prompt history, logs.
   request, subagents, a moved session, guard refusals (shell, write, edit, patch, Code Mode, skills, and the second
   layer), and summaries through an own-key model with the free tier refused. It skips when OpenCode is not installed;
   `ORRERY_TEST_OPENCODE` names another binary.
-- `scripts/opencode-e2e.sh` is the real run, by hand: real OpenCode and a real model, about nine short sessions. It uses
-  a temp agent in a temp Orrery home and a scratch OpenCode home (no login of yours), so it chats with OpenCode's
-  default free model unless `ORRERY_E2E_MODEL` names another. It checks the plugin check, recording, the view, a recall
-  from it, search and zoom, guard refusals on a dummy protected file, a compaction answered with no model request, no
-  title request, and a free model refused for summaries. With `ORRERY_E2E_OPENCODE_CONFIG` (an OpenCode config file of
+- `scripts/opencode-e2e.sh` is the real run, by hand from your own terminal (not an agent's shell): real OpenCode and a
+  real model, about ten short sessions. It uses a temp agent in a temp Orrery home and a scratch OpenCode home (no login
+  of yours), so it chats with OpenCode's default free model unless `ORRERY_E2E_MODEL` names another. It checks the
+  plugin check, recording, the view, a recall from it, search and zoom, guard refusals on a dummy protected file, what
+  the agent's own shell may not run (`orrery remote key`, `orrery agent set … --reads all`, a browse of an agent it may
+  not read, `browse --out`), a compaction answered with no model request, no title request, and a free model refused
+  for summaries. With `ORRERY_E2E_OPENCODE_CONFIG` (an OpenCode config file of
   yours with a provider and its key) and `ORRERY_E2E_SUMMARY_MODEL` (`opencode/<provider>/<model>`) it also makes
   summaries through that model. It never reads Orrery's saved logins, and checks that your OpenCode config folder is
   unchanged.

@@ -93,7 +93,28 @@ release).
   `orrery remote` and the like), its hook commands, and Claude Code's and Codex's session folders (`~/.claude/projects`,
   `~/.codex/sessions`). Search for them with the agent's Grep or file tools rather than `grep` in the shell, and write
   a commit message that names one to a file and commit with `git commit -F <file>`. Run the refused commands themselves
-  in your own terminal.
+  in your own terminal. Refusals to expect:
+  - a refused command named after `orrery` anywhere in a command line: a commit message (`git commit -m "Orrery, setup
+    …"`), a `jq` filter such as `jq '{name:"orrery",run:1}'`, a `grep` for `orrery restore`, `orrery setup --help`,
+    `cp -r orrery backup`, `grep -E '[a-z]* install' file`, and in Codex a patch sent through the shell whose lines
+    name `orrery` with a refused command;
+  - where the guard can't tell where `orrery`'s options end, a refused command's name later in the text: prose such as
+    `echo "first orrery, then setup"`, a command line that feeds `xargs` or `parallel` and names `orrery`
+    (`ls | xargs orrery status; make install`), and an apostrophe that opens a quote it never closes (a `#` comment
+    saying "Orrery's") after an option the guard doesn't know or an expansion (`orrery $X status`);
+  - a checkout named after a folder option the guard doesn't take as that tool's own, such as `npm -C ~/src/orrery run
+    check`: use `npm --prefix`, `pnpm --dir`, `yarn --cwd`, `git -C` or `make -C`;
+  - a glob that could name a session folder: `ls ~/.claude/*`, `du -sh ~/.claude/* ~/.codex/*`.
+
+  The tests run in a scratch `HOME` and start without an agent session's markers (`test/global-env.ts`,
+  `test/setup-env.ts`), so they pass inside an agent session; a test that starts the CLI or a real tool must keep it
+  that way. Running `src/cli/main.ts` by hand with your own `HOME` inside an agent session gets the agent's answers.
+  The end-to-end scripts (`scripts/*-e2e.sh`) and the live check before a release run from your own terminal: an
+  agent's shell is refused the commands they need.
+- **Claude Code records only through the compiled program.** Its hooks check that Claude Code itself called them, which
+  needs the Bun binary: run from source under Node, every hook that writes records nothing, and the session says so.
+  The tests that record through real hook processes run under `npm run test:binary`; to try a change in Claude Code,
+  `npm run install-local`, and `scripts/claude-e2e.sh` builds one for its run.
 - **The pi extension.** Code under `src/pi/` imports pi-ai only through entry points pi supplies. A test enforces this
   ([adapters and boundaries](docs/architecture.md#adapters-and-boundaries)).
 - **Remote agents.** One machine writes an agent at a time, and memory is encrypted before upload. Storage changes must

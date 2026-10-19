@@ -83,6 +83,7 @@ describe("orrery help", () => {
 		for (const line of lines) if (line.startsWith(" ")) expect([2, 6, 28], line).toContain(line.length - line.trimStart().length);
 		expect(all.stdout).toContain('An agent named "." (status, usage, browse, compactor, claude-setup)');
 		expect(all.stdout).toContain("Config: --config FILE, $ORRERY_CONFIG");
+		expect(all.stdout).toContain("Inside an agent's session (its shell, or a ! command typed in its tool) only help, --version,");
 	});
 
 	it("help <command> and <command> --help print every line of that command, and nothing runs", () => {

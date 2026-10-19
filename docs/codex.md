@@ -5,7 +5,8 @@ An agent can run in Codex as well as in pi, OMP, Claude Code and OpenCode, on th
 its memory view at the start and after each compaction, the memory tools, and Orrery's guard on every tool call, and
 each turn is recorded into the agent's memory.
 
-Tested with Codex 0.162.1 (`codex --version` says `codex-cli 0.162.1`).
+Tested with Codex 0.163.0 (`codex --version` says `codex-cli 0.163.0`), whose session files Orrery reads to confirm
+what it records (see What's recorded).
 
 ## Install
 
@@ -64,7 +65,9 @@ To turn existing Codex chats into an agent, see the README's Importing chats.
    guard still work. Orrery starts that shell once, the way Codex will, names the file that most likely prints, and asks
    `Start Codex anyway?` (default no). See Troubleshooting.
 3. **Codex starts** in the folder, with `ORRERY_AGENT` and a one-time `ORRERY_AGENT_TOKEN` that the first Codex process
-   claims, so a Codex the agent starts from its own shell is not the agent. Its command line adds:
+   claims, so a Codex the agent starts from its own shell is not the agent. (A plain `codex` it starts is no agent's
+   session anyway; one given Orrery's flags, inside any agent's session, opens no memory and records nothing, and says
+   so.) Its command line adds:
    - Orrery's hooks for session start, each prompt, each turn's end, the session's end and every tool call, with the
      trust values Codex expects for them;
    - the `orrery` memory server (MCP);
@@ -82,6 +85,14 @@ The instructions travel on Codex's command line, so they show in `ps`, like ever
 
 - Your prompts, and the final reply of each turn. Tool calls, their output, the model's reasoning, and subagents'
   turns are not kept. Codex's own commands (`/compact`, `/model`) never reach the hooks.
+- Only what Codex's own record of the session confirms. Codex runs its hooks through a pipe, so any program could feed
+  Orrery's hook command a made-up prompt; the session's rollout (Codex's session file under `~/.codex/sessions`, found
+  by the session's id, never by what the hook says) is the proof. A session start counts only when this Codex holds
+  that rollout open; a prompt once the rollout has your message for that turn, with the same words, in a turn you
+  started (in the TUI or with `codex exec`); a reply once it is the turn's final message. What the rollout never
+  confirms (within 30 seconds of the turn's end) is dropped, and `orrery status` counts it: `N unconfirmed messages not
+  recorded`. A session start that can't be confirmed says so and records nothing: `Orrery: can't confirm this is this
+  Codex's own session (…), so it opens no memory and records nothing.`
 - The hooks only drop each event in a spool; a recorder in the background holds the agent for the session, records the
   spool into memory, runs the summaries, and leaves once the session has ended and the summaries are done (at most 10
   minutes). It is the same recorder Claude Code uses.
@@ -169,6 +180,19 @@ and put words in your mouth in its own memory. The cost: a shell command that on
 `grep -r codex-hook src/` or a `git commit -m` whose message names one. Run those yourself, or search with your
 editor. A name built at run time still gets through.
 
+The same goes for Orrery's commands that agents may not run (all but `help`, `--version`, `status`, `usage`, `browse`
+and `compactor`; README, Safety): a shell command that runs `orrery` with one of them is refused before it runs, and so
+is one that only names it (a `grep` for `orrery restore`, a commit message that mentions `orrery setup`, a patch sent
+through the shell whose lines name one). The CLI refuses them inside the session too. Codex's sandboxed shell runs in a
+process space of its own (on Linux), where Orrery can't see which agent's session it is: there `orrery` runs only
+`help` and the version, not even `status` or `browse`. The memory tools (`zoom`, `date`, `search`) are unaffected:
+Codex runs the MCP server outside the sandbox.
+
+Codex's rollouts are what Orrery checks prompts against, so no tool may change them, and neither may it change Claude
+Code's transcripts: `apply_patch` is refused anywhere under `~/.codex/sessions` and `~/.codex/archived_sessions` (or
+under `$CODEX_HOME`) and `~/.claude/projects`, and shell text that names one of those folders is refused, whatever the
+command. Since Codex reads files through its shell, an agent in Codex can't read them either.
+
 OpenCode's config and code are read-only to agents, as in every tool: no `apply_patch` writes `opencode.json` or
 `opencode.jsonc` in any folder, a `.opencode` folder, OpenCode's own config, cache and state folders, its database, or
 its system config. OpenCode loads plugins, runs commands and takes permissions from them, with no prompt, the next time
@@ -217,6 +241,15 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
   that would make it possible (see What happens at launch).
 - **A name built from a variable** (`f=.en; cat ${f}v`), read from a file, or printed by another program gets through
   the shell-text rules, as in every tool.
+- **Inside the sandbox, no detach is needed.** An agent that clears the session's markers in its sandboxed shell and
+  hides Orrery's name from the guard can run any `orrery` command there, and reads of other agents may work.
+- **Under full access, a rollout can be written.** Codex's workspace-write sandbox keeps the shell out of its session
+  files; with full access (`--dangerously-bypass-approvals-and-sandbox`, or `danger-full-access`) a program that
+  appends to a rollout can fake a turn Orrery then records.
+- **A process's decision that can't be saved** (which agent this Codex is): resuming inside Codex's own window can then
+  decide again in the same process.
+- **macOS is not yet verified.** There Orrery asks `lsof` which files Codex holds open; if that fails, the session
+  start says so and records nothing.
 
 ## Your own Codex settings still apply
 
@@ -240,6 +273,14 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
 - No status line and no memory: the session was a plain `codex`. Open the agent with `orrery agent <Name> --tool codex`.
 - "read-only": the agent is open elsewhere, in the tool the notice names. `orrery status` shows it.
 - "not recording yet", or "did not answer": read `holder.log` in the agent's data folder, under `claude/`.
+- "can't confirm this is this Codex's own session": Orrery could not find the session's rollout open in this Codex (the
+  reason follows in brackets), so the session is not recorded. Open the agent again with `orrery agent`.
+- "unconfirmed messages not recorded" in `orrery status`: prompts or replies the rollout never confirmed.
+- After updating Orrery, restart open Codex sessions. One started before the update records the old way, without the
+  rollout check, while its old recorder runs, and its prompts are dropped once a new recorder takes over; a compaction
+  doesn't change that, only `/clear` or a restart does.
+- `orrery status .` or `browse` refused in the agent's shell, "only help and the version run": that is Codex's
+  sandbox (see The guard). Run them in your own terminal.
 - Summaries failing: check `orrery login`; switch the source with `orrery compactor <Name>`.
 - Summaries waiting: the agent's summary model is an OpenCode model (`opencode/…`, chosen in OpenCode), which works only
   while the agent is open in OpenCode. Switch with `orrery compactor <Name>`.
@@ -252,6 +293,10 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
 - `<agent data>/claims/`: which process has claimed `ORRERY_AGENT_TOKEN`;
 - `<agent data>/status.json`, which `orrery status` reads;
 - `<agent data>/claude/codex-sessions.json`: which session each running Codex of the agent is on, for the resume line;
+- `<agent data>/claude/unconfirmed.json`: how many prompts and replies the rollout never confirmed (a count, no words);
+- `<data>/codex-processes/`: each Codex process's pick, so a session keeps the agent it started with;
+- `<data>/session-hosts/`: the Codex process of each open agent session, with its session id, so `orrery` knows a
+  command run inside it;
 - `codex-check.json` in Orrery's home: the last hook check.
 
 Orrery writes nothing to `~/.codex`. Codex keeps its usual files there: session files, its prompt history, logs.
@@ -263,11 +308,13 @@ Orrery writes nothing to `~/.codex`. Codex keeps its usual files there: session 
 - `test/codex/real-codex.test.ts` runs the installed Codex in scratch homes against a fake model: the trust values,
   hooks that load, guard refusals (shell, patch, code cells), compaction and resume, and `orrery agent … -- exec`. It
   skips when Codex is not installed; `ORRERY_TEST_CODEX` names another binary.
-- `scripts/codex-e2e.sh` is the real run: real Codex, the real model, about eight short sessions, so it costs usage. It
-  uses a temp agent in a temp Orrery home and your Codex login and config, in Codex's normal sandbox, and checks
-  recording, the view, resume, a memory tool call, guard refusals on a dummy protected file, and the view after a
-  compaction when Codex compacts. It checks that Codex's `config.toml` and `hooks.json` are unchanged, and lists the
-  Codex sessions it made with the `codex delete <id>` that removes each.
+- `scripts/codex-e2e.sh` is the real run: real Codex, the real model, about nine short sessions, so it costs usage.
+  Run it from your own terminal, not an agent's shell. It uses a temp agent in a temp Orrery home and your Codex login
+  and config, in Codex's normal sandbox, and checks recording, the view, resume, a memory tool call, guard refusals on a
+  dummy protected file, what the agent's own shell may not run (`orrery remote key`, `orrery agent set … --reads all`,
+  a browse of an agent it may not read), and the view after a compaction when Codex compacts. It checks that Codex's
+  `config.toml` and `hooks.json` are unchanged, and lists the Codex sessions it made with the `codex delete <id>` that
+  removes each.
 
 ## Limits
 

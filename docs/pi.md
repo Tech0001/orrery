@@ -153,8 +153,11 @@ project's rules.
 - `date`: find messages by date.
 - `search`: search the log.
 
-An agent with `reads = ["*"]` (or a list of agent names), like Birch, also gets `agents` and `agent_memory`. They list
-the other agents and read their memory. They are read-only.
+An agent allowed to read other agents, like Birch, also gets `agents` and `agent_memory`. They list the agents it may
+read and read their memory. They are read-only. New agents read nobody: allow more with the TUI's `C`, Reads, or
+`orrery agent set Birch --reads Atlas` (`all`, `none`), which is `reads = ["Atlas"]` (or `["*"]`) in the config. pi adds
+these tools once per run, when the first agent opens in it: a pi that first opened an agent with no reads gets them
+only after a restart.
 
 ## Imports and builds
 
@@ -163,8 +166,8 @@ list shows every chat and marks one written to in the last ten minutes "in use".
 chats are only read, never changed, and anything said in them afterwards is not in the agent. The memory builds in the
 background, and you can open the agent once it is done.
 
-From a shell, import an agent's Claude Code and Codex history. Preview first (the dry run prints progress lines),
-review the report, then commit. Claude Code deletes its
+From your own terminal (an agent's shell is refused imports, dry runs too), import an agent's Claude Code and Codex
+history. Preview first (the dry run prints progress lines), review the report, then commit. Claude Code deletes its
 session files after 30 days by default, so import early, or raise `cleanupPeriodDays` in `~/.claude/settings.json`.
 
 ```bash
@@ -289,6 +292,16 @@ still applies to it. Close the first one, or work in it.
   code) is refused, and so is an edit that adds such a line anywhere in it. bash text that names a skills folder is
   refused, whatever the command (`ls`, `cat`, `git add`): use `read`, `grep`, `find`, `write` and `edit`. `AGENTS.md`
   and `.claude/settings.json` stay writable.
+- `orrery` run from the agent's shell (its bash tool, or a `!cmd` you type) runs inside the agent's session: only
+  `help`, `--version`, `status`, `usage`, `browse` (no `--out`) and `compactor`, as the agent and for the agents it may
+  read. Everything else is refused, by the CLI and by the guard's text rule, which also refuses a bash command that only
+  names one (`grep "orrery restore"`, a commit message naming `orrery setup`); run it in another terminal or the TUI.
+  See the README's Safety.
+- A pi started from an agent's session (`pi -p` in its bash, in its folder or another agent's) opens no memory and
+  records nothing, and says so (`Orrery: started inside Atlas's session (pi), so this one opens no memory and records
+  nothing.`); its guard keeps that agent's rules, and in another agent's folder both agents' rules at once.
+- bash text that names Claude Code's or Codex's session records (`~/.claude/projects`, `~/.codex/sessions`) is refused,
+  and no tool writes there: Orrery checks those tools' prompts against them. `read` may read them.
 - The guard knows pi's built-in tools only. Tools added by other pi packages (for example context-mode's
   `ctx_execute`) are not checked.
 - A message does not wait for summaries longer than 60 seconds, and not at all while they are failing or stopped.

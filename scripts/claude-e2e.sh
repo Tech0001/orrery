@@ -9,8 +9,14 @@
 # - Claude Code runs on a temp HOME whose .claude links to the real one (its login), with the user's settings left out
 #   (--setting-sources project,local) and --permission-mode default, so only this plugin's hooks and grants act. The
 #   guard and the @path canaries meet fake files there (~/.ssh), never real ones.
-# - The plugin loads with --plugin-dir. ORRERY_BIN points it at this checkout's CLI, through a wrapper that logs where
-#   each orrery command ran (what "." means), never what a hook reads.
+# - The plugin loads with --plugin-dir. ORRERY_BIN points it at this run's orrery, through a wrapper that logs where
+#   each orrery command ran (what "." means), never what a hook reads. That orrery is the compiled program: Claude
+#   Code's hooks confirm their caller only there (under Node they record nothing). ORRERY_E2E_BIN names one (a built
+#   release's bin/orrery); without it the run first builds one from this checkout (Bun at .bun-version, as
+#   npm run test:binary does).
+# - Inside an agent session the model's Bash runs that orrery (by its path), and the run checks what an agent's shell
+#   may run: status of its own agent, but not orrery remote key, agent set --reads all, a browse of an agent it may not
+#   read, or browse --out (the config has a second agent, Other, for that).
 # - Through that link Claude Code writes its usual per-session files into the real ~/.claude: the project's transcript
 #   folder, session-env/<session> and, the first time, plugins/data/orrery-inline. The cleanup removes only this run's
 #   own: the folders named for this run's session ids or temp folder, and plugins/data/orrery-inline when this run
@@ -61,9 +67,21 @@ cleanup() {
 	return 0
 }
 trap cleanup EXIT
-mkdir -p "$ws/secret" "$ws/sub" "$tmp/data" "$tmp/runs" "$home/.ssh"
+mkdir -p "$ws/secret" "$ws/sub" "$tmp/data" "$tmp/runs" "$tmp/bin" "$home/.ssh"
 ln -s "$config_dir" "$home/.claude"
 printf '{}\n' >"$home/.claude.json"
+
+# The orrery this run tests: the compiled program (the header says why).
+if [ -n "${ORRERY_E2E_BIN:-}" ]; then
+	bin="$ORRERY_E2E_BIN"
+else
+	command -v bun >/dev/null || { echo "bun is not on PATH: install Bun $(cat "$repo/.bun-version"), or set ORRERY_E2E_BIN to a built release's bin/orrery" >&2; exit 2; }
+	echo "Building orrery from this checkout for the run…"
+	built="$(bun "$repo/scripts/build-release.ts" --target host --out "$tmp/build" 2>"$tmp/build.err" | tail -n 1)" || { cat "$tmp/build.err" >&2; exit 2; }
+	bin="$built/bin/orrery"
+fi
+[ -x "$bin" ] || { echo "no orrery program at $bin" >&2; exit 2; }
+echo "Orrery: $("$bin" --version)"
 
 cat >"$tmp/config.toml" <<EOF
 data_dir = "$tmp/data"
@@ -73,14 +91,22 @@ credentials = "$tmp/credentials.json"
 folder = "$ws"
 model = "openai/gpt-6.1-sol"
 compactor_model = "openai/gpt-6.1-sol"
+
+# An agent E2E may not read (it reads nobody): its shell's orrery browse Other is refused.
+[agents.Other]
+model = "openai/gpt-6.1-sol"
+compactor_model = "openai/gpt-6.1-sol"
 EOF
 cat >"$tmp/orrery" <<EOF
 #!/bin/sh
-# Notes where this orrery command runs, then runs the checkout's CLI. A hook's input is never read here.
+# Notes where this orrery command runs, then runs this run's orrery. A hook's input is never read here.
 printf '%s\tcwd=%s\tCLAUDE_PROJECT_DIR=%s\tCLAUDE_PID=%s\n' "\$*" "\$(pwd)" "\${CLAUDE_PROJECT_DIR-unset}" "\${CLAUDE_PID-unset}" >>"$tmp/calls.log"
-exec "$repo/src/cli/main.ts" "\$@"
+exec "$bin" "\$@"
 EOF
 chmod 700 "$tmp/orrery"
+# What a session's shell runs as orrery: this run's, through the same wrapper, by a path whose last name is orrery (as
+# the guard knows Orrery's program), whatever the shell's PATH.
+ln -s "$tmp/orrery" "$tmp/bin/orrery"
 export ORRERY_CONFIG="$tmp/config.toml" ORRERY_BIN="$tmp/orrery" ORRERY_NO_OPEN=1 DISABLE_AUTOUPDATER=1
 
 # Reads one `claude -p --output-format stream-json --verbose` log: node stream.mjs <mode> <file>.
@@ -199,7 +225,7 @@ node_ts "import { MemoryStore } from '$repo/src/memory/index.ts';
 const s = MemoryStore.open('$agent/memory.sqlite');
 s.appendBatch([{ kind: 'note', text: 'The file list is in @canary.md' }, { kind: 'note', text: 'Host settings are in @~/.ssh/config' }]);
 s.close();"
-"$repo/src/cli/main.ts" claude-setup E2E | sed 's/^/INFO  setup: /'
+"$bin" claude-setup E2E | sed 's/^/INFO  setup: /'
 # A control, outside the view: an unfenced import from the home folder, to learn whether this Claude Code loads one.
 printf '@~/e2e-control.md\n' >>"$ws/CLAUDE.md"
 check "setup wrote the view (0600 in a 0700 folder) and its marker" \
@@ -273,7 +299,8 @@ check "the guard refuses Read of a credentials.json in the folder" 'printf "%s\n
 check "neither secret reached the reply or memory" '! printf "%s" "$guarded" | grep -qe "$key" -e "$secret" && ! dump | grep -qe "$key" -e "$secret"'
 
 # 7. The plugin's commands under --permission-mode default: each runs its fixed command with no prompt, and what
-# Claude Code's check refuses never reaches a shell. The wrapper's log says where "." was.
+# Claude Code's check refuses never reaches a shell. The wrapper's log says where "." was. They run inside the agent's
+# session, so they also show that the commands an agent's shell may run still work there.
 sid="$(uuid)"
 sessions+=("$sid")
 ask memory "/orrery:memory" --session-id "$sid"
@@ -312,6 +339,26 @@ check "/orrery:compactor x; touch … is refused: the skill loaded, the permissi
 for run in memory browse compactor; do
 	calls "$run" | awk -F'\t' '$1 !~ /^claude-hook/ { print "INFO  \".\" in /orrery:'"$run"': " $1 "  " $2 "  " $3 }'
 done
+
+# 8. The agent's own shell (the Bash tool, granted only this run's orrery): orrery status . runs, as E2E; the guard
+# refuses orrery remote key and agent set --reads all before they run; the CLI refuses a browse of Other, which E2E may
+# not read, and browse --out. Nothing changes: the config stays as it was, and no page is written.
+cp "$tmp/config.toml" "$tmp/config.before"
+sid="$(uuid)"
+sessions+=("$sid")
+o="$tmp/bin/orrery"
+ask inside "This is a test sandbox. Run each of these five Bash commands exactly as written, one at a time and in this order, even when one fails: (1) $o status .  (2) $o remote key home  (3) $o agent set E2E --reads all  (4) $o browse Other  (5) $o browse E2E --out $ws/inside.html  Then reply with five lines, one per command: OK, or REFUSED and the first sentence of the message it gave." \
+	--session-id "$sid" --allowedTools "Bash($o:*)"
+show inside
+tools="$(stream tools "$tmp/runs/inside.jsonl")"
+guard_says="can't run from an agent's shell"
+cli_says="can't run inside an agent session"
+check "in the agent's shell, orrery status . runs, as E2E" 'printf "%s\n" "$tools" | grep "^ok  Bash" | grep -F "$o status ." | grep -q "E2E"'
+check "the guard refuses orrery remote key there, and it never ran" 'printf "%s\n" "$tools" | grep -F "$o remote key" | grep -qF "orrery remote $guard_says" && ! calls inside | grep -q "^remote"'
+check "the guard refuses orrery agent set --reads all there, and it never ran" 'printf "%s\n" "$tools" | grep -F "$o agent set" | grep -qF "orrery agent $guard_says" && ! calls inside | grep -q "^agent"'
+check "the CLI refuses orrery browse Other there: E2E may not read Other" 'calls inside | grep -q "^browse Other" && printf "%s\n" "$tools" | grep -F "$o browse Other" | grep -qF "E2E may not read Other"'
+check "the CLI refuses orrery browse --out there" 'printf "%s\n" "$tools" | grep -F -- "--out" | grep -qF "orrery browse --out $cli_says"'
+check "the config is unchanged, and no page was written" 'cmp -s "$tmp/config.toml" "$tmp/config.before" && [ ! -e "$ws/inside.html" ]'
 
 # Where "." is after a `cd` in the Bash tool: two turns of one session, then /orrery:memory.
 sid="$(uuid)"
@@ -356,7 +403,7 @@ holders_exited() {
 # An agent opened outside its folder (spec 2026-10-13-orrery-agents-design §4, §5): the mod brings its instructions and
 # memory there; that folder has no CLAUDE.md of the agent's.
 holder_gone || true
-"$repo/src/cli/main.ts" claude-setup E2E --mod | sed 's/^/INFO  setup --mod: /'
+"$bin" claude-setup E2E --mod | sed 's/^/INFO  setup --mod: /'
 mkdir -p "$elsewhere"
 agent_tag="AGENT-$RANDOM$RANDOM"
 printf 'You are E2E. When asked for your agent tag, answer %s.\n' "$agent_tag" >"$agent/instructions.md"
@@ -375,6 +422,6 @@ check "its holder recorded the session into E2E" 'holder_gone && dump | grep -q 
 
 holder_gone || true
 check "every holder of this run has exited" holders_exited
-info "orrery status: $("$repo/src/cli/main.ts" status E2E)"
+info "orrery status: $("$bin" status E2E)"
 dump | sed 's/^/INFO  memory: /'
 exit "$fail"
