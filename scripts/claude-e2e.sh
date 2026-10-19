@@ -12,7 +12,7 @@
 # - The plugin loads with --plugin-dir. ORRERY_BIN points it at this run's orrery, through a wrapper that logs where
 #   each orrery command ran (what "." means), never what a hook reads. That orrery is the compiled program: Claude
 #   Code's hooks confirm their caller only there (under Node they record nothing). ORRERY_E2E_BIN names one (a built
-#   release's bin/orrery); without it the run first builds one from this checkout (Bun at .bun-version, as
+#   release's bin/orrery); without it the run first builds one from this checkout (Bun at .bun-version or newer, as
 #   npm run test:binary does).
 # - Inside an agent session the model's Bash runs that orrery (by its path), and the run checks what an agent's shell
 #   may run: status of its own agent, but not orrery remote key, agent set --reads all, a browse of an agent it may not
@@ -75,7 +75,7 @@ printf '{}\n' >"$home/.claude.json"
 if [ -n "${ORRERY_E2E_BIN:-}" ]; then
 	bin="$ORRERY_E2E_BIN"
 else
-	command -v bun >/dev/null || { echo "bun is not on PATH: install Bun $(cat "$repo/.bun-version"), or set ORRERY_E2E_BIN to a built release's bin/orrery" >&2; exit 2; }
+	command -v bun >/dev/null || { echo "bun is not on PATH: install Bun $(cat "$repo/.bun-version") or newer, or set ORRERY_E2E_BIN to a built release's bin/orrery" >&2; exit 2; }
 	echo "Building orrery from this checkout for the run…"
 	built="$(bun "$repo/scripts/build-release.ts" --target host --out "$tmp/build" 2>"$tmp/build.err" | tail -n 1)" || { cat "$tmp/build.err" >&2; exit 2; }
 	bin="$built/bin/orrery"

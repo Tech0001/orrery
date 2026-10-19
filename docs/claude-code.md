@@ -485,7 +485,7 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
   works on a temp agent with made-up content, runs Claude Code on a temp `HOME` whose `.claude` links to yours (for
   the login), leaves out your settings (`--setting-sources project,local`) and loads the plugin with `--plugin-dir`.
   The hooks run the compiled program: `ORRERY_E2E_BIN` names one (a built release's `bin/orrery`), else the run builds
-  one from the checkout first, with the Bun of `.bun-version`. If the plugin is installed, it stops: uninstall it for
+  one from the checkout first, with the Bun of `.bun-version` or newer. If the plugin is installed, it stops: uninstall it for
   the run. Besides recording, the view, the memory tools, the guard and the plugin's commands, it checks the agent's
   own shell: `orrery status .` runs there, while `orrery remote key`, `orrery agent set … --reads all`, a browse of an
   agent it may not read and `browse --out` are refused, and nothing changes. Each check prints `PASS` or `FAIL`, and

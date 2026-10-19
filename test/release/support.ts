@@ -3,20 +3,21 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writ
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bunFits } from "../../scripts/build-release.ts";
 
 export const REPO = fileURLToPath(new URL("../..", import.meta.url));
 export const PINNED_BUN = readFileSync(join(REPO, ".bun-version"), "utf8").trim();
 
-/** bun on PATH at the pinned version: the release tests build with it and skip without it. */
+/** bun on PATH at the pinned version or a newer one: the release tests build with it and skip without it. */
 export const bunReady: boolean = (() => {
 	const r = spawnSync("bun", ["--version"], { encoding: "utf8" });
-	return r.status === 0 && r.stdout.trim() === PINNED_BUN;
+	return r.status === 0 && bunFits(r.stdout.trim(), false, PINNED_BUN);
 })();
 
-/** With ORRERY_REQUIRE_BUN=1 (CI), a missing or wrong Bun is an error, not a quiet skip. */
+/** With ORRERY_REQUIRE_BUN=1 (CI), a missing or too old Bun is an error, not a quiet skip. */
 export function assertBunWhenRequired(env: NodeJS.ProcessEnv, ready: boolean, pinned: string): void {
 	if (env.ORRERY_REQUIRE_BUN === "1" && !ready) {
-		throw new Error(`ORRERY_REQUIRE_BUN is set, but bun ${pinned} (the version in .bun-version) is not on PATH`);
+		throw new Error(`ORRERY_REQUIRE_BUN is set, but bun ${pinned} (the version in .bun-version) or newer is not on PATH`);
 	}
 }
 assertBunWhenRequired(process.env, bunReady, PINNED_BUN);
