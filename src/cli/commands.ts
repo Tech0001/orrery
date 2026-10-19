@@ -1,16 +1,17 @@
 /** Non-interactive and setup commands of agent. */
 
-import { chmodSync, writeFileSync } from "node:fs";
+import { renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { Models } from "@earendil-works/pi-ai";
 import { acceptHostKey, scanHostKey } from "@earendil-works/pi-env";
+import { readUnconfirmed } from "../claude/transcript.ts";
 import { checkClaudeFiles, claudeProjectDir, claudeSessionFiles } from "../import/claude.ts";
 import { checkCodexFiles, findCodexSessions } from "../import/codex.ts";
 import { dryRun } from "../import/dry-run.ts";
 import { commitPreview, readPreview } from "../import/preview.ts";
-import { findAgent, type HarnessConfig, parseModelChoice } from "../agent/config.ts";
+import { type AgentConfig, findAgent, type HarnessConfig, parseModelChoice } from "../agent/config.ts";
 import { FileCredentialStore } from "../agent/credentials.ts";
 import { sshTarget } from "../agent/env.ts";
 import { writeBuild } from "../agent/build.ts";
@@ -26,24 +27,42 @@ import { attachRemoteStore, withBriefCheckOut } from "../remote/checkout.ts";
 import { clean } from "./printer.ts";
 import { formatUsage } from "./run.ts";
 
-/** `orrery status [<Name>] [--json]`: one line per agent (or the named one): state, tool, memory, summaries. */
-export function statusCommand(config: HarnessConfig, only?: string, options: { json?: boolean } = {}): string {
+/** What status and usage list, inside an agent's session: the agents it may read (src/cli/gate.ts readableBy). */
+type Readable = (agent: AgentConfig) => boolean;
+
+/** `config` with only the agents `readable` takes (all without it), so nothing of the others is even read. */
+function readableOnly(config: HarnessConfig, readable: Readable | undefined): HarnessConfig {
+	return readable === undefined ? config : { ...config, agents: new Map([...config.agents].filter(([, agent]) => readable(agent))) };
+}
+
+/**
+ * `orrery status [<Name>] [--json]`: one line per agent (or the named one): state, tool, memory, summaries, and the
+ * messages that Claude Code's transcript or Codex's rollout never confirmed, which were not recorded
+ * (src/claude/transcript.ts, src/codex/rollout.ts), once there are any.
+ */
+export function statusCommand(config: HarnessConfig, only?: string, options: { json?: boolean; readable?: Readable } = {}): string {
 	const name = only === undefined ? undefined : findAgent(config, only).name;
-	const rows = agentOverview(config).filter((row) => name === undefined || row.name === name);
+	const rows = agentOverview(readableOnly(config, options.readable))
+		.filter((row) => name === undefined || row.name === name)
+		.map((row) => {
+			const unconfirmed = readUnconfirmed(config.agents.get(row.name)?.dir ?? row.dataDir);
+			return unconfirmed > 0 ? { ...row, unconfirmedMessages: unconfirmed } : row;
+		});
 	if (options.json === true) return `${JSON.stringify({ agents: rows }, null, 2)}\n`;
 	const toolWidth = Math.max(11, ...rows.map((row) => TOOL_LABELS[row.tool].length + (row.launcher === "ori" ? 6 : 0)));
 	let out = "";
 	for (const row of rows) {
 		const memory = row.unreadable !== undefined ? `unreadable: ${row.unreadable}` : row.hasMemory ? `${row.messages} messages, view ${Math.round(row.viewBytes / 1000)}/${Math.round(row.viewBudget / 1000)} KB` : "no memory yet";
-		out += `${row.name.padEnd(12)} ${row.state.padEnd(9)} ${`${TOOL_LABELS[row.tool]}${row.launcher === "ori" ? " · Ori" : ""}`.padEnd(toolWidth)} ${memory}  summaries ${summaryText(row)} · ${row.summaryModel.ref} ${row.summaryModel.thinking}\n`;
+		const unconfirmed = "unconfirmedMessages" in row ? ` · ${row.unconfirmedMessages} unconfirmed ${row.unconfirmedMessages === 1 ? "message" : "messages"} not recorded` : "";
+		out += `${row.name.padEnd(12)} ${row.state.padEnd(9)} ${`${TOOL_LABELS[row.tool]}${row.launcher === "ori" ? " · Ori" : ""}`.padEnd(toolWidth)} ${memory}  summaries ${summaryText(row)} · ${row.summaryModel.ref} ${row.summaryModel.thinking}${unconfirmed}\n`;
 	}
 	// status.json carries provider and model error text: never pass its control sequences to the terminal.
 	return clean(out) || "No agents configured.\n";
 }
 
-export function usageCommand(config: HarnessConfig, agentName: string | undefined, days: number, options: { json?: boolean } = {}): string {
+export function usageCommand(config: HarnessConfig, agentName: string | undefined, days: number, options: { json?: boolean; readable?: Readable } = {}): string {
 	const only = agentName === undefined ? undefined : findAgent(config, agentName).name;
-	const usage = agentUsage(config, days, only);
+	const usage = agentUsage(readableOnly(config, options.readable), days, only);
 	if (options.json === true) return `${JSON.stringify({ days, agents: usage }, null, 2)}\n`;
 	return usage.map((agent) => `== ${agent.name}\n${formatUsage([...agent.rows])}`).join("") || "No usage recorded.\n";
 }
@@ -205,8 +224,16 @@ export function browseCommand(config: HarnessConfig, agentName: string, out?: st
 	try {
 		const html = renderMemoryHtml(new MemoryView(store, agent.memory.viewBytes), agent.name);
 		const path = out ?? join(process.cwd(), `${agent.name}-memory.html`);
-		writeFileSync(path, html, { mode: 0o600 });
-		chmodSync(path, 0o600);
+		// A new file renamed into place: a link (soft or hard) already at `path` is replaced, never written through, so the
+		// page can't land in the config or a memory file it points at.
+		const temporary = join(dirname(path), `.${basename(path)}.${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
+		writeFileSync(temporary, html, { mode: 0o600, flag: "wx" });
+		try {
+			renameSync(temporary, path);
+		} catch (error) {
+			rmSync(temporary, { force: true });
+			throw error;
+		}
 		return path;
 	} finally {
 		store.close();
@@ -225,13 +252,15 @@ export async function compactorCliCommand(
 	config: HarnessConfig,
 	agentName: string,
 	args: readonly string[],
-	options: { sources?: SummarySources; waitMs?: number; prefix?: string } = {},
+	options: { sources?: SummarySources; waitMs?: number; prefix?: string; interactive?: boolean } = {},
 ): Promise<string> {
 	const agent = findAgent(config, agentName);
 	const sources = options.sources ?? (await openSummarySources(config, agent));
 	const exists = (provider: string, modelId: string) => sources.models.getModel(provider, modelId) !== undefined;
 	const target = agentCompactorTarget(config, agent.name, { ...(options.waitMs === undefined ? {} : { waitMs: options.waitMs }), exists });
-	const signin = process.stdin.isTTY ? async (name: string) => {
+	// A sign-in's flow needs a terminal, and never starts inside an agent's session (`interactive` false): there the
+	// existing logins, keys and local endpoints are all it chooses among.
+	const signin = options.interactive !== false && process.stdin.isTTY ? async (name: string) => {
 		const { loginCommand } = await import("./logins.ts");
 		process.stdout.write(await loginCommand(config, { signin: name }));
 	} : undefined;

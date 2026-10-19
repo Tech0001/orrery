@@ -2,6 +2,7 @@ import { PassThrough } from "node:stream";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { parseConfig } from "../../src/agent/config.ts";
 import { type ReaderTool, memoryTools, readerTools, withAgentView } from "../../src/agent/memory-tools.ts";
 import { agentTools, runMcp } from "../../src/claude/mcp.ts";
 import { readerTools as piReaderTools } from "../../src/pi/tools.ts";
@@ -154,5 +155,21 @@ describe("remote memory tools", () => {
 		failingInput.end(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "zoom", arguments: { id: 0, n: 1 } } })}\n`);
 		await failed;
 		expect(JSON.parse(errorText).result).toMatchObject({ isError: true, content: [{ type: "text", text: expect.stringContaining("isn't on this machine") }] });
+	});
+});
+
+describe("the agents tool and reads", () => {
+	it("lists only the agent itself and the agents it may read", () => {
+		const { root } = world();
+		const toml = (reads: string) => `data_dir = ${JSON.stringify(join(root, "data"))}\n${["Atlas", "Birch", "Cedar"].map((name) => `[agents.${name}]\ncompactor_model = "a/b"\n${name === "Atlas" ? reads : ""}`).join("")}`;
+		const some = parseConfig(toml('reads = ["Birch"]\n'), root);
+		const listed = run(readerTools(() => some.agents.get("Atlas")!, some), "agents") as string;
+		expect(listed).toMatch(/^Atlas: /m);
+		expect(listed).toMatch(/^Birch: /m);
+		expect(listed).not.toContain("Cedar");
+		const all = parseConfig(toml('reads = ["*"]\n'), root);
+		expect((run(readerTools(() => all.agents.get("Atlas")!, all), "agents") as string).split("\n").map((line) => line.split(":")[0])).toEqual(["Atlas", "Birch", "Cedar"]);
+		const none = parseConfig(toml(""), root);
+		expect(run(readerTools(() => none.agents.get("Atlas")!, none), "agents")).toMatch(/^Atlas: no memory yet$/);
 	});
 });

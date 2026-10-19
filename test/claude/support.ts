@@ -1,6 +1,7 @@
 /** Shared pieces of the Claude Code adapter's tests. Everything lives in temp folders, never ~/.orrery. */
 
-import { execFileSync, type SpawnSyncReturns, spawnSync } from "node:child_process";
+import { execFileSync, type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll } from "vitest";
@@ -10,6 +11,7 @@ import { VIEW_IMPORT, writeSetupMarker } from "../../src/claude/view-file.ts";
 import { type HarnessConfig, type AgentConfig, parseConfig } from "../../src/agent/config.ts";
 import { type Kind, MemoryStore } from "../../src/memory/index.ts";
 import { agentConfigToml, tempDir } from "../agent/support.ts";
+import { line, transcriptIn } from "./transcript-lines.ts";
 
 /** The CLI entry point, run by process tests as `node MAIN …`. */
 export const MAIN = new URL("../../src/cli/main.ts", import.meta.url).pathname;
@@ -38,16 +40,19 @@ export interface TestAgent {
 }
 
 /**
- * Agent "Test": folder, data folder and config file in one temp folder. Its summary model (faux-compactor) is
- * unknown to orrery's real registry, so a holder process runs with summaries off. `setup` does what claude-setup does:
- * a CLAUDE.md that imports the view, and the marker in the agent's data folder.
+ * Agent "Test": folder, data folder and config file in one temp folder, the config in the data folder as ~/.orrery
+ * keeps it (from inside an agent's session the CLI takes only the config that holds the session's memory:
+ * src/cli/gate.ts). Its summary model (faux-compactor) is unknown to orrery's real registry, so a holder process runs
+ * with summaries off. `setup` does what claude-setup does: a CLAUDE.md that imports the view, and the marker in the
+ * agent's data folder.
  */
 export function testAgent(options: { setup?: boolean } = {}): TestAgent {
 	const dir = tempDir("orrery-claude-");
 	dirs.push(dir);
 	const folder = join(dir, "ws");
 	mkdirSync(folder);
-	const configPath = join(dir, "config.toml");
+	mkdirSync(join(dir, "data"));
+	const configPath = join(dir, "data", "config.toml");
 	writeFileSync(configPath, agentConfigToml({ dataDir: join(dir, "data"), folder }));
 	const config = parseConfig(readFileSync(configPath, "utf8"), dir);
 	const agent = config.agents.get("Test") as AgentConfig & { readonly folder: string };
@@ -90,16 +95,46 @@ export function messages(agent: AgentConfig): string[] {
 	}
 }
 
-type Spooled = { kind: "prompt" | "reply"; text: string } | { kind: "command" } | { kind: "end"; reason?: string } | { kind: "compactor"; args: string };
+type Spooled =
+	| { kind: "prompt"; text: string; promptId?: string; host?: "codex"; turnId?: string }
+	| { kind: "reply"; text: string; host?: "codex"; turnId?: string }
+	| { kind: "command" }
+	| { kind: "end"; reason?: string }
+	| { kind: "compactor"; args: string }
+	| { kind: "transcript"; path: string; projects: string; offset: number }
+	| { kind: "rollout"; path: string; home: string; offset: number; file?: string };
 let clock = 0;
 
 /**
  * Spools an event as a hook would, a millisecond after the previous one so events sort as spooled. An explicit `at`
  * (an event from the past or the future) leaves that clock alone.
+ *
+ * A prompt given with neither a promptId nor a host is spooled as Claude Code's hook spools it, so a holder records it:
+ * with a fresh promptId, and the line Claude Code writes into the session's transcript, whose place is spooled first,
+ * once per session (src/claude/transcript.ts). Give a promptId (or host "codex") to spool exactly what is given.
  */
 export function spool(agent: AgentConfig, session: string, event: Spooled, claudePid: number, at?: number): string {
+	if (event.kind === "prompt" && event.promptId === undefined && event.host === undefined) return claudePrompt(agent, session, event.text, claudePid, at);
 	if (at === undefined) clock = Math.max(clock + 1, Date.now());
 	return spoolEvent(agent.dir, session, { ...event, at: at ?? clock, claudePid } as SpoolEvent);
+}
+
+/** Where this test file's Claude Code prompts are written, as their transcripts (spool): made when first needed. */
+let transcriptsRoot: string | undefined;
+/** The sessions whose transcript's place was spooled, by agent folder and session. */
+const begun = new Set<string>();
+
+/** A Claude Code prompt as its hook spools it, and its line in the transcript, which the holder confirms it by. */
+function claudePrompt(agent: AgentConfig, session: string, text: string, claudePid: number, at?: number): string {
+	transcriptsRoot ??= tempDir("orrery-transcripts-");
+	const transcript = transcriptIn(join(transcriptsRoot, createHash("sha256").update(agent.dir).digest("hex").slice(0, 16)));
+	if (!begun.has(`${agent.dir}\0${session}`)) {
+		begun.add(`${agent.dir}\0${session}`);
+		spool(agent, session, { kind: "transcript", path: transcript.path(session), projects: transcript.projects, offset: 0 }, claudePid, at === undefined ? undefined : at - 1);
+	}
+	const promptId = randomUUID();
+	transcript.add(session, line.typed(promptId, text));
+	return spool(agent, session, { kind: "prompt", text, promptId }, claudePid, at);
 }
 
 /** Polls `check` (a throw counts as "not yet") until it holds, or fails after `ms`. */
@@ -131,6 +166,8 @@ function scratchHome(): string {
 afterAll(() => {
 	if (childHome !== undefined) rmSync(childHome, { recursive: true, force: true });
 	childHome = undefined;
+	if (transcriptsRoot !== undefined) rmSync(transcriptsRoot, { recursive: true, force: true });
+	transcriptsRoot = undefined;
 });
 
 /**
@@ -152,6 +189,64 @@ export function hookCli(event: string, input: object, env: Record<string, string
 		encoding: "utf8",
 		timeout: 20_000,
 	});
+}
+
+/** A stand-in for a Claude Code process, alive until killed, that runs hooks as its own children. */
+export interface FakeClaude {
+	readonly pid: number;
+	/**
+	 * `orrery claude-hook <event>` as Claude Code runs it: its child, with CLAUDE_PID its pid (unless `env` names one), the
+	 * input on stdin (a socket pair whose peer is this stand-in, as Claude Code's is).
+	 */
+	hook(event: string, input: object, env: Record<string, string>): Promise<{ readonly status: number | null; readonly stdout: string; readonly stderr: string }>;
+	kill(): void;
+}
+
+const FAKE_CLAUDE = `
+const { spawnSync } = require("node:child_process");
+let buffer = "";
+process.stdin.setEncoding("utf8").on("data", (chunk) => {
+	buffer += chunk;
+	for (let at = buffer.indexOf("\\n"); at >= 0; at = buffer.indexOf("\\n")) {
+		const { id, cmd, args, env, input } = JSON.parse(buffer.slice(0, at));
+		buffer = buffer.slice(at + 1);
+		const run = spawnSync(cmd, args, { env, input, encoding: "utf8", timeout: 20000 });
+		process.stdout.write(JSON.stringify({ id, status: run.status, stdout: run.stdout, stderr: run.stderr }) + "\\n");
+	}
+});
+`;
+
+/**
+ * A stand-in for a Claude Code process: hooks are its children, as Claude Code's are, so their parent and their
+ * CLAUDE_PID are its pid (src/claude/pick.ts claudeHookPid checks that). Kill it when done.
+ */
+export function fakeClaude(): FakeClaude {
+	const child = spawn(process.execPath, ["-e", FAKE_CLAUDE], { env: cleanEnv({}), stdio: ["pipe", "pipe", "ignore"] });
+	const pid = child.pid as number;
+	const waiting = new Map<number, (answer: { status: number | null; stdout: string; stderr: string }) => void>();
+	let next = 0;
+	let buffer = "";
+	child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+		buffer += chunk;
+		for (let at = buffer.indexOf("\n"); at >= 0; at = buffer.indexOf("\n")) {
+			const answer = JSON.parse(buffer.slice(0, at)) as { id: number; status: number | null; stdout: string; stderr: string };
+			buffer = buffer.slice(at + 1);
+			waiting.get(answer.id)?.(answer);
+			waiting.delete(answer.id);
+		}
+	});
+	return {
+		pid,
+		hook: (event, input, env) =>
+			new Promise((resolve) => {
+				const id = next++;
+				waiting.set(id, resolve);
+				const c = cliCommand(["claude-hook", event]);
+				// CLAUDE_PID is its own pid unless `env` names another (the shell of another Claude Code, forging a hook call).
+				child.stdin.write(`${JSON.stringify({ id, cmd: c.cmd, args: c.args, env: cleanEnv({ CLAUDE_PID: String(pid), ...env }), input: JSON.stringify(input) })}\n`);
+			}),
+		kill: () => child.kill(),
+	};
 }
 
 /**

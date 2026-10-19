@@ -885,3 +885,53 @@ it.each(["No", "Yes"])("N asks about Ori only when found, defaulting to No (%s)"
 	await app.idle();
 	expect(parseConfig(deps.edits.at(-1)!, "/d").agents.get("Atlas")?.launcher).toBe(choice === "Yes" ? "ori" : "direct");
 });
+
+it("C sets who the agent reads from a checklist, and shows it in the settings list", async () => {
+	const deps = fakeDeps();
+	const app = makeApp(deps, [agentsPage]);
+	keys(app, "C");
+	await answer(app, "change which setting?", ...typed("Reads"), ENTER);
+	expect(screen(app)).toContain("Alpha may read which agents?");
+	await answer(app, "may read which agents", DOWN, " ", ENTER);
+	await app.idle();
+	expect(deps.edits.at(-1)).toContain('reads = ["Cedarn"]');
+});
+
+it.each([[[], "Reads: none"], [["*"], "Reads: all agents"], [["Cedarn"], "Reads: Cedarn"]])("the C settings list shows reads %j as %s", async (reads, shown) => {
+	const app = makeApp(fakeDeps({}, [row({ name: "Alpha", reads }), row({ name: "Cedarn" })]), [agentsPage]);
+	keys(app, "C");
+	await settle();
+	expect(screen(app)).toContain(shown);
+});
+
+it("C Reads: the all row writes [\"*\"], and Esc changes nothing", async () => {
+	const deps = fakeDeps();
+	const app = makeApp(deps, [agentsPage]);
+	keys(app, "C");
+	await answer(app, "change which setting?", ...typed("Reads"), ENTER);
+	await answer(app, "may read which agents", " ", ENTER);
+	await app.idle();
+	expect(deps.edits.at(-1)).toContain('reads = ["*"]');
+	const count = deps.edits.length;
+	keys(app, "C");
+	await answer(app, "change which setting?", ...typed("Reads"), ENTER);
+	await answer(app, "may read which agents", "\x1b");
+	await app.idle();
+	expect(deps.edits).toHaveLength(count);
+});
+
+it("the agent page shows who reads the agent, and which agents read all", () => {
+	const text = `data_dir = "/d"\n${["Alpha", "Birch", "Cedar", "Dune"].map((n) => `[agents.${n}]\ncompactor_model = "a/b"\n${n === "Birch" ? 'reads = ["Alpha"]\n' : n === "Dune" ? 'reads = ["*"]\n' : ""}`).join("")}`;
+	const config = parseConfig(text, "/d");
+	const app = makeApp(fakeDeps({ loadConfig: () => config }, [row({ name: "Alpha" })]), [agentsPage]);
+	keys(app, "i");
+	expect(screen(app)).toContain("Read by           Birch (and every agent that reads all: Dune)");
+});
+
+it("Read by names only the all-readers when no agent lists this one by name", () => {
+	const text = `data_dir = "/d"\n${["Alpha", "Dune"].map((n) => `[agents.${n}]\ncompactor_model = "a/b"\n${n === "Dune" ? 'reads = ["*"]\n' : ""}`).join("")}`;
+	const config = parseConfig(text, "/d");
+	const app = makeApp(fakeDeps({ loadConfig: () => config }, [row({ name: "Alpha" })]), [agentsPage]);
+	keys(app, "i");
+	expect(screen(app)).toContain("Read by           every agent that reads all: Dune");
+});

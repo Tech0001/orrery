@@ -685,7 +685,8 @@ describe("Claude Code: only the agent that owns a folder's memory view reads it"
 	}
 	/** A Claude Code session in `projectDir`: its SessionStart, and the PreToolUse answer to one tool call. */
 	const session = (config: HarnessConfig, home: string, projectDir: string, env: NodeJS.ProcessEnv = {}) => {
-		const c: HookContext = { config, env: { CLAUDE_PROJECT_DIR: projectDir, ...env }, claudePid: process.pid, startHolder: () => {}, home };
+		// Its SessionStart comes from its Claude Code (this process), on stdin's other end (src/claude/peer.ts).
+		const c: HookContext = { config, env: { CLAUDE_PROJECT_DIR: projectDir, ...env }, claudePid: process.pid, peer: () => process.pid, startHolder: () => {}, home };
 		return {
 			start: () => runHook("session-start", JSON.stringify({ session_id: "s1", cwd: projectDir }), c),
 			tool: async (tool_name: string, tool_input: object) => {

@@ -103,6 +103,12 @@ export interface HarnessConfig {
 	 * writes them (protectEntries): a path ("/…" or "~/…", "~" read by each guard) or a name (no "/").
 	 */
 	readonly guard: { readonly protect: readonly string[] };
+	/**
+	 * The file loadConfig read it from, an absolute path (links kept, so a relative data_dir reads as it did); none for a
+	 * config parsed from text. A session's host records it (src/agent/sessions.ts), and the CLI takes that file, and no
+	 * other, for a command run inside the session (src/cli/gate.ts).
+	 */
+	readonly file?: string;
 }
 
 type Table = Record<string, unknown>;
@@ -575,7 +581,24 @@ export function loadConfig(file: string = defaultConfigPath()): HarnessConfig {
 		}
 		throw error;
 	}
-	return parseConfig(text, dirname(resolve(file)));
+	return { ...parseConfig(text, dirname(resolve(file))), file: resolve(file) };
+}
+
+/**
+ * Whether `reader` may read `agent`'s memory: itself always, else what its `reads` names (or "*", every agent). The
+ * memory tools (src/agent/memory-tools.ts) and the CLI inside a session (src/cli/gate.ts) both ask here.
+ */
+export function mayRead(reader: AgentConfig, agent: AgentConfig): boolean {
+	return reader.reads.includes("*") || reader.reads.includes(agent.name) || agent.name === reader.name;
+}
+
+/** Who reads `name`'s memory: the agents listing it by name, and (apart) the agents that read every agent. */
+export function readBy(config: HarnessConfig, name: string): { readonly names: readonly string[]; readonly everyone: readonly string[] } {
+	const others = [...config.agents.values()].filter((agent) => agent.name !== name);
+	return {
+		names: others.filter((agent) => agent.reads.includes(name) && !agent.reads.includes("*")).map((agent) => agent.name),
+		everyone: others.filter((agent) => agent.reads.includes("*")).map((agent) => agent.name),
+	};
 }
 
 /** Finds an agent by name, ignoring case; an exact match wins. Throws ConfigError listing the agents otherwise. */

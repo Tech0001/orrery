@@ -36,13 +36,13 @@ const GROUPS: readonly Group[] = [
 				"open the agent here: its tool starts in this folder with its instructions and memory (--tool: another tool this time; --yes: answers its questions yes; what follows -- goes to the tool). Codex gets Orrery's hooks, memory tools and instructions on its command line, after a check that the hooks load in that Codex; OpenCode gets Orrery's plugin for this launch (opencode --standalone, nothing written to OpenCode's config), after a check that it loads in that OpenCode; only a person at a terminal can start either without them",
 			],
 			[
-				"agent add <Name> --folder DIR --tool pi|omp|claude-code|codex|opencode --summary provider/id [--thinking L]",
-				"add an agent to the config (the TUI's N); --thinking is the summary model's thinking level (default low)",
+				"agent add <Name> --folder DIR --tool pi|omp|claude-code|codex|opencode --summary provider/id [--thinking L] [--reads all|none|A,B]",
+				"add an agent to the config (the TUI's N); --thinking is the summary model's thinking level (default low); --reads: the other agents it may read through the memory tools (default none)",
 			],
 			["agent edit <Name>", "open the agent's instructions in $EDITOR (else nano, else vi); needs a terminal"],
 			[
-				"agent set <Name> [--tool T] [--folder DIR] [--view-kb N] [--summary-kb N] [--jobs N] [--compact-at TOKENS]",
-				"change an agent's settings in the config, keeping its comments; they apply when it next opens (--view-kb: the memory view's size; --summary-kb: the most one summary call reads; --jobs: summary calls at once; --compact-at: where Claude Code compacts)",
+				"agent set <Name> [--tool T] [--folder DIR] [--view-kb N] [--summary-kb N] [--jobs N] [--compact-at TOKENS] [--reads all|none|A,B]",
+				"change an agent's settings in the config, keeping its comments; they apply when it next opens (--view-kb: the memory view's size; --summary-kb: the most one summary call reads; --jobs: summary calls at once; --compact-at: where Claude Code compacts; --reads: the other agents it may read, all, none or a comma list; an agent always reads itself)",
 			],
 			["agent set <Name> launcher direct|ori | ori_model <id>", "launch it through Ori or not, and Ori's model; an empty value clears it (also --launcher, --ori-model)"],
 			[
@@ -182,9 +182,13 @@ const FOOTER: readonly Line[] = [
 /** The commands that take "." for this session's agent (main's agentArg). */
 const DOT_COMMANDS = ["status", "usage", "browse", "compactor", "claude-setup"];
 
-const DOT_NOTE = `An agent named "." (${DOT_COMMANDS.join(", ")}) is this session's agent: ORRERY_AGENT, else the agent whose folder holds the current folder.`;
+const DOT_NOTE = `An agent named "." (${DOT_COMMANDS.join(", ")}) is this session's agent: inside an agent's session, the agent it was opened as; elsewhere ORRERY_AGENT, else the agent whose folder holds the current folder.`;
 
 const CONFIG_NOTE = "Config: --config FILE, $ORRERY_CONFIG, ~/.orrery/config.toml (or under $ORRERY_HOME), or /etc/orrery/config.toml.";
+
+/** What runs inside an agent's session (src/cli/gate.ts): `orrery help all` says it last. */
+const INSIDE_NOTE =
+	"Inside an agent's session (its shell, or a ! command typed in its tool) only help, --version, status, usage, browse (no --out) and compactor run, as that agent and for the agents it may read, besides what the plugins run; run the rest in your own terminal or the TUI.";
 
 /** Where a line's text starts, on every page. */
 const COLUMN = 28;
@@ -277,7 +281,7 @@ export function shortHelp(version: string | undefined): string {
 export function allHelp(version: string | undefined): string {
 	const lines = [header(version), "", ...render(TOP, WIDTH)];
 	for (const group of GROUPS) lines.push("", group.title, ...group.detail.flatMap((line) => render(line, WIDTH)));
-	lines.push("", ...FOOTER.flatMap((line) => render(line, WIDTH, 0)), "", ...fill(DOT_NOTE, false, WIDTH), ...fill(CONFIG_NOTE, false, WIDTH));
+	lines.push("", ...FOOTER.flatMap((line) => render(line, WIDTH, 0)), "", ...fill(DOT_NOTE, false, WIDTH), ...fill(CONFIG_NOTE, false, WIDTH), ...fill(INSIDE_NOTE, false, WIDTH));
 	return page(lines);
 }
 

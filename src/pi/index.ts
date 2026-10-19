@@ -19,6 +19,9 @@ import { agentModelSource } from "../agent/model-source.ts";
 import { noticeKey, noticeText, type TroubleState } from "../agent/notices.ts";
 import { pickAgent, refusedNotice, workArea } from "../agent/pick.ts";
 import { NO_AGENT, noteSession, sessionStanding, settleVisit } from "../agent/session-owner.ts";
+import { forgetSession, type Inside, insideSession, nestedNotice, recordSession } from "../agent/sessions.ts";
+import { leaveHostEnv } from "../agent/host-env.ts";
+import { nestedRules } from "../agent/nested-rules.ts";
 import { runningVersion } from "../agent/running.ts";
 import { takeRequest } from "../agent/settings-request.ts";
 import { safeText } from "../agent/source-labels.ts";
@@ -86,6 +89,12 @@ export interface OrreryState {
 	instructions?: string;
 	/** The update notices this session has shown (src/agent/update-notices.ts keys); a new set at each open. */
 	updatesShown?: Set<string>;
+	/** The agent session this one was started inside (nestedIn): it opens no memory and records nothing. */
+	nested?: Inside;
+	/** The data folder this session recorded its host process in (recordHost), to forget it there when it ends. */
+	hosted?: string;
+	/** Takes back the HOST_ENV this session set for its shell (recordHost, src/agent/host-env.ts). */
+	hostEnv?: () => void;
 }
 
 export interface OrreryOptions {
@@ -128,10 +137,10 @@ interface Guarded {
 	/** The session's agent; absent when its ORRERY_AGENT was refused (then the guard alone runs, with no memory). */
 	readonly agent?: AgentConfig;
 	/**
-	 * How the session found its agent: ORRERY_AGENT, its folder, or neither, because ORRERY_AGENT was refused or Orrery's
-	 * config could not be read (unreadableGuard).
+	 * How the session found its agent: ORRERY_AGENT, its folder, or neither, because ORRERY_AGENT was refused, Orrery's
+	 * config could not be read (unreadableGuard), or the session was started inside an agent's session (nestedGuard).
 	 */
-	readonly by: "env" | "folder" | "refused" | "unreadable";
+	readonly by: "env" | "folder" | "refused" | "unreadable" | "nested";
 	/** Where writes may go besides allowedRoots (src/agent/pick.ts workArea). */
 	readonly workArea: string;
 	readonly allowedRoots: readonly string[];
@@ -212,17 +221,88 @@ function refusedGuard(cwd: string, config: HarnessConfig, options: OrreryOptions
 	return { by: "refused", workArea: workArea(rules ?? {}, cwd), allowedRoots: rules?.allowedRoots ?? [], ...guardBase(config, options), ...agentViews(config) };
 }
 
+/** The process that hosts this session: the tool's own (the owner of its ORRERY_AGENT_TOKEN claim). */
+const hostPid = (options: OrreryOptions): number => options.owner ?? process.pid;
+
+/** Where nestedIn keeps its decisions: on globalThis, which every load of this extension in the process shares. */
+const NESTED_DECISIONS = Symbol.for("orrery.pi.nested");
+
+/**
+ * The agent session this one was started inside, if any (spec 2026-10-18-agent-permissions §3b; src/agent/sessions.ts):
+ * an ancestor of this tool's process recorded in the config's data folder, or, when the ancestry is cut, the markers in
+ * its environment. This tool's own launch (its ORRERY_AGENT and token, its own record) is no such session. A look that
+ * fails (it should never throw) counts as a session whose agent is unknown: a check that can't judge refuses.
+ * Decided once per process and data folder, as Claude Code, Codex and OpenCode decide it: kept where every load of this
+ * extension in the process finds it (a new session, an OMP subagent, a reload), so a pi or OMP started inside a session
+ * stays without memory once that session ends, and one started outside stays outside.
+ */
+function nestedIn(config: HarnessConfig, options: OrreryOptions): Inside | undefined {
+	const self = hostPid(options);
+	const key = `${self}\u0000${resolve(config.dataDir)}`;
+	const store = globalThis as unknown as Record<symbol, Map<string, { readonly inside: Inside | undefined }> | undefined>;
+	const decided = (store[NESTED_DECISIONS] ??= new Map());
+	const found = decided.get(key);
+	if (found !== undefined) return found.inside;
+	let inside: Inside | undefined;
+	try {
+		inside = insideSession([config.dataDir], options.env ?? process.env, config, { self });
+	} catch {
+		inside = { agent: undefined, tool: undefined, via: "marker", dataDir: config.dataDir };
+	}
+	decided.set(key, { inside });
+	return inside;
+}
+
+/**
+ * The guard for a session started inside an agent's session: no agent and no memory, and the outer agent's rules (its
+ * work area from the session's folder, its allowed roots), never looser than the folder's own guard. In another agent's
+ * folder both agents' rules apply (src/agent/nested-rules.ts). It reads no memory, so every agent's view is another's, the outer
+ * agent's too. When whose session it is can't be told, or the config has no such agent, the rules of a session with no
+ * agent (refusedGuard): the folder's agent's, stricter than a plain folder's, which has no guard.
+ */
+function nestedGuard(inside: Inside, cwd: string, config: HarnessConfig, options: OrreryOptions): Guarded {
+	const rules = nestedRules(config, inside.agent, cwd);
+	if (rules === undefined) return { ...refusedGuard(cwd, config, options), by: "nested" };
+	return { by: "nested", ...rules, ...guardBase(config, options), ...agentViews(config) };
+}
+
+/**
+ * Records that this tool's process hosts `agent`'s session (spec 2026-10-18-agent-permissions §2), in the config's data
+ * folder, so a command or a tool started from the session is known as the agent's: whether or not its memory opens (an
+ * agent held elsewhere is still this session's agent). The host pid goes to the session's shell too (leaveHostEnv), for
+ * a tool started from it and detached. A record that could not be written is said, once per open.
+ */
+function recordHost(state: OrreryState, ctx: ExtensionContext, config: HarnessConfig, agent: AgentConfig, tool: "pi" | "omp", options: OrreryOptions): void {
+	const pid = hostPid(options);
+	if (!recordSession(config.dataDir, { agent: agent.name, tool, pid, config: config.file })) {
+		warn(ctx, `Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s.`);
+		return;
+	}
+	state.hosted = config.dataDir;
+	state.hostEnv?.();
+	state.hostEnv = leaveHostEnv(pid);
+}
+
+/** Forgets the host record this session made (recordHost), and takes its shell's HOST_ENV back, when it ends or leaves its agent. */
+function forgetHost(state: OrreryState, options: OrreryOptions): void {
+	if (state.hosted !== undefined) forgetSession(state.hosted, hostPid(options));
+	state.hosted = undefined;
+	state.hostEnv?.();
+	state.hostEnv = undefined;
+}
+
 const subagent = (ctx: ExtensionContext) => (ctx as { agent?: { kind?: string } }).agent?.kind === "sub";
 
 /**
  * Notes that the agent this session runs as (its agent, or NO_AGENT under a refused ORRERY_AGENT) ran in the session now
  * open (src/agent/session-owner.ts): when it opens, at each message's and run's end, and at shutdown, so a visitor still
  * running after the owner opened marks the turns it says later, even one killed before its run ended. Both entries do
- * it, the other tool's too. Not in OMP subagents. Cheap, and it never throws: a note that fails never stops a message,
- * a run's end or a shutdown (which releases the agent); the session then has no record, as before.
+ * it, the other tool's too. Not in OMP subagents, nor in a session started inside another (it records nothing). Cheap,
+ * and it never throws: a note that fails never stops a message, a run's end or a shutdown (which releases the agent);
+ * the session then has no record, as before.
  */
 function noteRun(state: OrreryState, ctx: ExtensionContext): void {
-	if (state.config === undefined || state.guarded === undefined || subagent(ctx)) return;
+	if (state.config === undefined || state.guarded === undefined || state.guarded.by === "nested" || subagent(ctx)) return;
 	try {
 		noteSession(state.config.dataDir, ctx.sessionManager.getSessionId(), state.guarded.agent?.name ?? NO_AGENT);
 	} catch {
@@ -249,6 +329,7 @@ export function summaryWaitMs(host: "pi" | "omp", elapsedMs: number, override?: 
 
 const registeredOn = new WeakSet<ExtensionAPI>();
 const guardedOn = new WeakSet<ExtensionAPI>();
+const DEBUG_SOCKET_NOTICE = "Orrery: OMP_TUI_DEBUG is set, so anything sent through OMP's debug socket would count as typed; this session opens no memory and records nothing.";
 const OPEN_CANCELLED = new Error("The session left while its memory was opening");
 
 export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
@@ -323,12 +404,15 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 
 		/**
 		 * Opens the session's agent (ORRERY_AGENT's, else the folder's), as a new session does: its guard, then (main session
-		 * only) its memory, OMP's settings, the tools, the session's copy and the status tick. `loaded`: the config already
-		 * read. `arrived`: the session moved here from another folder (OMP), so it records only what comes after the move.
+		 * only) its memory, OMP's settings, the tools, the session's copy and the status tick, with its host recorded. A
+		 * session started inside an agent's session gets the outer agent's guard and nothing else. `loaded`: the config
+		 * already read. `arrived`: the session moved here from another folder (OMP), so it records only what comes after the
+		 * move.
 		 */
 		const openNow = async (event: { reason?: string }, ctx: ExtensionContext, controller: AbortController, loaded?: HarnessConfig, arrived = false): Promise<void> => {
 			// A runtime pi keeps for the next session holds none from the last one until this open reads its agent's.
 			state.instructions = undefined;
+			state.nested = undefined;
 			const { config, unreadable, protect } = loaded === undefined ? orreryConfig(options, ctx) : { config: loaded, unreadable: undefined, protect: undefined };
 			if (config === undefined) {
 				// A guard that cannot judge refuses: an unreadable config leaves the default guard on (no agent, no memory).
@@ -340,6 +424,16 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 				return;
 			}
 			state.config = config;
+			// Started inside an agent's session (a tool the agent ran): before the pick, which may claim a token. No memory, no
+			// tools, no record, no copy; only the outer agent's guard, and why, once (spec 2026-10-18-agent-permissions §3b).
+			const inside = nestedIn(config, options);
+			if (inside !== undefined) {
+				state.nested = inside;
+				state.guarded = nestedGuard(inside, ctx.cwd, config, options);
+				guard(pi, state, host);
+				if (!subagent(ctx)) warn(ctx, nestedNotice(inside));
+				return;
+			}
 			const pick = pickFor(config, options, ctx.cwd);
 			if (pick.kind === "none") return;
 			if (pick.kind === "unknown" || pick.kind === "bad-token") {
@@ -359,8 +453,18 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			guard(pi, state, host);
 			// OMP loads the extension again in each subagent (its task tool): a subagent gets the guard, never the memory.
 			if (omp && subagent(ctx)) return;
-			// The session is this agent's, whether or not its memory opens.
+			// OMP's debug socket (OMP_TUI_DEBUG) types for the user: nothing it sends could be told from the user's words, so
+			// the memory stays shut, as for an agent held elsewhere, and nothing is recorded, host included. The guard stays on.
+			if (omp && (options.env ?? process.env).OMP_TUI_DEBUG) {
+				// The host record stays (and ORRERY_HOST with it): the agent's shell is inside its session for the CLI gate. No
+				// noteRun: that is for copying the session's log, which a session recording nothing needs not.
+				recordHost(state, ctx, config, agent, host, options);
+				warn(ctx, DEBUG_SOCKET_NOTICE);
+				return;
+			}
+			// The session is this agent's, whether or not its memory opens: what it starts runs inside the agent's session.
 			noteRun(state, ctx);
+			recordHost(state, ctx, config, agent, host, options);
 			// Before the memory opens, which may take a while (a remote check-out): these need no memory.
 			state.updatesShown = new Set();
 			showUpdates(ctx, config);
@@ -549,11 +653,13 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 		 * (its /resume of another folder's session, /move); pi starts a new session.
 		 */
 		const moved = (ctx: ExtensionContext): boolean =>
-			omp && state.config !== undefined && state.guarded?.by !== "env" && state.guarded?.by !== "refused" && agentForCwd(state.config, ctx.cwd)?.name !== state.guarded?.agent?.name;
+			omp && state.config !== undefined && state.guarded?.by !== "env" && state.guarded?.by !== "refused" && state.guarded?.by !== "nested" && agentForCwd(state.config, ctx.cwd)?.name !== state.guarded?.agent?.name;
 
 		// A session moved elsewhere by /move and ended before another message is no longer the agent's to save.
 		pi.on("session_shutdown", (_event, ctx) => {
 			noteRun(state, ctx);
+			// The session ends here: what its shell starts from now on runs inside no session of this one's.
+			forgetHost(state, options);
 			state.updatesShown = undefined;
 			return closeAgent(ctx, !moved(ctx));
 		});
@@ -561,6 +667,8 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 		/** Leaves the agent the session had, as its end would but without saving: its guard and OMP settings go, the footer clears. */
 		const leave = async (ctx: ExtensionContext): Promise<void> => {
 			const name = state.guarded?.agent?.name;
+			// No longer the agent's session; the next folder's agent, if any, records it again (open).
+			forgetHost(state, options);
 			try {
 				await closeAgent(ctx, false);
 			} catch (error) {
@@ -606,6 +714,11 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			// Nor does a session without a readable config: its default guard's work area is the folder it moved to.
 			if (state.guarded?.by === "unreadable") {
 				state.guarded = { ...state.guarded, workArea: workArea({}, ctx.cwd) };
+				return false;
+			}
+			// Nor one started inside an agent's session, wherever it moves: the outer agent's guard follows the folder.
+			if (state.guarded?.by === "nested" && state.nested !== undefined && state.config !== undefined) {
+				state.guarded = nestedGuard(state.nested, ctx.cwd, state.config, options);
 				return false;
 			}
 			if (!moved(ctx)) return false;
@@ -913,32 +1026,47 @@ function mismatched(pi: ExtensionAPI, options: OrreryOptions, omp: boolean): voi
 	const notice = omp
 		? "Orrery's OMP extension is loaded in pi: no memory in this session (the guard still runs). Install Orrery for pi from orrery's Tools page."
 		: "Orrery's pi extension is loaded in OMP: no memory in this session (the guard still runs). Install Orrery for OMP from orrery's Tools page.";
+	// Judged by the tool this runs in, not the entry's: OMP's tool shapes when pi's entry is loaded in OMP.
+	const tool = insideOmp(pi) ? "omp" : "pi";
 	pi.on("session_start", async (_event, ctx) => {
 		const { config, unreadable, protect } = orreryConfig(options, ctx);
 		if (config === undefined) {
 			// A guard that cannot judge refuses: an unreadable config leaves the default guard on.
 			if (unreadable !== undefined) {
 				state.guarded = unreadableGuard(unreadable, ctx.cwd, options, protect);
-				guard(pi, state, insideOmp(pi) ? "omp" : "pi");
+				guard(pi, state, tool);
 			}
+			return;
+		}
+		// Started inside an agent's session: the outer agent's guard, nothing noted or recorded, and that notice alone.
+		const inside = nestedIn(config, options);
+		if (inside !== undefined) {
+			state.config = config;
+			state.guarded = nestedGuard(inside, ctx.cwd, config, options);
+			guard(pi, state, tool);
+			if (!subagent(ctx)) warn(ctx, nestedNotice(inside));
 			return;
 		}
 		const pick = pickFor(config, options, ctx.cwd);
 		if (pick.kind === "none") return;
 		state.config = config;
 		state.guarded = pick.kind === "agent" ? guarded(pick.agent, pick.by, ctx.cwd, config, options) : refusedGuard(ctx.cwd, config, options);
-		// Judged by the tool this runs in, not the entry's: OMP's tool shapes when pi's entry is loaded in OMP.
-		guard(pi, state, insideOmp(pi) ? "omp" : "pi");
+		guard(pi, state, tool);
 		// One notice per session: OMP starts each subagent too (its task tool), and a subagent says nothing.
 		if (subagent(ctx)) return;
-		// Whose session this is, as the right entry notes it, now and as the session goes on.
+		// Whose session this is, as the right entry notes it, now and as the session goes on; its host, as the right entry
+		// records it.
 		noteRun(state, ctx);
+		if (pick.kind === "agent") recordHost(state, ctx, config, pick.agent, tool, options);
 		warn(ctx, notice);
 	});
 	const note = (_event: unknown, ctx: ExtensionContext) => noteRun(state, ctx);
 	pi.on("message_end", note);
 	pi.on("agent_end", note);
-	pi.on("session_shutdown", note);
+	pi.on("session_shutdown", (_event, ctx) => {
+		noteRun(state, ctx);
+		forgetHost(state, options);
+	});
 }
 
 /** The agent guard on tool calls, registered once per runtime, whether or not the agent's memory opened. */

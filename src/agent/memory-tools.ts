@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type TSchema, Type } from "typebox";
 import { formatHits, MemoryStore, MemoryView, searchLog } from "../memory/index.ts";
-import { findAgent, type HarnessConfig, type AgentConfig } from "./config.ts";
+import { findAgent, type HarnessConfig, type AgentConfig, mayRead } from "./config.ts";
 import { openStorage } from "../remote/index.ts";
 import { agentOpenHere, readCopyPath } from "../remote/read-copy.ts";
 import type { LaneEntry } from "../remote/types.ts";
@@ -107,10 +107,6 @@ function remoteList(config: HarnessConfig, remote: string): Promise<LaneEntry[] 
 	return entry.result;
 }
 
-function mayRead(reader: AgentConfig, agent: AgentConfig): boolean {
-	return reader.reads.includes("*") || reader.reads.includes(agent.name) || agent.name === reader.name;
-}
-
 /** Message counts for readable agents; other remote agents expose only their cached public listing. */
 function agentsText(config: HarnessConfig, reader: AgentConfig): string | Promise<string> {
 	const line = (agent: AgentConfig, file: string, state: string) => {
@@ -119,7 +115,8 @@ function agentsText(config: HarnessConfig, reader: AgentConfig): string | Promis
 		try { return `${agent.name}: ${store.root.length} messages, last ${store.root.at(-1)?.date.slice(0, 10) ?? "never"}, ${state}`; }
 		finally { store.close(); }
 	};
-	const lines = [...config.agents.values()].map((agent) => {
+	// A local agent the caller may not read is not listed; a remote one shows only its cached public facts.
+	const lines = [...config.agents.values()].filter((agent) => agent.remote !== undefined || mayRead(reader, agent)).map((agent) => {
 		const file = join(agent.dir, "memory.sqlite");
 		if (agent.remote !== undefined) {
 			return (async () => {
@@ -162,7 +159,7 @@ export function readerTools(reader: () => AgentConfig, config: HarnessConfig): R
 		{
 			name: "agents",
 			label: "agents",
-			description: "Every agent: memory or remote save counts, last message date when available, and where it is open now.",
+			description: "This agent, the agents it may read, and remote agents (public facts only): memory or remote save counts, last message date when available, and where each is open now.",
 			parameters: Type.Object({}),
 			long: false,
 			run: () => agentsText(config, reader()),

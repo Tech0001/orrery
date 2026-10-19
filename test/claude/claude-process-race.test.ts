@@ -88,7 +88,7 @@ describe("two deciders of one Claude Code process", () => {
 		const loser = claudeSession(config, { env, cwd: join(root, "elsewhere"), pid: process.pid, decide: true });
 		expect(winner).toEqual({ kind: "in-view-folder", name: "Test", host: "Other" });
 		expect(loser).toEqual(winner);
-		expect(JSON.parse(readFileSync(join(records, `${process.pid}.json`), "utf8"))).toEqual({ agent: "Test", token: "", kind: "refused", why: "in-view-folder", name: "Test", host: "Other" });
+		expect(JSON.parse(readFileSync(join(records, `${process.pid}.json`), "utf8"))).toEqual({ agent: "Test", token: "", start: expect.any(String), kind: "refused", why: "in-view-folder", name: "Test", host: "Other" });
 		expect(readdirSync(records)).toEqual([`${process.pid}.json`]);
 	});
 
@@ -102,7 +102,7 @@ describe("two deciders of one Claude Code process", () => {
 		utimesSync(file, longAgo, longAgo);
 		hook.afterRename = (_source, target) => rmSync(target);
 		expect(claudeSession(config, { env, cwd: join(root, "elsewhere"), pid: process.pid, decide: true })).toMatchObject({ kind: "agent", by: "env", agent: { name: "Test" } });
-		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ agent: "Test", token: "", kind: "agent", name: "Test", by: "env" });
+		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ agent: "Test", token: "", start: expect.any(String), kind: "agent", name: "Test", by: "env" });
 		expect(readdirSync(records)).toEqual([`${process.pid}.json`]);
 	});
 });

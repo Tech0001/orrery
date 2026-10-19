@@ -1,7 +1,7 @@
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import type { Chat } from "../../src/import/chats.ts";
-import { ChatListModal, ConfirmModal, hardWrap, InputModal, MessageModal, ModalHost, menuUI, ProgressModal, ReportModal, SecretModal, SelectModal } from "../../src/tui/dialogs.ts";
+import { CheckListModal, ChatListModal, ConfirmModal, hardWrap, InputModal, MessageModal, ModalHost, menuUI, ProgressModal, ReportModal, SecretModal, SelectModal } from "../../src/tui/dialogs.ts";
 import { PLAIN } from "../../src/tui/theme.ts";
 
 const DOWN = "\x1b[B";
@@ -198,4 +198,29 @@ describe("dialogs", () => {
 		expect(host.current).toBeUndefined();
 		expect(host.handleInput("x")).toBe(false);
 	});
+
+	it("CheckListModal ticks with Space or Tab, treats a ticked all row as every row, answers on Enter and undefined on Esc", async () => {
+		const rows = [{ label: "Birch", value: "Birch", checked: false }, { label: "Cedar", value: "Cedar", checked: true }];
+		const modal = new CheckListModal("Reads", rows, { all: { label: "All agents", checked: false } });
+		expect(modal.render(60, 10, PLAIN).map((line) => line.trimEnd())).toEqual(expect.arrayContaining(["› [ ] All agents", "  [ ] Birch", "  [x] Cedar"]));
+		modal.handleInput(DOWN);
+		modal.handleInput(" ");
+		modal.handleInput(DOWN);
+		modal.handleInput(TAB);
+		modal.handleInput(ENTER);
+		expect(await modal.result).toEqual(["Birch"]);
+		const all = new CheckListModal("Reads", rows, { all: { label: "All agents", checked: false } });
+		all.handleInput(" ");
+		expect(all.render(60, 10, PLAIN).join("\n")).toMatch(/\[x\] All agents\s*\n.*\[x\] Birch\s*\n.*\[x\] Cedar/);
+		for (const line of all.render(20, 10, PLAIN)) expect(visibleWidth(line)).toBeLessThanOrEqual(20);
+		all.handleInput(ENTER);
+		expect(await all.result).toBe("all");
+		const left = new CheckListModal("Reads", rows);
+		left.handleInput(ESC);
+		expect(await left.result).toBeUndefined();
+		const preset = new CheckListModal("Reads", rows, { all: { label: "All agents", checked: true } });
+		preset.handleInput(ENTER);
+		expect(await preset.result).toBe("all");
+	});
+
 });

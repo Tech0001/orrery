@@ -33,7 +33,7 @@ describe("the Claude Code plugin", () => {
 
 	it("loads the Orrery mod beside the classic hooks", () => {
 		expect(read("claude-plugin/hooks/hooks.json").modules).toEqual(["./mod.ts"]);
-		expect(read("claude-plugin/.claude-plugin/plugin.json").version).toBe("0.8.0");
+		expect(read("claude-plugin/.claude-plugin/plugin.json").version).toBe("0.9.0");
 		const mod = readFileSync(join(ROOT, "claude-plugin/hooks/mod.ts"), "utf8");
 		const imports = [...mod.matchAll(/^\s*import\b[^;]*?from\s+["']([^"']+)["']/gm)].map((m) => m[1]);
 		expect(imports.sort()).toEqual(["./logo.ts", "./mod-logic.ts", "claude-code"]);

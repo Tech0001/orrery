@@ -2,9 +2,11 @@ import { execFileSync, type SpawnSyncReturns, spawn, spawnSync } from "node:chil
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { addUnconfirmed } from "../../src/claude/transcript.ts";
 import { statusCommand } from "../../src/cli/commands.ts";
 import { parseConfig } from "../../src/agent/config.ts";
 import { runningRoot, versionLine, versionNumber } from "../../src/agent/running.ts";
+import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
 import { localIso, MemoryStore } from "../../src/memory/index.ts";
 import { cliCommand } from "../claude/support.ts";
 import { agentConfigToml, tempDir } from "../agent/support.ts";
@@ -113,6 +115,47 @@ describe("orrery", () => {
 		expect(out).toMatch(reached);
 	}, 20_000);
 
+	it("inside an agent's session (its parent recorded in the data folder) refuses remote key, and \".\" and status are that agent's", () => {
+		const dir = tempDir("orrery-main-");
+		dirs.push(dir);
+		const dataDir = join(dir, "data");
+		mkdirSync(dataDir);
+		// In its data folder, as ~/.orrery keeps it, and that folder its ORRERY_HOME (not the test run's scratch home).
+		const configPath = join(dataDir, "config.toml");
+		const extra = `\n[agents.Other]\nfolder = ${JSON.stringify(join(dir, "other"))}\nmodel = "faux-agent/faux-1"\n`;
+		writeFileSync(configPath, agentConfigToml({ dataDir, folder: join(dir, "ws"), extra }));
+		const env = { ...process.env, ORRERY_HOME: dataDir };
+		const run = (args: string[]) => {
+			const c = cliCommand([...args, "--config", configPath]);
+			return spawnSync(c.cmd, c.args, { encoding: "utf8", env, cwd: dir });
+		};
+		// This test process, the CLI's parent, stands for Test's pi: the CLI (ORRERY_TEST_BIN's binary too) runs inside it.
+		expect(recordSession(dataDir, { agent: "Test", tool: "pi", pid: process.pid })).toBe(true);
+		try {
+			const key = run(["remote", "key", "home"]);
+			expect({ status: key.status, stdout: key.stdout, stderr: key.stderr }).toEqual({
+				status: 1,
+				stdout: "",
+				stderr: "orrery remote can't run inside an agent session (Test, pi): agents can't change memory or settings. Run it in your own terminal or the TUI.\n",
+			});
+			// "." is the session's agent, from a folder that is no agent's; with no name, only what Test may read.
+			expect(run(["status", "."]).stdout).toMatch(/^Test\s+closed/);
+			expect(run(["status"]).stdout.split("\n").filter(Boolean).map((line) => line.split(/\s+/)[0])).toEqual(["Test"]);
+			const other = run(["status", "Other"]);
+			expect([other.status, other.stderr]).toEqual([1, "Test may not read Other. Allow it in the TUI (C, Reads) or with: orrery agent set Test --reads Other\n"]);
+			// A config of its own, naming the same data folder, changes nothing: refused.
+			const fake = join(dir, "fake.toml");
+			writeFileSync(fake, agentConfigToml({ dataDir, folder: join(dir, "ws"), extra: `${extra}reads = ["*"]\n` }));
+			const c = cliCommand(["status", "Other", "--config", fake]);
+			const forged = spawnSync(c.cmd, c.args, { encoding: "utf8", env });
+			expect([forged.status, forged.stderr]).toEqual([1, "--config and ORRERY_CONFIG can't be changed inside an agent session.\n"]);
+		} finally {
+			forgetSession(dataDir, process.pid);
+		}
+		// Outside it again: every command runs (remote key fails on its own, naming the missing remote).
+		expect(run(["remote", "key", "home"]).stderr).not.toContain("inside an agent session");
+	});
+
 	it("strips control sequences from status.json text", () => {
 		const dir = tempDir("orrery-main-");
 		dirs.push(dir);
@@ -141,6 +184,19 @@ describe("orrery", () => {
 		expect(parsed.agents[0].lastBackup).toBeUndefined();
 		mkdirSync(join(dir, "data", "backups", "2026-10-07", "Test"), { recursive: true });
 		expect(JSON.parse(statusCommand(config, undefined, { json: true })).agents[0].lastBackup).toBe("2026-10-07");
+	});
+
+	it("counts the messages dropped because Claude Code's transcript or Codex's rollout never confirmed them, once there are any", () => {
+		const dir = tempDir("orrery-main-");
+		dirs.push(dir);
+		const config = parseConfig(agentConfigToml({ dataDir: join(dir, "data"), folder: join(dir, "ws") }), dir);
+		expect(statusCommand(config)).not.toContain("unconfirmed");
+		expect(JSON.parse(statusCommand(config, undefined, { json: true })).agents[0].unconfirmedMessages).toBeUndefined();
+		addUnconfirmed(config.agents.get("Test")!.dir);
+		expect(statusCommand(config)).toMatch(/^Test .* · 1 unconfirmed message not recorded\n$/);
+		addUnconfirmed(config.agents.get("Test")!.dir, 2);
+		expect(statusCommand(config)).toContain(" · 3 unconfirmed messages not recorded\n");
+		expect(JSON.parse(statusCommand(config, undefined, { json: true })).agents[0].unconfirmedMessages).toBe(3);
 	});
 
 	it("backs up every agent with memory, and rejects a bad --keep", () => {

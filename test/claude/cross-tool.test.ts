@@ -1,16 +1,18 @@
-import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
+import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { claudeSetup } from "../../src/claude/setup.ts";
 import { pendingEvents } from "../../src/claude/spool.ts";
 import { readHolder } from "../../src/agent/handover.ts";
 import { cleanup, close, isolatedHome, lastAgent, pi, world } from "../pi/world.ts";
-import { hookCli, messages, waitUntil } from "./support.ts";
+import { fakeClaude, messages, waitUntil } from "./support.ts";
+import { line, transcriptIn } from "./transcript-lines.ts";
 
 afterEach(cleanup);
 
-describe("one agent in pi and in Claude Code", () => {
+// Its hooks run as processes: only the built binary can confirm their caller (src/claude/peer.ts); under Node they record nothing.
+describe.skipIf(!process.env.ORRERY_TEST_BIN)("one agent in pi and in Claude Code", () => {
 	const home = isolatedHome();
 
 	it("keeps one memory across both, and the second runs read-only while the first holds the agent", async () => {
@@ -19,32 +21,41 @@ describe("one agent in pi and in Claude Code", () => {
 		const atlas = config.agents.get("Atlas")!;
 		// Claude Code records only in an agent where claude-setup ran.
 		claudeSetup(atlas);
-		const claude = spawn("sleep", ["60"]);
-		// The hook processes get the scratch home too (hookCli inherits this process's environment; said here anyway).
-		const env = { ORRERY_CONFIG: configPath, CLAUDE_PROJECT_DIR: ws, CLAUDE_PID: String(claude.pid), HOME: home() };
+		const claude = fakeClaude();
+		// pi runs in this process, the fake Claude Code's parent; the real two are siblings. pi's host is a bystander, so
+		// the Claude Code is not taken as started inside pi's session (src/agent/sessions.ts).
+		const piHost = spawn("sleep", ["60"], { stdio: "ignore" });
+		const host = { owner: piHost.pid as number };
+		// The hook processes get the scratch home too (said here anyway).
+		const transcript = transcriptIn(root);
+		const env = { ORRERY_CONFIG: configPath, CLAUDE_PROJECT_DIR: ws, HOME: home(), CLAUDE_CONFIG_DIR: transcript.configDir };
+		const hookCli = async (event: string, input: { session_id: string } & Record<string, unknown>, vars: Record<string, string>) =>
+			claude.hook(event, { transcript_path: transcript.path(input.session_id), ...input }, vars);
 		try {
-			const first = await pi(root, ws, config);
+			const first = await pi(root, ws, config, undefined, host);
 			first.setResponses([fauxAssistantMessage("pi reply")]);
 			await first.session.prompt("pi says hello");
-			const held = JSON.parse(hookCli("session-start", { session_id: "c1", cwd: ws, source: "startup" }, env).stdout);
+			const held = JSON.parse((await hookCli("session-start", { session_id: "c1", cwd: ws, source: "startup" }, env)).stdout);
 			expect(held.hookSpecificOutput.additionalContext).toContain("read-only");
-			hookCli("user-prompt-submit", { session_id: "c1", cwd: ws, prompt: "lost words" }, env);
+			await hookCli("user-prompt-submit", { session_id: "c1", cwd: ws, prompt: "lost words" }, env);
 			expect(pendingEvents(atlas.dir, "c1")).toEqual([]);
 			await close(first);
-			const recording = JSON.parse(hookCli("session-start", { session_id: "c2", cwd: ws, source: "startup" }, env).stdout);
+			const recording = JSON.parse((await hookCli("session-start", { session_id: "c2", cwd: ws, source: "startup" }, env)).stdout);
 			expect(recording.hookSpecificOutput.additionalContext).toMatch(/2 msgs · recording/);
-			hookCli("user-prompt-submit", { session_id: "c2", cwd: ws, prompt: "claude says hello" }, env);
-			hookCli("stop", { session_id: "c2", cwd: ws, last_assistant_message: "claude reply" }, env);
+			await hookCli("user-prompt-submit", { session_id: "c2", cwd: ws, prompt: "claude says hello", prompt_id: "p-1" }, env);
+			transcript.add("c2", line.typed("p-1", "claude says hello"));
+			await hookCli("stop", { session_id: "c2", cwd: ws, last_assistant_message: "claude reply" }, env);
 			await waitUntil(() => messages(atlas).length === 4);
-			const second = await pi(root, ws, config);
+			const second = await pi(root, ws, config, undefined, host);
 			expect(second.notices).toContainEqual({ message: "Atlas is open in Claude Code; this pi runs without memory.", type: "warning" });
 			await close(second);
-			hookCli("session-end", { session_id: "c2", cwd: ws, reason: "other" }, env);
+			await hookCli("session-end", { session_id: "c2", cwd: ws, reason: "other" }, env);
 			await waitUntil(() => readHolder(atlas.dir) === undefined, 10_000);
-			await pi(root, ws, config);
+			await pi(root, ws, config, undefined, host);
 			expect(lastAgent().view.store.root.map((m) => `${m.kind}: ${m.text}`)).toEqual(["user: pi says hello", "talk: pi reply", "user: claude says hello", "talk: claude reply"]);
 		} finally {
 			claude.kill();
+			piHost.kill();
 		}
 	}, 60_000);
 });

@@ -46,10 +46,11 @@ import { isAbsolute, normalize, resolve } from "node:path";
 import type { HarnessConfig } from "../agent/config.ts";
 import { agentViews, GuardCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials, RUST_SPACE } from "../agent/guard-paths.ts";
 import { inAnyReading, NEW_TEXT, patchNewText, type SkillShellRead, shellWord, skillShellRead, skillsNamed } from "../agent/guard-rules.ts";
+import { nestedRules, type WriteRules } from "../agent/nested-rules.ts";
 import { workArea } from "../agent/pick.ts";
 import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from "../claude/guard.ts";
 import { TOOL_INPUT_MAX } from "../claude/hooks.ts";
-import { codexAgent } from "./pick.ts";
+import { codexAgent, type CodexPicked, codexNested } from "./pick.ts";
 
 /** How long the guard may judge one call, in ms, at most (CodexGuardContext.deadline may leave it less). */
 const JUDGE_MS = 2000;
@@ -369,6 +370,8 @@ export interface CodexGuardContext {
 	readonly env: NodeJS.ProcessEnv;
 	/** Codex's process (src/codex/host.ts): the token's owner. */
 	readonly codexPid: number;
+	/** The process codexPid() started from (the hook's parent), for its proof (src/codex/pick.ts); undefined: none. */
+	readonly codexParent?: number;
 	/** The home folder "~" means (default: the OS's); tests set it. */
 	readonly home?: string;
 	/** The file the config came from: kept read-only and named in no command (GuardOptions.configFile). */
@@ -384,6 +387,7 @@ export interface CodexGuardContext {
 
 /** The fields of Codex's PreToolUse input the guard reads; each is checked before use. */
 interface ToolCall {
+	readonly session_id?: unknown;
 	readonly cwd?: unknown;
 	readonly tool_name?: unknown;
 	readonly tool_input?: unknown;
@@ -406,6 +410,20 @@ export function runCodexGuard(stdin: string | undefined, ctx: CodexGuardContext)
 	return reason === undefined ? undefined : codexRefusal(reason);
 }
 
+/**
+ * Where a call of a session may write: its agent's rules. A nested one's (its process's decision, src/codex/pick.ts):
+ * the outer agent's, never looser than the folder's own (src/agent/nested-rules.ts). A session that is no agent's and
+ * whose process made no decision (`undecided`: a Codex started before this version) is looked up only then, so an
+ * agent's call never walks the process tree. Else, or when whose session it was can't be told, no agent's: only where
+ * it runs.
+ */
+function writeRules(pick: CodexPicked, ctx: CodexGuardContext, cwd: string): WriteRules {
+	if (pick.kind === "agent") return { workArea: workArea(pick.agent, cwd), allowedRoots: pick.agent.allowedRoots };
+	const nested = pick.kind === "nested" ? pick : pick.undecided === true ? codexNested(ctx.config, ctx.env, ctx.codexPid) : undefined;
+	const outer = nested?.kind === "nested" ? nestedRules(ctx.config, nested.outer, cwd) : undefined;
+	return outer ?? { workArea: workArea({}, cwd), allowedRoots: [] };
+}
+
 function judgeCall(stdin: string | undefined, ctx: CodexGuardContext): string | undefined {
 	if (stdin === undefined) return "this call's input is too large for Orrery's guard to check (over 1 MB); nothing was run.";
 	// Done by the context's deadline, and within JUDGE_MS of now.
@@ -422,13 +440,21 @@ function judgeCall(stdin: string | undefined, ctx: CodexGuardContext): string | 
 	}
 	if (typeof call.tool_name !== "string" || typeof call.cwd !== "string" || !isAbsolute(call.cwd)) return CALL_UNREADABLE;
 	const { config, env } = ctx;
-	const pick = codexAgent(config, { env, pid: ctx.codexPid, takeover: false, ...(ctx.alive === undefined ? {} : { alive: ctx.alive }) });
+	const pick = codexAgent(config, {
+		env,
+		pid: ctx.codexPid,
+		takeover: false,
+		...(ctx.codexParent === undefined ? {} : { parent: ctx.codexParent }),
+		...(typeof call.session_id === "string" ? { session: call.session_id } : {}),
+		...(ctx.alive === undefined ? {} : { alive: ctx.alive }),
+	});
 	const agent = pick.kind === "agent" ? pick.agent : undefined;
+	const rules = writeRules(pick, ctx, call.cwd);
 	const home = ctx.home ?? homedir();
 	return codexGuard(call.tool_name, call.tool_input, {
 		judgeMs: by - performance.now(),
-		folder: workArea(agent ?? {}, call.cwd),
-		allowedRoots: agent?.allowedRoots ?? [],
+		folder: rules.workArea,
+		allowedRoots: rules.allowedRoots,
 		cwd: call.cwd,
 		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...movedConfigDirCredentials(env), ...ompCredentials(env, home), ...openCodeCredentials(env, home)],
 		orreryData: config.dataDir,

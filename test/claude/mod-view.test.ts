@@ -1,13 +1,17 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runHook } from "../../src/claude/hooks.ts";
+import { UNCONFIRMED_NOTICE } from "../../src/claude/pick.ts";
 import { modView } from "../../src/claude/mod-view.ts";
 import { pendingEvents, writeMode } from "../../src/claude/spool.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { holderFile } from "../../src/agent/handover.ts";
 import { newToken } from "../../src/agent/pick.ts";
+import { processStartedAt } from "../../src/agent/process.ts";
+import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
 import { MemoryStore, MemoryView, Part } from "../../src/memory/index.ts";
 import { cleanEnv, cleanupDirs, cliCommand, seed, spool, type TestAgent, testAgent } from "./support.ts";
 
@@ -56,6 +60,27 @@ describe("orrery claude-mod view", () => {
 		const t = testAgent();
 		expect(await modView(t.config, { cwd: "/nowhere" })).toEqual({ lane: null });
 		expect(await modView(undefined, { cwd: t.agent.folder })).toEqual({ lane: null });
+	});
+
+	it("a session its SessionStart found unconfirmed gets no view, even once the start can be read; a mark made before this Claude Code started is another's", async () => {
+		const t = modAgent();
+		// This test process stands for the Claude Code whose start could not be read at SessionStart (src/claude/hooks.ts).
+		const unconfirmed = { mode: "read-only" as const, pid: process.pid, claudePid: process.pid, nonce: "u", since: Date.now(), reason: UNCONFIRMED_NOTICE };
+		writeMode(t.agent.dir, OTHER, unconfirmed);
+		const view = (session?: string, owner = process.pid) => modView(t.config, { cwd: t.agent.folder, env: {}, owner, ...(session === undefined ? {} : { session }) });
+		expect(await view(OTHER)).toEqual({ lane: null });
+		// Without a session: any session of the process marked so.
+		expect(await view()).toEqual({ lane: null });
+		// Another session of the process, which its hooks record, and another process: the view as ever.
+		expect(await view(SESSION)).toMatchObject({ lane: "Test", mode: "mod" });
+		expect(await view(OTHER, process.ppid)).toMatchObject({ lane: "Test" });
+		// Made before this process started: a gone Claude Code's, whose pid this one reuses.
+		writeMode(t.agent.dir, OTHER, { ...unconfirmed, since: (processStartedAt(process.pid) as number) - 60_000 });
+		expect(await view(OTHER)).toMatchObject({ lane: "Test" });
+		expect(await view()).toMatchObject({ lane: "Test" });
+		// A read-only session for another reason is no such mark.
+		writeMode(t.agent.dir, OTHER, { ...unconfirmed, reason: "pi holds Test" });
+		expect(await view(OTHER)).toMatchObject({ lane: "Test" });
 	});
 
 	it("mode none and file: no section", async () => {
@@ -344,6 +369,8 @@ describe("the CLI", () => {
 				config: t.config,
 				env: { ...env, CLAUDE_PROJECT_DIR: elsewhere },
 				claudePid: process.pid,
+				// On its stdin's other end: its Claude Code (src/claude/peer.ts).
+				peer: () => process.pid,
 				startHolder: () => {},
 				modeWaitMs: 100,
 				home: join(t.dir, "home"),
@@ -361,6 +388,42 @@ describe("the CLI", () => {
 			expect(view(["--agent", "Test", "--agent-token", token], { CLAUDE_PID: String(process.pid) }, true)).toEqual({ lane: null });
 		} finally {
 			rmSync(record, { force: true });
+		}
+	});
+
+	it("inside an agent's session serves only that agent; a session whose agent is unknown gets an error, never stderr (spec 2026-10-18-agent-permissions §3)", async () => {
+		const t = testAgent();
+		const other = join(t.dir, "other");
+		mkdirSync(other);
+		const configPath = t.configPath;
+		writeFileSync(configPath, `${readFileSync(t.configPath, "utf8")}\n[agents.Other]\nfolder = ${JSON.stringify(other)}\nmodel = "faux-agent/faux-1"\n`);
+		const view = (cwd: string, env: Record<string, string> = {}) => {
+			const c = cliCommand(["claude-mod", "view", "--cwd", cwd]);
+			return spawnSync(c.cmd, c.args, { env: cleanEnv({ ORRERY_CONFIG: configPath, ...env }), encoding: "utf8", timeout: 20_000 });
+		};
+		// This test process, the view's parent, stands for Test's Claude Code, with its host recorded.
+		expect(recordSession(t.config.dataDir, { agent: "Test", tool: "claude-code", pid: process.pid })).toBe(true);
+		try {
+			const elsewhere = view(other);
+			expect([elsewhere.status, JSON.parse(elsewhere.stdout), elsewhere.stderr]).toEqual([0, { lane: null }, ""]);
+			expect(JSON.parse(view(t.agent.folder).stdout)).toMatchObject({ lane: "Test" });
+		} finally {
+			forgetSession(t.config.dataDir, process.pid);
+		}
+		// Only ORRERY_HOST says there is a session (its host is no ancestor of the view's), and nothing proves whose.
+		const host = spawn("sleep", ["120"], { stdio: "ignore" });
+		try {
+			expect(recordSession(t.config.dataDir, { agent: "Test", tool: "claude-code", pid: host.pid as number })).toBe(true);
+			const unknown = view(t.agent.folder, { ORRERY_HOST: String(host.pid) });
+			expect([unknown.status, unknown.stderr]).toEqual([1, ""]);
+			expect(JSON.parse(unknown.stdout)).toEqual({
+				error:
+					"orrery can't tell which agent's session this is, so inside it only help and the version run. The session is known only by ORRERY_HOST. If this is your own terminal (a tmux server first started from an agent session keeps its markers), see \"Leftover markers\" in the docs.",
+			});
+		} finally {
+			host.kill();
+			await once(host, "exit");
+			forgetSession(t.config.dataDir, host.pid as number);
 		}
 	});
 

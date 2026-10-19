@@ -5,7 +5,7 @@
 
 import { join } from "node:path";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { AgentTool } from "../../agent/config.ts";
+import { type AgentTool, readBy } from "../../agent/config.ts";
 import { ago, type AgentRow, summaryText, TOOL_LABELS } from "../../agent/overview.ts";
 import { needsRestart } from "../../install/update.ts";
 import { safeText } from "../../agent/source-labels.ts";
@@ -13,7 +13,7 @@ import { localIso } from "../../memory/index.ts";
 import type { UsageRow } from "../../memory/types.ts";
 import type { App, Page } from "../app.ts";
 import { type Column, compactCount, fit, renderTable } from "../table.ts";
-import { archiveAgentAction, browseAgent, chooseSummaryModel, editInstructions, editAgent, launchAgent } from "./agent-actions.ts";
+import { archiveAgentAction, browseAgent, chooseSummaryModel, editInstructions, editAgent, launchAgent, readsText } from "./agent-actions.ts";
 import { newAgent } from "./new-agent.ts";
 
 /**
@@ -185,10 +185,20 @@ function instructionsField(row: AgentRow): string {
 /** Each App's "Tokens, 7 days" text per agent, read when the agent's page opens. */
 const pageUsage = new WeakMap<App, Map<string, string>>();
 
+/** The agent page's Read by field: who lists the agent by name, and who reads every agent. */
+function readByText(by: ReturnType<typeof readBy>): string {
+	const names = by.names.map(safeText).join(", ");
+	const everyone = by.everyone.length === 0 ? "" : `every agent that reads all: ${by.everyone.map(safeText).join(", ")}`;
+	if (names === "") return everyone === "" ? "none" : everyone;
+	return everyone === "" ? names : `${names} (and ${everyone})`;
+}
+
 function detailLines(app: App, row: AgentRow, width: number): string[] {
 	const { theme } = app.deps;
 	const field = (label: string, value: string) => wrapTextWithAnsi(`${label.padEnd(18)}${value}`, width).map((l) => fit(l, width));
-	const reads = row.reads.length === 0 ? "none" : row.reads.includes("*") ? "all agents" : row.reads.join(", ");
+	const reads = readsText(row.reads);
+	const by = app.config === undefined ? undefined : readBy(app.config, row.name);
+	const readByLine = by === undefined ? undefined : readByText(by);
 	const usage = pageUsage.get(app)?.get(row.name);
 	const backup = backupText(app, row);
 	return [
@@ -206,6 +216,7 @@ function detailLines(app: App, row: AgentRow, width: number): string[] {
 		...(row.building === undefined ? [] : field("Memory build", row.building)),
 		...field("Summary model", `${row.summaryModel.ref} ${row.summaryModel.thinking} (${row.summaryModel.source === "chat" ? "chosen in chat" : "from the config"})`),
 		...field("Reads", reads),
+		...(readByLine === undefined ? [] : field("Read by", readByLine)),
 		...field("Last message", row.lastMessageAt === undefined ? "—" : `${ago(row.lastMessageAt, app.deps.now())} ago`),
 		...field("Last backup", backup.text).map((line) => (backup.stale ? theme.yellow(line) : line)),
 		...field("Tokens, 7 days", usage ?? "—"),

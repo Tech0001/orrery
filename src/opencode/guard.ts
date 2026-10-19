@@ -54,6 +54,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { agentViews, DATABASE_NAME, GuardCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials, openCodeOf, realTarget } from "../agent/guard-paths.ts";
 import { inAnyReading, NEW_TEXT, type NewText, OPENCODE_COMMAND, openCodeNamed, type OpenCodeRule, openCodeRule, openCodeSkillPath, patchNewText, SKILL_SHELL, skillsNamed } from "../agent/guard-rules.ts";
+import type { WriteRules } from "../agent/nested-rules.ts";
 import { workArea } from "../agent/pick.ts";
 import { ownFolder } from "../agent/private-file.ts";
 import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from "../claude/guard.ts";
@@ -125,21 +126,24 @@ export interface OpenCodeGuardOptions extends ClaudeGuardOptions {
  * The guard's options for a session of `agent` (or of no agent: the launch's token was refused, another process holds
  * it, or the plugin has no options) in OpenCode's folder `cwd`, as Codex's guard builds its own: the agent's folder (or
  * `cwd`, outside it) and allowed roots, Orrery's credentials and the tools' (pi's, OMP's, Claude Code's moved ones,
- * OpenCode's login), Orrery's home, [guard] protect and every other agent's view.
+ * OpenCode's login), Orrery's home, [guard] protect and every other agent's view. `context.rules` stands in for the
+ * agent's folder and allowed roots: a session started inside an agent's session (no agent: every view is another's)
+ * writes by the outer agent's (src/agent/nested-rules.ts).
  */
 export function openCodeGuardOptions(
 	config: HarnessConfig,
 	agent: AgentConfig | undefined,
 	cwd: string,
-	context: { readonly env?: NodeJS.ProcessEnv; readonly home?: string; readonly configFile?: string } = {},
+	context: { readonly env?: NodeJS.ProcessEnv; readonly home?: string; readonly configFile?: string; readonly rules?: WriteRules } = {},
 ): OpenCodeGuardOptions {
 	const env = context.env ?? process.env;
 	const home = context.home ?? homedir();
 	const logins = openCodeLogins(env, home);
 	const tilde = context.home ?? openCodeHome(env);
+	const rules = context.rules ?? { workArea: workArea(agent ?? {}, cwd), allowedRoots: agent?.allowedRoots ?? [] };
 	return {
-		folder: workArea(agent ?? {}, cwd),
-		allowedRoots: [...(agent?.allowedRoots ?? []), ...openCodeStateRoots(tilde)],
+		folder: rules.workArea,
+		allowedRoots: [...rules.allowedRoots, ...openCodeStateRoots(tilde)],
 		cwd: resolve(cwd),
 		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...movedConfigDirCredentials(env), ...ompCredentials(env, home), ...logins],
 		orreryData: config.dataDir,

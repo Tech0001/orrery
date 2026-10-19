@@ -75,6 +75,19 @@ Everything in [pi.md](pi.md)'s Daily use holds, with these differences:
   earlier turns never enter that agent's memory (each agent's memory stays its own). Elsewhere OMP runs plain, without the guard.
 - `/resume @claude` of a Claude Code session that the agent's Claude Code already recorded records its turns again: OMP
   gives them new ids.
+- With `OMP_TUI_DEBUG` set, OMP opens a local debug socket that types into the session as you would, so whatever comes
+  through it would be recorded as your words. Orrery then opens no memory and records nothing in that session, and
+  says so: `Orrery: OMP_TUI_DEBUG is set, so anything sent through OMP's debug socket would count as typed; this
+  session opens no memory and records nothing.` The guard stays on. Unset it before opening an agent.
+- With `/collab` and write access, a guest you invited can send prompts that are recorded as yours: the invitation is
+  yours to give.
+- An OMP started from an agent's session (from its `bash`, in its folder or another agent's) opens no memory and
+  records nothing, and says so; its guard keeps that agent's rules. As in pi, this is decided once per run: such an
+  OMP stays without memory after `/new`, in its subagents and after a reload, even once that agent's session has
+  ended. `orrery` run from the agent's `bash` (or a `!` command you type) runs only what reads, as in pi: see the
+  README's Safety.
+- The reader tools (`agents`, `agent_memory`) come once per run, as in pi: an OMP that first opened an agent with no
+  reads gets them only after a restart.
 
 ## One writer
 
@@ -146,6 +159,9 @@ Shell text that runs Orrery's hook plumbing is refused in `bash` and `eval`: the
 `codex-hook`) named anywhere, or Orrery's program with the word `holder`, so an agent cannot feed a hook made-up input
 and put words in your mouth in its memory. The cost: a command that only names them is refused too, such as a `grep`
 for them or a commit message that mentions one; OMP's own search tools are not read this way.
+The same goes for Orrery's commands that agents may not run (all but `help`, `--version`, `status`, `usage`, `browse`
+and `compactor`) and for Claude Code's and Codex's session records (`~/.claude/projects`, `~/.codex/sessions`), which
+no tool may write: `bash` and `eval` text that runs or names one is refused (README, Safety).
 `bash` runs in the folder its `cwd` names, so that folder is judged as a read of it: a credential folder, Orrery's
 home or a protected folder as `cwd` is refused. A relative name in the command is then not seen, as after a `cd`.
 Tools from OMP plugins are not checked.

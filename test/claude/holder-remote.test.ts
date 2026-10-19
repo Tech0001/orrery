@@ -13,6 +13,7 @@ import { STALE_MS } from "../../src/remote/types.ts";
 import { fauxModels } from "../agent/support.ts";
 import { checkoutFixture } from "../remote/checkout-fixture.ts";
 import { spool } from "./support.ts";
+import { transcriptIn } from "./transcript-lines.ts";
 
 let f: Awaited<ReturnType<typeof checkoutFixture>>;
 let holder: Holder | undefined;
@@ -124,14 +125,17 @@ it.each(["existing memory", "split history"])("shows %s check-out notices at ses
 	const mode = readMode(f.agent.dir, "remote-session");
 	expect(mode?.mode).toBe("recording");
 	expect(mode?.reason).toMatch(kind === "split history" ? /unsaved-.*\.json/ : /memory already on this machine was kept aside/);
-	const out = JSON.parse(await runHook("session-start", JSON.stringify({ session_id: "remote-session", cwd: f.agent.folder }), {
-		config: f.config, env: { CLAUDE_PROJECT_DIR: f.agent.folder }, claudePid: process.pid, home: join(f.root, "home"),
+	// SessionStart from its Claude Code (this process), its transcript in a scratch config folder.
+	const transcript = transcriptIn(f.root);
+	const input = JSON.stringify({ session_id: "remote-session", cwd: f.agent.folder, transcript_path: transcript.path("remote-session") });
+	const out = JSON.parse(await runHook("session-start", input, {
+		config: f.config, env: { CLAUDE_PROJECT_DIR: f.agent.folder, CLAUDE_CONFIG_DIR: transcript.configDir }, claudePid: process.pid, peer: () => process.pid, home: join(f.root, "home"),
 		startHolder: () => { throw new Error("holder is already running"); },
 	}));
 	expect(out.systemMessage).toContain(mode!.reason);
 	// A /compact reuses the recorder and runs SessionStart again: the notice isn't said twice.
-	const again = JSON.parse(await runHook("session-start", JSON.stringify({ session_id: "remote-session", cwd: f.agent.folder }), {
-		config: f.config, env: { CLAUDE_PROJECT_DIR: f.agent.folder }, claudePid: process.pid, home: join(f.root, "home"),
+	const again = JSON.parse(await runHook("session-start", input, {
+		config: f.config, env: { CLAUDE_PROJECT_DIR: f.agent.folder, CLAUDE_CONFIG_DIR: transcript.configDir }, claudePid: process.pid, peer: () => process.pid, home: join(f.root, "home"),
 		startHolder: () => { throw new Error("holder is already running"); },
 	}));
 	expect(again.systemMessage ?? "").not.toContain(mode!.reason);

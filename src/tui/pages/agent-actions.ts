@@ -21,7 +21,7 @@ import { switchSummaryModel } from "../../agent/summary-text.ts";
 import { shortHome } from "../../agent/tools.ts";
 import { localIso } from "../../memory/index.ts";
 import type { App } from "../app.ts";
-import { ConfirmModal, hardWrap, InputModal, MessageModal, menuUI, SelectModal } from "../dialogs.ts";
+import { CheckListModal, ConfirmModal, hardWrap, InputModal, MessageModal, menuUI, SelectModal } from "../dialogs.ts";
 
 export const NO_LOGINS = "No summary logins saved yet. Add one on the Logins page (2), then try again.";
 const kb = (bytes: number) => Math.round(bytes / 1000);
@@ -203,6 +203,9 @@ async function askKb(app: App, title: string, bytes: number): Promise<number | u
 	return n * 1000;
 }
 
+/** An agent's `reads`, as the settings list and the details show it. */
+export const readsText = (reads: readonly string[]) => (reads.length === 0 ? "none" : reads.includes("*") ? "all agents" : reads.map(safeText).join(", "));
+
 /** C: changes one of the agent's settings in the config file. */
 export function editAgent(app: App, row: AgentRow | undefined): void {
 	if (row === undefined || app.config === undefined) return;
@@ -211,11 +214,11 @@ export function editAgent(app: App, row: AgentRow | undefined): void {
 		return;
 	}
 	app.run(`Editing ${row.name}`, async () => {
-		const items = [`Tool: ${TOOL_LABELS[row.tool]}`, `Folder: ${row.folder === undefined ? "none" : safeText(row.folder)}`, `View size: ${kb(row.viewBudget)} KB`, `Summary-call size: ${kb(row.summaryContextBytes)} KB`, `Summary jobs: ${row.summaryJobs}`, `Claude Code compacts at: ${Math.round(row.compactAt / 1000)}K tokens`, `Launcher: ${row.launcher === "ori" ? "Ori" : "Direct"}`, `Ori model: ${safeText(row.oriModel ?? "default")}`, ...(row.remote !== undefined || (app.config?.remotes.size ?? 0) > 0 ? [`Memory home: ${row.remote ?? "local"}`] : [])];
+		const items = [`Tool: ${TOOL_LABELS[row.tool]}`, `Folder: ${row.folder === undefined ? "none" : safeText(row.folder)}`, `View size: ${kb(row.viewBudget)} KB`, `Summary-call size: ${kb(row.summaryContextBytes)} KB`, `Summary jobs: ${row.summaryJobs}`, `Claude Code compacts at: ${Math.round(row.compactAt / 1000)}K tokens`, `Launcher: ${row.launcher === "ori" ? "Ori" : "Direct"}`, `Ori model: ${safeText(row.oriModel ?? "default")}`, `Reads: ${readsText(row.reads)}`, ...(row.remote !== undefined || (app.config?.remotes.size ?? 0) > 0 ? [`Memory home: ${row.remote ?? "local"}`] : [])];
 		const picked = await app.host.open(new SelectModal(`${row.name}: change which setting?`, items));
 		if (picked === undefined) return undefined;
 		let key: EditableKey;
-		let value: string | number;
+		let value: string | number | readonly string[];
 		switch (items.indexOf(picked)) {
 			case 0: {
 				const label = await app.host.open(new SelectModal("Tool:", AGENT_TOOLS.map((t) => TOOL_LABELS[t])));
@@ -280,6 +283,14 @@ export function editAgent(app: App, row: AgentRow | undefined): void {
 				break;
 			}
 			case 8: {
+				const others = [...app.config!.agents.keys()].filter((name) => name !== row.name);
+				const picks = await app.host.open(new CheckListModal(`${row.name} may read which agents? (it always reads itself)`, others.map((name) => ({ label: name, value: name, checked: row.reads.includes(name) })), { all: { label: "All agents, including ones added later", checked: row.reads.includes("*") } }));
+				if (picks === undefined) return undefined;
+				key = "reads";
+				value = picks === "all" ? ["*"] : picks;
+				break;
+			}
+			case 9: {
 				const remotes = [...app.config!.remotes.keys()];
 				const homes = ["local (this machine)", ...remotes];
 				const home = await app.host.open(new SelectModal("Memory home:", homes));

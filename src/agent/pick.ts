@@ -6,18 +6,23 @@
  *    memory; no fallback). The first process that starts a session with that token owns it (claims/<token> in the agent's
  *    folder), so a tool the agent starts itself, which inherits both variables, is not the agent too: it falls through
  *    to 2. A dead owner's claim is taken over only at a session's start (`takeover`); a session's later picks (Claude
- *    Code asks at every hook) keep what its start decided, so it never changes agents midway.
+ *    Code asks at every hook) keep what its start decided, so it never changes agents midway. A claim holds the owner's
+ *    pid, then on Linux the pid namespace that pid is numbered in (claimText), so a reader in another namespace can tell
+ *    it can't judge the claim (src/agent/sessions.ts), and never takes it for dead (holding); then the owner's start
+ *    time when it can be read, so a claim whose pid was reused is a dead process's. Shorter claims, an older version's,
+ *    read as before.
  * 2. The agent whose folder holds the folder (agentForCwd).
  * 3. None.
  * Node built-ins and relative imports only: pi and OMP load this file.
  */
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type HarnessConfig, insideFolder, type AgentConfig, agentForCwd } from "./config.ts";
 import { beingMade, publish, removeStale, stray, temporaryOf } from "./exclusive.ts";
-import { processAlive } from "./process.ts";
+import { readPrivate } from "./private-file.ts";
+import { pidNamespace, processAlive, processStart } from "./process.ts";
 import { safeText } from "./source-labels.ts";
 
 export const AGENT_ENV = "ORRERY_AGENT";
@@ -69,24 +74,82 @@ export function pickAgent(config: HarnessConfig, where: Where): Picked {
 	return agent === undefined ? { kind: "none" } : { kind: "agent", agent, by: "folder" };
 }
 
-/** The pid a claim file holds, or undefined when it holds none (unreadable, empty, or not a pid). */
-function claimant(file: string): number | undefined {
+export type Claim = { readonly pid: number; readonly ns?: string; readonly start?: string };
+
+/** The most of a claim file read: a pid, a namespace's name and a start time are a few dozen bytes. */
+const CLAIM_MAX = 256;
+
+/**
+ * A claim file's pid and, when its second and third lines say (claimText), the pid namespace (Linux) and the owner's
+ * start time; "none" when it holds no pid (gone, empty, or not a pid); "unreadable" when it is no regular file of this
+ * user's (a FIFO or a link put in its place), which is read without waiting or following (readPrivate) and which nobody
+ * here can judge.
+ */
+function readClaim(file: string): Claim | "none" | "unreadable" {
+	let text: string;
 	try {
-		const pid = Number.parseInt(readFileSync(file, "utf8"), 10);
-		return Number.isInteger(pid) && pid > 0 ? pid : undefined;
-	} catch {
-		return undefined;
+		text = readPrivate(file, CLAIM_MAX);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT" ? "none" : "unreadable";
 	}
+	const pid = Number.parseInt(text, 10);
+	if (!Number.isInteger(pid) || pid < 1) return "none";
+	const [, ns, start] = text.split("\n").map((line) => line.trim());
+	return { pid, ...(ns ? { ns } : {}), ...(start ? { start } : {}) };
+}
+
+/**
+ * Whether a claim's pid now names another process than the one that claimed: the claim's start time and the pid's now
+ * (processStart, src/agent/process.ts) are both known, and differ (the pid was reused). Either unknown: no, and the claim
+ * is judged by pid and namespace. src/agent/sessions.ts judges a claim's marker the same way.
+ */
+export function reused(claim: Claim): boolean {
+	if (claim.start === undefined) return false;
+	const now = processStart(claim.pid);
+	return now !== undefined && now !== claim.start;
+}
+
+/** A claim file's pid and namespace, or undefined when it holds none, or can't be read. */
+function claimIn(file: string): Claim | undefined {
+	const claim = readClaim(file);
+	return typeof claim === "object" ? claim : undefined;
+}
+
+/** The pid a claim file holds, or undefined when it holds none. */
+const claimant = (file: string): number | undefined => claimIn(file)?.pid;
+
+/**
+ * Whether a claim was made in another pid namespace than this process's, or this one's can't be read to tell: its pid
+ * names another process here, or none, and kill(0) can't judge its owner. A one-line claim (an older version's, or
+ * macOS's) names no namespace and is judged as before.
+ */
+function foreign(claim: Claim): boolean {
+	if (claim.ns === undefined) return false;
+	const here = pidNamespace("self");
+	return here === undefined || claim.ns !== here;
+}
+
+/** Whether the claim in `file` is `owner`'s, made in this pid namespace, and not by a process that had its pid before. */
+function heldBy(file: string, owner: number): boolean {
+	const claim = claimIn(file);
+	return claim !== undefined && claim.pid === owner && !foreign(claim) && !reused(claim);
 }
 
 /**
  * What a claim file holds: the live process it names; "making" when it names none yet but is young (publish's fallback
- * is still writing it; src/agent/exclusive.ts); else "dead": its process is gone, or it names no pid and is old (a
- * crash's leftover, or an older version's). One rule for pruning and for taking a token over.
+ * is still writing it; src/agent/exclusive.ts); "unsure" when it was made in another pid namespace (foreign), or is no
+ * regular file of this user's (readClaim); else "dead": its process is gone, or its pid now names a process started at
+ * another time than the claim says (reused), or it names no pid and is old (a crash's leftover, or an older version's).
+ * One rule for pruning and for taking a token over. An unsure claim is never dead:
+ * from here it is neither pruned nor taken over, so a tool started in another namespace (`unshare -p` from an agent's
+ * shell) can't take a live session's token, and falls through to its folder (src/agent/sessions.ts finds it inside a
+ * session). The cost: a really dead claim from another namespace stays until its launcher releases it, or a claimer in
+ * that namespace prunes it; tokens are per launch, so no other launch needs it.
  */
-function holding(file: string, alive: (pid: number) => boolean): number | "making" | "dead" {
-	const pid = claimant(file);
-	if (pid !== undefined) return alive(pid) ? pid : "dead";
+function holding(file: string, alive: (pid: number) => boolean): number | "making" | "unsure" | "dead" {
+	const claim = readClaim(file);
+	if (claim === "unreadable") return "unsure";
+	if (claim !== "none") return foreign(claim) ? "unsure" : alive(claim.pid) && !reused(claim) ? claim.pid : "dead";
 	return beingMade(file) ? "making" : "dead";
 }
 
@@ -134,13 +197,13 @@ export function claimToken(agentDir: string, token: string, owner: number, alive
 	const dir = join(agentDir, "claims");
 	const file = join(dir, token);
 	// The owner's own claim, the common case (Claude Code asks at every hook): nothing to prune or write.
-	if (claimant(file) === owner) return true;
+	if (heldBy(file, owner)) return true;
 	if (!takeover) return false;
 	let temporary: string | undefined;
 	try {
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
 		pruneClaims(dir, alive);
-		const content = `${owner}\n`;
+		const content = claimText(owner);
 		temporary = temporaryOf(file);
 		writeFileSync(temporary, content, { flag: "wx", mode: 0o600 });
 		if (publish(temporary, file, content) === true) return true;
@@ -149,7 +212,7 @@ export function claimToken(agentDir: string, token: string, owner: number, alive
 		if (held !== "dead") return held === owner;
 		removeStale(file, dead(alive));
 		if (publish(temporary, file, content) === true) return true;
-		return claimant(file) === owner;
+		return heldBy(file, owner);
 	} catch {
 		// A claim that cannot be recorded never costs the session its agent.
 		return true;
@@ -162,9 +225,39 @@ export function claimToken(agentDir: string, token: string, owner: number, alive
 	}
 }
 
+/**
+ * What a claim by `owner` holds: its pid; then on Linux the pid namespace of this process, the one `owner` is numbered
+ * in (an empty line elsewhere); then `owner`'s start time, when it can be read. Lines with nothing after them are left out.
+ */
+export function claimText(owner: number): string {
+	const ns = pidNamespace("self");
+	const start = processStart(owner);
+	if (start !== undefined) return `${owner}\n${ns ?? ""}\n${start}\n`;
+	return ns === undefined ? `${owner}\n` : `${owner}\n${ns}\n`;
+}
+
 /** The pid that claimed `token` for the agent, or undefined when none has (or the token is no token). */
 export function claimedBy(agentDir: string, token: string): number | undefined {
 	return TOKEN.test(token) ? claimant(join(agentDir, "claims", token)) : undefined;
+}
+
+/**
+ * Whether a claim on `token` for the agent stands (holding): a live process's, one being made, or one that can't be
+ * judged from here. False when there is none, or the one there is dead (the token is no token: false).
+ */
+export function tokenHeld(agentDir: string, token: string, alive: (pid: number) => boolean = processAlive): boolean {
+	return TOKEN.test(token) && holding(join(agentDir, "claims", token), alive) !== "dead";
+}
+
+/**
+ * The claim on `token` for the agent: the pid, and the pid namespace it is numbered in when the claim says (Linux);
+ * "unreadable" when something other than a regular file of this user's is in its place (readClaim); or undefined when
+ * none holds a pid (or the token is no token).
+ */
+export function claimHeld(agentDir: string, token: string): Claim | "unreadable" | undefined {
+	if (!TOKEN.test(token)) return undefined;
+	const claim = readClaim(join(agentDir, "claims", token));
+	return claim === "none" ? undefined : claim;
 }
 
 /** Removes a claim its launcher made, once its tool has exited. */

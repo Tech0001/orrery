@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { claudeSession } from "../../src/claude/pick.ts";
-import { claimToken, newToken } from "../../src/agent/pick.ts";
+import { claimText, claimToken, newToken } from "../../src/agent/pick.ts";
 import { cleanupDirs, testAgent } from "../claude/support.ts";
 
 /** Runs once, before the first write into a file made by the exclusive create (the fallback's empty moment). */
@@ -54,14 +54,14 @@ describe("without hard links", () => {
 		const dir = agent();
 		const token = newToken();
 		expect(claimToken(dir, token, first, alive)).toBe(true);
-		expect(readFileSync(join(dir, "claims", token), "utf8")).toBe(`${first}\n`);
+		expect(readFileSync(join(dir, "claims", token), "utf8")).toBe(claimText(first));
 		expect(claimToken(dir, token, second, alive)).toBe(false);
 		expect(claimToken(dir, token, first, alive)).toBe(true);
 		expect(readdirSync(join(dir, "claims"))).toEqual([token]);
 		const dead = newToken();
 		writeFileSync(join(dir, "claims", dead), `${gone}\n`);
 		expect(claimToken(dir, dead, second, alive)).toBe(true);
-		expect(readFileSync(join(dir, "claims", dead), "utf8")).toBe(`${second}\n`);
+		expect(readFileSync(join(dir, "claims", dead), "utf8")).toBe(claimText(second));
 	});
 
 	it("a claim made but not yet written is one being made: a second claimer at that moment loses", () => {
@@ -73,7 +73,7 @@ describe("without hard links", () => {
 		};
 		expect(claimToken(dir, token, first, alive)).toBe(true);
 		expect(other).toBe(false);
-		expect(readFileSync(join(dir, "claims", token), "utf8")).toBe(`${first}\n`);
+		expect(readFileSync(join(dir, "claims", token), "utf8")).toBe(claimText(first));
 		expect(readdirSync(join(dir, "claims"))).toEqual([token]);
 	});
 

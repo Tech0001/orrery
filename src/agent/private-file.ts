@@ -1,7 +1,26 @@
 /** Private files: written whole or not at all, readable by the user only, never through a symlink. */
 
-import { chmodSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+
+/**
+ * A small private file's text: a regular file of this user's, never through a link at its own name, read up to `max`
+ * bytes. Opened without blocking, so a FIFO put in its place is refused rather than waited on. Throws when it can't be
+ * read (gone: ENOENT).
+ */
+export function readPrivate(path: string, max: number): string {
+	const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	try {
+		const stat = fstatSync(fd);
+		if (!stat.isFile()) throw new Error("not a file");
+		if (process.getuid !== undefined && stat.uid !== process.getuid()) throw new Error("not this user's file");
+		const buffer = Buffer.alloc(max);
+		const read = readSync(fd, buffer, 0, max, 0);
+		return buffer.toString("utf8", 0, read);
+	} finally {
+		closeSync(fd);
+	}
+}
 
 /** Whether `dir` is a real folder (not a symlink) of this user's; undefined when nothing is there. */
 export function ownFolder(dir: string): boolean | undefined {

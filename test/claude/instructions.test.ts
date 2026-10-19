@@ -10,6 +10,7 @@ import { refreshViewFile } from "../../src/claude/view-file.ts";
 import { INSTRUCTIONS_MAX_BYTES, writeInstructions } from "../../src/agent/instructions.ts";
 import { tempDir } from "../agent/support.ts";
 import { cleanupDirs, seed, testAgent } from "./support.ts";
+import { transcriptIn } from "./transcript-lines.ts";
 
 const elsewheres: string[] = [];
 afterEach(() => {
@@ -24,15 +25,19 @@ const elsewhere = () => {
 	return dir;
 };
 
-/** SessionStart for `t`'s agent in `dir` (default its folder) with `env` added, its holder answering "recording" at once. */
+/**
+ * SessionStart for `t`'s agent in `dir` (default its folder) with `env` added, its holder answering "recording" at once,
+ * sent by its Claude Code (this process), which keeps its transcripts in a scratch config folder.
+ */
 function hookContext(t: ReturnType<typeof testAgent>, dir = t.folder, env: NodeJS.ProcessEnv = {}): HookContext {
 	return {
 		config: t.config,
-		env: { CLAUDE_PROJECT_DIR: dir, ...env },
-		claudePid: 4242,
+		env: { CLAUDE_PROJECT_DIR: dir, CLAUDE_CONFIG_DIR: transcriptIn(t.dir).configDir, ...env },
+		claudePid: process.pid,
+		peer: () => process.pid,
 		modeWaitMs: 200,
 		home: join(t.dir, "home"),
-		startHolder: (agent, session, nonce, since) => writeMode(agent.dir, session, { mode: "recording", pid: 1, claudePid: 4242, nonce, since }),
+		startHolder: (agent, session, nonce, since) => writeMode(agent.dir, session, { mode: "recording", pid: 1, claudePid: process.pid, nonce, since }),
 	};
 }
 
@@ -96,7 +101,7 @@ describe("an agent's instructions in Claude Code", () => {
 		const t = testAgent();
 		claudeSetupMod(t.agent);
 		writeInstructions(t.agent.dir, "a".repeat(INSTRUCTIONS_MAX_BYTES + 10));
-		const out = JSON.parse(await runHook("session-start", JSON.stringify({ session_id: "s1", cwd: t.folder }), hookContext(t))) as { systemMessage?: string };
+		const out = JSON.parse(await runHook("session-start", JSON.stringify({ session_id: "s1", cwd: t.folder, transcript_path: transcriptIn(t.dir).path("s1") }), hookContext(t))) as { systemMessage?: string };
 		expect(out.systemMessage).toContain("Orrery: Test's instructions are over 32 KB; only the first 32 KB reach the model. Shorten instructions.md.");
 	});
 
@@ -105,7 +110,7 @@ describe("an agent's instructions in Claude Code", () => {
 		const t = testAgent({ setup: true });
 		seed(t.agent, ["Use pnpm here.", "Switched to pnpm."]);
 		writeInstructions(t.agent.dir, "a".repeat(INSTRUCTIONS_MAX_BYTES + 10));
-		const out = JSON.parse(await runHook("session-start", JSON.stringify({ session_id: "s3", cwd: t.folder }), hookContext(t))) as { systemMessage?: string };
+		const out = JSON.parse(await runHook("session-start", JSON.stringify({ session_id: "s3", cwd: t.folder, transcript_path: transcriptIn(t.dir).path("s3") }), hookContext(t))) as { systemMessage?: string };
 		expect(out.systemMessage).toContain("Orrery: Test's instructions are over 32 KB; only the first 32 KB reach the model. Shorten instructions.md.");
 	});
 
@@ -115,12 +120,12 @@ describe("an agent's instructions in Claude Code", () => {
 		seed(t.agent, ["Use pnpm here.", "Switched to pnpm."]);
 		writeInstructions(t.agent.dir, "a".repeat(INSTRUCTIONS_MAX_BYTES + 10));
 		const dir = elsewhere();
-		const outside = JSON.parse(await runHook("session-start", JSON.stringify({ session_id: "s4", cwd: dir }), hookContext(t, dir, { ORRERY_AGENT: "Test" }))) as { systemMessage?: string };
+		const outside = JSON.parse(await runHook("session-start", JSON.stringify({ session_id: "s4", cwd: dir, transcript_path: transcriptIn(t.dir).path("s4") }), hookContext(t, dir, { ORRERY_AGENT: "Test" }))) as { systemMessage?: string };
 		expect(outside.systemMessage).toContain(none);
 		expect(outside.systemMessage).not.toContain("only the first 32 KB reach the model");
 		const u = testAgent();
 		writeInstructions(u.agent.dir, "a".repeat(INSTRUCTIONS_MAX_BYTES + 10));
-		const unset = JSON.parse(await runHook("session-start", JSON.stringify({ session_id: "s5", cwd: u.folder }), hookContext(u))) as { systemMessage?: string };
+		const unset = JSON.parse(await runHook("session-start", JSON.stringify({ session_id: "s5", cwd: u.folder, transcript_path: transcriptIn(u.dir).path("s5") }), hookContext(u))) as { systemMessage?: string };
 		expect(unset.systemMessage).toContain(none);
 	});
 
@@ -128,7 +133,7 @@ describe("an agent's instructions in Claude Code", () => {
 		const t = testAgent();
 		claudeSetupMod(t.agent);
 		writeInstructions(t.agent.dir, "a".repeat(INSTRUCTIONS_MAX_BYTES));
-		const out = await runHook("session-start", JSON.stringify({ session_id: "s2", cwd: t.folder }), hookContext(t));
+		const out = await runHook("session-start", JSON.stringify({ session_id: "s2", cwd: t.folder, transcript_path: transcriptIn(t.dir).path("s2") }), hookContext(t));
 		expect(out).not.toContain("over 32 KB");
 	});
 });

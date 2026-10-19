@@ -83,6 +83,7 @@ describe("orrery help", () => {
 		for (const line of lines) if (line.startsWith(" ")) expect([2, 6, 28], line).toContain(line.length - line.trimStart().length);
 		expect(all.stdout).toContain('An agent named "." (status, usage, browse, compactor, claude-setup)');
 		expect(all.stdout).toContain("Config: --config FILE, $ORRERY_CONFIG");
+		expect(all.stdout).toContain("Inside an agent's session (its shell, or a ! command typed in its tool) only help, --version,");
 	});
 
 	it("help <command> and <command> --help print every line of that command, and nothing runs", () => {
@@ -98,6 +99,7 @@ describe("orrery help", () => {
 		const agent = orrery(env, "agent", "Atlas", "--help");
 		expect(agent.status, agent.stderr).toBe(0);
 		for (const usage of ["agent <Name> [--tool", "agent add <Name>", "agent set <Name>", "agent push <Name>", "agent local <Name>"]) expect(agent.stdout).toContain(`  ${usage}`);
+		expect(agent.stdout).toContain("--reads all|none|A,B");
 		expect(orrery(env, "help", "status").stdout).toContain('An agent named "."');
 		expect(orrery(env, "help", "compact").stdout).not.toContain('An agent named "."');
 		// No config was read or written, no folder made.

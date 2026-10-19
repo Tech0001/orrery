@@ -111,7 +111,10 @@ export function world(options: { compactorModel?: string; local?: boolean } = {}
 		? `[[providers]]\nid = "${FAUX_SUMMARY.provider}"\nbase_url = "http://127.0.0.1:9"\n[[providers.models]]\nid = "${FAUX_SUMMARY.model}"\ncontext_window = 128000\nmax_tokens = 16384\n`
 		: "";
 	const toml = `data_dir = ${JSON.stringify(join(root, "data"))}\n${local}${agent("Atlas")}${agent("Birch", 'reads = ["*"]\n')}`;
-	const configPath = join(root, "config.toml");
+	// In its data folder, as ~/.orrery keeps it: from inside an agent's session, the CLI takes only the config that holds
+	// the session's memory (src/cli/gate.ts).
+	mkdirSync(join(root, "data"), { recursive: true });
+	const configPath = join(root, "data", "config.toml");
 	writeFileSync(configPath, toml);
 	return { root, config: parseConfig(toml, root), configPath };
 }

@@ -5,10 +5,14 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cachedUpdate, downloadRelease, latestVersion, needsRestart, newer, platformAsset, refreshUpdateCache, updateCheck } from "../../src/install/update.ts";
+import { installFrom } from "../../src/install/install.ts";
 import { cliCommand } from "../claude/support.ts";
+import { cleanupScratch, fixtureRelease, scratchPath, tempDir } from "./support.ts";
 import { cleanupFakes, PLATFORM, release, releasesServer, scratch, servers } from "../release/fake-releases.ts";
 
 afterEach(cleanupFakes);
+// Installed versions are read-only: removeVersion takes them away.
+afterEach(cleanupScratch);
 afterEach(() => {
 	vi.unstubAllGlobals();
 });
@@ -310,6 +314,31 @@ describe("orrery update", () => {
 		expect(installed).toMatch(new RegExp(`^install --from .*/orrery-${NEXT_RE}-${PLATFORM} --yes$`));
 		expect(r.stdout).toMatch(new RegExp(`Updated \\S+ → ${NEXT_RE}`));
 		expect(readdirSync(tmp).filter((n) => n.startsWith("orrery-update-"))).toEqual([]);
+	});
+
+	it("over an installed version with agents, the new release's installer says to restart open agent sessions", async () => {
+		// The new release's own orrery: its version, else this checkout's CLI, as a real release runs install --from.
+		const main = new URL("../../src/cli/main.ts", import.meta.url).pathname;
+		const script = `#!/bin/sh\n[ "$1" = --version ] && { echo "orrery ${NEXT}"; exit 0; }\nexec "${process.execPath}" --disable-warning=ExperimentalWarning "${main}" "$@"\n`;
+		const { base } = await releasesServer(NEXT, release(NEXT, script));
+		const home = tempDir("orrery-update-home-");
+		const orreryHome = join(home, "orrery-home");
+		// An earlier version installed, and a config whose agents may have sessions open.
+		installFrom({ from: fixtureRelease("0.6.0"), env: { ...process.env, HOME: home, ORRERY_HOME: orreryHome } });
+		writeFileSync(join(orreryHome, "config.toml"), "");
+		const c = cliCommand(["update", "--yes"]);
+		// Into a file, as a terminal takes it: the installer it runs ends its streams on exit, which on the socket pair a
+		// spawned process's output is here would end orrery update's too.
+		const said = join(home, "said.txt");
+		// No pi, OMP, Claude Code or systemctl on PATH for the installer's setup: only what unpacking needs.
+		const env = { PATH: scratchPath(["tar", "gzip"]), HOME: home, ORRERY_HOME: orreryHome, ORRERY_RELEASES_URL: base, TMPDIR: scratch("orrery-tmp-") };
+		const child = spawn("/bin/sh", ["-c", 'exec "$0" "$@" >"$SAID" 2>&1', c.cmd, ...c.args], { timeout: 60_000, stdio: "ignore", env: { ...env, SAID: said } });
+		const status = await new Promise<number | null>((done) => child.on("close", done));
+		const out = readFileSync(said, "utf8");
+		expect(status, out).toBe(0);
+		expect(out).toContain(`Installed ${NEXT}.`);
+		expect(out).toMatch(/^Restart open agent sessions now: sessions left open across the update aren't recorded until they restart\.$/m);
+		expect(out).toMatch(new RegExp(`^Updated \\S+ → ${NEXT_RE}\\. Release notes: `, "m"));
 	});
 
 	it("--check says whether a release is out and downloads nothing", async () => {

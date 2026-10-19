@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, type PathLike, readdirSync, readFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { claimToken, newToken } from "../../src/agent/pick.ts";
+import { claimText, claimToken, newToken } from "../../src/agent/pick.ts";
 
 /** Runs before a link or a rename (the hook clears itself first when it must not run again). */
 const hook = vi.hoisted(() => ({
@@ -62,7 +62,7 @@ function agent() {
 function oneWinner(dir: string, token: string, mine: boolean, other: boolean | undefined) {
 	expect(other).toBeDefined();
 	expect([mine, other].filter((won) => won === true)).toHaveLength(1);
-	expect(readFileSync(join(dir, "claims", token), "utf8")).toBe(`${mine ? first : second}\n`);
+	expect(readFileSync(join(dir, "claims", token), "utf8")).toBe(claimText(mine ? first : second));
 	expect(readdirSync(join(dir, "claims"))).toEqual([token]);
 }
 

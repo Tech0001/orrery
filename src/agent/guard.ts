@@ -1,7 +1,9 @@
 /**
  * A seatbelt, not a sandbox (spec §6).
  *
- * - write/edit must land inside the folder and allowed roots, and never in Orrery's config or installed program.
+ * - write/edit must land inside the folder and allowed roots, and never in Orrery's config or installed program, nor in
+ *   Claude Code's or Codex's session records (but a project's memory folder there).
+ * - bash may not run Orrery's commands that change memory or settings, nor name those session records (guard-rules.ts).
  * - No file tool may touch ssh keys or credential stores (tool logins under home such as ~/.npmrc among them), .env
  *   files and the other built-in secret names, what the config's [guard] protect names, or another agent's memory view
  *   (GuardOptions.foreignViews).
@@ -9,7 +11,9 @@
  *   prefix, `~`, `file://`, relative to cwd) and then through symlinks, so the check and the write see the same file.
  *
  * Limits, by design:
- * - Shell commands cannot be parsed reliably, so bash only gets the sensitive-pattern check.
+ * - Shell commands cannot be parsed reliably, so bash is judged by its text, read bluntly every way a shell may read it
+ *   (guard-rules.ts checkToolCall): names of sensitive, protected and Orrery's own files, the hook plumbing, Orrery's
+ *   commands, OpenCode's config, skills folders and the session records. A name built at run time gets through.
  * - An agent can still reach anything its OS account can. The real boundary is the account the tools run as.
  * - No search-root rule here: a grep or find over a folder holding a credential store or another agent's view is not
  *   refused (pi's, OMP's and Claude Code's guards refuse it; src/agent/guard-paths.ts).
@@ -47,6 +51,9 @@ import {
 	protection,
 	secretPath,
 	sensitive,
+	TRANSCRIPT_READ_ONLY,
+	transcriptPath,
+	transcriptRule,
 	viewRules,
 	within,
 } from "./guard-rules.ts";
@@ -168,6 +175,12 @@ export async function checkResolvedPath(
 		}
 		const roots = await Promise.all([options.folder, ...options.allowedRoots].map((root) => realPath(env, root, context)));
 		if (!roots.some((root) => within(real, root))) return `${real} is outside this agent's folder and allowed roots.`;
+		// Claude Code's and Codex's session records (guard-rules.ts transcriptRule), where the tool writes and where that
+		// really is; the folders as given and where they really are (a ~/.claude that is a link).
+		const records = options.transcripts ?? transcriptRule(process.env, options.home ?? homedir());
+		const reals = async (folders: readonly string[]) => Promise.all(folders.map((folder) => realPath(env, folder, context)));
+		const realRecords = { claude: await reals(records.claude), codex: await reals(records.codex) };
+		if ([records, realRecords].some((rule) => transcriptPath(target, rule) || transcriptPath(real, rule))) return TRANSCRIPT_READ_ONLY(real);
 	}
 	return undefined;
 }

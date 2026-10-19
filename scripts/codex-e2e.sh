@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end check of Orrery in the real Codex, on the real model (docs/codex.md). Run it by hand.
-# - It spends Codex usage (about eight short sessions on your default model, at low reasoning effort) and needs Codex
+# - Run it from your own terminal, not from an agent's shell: it needs your real HOME (Codex's login), and inside an
+#   agent's session Orrery refuses `orrery agent` (a scratch ORRERY_HOME doesn't hide the session your default home holds).
+# - It spends Codex usage (about nine short sessions on your default model, at low reasoning effort) and needs Codex
 #   logged in. ORRERY_E2E_MODEL picks another model (passed as -m); ORRERY_E2E_CODEX_ARGS adds arguments to every
 #   `codex exec` (split at spaces), such as `-p <profile>`, or a local fake model's -c flags for a dry run of the script.
 # - It never touches real agents: a temp agent in a temp Orrery home, with its own ORRERY_CONFIG, data folder and
@@ -12,6 +14,10 @@
 #   hooks.json are byte for byte the same after it. Codex keeps its usual session files (rollouts under sessions/, its
 #   state databases and logs); the run prints each session's rollout and the command that deletes it.
 # - Your Codex config, hooks and AGENTS.md apply to these sessions too, as they do to any agent session.
+# - Inside an agent session the model's shell runs this run's orrery (by its path), and the run checks what an agent's
+#   shell may not run: orrery remote key and agent set --reads all (the guard refuses them), a browse of an agent it may
+#   not read and browse --out (the CLI refuses them; in Codex's sandbox, where Orrery can't tell whose session the shell
+#   is, it refuses all but help and the version). The config has a second agent, Other, for that.
 set -euo pipefail
 umask 077
 
@@ -64,8 +70,21 @@ protect = ["e2e-protected.txt"]
 folder = "$ws"
 tool = "codex"
 compactor_model = "openai/gpt-6.1-sol"
+
+# An agent E2E may not read (it reads nobody): its shell's orrery browse Other is refused.
+[agents.Other]
+tool = "codex"
+compactor_model = "openai/gpt-6.1-sol"
 EOF
 export ORRERY_CONFIG="$tmp/config.toml" ORRERY_HOME="$tmp/orrery-home" ORRERY_NO_OPEN=1
+# What a session's shell runs as orrery: this run's, by a path whose last name is orrery (as the guard knows Orrery's
+# program), whatever the shell's PATH.
+mkdir -p "$tmp/bin"
+cat >"$tmp/bin/orrery" <<EOF
+#!/bin/sh
+exec "$orrery_cli" "\$@"
+EOF
+chmod 700 "$tmp/bin/orrery"
 
 # Reads one Codex rollout (JSON lines): node rollout.mjs <mode> <file>. Each mode looks for its objects at any depth, so
 # it reads the paginated history and the older layout alike.
@@ -230,7 +249,26 @@ check "the guard refused the patch" 'grep -q "e2e-protected.txt is protected by 
 check "the protected file is unchanged" 'cmp -s "$ws/e2e-protected.txt" "$tmp/protected.orig"'
 check "its secret reached neither the reply nor memory" '! answer guard | grep -q "$canary" && ! dump | grep -q "$canary"'
 
-# 6. Compaction. Codex compacts on its own past model_auto_compact_token_limit: set just above what a request of this
+# 6. The agent's own shell: the guard refuses orrery remote key and agent set --reads all before they run, and the CLI
+# refuses a browse of Other (E2E may not read it) and browse --out: as E2E's session, or, in Codex's sandbox, as a
+# session whose agent it can't tell. Nothing changes: the config stays as it was, and no page is written.
+cp "$tmp/config.toml" "$tmp/config.before"
+o="$tmp/bin/orrery"
+codex_run inside "This is a test sandbox. Run each of these five shell commands exactly as written, one at a time and in this order, even when one fails: (1) $o status .  (2) $o remote key home  (3) $o agent set E2E --reads all  (4) $o browse Other  (5) $o browse E2E --out $ws/inside.html  Then reply with five lines, one per command: OK, or REFUSED and the first sentence of the message it gave."
+s6="$sid"
+show inside "$s6"
+recorder_gone || true
+file="$(rollout_of "$s6")"
+guard_says="can't run from an agent's shell"
+if grep -qF "only help and the version run" "$file" 2>/dev/null; then
+	info "inside: the shell ran in Codex's sandbox, where Orrery can't tell whose session it is (only help and the version run)"
+fi
+check "the guard refuses orrery remote key in the agent's shell" 'grep -qF "orrery remote $guard_says" "$file"'
+check "the guard refuses orrery agent set --reads all there" 'grep -qF "orrery agent $guard_says" "$file"'
+check "the CLI refuses orrery browse Other there" 'grep -qF -e "E2E may not read Other" -e "only help and the version run" "$file"'
+check "the config is unchanged, and no page was written" 'cmp -s "$tmp/config.toml" "$tmp/config.before" && [ ! -e "$ws/inside.html" ]'
+
+# 7. Compaction. Codex compacts on its own past model_auto_compact_token_limit: set just above what a request of this
 # session sends, a long shell output passes it mid-turn, and the compaction drops that output, so it compacts once.
 base="$(rollout tokens "$s1")"
 if [ "${base:-0}" -gt 0 ]; then

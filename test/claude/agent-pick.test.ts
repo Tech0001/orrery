@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { Holder } from "../../src/claude/holder.ts";
 import { type HookContext, runHook } from "../../src/claude/hooks.ts";
 import { modView } from "../../src/claude/mod-view.ts";
@@ -12,11 +12,15 @@ import { pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
 import { agentMode, viewGate, writeSetupMarker } from "../../src/claude/view-file.ts";
 import { type HarnessConfig, type AgentConfig, parseConfig } from "../../src/agent/config.ts";
 import { agentModelSource } from "../../src/agent/model-source.ts";
-import { claimToken, newToken } from "../../src/agent/pick.ts";
+import { claimText, claimToken, newToken } from "../../src/agent/pick.ts";
 import { fauxModels, tempDir } from "../agent/support.ts";
 import { cleanupDirs, messages, seed, type TestAgent, testAgent } from "./support.ts";
+import { line, transcriptIn } from "./transcript-lines.ts";
 
 const dirs: string[] = [];
+/** The scratch folder whose Claude Code config folder keeps this file's sessions' transcripts. */
+const transcripts = transcriptIn(tempDir("orrery-claude-config-"));
+afterAll(() => rmSync(dirname(transcripts.configDir), { recursive: true, force: true }));
 const holders: Holder[] = [];
 const sleepers: ChildProcess[] = [];
 afterEach(async () => {
@@ -40,11 +44,15 @@ async function kill(process: ChildProcess): Promise<void> {
 	if (process.exitCode === null && process.signalCode === null) await once(process, "exit");
 }
 
-/** A hook's context in `dir` (CLAUDE_PROJECT_DIR), with `env` added and Claude Code's pid 4242. */
+/**
+ * A hook's context in `dir` (CLAUDE_PROJECT_DIR), with `env` added, and this test's process as the Claude Code: the
+ * peer on the hook's stdin is the Claude Code (src/claude/peer.ts), whichever pid `extra` gives it, unless `extra` says.
+ */
 const ctx = (config: HarnessConfig, home: string, dir: string, env: NodeJS.ProcessEnv, extra: Partial<HookContext> = {}): HookContext => ({
 	config,
-	env: { CLAUDE_PROJECT_DIR: dir, ...env },
-	claudePid: 4242,
+	env: { CLAUDE_PROJECT_DIR: dir, CLAUDE_CONFIG_DIR: transcripts.configDir, ...env },
+	claudePid: process.pid,
+	peer: () => extra.claudePid ?? process.pid,
 	startHolder: () => {},
 	modeWaitMs: 200,
 	home,
@@ -54,7 +62,7 @@ const at = (t: TestAgent, dir: string, env: NodeJS.ProcessEnv, extra: Partial<Ho
 /** A startHolder that answers as a recording holder would, and notes which agent it was for. */
 const recording = (started: string[]) => (agent: AgentConfig, session: string, nonce: string, since: number) => {
 	started.push(agent.name);
-	writeMode(agent.dir, session, { mode: "recording", pid: 1, claudePid: 4242, nonce, since });
+	writeMode(agent.dir, session, { mode: "recording", pid: 1, claudePid: process.pid, nonce, since });
 };
 /** A folder of no agent's, in a temp folder of its own (so no agent's allowed roots hold it). */
 const elsewhere = () => {
@@ -62,7 +70,8 @@ const elsewhere = () => {
 	dirs.push(dir);
 	return dir;
 };
-const hookInput = (session: string, cwd: string, extra: object = {}) => JSON.stringify({ session_id: session, cwd, ...extra });
+/** A hook's input for `session` in `cwd`, with where Claude Code keeps the session's transcript. */
+const hookInput = (session: string, cwd: string, extra: object = {}) => JSON.stringify({ session_id: session, cwd, transcript_path: transcripts.path(session), ...extra });
 /** What is spooled for `session` in `agent`, oldest first: "kind: text", or the kind alone. */
 const spooled = (agent: AgentConfig, session: string) =>
 	pendingEvents(agent.dir, session).map((pending) => {
@@ -93,7 +102,8 @@ describe("Claude Code outside the agent's folder, by ORRERY_AGENT", () => {
 		expect(out.systemMessage).toBeUndefined();
 		await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "A question asked elsewhere." }), c);
 		await runHook("stop", hookInput("s1", dir, { last_assistant_message: "An answer given elsewhere." }), c);
-		expect(spooled(t.agent, "s1")).toEqual(["prompt: A question asked elsewhere.", "reply: An answer given elsewhere."]);
+		// After where the session's transcript is, which confirms its prompts (src/claude/transcript.ts).
+		expect(spooled(t.agent, "s1")).toEqual(["transcript", "prompt: A question asked elsewhere.", "reply: An answer given elsewhere."]);
 	});
 
 	it("in file mode: records, and says only the mod brings memory into this folder", async () => {
@@ -140,7 +150,7 @@ describe("Claude Code outside the agent's folder, by ORRERY_AGENT", () => {
 		expect(await runHook("pre-tool-use", undefined, at(t, dir, {}))).toBe("");
 	});
 
-	it("a Claude Code the agent started (same variables, another Claude Code process): its folder decides", async () => {
+	it("a Claude Code the agent started (same variables, another Claude Code process): started inside the agent's session, it opens no memory, in the agent's folder too", async () => {
 		const t = testAgent({ setup: true });
 		const dir = elsewhere();
 		const token = newToken();
@@ -152,13 +162,13 @@ describe("Claude Code outside the agent's folder, by ORRERY_AGENT", () => {
 		expect(own.hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · /);
 		expect(started).toEqual(["Test"]);
 		expect(claimToken(t.agent.dir, token, agent)).toBe(true);
-		// ...so another Claude Code with the same variables is not the agent (a guard: outside agents it was never one).
-		const out = await runHook("session-start", hookInput("s2", dir), at(t, dir, env, { claudePid: child, startHolder: recording(started) }));
-		expect(out).toBe("");
+		// ...so another Claude Code with the same variables was started inside its session (the token a live other process
+		// claimed says whose): no memory, and why (spec 2026-10-18-agent-permissions §3b).
+		const nested = { systemMessage: "Orrery: started inside Test's session (Claude Code), so this one opens no memory and records nothing." };
+		expect(JSON.parse(await runHook("session-start", hookInput("s2", dir), at(t, dir, env, { claudePid: child, startHolder: recording(started) })))).toEqual(nested);
+		// In the agent's own folder too, where its folder would have made it the agent.
+		expect(JSON.parse(await runHook("session-start", hookInput("s3", t.folder), at(t, t.folder, env, { claudePid: other, startHolder: recording(started) })))).toEqual(nested);
 		expect(started).toEqual(["Test"]);
-		// In the agent's own folder, it is that folder's agent.
-		const inFolder = JSON.parse(await runHook("session-start", hookInput("s3", t.folder), at(t, t.folder, env, { claudePid: other, startHolder: recording(started) })));
-		expect(inFolder.hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · /);
 	});
 
 	it("PreToolUse lets the agent write in the folder it was opened in, and refuses outside it", async () => {
@@ -204,19 +214,20 @@ describe("a Claude Code session another agent recorded, resumed by ORRERY_AGENT"
 		const asAtlas = ctx(config, home, folder, { ORRERY_AGENT: "Atlas" }, {
 			startHolder: (agent, session, nonce, since) => {
 				started.push(agent.name);
-				void Holder.start({ agent, session, nonce, since, claudePid: 4242, models: agentModelSource(fauxModels().models), alive: () => true, tickMs: 20 }).then((h) => h && holders.push(h));
+				void Holder.start({ agent, session, nonce, since, claudePid: process.pid, models: agentModelSource(fauxModels().models), alive: () => true, tickMs: 20 }).then((h) => h && holders.push(h));
 			},
 			modeWaitMs: 5000,
 		});
 		await runHook("session-start", hookInput("s-b", folder, { source: "resume" }), asAtlas);
 		expect(started).toEqual(["Atlas"]);
-		await runHook("user-prompt-submit", hookInput("s-b", folder, { prompt: "Atlas question." }), asAtlas);
+		await runHook("user-prompt-submit", hookInput("s-b", folder, { prompt: "Atlas question.", prompt_id: "p-a" }), asAtlas);
+		transcripts.add("s-b", line.typed("p-a", "Atlas question."));
 		await runHook("stop", hookInput("s-b", folder, { last_assistant_message: "Atlas answer." }), asAtlas);
 		await runHook("session-end", hookInput("s-b", folder, { reason: "other" }), asAtlas);
 		for (const holder of holders.splice(0)) await holder.stop("test over");
 		expect(messages(atlas)).toEqual(["user: Atlas question.", "talk: Atlas answer."]);
 		// Birch's spool holds only Birch's own turn; Atlas's never went there.
-		expect(spooled(birch, "s-b")).toEqual(["prompt: Birch secret question.", "reply: Birch secret answer."]);
+		expect(spooled(birch, "s-b")).toEqual(["transcript", "prompt: Birch secret question.", "reply: Birch secret answer."]);
 	});
 });
 
@@ -245,7 +256,7 @@ describe("Claude Code by ORRERY_AGENT in another agent's folder", () => {
 		expect(await tool("Read", { file_path: config.credentialsPath })).toContain("Orrery guard");
 		// With Birch in mod mode there, nothing of Birch's is loaded: a new Claude Code opens Atlas.
 		claudeSetupMod(birch);
-		const opened = JSON.parse(await runHook("session-start", hookInput("s2", folder), { ...c, claudePid: second }));
+		const opened = JSON.parse(await runHook("session-start", hookInput("s2", folder), { ...c, claudePid: second, peer: () => second }));
 		expect(opened.hookSpecificOutput.additionalContext).toMatch(/^Orrery · Atlas · /);
 		expect(started).toEqual(["Atlas"]);
 	});
@@ -273,21 +284,24 @@ describe("one decision per Claude Code process (src/claude/pick.ts)", () => {
 		const token = newToken();
 		const agent = live();
 		expect(claimToken(t.agent.dir, token, agent.pid)).toBe(true);
-		// A Claude Code the agent started, with the same variables: not the agent.
+		// What the claim holds, read while the agent lives (its start time is in it).
+		const claim = claimText(agent.pid);
+		// A Claude Code the agent started, with the same variables: started inside its session, so not the agent.
 		const started: string[] = [];
 		const env = { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token };
 		const child = at(t, dir, env, { claudePid: live().pid, startHolder: recording(started) });
-		expect(await runHook("session-start", hookInput("s1", dir, { source: "startup" }), child)).toBe("");
+		const nested = JSON.stringify({ systemMessage: "Orrery: started inside Test's session, so this one opens no memory and records nothing." });
+		expect(await runHook("session-start", hookInput("s1", dir, { source: "startup" }), child)).toBe(nested);
 		await kill(agent);
 		expect(await runHook("session-start", hookInput("s1", dir, { source: "compact" }), child)).toBe("");
 		expect(await runHook("session-end", hookInput("s1", dir, { reason: "clear" }), child)).toBe("");
-		expect(await runHook("session-start", hookInput("s2", dir, { source: "clear" }), child)).toBe("");
+		expect(await runHook("session-start", hookInput("s2", dir, { source: "clear" }), child)).toBe(nested);
 		expect(await runHook("session-end", hookInput("s2", dir, { reason: "resume" }), child)).toBe("");
-		expect(await runHook("session-start", hookInput("s1", dir, { source: "resume" }), child)).toBe("");
+		expect(await runHook("session-start", hookInput("s1", dir, { source: "resume" }), child)).toBe(nested);
 		expect(await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "The child's words." }), child)).toBe("");
 		expect(spooled(t.agent, "s1")).toEqual([]);
 		expect(started).toEqual([]);
-		expect(readFileSync(join(t.agent.dir, "claims", token), "utf8")).toBe(`${agent.pid}\n`);
+		expect(readFileSync(join(t.agent.dir, "claims", token), "utf8")).toBe(claim);
 		// `claude --resume` starts a new process: its first decision may take the dead claim over.
 		const resumed = at(t, dir, env, { claudePid: live().pid, startHolder: recording(started) });
 		expect(JSON.parse(await runHook("session-start", hookInput("s1", dir, { source: "resume" }), resumed)).hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · /);
@@ -318,7 +332,7 @@ describe("one decision per Claude Code process (src/claude/pick.ts)", () => {
 		// This process's SessionStart replaces the stale record with its own decision.
 		expect(JSON.parse(await runHook("session-start", hookInput("s1", dir), c)).hookSpecificOutput.additionalContext).toMatch(/^Orrery · Atlas · /);
 		expect(started).toEqual(["Atlas"]);
-		expect(JSON.parse(readFileSync(record, "utf8"))).toEqual({ agent: "Atlas", token: "", kind: "agent", name: "Atlas", by: "env" });
+		expect(JSON.parse(readFileSync(record, "utf8"))).toEqual({ agent: "Atlas", token: "", start: expect.any(String), kind: "agent", name: "Atlas", by: "env" });
 	});
 
 	it("a decision that cannot be recorded refuses the session: nothing recorded, and the guard on", async () => {
@@ -343,15 +357,15 @@ describe("one decision per Claude Code process (src/claude/pick.ts)", () => {
 		const t = testAgent();
 		claudeSetupMod(t.agent);
 		const dir = elsewhere();
-		// The claims folder cannot be made: a file stands where it would go.
-		mkdirSync(t.agent.dir, { recursive: true });
-		writeFileSync(join(t.agent.dir, "claims"), "");
+		// The claims folder cannot be written. (One that can't be read either says nothing of whose a token is: the
+		// session lookup then takes it as another's, src/agent/sessions.ts, and the session opens no memory.)
+		mkdirSync(join(t.agent.dir, "claims"), { recursive: true, mode: 0o500 });
 		const started: string[] = [];
 		const c = at(t, dir, { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: newToken() }, { claudePid: live().pid, startHolder: recording(started) });
 		expect(JSON.parse(await runHook("session-start", hookInput("s1", dir), c)).hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · /);
 		expect(await runHook("pre-tool-use", hookInput("s1", dir, { tool_name: "Read", tool_input: { file_path: t.config.credentialsPath } }), c)).toContain("Orrery guard");
 		await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "Kept by the agent." }), c);
-		expect(spooled(t.agent, "s1")).toEqual(["prompt: Kept by the agent."]);
+		expect(spooled(t.agent, "s1")).toEqual(["transcript", "prompt: Kept by the agent."]);
 	});
 
 	it("SessionEnd at the process's end removes its decision (not at /clear); a new decision prunes a dead process's", async () => {
