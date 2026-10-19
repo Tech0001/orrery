@@ -9,10 +9,10 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readdirSync, readSync, rmSync } from "node:fs";
+import { readdirSync, rmSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { orreryHome } from "../agent/home.ts";
-import { ownFolder, writePrivate } from "../agent/private-file.ts";
+import { ownFolder, readPrivate, writePrivate } from "../agent/private-file.ts";
 import { processAlive } from "../agent/process.ts";
 import { cleanUpOnSignals, type SignalTarget } from "../agent/signal-cleanup.ts";
 
@@ -50,17 +50,7 @@ const TOKEN_MAX = 256;
  * read up to TOKEN_MAX bytes. Throws when it cannot be read; whether it is a token is pickAgent's to say.
  */
 export function readTokenFile(file: string): string {
-	const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-	try {
-		const stat = fstatSync(fd);
-		if (!stat.isFile()) throw new Error("not a file");
-		if (process.getuid !== undefined && stat.uid !== process.getuid()) throw new Error("not this user's file");
-		const buffer = Buffer.alloc(TOKEN_MAX);
-		const read = readSync(fd, buffer, 0, TOKEN_MAX, 0);
-		return buffer.toString("utf8", 0, read).trim();
-	} finally {
-		closeSync(fd);
-	}
+	return readPrivate(file, TOKEN_MAX).trim();
 }
 
 /** A new token file's path for this process (nothing is written). */

@@ -6,7 +6,9 @@
  *    memory; no fallback). The first process that starts a session with that token owns it (claims/<token> in the agent's
  *    folder), so a tool the agent starts itself, which inherits both variables, is not the agent too: it falls through
  *    to 2. A dead owner's claim is taken over only at a session's start (`takeover`); a session's later picks (Claude
- *    Code asks at every hook) keep what its start decided, so it never changes agents midway.
+ *    Code asks at every hook) keep what its start decided, so it never changes agents midway. A claim holds the owner's
+ *    pid, then on Linux the pid namespace that pid is numbered in (claimText), so a reader in another namespace can tell
+ *    it can't judge the claim (src/agent/sessions.ts). A one-line claim, an older version's, reads as before.
  * 2. The agent whose folder holds the folder (agentForCwd).
  * 3. None.
  * Node built-ins and relative imports only: pi and OMP load this file.
@@ -17,7 +19,7 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join, resolve } from "node:path";
 import { type HarnessConfig, insideFolder, type AgentConfig, agentForCwd } from "./config.ts";
 import { beingMade, publish, removeStale, stray, temporaryOf } from "./exclusive.ts";
-import { processAlive } from "./process.ts";
+import { pidNamespace, processAlive } from "./process.ts";
 import { safeText } from "./source-labels.ts";
 
 export const AGENT_ENV = "ORRERY_AGENT";
@@ -69,11 +71,16 @@ export function pickAgent(config: HarnessConfig, where: Where): Picked {
 	return agent === undefined ? { kind: "none" } : { kind: "agent", agent, by: "folder" };
 }
 
+/** The pid a claim's text starts with, or undefined when it starts with none. */
+function pidIn(text: string): number | undefined {
+	const pid = Number.parseInt(text, 10);
+	return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
 /** The pid a claim file holds, or undefined when it holds none (unreadable, empty, or not a pid). */
 function claimant(file: string): number | undefined {
 	try {
-		const pid = Number.parseInt(readFileSync(file, "utf8"), 10);
-		return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+		return pidIn(readFileSync(file, "utf8"));
 	} catch {
 		return undefined;
 	}
@@ -140,7 +147,7 @@ export function claimToken(agentDir: string, token: string, owner: number, alive
 	try {
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
 		pruneClaims(dir, alive);
-		const content = `${owner}\n`;
+		const content = claimText(owner);
 		temporary = temporaryOf(file);
 		writeFileSync(temporary, content, { flag: "wx", mode: 0o600 });
 		if (publish(temporary, file, content) === true) return true;
@@ -162,9 +169,32 @@ export function claimToken(agentDir: string, token: string, owner: number, alive
 	}
 }
 
+/** What a claim by `owner` holds: its pid, then on Linux the pid namespace of this process, the one `owner` is numbered in. */
+export function claimText(owner: number): string {
+	const ns = pidNamespace("self");
+	return ns === undefined ? `${owner}\n` : `${owner}\n${ns}\n`;
+}
+
 /** The pid that claimed `token` for the agent, or undefined when none has (or the token is no token). */
 export function claimedBy(agentDir: string, token: string): number | undefined {
 	return TOKEN.test(token) ? claimant(join(agentDir, "claims", token)) : undefined;
+}
+
+/**
+ * The claim on `token` for the agent: the pid, and the pid namespace it is numbered in when the claim says (Linux); or
+ * undefined when none holds a pid (or the token is no token).
+ */
+export function claimHeld(agentDir: string, token: string): { readonly pid: number; readonly ns?: string } | undefined {
+	if (!TOKEN.test(token)) return undefined;
+	let text: string;
+	try {
+		text = readFileSync(join(agentDir, "claims", token), "utf8");
+	} catch {
+		return undefined;
+	}
+	const pid = pidIn(text);
+	const ns = text.split("\n")[1]?.trim();
+	return pid === undefined ? undefined : ns ? { pid, ns } : { pid };
 }
 
 /** Removes a claim its launcher made, once its tool has exited. */

@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/agent/config.ts";
-import { claimToken, newToken, pickAgent, refusedNotice, releaseClaim, workArea } from "../../src/agent/pick.ts";
+import { claimedBy, claimHeld, claimText, claimToken, newToken, pickAgent, refusedNotice, releaseClaim, workArea } from "../../src/agent/pick.ts";
+import { pidNamespace } from "../../src/agent/process.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -71,7 +72,7 @@ describe("pickAgent", () => {
 		writeFileSync(join(birch, "claims", empty), "");
 		utimesSync(join(birch, "claims", empty), longAgo, longAgo);
 		expect(claimToken(birch, empty, 4245, () => true)).toBe(true);
-		expect(readFileSync(join(birch, "claims", empty), "utf8")).toBe("4245\n");
+		expect(readFileSync(join(birch, "claims", empty), "utf8")).toBe(claimText(4245));
 	});
 
 	it("a token belongs to the first process that starts with it; a live other process falls back to its folder; a dead owner hands it over", () => {
@@ -86,9 +87,25 @@ describe("pickAgent", () => {
 		expect(pickAgent(config, { env, cwd: join(root, "plain"), owner: 4242, alive })).toEqual({ kind: "none" });
 		expect(pickAgent(config, { env, cwd: join(root, "agent-Atlas"), owner: 4242, alive })).toMatchObject({ kind: "agent", by: "folder", agent: { name: "Atlas" } });
 		expect(pickAgent(config, { env, cwd: join(root, "plain"), owner: 4242, alive: () => false })).toMatchObject({ kind: "agent", by: "env" });
-		expect(readFileSync(join(birch, "claims", token), "utf8")).toBe("4242\n");
+		expect(readFileSync(join(birch, "claims", token), "utf8")).toBe(claimText(4242));
 		releaseClaim(birch, token);
 		expect(existsSync(join(birch, "claims", token))).toBe(false);
+	});
+
+	it("a claim holds its owner's pid, then on Linux this process's pid namespace; a one-line claim reads as before", () => {
+		const { config } = world();
+		const birch = join(config.dataDir, "agents", "Birch");
+		const token = newToken();
+		expect(claimToken(birch, token, me)).toBe(true);
+		const ns = pidNamespace("self");
+		expect(ns === undefined).toBe(process.platform !== "linux");
+		expect(readFileSync(join(birch, "claims", token), "utf8")).toBe(ns === undefined ? `${me}\n` : `${me}\n${ns}\n`);
+		expect(claimHeld(birch, token)).toEqual(ns === undefined ? { pid: me } : { pid: me, ns });
+		expect(claimedBy(birch, token)).toBe(me);
+		writeFileSync(join(birch, "claims", token), "4242\n");
+		expect(claimHeld(birch, token)).toEqual({ pid: 4242 });
+		expect(claimedBy(birch, token)).toBe(4242);
+		expect(claimHeld(birch, "not-a-token")).toBeUndefined();
 	});
 
 	it("never prunes a live owner's claim, however old; prunes a dead owner's claim of another token", () => {
@@ -105,7 +122,7 @@ describe("pickAgent", () => {
 		expect(existsSync(join(birch, "claims", gone))).toBe(false);
 		// The month-old claim of a live owner stands: another process with its token is not the agent.
 		expect(claimToken(birch, kept, 4244, alive)).toBe(false);
-		expect(readFileSync(join(birch, "claims", kept), "utf8")).toBe(`${me}\n`);
+		expect(readFileSync(join(birch, "claims", kept), "utf8")).toBe(claimText(me));
 	});
 
 	it("without takeover (a session's later events): only the claim's own owner, never a new or a dead owner's claim", () => {
@@ -124,7 +141,7 @@ describe("pickAgent", () => {
 		const env = { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: dead };
 		expect(pickAgent(config, { env, cwd: join(root, "plain"), owner: 4244, alive, takeover: false })).toEqual({ kind: "none" });
 		expect(pickAgent(config, { env, cwd: join(root, "plain"), owner: 4244, alive })).toMatchObject({ kind: "agent", by: "env", agent: { name: "Birch" } });
-		expect(readFileSync(join(birch, "claims", dead), "utf8")).toBe("4244\n");
+		expect(readFileSync(join(birch, "claims", dead), "utf8")).toBe(claimText(4244));
 	});
 
 	it("makes a claim whole (no temporary file left), and prunes only stray temporary files old enough to be dead", () => {

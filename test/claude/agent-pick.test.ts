@@ -12,7 +12,7 @@ import { pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
 import { agentMode, viewGate, writeSetupMarker } from "../../src/claude/view-file.ts";
 import { type HarnessConfig, type AgentConfig, parseConfig } from "../../src/agent/config.ts";
 import { agentModelSource } from "../../src/agent/model-source.ts";
-import { claimToken, newToken } from "../../src/agent/pick.ts";
+import { claimText, claimToken, newToken } from "../../src/agent/pick.ts";
 import { fauxModels, tempDir } from "../agent/support.ts";
 import { cleanupDirs, messages, seed, type TestAgent, testAgent } from "./support.ts";
 
@@ -287,7 +287,7 @@ describe("one decision per Claude Code process (src/claude/pick.ts)", () => {
 		expect(await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "The child's words." }), child)).toBe("");
 		expect(spooled(t.agent, "s1")).toEqual([]);
 		expect(started).toEqual([]);
-		expect(readFileSync(join(t.agent.dir, "claims", token), "utf8")).toBe(`${agent.pid}\n`);
+		expect(readFileSync(join(t.agent.dir, "claims", token), "utf8")).toBe(claimText(agent.pid));
 		// `claude --resume` starts a new process: its first decision may take the dead claim over.
 		const resumed = at(t, dir, env, { claudePid: live().pid, startHolder: recording(started) });
 		expect(JSON.parse(await runHook("session-start", hookInput("s1", dir, { source: "resume" }), resumed)).hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · /);

@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { installFrom, listVersions, removeVersion } from "../../src/install/install.ts";
-import { newToken } from "../../src/agent/pick.ts";
+import { claimText, newToken } from "../../src/agent/pick.ts";
 import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
 import { readStatus } from "../../src/agent/status-file.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
@@ -289,7 +289,7 @@ describe.skipIf(pi === null)("ORRERY_AGENT inside a real pi", () => {
 			const agent = start();
 			try {
 				await agent.waitFor((f) => f.method === "setStatus" && f.statusKey === "orrery" && f.statusText === "Orrery · Probe · 0 msgs");
-				expect(readFileSync(join(agentDir, "claims", token), "utf8")).toBe(`${agent.child.pid}\n`);
+				expect(readFileSync(join(agentDir, "claims", token), "utf8")).toBe(claimText(agent.child.pid as number));
 				await agent.send({ type: "prompt", message: "The codename is Cedar." });
 				await agent.waitFor((f) => f.type === "agent_end");
 				const deadline = Date.now() + 30_000;

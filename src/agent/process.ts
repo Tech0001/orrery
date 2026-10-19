@@ -1,10 +1,12 @@
 /**
  * Processes, asked about once for the whole agent code: whether one lives (status files, the CLI, Claude Code's holder),
- * and its parent and name (Codex's own process, src/codex/host.ts). Node built-ins only: pi and OMP load this file.
+ * its parent and name (Codex's own process, src/codex/host.ts), and on Linux the pid namespace it is numbered in and
+ * this boot's id (session records, src/agent/sessions.ts; token claims, src/agent/pick.ts). Node built-ins only: pi and
+ * OMP load this file.
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, readlinkSync } from "node:fs";
 import { basename } from "node:path";
 
 /**
@@ -18,6 +20,40 @@ export function processAlive(pid: number): boolean {
 		return true;
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/**
+ * macOS's ps output for `args`, or undefined when it fails (a gone pid makes it exit 1). By its path, so a `ps` first on
+ * PATH isn't the one asked; in UTC and the C locale, so what it prints (lstart) reads alike in every process whatever its
+ * TZ or LANG.
+ */
+export function psOutput(args: readonly string[]): string | undefined {
+	const ps = spawnSync("/bin/ps", args, { encoding: "utf8", timeout: 2000, env: { ...process.env, LC_ALL: "C", TZ: "UTC" } });
+	return ps.status === 0 ? ps.stdout : undefined;
+}
+
+/**
+ * Linux: the pid namespace process `pid` (or this one, "self") is in, as its /proc/<pid>/ns/pid link reads
+ * ("pid:[4026531836]"). Undefined elsewhere, or when it can't be read. A pid means a process only within the namespace it
+ * is numbered in: from another one, kill(0) finds it gone and /proc shows another process, or none.
+ */
+export function pidNamespace(pid: number | "self"): string | undefined {
+	if (process.platform !== "linux") return undefined;
+	try {
+		return readlinkSync(`/proc/${pid}/ns/pid`);
+	} catch {
+		return undefined;
+	}
+}
+
+/** Linux: this boot's id, so a pid and start time recorded before a reboot never match after it. Undefined elsewhere. */
+export function bootId(): string | undefined {
+	if (process.platform !== "linux") return undefined;
+	try {
+		return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() || undefined;
+	} catch {
+		return undefined;
 	}
 }
 
@@ -47,8 +83,7 @@ export function processInfo(pid: number): ProcessInfo | undefined {
 			return stat !== undefined && Number.isInteger(ppid) ? { ppid, name: stat.name } : undefined;
 		}
 		if (process.platform === "darwin") {
-			const ps = spawnSync("ps", ["-o", "ppid=", "-o", "comm=", "-p", String(pid)], { encoding: "utf8", timeout: 2000 });
-			const match = /^\s*(\d+)\s+(.+?)\s*$/.exec(ps.stdout ?? "");
+			const match = /^\s*(\d+)\s+(.+?)\s*$/.exec(psOutput(["-o", "ppid=", "-o", "comm=", "-p", String(pid)]) ?? "");
 			return match === null ? undefined : { ppid: Number(match[1]), name: basename(match[2] as string).replace(/^-/, "") };
 		}
 	} catch {

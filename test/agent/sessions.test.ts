@@ -1,13 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/agent/config.ts";
 import { orreryHome } from "../../src/agent/home.ts";
 import { ALLOWED_INSIDE as ALLOWED_ALONE } from "../../src/agent/inside-commands.ts";
-import { claimToken, newToken } from "../../src/agent/pick.ts";
+import { claimHeld, claimToken, newToken } from "../../src/agent/pick.ts";
 import { writePrivate } from "../../src/agent/private-file.ts";
+import { bootId, pidNamespace } from "../../src/agent/process.ts";
 import {
 	ALLOWED_INSIDE,
 	ancestors,
@@ -50,17 +51,37 @@ const hostFile = (dataDir: string, pid: number) => join(dataDir, "session-hosts"
 
 type Table = Record<number, { readonly ppid: number; readonly start: string }>;
 
+/**
+ * The pid namespace the fakes' processes and this test are in: this process's own on Linux, so the claims real
+ * claimToken writes (with this process's namespace) are judged from it; any name elsewhere (claims there have none).
+ */
+const NS = pidNamespace("self") ?? "pid:[4026531836]";
+const BOOT = "0b0b0b0b-boot";
+
 /** A /proc/<pid>/stat line: the name holds spaces and parentheses, field 4 is the parent, field 22 the start time. */
 const statLine = (pid: number, ppid: number, start: string) => `${pid} (a (b) c) S ${ppid} ${Array(17).fill("0").join(" ")} ${start} 4096 0\n`;
 
-/** A fake Linux: the table read through a fake /proc; a process lives while the table has it. */
-function linux(table: Table, from?: number): SessionDeps {
+/**
+ * A fake Linux: the table read through a fake /proc; a process lives while the table has it; every process is in NS,
+ * and so is this one unless `here` says otherwise; the boot is BOOT.
+ */
+function linux(table: Table, from?: number, here: string | undefined = NS): SessionDeps {
 	return {
 		platform: "linux",
 		proc: (pid) => (table[pid] === undefined ? undefined : statLine(pid, table[pid].ppid, table[pid].start)),
 		alive: (pid) => table[pid] !== undefined,
+		ns: (pid) => (pid === "self" ? here : table[pid] === undefined ? undefined : NS),
+		boot: () => BOOT,
 		...(from === undefined ? {} : { from }),
 	};
+}
+
+/**
+ * This process as a child pid namespace sees the fakes' processes (`unshare -p`): its own namespace is another, kill(0)
+ * finds every one of them gone, and /proc shows them (`/proc` not remounted) or nothing (`--mount-proc`).
+ */
+function elsewhere(table: Table, procfs: "kept" | "remounted", from?: number): SessionDeps {
+	return { ...linux(table, from, "pid:[4026533000]"), alive: () => false, ...(procfs === "remounted" ? { proc: () => undefined } : {}) };
 }
 
 /** A fake macOS: the table read through a fake ps, each call kept. */
@@ -88,7 +109,9 @@ describe("session records", () => {
 		expect(recordSession(dir, { agent: "Atlas", tool: "pi", pid: process.pid })).toBe(true);
 		const start = processStart(process.pid);
 		expect(start).toMatch(/\S/);
-		expect(liveSession(dir, process.pid)).toEqual({ agent: "Atlas", tool: "pi", pid: process.pid, start });
+		const place = process.platform === "linux" ? { ns: pidNamespace("self"), boot: bootId() } : {};
+		expect(place).not.toMatchObject({ ns: undefined });
+		expect(liveSession(dir, process.pid)).toEqual({ agent: "Atlas", tool: "pi", pid: process.pid, start, ...place });
 		expect(statSync(hostFile(dir, process.pid)).mode & 0o777).toBe(0o600);
 		expect(statSync(join(dir, "session-hosts")).mode & 0o777).toBe(0o700);
 		forgetSession(dir, process.pid);
@@ -102,7 +125,7 @@ describe("session records", () => {
 		const dir = temp();
 		const deps = linux(chain());
 		expect(recordSession(dir, { agent: "Birch", tool: "codex", pid: 30, codexSession: "019a-thread" }, deps)).toBe(true);
-		expect(liveSession(dir, 30, deps)).toEqual({ agent: "Birch", tool: "codex", pid: 30, start: "300", codexSession: "019a-thread" });
+		expect(liveSession(dir, 30, deps)).toEqual({ agent: "Birch", tool: "codex", pid: 30, start: "300", codexSession: "019a-thread", ns: NS, boot: BOOT });
 	});
 
 	it("a record whose pid now names a process started at another time (a reused pid) is no session, and goes", () => {
@@ -135,18 +158,52 @@ describe("session records", () => {
 		expect(liveSession(dir, 30, linux(table))).toMatchObject({ agent: "Atlas" });
 	});
 
-	it("a file that is no record: gone when its process is, kept while it lives; another pid's record is no record of this one", () => {
+	it("a file that is no record: on macOS gone when its process is, kept while it lives; on Linux kept (its namespace unknown)", () => {
 		const dir = temp();
 		const table = chain();
 		mkdirSync(join(dir, "session-hosts"), { recursive: true });
 		writeFileSync(hostFile(dir, 30), "not json");
-		expect(liveSession(dir, 30, linux(table))).toBeUndefined();
+		for (const deps of [linux(table), darwin(table)]) expect(liveSession(dir, 30, deps)).toBeUndefined();
 		expect(existsSync(hostFile(dir, 30))).toBe(true);
 		delete table[30];
 		expect(liveSession(dir, 30, linux(table))).toBeUndefined();
+		expect(existsSync(hostFile(dir, 30))).toBe(true);
+		expect(liveSession(dir, 30, darwin(table))).toBeUndefined();
 		expect(existsSync(hostFile(dir, 30))).toBe(false);
-		writeFileSync(hostFile(dir, 40), JSON.stringify({ agent: "Atlas", tool: "pi", pid: 50, start: "500" }));
+		// Another pid's record is no record of this one; a Linux record without its namespace is judged by nobody.
+		writeFileSync(hostFile(dir, 40), JSON.stringify({ agent: "Atlas", tool: "pi", pid: 50, start: "500", ns: NS, boot: BOOT }));
 		expect(liveSession(dir, 40, linux(table))).toBeUndefined();
+		writeFileSync(hostFile(dir, 50), JSON.stringify({ agent: "Atlas", tool: "pi", pid: 50, start: "500" }));
+		expect(liveSession(dir, 50, linux(table))).toBeUndefined();
+		delete table[50];
+		expect(liveSession(dir, 50, linux(table))).toBeUndefined();
+		expect(existsSync(hostFile(dir, 50))).toBe(true);
+	});
+
+	it("never reads a record through a link, nor waits on a FIFO in its place; both are kept", () => {
+		const dir = temp();
+		const table = chain();
+		expect(recordSession(dir, { agent: "Atlas", tool: "pi", pid: 30 }, linux(table))).toBe(true);
+		renameSync(hostFile(dir, 30), join(dir, "elsewhere.json"));
+		symlinkSync(join(dir, "elsewhere.json"), hostFile(dir, 30));
+		expect(liveSession(dir, 30, linux(table))).toBeUndefined();
+		expect(lstatSync(hostFile(dir, 30)).isSymbolicLink()).toBe(true);
+		const fifo = spawnSync("mkfifo", [hostFile(dir, 40)]);
+		if (fifo.status === 0) {
+			expect(liveSession(dir, 40, linux(table))).toBeUndefined();
+			expect(lstatSync(hostFile(dir, 40)).isFIFO()).toBe(true);
+			// A marker pointing at either is a session of unknown identity.
+			const { config } = world();
+			expect(insideSession([dir], { CLAUDE_PID: "40" }, { ...config, dataDir: dir }, linux(table, 50))).toMatchObject({ agent: undefined, via: "marker" });
+		}
+	});
+
+	it("a record from another boot is stale, though its pid, start and namespace match", () => {
+		const dir = temp();
+		const table = chain();
+		expect(recordSession(dir, { agent: "Atlas", tool: "pi", pid: 30 }, linux(table))).toBe(true);
+		expect(liveSession(dir, 30, { ...linux(table), boot: () => "1c1c1c1c-boot" })).toBeUndefined();
+		expect(existsSync(hostFile(dir, 30))).toBe(false);
 	});
 
 	it("a new record takes out the dead ones beside it", () => {
@@ -258,10 +315,15 @@ describe("insideSession by markers", () => {
 		expect(insideSession([config.dataDir], { ORRERY_AGENT: "atlas", ORRERY_AGENT_TOKEN: token }, config, deps)).toEqual({ agent: "Atlas", tool: undefined, via: "marker", dataDir: config.dataDir });
 		expect(insideSession([config.dataDir], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: newToken() }, config, deps)).toEqual({ agent: undefined, tool: undefined, via: "marker", dataDir: config.dataDir });
 		expect(insideSession([config.dataDir], { ORRERY_AGENT: "Atlas" }, config, deps)).toMatchObject({ agent: undefined, via: "marker" });
-		// Birch's claims hold no Atlas token.
-		expect(insideSession([config.dataDir], { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: token }, config, deps)).toMatchObject({ agent: undefined, via: "marker" });
+		// The token proves Atlas whatever name is beside it, or none (it is found in every agent's claims).
+		expect(insideSession([config.dataDir], { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: token }, config, deps)).toMatchObject({ agent: "Atlas", via: "marker" });
+		expect(insideSession([config.dataDir], { ORRERY_AGENT: "Ghost", ORRERY_AGENT_TOKEN: token }, config, deps)).toMatchObject({ agent: "Atlas", via: "marker" });
+		expect(insideSession([config.dataDir], { ORRERY_AGENT_TOKEN: token }, config, deps)).toEqual({ agent: "Atlas", tool: undefined, via: "marker", dataDir: config.dataDir });
+		// A token alone that no live process claimed is no marker.
+		expect(insideSession([config.dataDir], { ORRERY_AGENT_TOKEN: newToken() }, config, deps)).toBeUndefined();
 		delete table[77];
 		expect(insideSession([config.dataDir], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token }, config, deps)).toMatchObject({ agent: undefined, via: "marker" });
+		expect(insideSession([config.dataDir], { ORRERY_AGENT_TOKEN: token }, config, deps)).toBeUndefined();
 	});
 
 	it("a claimed ORRERY_AGENT takes its tool from the claimant's record", () => {
@@ -333,14 +395,17 @@ describe("insideSession by markers", () => {
 		const plugin = join(root, "app", "current", "extensions", "opencode");
 		const content = (agent: string, folder = plugin) => configContent(folder, { agent, tokenFile });
 		expect(insideSession([config.dataDir], { ...env, OPENCODE_CONFIG_CONTENT: content("Atlas") }, config, deps)).toEqual({ agent: undefined, tool: "opencode", via: "marker", dataDir: config.dataDir });
+		// A plugin for an agent the config doesn't have, its token unclaimed: no marker.
+		expect(insideSession([config.dataDir], { ...env, OPENCODE_CONFIG_CONTENT: content("Ghost") }, config, deps)).toBeUndefined();
 		claimToken(join(config.dataDir, "agents", "Atlas"), token, 77, deps.alive);
 		expect(insideSession([config.dataDir], { ...env, OPENCODE_CONFIG_CONTENT: content("Atlas") }, config, deps)).toEqual({ agent: "Atlas", tool: "opencode", via: "marker", dataDir: config.dataDir });
 		// Among the person's own plugins, and from a checkout's plugin folder, alike.
 		const theirs = JSON.stringify({ plugins: ["their-plugin", ...JSON.parse(content("Atlas", join(root, "orrery", "src", "opencode", "plugin"))).plugins] });
 		expect(insideSession([config.dataDir], { ...env, OPENCODE_CONFIG_CONTENT: theirs }, config, deps)).toMatchObject({ agent: "Atlas", via: "marker" });
-		// Not Orrery's plugin, a plugin for an agent the config doesn't have, or no JSON: no marker.
+		// Its token claimed, the name in the entry doesn't matter.
+		expect(insideSession([config.dataDir], { ...env, OPENCODE_CONFIG_CONTENT: content("Ghost") }, config, deps)).toMatchObject({ agent: "Atlas", via: "marker" });
+		// Not Orrery's plugin, or no JSON: no marker.
 		expect(insideSession([config.dataDir], { ...env, OPENCODE_CONFIG_CONTENT: content("Atlas", join(root, "elsewhere")) }, config, deps)).toBeUndefined();
-		expect(insideSession([config.dataDir], { ...env, OPENCODE_CONFIG_CONTENT: content("Ghost") }, config, deps)).toBeUndefined();
 		expect(insideSession([config.dataDir], { ...env, OPENCODE_CONFIG_CONTENT: "{plugins: [" }, config, deps)).toBeUndefined();
 		// A token file outside Orrery's tokens folder proves nothing.
 		const stray = join(root, "opencode-123-0123456789ab");
@@ -454,6 +519,99 @@ describe("insideSession for a tool asking about itself (self)", () => {
 		const token = newToken();
 		claimToken(join(config.dataDir, "agents", "Birch"), token, 88, self.alive);
 		expect(insideSession([config.dataDir], { CODEX_THREAD_ID: "019a-thread", ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: token }, config, self)).toEqual({ agent: "Birch", tool: "codex", via: "marker", dataDir: config.dataDir });
+	});
+});
+
+describe("pid namespaces (Linux)", () => {
+	/** chain() plus 88 (another tool) and 60 (a tool asking about itself), each under 1. */
+	const tools = (): Table => ({ ...chain(), 60: { ppid: 1, start: "600" }, 88: { ppid: 1, start: "880" } });
+
+	for (const procfs of ["kept", "remounted"] as const) {
+		it(`a reader in another pid namespace (/proc ${procfs}) keeps every record, counts none for its ancestry, and takes a marker pointing at one for a session of unknown identity`, () => {
+			const { config } = world();
+			const table = tools();
+			const records = [
+				{ agent: "Atlas", tool: "pi", pid: 30 },
+				{ agent: "Atlas", tool: "claude-code", pid: 77 },
+				{ agent: "Birch", tool: "codex", pid: 88, codexSession: "019a-thread" },
+			] as const;
+			for (const record of records) expect(recordSession(config.dataDir, record, linux(table))).toBe(true);
+			const kept = () => records.every((record) => existsSync(hostFile(config.dataDir, record.pid)));
+			const blind = { ...elsewhere(table, procfs, 50), ns: (pid: number | "self") => (pid === "self" ? undefined : NS) };
+			for (const deps of [elsewhere(table, procfs, 50), blind]) {
+				for (const record of records) expect(liveSession(config.dataDir, record.pid, deps)).toBeUndefined();
+				expect(insideSession([config.dataDir], {}, config, deps)).toBeUndefined();
+				expect(insideSession([config.dataDir], { CLAUDE_PID: "77" }, config, deps)).toEqual({ agent: undefined, tool: "claude-code", via: "marker", dataDir: config.dataDir });
+				expect(insideSession([config.dataDir], { CODEX_THREAD_ID: "019a-thread" }, config, deps)).toEqual({ agent: undefined, tool: "codex", via: "marker", dataDir: config.dataDir });
+				// A new record made there doesn't take them out either (nor is made: its host isn't numbered here).
+				expect(recordSession(config.dataDir, { agent: "Birch", tool: "pi", pid: 60 }, deps)).toBe(false);
+				expect(kept()).toBe(true);
+			}
+			// Back in their own namespace they are live.
+			expect(liveSession(config.dataDir, 77, linux(table))).toMatchObject({ agent: "Atlas" });
+		});
+	}
+
+	it("a claim numbered in another pid namespace proves nothing, and to a tool asking about itself is no launch of its own", () => {
+		const { config } = world();
+		const table = tools();
+		const atlas = join(config.dataDir, "agents", "Atlas");
+		mkdirSync(join(atlas, "claims"), { recursive: true });
+		const [token, mine] = [newToken(), newToken()];
+		// 77 lives here, but its claim was made in another namespace, where 77 is another process; so was 60's.
+		writeFileSync(join(atlas, "claims", token), "77\npid:[4026533000]\n");
+		writeFileSync(join(atlas, "claims", mine), "60\npid:[4026533000]\n");
+		const deps = linux(table, 50);
+		const unknown = { agent: undefined, tool: undefined, via: "marker", dataDir: config.dataDir };
+		expect(insideSession([config.dataDir], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token }, config, deps)).toEqual(unknown);
+		expect(insideSession([config.dataDir], { ORRERY_AGENT_TOKEN: token }, config, deps)).toEqual(unknown);
+		expect(insideSession([config.dataDir], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token }, config, { ...deps, self: 60 })).toEqual(unknown);
+		expect(insideSession([config.dataDir], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: mine }, config, { ...deps, self: 60 })).toEqual(unknown);
+		// A claim made here (real claimToken: this process's namespace) read from another namespace, or where this one's
+		// can't be read: the same. A tool asking about itself there is inside a session it can't name.
+		const here = newToken();
+		claimToken(atlas, here, 77, deps.alive);
+		for (const reader of [elsewhere(table, "kept", 50), { ...deps, ns: (pid: number | "self") => (pid === "self" ? undefined : NS) }]) {
+			if (pidNamespace("self") === undefined) break; // no namespaces here: the claim says none
+			expect(insideSession([config.dataDir], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: here }, config, reader)).toEqual(unknown);
+			expect(insideSession([config.dataDir], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: here }, config, { ...reader, self: 60 })).toEqual(unknown);
+		}
+		// From its own namespace it proves Atlas; an older one-line claim is judged as before, by its pid.
+		expect(insideSession([config.dataDir], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: here }, config, deps)).toMatchObject({ agent: "Atlas" });
+		const old = newToken();
+		writeFileSync(join(atlas, "claims", old), "77\n");
+		expect(insideSession([config.dataDir], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: old }, config, deps)).toMatchObject({ agent: "Atlas" });
+	});
+
+	const unshare = process.platform === "linux" && spawnSync("unshare", ["-Upf", "true"]).status === 0;
+	it.skipIf(!unshare)("a real process in a new pid namespace (unshare -Upf, with and without --mount-proc) keeps the record and the claim, and is inside a session it can't name", () => {
+		const { root, toml, config } = world();
+		const dir = config.dataDir;
+		const token = newToken();
+		const atlas = join(dir, "agents", "Atlas");
+		expect(recordSession(dir, { agent: "Atlas", tool: "claude-code", pid: process.pid })).toBe(true);
+		expect(claimToken(atlas, token, process.pid)).toBe(true);
+		const script = `Promise.all([import(${JSON.stringify(SESSIONS)}), import(${JSON.stringify(CONFIG)})]).then(([s, c]) => {
+			const config = c.parseConfig(${JSON.stringify(toml)}, ${JSON.stringify(root)});
+			const claude = s.insideSession([config.dataDir], { CLAUDE_PID: ${JSON.stringify(String(process.pid))} }, config) ?? null;
+			const nested = s.insideSession([config.dataDir], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: ${JSON.stringify(token)} }, config, { self: process.pid }) ?? null;
+			process.stdout.write(JSON.stringify({ claude, nested }));
+		})`;
+		const node = [process.execPath, "--disable-warning=ExperimentalWarning", "-e", script];
+		const run = (prefix: string[]) => {
+			const child = spawnSync(prefix[0] ?? node[0], [...prefix.slice(1), ...(prefix.length > 0 ? node : node.slice(1))], { encoding: "utf8", env: { PATH: process.env.PATH, HOME: root } });
+			return { out: JSON.parse(child.stdout || "null"), err: child.stderr };
+		};
+		// In this namespace the child finds this process, its parent, by ancestry.
+		const same = run([]);
+		const found = { agent: "Atlas", tool: "claude-code", via: "ancestry", dataDir: dir };
+		expect(same.out, same.err).toEqual({ claude: found, nested: found });
+		for (const prefix of [["unshare", "-Upf"], ["unshare", "-Upf", "--mount-proc"]]) {
+			const inside = run(prefix);
+			expect(inside.out, `${prefix.join(" ")}: ${inside.err}`).toEqual({ claude: { agent: undefined, tool: "claude-code", via: "marker", dataDir: dir }, nested: { agent: undefined, via: "marker", dataDir: dir } });
+			expect(liveSession(dir, process.pid)).toMatchObject({ agent: "Atlas" });
+			expect(claimHeld(atlas, token)?.pid).toBe(process.pid);
+		}
 	});
 });
 
