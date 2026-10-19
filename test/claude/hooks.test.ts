@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,6 +8,7 @@ import { HOOK_EVENTS, type HookContext, runHook } from "../../src/claude/hooks.t
 import { holderLog, sessionDir, setupMarker, viewFile } from "../../src/claude/paths.ts";
 import { claudeSetup, claudeSetupMod } from "../../src/claude/setup.ts";
 import { claudeSession } from "../../src/claude/pick.ts";
+import { newToken } from "../../src/agent/pick.ts";
 import { listSessions, pendingEvents, readEvent, readMode, writeMode } from "../../src/claude/spool.ts";
 import { VIEW_IMPORT, writeSetupMarker } from "../../src/claude/view-file.ts";
 import { forgetSession, liveSession, processStart } from "../../src/agent/sessions.ts";
@@ -253,7 +255,8 @@ describe("the caller check (spec 2026-10-18-agent-permissions 3c): a writing hoo
 		const genuine = await recordingSession(t);
 		rmSync(join(t.config.dataDir, "claude-processes", `${CLAUDE}.json`));
 		forgetSession(t.config.dataDir, CLAUDE);
-		expect(await runHook("user-prompt-submit", input(t, { prompt: "Lost.", prompt_id: "p-1" }), genuine)).toBe("");
+		// As a session open across the update from 0.8.0 looks: said once (see below), nothing spooled.
+		expect(JSON.parse(await runHook("user-prompt-submit", input(t, { prompt: "Lost.", prompt_id: "p-1" }), genuine))).toEqual({ systemMessage: expect.stringContaining("restart it") });
 		await recordingSession(t);
 		expect(await runHook("user-prompt-submit", input(t, { prompt: "Lost too.", prompt_id: "p-2" }), { ...genuine, processStart: () => "another start" })).toBe("");
 		expect(spooled(t)).toEqual(["transcript", "transcript"]);
@@ -398,6 +401,92 @@ describe("the caller check (spec 2026-10-18-agent-permissions 3c): a writing hoo
 		expect(readMode(t.agent.dir, "s1")).toMatchObject({ mode: "read-only", reason: notice });
 		await runHook("user-prompt-submit", input(t, { prompt: "Not recorded.", prompt_id: "p-1" }), c);
 		expect(pendingEvents(t.agent.dir, "s1")).toEqual([]);
+	});
+});
+
+describe("a Claude Code session left open across the update from 0.8.0: its decision holds no start, and it has no host record", () => {
+	const UPDATED = "Orrery was updated while this session was open; restart it to keep recording.";
+	const digest = (token: string) => createHash("sha256").update(token).digest("hex");
+	/** The process's decision as 0.8.0 recorded it (an ORRERY_AGENT launch's): whose and what, no start. */
+	function oldDecision(t: TestAgent, identity: { readonly agent: string; readonly token: string }): void {
+		const records = join(t.config.dataDir, "claude-processes");
+		mkdirSync(records, { recursive: true, mode: 0o700 });
+		writeFileSync(join(records, `${CLAUDE}.json`), JSON.stringify({ ...identity, kind: "agent", name: "Test", by: "env" }));
+	}
+	/** Session `session` as 0.8.0's recorder records it. */
+	const recording = (t: TestAgent, session = "s1") => writeMode(t.agent.dir, session, { mode: "recording", pid: process.pid, claudePid: CLAUDE, nonce: "old", since: Date.now() - 60_000 });
+	const spooled = (t: TestAgent, session = "s1") => pendingEvents(t.agent.dir, session).map((e) => readEvent(e.path)?.kind);
+
+	it("launched with a token: its prompts and replies still spool, its caller still checked; another token's record, or one with none, is refused", async () => {
+		const t = testAgent({ setup: true });
+		recording(t);
+		const token = newToken();
+		const c = ctx(t, { env: { CLAUDE_PROJECT_DIR: t.folder, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token } });
+		oldDecision(t, { agent: "Test", token: digest(token) });
+		expect(await runHook("user-prompt-submit", input(t, { prompt: "Across the update.", prompt_id: "p-1" }), c)).toBe("");
+		expect(await runHook("stop", input(t, { last_assistant_message: "Still recorded." }), c)).toBe("");
+		expect(spooled(t)).toEqual(["prompt", "reply"]);
+		// A forged call (the shell's own pipe) is refused as ever.
+		expect(await runHook("user-prompt-submit", input(t, { prompt: "Forged.", prompt_id: "p-2" }), { ...c, peer: () => "not-socket" })).toBe("");
+		// The record of another token: not this launch's.
+		oldDecision(t, { agent: "Test", token: digest(newToken()) });
+		await runHook("user-prompt-submit", input(t, { prompt: "Another launch's.", prompt_id: "p-3" }), c);
+		// ORRERY_AGENT without a token: a record no one's.
+		oldDecision(t, { agent: "Test", token: "" });
+		await runHook("user-prompt-submit", input(t, { prompt: "No token.", prompt_id: "p-4" }), ctx(t, { env: { CLAUDE_PROJECT_DIR: t.folder, ORRERY_AGENT: "Test" } }));
+		expect(spooled(t)).toEqual(["prompt", "reply"]);
+	});
+
+	it("one it stops recording (picked by its folder, or ORRERY_AGENT without a token) says so once a process and session, and spools nothing", async () => {
+		const t = testAgent({ setup: true });
+		recording(t);
+		const c = ctx(t);
+		// 0.8.0 recorded no decision for a folder's pick, and no host record.
+		rmSync(join(t.config.dataDir, "claude-processes", `${CLAUDE}.json`));
+		forgetSession(t.config.dataDir, CLAUDE);
+		expect(JSON.parse(await runHook("user-prompt-submit", input(t, { prompt: "After the update.", prompt_id: "p-1" }), c))).toEqual({ systemMessage: UPDATED });
+		expect(await runHook("stop", input(t, { last_assistant_message: "A reply." }), c)).toBe("");
+		expect(await runHook("user-prompt-submit", input(t, { prompt: "Again.", prompt_id: "p-2" }), c)).toBe("");
+		expect(spooled(t)).toEqual([]);
+		// Another session of the process says it too, once.
+		recording(t, "s2");
+		expect(JSON.parse(await runHook("stop", input(t, { session_id: "s2", last_assistant_message: "A reply." }), c))).toEqual({ systemMessage: UPDATED });
+		expect(await runHook("user-prompt-submit", input(t, { session_id: "s2", prompt: "Again.", prompt_id: "p-3" }), c)).toBe("");
+		const u = testAgent({ setup: true });
+		recording(u);
+		oldDecision(u, { agent: "Test", token: "" });
+		const v = ctx(u, { env: { CLAUDE_PROJECT_DIR: u.folder, ORRERY_AGENT: "Test" } });
+		expect(JSON.parse(await runHook("user-prompt-submit", input(u, { prompt: "After the update.", prompt_id: "p-1" }), v))).toEqual({ systemMessage: UPDATED });
+		expect(spooled(u)).toEqual([]);
+	});
+
+	it("says nothing where the session wasn't recording, to a subagent, to a forged or unconfirmed caller, or for a Claude Code recorded since", async () => {
+		const t = testAgent({ setup: true });
+		const c = ctx(t);
+		rmSync(join(t.config.dataDir, "claude-processes", `${CLAUDE}.json`));
+		forgetSession(t.config.dataDir, CLAUDE);
+		const prompt = (extra: Record<string, unknown> = {}, at: HookContext = c) => runHook("user-prompt-submit", input(t, { prompt: "Words.", prompt_id: "p-1", ...extra }), at);
+		// No recorder recorded it, or it ran read-only.
+		expect(await prompt()).toBe("");
+		writeMode(t.agent.dir, "s1", { mode: "read-only", pid: process.pid, claudePid: CLAUDE, nonce: "old", since: 0, reason: "held" });
+		expect(await prompt()).toBe("");
+		recording(t);
+		expect(await prompt({ agent_id: "a1" })).toBe("");
+		expect(await prompt({}, { ...c, peer: () => "not-socket" })).toBe("");
+		expect(await prompt({}, { ...c, peer: () => CLAUDE + 1 })).toBe("");
+		expect(await prompt({}, { ...c, processStart: () => undefined })).toBe("");
+		// Recorded by this version since, at another start (a reused pid): not the update's doing.
+		claudeSession(t.config, { env: c.env, cwd: t.folder, pid: CLAUDE, decide: true, start: () => "another start" });
+		forgetSession(t.config.dataDir, CLAUDE);
+		expect(await prompt()).toBe("");
+		// Not set up for Claude Code here.
+		const u = testAgent();
+		const v = ctx(u);
+		rmSync(join(u.config.dataDir, "claude-processes", `${CLAUDE}.json`));
+		forgetSession(u.config.dataDir, CLAUDE);
+		recording(u);
+		expect(await runHook("user-prompt-submit", input(u, { prompt: "Words.", prompt_id: "p-1" }), v)).toBe("");
+		expect(spooled(t)).toEqual([]);
 	});
 });
 

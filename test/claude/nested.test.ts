@@ -8,7 +8,8 @@ import { forgetSession, liveSession, nestedNotice, processStart, recordSession, 
 import { type HookContext, runHook } from "../../src/claude/hooks.ts";
 import { modView } from "../../src/claude/mod-view.ts";
 import { claudeHookPid, claudeRefusedNotice, claudeSession, forgetProcess, UNCONFIRMED_NOTICE } from "../../src/claude/pick.ts";
-import { pendingEvents, readMode } from "../../src/claude/spool.ts";
+import { pendingEvents, readMode, writeMode } from "../../src/claude/spool.ts";
+import { processStartedAt } from "../../src/agent/process.ts";
 import { claudeSetupMod } from "../../src/claude/setup.ts";
 import { seed } from "./support.ts";
 import { transcriptIn } from "./transcript-lines.ts";
@@ -190,7 +191,7 @@ describe("a Claude Code started inside an agent's session (spec 2026-10-18-agent
 		forgetProcess(config, process.pid);
 	});
 
-	it("the mod's view gives the notice, not memory", async () => {
+	it("the mod's view gives no memory (SessionStart says why)", async () => {
 		const { root, config, dataDir } = nestedWorld();
 		const birch = config.agents.get("Birch");
 		if (birch === undefined) throw new Error("no Birch");
@@ -199,9 +200,9 @@ describe("a Claude Code started inside an agent's session (spec 2026-10-18-agent
 		hostRecord(dataDir, "Atlas", "pi", process.ppid);
 		const dir = join(root, "agent-Birch");
 		// Before any decision, and after one.
-		expect(await modView(config, { cwd: dir, env: {}, owner: process.pid })).toEqual({ lane: null, notice: ATLAS_PI });
+		expect(await modView(config, { cwd: dir, env: {}, owner: process.pid })).toEqual({ lane: null });
 		claudeSession(config, { env: {}, cwd: dir, pid: process.pid, decide: true });
-		expect(await modView(config, { cwd: dir, env: {}, owner: process.pid, session: "s1" })).toEqual({ lane: null, notice: ATLAS_PI });
+		expect(await modView(config, { cwd: dir, env: {}, owner: process.pid, session: "s1" })).toEqual({ lane: null });
 		forgetProcess(config, process.pid);
 	});
 });
@@ -269,9 +270,14 @@ describe("a Claude Code session's host record (spec 2026-10-18-agent-permissions
 			await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "Still not recorded." }), at());
 			await runHook("stop", hookInput("s1", dir, { last_assistant_message: "A reply." }), at());
 			expect(pendingEvents(memory.dir, "s1")).toEqual([]);
-			expect(readMode(memory.dir, "s1")).toMatchObject({ mode: "read-only", claudePid: process.pid, reason: UNCONFIRMED_NOTICE });
+			const mark = readMode(memory.dir, "s1");
+			expect(mark).toMatchObject({ mode: "read-only", claudePid: process.pid, reason: UNCONFIRMED_NOTICE });
 			// Another session of the process (/clear) is decided as ever.
 			expect(JSON.parse(await runHook("session-start", hookInput("s2", dir, { source: "clear" }), at({ startHolder: () => {} }))).hookSpecificOutput.additionalContext).toMatch(new RegExp(`^Orrery · ${agent} · `));
+			// A mark made before this Claude Code started is a gone one's, whose pid it reuses: resuming s1 decides as ever.
+			if (mark === undefined) throw new Error("no mark");
+			writeMode(memory.dir, "s1", { ...mark, since: (processStartedAt(process.pid) as number) - 60_000 });
+			expect(JSON.parse(await runHook("session-start", hookInput("s1", dir, { source: "resume" }), at({ startHolder: () => {} }))).hookSpecificOutput.additionalContext).toMatch(new RegExp(`^Orrery · ${agent} · `));
 			forgetProcess(config, process.pid);
 		}
 	});

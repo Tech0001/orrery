@@ -41,9 +41,9 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { beingMade, publish, removeStale, stray, temporaryOf } from "../agent/exclusive.ts";
-import { AGENT_ENV, agentNamed, claimToken, refusedNotice, TOKEN_ENV, tokenForm } from "../agent/pick.ts";
+import { AGENT_ENV, agentNamed, claimToken, refusedNotice, TOKEN_ENV, tokenForm, tokenHeld } from "../agent/pick.ts";
 import { processAlive } from "../agent/process.ts";
-import { insideSession, liveSession, processStart, type SessionTool } from "../agent/sessions.ts";
+import { insideSession, liveSession, processStart, SESSION_TOOLS, type SessionTool } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 
 export type CodexPicked =
@@ -123,7 +123,6 @@ interface Identity {
 	readonly start: string;
 }
 
-const TOOLS: ReadonlySet<string> = new Set<SessionTool>(["pi", "omp", "claude-code", "codex", "opencode", "run"]);
 const decisionsDir = (config: HarnessConfig) => join(config.dataDir, "codex-processes");
 const decisionFile = (config: HarnessConfig, pid: number) => join(decisionsDir(config), `${pid}.json`);
 
@@ -149,7 +148,7 @@ function readDecision(file: string): { readonly identity: Identity; readonly dec
 	if (typeof value !== "object" || value === null || typeof value.agent !== "string" || typeof value.token !== "string" || typeof value.start !== "string") return "unreadable";
 	const identity: Identity = { agent: value.agent, token: value.token, start: value.start };
 	if (value.kind === "agent" || value.kind === "refused") return { identity, decision: { kind: value.kind } };
-	if (value.kind === "nested" && (value.outer === undefined || typeof value.outer === "string") && (value.tool === undefined || (typeof value.tool === "string" && TOOLS.has(value.tool)))) {
+	if (value.kind === "nested" && (value.outer === undefined || typeof value.outer === "string") && (value.tool === undefined || (typeof value.tool === "string" && SESSION_TOOLS.has(value.tool)))) {
 		return { identity, decision: { kind: "nested", ...(value.outer === undefined ? {} : { outer: value.outer }), ...(value.tool === undefined ? {} : { tool: value.tool as SessionTool }) } };
 	}
 	return "unreadable";
@@ -268,8 +267,14 @@ function claimed(config: HarnessConfig, asking: CodexAsker, takeover: boolean): 
 		return { kind: "refused", notice: `Orrery: ORRERY_AGENT_TOKEN is not set, so this Codex is not ${safeText(agent.name)}; it runs without memory. Open it with orrery agent ${safeText(agent.name)} --tool codex.` };
 	}
 	if (!tokenForm(token)) return { kind: "refused", notice: refusedNotice({ kind: "bad-token", name: agent.name }) };
-	if (!claimToken(agent.dir, token, asking.pid, asking.alive ?? processAlive, takeover)) {
-		return { kind: "refused", notice: `Orrery: ${safeText(agent.name)}'s token belongs to another process, so this Codex is not ${safeText(agent.name)}; it runs without memory.` };
+	const alive = asking.alive ?? processAlive;
+	if (!claimToken(agent.dir, token, asking.pid, alive, takeover)) {
+		const shown = safeText(agent.name);
+		// An asker that may not claim (a compaction, /clear, a fork) finds only its own claim: one nobody holds isn't another's.
+		if (!takeover && !tokenHeld(agent.dir, token, alive)) {
+			return { kind: "refused", notice: `Orrery: this Codex hasn't started or resumed a session yet, and only those claim ${shown}'s token, so this session runs without memory. Resume it, or open ${shown} with orrery agent ${shown} --tool codex.` };
+		}
+		return { kind: "refused", notice: `Orrery: ${shown}'s token belongs to another process, so this Codex is not ${shown}; it runs without memory.` };
 	}
 	return { kind: "agent", agent };
 }

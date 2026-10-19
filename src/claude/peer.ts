@@ -15,7 +15,7 @@ import { fstatSync } from "node:fs";
 import { createRequire } from "node:module";
 import type { HarnessConfig } from "../agent/config.ts";
 import { liveSession, processStart } from "../agent/sessions.ts";
-import { decisionStart } from "./pick.ts";
+import { decidedFor } from "./pick.ts";
 
 /**
  * The pid on the other end of stdin; "not-socket" when stdin is no socket (or no Unix one); "unsupported" when it can't
@@ -90,17 +90,24 @@ export type CallerCheck = "ok" | "not-socket" | "unsupported" | "other-process" 
  * Whether a writing hook's caller is Claude Code process `claudePid` (the hook's CLAUDE_PID, as claudeHookPid checked it):
  * the peer on its stdin must be that process. `recorded` (every event but SessionStart): it must also be the Claude Code
  * Orrery recorded, its start time known and equal to the one its decision record holds (src/claude/pick.ts), else its
- * host record (src/agent/sessions.ts), so a pid that a gone Claude Code left to another process is not it. SessionStart
- * takes the peer alone: it may come before any record, and the pick it makes reads the start and records it (a start it
- * can't read is "unconfirmed" there). `start`: how a process's start time is read (default processStart).
+ * host record (src/agent/sessions.ts), so a pid that a gone Claude Code left to another process is not it. A decision
+ * recorded before start times (0.8.0: a session left open across the update) counts for an ORRERY_AGENT launch whose
+ * token's digest the hook's `env` holds (decidedFor). SessionStart takes the peer alone: it may come before any record,
+ * and the pick it makes reads the start and records it (a start it can't read is "unconfirmed" there). `start`: how a
+ * process's start time is read (default processStart).
  */
-export function checkCaller(config: HarnessConfig, claudePid: number, peer: StdinPeer, options: { readonly recorded: boolean; readonly start?: (pid: number) => string | undefined }): CallerCheck {
+export function checkCaller(
+	config: HarnessConfig,
+	claudePid: number,
+	peer: StdinPeer,
+	options: { readonly recorded: boolean; readonly env: NodeJS.ProcessEnv; readonly start?: (pid: number) => string | undefined },
+): CallerCheck {
 	if (typeof peer !== "number") return peer;
 	if (peer !== claudePid) return "other-process";
 	if (!options.recorded) return "ok";
 	const start = (options.start ?? processStart)(peer);
 	if (start === undefined) return "unrecorded";
-	if (decisionStart(config, peer) === start) return "ok";
+	if (decidedFor(config, peer, options.env, start)) return "ok";
 	const host = liveSession(config.dataDir, peer);
 	return host?.tool === "claude-code" && host.start === start ? "ok" : "unrecorded";
 }

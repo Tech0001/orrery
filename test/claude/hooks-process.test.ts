@@ -1,9 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { claudeSession } from "../../src/claude/pick.ts";
-import { listSessions, pendingEvents, readEvent, readMode } from "../../src/claude/spool.ts";
+import { listSessions, pendingEvents, readEvent, readMode, writeMode } from "../../src/claude/spool.ts";
+import { newToken } from "../../src/agent/pick.ts";
 import { readHolder } from "../../src/agent/handover.ts";
 import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
@@ -228,6 +230,25 @@ describe.skipIf(!binary)("the caller check in the built binary (spec 2026-10-18-
 			shell.kill();
 			await end();
 		}
+	}, 60_000);
+
+	it("a session left open across the update from 0.8.0 (a decision with no start, no host record): a token launch's prompt spools; a folder's says to restart, once", () => {
+		const { t, env, at } = setUp();
+		const token = newToken();
+		mkdirSync(join(t.config.dataDir, "claude-processes"), { recursive: true, mode: 0o700 });
+		writeFileSync(decision(t), JSON.stringify({ agent: "Test", token: createHash("sha256").update(token).digest("hex"), kind: "agent", name: "Test", by: "env" }));
+		// 0.8.0's recorder records s1.
+		writeMode(t.agent.dir, "s1", { mode: "recording", pid: process.pid, claudePid: process.pid, nonce: "old", since: Date.now() - 60_000 });
+		const launched = own("user-prompt-submit", { ...at, prompt: "Across the update.", prompt_id: "p-1" }, { ...env, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token });
+		expect([launched.status, launched.stdout, launched.stderr]).toEqual([0, "", ""]);
+		expect(prompts(t)).toEqual([expect.objectContaining({ text: "Across the update.", promptId: "p-1" })]);
+		// By its folder: 0.8.0 recorded no decision for it.
+		rmSync(decision(t));
+		const first = own("user-prompt-submit", { ...at, prompt: "Not recorded.", prompt_id: "p-2" }, env);
+		expect([first.status, first.stderr]).toEqual([0, ""]);
+		expect(JSON.parse(first.stdout)).toEqual({ systemMessage: "Orrery was updated while this session was open; restart it to keep recording." });
+		expect(own("user-prompt-submit", { ...at, prompt: "Nor this.", prompt_id: "p-3" }, env).stdout).toBe("");
+		expect(prompts(t)).toHaveLength(1);
 	}, 60_000);
 
 	it("stdin taken from a socket the Claude Code made but carrying no payload (the shell's `0<&1`): nothing spooled", async () => {

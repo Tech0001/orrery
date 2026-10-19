@@ -96,7 +96,8 @@ export type SessionTool = "pi" | "omp" | "claude-code" | "codex" | "opencode" | 
 
 /** Each tool as a notice (and the CLI's refusal, src/cli/gate.ts) names it. */
 export const TOOL_NAMES: Readonly<Record<SessionTool, string>> = { pi: "pi", omp: "OMP", "claude-code": "Claude Code", codex: "Codex", opencode: "OpenCode", run: "orrery run" };
-const TOOLS: ReadonlySet<string> = new Set(Object.keys(TOOL_NAMES));
+/** Every SessionTool, for reading one from a record (here, and the Claude Code and Codex decisions). */
+export const SESSION_TOOLS: ReadonlySet<string> = new Set(Object.keys(TOOL_NAMES));
 
 export interface SessionRecord {
 	readonly agent: string;
@@ -223,7 +224,7 @@ export function ancestors(from: number = process.pid, deps: SessionDeps = {}): n
  */
 function recordOf(value: unknown, pid: number): { readonly record: SessionRecord; readonly doubtful: boolean } | undefined {
 	const { agent, tool, pid: own, start, codexSession, ns, boot, config, configReal } = (value ?? {}) as Record<string, unknown>;
-	if (typeof agent !== "string" || agent === "" || typeof tool !== "string" || !TOOLS.has(tool) || own !== pid || typeof start !== "string" || start === "") return undefined;
+	if (typeof agent !== "string" || agent === "" || typeof tool !== "string" || !SESSION_TOOLS.has(tool) || own !== pid || typeof start !== "string" || start === "") return undefined;
 	const text = (field: unknown): field is string => typeof field === "string" && field !== "";
 	const doubtful = [codexSession, ns, boot].some((field) => field !== undefined && !text(field));
 	const configured = text(config) && text(configReal) && isAbsolute(config) && isAbsolute(configReal);
@@ -397,7 +398,7 @@ const MARKERS = [AGENT_ENV, TOKEN_ENV, HOST_ENV, "CLAUDE_PID", "CODEX_THREAD_ID"
 const MAX_LINKS = 8;
 
 /** A path with its links resolved, or undefined when it can't be (it isn't there). */
-function realOrNone(path: string): string | undefined {
+export function realOrNone(path: string): string | undefined {
 	try {
 		return realpathSync(path);
 	} catch {

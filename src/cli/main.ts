@@ -93,7 +93,7 @@ async function installCommand(values: { from?: string; rollback?: boolean; list?
 	const { installFrom, listVersions, rollback, versionLines } = await import("../install/install.ts");
 	if (values.from !== undefined) {
 		if (values.rollback === true || values.list === true) throw new Error("install takes one of --from DIR, --rollback or --list.");
-		const { version, removed } = installFrom({ from: values.from, env: process.env, log: say });
+		const { version, previous, removed } = installFrom({ from: values.from, env: process.env, log: say });
 		say(`Installed ${version}.`);
 		if (removed.length > 0) say(`Removed older versions: ${removed.join(", ")}.`);
 		const status = await setupCommand(values);
@@ -102,6 +102,10 @@ async function installCommand(values: { from?: string; rollback?: boolean; list?
 		if (!existsSync(defaultConfigPath(process.env))) {
 			const onPath = pathAdvice(process.env, join(process.env.HOME || homedir(), ".local", "bin")) === undefined;
 			say(onPath ? "Run orrery to add your first agent." : "Run ~/.local/bin/orrery (or open a new terminal after adding it to PATH) to add your first agent.");
+		} else if (previous !== undefined && previous !== version) {
+			// An update (orrery update hands over to the new release's install --from, so the new version says this): a
+			// session open across it may not be recorded until it restarts (a Claude Code or Codex started before it).
+			say("Restart open agent sessions now: sessions left open across the update aren't recorded until they restart.");
 		}
 		return status;
 	}
@@ -770,7 +774,8 @@ const denyToolCall = (reason: string) =>
  * session's memory (`trusted`); and when its parent is that session's recorded host (a restarted server, or the agent's
  * shell exec'ing `orrery mcp`), it only reads the decision the host made, so no folder or variable given to it can
  * change whose session the host is. A Claude Code that one of its SessionStarts found unconfirmed (src/claude/hooks.ts:
- * its start couldn't be read) gets no tools, as its view gets none (markedUnconfirmed, src/claude/mod-view.ts).
+ * its start couldn't be read) gets no tools, as its view gets none (markedUnconfirmed, src/claude/pick.ts); one that
+ * started after that mark reuses a gone Claude Code's pid, and gets them.
  */
 async function mcpServer(configPath: string | undefined, tool: string | undefined, inside: Inside | undefined, trusted: HarnessConfig | undefined): Promise<number> {
 	if (tool !== undefined && tool !== "claude-code" && tool !== "codex") throw new UsageError(`mcp: --tool takes claude-code or codex (not ${tool}).`);
@@ -784,7 +789,7 @@ async function mcpServer(configPath: string | undefined, tool: string | undefine
 		const pick = codexAgent(config, { env: process.env, pid: codexPid(), parent: process.ppid, takeover: true });
 		if (pick.kind === "agent" && ours(pick.agent)) tools = agentTools(config, pick.agent);
 	} else if (config !== undefined) {
-		const [{ claudeSession }, { liveSession }, { markedUnconfirmed }] = await Promise.all([import("../claude/pick.ts"), import("../agent/sessions.ts"), import("../claude/mod-view.ts")]);
+		const [{ claudeSession, markedUnconfirmed }, { liveSession }] = await Promise.all([import("../claude/pick.ts"), import("../agent/sessions.ts")]);
 		const decided = inside !== undefined && liveSession(config.dataDir, process.ppid) !== undefined;
 		const pick = claudeSession(config, { env: process.env, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), pid: process.ppid, decide: !decided });
 		// A Claude Code a SessionStart found unconfirmed (src/claude/hooks.ts) gets no tools, even once its start can be read.

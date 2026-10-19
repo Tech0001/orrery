@@ -242,6 +242,14 @@ export function claimedBy(agentDir: string, token: string): number | undefined {
 }
 
 /**
+ * Whether a claim on `token` for the agent stands (holding): a live process's, one being made, or one that can't be
+ * judged from here. False when there is none, or the one there is dead (the token is no token: false).
+ */
+export function tokenHeld(agentDir: string, token: string, alive: (pid: number) => boolean = processAlive): boolean {
+	return TOKEN.test(token) && holding(join(agentDir, "claims", token), alive) !== "dead";
+}
+
+/**
  * The claim on `token` for the agent: the pid, and the pid namespace it is numbered in when the claim says (Linux);
  * "unreadable" when something other than a regular file of this user's is in its place (readClaim); or undefined when
  * none holds a pid (or the token is no token).

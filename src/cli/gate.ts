@@ -11,7 +11,8 @@
  * all of them, so a records folder planted nearer judges nothing away). So a command run with
  * a scratch HOME, ORRERY_HOME or ORRERY_CONFIG still finds the sessions of the real files it would read or write: a
  * crafted config's `credentials` naming the real logins, or a --out naming the real config. A config that can't be read
- * leaves the rest and the markers to decide.
+ * leaves the rest, the data folder each of those homes' own config names (one kept apart, data_dir), and the markers to
+ * decide.
  *
  * Which config rules inside a session: the one that holds the session's memory (trustedConfig: the file the session's
  * record names, which its host loaded; with none, the config in the home that is its data folder, or the server path's),
@@ -43,7 +44,7 @@
  * shell, in a pid namespace of its own, is always such a session, and its agent can't be told.
  */
 
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { type AgentConfig, DEFAULT_CONFIG_PATH, defaultConfigPath, type HarnessConfig, loadConfig, mayRead, parseConfig } from "../agent/config.ts";
@@ -51,7 +52,7 @@ import { orreryHome } from "../agent/home.ts";
 import { ALLOWED_INSIDE } from "../agent/inside-commands.ts";
 import { AGENT_ENV, agentNamed, claimHeld, TOKEN_ENV } from "../agent/pick.ts";
 import { pidNamespace } from "../agent/process.ts";
-import { ancestors, HOST_ENV, type Inside, insideSession, judgedFolders, liveSession, processStart, type SessionDeps, TOOL_NAMES } from "../agent/sessions.ts";
+import { ancestors, HOST_ENV, type Inside, insideSession, judgedFolders, liveSession, processStart, realOrNone, type SessionDeps, TOOL_NAMES } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { codexPid } from "../codex/host.ts";
 
@@ -134,7 +135,7 @@ export function gateCommand(command: string | undefined, positionals: readonly s
 	if (trusted === undefined || config === undefined) throw refused(NO_CONFIG);
 	// The config the command would load must be that file: --config, else ORRERY_CONFIG, else ORRERY_HOME's or the default.
 	const chosen = typeof values.config === "string" ? values.config : env.ORRERY_CONFIG || undefined;
-	if (real(chosen ?? defaultConfigPath(env)) !== trusted.real) throw refused(chosen === undefined && env.ORRERY_HOME ? HOME_CHANGED : CONFIG_CHANGED);
+	if (realOrNone(chosen ?? defaultConfigPath(env)) !== trusted.real) throw refused(chosen === undefined && env.ORRERY_HOME ? HOME_CHANGED : CONFIG_CHANGED);
 	// And an ORRERY_HOME beside it may hold no other config.
 	if (env.ORRERY_HOME) {
 		let home: string;
@@ -143,7 +144,7 @@ export function gateCommand(command: string | undefined, positionals: readonly s
 		} catch {
 			throw refused(HOME_CHANGED);
 		}
-		const own = real(join(home, "config.toml"));
+		const own = realOrNone(join(home, "config.toml"));
 		if (own !== undefined && own !== trusted.real) throw refused(HOME_CHANGED);
 	}
 	/** The agent a name given on the command line stands for, as the config spells it; "." is the session's. */
@@ -176,15 +177,6 @@ export function gateCommand(command: string | undefined, positionals: readonly s
 	return { inside, config };
 }
 
-/** A path with its links resolved, or undefined when it can't be (it isn't there). */
-function real(path: string): string | undefined {
-	try {
-		return realpathSync(path);
-	} catch {
-		return undefined;
-	}
-}
-
 /**
  * The config that holds a session's memory. Never one the caller names (--config, ORRERY_CONFIG, ORRERY_HOME, HOME): a
  * config is anyone's to write, and one naming the real data folder with `reads = ["*"]` would otherwise read every
@@ -200,11 +192,11 @@ function real(path: string): string | undefined {
  * file a caller's config must resolve to.
  */
 function trustedConfig(inside: Inside): { readonly real: string; readonly config: HarnessConfig } | undefined {
-	const folder = real(inside.dataDir);
+	const folder = realOrNone(inside.dataDir);
 	if (folder === undefined) return undefined;
-	const owns = (config: HarnessConfig) => real(config.dataDir) === folder;
+	const owns = (config: HarnessConfig) => realOrNone(config.dataDir) === folder;
 	if (inside.config !== undefined) {
-		if (inside.configReal === undefined || real(inside.config) !== inside.configReal) return undefined;
+		if (inside.configReal === undefined || realOrNone(inside.config) !== inside.configReal) return undefined;
 		try {
 			const config = { ...parseConfig(readFileSync(inside.configReal, "utf8"), dirname(resolve(inside.config))), file: resolve(inside.config) };
 			return owns(config) ? { real: inside.configReal, config } : undefined;
@@ -215,7 +207,7 @@ function trustedConfig(inside: Inside): { readonly real: string; readonly config
 	for (const path of [join(folder, "config.toml"), DEFAULT_CONFIG_PATH]) {
 		try {
 			const config = loadConfig(path);
-			const file = real(path);
+			const file = realOrNone(path);
 			if (owns(config) && file !== undefined) return { real: file, config };
 		} catch {
 			// none there, or none that loads
@@ -247,17 +239,30 @@ function readConfig(values: GateValues, env: NodeJS.ProcessEnv): HarnessConfig |
 
 /**
  * What judges a command: the config's data folder, $ORRERY_HOME, ~/.orrery under $HOME, and each file the command would
- * touch (touchedPaths), since every one of those is the caller's to name. insideSession judges each with every folder
- * above it that holds session records (judgedFolders, src/agent/sessions.ts).
+ * touch (touchedPaths), since every one of those is the caller's to name. With no config to load (a --config naming
+ * nothing), each of those homes' own config names the data folder too: one kept apart from its home (data_dir) holds the
+ * session records. insideSession judges each with every folder above it that holds session records (judgedFolders,
+ * src/agent/sessions.ts).
  */
 function dataDirs(command: string | undefined, config: HarnessConfig | undefined, values: GateValues, env: NodeJS.ProcessEnv, cwd: string): string[] {
 	const dirs = config === undefined ? [] : [config.dataDir];
+	const homes: string[] = [];
 	try {
-		dirs.push(orreryHome(env));
+		homes.push(orreryHome(env));
 	} catch {
 		// an ORRERY_HOME that is no absolute path: the home under $HOME still counts
 	}
-	dirs.push(join(env.HOME || homedir(), ".orrery"));
+	homes.push(join(env.HOME || homedir(), ".orrery"));
+	dirs.push(...homes);
+	if (config === undefined) {
+		for (const home of homes) {
+			try {
+				dirs.push(loadConfig(join(home, "config.toml")).dataDir);
+			} catch {
+				// none there, or none that loads
+			}
+		}
+	}
 	dirs.push(...touchedPaths(command, config, values, env, cwd));
 	return [...new Set(dirs)];
 }

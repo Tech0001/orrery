@@ -9,6 +9,7 @@ import { MemoryStore } from "../../src/memory/index.ts";
 import type { ReaderTool } from "../../src/agent/memory-tools.ts";
 import { claimToken, newToken } from "../../src/agent/pick.ts";
 import { forgetSession, liveSession, recordSession } from "../../src/agent/sessions.ts";
+import { processStartedAt } from "../../src/agent/process.ts";
 import { runHook } from "../../src/claude/hooks.ts";
 import { claudeSession, forgetProcess, UNCONFIRMED_NOTICE } from "../../src/claude/pick.ts";
 import { writeMode } from "../../src/claude/spool.ts";
@@ -272,11 +273,16 @@ describe("Orrery's MCP server", () => {
 			forgetProcess(config, process.pid);
 			// Its SessionStart marked a session read-only as unconfirmed (src/claude/hooks.ts markUnconfirmed).
 			const session = "33333333-3333-4333-8333-333333333333";
-			writeMode(atlas.dir, session, { mode: "read-only", pid: process.pid, claudePid: process.pid, nonce: "u", since: 0, reason: UNCONFIRMED_NOTICE });
+			const mark = { mode: "read-only" as const, pid: process.pid, claudePid: process.pid, nonce: "u", since: Date.now(), reason: UNCONFIRMED_NOTICE };
+			writeMode(atlas.dir, session, mark);
 			expect(await served()).toEqual([]);
 			forgetProcess(config, process.pid);
 			// Another Claude Code's mark is not this one's.
-			writeMode(atlas.dir, session, { mode: "read-only", pid: process.pid, claudePid: process.ppid, nonce: "u", since: 0, reason: UNCONFIRMED_NOTICE });
+			writeMode(atlas.dir, session, { ...mark, claudePid: process.ppid });
+			expect(await served()).toEqual(["zoom", "date", "search"]);
+			forgetProcess(config, process.pid);
+			// Nor is one made before this Claude Code started: a gone one's, whose pid this one reuses.
+			writeMode(atlas.dir, session, { ...mark, since: (processStartedAt(process.pid) as number) - 60_000 });
 			expect(await served()).toEqual(["zoom", "date", "search"]);
 		} finally {
 			forgetProcess(config, process.pid);

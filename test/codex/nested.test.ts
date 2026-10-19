@@ -4,7 +4,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/agent/config.ts";
-import { claimedBy, newToken } from "../../src/agent/pick.ts";
+import { claimedBy, claimToken, newToken } from "../../src/agent/pick.ts";
 import { forgetSession, liveSession, recordSession, type SessionTool } from "../../src/agent/sessions.ts";
 import { pendingEvents, readEvent } from "../../src/claude/spool.ts";
 import { type CodexGuardContext, runCodexGuard } from "../../src/codex/guard.ts";
@@ -279,13 +279,21 @@ describe("one decision per Codex process: a nested Codex stays nested", () => {
 		expect(hosts(w.dataDir)).toEqual([]);
 	});
 
-	it("a compaction or /clear is never a process's first asker: with no decision and no claim, it claims nothing", async () => {
+	it("a compaction, /clear or fork is never a process's first asker: with no decision and no claim, it claims nothing, and says why", async () => {
 		const w = codexWorld();
-		for (const source of ["compact", "clear"]) {
-			expect(await run("session-start", input("s1", { source }), hookCtx(w))).toMatchObject({ systemMessage: expect.stringContaining("token belongs to another process") });
+		const unclaimed = "Orrery: this Codex hasn't started or resumed a session yet, and only those claim Birch's token, so this session runs without memory. Resume it, or open Birch with orrery agent Birch --tool codex.";
+		for (const source of ["compact", "clear", "fork"]) {
+			expect(await run("session-start", input("s1", { source }), hookCtx(w))).toEqual({ systemMessage: unclaimed });
 			expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
 		}
 		expect(existsSync(join(w.dataDir, "codex-processes"))).toBe(false);
+		// The token claimed by another live process (another Codex of the launch): that is what it says then.
+		const other = bystander();
+		expect(claimToken(w.birch.dir, w.token, other)).toBe(true);
+		expect(await run("session-start", input("s1", { source: "clear" }), hookCtx(w))).toEqual({
+			systemMessage: "Orrery: Birch's token belongs to another process, so this Codex is not Birch; it runs without memory.",
+		});
+		expect(claimedBy(w.birch.dir, w.token)).toBe(other);
 	});
 
 	it("an agent whose decision can't be recorded stays the agent (its claim holds), says so once a session, and records its events once", async () => {

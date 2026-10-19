@@ -10,6 +10,7 @@ import { pendingEvents, writeMode } from "../../src/claude/spool.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { holderFile } from "../../src/agent/handover.ts";
 import { newToken } from "../../src/agent/pick.ts";
+import { processStartedAt } from "../../src/agent/process.ts";
 import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
 import { MemoryStore, MemoryView, Part } from "../../src/memory/index.ts";
 import { cleanEnv, cleanupDirs, cliCommand, seed, spool, type TestAgent, testAgent } from "./support.ts";
@@ -61,18 +62,22 @@ describe("orrery claude-mod view", () => {
 		expect(await modView(undefined, { cwd: t.agent.folder })).toEqual({ lane: null });
 	});
 
-	it("a session its SessionStart found unconfirmed gets no view and the notice, even once the start can be read", async () => {
+	it("a session its SessionStart found unconfirmed gets no view, even once the start can be read; a mark made before this Claude Code started is another's", async () => {
 		const t = modAgent();
 		// This test process stands for the Claude Code whose start could not be read at SessionStart (src/claude/hooks.ts).
-		const unconfirmed = { mode: "read-only" as const, pid: process.pid, claudePid: process.pid, nonce: "u", since: 0, reason: UNCONFIRMED_NOTICE };
+		const unconfirmed = { mode: "read-only" as const, pid: process.pid, claudePid: process.pid, nonce: "u", since: Date.now(), reason: UNCONFIRMED_NOTICE };
 		writeMode(t.agent.dir, OTHER, unconfirmed);
 		const view = (session?: string, owner = process.pid) => modView(t.config, { cwd: t.agent.folder, env: {}, owner, ...(session === undefined ? {} : { session }) });
-		expect(await view(OTHER)).toEqual({ lane: null, notice: UNCONFIRMED_NOTICE });
+		expect(await view(OTHER)).toEqual({ lane: null });
 		// Without a session: any session of the process marked so.
-		expect(await view()).toEqual({ lane: null, notice: UNCONFIRMED_NOTICE });
+		expect(await view()).toEqual({ lane: null });
 		// Another session of the process, which its hooks record, and another process: the view as ever.
 		expect(await view(SESSION)).toMatchObject({ lane: "Test", mode: "mod" });
 		expect(await view(OTHER, process.ppid)).toMatchObject({ lane: "Test" });
+		// Made before this process started: a gone Claude Code's, whose pid this one reuses.
+		writeMode(t.agent.dir, OTHER, { ...unconfirmed, since: (processStartedAt(process.pid) as number) - 60_000 });
+		expect(await view(OTHER)).toMatchObject({ lane: "Test" });
+		expect(await view()).toMatchObject({ lane: "Test" });
 		// A read-only session for another reason is no such mark.
 		writeMode(t.agent.dir, OTHER, { ...unconfirmed, reason: "pi holds Test" });
 		expect(await view(OTHER)).toMatchObject({ lane: "Test" });

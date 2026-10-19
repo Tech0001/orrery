@@ -324,6 +324,26 @@ describe("the CLI gate (spec 2026-10-18-agent-permissions §3)", () => {
 		expect(gateCommand("help", ["help"], { config: split }, t.env)).toEqual({});
 	});
 
+	it("a config that can't be loaded (--config /nonexistent) still finds the session kept in the data folder the home's own config names", () => {
+		const t = scratch();
+		// The home's config keeps memory and session records in a data folder apart from the home (data_dir).
+		const data = join(t.root, "split-data");
+		const home = join(t.home, ".orrery");
+		mkdirSync(home);
+		writeFileSync(join(home, "config.toml"), `data_dir = ${JSON.stringify(data)}\n${agents(t.root)}`);
+		record(data, { agent: "Atlas", tool: "pi", pid: process.ppid, config: join(home, "config.toml") });
+		const changed = "--config and ORRERY_CONFIG can't be changed inside an agent session.";
+		const missing = join(t.root, "nonexistent.toml");
+		expect(refusal(() => gateCommand("status", ["status", "."], { config: missing }, { HOME: t.home }))).toBe(changed);
+		expect(refusal(() => gateCommand("status", ["status", "."], {}, { HOME: t.home, ORRERY_CONFIG: missing }))).toBe(changed);
+		expect(refusal(() => gateCommand("setup", ["setup"], { config: missing }, { HOME: t.home }))).toBe(changes("orrery setup", "Atlas, pi"));
+		// The same home named by ORRERY_HOME, under a scratch HOME.
+		expect(refusal(() => gateCommand("setup", ["setup"], { config: missing }, { HOME: join(t.root, "other"), ORRERY_HOME: home }))).toBe(changes("orrery setup", "Atlas, pi"));
+		// No session there: the command runs (and fails on its own config).
+		forgetSession(data, process.ppid);
+		expect(gateCommand("status", ["status", "."], { config: missing }, { HOME: t.home })).toEqual({});
+	});
+
 	it("a session proven by a token: the config its claimant's record names, else only one in the data folder", () => {
 		const t = scratch();
 		const data = join(t.root, "split-data");

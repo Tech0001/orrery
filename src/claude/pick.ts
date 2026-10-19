@@ -40,12 +40,13 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type HarnessConfig, insideFolder } from "../agent/config.ts";
+import { type AgentConfig, type HarnessConfig, insideFolder } from "../agent/config.ts";
 import { beingMade, publish, removeStale, stray, temporaryOf } from "../agent/exclusive.ts";
 import { AGENT_ENV, type Picked, pickAgent, type Refused, refusedNotice, TOKEN_ENV, type Where } from "../agent/pick.ts";
-import { processAlive, processInfo } from "../agent/process.ts";
-import { forgetSession, type Inside, insideSession, liveSession, nestedNotice, processStart, recordSession, type SessionTool } from "../agent/sessions.ts";
+import { processAlive, processInfo, processStartedAt } from "../agent/process.ts";
+import { forgetSession, type Inside, insideSession, liveSession, nestedNotice, processStart, recordSession, SESSION_TOOLS, type SessionTool } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
+import { listSessions, readMode } from "./spool.ts";
 import { agentMode } from "./view-file.ts";
 
 /** Refused by Claude Code's rules, beyond pickAgent's own refusals. */
@@ -70,6 +71,32 @@ export type ClaudeRefused =
 
 /** What an unconfirmed session (ClaudeRefused "unconfirmed") says, and the reason its SessionStart marks it read-only with. */
 export const UNCONFIRMED_NOTICE = "Orrery: this Claude Code's process can't be confirmed (its start time can't be read), so this session opens no memory and records nothing.";
+
+/**
+ * How much later than a mark a process under the marked pid must have started to be another: processStartedAt is to the
+ * second at worst, and a Claude Code starts before its SessionStart marks.
+ */
+const MARK_SLACK_MS = 2000;
+
+/**
+ * Whether Claude Code process `claudePid` was found unconfirmed at a SessionStart of `agent`'s (src/claude/hooks.ts
+ * markUnconfirmed: the session's mode is read-only for that reason): for `session` when given, as its hooks and the mod
+ * view judge it; else for any of the agent's sessions, as the MCP server, which knows no session, must. Such a session
+ * gets no view, no memory tools and nothing recorded, even once the process's start can be read. The start couldn't be
+ * read when it was marked, so the mark's time stands for it: a process under that pid that started after the mark
+ * (`startedAt`, default processStartedAt) is another, whose pid a gone one left it. One whose start can't be read is
+ * taken for the marked one.
+ */
+export function markedUnconfirmed(agent: AgentConfig, claudePid: number, session?: string, startedAt: () => number | undefined = () => processStartedAt(claudePid)): boolean {
+	let started: { readonly at: number | undefined } | undefined;
+	const marked = (id: string) => {
+		const mode = readMode(agent.dir, id);
+		if (mode?.mode !== "read-only" || mode.reason !== UNCONFIRMED_NOTICE || mode.claudePid !== claudePid) return false;
+		started ??= { at: startedAt() };
+		return started.at === undefined || typeof mode.since !== "number" || started.at <= mode.since + MARK_SLACK_MS;
+	};
+	return session === undefined ? listSessions(agent.dir).some(marked) : marked(session);
+}
 
 /**
  * A pick, or why there is none. Without ORRERY_AGENT a decision that could not be recorded costs nothing but speed (each
@@ -200,8 +227,6 @@ interface Recorded {
 /** The process's record: undefined when there is none; "unreadable" when there is one that cannot be read as one. */
 const readRecord = (config: HarnessConfig, pid: number) => readRecordFile(recordFile(config, pid));
 
-const TOOLS: ReadonlySet<string> = new Set<SessionTool>(["pi", "omp", "claude-code", "codex", "opencode", "run"]);
-
 function readRecordFile(file: string): Recorded | "unreadable" | undefined {
 	let text: string;
 	try {
@@ -225,7 +250,7 @@ function readRecordFile(file: string): Recorded | "unreadable" | undefined {
 	if (value.kind === "refused" && typeof value.name === "string" && (value.why === "unknown" || value.why === "bad-token" || value.why === "in-view-folder")) {
 		return recorded({ kind: "refused", why: value.why, name: value.name, ...(typeof value.host === "string" ? { host: value.host } : {}) });
 	}
-	if (value.kind === "nested" && (value.outer === undefined || typeof value.outer === "string") && (value.tool === undefined || (typeof value.tool === "string" && TOOLS.has(value.tool)))) {
+	if (value.kind === "nested" && (value.outer === undefined || typeof value.outer === "string") && (value.tool === undefined || (typeof value.tool === "string" && SESSION_TOOLS.has(value.tool)))) {
 		return recorded({ kind: "nested", ...(value.outer === undefined ? {} : { outer: value.outer }), ...(value.tool === undefined ? {} : { tool: value.tool as SessionTool }) });
 	}
 	return "unreadable";
@@ -386,12 +411,25 @@ export function claudeSession(config: HarnessConfig, asking: ClaudeProcess): Cla
 }
 
 /**
- * When the Claude Code process `pid` started, as its decision record says (src/claude/peer.ts checks a hook's caller
- * against it); undefined without a readable record, or one that holds no start.
+ * Whether Claude Code process `pid`, started at `start` and run with `env`, is the one its decision record names
+ * (src/claude/peer.ts checks a hook's caller against it): the record holds that start; or, recorded before start times
+ * (0.8.0), it stands for an ORRERY_AGENT launch whose token's digest `env` holds too (sameIdentity), so a session left
+ * open across the update keeps recording. A record with no start and no token (ORRERY_AGENT alone) is no one's.
  */
-export function decisionStart(config: HarnessConfig, pid: number): string | undefined {
+export function decidedFor(config: HarnessConfig, pid: number, env: NodeJS.ProcessEnv, start: string): boolean {
 	const recorded = readRecord(config, pid);
-	return recorded === undefined || recorded === "unreadable" ? undefined : recorded.identity?.start;
+	if (recorded === undefined || recorded === "unreadable" || recorded.identity === undefined) return false;
+	return recorded.identity.start === undefined ? sameIdentity(recorded.identity, identityOf(env, start)) : recorded.identity.start === start;
+}
+
+/**
+ * Whether process `pid` has no decision of this version's: none recorded, or one recorded before start times (0.8.0,
+ * which recorded only ORRERY_AGENT launches). A Claude Code its hooks find so, whose caller is otherwise its own, was
+ * started before Orrery's update (src/claude/hooks.ts says so).
+ */
+export function decidedBeforeUpdate(config: HarnessConfig, pid: number): boolean {
+	const recorded = readRecord(config, pid);
+	return recorded === undefined || (recorded !== "unreadable" && recorded.identity?.start === undefined);
 }
 
 /** SessionEnd at the process's end: its decision goes, and its host record (a Claude Code's only). */

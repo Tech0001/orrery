@@ -8,7 +8,7 @@ import { orreryHome } from "../../src/agent/home.ts";
 import { ALLOWED_INSIDE as ALLOWED_ALONE } from "../../src/agent/inside-commands.ts";
 import { claimHeld, claimToken, newToken } from "../../src/agent/pick.ts";
 import { writePrivate } from "../../src/agent/private-file.ts";
-import { bootId, pidNamespace } from "../../src/agent/process.ts";
+import { bootId, pidNamespace, processStartedAt } from "../../src/agent/process.ts";
 import {
 	ALLOWED_INSIDE,
 	ancestors,
@@ -232,6 +232,34 @@ describe("session records", () => {
 		expect(processStart(process.pid)).toBe(processStart(process.pid));
 		const gone = spawnSync(process.execPath, ["-e", ""]).pid as number;
 		expect(processStart(gone)).toBeUndefined();
+	});
+});
+
+describe("processStartedAt: when a process started, as a time", () => {
+	/** A /proc/<pid>/stat line whose field 22 (the start, in clock ticks since boot) is `ticks`. */
+	const stat = (ticks: string) => `30 (a (b) c) S ${Array.from({ length: 18 }, () => "1").join(" ")} ${ticks} 0 0\n`;
+
+	it("on Linux: the boot time (/proc/stat btime) and the start's clock ticks (100 a second)", () => {
+		expect(processStartedAt(30, { platform: "linux", proc: () => stat("12345"), bootTime: () => 1_700_000_000 })).toBe(1_700_000_123_450);
+		expect(processStartedAt(30, { platform: "linux", proc: () => undefined, bootTime: () => 1_700_000_000 })).toBeUndefined();
+		expect(processStartedAt(30, { platform: "linux", proc: () => stat("12345"), bootTime: () => undefined })).toBeUndefined();
+	});
+
+	it("on macOS: ps's lstart, read as UTC (ps is asked in UTC and the C locale)", () => {
+		const mac = (lstart: string | undefined) => ({ platform: "darwin" as const, ps: () => lstart });
+		expect(processStartedAt(30, mac("Sat Oct 18 10:00:00 2026\n"))).toBe(Date.UTC(2026, 9, 18, 10, 0, 0));
+		expect(processStartedAt(30, mac("Mon Oct  5 08:09:07 2026"))).toBe(Date.UTC(2026, 9, 5, 8, 9, 7));
+		expect(processStartedAt(30, mac("yesterday"))).toBeUndefined();
+		expect(processStartedAt(30, mac(undefined))).toBeUndefined();
+		expect(processStartedAt(30, { platform: "win32" })).toBeUndefined();
+	});
+
+	it.skipIf(!real)("a real process started before now, and a gone one has no start", () => {
+		const at = processStartedAt(process.pid);
+		expect(at).toBeDefined();
+		expect(at as number).toBeLessThanOrEqual(Date.now() + 1000);
+		expect(at as number).toBeGreaterThan(Date.now() - 24 * 60 * 60 * 1000);
+		expect(processStartedAt(spawnSync(process.execPath, ["-e", ""]).pid as number)).toBeUndefined();
 	});
 });
 

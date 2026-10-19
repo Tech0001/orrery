@@ -116,6 +116,41 @@ export function processStart(pid: number, deps: StartDeps = {}): string | undefi
 	return undefined;
 }
 
+/** Linux: when this boot began, in seconds since the epoch (/proc/stat's btime), or undefined when it can't be read. */
+export function bootTime(): number | undefined {
+	try {
+		const seconds = /^btime (\d+)$/m.exec(readFileSync("/proc/stat", "utf8"))?.[1];
+		return seconds === undefined ? undefined : Number(seconds);
+	} catch {
+		return undefined;
+	}
+}
+
+/** Linux's clock ticks a second in /proc (USER_HZ: 100 on every architecture Orrery runs on). */
+const TICKS_PER_SECOND = 100;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * When process `pid` started, in milliseconds since the epoch, or undefined when that can't be read: processStart as a
+ * time, to the second at worst (Linux: the boot time, itself to the second, plus the start's clock ticks; macOS: ps's
+ * lstart, in UTC). For telling a mark made before a process started from one made by it.
+ */
+export function processStartedAt(pid: number, deps: StartDeps & { readonly bootTime?: () => number | undefined } = {}): number | undefined {
+	const start = processStart(pid, deps);
+	if (start === undefined) return undefined;
+	const platform = deps.platform ?? process.platform;
+	if (platform === "linux") {
+		const boot = (deps.bootTime ?? bootTime)();
+		return boot === undefined ? undefined : boot * 1000 + (Number(start) * 1000) / TICKS_PER_SECOND;
+	}
+	// "Sat Oct 18 10:00:00 2026" (a day under 10 is padded with a space).
+	const lstart = /^[A-Z][a-z]{2} +([A-Z][a-z]{2}) +(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/.exec(start);
+	const month = lstart === null ? -1 : MONTHS.indexOf(lstart[1] as string);
+	if (lstart === null || month < 0) return undefined;
+	const [day, hours, minutes, seconds, year] = lstart.slice(2).map(Number) as [number, number, number, number, number];
+	return Date.UTC(year, month, day, hours, minutes, seconds);
+}
+
 /** A process's parent and name, or undefined when it cannot be read (gone, or no way to ask here). */
 export function processInfo(pid: number): ProcessInfo | undefined {
 	if (!Number.isInteger(pid) || pid < 1) return undefined;
