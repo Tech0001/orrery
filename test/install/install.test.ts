@@ -494,7 +494,7 @@ describe("orrery install", () => {
 		expect(again.stdout).not.toContain("to add your first agent.");
 	});
 
-	it("--from over another version (orrery update hands over to it) says, last, to restart open agent sessions", () => {
+	it("--from over another version (orrery update hands over to it), and --rollback, say, last, to restart open agent sessions", () => {
 		const env = scratchEnv();
 		const restart = "Restart open agent sessions now: sessions left open across the update aren't recorded until they restart.";
 		const first = cli(env, "install", "--from", fixtureRelease("0.6.0"));
@@ -508,6 +508,11 @@ describe("orrery install", () => {
 		const same = cli(env, "install", "--from", fixtureRelease("0.6.1"));
 		expect(same.status, same.stderr).toBe(0);
 		expect(same.stdout).not.toContain(restart);
+		// Back to 0.6.0: an open session's hooks are the older version's from here on, its recorder the newer one's.
+		const back = cli(env, "install", "--rollback");
+		expect(back.status, back.stderr).toBe(0);
+		expect(back.stdout).toMatch(/^Switched back from 0\.6\.1 to 0\.6\.0\.$/m);
+		expect(back.stdout.trim().split("\n").at(-1)).toBe(restart);
 	});
 
 	it("says how to add the first agent even when setup left something", () => {

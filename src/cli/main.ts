@@ -85,6 +85,9 @@ async function setupCommand(values: { yes?: boolean }): Promise<number> {
 	return 0;
 }
 
+/** What install --from over another version, and --rollback, say last once agents are set up (a config is there). */
+const RESTART_SESSIONS = "Restart open agent sessions now: sessions left open across the update aren't recorded until they restart.";
+
 /**
  * `orrery install --from DIR | --rollback | --list [--yes]`: install a release folder or switch back a version, each
  * followed by setup; or list the installed copies in the home's app folder.
@@ -105,7 +108,7 @@ async function installCommand(values: { from?: string; rollback?: boolean; list?
 		} else if (previous !== undefined && previous !== version) {
 			// An update (orrery update hands over to the new release's install --from, so the new version says this): a
 			// session open across it may not be recorded until it restarts (a Claude Code or Codex started before it).
-			say("Restart open agent sessions now: sessions left open across the update aren't recorded until they restart.");
+			say(RESTART_SESSIONS);
 		}
 		return status;
 	}
@@ -115,8 +118,13 @@ async function installCommand(values: { from?: string; rollback?: boolean; list?
 	}
 	if (values.rollback === true) {
 		const { from, to } = rollback(process.env);
-		say(`Switched back from ${from} to ${to}. pi and OMP agents keep their version until they restart.`);
-		return setupCommand(values);
+		say(`Switched back from ${from} to ${to}.`);
+		const status = await setupCommand(values);
+		// A session open across it runs the older version's hooks against the newer recorder (or the other way round),
+		// which drops what it can't confirm, and pi and OMP keep the version they loaded: all until they restart.
+		const [{ existsSync }, { defaultConfigPath }] = await Promise.all([import("node:fs"), import("../agent/config.ts")]);
+		if (existsSync(defaultConfigPath(process.env))) say(RESTART_SESSIONS);
+		return status;
 	}
 	throw new Error("install takes --from DIR, --rollback or --list.");
 }
