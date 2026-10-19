@@ -6,9 +6,9 @@
  * Session records. A tool session that opens an agent's memory records its host process in the data folder that holds
  * that memory, and forgets it when the session closes: <data>/session-hosts/<pid>.json, holding
  * {"agent","tool","pid","start"}, for Codex "codexSession", on Linux "ns" and "boot", and "config", the config file the
- * host loaded (HarnessConfig.file), when it loaded one; 0600 in a 0700 folder, written whole (src/agent/private-file.ts),
- * and read only as a small regular file of this user's, never through a link. The CLI takes that config, and no other,
- * for a command run inside the session (src/cli/gate.ts).
+ * host loaded (HarnessConfig.file), with "configReal", its real path then, when it loaded one; 0600 in a 0700 folder,
+ * written whole (src/agent/private-file.ts), and read only as a small regular file of this user's, never through a
+ * link. The CLI takes that config, and no other, for a command run inside the session (src/cli/gate.ts).
  * `start` is when the process started, so a reused pid is no session: Linux's /proc/<pid>/stat field 22 (clock ticks
  * since boot), macOS's `ps -o lstart=` (to the second, asked in UTC and the C locale so every process spells it alike).
  * On Linux a pid means a process only in the pid namespace it is numbered in: from another one (`unshare -p`, a
@@ -66,7 +66,7 @@
  * config.ts, and with it smol-toml and the memory module, which pi and OMP load already.
  */
 
-import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { namesOrreryPlugin } from "../install/layout.ts";
 import { readPluginOptions } from "../opencode/options.ts";
@@ -109,6 +109,11 @@ export interface SessionRecord {
 	readonly boot?: string;
 	/** The config file the host loaded (HarnessConfig.file, an absolute path), when it loaded one from a file. */
 	readonly config?: string;
+	/**
+	 * That file's real path when the record was made (with `config`, always): a link at `config` pointed elsewhere since
+	 * is no longer the host's config.
+	 */
+	readonly configReal?: string;
 }
 
 /** The session a process runs in. */
@@ -119,8 +124,9 @@ export interface Inside {
 	readonly via: "ancestry" | "marker";
 	/** The data folder whose record or config found it; with no config, the first data folder asked about ("" for none). */
 	readonly dataDir: string;
-	/** The config file the record of the session's agent names (SessionRecord.config), when one does. */
+	/** The config file the record of the session's agent names (SessionRecord.config), and its real path then. */
 	readonly config?: string;
+	readonly configReal?: string;
 }
 
 /** How processes are read; each defaults to this system's own way (tests give fakes). */
@@ -233,11 +239,12 @@ export function ancestors(from: number = process.pid, deps: SessionDeps = {}): n
 
 /** `value` as the record of `pid`, or undefined when it is none. */
 function recordOf(value: unknown, pid: number): SessionRecord | undefined {
-	const { agent, tool, pid: own, start, codexSession, ns, boot, config } = (value ?? {}) as Record<string, unknown>;
+	const { agent, tool, pid: own, start, codexSession, ns, boot, config, configReal } = (value ?? {}) as Record<string, unknown>;
 	if (typeof agent !== "string" || agent === "" || typeof tool !== "string" || !TOOLS.has(tool) || own !== pid || typeof start !== "string" || start === "") return undefined;
-	// Each optional field is absent, or a non-empty string; the config, an absolute path.
+	// Each optional field is absent, or a non-empty string; the config and its real path, both or neither, absolute paths.
 	const text = (field: unknown): field is string | undefined => field === undefined || (typeof field === "string" && field !== "");
-	if (!text(codexSession) || !text(ns) || !text(boot) || !text(config) || (config !== undefined && !isAbsolute(config))) return undefined;
+	if (!text(codexSession) || !text(ns) || !text(boot) || !text(config) || !text(configReal)) return undefined;
+	if ((config === undefined) !== (configReal === undefined) || (config !== undefined && !(isAbsolute(config) && isAbsolute(configReal as string)))) return undefined;
 	return {
 		agent,
 		tool: tool as SessionTool,
@@ -246,7 +253,7 @@ function recordOf(value: unknown, pid: number): SessionRecord | undefined {
 		...(codexSession === undefined ? {} : { codexSession }),
 		...(ns === undefined ? {} : { ns }),
 		...(boot === undefined ? {} : { boot }),
-		...(config === undefined ? {} : { config }),
+		...(config === undefined || configReal === undefined ? {} : { config, configReal }),
 	};
 }
 
@@ -353,9 +360,10 @@ function pruneSessions(dataDir: string, keep: number, deps: SessionDeps): void {
  * Records that process `record.pid` hosts a session of `record.agent`'s memory in `dataDir`, with the process's start
  * time, and on Linux its pid namespace and the boot. False when it can't: the start can't be read, the record is no
  * record, the host is in another pid namespace than this process (its pid wouldn't be the one a reader here sees), or
- * nothing can be written there.
+ * nothing can be written there. A config is kept with its real path now (configReal); one whose path can't be resolved
+ * is recorded as none.
  */
-export function recordSession(dataDir: string, record: Omit<SessionRecord, "start" | "ns" | "boot">, deps: SessionDeps = {}): boolean {
+export function recordSession(dataDir: string, record: Omit<SessionRecord, "start" | "ns" | "boot" | "configReal">, deps: SessionDeps = {}): boolean {
 	const start = processStart(record.pid, deps);
 	if (start === undefined) return false;
 	let place = {};
@@ -365,7 +373,15 @@ export function recordSession(dataDir: string, record: Omit<SessionRecord, "star
 		if (ns === undefined || ns !== namespaceOf(deps, "self") || boot === undefined) return false;
 		place = { ns, boot };
 	}
-	const full = recordOf({ ...record, start, ...place }, record.pid);
+	let configured = {};
+	if (record.config !== undefined) {
+		try {
+			configured = { config: record.config, configReal: realpathSync(record.config) };
+		} catch {
+			// no config to name: the CLI then takes only one in the data folder (src/cli/gate.ts)
+		}
+	}
+	const full = recordOf({ ...record, config: undefined, ...configured, start, ...place }, record.pid);
 	if (full === undefined) return false;
 	pruneSessions(dataDir, full.pid, deps);
 	try {
@@ -431,8 +447,9 @@ interface Mark {
 	readonly proves?: string;
 	readonly names?: string;
 	readonly tool: SessionTool | undefined;
-	/** The config file the record behind the mark names, if any. */
+	/** The config file the record behind the mark names, if any, and its real path then. */
 	readonly config?: string;
+	readonly configReal?: string;
 }
 
 /** The session the markers in `env` name for `config`'s data folder (module doc), or undefined when none does. */
@@ -508,12 +525,13 @@ function byMarkers(config: HarnessConfig, env: NodeJS.ProcessEnv, deps: SessionD
 	const agent = one !== undefined && marks.every((mark) => mark.names === undefined || mark.names === one) ? one : undefined;
 	const tool = marks.find((mark) => (agent === undefined || mark.proves === agent || mark.names === agent) && mark.tool !== undefined)?.tool;
 	// The config a record of that agent's names; none for a session whose agent is unknown.
-	const recorded = agent === undefined ? undefined : marks.find((mark) => (mark.proves === agent || mark.names === agent) && mark.config !== undefined)?.config;
-	return { agent, tool, via: "marker", dataDir, ...(recorded === undefined ? {} : { config: recorded }) };
+	const recorded = agent === undefined ? undefined : marks.find((mark) => (mark.proves === agent || mark.names === agent) && mark.config !== undefined && mark.configReal !== undefined);
+	return { agent, tool, via: "marker", dataDir, ...(recorded === undefined ? {} : { config: recorded.config, configReal: recorded.configReal }) };
 }
 
 /** A record's config, as an Inside or a Mark carries it. */
-const configOf = (record: SessionRecord): { config?: string } => (record.config === undefined ? {} : { config: record.config });
+const configOf = (record: SessionRecord): { config?: string; configReal?: string } =>
+	record.config === undefined || record.configReal === undefined ? {} : { config: record.config, configReal: record.configReal };
 
 /**
  * The options given to each of Orrery's plugin entries in an OPENCODE_CONFIG_CONTENT, as a launch writes them

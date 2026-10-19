@@ -313,8 +313,10 @@ describe("the CLI gate (spec 2026-10-18-agent-permissions §3)", () => {
 		// A recorded config that no longer names the session's data folder holds nothing: only help and the version.
 		record(data, { agent: "Atlas", tool: "pi", pid: process.ppid, config: t.configPath });
 		expect(refusal(() => gateCommand("status", ["status", "."], { config: split }, t.env))).toBe(noConfig);
-		// A config path that isn't absolute is no record's.
-		expect(recordSession(data, { agent: "Atlas", tool: "pi", pid: process.ppid, config: "split.toml" })).toBe(false);
+		// A config whose path can't be resolved is recorded as none.
+		record(data, { agent: "Atlas", tool: "pi", pid: process.ppid, config: join(t.root, "gone.toml") });
+		expect(gateCommand("help", ["help"], { config: split }, t.env)).toEqual({});
+		expect(refusal(() => gateCommand("status", ["status", "."], { config: split }, t.env))).toBe(noConfig);
 		// A record naming none (a host that loaded no file): only a config in the data folder, or the server path's, counts.
 		record(data, { agent: "Atlas", tool: "pi", pid: process.ppid });
 		expect(refusal(() => gateCommand("status", ["status", "."], { config: split }, t.env))).toBe(noConfig);
@@ -347,7 +349,7 @@ describe("the CLI gate (spec 2026-10-18-agent-permissions §3)", () => {
 		}
 	});
 
-	it("a session found only by its markers says which and how to clear them (a tmux server started from an agent's shell)", () => {
+	it("a session found only by its markers names them and points to the docs, with no recipe (a tmux server started from an agent's shell)", () => {
 		const t = scratch();
 		const host = sleeper();
 		record(t.config.dataDir, { agent: "Atlas", tool: "claude-code", pid: host });
@@ -379,7 +381,7 @@ describe("the CLI gate (spec 2026-10-18-agent-permissions §3)", () => {
 		expect(gateCommand("help", ["help"], { config: t.configPath }, env, { sessions: sandbox })).toEqual({});
 	});
 
-	it("the plugins' commands take the markers their own tool was started with as its own, and a holder its host's record", () => {
+	it("the plugins' commands take the markers their own tool was started with as its own; a holder only a host that vouches for it", () => {
 		const t = scratch();
 		// The MCP server Claude Code starts first, before its process decided: ORRERY_AGENT and a token nobody claimed yet.
 		const launch = { ...t.env, ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: newToken() };
@@ -387,14 +389,59 @@ describe("the CLI gate (spec 2026-10-18-agent-permissions §3)", () => {
 		expect(gateCommand("claude-mod", ["claude-mod", "view"], { config: t.configPath }, launch, { parent: process.pid })).toEqual({});
 		// The same markers in any other command are a session whose agent is unknown.
 		expect(refusal(() => gateCommand("status", ["status"], { config: t.configPath }, launch))).toBe(`${UNKNOWN}${markerNote("ORRERY_AGENT")}`);
-		// A holder whose hook exited (no recorded ancestor left), for a Claude Code that opened Atlas by its folder.
+		// A holder names its Claude Code on its command line, which is anyone's to write. A detached one (no recorded
+		// ancestor) whose CLAUDE_PID and --claude-pid name a Claude Code that is no ancestor of it, by its folder (no
+		// token), proves nothing: refused, for that host's agent too.
 		const claude = sleeper();
 		record(t.config.dataDir, { agent: "Atlas", tool: "claude-code", pid: claude });
-		const hook = { ...t.env, CLAUDE_PID: String(claude) };
-		const holder = (name: string, pid: number) => () => gateCommand("holder", ["holder", name], { config: t.configPath, session: "s", "claude-pid": String(pid) }, hook);
-		expect(holder("Atlas", claude)()).toMatchObject({ inside: { agent: "Atlas", tool: "claude-code" } });
-		expect(refusal(holder("Birch", claude))).toBe("orrery holder serves only this session's agent, Atlas, not Birch.");
-		// A host pid that isn't the one the markers point at proves nothing.
+		const holder = (name: string, pid: number, env: NodeJS.ProcessEnv = {}) => () =>
+			gateCommand("holder", ["holder", name], { config: t.configPath, session: "s", "claude-pid": String(pid) }, { ...t.env, CLAUDE_PID: String(claude), ...env });
+		for (const name of ["Atlas", "Birch"]) expect(refusal(holder(name, claude)), name).toBe(`${UNKNOWN}${markerNote("CLAUDE_PID")}`);
 		expect(refusal(holder("Birch", process.pid))).toBe(`${UNKNOWN}${markerNote("CLAUDE_PID")}`);
+		// A launched session: that host holds the claim of the holder's token for the agent its record names.
+		const token = newToken();
+		expect(claimToken(t.config.agents.get("Atlas")!.dir, token, claude)).toBe(true);
+		const launched = { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token };
+		expect(holder("Atlas", claude, launched)()).toMatchObject({ inside: { agent: "Atlas", tool: "claude-code" } });
+		expect(refusal(holder("Birch", claude, launched))).toBe("orrery holder serves only this session's agent, Atlas, not Birch.");
+	});
+
+	it("judges the data folder of every file a command would touch: a scratch HOME and config naming the real logins or config are still inside", () => {
+		const t = scratch();
+		// A stand-in for the real home: its data folder holds the config, the logins and the session of this test's parent.
+		const real = join(t.root, "real-home", ".orrery");
+		mkdirSync(real, { recursive: true });
+		writeFileSync(join(real, "config.toml"), agents(t.root));
+		writeFileSync(join(real, "credentials.json"), "{}\n");
+		record(real, { agent: "Atlas", tool: "claude-code", pid: process.ppid });
+		// A crafted config: a scratch data folder and the real logins; HOME scratch, no ORRERY_HOME, no markers.
+		const crafted = join(t.root, "crafted.toml");
+		writeFileSync(crafted, `data_dir = ${JSON.stringify(join(t.root, "scratch-data"))}\ncredentials = ${JSON.stringify(join(real, "credentials.json"))}\n${agents(t.root)}`);
+		const env = { HOME: t.home, ORRERY_CONFIG: crafted };
+		for (const argv of [["login", "openai"], ["logout", "openai"], ["logins"]]) expect(refusal(() => gateCommand(argv[0], argv, {}, env)), argv[0]).toBe(changes(`orrery ${argv[0]}`));
+		// From the scratch config, path options naming the real data folder: browse --out over its config, restore --from.
+		expect(refusal(() => gateCommand("browse", ["browse", "Atlas"], { config: t.configPath, out: join(real, "config.toml") }, t.env))).toBe("--config and ORRERY_CONFIG can't be changed inside an agent session.");
+		expect(refusal(() => gateCommand("restore", ["restore", "Atlas"], { config: t.configPath, from: join(real, "backups", "2026-01-01") }, t.env))).toBe(changes("orrery restore"));
+		// No session there: the same commands run.
+		forgetSession(real, process.ppid);
+		expect(gateCommand("logins", ["logins"], {}, env)).toEqual({});
+		expect(gateCommand("browse", ["browse", "Atlas"], { config: t.configPath, out: join(real, "config.toml") }, t.env)).toEqual({});
+	});
+
+	it("a recorded config reached through a link counts only while the link leads to the file it led to then", () => {
+		const t = scratch();
+		const data = join(t.root, "split-data");
+		const target = join(t.root, "split.toml");
+		writeFileSync(target, `data_dir = ${JSON.stringify(data)}\n${agents(t.root)}`);
+		const link = join(t.root, "orrery.toml");
+		symlinkSync(target, link);
+		record(data, { agent: "Atlas", tool: "pi", pid: process.ppid, config: link });
+		expect(gateCommand("status", ["status", "."], { config: link }, t.env).config?.file).toBe(link);
+		// Re-pointed at a config of the agent's making, naming the same data folder and reading every agent.
+		const fake = join(t.root, "fake.toml");
+		writeFileSync(fake, `data_dir = ${JSON.stringify(data)}\n${agents(t.root, '["*"]')}`);
+		rmSync(link);
+		symlinkSync(fake, link);
+		expect(refusal(() => gateCommand("browse", ["browse", "Cedar"], { config: link }, t.env))).toBe("orrery can't read the config that holds this session's memory, so inside it only help and the version run.");
 	});
 });
