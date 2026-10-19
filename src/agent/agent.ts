@@ -29,6 +29,7 @@ import { agentViews, openCodeCredentials } from "./guard-paths.ts";
 import { compactorModel, createAgentModels, modelContextWindow, savedSummaryLoginsOnly } from "./models.ts";
 import { isOpenCodeChoice, OPENCODE_SOURCE } from "./opencode-source.ts";
 import { Projector } from "./projector.ts";
+import { leaveHostEnv } from "./host-env.ts";
 import { forgetSession, insideSession, nestedNotice, recordSession } from "./sessions.ts";
 import { agentSummarizer } from "./summarizer.ts";
 export { type AgentStatus, type ModelSource, readStatus } from "./status-file.ts";
@@ -99,6 +100,8 @@ export class Agent {
 	#saving: Promise<void> = Promise.resolve();
 	/** The data folder this process is recorded in as the agent's session host (src/agent/sessions.ts), until close. */
 	#hosted: string | undefined;
+	/** Takes back the HOST_ENV this process set for the agent's shells (src/agent/host-env.ts), at close. */
+	#hostEnv: (() => void) | undefined;
 
 	private constructor(parts: {
 		config: AgentConfig;
@@ -258,9 +261,12 @@ export class Agent {
 				compactorModel: compactorChosen,
 				compactorSource: compactorChoice.choice ? "chat" : "config",
 			});
-			// Before any run resumes: what the agent's tools start runs inside its session from here on.
-			if (recordSession(options.config.dataDir, { agent: config.name, tool: "run", pid: process.pid })) agent.#hosted = options.config.dataDir;
-			else agent.report(`Orrery: this session could not be recorded as ${config.name}'s, so tools and commands started from it are not known as ${config.name}'s.`);
+			// Before any run resumes: what the agent's tools start runs inside its session from here on, a detached one too
+			// (its shell inherits HOST_ENV, src/agent/host-env.ts).
+			if (recordSession(options.config.dataDir, { agent: config.name, tool: "run", pid: process.pid })) {
+				agent.#hosted = options.config.dataDir;
+				agent.#hostEnv = leaveHostEnv(process.pid);
+			} else agent.report(`Orrery: this session could not be recorded as ${config.name}'s, so tools and commands started from it are not known as ${config.name}'s.`);
 			const stale = (choice: string) => `The model chosen in chat (${choice}) is no longer available; using the config's.`;
 			if (agentChoice.stale !== undefined) agent.report(stale(agentChoice.stale));
 			// A summary model chosen in OpenCode runs only there (src/opencode/summaries.ts): not gone, just not here.
@@ -439,12 +445,20 @@ export class Agent {
 				await this.harness.close(this.#context);
 				await this.#env.close();
 			} finally {
-				try { this.store.close(); } finally {
-					this.#writer?.();
-					if (this.#hosted !== undefined) forgetSession(this.#hosted, process.pid);
-					this.#hosted = undefined;
-				}
+				try {
+					// First, and on its own: the session has ended whatever closing the store or releasing its lock does.
+					this.#forgetHost();
+				} finally { try { this.store.close(); } finally { this.#writer?.(); } }
 			}
 		}
+	}
+
+	/** Forgets this process's host record (open), when the agent closes. */
+	#forgetHost(): void {
+		const hosted = this.#hosted;
+		this.#hosted = undefined;
+		if (hosted !== undefined) forgetSession(hosted, process.pid);
+		this.#hostEnv?.();
+		this.#hostEnv = undefined;
 	}
 }

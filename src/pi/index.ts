@@ -6,7 +6,7 @@
  * In OMP, src/omp/index.ts builds this with `host: "omp"` (docs/omp.md).
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
@@ -20,6 +20,7 @@ import { noticeKey, noticeText, type TroubleState } from "../agent/notices.ts";
 import { agentNamed, pickAgent, refusedNotice, workArea } from "../agent/pick.ts";
 import { NO_AGENT, noteSession, sessionStanding, settleVisit } from "../agent/session-owner.ts";
 import { forgetSession, type Inside, insideSession, nestedNotice, recordSession } from "../agent/sessions.ts";
+import { leaveHostEnv } from "../agent/host-env.ts";
 import { runningVersion } from "../agent/running.ts";
 import { takeRequest } from "../agent/settings-request.ts";
 import { safeText } from "../agent/source-labels.ts";
@@ -91,6 +92,8 @@ export interface OrreryState {
 	nested?: Inside;
 	/** The data folder this session recorded its host process in (recordHost), to forget it there when it ends. */
 	hosted?: string;
+	/** Takes back the HOST_ENV this session set for its shell (recordHost, src/agent/host-env.ts). */
+	hostEnv?: () => void;
 }
 
 export interface OrreryOptions {
@@ -223,40 +226,89 @@ const hostPid = (options: OrreryOptions): number => options.owner ?? process.pid
 /**
  * The agent session this one was started inside, if any (spec 2026-10-18-agent-permissions §3b; src/agent/sessions.ts):
  * an ancestor of this tool's process recorded in the config's data folder, or, when the ancestry is cut, the markers in
- * its environment. This tool's own launch (its ORRERY_AGENT and token, its own record) is no such session.
+ * its environment. This tool's own launch (its ORRERY_AGENT and token, its own record) is no such session. A look that
+ * fails (it should never throw) counts as a session whose agent is unknown: a check that can't judge refuses.
  */
-const nestedIn = (config: HarnessConfig, options: OrreryOptions): Inside | undefined =>
-	insideSession([config.dataDir], options.env ?? process.env, config, { self: hostPid(options) });
+function nestedIn(config: HarnessConfig, options: OrreryOptions): Inside | undefined {
+	try {
+		return insideSession([config.dataDir], options.env ?? process.env, config, { self: hostPid(options) });
+	} catch {
+		return { agent: undefined, tool: undefined, via: "marker", dataDir: config.dataDir };
+	}
+}
 
 /**
  * The guard for a session started inside an agent's session: no agent and no memory, and the outer agent's rules (its
- * work area from the session's folder, its allowed roots). It reads no memory, so every agent's view is another's, the
- * outer agent's too. When whose session it is can't be told, or the config has no such agent, the rules of a session
- * with no agent (refusedGuard): stricter than a plain folder's, which has no guard.
+ * work area from the session's folder, its allowed roots), never looser than the folder's own guard. In another agent's
+ * folder both agents' rules apply (bothRules). It reads no memory, so every agent's view is another's, the outer
+ * agent's too. When whose session it is can't be told, or the config has no such agent, the rules of a session with no
+ * agent (refusedGuard): the folder's agent's, stricter than a plain folder's, which has no guard.
  */
 function nestedGuard(inside: Inside, cwd: string, config: HarnessConfig, options: OrreryOptions): Guarded {
 	const outer = inside.agent === undefined ? undefined : agentNamed(config, inside.agent);
 	if (outer === undefined) return { ...refusedGuard(cwd, config, options), by: "nested" };
-	return { by: "nested", workArea: workArea(outer, cwd), allowedRoots: outer.allowedRoots, ...guardBase(config, options), ...agentViews(config) };
+	const here = agentForCwd(config, cwd);
+	const rules = here === undefined || here.name === outer.name ? { workArea: workArea(outer, cwd), allowedRoots: outer.allowedRoots } : bothRules(outer, here, cwd);
+	return { by: "nested", ...rules, ...guardBase(config, options), ...agentViews(config) };
+}
+
+/** `path` where it really is (links followed), or as written when it can't be read. */
+function realOr(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return resolve(path);
+	}
+}
+
+/** Whether `path` is `root` or inside it, both where they really are. */
+const holds = (root: string, path: string): boolean => {
+	const [r, p] = [realOr(root), realOr(path)];
+	return p === r || p.startsWith(`${r.replace(/\/+$/, "")}/`);
+};
+
+/**
+ * Two agents' rules at once, for a session in `here`'s folder started inside `outer`'s session: a write goes only where
+ * both allow it, so the guard is never looser than the folder's own (tighten only). The work area is the deeper of the
+ * two, which both hold `cwd`; the allowed roots are, for each root of one inside a root of the other, the inner one.
+ * Two work areas neither holds (spelled through a link the other isn't) leave the session's folder alone.
+ */
+function bothRules(outer: AgentConfig, here: AgentConfig, cwd: string): { readonly workArea: string; readonly allowedRoots: readonly string[] } {
+	const [a, b] = [workArea(outer, cwd), workArea(here, cwd)];
+	const area = holds(b, a) ? a : holds(a, b) ? b : resolve(cwd);
+	const roots = new Set<string>();
+	for (const x of outer.allowedRoots) {
+		for (const y of here.allowedRoots) {
+			if (holds(y, x)) roots.add(x);
+			else if (holds(x, y)) roots.add(y);
+		}
+	}
+	return { workArea: area, allowedRoots: [...roots] };
 }
 
 /**
  * Records that this tool's process hosts `agent`'s session (spec 2026-10-18-agent-permissions §2), in the config's data
  * folder, so a command or a tool started from the session is known as the agent's: whether or not its memory opens (an
- * agent held elsewhere is still this session's agent). Returns the data folder to forget it in, or undefined, with a
- * warning, when it could not be written.
+ * agent held elsewhere is still this session's agent). The host pid goes to the session's shell too (leaveHostEnv), for
+ * a tool started from it and detached. A record that could not be written is said, once per open.
  */
-function recordHost(ctx: ExtensionContext, config: HarnessConfig, agent: AgentConfig, tool: "pi" | "omp", options: OrreryOptions): string | undefined {
-	if (recordSession(config.dataDir, { agent: agent.name, tool, pid: hostPid(options) })) return config.dataDir;
-	warn(ctx, `Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s.`);
-	return undefined;
+function recordHost(state: OrreryState, ctx: ExtensionContext, config: HarnessConfig, agent: AgentConfig, tool: "pi" | "omp", options: OrreryOptions): void {
+	const pid = hostPid(options);
+	if (!recordSession(config.dataDir, { agent: agent.name, tool, pid })) {
+		warn(ctx, `Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s.`);
+		return;
+	}
+	state.hosted = config.dataDir;
+	state.hostEnv?.();
+	state.hostEnv = leaveHostEnv(pid);
 }
 
-/** Forgets the host record this session made (recordHost), when it ends or leaves its agent. */
+/** Forgets the host record this session made (recordHost), and takes its shell's HOST_ENV back, when it ends or leaves its agent. */
 function forgetHost(state: OrreryState, options: OrreryOptions): void {
-	if (state.hosted === undefined) return;
-	forgetSession(state.hosted, hostPid(options));
+	if (state.hosted !== undefined) forgetSession(state.hosted, hostPid(options));
 	state.hosted = undefined;
+	state.hostEnv?.();
+	state.hostEnv = undefined;
 }
 
 const subagent = (ctx: ExtensionContext) => (ctx as { agent?: { kind?: string } }).agent?.kind === "sub";
@@ -422,7 +474,7 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			if (omp && subagent(ctx)) return;
 			// The session is this agent's, whether or not its memory opens: what it starts runs inside the agent's session.
 			noteRun(state, ctx);
-			state.hosted = recordHost(ctx, config, agent, host, options);
+			recordHost(state, ctx, config, agent, host, options);
 			// Before the memory opens, which may take a while (a remote check-out): these need no memory.
 			state.updatesShown = new Set();
 			showUpdates(ctx, config);
@@ -1015,7 +1067,7 @@ function mismatched(pi: ExtensionAPI, options: OrreryOptions, omp: boolean): voi
 		// Whose session this is, as the right entry notes it, now and as the session goes on; its host, as the right entry
 		// records it.
 		noteRun(state, ctx);
-		if (pick.kind === "agent") state.hosted = recordHost(ctx, config, pick.agent, tool, options);
+		if (pick.kind === "agent") recordHost(state, ctx, config, pick.agent, tool, options);
 		warn(ctx, notice);
 	});
 	const note = (_event: unknown, ctx: ExtensionContext) => noteRun(state, ctx);

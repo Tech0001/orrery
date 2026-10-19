@@ -275,8 +275,8 @@ describe.skipIf(pi === null)("ORRERY_AGENT inside a real pi", () => {
 					store.close();
 				}
 			};
-			const start = () => {
-				const child = spawn(pi as string, ["--mode", "rpc", "--provider", "local", "--model", "m", "--thinking", "off", "-ne", "-e", join(PI_DIR, "index.ts")], { cwd: plain, env });
+			const start = (where: { cwd: string; env: NodeJS.ProcessEnv } = { cwd: plain, env }) => {
+				const child = spawn(pi as string, ["--mode", "rpc", "--provider", "local", "--model", "m", "--thinking", "off", "-ne", "-e", join(PI_DIR, "index.ts")], where);
 				const exited = new Promise<void>((done) => child.on("close", () => done()));
 				return { child, exited, ...rpc(child) };
 			};
@@ -304,6 +304,17 @@ describe.skipIf(pi === null)("ORRERY_AGENT inside a real pi", () => {
 					expect(tool.frames).toContainEqual(expect.objectContaining({ method: "notify", message: "Orrery: started inside Probe's session (pi), so this one opens no memory and records nothing." }));
 				} finally {
 					await stop(tool);
+				}
+				// A tool the agent ran detached (no ancestry), in Probe's own folder, with only the ORRERY_HOST its shell left
+				// it: a pid says there is a session, never whose.
+				const folder = join(root, "agent-Probe");
+				mkdirSync(folder, { recursive: true });
+				const detached = start({ cwd: folder, env: { ...isolated(home), ORRERY_HOME: orreryHome, PI_CODING_AGENT_DIR: piAgentDir, ORRERY_HOST: String(agent.child.pid) } });
+				try {
+					await detached.waitFor((f) => f.method === "notify" && f.message === "Orrery: started inside an agent's session (pi), so this one opens no memory and records nothing.");
+					expect(detached.frames.filter((f) => f.method === "setStatus" && f.statusKey === "orrery")).toEqual([]);
+				} finally {
+					await stop(detached);
 				}
 				expect(rows()).toEqual(["user: The codename is Cedar.", "talk: pong"]);
 				expect(`${agent.stderr()}\n${JSON.stringify(agent.frames)}`).not.toMatch(/Cannot find (package|module)|ResolveMessage/);

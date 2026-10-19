@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseConfig, parseModelChoice } from "../../src/agent/config.ts";
 import { INSTRUCTIONS_MAX_BYTES, writeInstructions } from "../../src/agent/instructions.ts";
 import { Agent, readStatus } from "../../src/agent/agent.ts";
-import { forgetSession, liveSession, recordSession } from "../../src/agent/sessions.ts";
+import { forgetSession, HOST_ENV, liveSession, recordSession } from "../../src/agent/sessions.ts";
 import { INSTRUCTIONS_KEY } from "../../src/remote/instructions-sync.ts";
 import { statusVersion } from "../../src/agent/status-file.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
@@ -241,10 +241,30 @@ describe("Agent", () => {
 describe("orrery run's session record (spec 2026-10-18-agent-permissions §2, §3b)", () => {
 	it("records this process as the agent's host, as orrery run's, while it is open, and forgets it at close", async () => {
 		const { config } = fixture();
+		expect(process.env[HOST_ENV]).toBeUndefined();
 		const agent = await Agent.open({ config, agent: "Test", models: fauxModels().models, context: ctx });
 		expect(liveSession(config.dataDir, process.pid)).toMatchObject({ agent: "Test", tool: "run", pid: process.pid });
+		// Its tools' shells inherit this process's environment (pi-durable's NodeExecutionEnv): ORRERY_HOST names it.
+		expect(process.env[HOST_ENV]).toBe(String(process.pid));
 		await agent.close();
 		expect(liveSession(config.dataDir, process.pid)).toBeUndefined();
+		expect(process.env[HOST_ENV]).toBeUndefined();
+	});
+
+	it("says when its session can't be recorded, and runs all the same", async () => {
+		const { config } = fixture();
+		// A file where the records' folder goes: nothing can be written there.
+		writeFileSync(join(config.dataDir, "session-hosts"), "");
+		const said: string[] = [];
+		const write = vi.spyOn(process.stderr, "write").mockImplementation((text) => (said.push(String(text)), true));
+		try {
+			const agent = await Agent.open({ config, agent: "Test", models: fauxModels().models, context: ctx });
+			expect(process.env[HOST_ENV]).toBeUndefined();
+			await agent.close();
+		} finally {
+			write.mockRestore();
+		}
+		expect(said).toContain("Orrery: this session could not be recorded as Test's, so tools and commands started from it are not known as Test's.\n");
 	});
 
 	it("refuses to start inside an agent's session (a recorded ancestor), opening nothing and recording nothing", async () => {

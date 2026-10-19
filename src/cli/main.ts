@@ -663,13 +663,21 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 			});
 			// systemctl stop (SIGTERM) and tmux kill-server (SIGHUP) close the agent like a fatal stop, but exit 0.
 			const releaseSignals = stopOnSignals(fatal);
-			const code = await runHarness(
-				agent,
-				{ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY === true, stop: fatal.signal },
-				BACKGROUND_CONTEXT,
-			);
-			await agent.close();
-			releaseSignals();
+			let code: number;
+			try {
+				code = await runHarness(
+					agent,
+					{ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY === true, stop: fatal.signal },
+					BACKGROUND_CONTEXT,
+				);
+			} finally {
+				// Closed even when the terminal failed: its lock, its status and its session record go with it.
+				try {
+					await agent.close();
+				} finally {
+					releaseSignals();
+				}
+			}
 			return fatal.signal.reason instanceof SignalStop ? 0 : code;
 		}
 		case "holder": {

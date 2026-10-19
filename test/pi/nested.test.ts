@@ -5,7 +5,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/provid
 import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/agent/config.ts";
 import { agentModelSource } from "../../src/agent/model-source.ts";
-import { forgetSession, liveSession, recordSession, type SessionTool } from "../../src/agent/sessions.ts";
+import { forgetSession, HOST_ENV, liveSession, recordSession, type SessionTool } from "../../src/agent/sessions.ts";
 import { Holder } from "../../src/claude/holder.ts";
 import { fauxModels } from "../agent/support.ts";
 import type { PiRun } from "./harness.ts";
@@ -22,13 +22,17 @@ afterEach(async () => {
 isolatedHome();
 
 /**
- * The pi world (Atlas and Birch), with Atlas allowed one more folder, `shared`, and no other: a write under Atlas's rules
- * differs from one under Birch's (whose allowed root is the world's folder). Each agent has a memory view in its folder.
+ * The pi world (Atlas and Birch), each agent with allowed roots of its own and one in common: Atlas `shared` and `common`,
+ * Birch `plain` and `common/inner` (inside Atlas's `common`). A write under Atlas's rules differs from one under Birch's.
+ * Each agent has a memory view in its folder.
  */
 function nestedWorld() {
 	const { root, configPath } = world();
-	mkdirSync(join(root, "shared"));
-	const toml = readFileSync(configPath, "utf8").replace("[agents.Atlas]\n", `[agents.Atlas]\nallowed_roots = [${JSON.stringify(join(root, "shared"))}]\n`);
+	for (const dir of ["shared", join("common", "inner")]) mkdirSync(join(root, dir), { recursive: true });
+	const roots = (...dirs: string[]) => `allowed_roots = ${JSON.stringify(dirs.map((dir) => join(root, dir)))}\n`;
+	const toml = readFileSync(configPath, "utf8")
+		.replace("[agents.Atlas]\n", `[agents.Atlas]\n${roots("shared", "common")}`)
+		.replace("[agents.Birch]\n", `[agents.Birch]\n${roots("plain", join("common", "inner"))}`);
 	const config = parseConfig(toml, root);
 	for (const name of ["Atlas", "Birch"]) {
 		mkdirSync(join(root, `agent-${name}`, ".orrery"));
@@ -62,7 +66,7 @@ async function call(run: PiRun, name: string, args: Parameters<typeof fauxToolCa
 const hosts = (dataDir: string): string[] => (existsSync(join(dataDir, "session-hosts")) ? readdirSync(join(dataDir, "session-hosts")) : []);
 
 describe("a pi started inside an agent's session (spec 2026-10-18-agent-permissions §3b)", () => {
-	it("under a recorded ancestor: opens no memory, registers no tools, records nothing, says why once, and keeps the guard on with the outer agent's rules", async () => {
+	it("under a recorded ancestor: opens no memory, registers no tools, records nothing, says why once, and keeps the guard on with the outer agent's rules and the folder's", async () => {
 		const { root, config, dataDir } = nestedWorld();
 		hostRecord(dataDir, "Atlas", "claude-code", process.ppid);
 		// In Birch's folder, where Birch (who reads every agent) would open with the memory and reader tools.
@@ -71,13 +75,15 @@ describe("a pi started inside an agent's session (spec 2026-10-18-agent-permissi
 		for (const tool of ["zoom", "date", "search", "agents", "agent_memory"]) expect(run.tool(tool)).toBeUndefined();
 		expect(run.status("orrery")).toBeUndefined();
 
-		// Atlas's rules: Birch's folder (the session's), and Atlas's one allowed root; not the world's folder, Birch's root.
-		expect(await call(run, "write", { path: join(root, "agent-Birch", "here.txt"), content: "x" })).not.toMatch(/outside/);
+		// Atlas's rules and Birch's at once (never looser than Birch's own guard here): a write goes where both allow it.
+		const writes = async (path: string) => !/outside/.test(await call(run, "write", { path: join(root, path), content: "x" }));
+		expect(await writes(join("agent-Birch", "here.txt"))).toBe(true); // the session's folder, in both
 		expect(readFileSync(join(root, "agent-Birch", "here.txt"), "utf8")).toBe("x");
-		expect(await call(run, "write", { path: join(root, "shared", "atlas.txt"), content: "x" })).not.toMatch(/outside/);
-		expect(existsSync(join(root, "shared", "atlas.txt"))).toBe(true);
-		expect(await call(run, "write", { path: join(root, "plain", "birch.txt"), content: "x" })).toMatch(/outside/);
-		expect(existsSync(join(root, "plain", "birch.txt"))).toBe(false);
+		expect(await writes(join("common", "inner", "both.txt"))).toBe(true); // Birch's root, inside Atlas's
+		expect(await writes(join("shared", "atlas.txt"))).toBe(false); // Atlas's root only
+		expect(await writes(join("common", "atlas.txt"))).toBe(false); // Atlas's root, outside Birch's
+		expect(await writes(join("plain", "birch.txt"))).toBe(false); // Birch's root only
+		for (const path of [join("shared", "atlas.txt"), join("common", "atlas.txt"), join("plain", "birch.txt")]) expect(existsSync(join(root, path))).toBe(false);
 		// No memory, the outer agent's view among it: every agent's view is another's.
 		for (const name of ["Atlas", "Birch"]) {
 			const text = await call(run, "read", { path: join(root, `agent-${name}`, ".orrery", "view.md") });
@@ -120,6 +126,58 @@ describe("a pi started inside an agent's session (spec 2026-10-18-agent-permissi
 		expect(hosts(dataDir)).toEqual([`${claude}.json`]);
 		expect(existsSync(join(dataDir, "session-owners"))).toBe(false);
 	}, 20_000);
+
+	it("in an agent's folder inside the outer agent's folder: no wider than that agent's own guard, the outer folder refused", async () => {
+		// Atlas's folder holds Birch's: p and p/sub. Birch is allowed nothing beyond its folder; Atlas, the world's folder.
+		const { root, configPath } = world();
+		mkdirSync(join(root, "p", "sub"), { recursive: true });
+		const toml = readFileSync(configPath, "utf8")
+			.replace(JSON.stringify(join(root, "agent-Atlas")), JSON.stringify(join(root, "p")))
+			.replace(JSON.stringify(join(root, "agent-Birch")), JSON.stringify(join(root, "p", "sub")))
+			.replace("[agents.Birch]\n", "[agents.Birch]\nallowed_roots = []\n");
+		const config = parseConfig(toml, root);
+		hostRecord(config.dataDir, "Atlas", "pi", process.ppid);
+		const run = await pi(root, join(root, "p", "sub"), config);
+		expect(run.notices).toEqual([{ type: "warning", message: "Orrery: started inside Atlas's session (pi), so this one opens no memory and records nothing." }]);
+		const writes = async (path: string) => !/outside/.test(await call(run, "write", { path: join(root, path), content: "x" }));
+		expect(await writes(join("p", "sub", "here.txt"))).toBe(true);
+		expect(await writes(join("p", "atlas.txt"))).toBe(false); // Atlas's folder, outside Birch's
+		expect(await writes(join("plain", "atlas.txt"))).toBe(false); // Atlas's allowed root, not Birch's
+		expect(existsSync(join(root, "p", "atlas.txt"))).toBe(false);
+	}, 20_000);
+
+	it("fails closed when the session lookup throws: a session whose agent is unknown, with the no-agent rules", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		// Only the session lookup reads these; reading one throws.
+		const markers = new Set(["ORRERY_AGENT", "ORRERY_AGENT_TOKEN", "ORRERY_HOST", "CLAUDE_PID", "CODEX_THREAD_ID", "CODEX_SESSION_ID", "OPENCODE_CONFIG_CONTENT"]);
+		const env = new Proxy({} as NodeJS.ProcessEnv, {
+			get: (_target, key) => {
+				if (typeof key === "string" && markers.has(key)) throw new Error("this environment can't be read");
+				return undefined;
+			},
+		});
+		const run = await pi(root, join(root, "agent-Birch"), config, undefined, { env });
+		expect(run.notices).toEqual([{ type: "warning", message: "Orrery: started inside an agent's session, so this one opens no memory and records nothing." }]);
+		expect(run.tool("zoom")).toBeUndefined();
+		// Birch's folder, without Birch: its rules, as for a refused ORRERY_AGENT.
+		expect(await call(run, "write", { path: join(root, "agent-Birch", "here.txt"), content: "x" })).not.toMatch(/outside/);
+		expect(await call(run, "write", { path: join(root, "shared", "atlas.txt"), content: "x" })).toMatch(/outside/);
+		expect(hosts(dataDir)).toEqual([]);
+		expect(existsSync(join(dataDir, "session-owners"))).toBe(false);
+	}, 20_000);
+
+	it("detached from the agent's session (no ancestry), found by the ORRERY_HOST its shell left it: no memory, no record", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		const host = bystander();
+		hostRecord(dataDir, "Atlas", "pi", host);
+		const run = await pi(root, join(root, "agent-Birch"), config, undefined, { env: { ORRERY_HOST: String(host) } });
+		// A pid is anyone's to copy: it says there is a session, never whose.
+		expect(run.notices).toEqual([{ type: "warning", message: "Orrery: started inside an agent's session (pi), so this one opens no memory and records nothing." }]);
+		expect(run.tool("zoom")).toBeUndefined();
+		expect(run.status("orrery")).toBeUndefined();
+		expect(existsSync(join(dataDir, "agents"))).toBe(false);
+		expect(hosts(dataDir)).toEqual([`${host}.json`]);
+	});
 });
 
 describe("a pi session's host record (spec 2026-10-18-agent-permissions §2)", () => {
@@ -163,5 +221,29 @@ describe("a pi session's host record (spec 2026-10-18-agent-permissions §2)", (
 		await pi(root, join(root, "plain"), config);
 		await pi(root, join(root, "agent-Atlas"), config, undefined, { env: { ORRERY_AGENT: "Nobody" } });
 		expect(hosts(config.dataDir)).toEqual([]);
+		expect(process.env[HOST_ENV]).toBeUndefined();
+	});
+
+	it("leaves its host pid to its shell while recorded (ORRERY_HOST): a command it runs sees it; taken back at shutdown", async () => {
+		const { root, config } = world();
+		expect(process.env[HOST_ENV]).toBeUndefined();
+		const run = await pi(root, join(root, "agent-Atlas"), config);
+		expect(process.env[HOST_ENV]).toBe(String(process.pid));
+		// pi's own bash, as the agent runs it.
+		expect(await call(run, "bash", { command: `echo "host=$${HOST_ENV}"` })).toContain(`host=${process.pid}`);
+		await close(run);
+		expect(process.env[HOST_ENV]).toBeUndefined();
+	});
+
+	it("says when its session can't be recorded, and opens its memory all the same", async () => {
+		const { root, config } = world();
+		// A file where the records' folder goes: nothing can be written there.
+		mkdirSync(config.dataDir, { recursive: true });
+		writeFileSync(join(config.dataDir, "session-hosts"), "");
+		const run = await pi(root, join(root, "agent-Atlas"), config);
+		expect(run.notices).toEqual([{ type: "warning", message: "Orrery: this session could not be recorded as Atlas's, so tools and commands started from it are not known as Atlas's." }]);
+		expect(run.status("orrery")).toBe("Orrery · Atlas · 0 msgs");
+		expect(process.env[HOST_ENV]).toBeUndefined();
+		await close(run);
 	});
 });
