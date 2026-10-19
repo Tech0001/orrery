@@ -1,7 +1,7 @@
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkCaller, stdinPeer } from "../../src/claude/peer.ts";
+import { checkCaller, stdinPeer, unsupportedCause } from "../../src/claude/peer.ts";
 import { claudeSession } from "../../src/claude/pick.ts";
 import { forgetSession, processStart } from "../../src/agent/sessions.ts";
 import { cleanupDirs, type TestAgent, testAgent } from "./support.ts";
@@ -16,9 +16,10 @@ const decide = (t: TestAgent, start?: (pid: number) => string | undefined) =>
 	claudeSession(t.config, { env: { CLAUDE_PROJECT_DIR: t.folder }, cwd: t.folder, pid: CLAUDE, decide: true, ...(start === undefined ? {} : { start }) });
 
 describe("stdinPeer", () => {
-	it("cannot tell under Node, which has no getsockopt: unsupported", () => {
+	it("cannot tell under Node, which has no getsockopt: unsupported, and says why", () => {
 		expect(process.versions.bun).toBeUndefined();
 		expect(stdinPeer()).toBe("unsupported");
+		expect(unsupportedCause()).toBe("it runs under Node, not its own binary");
 	});
 });
 

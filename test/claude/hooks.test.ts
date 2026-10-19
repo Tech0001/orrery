@@ -187,6 +187,8 @@ describe("UserPromptSubmit, Stop and SessionEnd", () => {
 });
 
 const CALLER_NOTICE = "Orrery: can't confirm prompts in this Claude Code version, so this session isn't recorded.";
+/** What a session whose hooks' caller can't be checked says, by cause. */
+const cannotCheck = (cause: string) => `Orrery can't check who calls its hooks here (${cause}), so this session isn't recorded.`;
 
 /** Two agents, Test and Other, each with its own folder, set up for Claude Code (spec 3c's forgery tests). */
 function twoAgents(): { t: TestAgent; other: AgentConfig & { readonly folder: string } } {
@@ -213,10 +215,10 @@ describe("the caller check (spec 2026-10-18-agent-permissions 3c): a writing hoo
 	const decision = (t: TestAgent) => readFileSync(join(t.config.dataDir, "claude-processes", `${CLAUDE}.json`), "utf8");
 
 	it.each([
-		["another process (the shell's own socket pair)", CLAUDE + 1],
-		["a pipe or a file (the shell's `echo … |`)", "not-socket"],
-		["a runtime that can't ask (Node)", "unsupported"],
-	] as const)("refuses %s: nothing spooled, forgotten, decided or started, and the guard still judges", async (_name, peer) => {
+		["another process (the shell's own socket pair)", CLAUDE + 1, CALLER_NOTICE],
+		["a pipe or a file (the shell's `echo … |`)", "not-socket", CALLER_NOTICE],
+		["a runtime that can't ask (Node)", "unsupported", cannotCheck("it runs under Node, not its own binary")],
+	] as const)("refuses %s: nothing spooled, forgotten, decided or started, and the guard still judges", async (_name, peer, notice) => {
 		const t = testAgent({ setup: true });
 		const genuine = await recordingSession(t);
 		expect(spooled(t)).toEqual(["transcript"]);
@@ -232,8 +234,8 @@ describe("the caller check (spec 2026-10-18-agent-permissions 3c): a writing hoo
 		expect(await runHook("session-end", input(t, { reason: "other" }), forged)).toBe("");
 		expect(await runHook("session-end", input(t, { reason: "prompt_input_exit" }), forged)).toBe("");
 		// A forged start of this session, or a new one: only the notice, and no holder, mode or transcript.
-		expect(JSON.parse(await runHook("session-start", input(t, { source: "startup" }), forged))).toEqual({ systemMessage: CALLER_NOTICE });
-		expect(JSON.parse(await runHook("session-start", input(t, { session_id: "s2", source: "startup" }), forged))).toEqual({ systemMessage: CALLER_NOTICE });
+		expect(JSON.parse(await runHook("session-start", input(t, { source: "startup" }), forged))).toEqual({ systemMessage: notice });
+		expect(JSON.parse(await runHook("session-start", input(t, { session_id: "s2", source: "startup" }), forged))).toEqual({ systemMessage: notice });
 		expect(spooled(t)).toEqual(["transcript"]);
 		expect(listSessions(t.agent.dir)).toEqual(["s1"]);
 		expect(readMode(t.agent.dir, "s1")).toEqual(mode);
@@ -321,12 +323,48 @@ describe("the caller check (spec 2026-10-18-agent-permissions 3c): a writing hoo
 	])("a genuine SessionStart whose transcript path is %s records nothing, says why, and later prompts spool nothing", async (_name, path) => {
 		const t = testAgent({ setup: true });
 		const c = ctx(t, { startHolder: () => { throw new Error("must not start"); } });
-		const out = JSON.parse(await runHook("session-start", JSON.stringify({ session_id: "s1", cwd: t.folder, source: "startup", transcript_path: path(t) }), c));
+		const start = (source: string) => runHook("session-start", JSON.stringify({ session_id: "s1", cwd: t.folder, source, transcript_path: path(t) }), c);
+		const out = JSON.parse(await start("startup"));
 		expect(out.hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · no memory yet · read-only: this session is not recorded/);
 		expect(out.systemMessage).toBe(CALLER_NOTICE);
 		expect(readMode(t.agent.dir, "s1")).toMatchObject({ mode: "read-only", reason: CALLER_NOTICE });
 		await runHook("user-prompt-submit", input(t, { prompt: "Not recorded.", prompt_id: "p-1" }), c);
 		expect(pendingEvents(t.agent.dir, "s1")).toEqual([]);
+		// Said once a session: not again at a /compact, which stays unrecorded.
+		const again = JSON.parse(await start("compact"));
+		expect(again.systemMessage).toBeUndefined();
+		expect(again.hookSpecificOutput.additionalContext).toMatch(/read-only: this session is not recorded/);
+	});
+
+	it("a SessionStart whose Claude Code can't be recorded says so, by its cause, and records nothing", async () => {
+		const t = testAgent({ setup: true });
+		const c = ctx(t, { startHolder: () => { throw new Error("must not start"); }, processStart: () => "a start of its own" });
+		// No decision can be written, and the host record holds the start the system reads, not this one.
+		rmSync(join(t.config.dataDir, "claude-processes"), { recursive: true, force: true });
+		writeFileSync(join(t.config.dataDir, "claude-processes"), "");
+		const out = JSON.parse(await runHook("session-start", input(t, { source: "startup" }), c));
+		const notice = cannotCheck("this Claude Code's process isn't recorded");
+		expect(out.systemMessage).toContain(notice);
+		expect(out.hookSpecificOutput.additionalContext).toMatch(/· read-only: this session is not recorded/);
+		expect(readMode(t.agent.dir, "s1")).toMatchObject({ mode: "read-only", reason: notice });
+	});
+
+	it("a /compact whose transcript can't be confirmed keeps the recorder it has, and its transcript; said once a session", async () => {
+		const t = testAgent({ setup: true });
+		const c = ctx(t, { startHolder: answer("recording") });
+		await runHook("session-start", input(t, { source: "startup" }), c);
+		// The recorder records s1 (as SessionStart's holder would say in holder.json).
+		writeHolder(t.agent.dir, { pid: process.pid, session: "s1", claudePid: CLAUDE, state: "recording", startedAt: Date.now(), updatedAt: Date.now() });
+		const compact = () => runHook("session-start", JSON.stringify({ session_id: "s1", cwd: t.folder, source: "compact" }), { ...c, startHolder: () => { throw new Error("must not start"); } });
+		const first = JSON.parse(await compact());
+		expect(first.systemMessage).toBe(CALLER_NOTICE);
+		expect(first.hookSpecificOutput.additionalContext).toMatch(/· recording$/m);
+		expect(readMode(t.agent.dir, "s1")?.mode).toBe("recording");
+		const second = JSON.parse(await compact());
+		expect(second.systemMessage).toBeUndefined();
+		// Prompts still spool, against the transcript the recorder has.
+		await runHook("user-prompt-submit", input(t, { prompt: "Still recorded.", prompt_id: "p-1" }), c);
+		expect(spooled(t)).toEqual(["transcript", "prompt"]);
 	});
 });
 

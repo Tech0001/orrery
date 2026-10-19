@@ -9,7 +9,7 @@
  * - It exits once its session has ended (SessionEnd, or the host process is gone) and the summaries have settled,
  *   cannot come (stopped or failing), or took longer than `finishMs`.
  * - Until then, a newcomer may ask it to yield (src/agent/handover.ts).
- * - A Claude Code prompt (one with a promptId) is held until Claude Code's transcript confirms it (spec
+ * - A Claude Code prompt (any but Codex's) is held until Claude Code's transcript confirms it (spec
  *   2026-10-18-agent-permissions §3c, src/claude/transcript.ts): the user's words are recorded, a peer's report as
  *   "[subagent] …", a task notification not at all. Its session's later events wait behind it, so the order holds. One
  *   not confirmed once its turn is over (a later event of its session, or its Claude Code gone) and `graceMs` have
@@ -305,19 +305,20 @@ export class Holder {
 			const meta: Record<string, string> = { [spoolKey(event.session)]: event.name };
 			const commandReply = parsed?.kind === "reply" && this.#afterCommand.has(event.session);
 			let unconfirmed = false;
-			if (parsed?.kind === "prompt" && parsed.promptId !== undefined) {
-				const prompt = { promptId: parsed.promptId, text: parsed.text };
-				const verdict = this.#verdict(event, prompt, parsed.claudePid, events.slice(index + 1), now);
+			// Every prompt but Codex's is Claude Code's, recorded only as its transcript confirms it (none without a promptId).
+			if (parsed?.kind === "prompt" && parsed.host !== "codex") {
+				const prompt = { promptId: parsed.promptId ?? "", text: parsed.text };
+				const { verdict, line } = this.#verdict(event, prompt, parsed.claudePid, events.slice(index + 1), now);
 				if (verdict === "wait") {
 					held.add(event.session);
 					continue;
 				}
 				this.#graceFrom.delete(event.name);
 				const reader = this.#transcripts.get(event.session);
-				// A replay (a resume, a fork) of a prompt recorded before is not recorded again.
-				if ((verdict === "user" || verdict === "report") && parsed.text.trim() && reader?.recordedBefore(verdict, prompt) !== true) {
+				// A line recorded before (a resume or a fork replays history, uuids and all) is not recorded again.
+				if ((verdict === "user" || verdict === "report") && parsed.text.trim() && (line === undefined || reader?.recordedBefore(line) !== true)) {
 					items.push({ kind: "user", text: verdict === "user" ? parsed.text : `[subagent] ${parsed.text}`, date: localIso(new Date(parsed.at)) });
-					reader?.remember(verdict, prompt);
+					if (line !== undefined) reader?.remember(line);
 				}
 				unconfirmed = verdict === "unconfirmed";
 				if (reader !== undefined) meta[transcriptKey(event.session)] = JSON.stringify(reader.mark());
@@ -357,22 +358,22 @@ export class Holder {
 	}
 
 	/**
-	 * What a Claude Code prompt was, by its session's transcript: "unconfirmed" when nothing can confirm it (no transcript
-	 * for its session, no promptId) or nothing did by the end of its grace, which begins once its turn is over (a later
-	 * event of its session, or its Claude Code gone).
+	 * What a Claude Code prompt was, by its session's transcript, and the line that said so: "unconfirmed" when nothing
+	 * can confirm it (no transcript for its session, no promptId) or nothing did by the end of its grace, which begins once
+	 * its turn is over (a later event of its session, or its Claude Code gone).
 	 */
-	#verdict(event: Pending, prompt: { promptId: string; text: string }, host: number, later: readonly Pending[], now: number): PromptVerdict | "unconfirmed" {
+	#verdict(event: Pending, prompt: { promptId: string; text: string }, host: number, later: readonly Pending[], now: number): { verdict: PromptVerdict | "unconfirmed"; line?: string } {
 		const reader = this.#transcript(event.session);
-		if (reader === undefined || prompt.promptId === "") return "unconfirmed";
+		if (reader === undefined || prompt.promptId === "") return { verdict: "unconfirmed" };
 		reader.read(now);
-		const verdict = reader.confirm(prompt);
-		if (verdict !== "wait") return verdict;
+		const confirmed = reader.confirm(prompt);
+		if (confirmed.verdict !== "wait") return confirmed;
 		let since = this.#graceFrom.get(event.name);
 		if (since === undefined && (later.some((next) => next.session === event.session) || !this.#alive(host))) {
 			since = now;
 			this.#graceFrom.set(event.name, now);
 		}
-		return since !== undefined && now - since >= this.#graceMs ? "unconfirmed" : "wait";
+		return { verdict: since !== undefined && now - since >= this.#graceMs ? "unconfirmed" : "wait" };
 	}
 
 	/** A session's transcript: as read so far, else where memory meta says the last holder left it, else none. */

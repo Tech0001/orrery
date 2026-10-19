@@ -1,6 +1,7 @@
 /** Shared pieces of the Claude Code adapter's tests. Everything lives in temp folders, never ~/.orrery. */
 
 import { execFileSync, type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll } from "vitest";
@@ -10,6 +11,7 @@ import { VIEW_IMPORT, writeSetupMarker } from "../../src/claude/view-file.ts";
 import { type HarnessConfig, type AgentConfig, parseConfig } from "../../src/agent/config.ts";
 import { type Kind, MemoryStore } from "../../src/memory/index.ts";
 import { agentConfigToml, tempDir } from "../agent/support.ts";
+import { line, transcriptIn } from "./transcript-lines.ts";
 
 /** The CLI entry point, run by process tests as `node MAIN …`. */
 export const MAIN = new URL("../../src/cli/main.ts", import.meta.url).pathname;
@@ -94,7 +96,7 @@ export function messages(agent: AgentConfig): string[] {
 }
 
 type Spooled =
-	| { kind: "prompt"; text: string; promptId?: string }
+	| { kind: "prompt"; text: string; promptId?: string; host?: "codex" }
 	| { kind: "reply"; text: string }
 	| { kind: "command" }
 	| { kind: "end"; reason?: string }
@@ -105,10 +107,33 @@ let clock = 0;
 /**
  * Spools an event as a hook would, a millisecond after the previous one so events sort as spooled. An explicit `at`
  * (an event from the past or the future) leaves that clock alone.
+ *
+ * A prompt given with neither a promptId nor a host is spooled as Claude Code's hook spools it, so a holder records it:
+ * with a fresh promptId, and the line Claude Code writes into the session's transcript, whose place is spooled first,
+ * once per session (src/claude/transcript.ts). Give a promptId (or host "codex") to spool exactly what is given.
  */
 export function spool(agent: AgentConfig, session: string, event: Spooled, claudePid: number, at?: number): string {
+	if (event.kind === "prompt" && event.promptId === undefined && event.host === undefined) return claudePrompt(agent, session, event.text, claudePid, at);
 	if (at === undefined) clock = Math.max(clock + 1, Date.now());
 	return spoolEvent(agent.dir, session, { ...event, at: at ?? clock, claudePid } as SpoolEvent);
+}
+
+/** Where this test file's Claude Code prompts are written, as their transcripts (spool): made when first needed. */
+let transcriptsRoot: string | undefined;
+/** The sessions whose transcript's place was spooled, by agent folder and session. */
+const begun = new Set<string>();
+
+/** A Claude Code prompt as its hook spools it, and its line in the transcript, which the holder confirms it by. */
+function claudePrompt(agent: AgentConfig, session: string, text: string, claudePid: number, at?: number): string {
+	transcriptsRoot ??= tempDir("orrery-transcripts-");
+	const transcript = transcriptIn(join(transcriptsRoot, createHash("sha256").update(agent.dir).digest("hex").slice(0, 16)));
+	if (!begun.has(`${agent.dir}\0${session}`)) {
+		begun.add(`${agent.dir}\0${session}`);
+		spool(agent, session, { kind: "transcript", path: transcript.path(session), projects: transcript.projects, offset: 0 }, claudePid, at === undefined ? undefined : at - 1);
+	}
+	const promptId = randomUUID();
+	transcript.add(session, line.typed(promptId, text));
+	return spool(agent, session, { kind: "prompt", text, promptId }, claudePid, at);
 }
 
 /** Polls `check` (a throw counts as "not yet") until it holds, or fails after `ms`. */
@@ -140,6 +165,8 @@ function scratchHome(): string {
 afterAll(() => {
 	if (childHome !== undefined) rmSync(childHome, { recursive: true, force: true });
 	childHome = undefined;
+	if (transcriptsRoot !== undefined) rmSync(transcriptsRoot, { recursive: true, force: true });
+	transcriptsRoot = undefined;
 });
 
 /**

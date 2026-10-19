@@ -1,10 +1,9 @@
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Holder } from "../../src/claude/holder.ts";
-import { spoolEvent } from "../../src/claude/spool.ts";
 import { readHolder } from "../../src/agent/handover.ts";
 import type { ModelSource } from "../../src/agent/model-source.ts";
-import { waitUntil } from "../claude/support.ts";
+import { spool, waitUntil } from "../claude/support.ts";
 import { cleanup, isolatedHome, lastAgent, pi, world } from "./world.ts";
 
 afterEach(cleanup);
@@ -26,8 +25,9 @@ describe("pi and a Claude Code holder", () => {
 		try {
 			expect(holder).toBeDefined();
 			const now = Date.now();
-			spoolEvent(agent.dir, "s1", { kind: "prompt", at: now, claudePid: 111, text: `A long prompt ${"detail ".repeat(200)}` });
-			spoolEvent(agent.dir, "s1", { kind: "end", at: now + 1, claudePid: 111 });
+			// A Claude Code prompt as its hook spools it, its transcript confirming it (test/claude/support.ts spool).
+			spool(agent, "s1", { kind: "prompt", text: `A long prompt ${"detail ".repeat(200)}` }, 111, now);
+			spool(agent, "s1", { kind: "end" }, 111, now + 1);
 			await waitUntil(() => readHolder(agent.dir)?.state === "finishing");
 			await pi(root, join(root, "agent-Atlas"), config);
 			expect(lastAgent().view.stats().messages).toBe(1);

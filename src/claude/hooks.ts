@@ -25,11 +25,12 @@
  *   2026-10-18-agent-permissions §3c, src/claude/peer.ts): its stdin's peer must be the Claude Code process, and, past
  *   SessionStart, the one recorded with its start time. An agent's shell that runs the hook command itself (a pipe, a
  *   socket pair of its own) gets nothing written, decided, forgotten or started; a SessionStart that looks like a real one
- *   says the session isn't recorded (CALLER_NOTICE).
+ *   says the session isn't recorded, and why (callerNotice).
  * - SessionStart spools where the session's transcript is (only under Claude Code's projects folder), and each prompt
  *   carries its promptId: the holder records a prompt only once that transcript confirms it (src/claude/transcript.ts).
- *   A session whose transcript can't be found there, or whose Claude Code isn't recorded, is marked read-only with
- *   CALLER_NOTICE, and nothing of it is recorded.
+ *   A session whose transcript can't be found there, or whose Claude Code isn't recorded, is marked read-only with the
+ *   reason, and nothing of it is recorded; a /compact of a session its recorder records keeps the transcript it has. The
+ *   reason is said once a session.
  */
 
 import { spawn } from "node:child_process";
@@ -52,7 +53,7 @@ import { type HolderHost, holderFresh, openElsewhere, readHolder } from "../agen
 import { claudeGuard, claudeStateRoots, movedConfigDirCredentials } from "./guard.ts";
 import { summaryNotice, updateNotice } from "./notices.ts";
 import { holderLog, samePath, validSession } from "./paths.ts";
-import { checkCaller, type StdinPeer, stdinPeer } from "./peer.ts";
+import { type CallerCheck, checkCaller, type StdinPeer, stdinPeer, unsupportedCause } from "./peer.ts";
 import { type ClaudePicked, claudeRefusedNotice, claudeSession, forgetProcess, UNCONFIRMED_NOTICE } from "./pick.ts";
 import { readMode, type SessionMode, spoolEvent, writeMode } from "./spool.ts";
 import { projectsFolder, transcriptIn } from "./transcript.ts";
@@ -286,11 +287,20 @@ const unconfirmedHere = (agent: AgentConfig, id: string, ctx: HookContext): bool
 };
 
 /**
- * What a session whose prompts can't be confirmed says (spec 2026-10-18-agent-permissions §3c): its hooks' caller can't be
- * told from an agent's shell (no socket on stdin, or this runtime can't ask), its Claude Code isn't recorded, or its
- * transcript is not where Claude Code keeps them. Nothing of it is recorded, never by falling back.
+ * What a session whose prompts can't be confirmed in this Claude Code version says (spec 2026-10-18-agent-permissions
+ * §3c): its hooks' stdin is no socket pair of its Claude Code's, or its transcript is not where Claude Code keeps them.
+ * Nothing of it is recorded, never by falling back.
  */
 export const CALLER_NOTICE = "Orrery: can't confirm prompts in this Claude Code version, so this session isn't recorded.";
+
+/**
+ * What a session whose hooks' caller can't be checked says, by why: Orrery can't ask here (it runs under Node, the system
+ * isn't supported, the C library can't be loaded), or its Claude Code's process isn't recorded; else CALLER_NOTICE.
+ */
+export function callerNotice(check: Exclude<CallerCheck, "ok">): string {
+	const cause = check === "unsupported" ? unsupportedCause() : check === "unrecorded" ? "this Claude Code's process isn't recorded" : undefined;
+	return cause === undefined ? CALLER_NOTICE : `Orrery can't check who calls its hooks here (${cause}), so this session isn't recorded.`;
+}
 
 /** Where the session's prompts are confirmed: its transcript and how long it was, from a SessionStart its caller sent. */
 interface TranscriptAt {
@@ -301,14 +311,16 @@ interface TranscriptAt {
 
 /**
  * The session's transcript (input.transcript_path, under Claude Code's projects folder: src/claude/transcript.ts) with
- * its size now, once this SessionStart's Claude Code is the recorded one (its pick just recorded it); else undefined.
+ * its size now, once this SessionStart's Claude Code is the recorded one (its pick just recorded it); else what the
+ * session says (callerNotice).
  */
-function confirmable(input: HookInput, ctx: HookContext): TranscriptAt | undefined {
+function confirmable(input: HookInput, ctx: HookContext): TranscriptAt | string {
 	const peer = (ctx.peer ?? stdinPeer)();
-	if (checkCaller(ctx.config, ctx.claudePid, peer, { recorded: true, ...(ctx.processStart === undefined ? {} : { start: ctx.processStart }) }) !== "ok") return undefined;
+	const check = checkCaller(ctx.config, ctx.claudePid, peer, { recorded: true, ...(ctx.processStart === undefined ? {} : { start: ctx.processStart }) });
+	if (check !== "ok") return callerNotice(check);
 	const projects = projectsFolder(ctx.env, ctx.home ?? homedir());
 	const path = transcriptIn(input.transcript_path, projects);
-	if (path === undefined) return undefined;
+	if (path === undefined) return CALLER_NOTICE;
 	let offset = 0;
 	try {
 		offset = statSync(path).size;
@@ -319,12 +331,12 @@ function confirmable(input: HookInput, ctx: HookContext): TranscriptAt | undefin
 }
 
 /**
- * Marks `session` read-only with CALLER_NOTICE: its later hooks spool nothing (recordable) and no holder adopts it. Only
+ * Marks `session` read-only, `reason` its notice: its later hooks spool nothing (recordable) and no holder adopts it. Only
  * a SessionStart whose caller was checked marks: a forged one changes nothing. Never throws.
  */
-function markNotConfirmable(agent: AgentConfig, session: string, ctx: HookContext): void {
+function markNotConfirmable(agent: AgentConfig, session: string, ctx: HookContext, reason: string): void {
 	try {
-		writeMode(agent.dir, session, { mode: "read-only", pid: process.pid, claudePid: ctx.claudePid, nonce: randomUUID(), since: Date.now(), reason: CALLER_NOTICE });
+		writeMode(agent.dir, session, { mode: "read-only", pid: process.pid, claudePid: ctx.claudePid, nonce: randomUUID(), since: Date.now(), reason });
 	} catch {
 		// unmarked: its prompts are dropped unconfirmed, and counted
 	}
@@ -332,17 +344,17 @@ function markNotConfirmable(agent: AgentConfig, session: string, ctx: HookContex
 
 /**
  * A SessionStart whose caller is not its Claude Code changes nothing: no decision, no host record, no mode, no holder, no
- * view. Where it would have recorded the session (an agent set up here, the main thread, not a compaction) it says
- * CALLER_NOTICE: a Claude Code that stopped handing hooks a socket stops recording visibly.
+ * view. Where it would have recorded the session (an agent set up here, the main thread, not a compaction) it says why
+ * (callerNotice): a Claude Code that stopped handing hooks a socket stops recording visibly.
  */
-function refusedStart(input: HookInput, ctx: HookContext): object | undefined {
+function refusedStart(input: HookInput, ctx: HookContext, check: Exclude<CallerCheck, "ok">): object | undefined {
 	if (input.agent_id !== undefined || input.source === "compact" || !validSession(input.session_id)) return undefined;
 	const projectDir = ctx.env.CLAUDE_PROJECT_DIR || (typeof input.cwd === "string" ? input.cwd : undefined);
 	if (projectDir === undefined) return undefined;
 	try {
 		const name = ctx.env[AGENT_ENV]?.trim();
 		const agent = name ? agentNamed(ctx.config, name) : agentForCwd(ctx.config, projectDir);
-		return agent !== undefined && markedHere(agent) ? { systemMessage: CALLER_NOTICE } : undefined;
+		return agent !== undefined && markedHere(agent) ? { systemMessage: callerNotice(check) } : undefined;
 	} catch {
 		return undefined;
 	}
@@ -420,27 +432,31 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 		warnings.push(`Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s.`);
 	}
 	let state = "recording";
-	// Where the session's prompts are confirmed (src/claude/transcript.ts). Subagents' events are not memory.
-	const transcript = setUp && input.agent_id === undefined ? confirmable(input, ctx) : undefined;
-	let spooled = true;
-	if (transcript !== undefined) {
+	// Where the session's prompts are confirmed (src/claude/transcript.ts), or why they can't be. Subagents' events are
+	// not memory.
+	const confirm = setUp && input.agent_id === undefined ? confirmable(input, ctx) : undefined;
+	let unconfirmable = typeof confirm === "string" ? confirm : undefined;
+	if (confirm !== undefined && typeof confirm !== "string") {
 		try {
-			spoolEvent(agent.dir, session, { kind: "transcript", at: Date.now(), claudePid: ctx.claudePid, ...transcript });
+			spoolEvent(agent.dir, session, { kind: "transcript", at: Date.now(), claudePid: ctx.claudePid, ...confirm });
 		} catch (error) {
-			spooled = false;
-			warnings.push(`Orrery: ${agent.name}'s spool could not be written (${errorText(error)}), so this session is not recorded.`);
+			unconfirmable = `Orrery: ${agent.name}'s spool could not be written (${errorText(error)}), so this session is not recorded.`;
 		}
 	}
+	const holder = readHolder(agent.dir);
+	const recordingHere = holderFresh(holder) && holder.session === session && holder.state === "recording";
+	// A /compact of a session its recorder records keeps the transcript the recorder has.
+	const keep = unconfirmable !== undefined && input.source === "compact" && recordingHere;
+	// Said once a session (again only for another reason), not at every compaction.
+	if (unconfirmable !== undefined && !noticeShownBefore(agent.dir, `${session}:caller`, unconfirmable)) warnings.push(unconfirmable);
 	if (!setUp) state = `not set up for Claude Code here, so this session is not recorded; run \`orrery claude-setup ${agent.name}\` to record it`;
-	else if (input.agent_id === undefined && (transcript === undefined || !spooled)) {
+	else if (unconfirmable !== undefined && !keep) {
 		// Its prompts can't be confirmed: none of it is recorded, whatever comes later.
-		markNotConfirmable(agent, session, ctx);
+		markNotConfirmable(agent, session, ctx, unconfirmable);
 		state = "read-only: this session is not recorded";
-		if (spooled) warnings.push(CALLER_NOTICE);
 	} else {
-		const holder = readHolder(agent.dir);
 		let mode: SessionMode | undefined;
-		if (holderFresh(holder) && holder.session === session && holder.state === "recording") mode = readMode(agent.dir, session);
+		if (recordingHere) mode = readMode(agent.dir, session);
 		else {
 			const nonce = randomUUID();
 			ctx.startHolder(agent, session, nonce, since);
@@ -592,7 +608,7 @@ export async function runHook(event: string, stdin: string | undefined, ctx: Hoo
 		const peer = (ctx.peer ?? stdinPeer)();
 		const caller = checkCaller(ctx.config, ctx.claudePid, peer, { recorded: event !== "session-start", ...(ctx.processStart === undefined ? {} : { start: ctx.processStart }) });
 		if (caller !== "ok") {
-			const refused = event === "session-start" ? refusedStart(input, ctx) : undefined;
+			const refused = event === "session-start" ? refusedStart(input, ctx, caller) : undefined;
 			return refused === undefined ? "" : JSON.stringify(refused);
 		}
 		ctx = { ...ctx, peer: () => peer };

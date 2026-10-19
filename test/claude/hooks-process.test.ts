@@ -93,7 +93,8 @@ describe("the hooks as Claude Code runs them", () => {
 		const at = { session_id: "s1", cwd: t.folder, transcript_path: transcript.path("s1") };
 		const start = hookCli("session-start", { ...at, source: "startup" }, env);
 		expect([start.status, start.stderr]).toEqual([0, ""]);
-		expect(JSON.parse(start.stdout)).toEqual({ systemMessage: CALLER_NOTICE });
+		// Said by its cause, not as a Claude Code version's.
+		expect(JSON.parse(start.stdout)).toEqual({ systemMessage: "Orrery can't check who calls its hooks here (it runs under Node, not its own binary), so this session isn't recorded." });
 		expect(hookCli("user-prompt-submit", { ...at, prompt: "Not recorded.", prompt_id: "p-1" }, env).stdout).toBe("");
 		expect(listSessions(t.agent.dir)).toEqual([]);
 		expect(readHolder(t.agent.dir)).toBeUndefined();

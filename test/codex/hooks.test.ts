@@ -256,7 +256,8 @@ describe("recording a Codex session", () => {
 		expect(await run("session-end", input({ reason: "other" }), c)).toBe("");
 		const events = pendingEvents(t.agent.dir, "s1").map((event) => readEvent(event.path));
 		expect(events.map((event) => ({ ...event, at: 0 }))).toEqual([
-			{ kind: "prompt", at: 0, claudePid: CODEX, text: "Codename Saffron." },
+			// Marked Codex's: the holder confirms only Claude Code's prompts against a transcript (src/claude/holder.ts).
+			{ kind: "prompt", at: 0, claudePid: CODEX, text: "Codename Saffron.", host: "codex" },
 			{ kind: "reply", at: 0, claudePid: CODEX, text: "Noted: Saffron." },
 			{ kind: "end", at: 0, claudePid: CODEX, reason: "other" },
 		]);

@@ -17,12 +17,13 @@ import { sessionDir, sessionsDir, validSession } from "./paths.ts";
  * One hook event: the user's prompt, the turn's final reply, one of orrery's own commands (text-less: its reply
  * stays out of memory), the session's end, a summary model switch, or the session's transcript.
  * - A Claude Code prompt carries the hook's `promptId` ("" when the hook got none): the holder records it only once
- *   Claude Code's transcript confirms it (src/claude/transcript.ts). A prompt without one is Codex's, recorded as it comes.
+ *   Claude Code's transcript confirms it (src/claude/transcript.ts); one without a promptId never is. Codex's hook marks
+ *   its prompts `host: "codex"`: those are recorded as they come (until Codex's rollout check).
  * - `transcript`: SessionStart's, once its caller was checked (src/claude/peer.ts): the session's transcript file under
  *   Claude Code's projects folder, and its size then, where the session's prompts are looked for.
  */
 export type SpoolEvent =
-	| { readonly kind: "prompt"; readonly at: number; readonly claudePid: number; readonly text: string; readonly promptId?: string }
+	| { readonly kind: "prompt"; readonly at: number; readonly claudePid: number; readonly text: string; readonly promptId?: string; readonly host?: "codex" }
 	| { readonly kind: "reply"; readonly at: number; readonly claudePid: number; readonly text: string }
 	| { readonly kind: "command"; readonly at: number; readonly claudePid: number }
 	| { readonly kind: "end"; readonly at: number; readonly claudePid: number; readonly reason?: string }
@@ -86,7 +87,9 @@ export function readEvent(path: string): SpoolEvent | undefined {
 	}
 	if (typeof value !== "object" || value === null || typeof value.claudePid !== "number") return undefined;
 	if (typeof value.at !== "number" || !(value.at >= 0 && value.at < LAST_AT)) return undefined;
-	if (value.kind === "prompt" && typeof value.text === "string" && (value.promptId === undefined || typeof value.promptId === "string")) return value as unknown as SpoolEvent;
+	if (value.kind === "prompt" && typeof value.text === "string" && (value.promptId === undefined || typeof value.promptId === "string") && (value.host === undefined || value.host === "codex")) {
+		return value as unknown as SpoolEvent;
+	}
 	if (value.kind === "reply" && typeof value.text === "string") return value as unknown as SpoolEvent;
 	if (value.kind === "transcript" && typeof value.path === "string" && typeof value.projects === "string" && Number.isSafeInteger(value.offset) && (value.offset as number) >= 0) {
 		return value as unknown as SpoolEvent;

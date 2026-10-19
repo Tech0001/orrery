@@ -128,7 +128,8 @@ function notices(input: CodexHookInput, ctx: CodexHookContext): object | undefin
 export function userPromptSubmit(input: CodexHookInput, ctx: CodexHookContext): object | undefined {
 	const at = recordable(input, ctx);
 	if (at !== undefined && typeof input.prompt === "string" && input.prompt.trim()) {
-		spoolEvent(at.agent.dir, at.session, { kind: "prompt", at: Date.now(), claudePid: ctx.codexPid, text: input.prompt });
+		// Marked Codex's: the holder confirms a Claude Code prompt against its transcript, and a Codex one as Codex's.
+		spoolEvent(at.agent.dir, at.session, { kind: "prompt", at: Date.now(), claudePid: ctx.codexPid, text: input.prompt, host: "codex" });
 	}
 	return notices(input, ctx);
 }

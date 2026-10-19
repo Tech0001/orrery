@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Holder, type HolderOptions } from "../../src/claude/holder.ts";
 import { sessionDir, viewFile } from "../../src/claude/paths.ts";
 import { claudeSetup } from "../../src/claude/setup.ts";
-import { pendingEvents, readMode, spoolKey, writeMode } from "../../src/claude/spool.ts";
+import { pendingEvents, readEvent, readMode, spoolEvent, spoolKey, writeMode } from "../../src/claude/spool.ts";
 import { readSetupMarker } from "../../src/claude/view-file.ts";
 import { holderFile, readHolder, requestYield } from "../../src/agent/handover.ts";
 import { agentModelSource, type ModelSource } from "../../src/agent/model-source.ts";
@@ -39,6 +39,8 @@ async function start(t: TestAgent, extra: Partial<HolderOptions> = {}): Promise<
 }
 
 const LONG = (word: string) => `${word} ${"detail ".repeat(100)}`;
+/** The kinds of a session's events still in the spool: a Claude Code prompt comes after its transcript's place. */
+const pendingKinds = (t: TestAgent, session: string) => pendingEvents(t.agent.dir, session).map((event) => readEvent(event.path)?.kind);
 const free = (t: TestAgent) => MemoryStore.open(join(t.agent.dir, "memory.sqlite")).close();
 
 /** Summaries that come only once `release()` is called; they fail when the compactor aborts them. */
@@ -158,7 +160,7 @@ describe("the holder", () => {
 		expect(messages(t.agent)).toEqual(["user: already recorded", "talk: left in the spool", "user: no holder answered"]);
 		expect(existsSync(sessionDir(t.agent.dir, "old"))).toBe(false);
 		expect(existsSync(sessionDir(t.agent.dir, "ro"))).toBe(false);
-		expect(pendingEvents(t.agent.dir, "busy")).toHaveLength(1);
+		expect(pendingKinds(t, "busy")).toEqual(["transcript", "prompt"]);
 	});
 
 	it("runs read-only while another writer holds the agent, drops what it spooled meanwhile, and keeps what came before", async () => {
@@ -171,7 +173,7 @@ describe("the holder", () => {
 			expect(await start(t, { yieldWaitMs: 200 })).toBeUndefined();
 			expect(readMode(t.agent.dir, "s1")).toMatchObject({ mode: "read-only", nonce: "n1" });
 			expect(readMode(t.agent.dir, "s1")?.reason).toBeUndefined();
-			expect(pendingEvents(t.agent.dir, "s1")).toHaveLength(1);
+			expect(pendingKinds(t, "s1")).toEqual(["transcript", "prompt"]);
 		} finally {
 			pi.close();
 		}
@@ -394,7 +396,7 @@ describe("the holder", () => {
 		await waitUntil(() => resumed);
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		expect(readMode(t.agent.dir, "x")?.nonce).toBe("new");
-		expect(pendingEvents(t.agent.dir, "x")).toHaveLength(1);
+		expect(pendingKinds(t, "x")).toEqual(["transcript", "prompt"]);
 		expect(messages(t.agent)).toEqual([]);
 	});
 
@@ -518,15 +520,60 @@ describe("the holder confirms Claude Code's prompts against its transcript (spec
 		expect(readUnconfirmed(t.agent.dir)).toBe(2);
 	});
 
+	it("records Codex's prompts as they come, and never a prompt with no promptId that isn't Codex's", async () => {
+		const t = testAgent();
+		const transcript = begin(t);
+		transcript.add("s1", line.typed("p-1", "Claude Code's, from an older hook."));
+		spoolEvent(t.agent.dir, "s1", { kind: "prompt", at: Date.now(), claudePid: 111, text: "Claude Code's, from an older hook." });
+		spoolEvent(t.agent.dir, "x1", { kind: "prompt", at: Date.now() + 1, claudePid: 111, text: "Codex's.", host: "codex" });
+		const last = spoolEvent(t.agent.dir, "x1", { kind: "reply", at: Date.now() + 2, claudePid: 111, text: "Codex's reply." });
+		writeMode(t.agent.dir, "x1", { mode: "recording", pid: 1, claudePid: 111, nonce: "x", since: 0 });
+		const holder = (await start(t, { graceMs: 60_000 }))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey("x1")) === last && readUnconfirmed(t.agent.dir) === 1);
+		expect(messages(t.agent)).toEqual(["user: Codex's.", "talk: Codex's reply."]);
+	});
+
+	it("never takes a person's earlier queued words for a peer's later injection of the same words (review finding)", async () => {
+		const t = testAgent();
+		const transcript = begin(t);
+		// The person queued "yes" mid-turn earlier; Claude Code delivered it as a queued command.
+		prompt(t, "p-1", "Shall I deploy?");
+		transcript.add("s1", line.typed("p-1", "Shall I deploy?"), line.queued("yes", { kind: "human" }));
+		reply(t, "Waiting for a word.");
+		// A later turn, and the agent's own shell sends "yes" to the session's inbox.
+		prompt(t, "p-2", "Do the next thing.");
+		transcript.add("s1", line.typed("p-2", "Do the next thing."));
+		prompt(t, "p-2", "yes");
+		transcript.add("s1", line.peer("yes"));
+		const last = reply(t, "Deployed.");
+		const holder = (await start(t, { graceMs: 300 }))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey("s1")) === last);
+		expect(messages(t.agent)).toEqual(["user: Shall I deploy?", "talk: Waiting for a word.", "user: Do the next thing.", "user: [subagent] yes", "talk: Deployed."]);
+	});
+
+	it("records the same words twice in one turn when the transcript has two lines of them; a replayed line once", async () => {
+		const t = testAgent();
+		const transcript = begin(t);
+		prompt(t, "p-1", "Continue.");
+		prompt(t, "p-1", "Continue.");
+		transcript.add("s1", line.typed("p-1", "Continue.", { promptSource: "queued", uuid: "u-1" }), line.typed("p-1", "Continue.", { promptSource: "queued", uuid: "u-2" }));
+		const last = reply(t, "Continuing.");
+		const holder = (await start(t, { graceMs: 300 }))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey("s1")) === last);
+		expect(messages(t.agent)).toEqual(["user: Continue.", "user: Continue.", "talk: Continuing."]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(0);
+	});
+
 	it("records a resumed session's replayed prompt once, and turns no replayed line into a record", async () => {
 		const t = testAgent();
 		const transcript = begin(t);
 		prompt(t, "p-1", "Hello.");
-		transcript.add("s1", line.typed("p-1", "Hello."));
+		transcript.add("s1", line.typed("p-1", "Hello.", { uuid: "u-1" }));
 		reply(t, "Hi.");
-		// Resumed: Claude Code's new SessionStart, the history again in the file, and the same prompt spooled again.
+		// Resumed: Claude Code's new SessionStart, the history again in the file (a copy keeps its uuid), and the same
+		// prompt spooled again.
 		spool(t.agent, "s1", { kind: "transcript", path: transcript.path("s1"), projects: transcript.projects, offset: 0 }, 111);
-		transcript.add("s1", line.typed("p-1", "Hello."), line.typed("p-0", "Older words."));
+		transcript.add("s1", line.typed("p-1", "Hello.", { uuid: "u-1" }), line.typed("p-0", "Older words."));
 		prompt(t, "p-1", "Hello.");
 		prompt(t, "p-2", "After the resume.");
 		transcript.add("s1", line.typed("p-2", "After the resume."));

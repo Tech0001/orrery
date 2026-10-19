@@ -1,9 +1,10 @@
 /**
  * Confirming Claude Code's prompts against its own transcript (spec 2026-10-18-agent-permissions §3c). A prompt that
  * UserPromptSubmit spooled is held until the transcript Claude Code writes says what it was:
- * - the user's: a `type:"user"` line under the hook's promptId, with the same words, typed, queued or sent by `-p`
- *   (promptSource typed, queued or sdk; origin absent or human), and no tool result's marks; or a command a human queued
- *   mid-turn (an attachment `queued_command` with a human origin and the same words);
+ * - the user's: a `type:"user"` line under the hook's promptId, with the same words and no tool result's marks, typed or
+ *   queued (promptSource typed or queued, origin human) or sent by `-p` (promptSource sdk, no origin, or a human one). A
+ *   queued command's attachment is never the user's: it names no promptId, so a person's earlier words could stand for
+ *   an injection's later ones;
  * - a report: a message from a peer (a subagent's report, or anything sent to the session's inbox, the agent's own shell
  *   included), recorded as "[subagent] …" as the importer records subagent reports (src/import/claude.ts), never as the
  *   user's words;
@@ -15,11 +16,13 @@
  * The transcript's path comes only from a SessionStart whose caller was checked (src/claude/peer.ts), and only under
  * Claude Code's projects folder ($CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects), links followed as far as they
  * exist; it is read only from the offset SessionStart saw on, a line at a time, through no link at its own place and
- * never once it leads out of that folder. Lines are kept only when they could confirm a prompt, for a while.
+ * never once it leads out of that folder (on Linux, judged by the file it opened). A file replaced, or written anew
+ * shorter, is read from its start. Lines are kept only when they could confirm a prompt, for a while; each confirms one
+ * prompt, and one recorded before (by its uuid: a resume replays history) is not recorded again.
  */
 
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { writePrivate } from "../agent/private-file.ts";
 import { unconfirmedFile } from "./paths.ts";
@@ -68,14 +71,16 @@ function verdictOf(line: Line, prompt: SpooledPrompt): PromptVerdict {
 		if (notification(line.turnOrigin) || notification(origin) || prompt.text.trimStart().startsWith("<task-notification")) return "drop";
 		if (origin === "peer" || line.turnOrigin === "peer") return "report";
 		if (line.isMeta === true || line.isCompactSummary === true || !HUMAN_SOURCES.has(line.promptSource)) return "wait";
-		return line.origin === undefined || origin === "human" ? "user" : "wait";
+		// Typed and queued prompts carry a human origin; only `-p`'s (sdk) come without one (2.1.302).
+		if (line.origin === undefined) return line.promptSource === "sdk" ? "user" : "wait";
+		return origin === "human" ? "user" : "wait";
 	}
+	// A queued command names no promptId: its words alone may make a prompt a report or nothing, never the user's.
 	const attachment = line.type === "attachment" ? record(line.attachment) : undefined;
 	if (attachment?.type === "queued_command" && attachment.prompt === prompt.text) {
 		const origin = kindOf(attachment.origin);
 		if (notification(origin)) return "drop";
 		if (origin === "peer") return "report";
-		if (origin === "human") return "user";
 	}
 	return "wait";
 }
@@ -133,8 +138,10 @@ export interface TranscriptMark {
 	readonly projects: string;
 	/** The byte the next read starts at: a line's start. */
 	readonly offset: number;
-	/** What was recorded lately (TranscriptReader.remember), so a replay is recorded once. */
+	/** The lines that confirmed what was recorded lately (TranscriptReader.remember), so a replay is recorded once. */
 	readonly recorded?: readonly string[];
+	/** The file read so far ("device:inode"): another file at the path is read from its start. */
+	readonly file?: string;
 }
 
 /** A TranscriptMark from memory meta, or undefined when it is no mark. */
@@ -146,7 +153,7 @@ export function parseMark(text: string | undefined): TranscriptMark | undefined 
 		const offset = value.offset;
 		if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0) return undefined;
 		const recorded = Array.isArray(value.recorded) ? value.recorded.filter((key): key is string => typeof key === "string") : [];
-		return { path: value.path, projects: value.projects, offset, recorded };
+		return { path: value.path, projects: value.projects, offset, recorded, ...(typeof value.file === "string" ? { file: value.file } : {}) };
 	} catch {
 		return undefined;
 	}
@@ -157,14 +164,22 @@ const CHUNK = 8 * 1024 * 1024;
 /** How long a line that could confirm a prompt is kept unused, and how many are kept. */
 const KEEP_MS = 10 * 60_000;
 const KEEP_LINES = 1000;
-/** How many recorded prompts are remembered against a replay. */
+/** How many recorded prompts' lines are remembered against a replay. */
 const RECORDED_KEPT = 64;
 
 interface Kept {
 	readonly text: string;
+	/** The line's own identity: its uuid, else where it starts in the file. */
+	readonly id: string;
 	/** Where the line starts in the file. */
 	readonly at: number;
 	readonly readAt: number;
+}
+
+/** What the transcript said of a prompt, and which line said it (its identity, for a replay's check). */
+export interface Confirmation {
+	readonly verdict: PromptVerdict;
+	readonly line?: string;
 }
 
 /**
@@ -179,12 +194,22 @@ export class TranscriptReader {
 	#skipping = false;
 	#kept: Kept[] = [];
 	readonly #recorded: string[];
+	/** The file read so far, "device:inode". */
+	#file: string | undefined;
 
 	constructor(mark: TranscriptMark) {
 		this.path = mark.path;
 		this.projects = mark.projects;
 		this.#offset = mark.offset;
 		this.#recorded = [...(mark.recorded ?? [])];
+		this.#file = mark.file;
+	}
+
+	/** Starts over at the file's start: another file at the path, or this one written anew. */
+	#restart(): void {
+		this.#offset = 0;
+		this.#skipping = false;
+		this.#kept = [];
 	}
 
 	/** Reads what was appended since the last read. A file that isn't there yet, or can't be read now, is read later. */
@@ -198,12 +223,13 @@ export class TranscriptReader {
 		}
 		try {
 			const stat = fstatSync(fd);
-			if (!stat.isFile() || !under(realpathSync(this.path), realish(this.projects))) return;
-			// A transcript is only appended to: a shorter one was written anew, from its start.
-			if (stat.size < this.#offset) {
-				this.#offset = 0;
-				this.#skipping = false;
-			}
+			// On Linux, the file this opened, whatever was swapped in on the way; elsewhere (macOS), the path as it is now.
+			const opened = process.platform === "linux" ? readlinkSync(`/proc/self/fd/${fd}`) : realpathSync(this.path);
+			if (!stat.isFile() || !under(opened, realish(this.projects))) return;
+			// A transcript is only appended to: another file, or a shorter one, was written anew; read from its start.
+			const file = `${stat.dev}:${stat.ino}`;
+			if ((this.#file !== undefined && this.#file !== file) || stat.size < this.#offset) this.#restart();
+			this.#file = file;
 			while (this.#offset < stat.size) {
 				const want = Math.min(stat.size - this.#offset, CHUNK);
 				const buffer = Buffer.alloc(want);
@@ -245,40 +271,40 @@ export class TranscriptReader {
 		}
 		const user = line?.type === "user" && typeof line.promptId === "string" && line.toolUseResult === undefined;
 		const queued = line?.type === "attachment" && record(line.attachment)?.type === "queued_command";
-		if (user || queued) this.#kept.push({ text, at, readAt: now });
+		if (line !== undefined && (user || queued)) this.#kept.push({ text, id: typeof line.uuid === "string" ? `uuid:${line.uuid}` : `at:${at}`, at, readAt: now });
 	}
 
-	/** What the lines read so far say `prompt` was; the line that says so is used up. */
-	confirm(prompt: SpooledPrompt): PromptVerdict {
+	/** What the lines read so far say `prompt` was, and which line said it; that line is used up. */
+	confirm(prompt: SpooledPrompt): Confirmation {
 		for (const [index, kept] of this.#kept.entries()) {
 			const verdict = confirmPrompt([kept.text], prompt);
 			if (verdict === "wait") continue;
 			this.#kept.splice(index, 1);
-			return verdict;
+			return { verdict, line: kept.id };
 		}
-		return "wait";
+		return { verdict: "wait" };
 	}
 
-	/** Whether `prompt` was recorded as `kind` before (a resume or a fork replays history). */
-	recordedBefore(kind: "user" | "report", prompt: SpooledPrompt): boolean {
-		return this.#recorded.includes(recordKey(kind, prompt));
+	/** Whether what `line` says was recorded before: a resume or a fork replays history, uuids and all. */
+	recordedBefore(line: string): boolean {
+		return this.#recorded.includes(lineKey(line));
 	}
 
-	/** Remembers that `prompt` was recorded as `kind`. */
-	remember(kind: "user" | "report", prompt: SpooledPrompt): void {
-		this.#recorded.push(recordKey(kind, prompt));
+	/** Remembers that what `line` says was recorded. */
+	remember(line: string): void {
+		this.#recorded.push(lineKey(line));
 		this.#recorded.splice(0, Math.max(0, this.#recorded.length - RECORDED_KEPT));
 	}
 
 	/** Where a reader started afresh picks up without losing a line this one still keeps. */
 	mark(): TranscriptMark {
 		const offset = Math.min(this.#offset, ...this.#kept.map((kept) => kept.at));
-		return { path: this.path, projects: this.projects, offset, recorded: [...this.#recorded] };
+		return { path: this.path, projects: this.projects, offset, recorded: [...this.#recorded], ...(this.#file === undefined ? {} : { file: this.#file }) };
 	}
 }
 
-/** A recorded prompt's key: its kind, promptId and a digest of its words (no words in memory meta twice). */
-const recordKey = (kind: string, prompt: SpooledPrompt) => `${kind}:${prompt.promptId}:${createHash("sha256").update(prompt.text).digest("hex").slice(0, 32)}`;
+/** A confirming line's key in memory meta: a digest of its identity. */
+const lineKey = (line: string) => createHash("sha256").update(line).digest("hex").slice(0, 32);
 
 /** How many Claude Code prompts were dropped because the transcript never confirmed them (`orrery status`). */
 export function readUnconfirmed(agentDir: string): number {

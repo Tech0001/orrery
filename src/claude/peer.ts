@@ -17,7 +17,10 @@ import type { HarnessConfig } from "../agent/config.ts";
 import { liveSession, processStart } from "../agent/sessions.ts";
 import { decisionStart } from "./pick.ts";
 
-/** The pid on the other end of stdin; "not-socket" when stdin is no socket; "unsupported" when it can't be asked. */
+/**
+ * The pid on the other end of stdin; "not-socket" when stdin is no socket (or no Unix one); "unsupported" when it can't
+ * be asked (unsupportedCause says why).
+ */
 export type StdinPeer = number | "not-socket" | "unsupported";
 
 /** The getsockopt arguments for the peer's pid on this system, or undefined where Orrery doesn't know them. */
@@ -31,13 +34,21 @@ const ASK: Partial<Record<NodeJS.Platform, { readonly lib: string; readonly leve
 /** bun:ffi's getsockopt, bound once per process (only the Bun binary runs this). */
 type GetSockOpt = (fd: number, level: number, name: number, value: Int32Array, length: Uint32Array) => number;
 let bound: GetSockOpt | undefined;
+/** Why this process's last ask could not be made, past being Bun on a known system (unsupportedCause). */
+let failed: string | undefined;
 
 function getsockopt(lib: string): GetSockOpt {
 	if (bound !== undefined) return bound;
 	const ffi = createRequire(import.meta.url)("bun:ffi") as {
 		dlopen(path: string, symbols: Record<string, { args: string[]; returns: string }>): { symbols: { getsockopt: GetSockOpt } };
 	};
-	bound = ffi.dlopen(lib, { getsockopt: { args: ["i32", "i32", "i32", "ptr", "ptr"], returns: "i32" } }).symbols.getsockopt;
+	try {
+		bound = ffi.dlopen(lib, { getsockopt: { args: ["i32", "i32", "i32", "ptr", "ptr"], returns: "i32" } }).symbols.getsockopt;
+	} catch (error) {
+		// No glibc (musl, say) has no libc.so.6.
+		failed = `its C library ${lib} can't be loaded`;
+		throw error;
+	}
 	return bound;
 }
 
@@ -53,12 +64,23 @@ export function stdinPeer(): StdinPeer {
 	try {
 		const value = new Int32Array(Math.ceil(ask.size / 4));
 		const length = new Uint32Array([ask.size]);
-		if (getsockopt(ask.lib)(0, ask.level, ask.name, value, length) !== 0 || length[0] < 4) return "unsupported";
-		// A socket that is no Unix one names no process (pid 0): no Claude Code's.
-		return value[0] > 0 ? value[0] : "unsupported";
+		if (getsockopt(ask.lib)(0, ask.level, ask.name, value, length) !== 0 || length[0] < 4) {
+			failed = "the system would not name the socket's other end";
+			return "unsupported";
+		}
+		// A socket that is no Unix one names no process (pid 0): not the socket pair Claude Code hands its hooks.
+		return value[0] > 0 ? value[0] : "not-socket";
 	} catch {
+		failed ??= "bun:ffi failed";
 		return "unsupported";
 	}
+}
+
+/** Why stdinPeer can't ask here, in a few words, for the hooks' notice (src/claude/hooks.ts). */
+export function unsupportedCause(): string {
+	if (process.versions.bun === undefined) return "it runs under Node, not its own binary";
+	if (ASK[process.platform] === undefined) return `${process.platform} isn't supported`;
+	return failed ?? "it can't ask on this system";
 }
 
 /** Why a hook's caller is not its Claude Code, or "ok". */

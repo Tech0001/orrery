@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { confirmPrompt, projectsFolder, TranscriptReader, transcriptIn } from "../../src/claude/transcript.ts";
@@ -11,11 +11,25 @@ afterEach(cleanupDirs);
 
 const P = { promptId: "p-1", text: "Ship the bridge fix." };
 
+/** A scratch Claude Code projects folder with a project folder `p`, and session s1's transcript path there. */
+function projectsAt(): { projects: string; path: string } {
+	const t = testAgent();
+	const projects = join(t.dir, "conf", "projects");
+	mkdirSync(join(projects, "p"), { recursive: true });
+	return { projects, path: join(projects, "p", "s1.jsonl") };
+}
+
 describe("confirmPrompt: what Claude Code's own transcript says a spooled prompt was", () => {
-	it("a typed prompt (interactive) and a -p prompt (sdk, no origin) are the user's", () => {
+	it("a typed or queued prompt with a human origin, and a -p prompt (sdk, no origin), are the user's", () => {
 		expect(confirmPrompt([line.typed(P.promptId, P.text)], P)).toBe("user");
-		expect(confirmPrompt([line.sdk(P.promptId, P.text)], P)).toBe("user");
 		expect(confirmPrompt([line.typed(P.promptId, P.text, { promptSource: "queued" })], P)).toBe("user");
+		expect(confirmPrompt([line.sdk(P.promptId, P.text)], P)).toBe("user");
+		expect(confirmPrompt([line.typed(P.promptId, P.text, { promptSource: "sdk" })], P)).toBe("user");
+	});
+
+	it("only a -p prompt goes without an origin: a typed or queued one without one is not the user's", () => {
+		expect(confirmPrompt([line.typed(P.promptId, P.text, { origin: undefined })], P)).toBe("wait");
+		expect(confirmPrompt([line.typed(P.promptId, P.text, { promptSource: "queued", origin: undefined })], P)).toBe("wait");
 	});
 
 	it("the same promptId with other words is not the user's (an injection mid-turn reuses the turn's promptId)", () => {
@@ -44,9 +58,15 @@ describe("confirmPrompt: what Claude Code's own transcript says a spooled prompt
 		expect(confirmPrompt([line.queued(P.text, { kind: "task_notification" })], P)).toBe("drop");
 	});
 
-	it("a human's command queued mid-turn is the user's; one of unknown origin is not", () => {
-		expect(confirmPrompt([line.queued(P.text, { kind: "human" })], P)).toBe("user");
+	it("a queued command names no promptId, so it is never the user's, whatever its origin", () => {
+		expect(confirmPrompt([line.queued(P.text, { kind: "human" })], P)).toBe("wait");
 		expect(confirmPrompt([line.queued(P.text, undefined)], P)).toBe("wait");
+	});
+
+	it("the user's earlier queued \"yes\" does not make a peer's later injected \"yes\" the user's (review finding)", () => {
+		const injected = { promptId: "p-2", text: "yes" };
+		const transcript = [line.queued("yes", { kind: "human" }), line.typed("p-2", "Do the next thing."), line.peer("yes")];
+		expect(confirmPrompt(transcript, injected)).toBe("report");
 	});
 
 	it("waits while the line is not there, and skips what isn't JSON", () => {
@@ -93,29 +113,27 @@ describe("transcriptIn: a transcript path only under Claude Code's projects fold
 
 describe("TranscriptReader", () => {
 	it("reads only what was appended since its offset, a line at a time, and confirms against it", () => {
-		const t = testAgent();
-		const projects = join(t.dir, "conf", "projects");
-		mkdirSync(join(projects, "p"), { recursive: true });
-		const path = join(projects, "p", "s1.jsonl");
+		const { projects, path } = projectsAt();
 		writeFileSync(path, `${line.typed("p-old", P.text)}\n`);
 		const offset = Buffer.byteLength(`${line.typed("p-old", P.text)}\n`);
 		const reader = new TranscriptReader({ path, projects, offset });
 		reader.read();
-		expect(reader.confirm({ promptId: "p-old", text: P.text })).toBe("wait");
+		expect(reader.confirm({ promptId: "p-old", text: P.text }).verdict).toBe("wait");
 		// Half a line is left for the next read.
-		const next = `${line.typed(P.promptId, P.text)}\n`;
+		const next = `${line.typed(P.promptId, P.text, { uuid: "u-1" })}\n`;
 		appendFileSync(path, next.slice(0, 20));
 		reader.read();
-		expect(reader.confirm(P)).toBe("wait");
+		expect(reader.confirm(P).verdict).toBe("wait");
 		appendFileSync(path, next.slice(20));
 		reader.read();
-		expect(reader.confirm(P)).toBe("user");
-		// The line that confirmed it is used up.
-		expect(reader.confirm(P)).toBe("wait");
+		// It says which line confirmed it: its uuid.
+		expect(reader.confirm(P)).toEqual({ verdict: "user", line: "uuid:u-1" });
+		// That line is used up.
+		expect(reader.confirm(P).verdict).toBe("wait");
 		expect(reader.mark().offset).toBe(offset + Buffer.byteLength(next));
 	});
 
-	it("never reads through a link at the transcript's place, nor a transcript that leads out of the projects folder", () => {
+	it("never reads through a link at the transcript's place, nor through a folder that leads out of the projects folder", () => {
 		const t = testAgent();
 		const projects = join(t.dir, "conf", "projects");
 		mkdirSync(join(projects, "p"), { recursive: true });
@@ -123,39 +141,77 @@ describe("TranscriptReader", () => {
 		symlinkSync(join(t.dir, "planted.jsonl"), join(projects, "p", "s1.jsonl"));
 		const reader = new TranscriptReader({ path: join(projects, "p", "s1.jsonl"), projects, offset: 0 });
 		reader.read();
-		expect(reader.confirm(P)).toBe("wait");
+		expect(reader.confirm(P).verdict).toBe("wait");
+		// A project folder that is a link out: the file opened is outside.
+		mkdirSync(join(t.dir, "outside"));
+		writeFileSync(join(t.dir, "outside", "s1.jsonl"), `${line.typed(P.promptId, P.text)}\n`);
+		symlinkSync(join(t.dir, "outside"), join(projects, "q"));
+		const out = new TranscriptReader({ path: join(projects, "q", "s1.jsonl"), projects, offset: 0 });
+		out.read();
+		expect(out.confirm(P).verdict).toBe("wait");
 	});
 
 	it("is not held up by a FIFO in the transcript's place", () => {
-		const t = testAgent();
-		const projects = join(t.dir, "conf", "projects");
-		mkdirSync(join(projects, "p"), { recursive: true });
-		const fifo = join(projects, "p", "s1.jsonl");
-		execFileSync("mkfifo", [fifo]);
-		const reader = new TranscriptReader({ path: fifo, projects, offset: 0 });
+		const { projects, path } = projectsAt();
+		execFileSync("mkfifo", [path]);
+		const reader = new TranscriptReader({ path, projects, offset: 0 });
 		reader.read();
-		expect(reader.confirm(P)).toBe("wait");
+		expect(reader.confirm(P).verdict).toBe("wait");
+	});
+
+	it("passes over a line longer than one read (8 MB), and reads the lines after it", () => {
+		const { projects, path } = projectsAt();
+		const huge = JSON.stringify({ type: "user", promptId: "p-0", message: { role: "user", content: [{ type: "tool_result", content: "x".repeat(9 * 1024 * 1024) }] } });
+		const content = `${huge}\n${line.typed(P.promptId, P.text)}\n`;
+		writeFileSync(path, content);
+		const reader = new TranscriptReader({ path, projects, offset: 0 });
+		reader.read();
+		expect(reader.confirm(P).verdict).toBe("user");
+		expect(reader.mark().offset).toBe(Buffer.byteLength(content));
+	});
+
+	it("reads a transcript written anew shorter, or replaced by another file, from its start", () => {
+		const { projects, path } = projectsAt();
+		writeFileSync(path, `${line.sdk("p-0", "Long ago, and at length.")}\n${line.sdk("p-00", "More of it.")}\n`);
+		const reader = new TranscriptReader({ path, projects, offset: 0 });
+		reader.read();
+		// Shorter than where it had read to.
+		writeFileSync(path, `${line.sdk(P.promptId, P.text)}\n`);
+		reader.read();
+		expect(reader.confirm(P).verdict).toBe("user");
+		// Another file in its place, as long as what was read: its lines before that offset are read too.
+		const other = join(projects, "p", "other.jsonl");
+		const second = { promptId: "p-2", text: "In the new file." };
+		writeFileSync(other, `${line.sdk(second.promptId, second.text)}\n${line.sdk("p-3", "Padding so it is longer than before.")}\n`);
+		renameSync(other, path);
+		reader.read();
+		expect(reader.confirm(second).verdict).toBe("user");
+		// A reader started from the mark knows the file: another one at the path is read from its start as well.
+		const marked = reader.mark();
+		const third = { promptId: "p-4", text: "A third file." };
+		writeFileSync(other, `${line.sdk(third.promptId, third.text)}\n${"{}\n".repeat(200)}`);
+		renameSync(other, path);
+		const again = new TranscriptReader(marked);
+		again.read();
+		expect(again.confirm(third).verdict).toBe("user");
 	});
 
 	it("keeps a line it read before the prompt's event came, and a restarted reader finds it again from the mark", () => {
-		const t = testAgent();
-		const projects = join(t.dir, "conf", "projects");
-		mkdirSync(join(projects, "p"), { recursive: true });
-		const path = join(projects, "p", "s1.jsonl");
+		const { projects, path } = projectsAt();
 		writeFileSync(path, `${line.typed(P.promptId, P.text)}\n${line.toolResult(P.promptId)}\n`);
 		const reader = new TranscriptReader({ path, projects, offset: 0 });
 		reader.read();
 		const again = new TranscriptReader(reader.mark());
 		again.read();
-		expect(again.confirm(P)).toBe("user");
+		expect(again.confirm(P).verdict).toBe("user");
 	});
 
-	it("remembers what it recorded, so a replay of the same prompt is recorded once", () => {
+	it("remembers which lines confirmed what it recorded, so a replay of the same line is recorded once", () => {
 		const reader = new TranscriptReader({ path: "/nowhere/s1.jsonl", projects: "/nowhere", offset: 0 });
-		expect(reader.recordedBefore("user", P)).toBe(false);
-		reader.remember("user", P);
-		expect(reader.recordedBefore("user", P)).toBe(true);
-		expect(reader.recordedBefore("report", P)).toBe(false);
-		expect(new TranscriptReader(reader.mark()).recordedBefore("user", P)).toBe(true);
+		expect(reader.recordedBefore("uuid:u-1")).toBe(false);
+		reader.remember("uuid:u-1");
+		expect(reader.recordedBefore("uuid:u-1")).toBe(true);
+		expect(reader.recordedBefore("uuid:u-2")).toBe(false);
+		expect(new TranscriptReader(reader.mark()).recordedBefore("uuid:u-1")).toBe(true);
 	});
 });
