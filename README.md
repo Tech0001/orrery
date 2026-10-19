@@ -457,7 +457,7 @@ From a checkout (see [CONTRIBUTING.md](CONTRIBUTING.md#setup)):
 
 ```bash
 npm run check           # TypeScript and the full test suite
-npm run test:binary     # the compiled program; needs Bun (see .bun-version)
+npm run test:binary     # the compiled program; needs Bun at .bun-version or newer
 npm run test:bun-suite  # the full suite on Bun
 npm run demo            # the TUI with five fictional agents: no model calls, nothing of yours touched
 ```

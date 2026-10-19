@@ -25,8 +25,9 @@ npm_config_ignore_scripts=true npm ci
 npm run check
 ```
 
-Tests and the typecheck need Node 22.19 or newer. Building the program needs Bun at the version in `.bun-version`
-(`npm run install-local` refuses another version). The program carries Bun's runtime, so a change to `.bun-version`
+Tests and the typecheck need Node 22.19 or newer. Building the program needs Bun at the version in `.bun-version` or
+newer (`npm run install-local` and the binary tests refuse an older one); official releases build with exactly that
+version. The program carries Bun's runtime, so a change to `.bun-version`
 also replaces `scripts/licenses/bun-LICENSE.md` with that Bun tag's `LICENSE.md`. Keep install scripts off for every
 npm install in this repo, including `worker/`.
 

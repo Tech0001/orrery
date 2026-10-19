@@ -1,23 +1,22 @@
 /**
  * npm run install-local [-- --yes]: builds this checkout's last commit as a release for this machine and installs it
  * with that release's own `orrery install --from` (spec 2026-10-13-orrery-releases-design §8), exactly as install.sh
- * and orrery update do. Needs the pinned Bun (.bun-version).
+ * and orrery update do. Needs the Bun of .bun-version or a newer one.
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildRelease, hostTarget } from "./build-release.ts";
+import { bunFits, buildRelease, hostTarget, PINNED_BUN } from "./build-release.ts";
 
 const checkout = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const say = (line: string) => process.stdout.write(`${line}\n`);
 const git = (...args: string[]) => spawnSync("git", ["-C", checkout, ...args], { encoding: "utf8", maxBuffer: 1024 * 1024 * 1024 });
 
-const pinned = readFileSync(join(checkout, ".bun-version"), "utf8").trim();
-if (Bun.version !== pinned) {
-	process.stderr.write(`install-local builds with Bun ${pinned}; this is Bun ${Bun.version}. Install it (for example: mise install bun@${pinned}) and run it again.\n`);
+if (!bunFits(Bun.version, false)) {
+	process.stderr.write(`install-local builds with Bun ${PINNED_BUN} or newer; this is Bun ${Bun.version}. Update Bun and run it again.\n`);
 	process.exit(1);
 }
 if (git("rev-parse", "--verify", "--quiet", "HEAD").status !== 0) throw new Error(`${checkout} has no commit yet`);

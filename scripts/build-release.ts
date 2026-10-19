@@ -25,6 +25,20 @@ const BUN_TARGET: Record<Target, string> = {
 /** The Bun releases are built with (.bun-version): bin/orrery carries this Bun's runtime. */
 export const PINNED_BUN = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", ".bun-version"), "utf8").trim();
 
+/**
+ * Whether a Bun may build: an official release only with the pinned Bun, so every release carries the same runtime;
+ * any other build (install-local, the binary tests) with the pinned Bun or a newer one.
+ */
+export function bunFits(version: string, official: boolean, pinned = PINNED_BUN): boolean {
+	if (official) return version === pinned;
+	const parts = (v: string) => /^(\d+)\.(\d+)\.(\d+)/.exec(v)?.slice(1).map(Number);
+	const have = parts(version);
+	const want = parts(pinned);
+	if (have === undefined || want === undefined) return false;
+	for (const [i, n] of have.entries()) if (n !== want[i]) return n > (want[i] ?? 0);
+	return true;
+}
+
 export function hostTarget(): Target {
 	const os = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : undefined;
 	const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : undefined;
@@ -219,7 +233,10 @@ export function writeSums(out: string, archives: string[]): string {
 
 if (import.meta.main) {
 	const { values } = parseArgs({ options: { target: { type: "string", multiple: true }, official: { type: "boolean" }, archive: { type: "boolean" }, out: { type: "string" }, from: { type: "string" } } });
-	if (Bun.version !== PINNED_BUN) throw new Error(`build with Bun ${PINNED_BUN} (this is ${Bun.version}); see CONTRIBUTING.md`);
+	if (!bunFits(Bun.version, values.official === true)) {
+		const wanted = values.official === true ? `an official release builds with Bun ${PINNED_BUN}` : `build with Bun ${PINNED_BUN} or newer`;
+		throw new Error(`${wanted} (this is ${Bun.version}); see CONTRIBUTING.md`);
+	}
 	const targets = (values.target ?? ["host"]).map((t) => (t === "host" ? hostTarget() : t)) as Target[];
 	for (const t of targets) if (!TARGETS.includes(t)) throw new Error(`unknown target ${t} (${TARGETS.join(", ")} or host)`);
 	const out = resolve(values.out ?? "dist");
