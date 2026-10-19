@@ -34,6 +34,7 @@ import { localIso, type NewMessage } from "../memory/index.ts";
 import { holdWriterLock } from "../memory/store.ts";
 import { remoteFooter, remoteOpenNotice } from "../remote/checkout.ts";
 import { RemoteError, type RemoteStatus, type LockState } from "../remote/types.ts";
+import { codexSessionOf } from "../codex/resume.ts";
 import { type CodexSaid, type CodexVerdict, parseRolloutMark, RolloutReader, rolloutIn } from "../codex/rollout.ts";
 import { holderLog, validSession } from "./paths.ts";
 import { dropEventsSince, listSessions, type Pending, pendingEvents, readEvent, readMode, removeSession, type SpoolEvent, spoolKey, writeMode } from "./spool.ts";
@@ -110,6 +111,8 @@ export class Holder {
 	readonly #graceFrom = new Map<string, number>();
 	/** Whether the last look left a prompt (or a Codex reply) of its own session held. */
 	#holding = false;
+	/** The sessions the last look left an event of held. */
+	#heldSessions: ReadonlySet<string> = new Set();
 	/** The Orrery version this process runs, for the heartbeat: an update leaves it on the old one until the session restarts. */
 	readonly #version = statusVersion();
 	#state: "recording" | "finishing" = "recording";
@@ -327,6 +330,7 @@ export class Holder {
 				const { verdict, line } = this.#codexVerdict(event, said, parsed.claudePid, events.slice(index + 1), now);
 				if (verdict === "wait") {
 					held.add(event.session);
+					this.#graceTogether(event, events.slice(index + 1));
 					continue;
 				}
 				this.#graceFrom.delete(event.name);
@@ -344,6 +348,7 @@ export class Holder {
 				const { verdict, line } = this.#verdict(event, prompt, parsed.claudePid, events.slice(index + 1), now);
 				if (verdict === "wait") {
 					held.add(event.session);
+					this.#graceTogether(event, events.slice(index + 1));
 					continue;
 				}
 				this.#graceFrom.delete(event.name);
@@ -361,12 +366,16 @@ export class Holder {
 			} else if (parsed?.kind === "rollout") {
 				const reader = this.#startRollout(event.session, parsed);
 				meta[rolloutKey(event.session)] = reader === undefined ? "{}" : JSON.stringify(reader.mark());
+			} else if (parsed?.kind === "reply" && this.#codexSession(event.session, parsed.claudePid)) {
+				// A Codex reply with no turn to check (spooled by an Orrery from before the rollout check): never recorded.
+				unconfirmed = "a reply Codex's rollout does not confirm";
 			} else if (parsed?.kind === "reply" && parsed.text.trim() && !commandReply) {
 				// Claude Code's: its Stop hook's caller was checked (src/claude/peer.ts).
 				items.push({ kind: "talk", text: parsed.text, date: localIso(new Date(parsed.at)) });
 			}
 			this.agent.view.appendBatch(items, meta);
 			rmSync(event.path, { force: true });
+			this.#graceFrom.delete(event.name);
 			if (unconfirmed !== undefined) {
 				this.#log(`${event.session}: ${unconfirmed} was not recorded`);
 				this.#attempt("counting unconfirmed messages", () => addUnconfirmed(this.agent.config.dir));
@@ -392,6 +401,7 @@ export class Holder {
 			} else if (parsed.kind === "compactor") this.#applyCompactor(parsed.args);
 		}
 		this.#holding = held.has(this.session);
+		this.#heldSessions = held;
 	}
 
 	/**
@@ -415,7 +425,8 @@ export class Holder {
 	#codexVerdict(event: Pending, said: CodexSaid, host: number, later: readonly Pending[], now: number): { verdict: CodexVerdict | "unconfirmed"; line?: string } {
 		const reader = this.#rollout(event.session);
 		if (reader === undefined || said.turnId === "") return { verdict: "unconfirmed" };
-		reader.read(now);
+		// While an event of the session waits, what the later ones need is kept, however long.
+		reader.read(now, this.#heldSessions.has(event.session));
 		const confirmed = reader.confirm(said);
 		if (confirmed.verdict !== "wait") return confirmed;
 		return { verdict: this.#graceOver(event, host, later, now) ? "unconfirmed" : "wait" };
@@ -429,6 +440,26 @@ export class Holder {
 			this.#graceFrom.set(event.name, now);
 		}
 		return since !== undefined && now - since >= this.#graceMs;
+	}
+
+	/**
+	 * A held event's session's later events begin their grace with it, so a run of events nothing confirms (a flood of
+	 * made-up ones) waits one grace, not one each. One whose line comes is still confirmed when its turn comes.
+	 */
+	#graceTogether(event: Pending, later: readonly Pending[]): void {
+		const since = this.#graceFrom.get(event.name);
+		if (since === undefined) return;
+		for (const next of later) if (next.session === event.session && !this.#graceFrom.has(next.name)) this.#graceFrom.set(next.name, since);
+	}
+
+	/**
+	 * Whether `session` is a Codex session, for a reply that doesn't say: this holder's own when it records Codex, one
+	 * with a rollout place, or the session the reply's process noted as Codex's (src/codex/resume.ts).
+	 */
+	#codexSession(session: string, pid: number): boolean {
+		if (session === this.session && this.#host === "codex") return true;
+		if (this.#rollouts.has(session) || this.agent.store.getMeta(rolloutKey(session)) !== undefined) return true;
+		return codexSessionOf(this.agent.config.dir, pid) === session;
 	}
 
 	/** A Codex session's rollout: as read so far, else where memory meta says the last holder left it, else none. */
@@ -452,7 +483,7 @@ export class Holder {
 		this.#rollouts.delete(session);
 		const path = rolloutIn(event.path, event.home, session);
 		if (path === undefined) return undefined;
-		const reader = new RolloutReader({ path, home: event.home, offset: event.offset, ...(before === undefined ? {} : { recorded: before }) });
+		const reader = new RolloutReader({ path, home: event.home, offset: event.offset, ...(event.file === undefined ? {} : { file: event.file }), ...(before === undefined ? {} : { recorded: before }) });
 		this.#rollouts.set(session, reader);
 		return reader;
 	}

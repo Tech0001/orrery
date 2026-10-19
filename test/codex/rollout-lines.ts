@@ -12,14 +12,34 @@ const at = () => new Date().toISOString();
 const event = (payload: object) => JSON.stringify({ timestamp: at(), type: "event_msg", payload });
 
 export const rollout = {
-	/** The first line: the session's own record. */
+	/** The first line: the session's own record, a person's own thread ("user": the TUI and `codex exec` alike). */
 	meta: (session: string) =>
 		JSON.stringify({ timestamp: at(), type: "session_meta", payload: { session_id: session, id: session, timestamp: at(), cwd: "/w", originator: "codex_exec", cli_version: "0.163.0", source: "exec", thread_source: "user" } }),
-	/** A turn's start: `trigger` is "user" in the TUI, "exec" for `codex exec`, "guardian_review" for a guardian's turn. */
-	started: (turnId: string, trigger = "exec") =>
+	/** The first line of a spawned agent's thread (spawn_agent), as 0.163.0 writes it. */
+	subagentMeta: (session: string, parent: string) =>
+		JSON.stringify({
+			timestamp: at(),
+			type: "session_meta",
+			payload: {
+				session_id: session,
+				id: session,
+				parent_thread_id: parent,
+				timestamp: at(),
+				cwd: "/w",
+				originator: "codex_exec",
+				cli_version: "0.163.0",
+				source: { subagent: { thread_spawn: { parent_thread_id: parent, depth: 1, agent_path: null, agent_nickname: "Plato", agent_role: null } } },
+				thread_source: "subagent",
+			},
+		}),
+	/**
+	 * A turn's start: `trigger` is "user" in the TUI, "exec" for `codex exec` (and for a spawned agent's turn, whose
+	 * `parent_turn_id` names the turn that spawned it), "queue" for `codex queue`, "guardian_review" for a guardian's turn.
+	 */
+	started: (turnId: string, trigger = "exec", attribution: { parent_turn_id?: string | null; initiating_agent_path?: string | null } = {}) =>
 		event({
 			type: "task_started",
-			turn_attribution: { turn_id: turnId, turn_trigger: trigger, parent_turn_id: null, initiating_agent_path: null, root_turn_id: turnId },
+			turn_attribution: { turn_id: turnId, turn_trigger: trigger, parent_turn_id: null, initiating_agent_path: null, root_turn_id: turnId, ...attribution },
 			turn_id: turnId,
 			root_turn_id: turnId,
 			started_at: 1,
@@ -60,8 +80,11 @@ export interface CodexHome {
 	path(session: string): string;
 	/** Whether the session's rollout was made. */
 	has(session: string): boolean;
-	/** Makes the session's rollout with its first line; `open` (default): this process holds it open, as Codex does. */
-	begin(session: string, options?: { readonly open?: boolean; readonly archived?: boolean }): string;
+	/**
+	 * Makes the session's rollout with its first line (`meta`, default a person's own thread's); `open` (default): this
+	 * process holds it open, as Codex does.
+	 */
+	begin(session: string, options?: { readonly open?: boolean; readonly archived?: boolean; readonly meta?: string }): string;
 	/** Appends lines to the session's rollout, as Codex does. */
 	add(session: string, ...lines: string[]): void;
 	/** Closes what this process holds open. */
@@ -85,7 +108,7 @@ export function codexHomeIn(dir: string): CodexHome {
 			const folder = options.archived === true ? join(home, "archived_sessions") : join(home, "sessions", "2026", "10", "18");
 			mkdirSync(folder, { recursive: true, mode: 0o700 });
 			const file = join(folder, `rollout-2026-10-18T22-34-55-${session}.jsonl`);
-			writeFileSync(file, `${rollout.meta(session)}\n`, { mode: 0o600 });
+			writeFileSync(file, `${options.meta ?? rollout.meta(session)}\n`, { mode: 0o600 });
 			paths.set(session, file);
 			if (options.open !== false) open.push(openSync(file, "a"));
 			return file;

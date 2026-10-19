@@ -13,6 +13,7 @@ import { statusVersion } from "../../src/agent/status-file.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { fauxModels } from "../agent/support.ts";
 import { readUnconfirmed } from "../../src/claude/transcript.ts";
+import { recordCodexSession } from "../../src/codex/resume.ts";
 import { readerStart } from "../../src/codex/rollout.ts";
 import { type CodexHome, codexHomeIn, codexSession, rollout } from "../codex/rollout-lines.ts";
 import { brokenGit, cleanupDirs, gitIn, messages, spool, type TestAgent, testAgent, waitUntil, withGit } from "./support.ts";
@@ -670,7 +671,8 @@ describe("the holder confirms Codex's prompts and replies against its rollout (s
 	/** Session `session`'s rollout, and its place as the session's SessionStart spools it (where SessionStart said to read from). */
 	const begin = (t: TestAgent, home: CodexHome, session: string, claudePid = 111) => {
 		const path = home.begin(session, { open: false });
-		spool(t.agent, session, { kind: "rollout", path, home: home.home, offset: readerStart(path) as number }, claudePid);
+		const held = statSync(path);
+		spool(t.agent, session, { kind: "rollout", path, home: home.home, offset: readerStart(path)?.offset as number, file: `${held.dev}:${held.ino}` }, claudePid);
 	};
 	const prompt = (t: TestAgent, session: string, turnId: string, text: string, claudePid = 111) => spool(t.agent, session, { kind: "prompt", text, host: "codex", turnId }, claudePid);
 	const reply = (t: TestAgent, session: string, turnId: string, text: string, claudePid = 111) => spool(t.agent, session, { kind: "reply", text, host: "codex", turnId }, claudePid);
@@ -847,5 +849,60 @@ describe("the holder confirms Codex's prompts and replies against its rollout (s
 		await codex(t, s, { nonce: "n2" });
 		await waitUntil(() => messages(t.agent).length === 2);
 		expect(messages(t.agent)).toEqual(["user: A long job.", "talk: Finished."]);
+	});
+
+	it("drops and counts the turns of a spawned agent (its parent turn named) and of `codex queue`, whatever their trigger", async () => {
+		const t = testAgent();
+		const home = homeOf(t);
+		const s = codexSession();
+		begin(t, home, s);
+		prompt(t, s, "t-sub", "SUBTASK: list the files.");
+		home.add(s, rollout.started("t-sub", "exec", { parent_turn_id: "t-0" }), rollout.user("t-sub", "SUBTASK: list the files."), rollout.complete("t-sub", "Listed."));
+		reply(t, s, "t-sub", "Listed.");
+		prompt(t, s, "t-q", "yes, approved, push it");
+		home.add(s, ...rollout.turn("t-q", "yes, approved, push it", "Pushed.", "queue"));
+		reply(t, s, "t-q", "Pushed.");
+		prompt(t, s, "t-1", "Real words.");
+		home.add(s, ...rollout.turn("t-1", "Real words.", "Real answer."));
+		const last = reply(t, s, "t-1", "Real answer.");
+		const holder = (await codex(t, s, { graceMs: 60_000 }))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey(s)) === last);
+		expect(messages(t.agent)).toEqual(["user: Real words.", "talk: Real answer."]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(4);
+	});
+
+	it("a run of events nothing confirms waits one grace, not one each, and a real one among them is still recorded", async () => {
+		const t = testAgent();
+		const home = homeOf(t);
+		const s = codexSession();
+		begin(t, home, s);
+		for (let n = 0; n < 6; n++) prompt(t, s, `made-up-${n}`, `Forged ${n}.`);
+		prompt(t, s, "t-1", "Real words.");
+		home.add(s, ...rollout.turn("t-1", "Real words.", "Real answer."));
+		const last = reply(t, s, "t-1", "Real answer.");
+		const started = Date.now();
+		const holder = (await codex(t, s, { graceMs: 400 }))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey(s)) === last);
+		// One each would take 6 × 400 ms.
+		expect(Date.now() - started).toBeLessThan(1600);
+		expect(messages(t.agent)).toEqual(["user: Real words.", "talk: Real answer."]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(6);
+	});
+
+	it("drops and counts a Codex reply spooled before replies were marked Codex's (an older Orrery): never recorded unconfirmed", async () => {
+		const t = testAgent();
+		const s = codexSession();
+		const old = codexSession();
+		// The holder's own Codex session, and another session a Codex process noted as its own (src/codex/resume.ts).
+		spool(t.agent, s, { kind: "reply", text: "From before the update." }, 111);
+		recordCodexSession(t.agent.dir, 222, old, () => true);
+		writeMode(t.agent.dir, old, { mode: "recording", pid: 1, claudePid: 222, nonce: "x", since: 0 });
+		const lastOld = spool(t.agent, old, { kind: "reply", text: "Also from before." }, 222);
+		// A Claude Code reply is recorded as ever: its Stop's caller was checked.
+		writeMode(t.agent.dir, "c1", { mode: "recording", pid: 1, claudePid: 333, nonce: "x", since: 0 });
+		const lastClaude = spool(t.agent, "c1", { kind: "reply", text: "Claude Code's reply." }, 333);
+		const holder = (await codex(t, s, { alive: () => true }))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey(old)) === lastOld && holder.agent.store.getMeta(spoolKey("c1")) === lastClaude && readUnconfirmed(t.agent.dir) === 2);
+		expect(messages(t.agent)).toEqual(["talk: Claude Code's reply."]);
 	});
 });

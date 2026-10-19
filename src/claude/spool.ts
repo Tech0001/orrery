@@ -23,7 +23,7 @@ import { sessionDir, sessionsDir, validSession } from "./paths.ts";
  * - `transcript`: SessionStart's, once its caller was checked (src/claude/peer.ts): the session's transcript file under
  *   Claude Code's projects folder, and its size then, where the session's prompts are looked for.
  * - `rollout`: Codex's SessionStart's, once Codex was seen holding it open: the session's rollout under Codex's folder
- *   (`home`), and where to read it from.
+ *   (`home`), both as they really are, the file Codex holds ("device:inode"), and where to read it from.
  */
 export type SpoolEvent =
 	| { readonly kind: "prompt"; readonly at: number; readonly claudePid: number; readonly text: string; readonly promptId?: string; readonly host?: "codex"; readonly turnId?: string }
@@ -32,7 +32,7 @@ export type SpoolEvent =
 	| { readonly kind: "end"; readonly at: number; readonly claudePid: number; readonly reason?: string }
 	| { readonly kind: "compactor"; readonly at: number; readonly claudePid: number; readonly args: string }
 	| { readonly kind: "transcript"; readonly at: number; readonly claudePid: number; readonly path: string; readonly projects: string; readonly offset: number }
-	| { readonly kind: "rollout"; readonly at: number; readonly claudePid: number; readonly path: string; readonly home: string; readonly offset: number };
+	| { readonly kind: "rollout"; readonly at: number; readonly claudePid: number; readonly path: string; readonly home: string; readonly offset: number; readonly file?: string };
 
 /**
  * What a session's holder chose, from `since` (its start) on. `nonce` comes from SessionStart, so the hook knows this
@@ -98,7 +98,9 @@ export function readEvent(path: string): SpoolEvent | undefined {
 	if (value.kind === "reply" && typeof value.text === "string" && codex) return value as unknown as SpoolEvent;
 	const offset = Number.isSafeInteger(value.offset) && (value.offset as number) >= 0;
 	if (value.kind === "transcript" && typeof value.path === "string" && typeof value.projects === "string" && offset) return value as unknown as SpoolEvent;
-	if (value.kind === "rollout" && typeof value.path === "string" && typeof value.home === "string" && offset) return value as unknown as SpoolEvent;
+	if (value.kind === "rollout" && typeof value.path === "string" && typeof value.home === "string" && offset && (value.file === undefined || typeof value.file === "string")) {
+		return value as unknown as SpoolEvent;
+	}
 	if (value.kind === "command") return { kind: "command", at: value.at, claudePid: value.claudePid };
 	if (value.kind === "end" || (value.kind === "compactor" && typeof value.args === "string")) return value as unknown as SpoolEvent;
 	return undefined;

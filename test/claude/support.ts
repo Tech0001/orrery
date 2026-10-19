@@ -102,7 +102,7 @@ type Spooled =
 	| { kind: "end"; reason?: string }
 	| { kind: "compactor"; args: string }
 	| { kind: "transcript"; path: string; projects: string; offset: number }
-	| { kind: "rollout"; path: string; home: string; offset: number };
+	| { kind: "rollout"; path: string; home: string; offset: number; file?: string };
 let clock = 0;
 
 /**

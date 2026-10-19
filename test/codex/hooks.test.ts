@@ -92,14 +92,19 @@ const realHolder = (started: string[] = [], tickMs = 20, options: { graceMs?: nu
 };
 
 type Answer = { systemMessage?: string; hookSpecificOutput?: { hookEventName: string; additionalContext: string } };
+let turns = 0;
 /**
- * A hook as Codex runs it: before SessionStart the session's rollout is there, held open by this process (the Codex);
- * after a prompt's or a reply's hook, Codex writes their lines into it.
+ * A hook as Codex runs it: before SessionStart the session's rollout is there, held open by this process (the Codex),
+ * with the turn that brought the session on already started (Codex starts it before SessionStart); after a prompt's or
+ * a reply's hook, Codex writes their lines into it.
  */
 const run = async (event: string, json: string, c: CodexHookContext): Promise<Answer | ""> => {
 	const said = JSON.parse(json) as { session_id: string; turn_id?: string; prompt?: string; last_assistant_message?: string };
 	const home = homes.get(c.env.CODEX_HOME ?? "");
-	if (home !== undefined && event === "session-start" && !home.has(said.session_id)) home.begin(said.session_id);
+	if (home !== undefined && event === "session-start") {
+		if (!home.has(said.session_id)) home.begin(said.session_id);
+		home.add(said.session_id, rollout.started(`turn-at-start-${++turns}`, "user"));
+	}
 	const out = await runCodexHook(event, json, c);
 	if (home?.has(said.session_id) === true && typeof said.turn_id === "string") {
 		if (event === "user-prompt-submit") home.add(said.session_id, rollout.started(said.turn_id), rollout.user(said.turn_id, String(said.prompt)));
@@ -396,6 +401,51 @@ describe("hook calls forged by the agent's own shell (spec 2026-10-18-agent-perm
 		}
 		expect(state(t)).toEqual(before);
 		expect(started).toEqual([id("s1")]);
+	});
+
+	it("SessionStart opens nothing for a spawned agent's thread, though this Codex holds its rollout open, and changes nothing", async () => {
+		const t = testAgent();
+		const started: string[] = [];
+		const c = ctx(t, { startHolder: answer("recording", started), compactWaitMs: 0 });
+		await run("session-start", input(), c);
+		writeHolder(t.agent.dir, { pid: process.pid, session: id("s1"), claudePid: CODEX, host: "codex", state: "recording", startedAt: Date.now(), updatedAt: Date.now() });
+		const before = state(t);
+		// Codex runs a spawned agent's thread in its own process, its rollout open, a turn of it running.
+		homeOf(t).begin(id("sub"), { meta: rollout.subagentMeta(id("sub"), id("s1")) });
+		homeOf(t).add(id("sub"), rollout.started("t-sub", "exec", { parent_turn_id: "t-1" }));
+		for (const source of ["startup", "resume", "clear"]) {
+			expect(await forged("session-start", input({ session: "sub", source }), c)).toEqual({
+				systemMessage: "Orrery: can't confirm this is this Codex's own session (it is no thread of the person's own, but a spawned agent's or another kind), so it opens no memory and records nothing.",
+			});
+		}
+		await forged("user-prompt-submit", input({ session: "sub", prompt: "SUBTASK: list the files.", turn_id: "t-sub" }), c);
+		expect(state(t)).toEqual(before);
+		expect(started).toEqual([id("s1")]);
+	});
+
+	it("moving to an earlier session this Codex still holds open takes a turn of it running: a made-up one changes nothing; /clear moves", async () => {
+		const t = testAgent();
+		const started: string[] = [];
+		const c = ctx(t, { startHolder: answer("recording", started), compactWaitMs: 0 });
+		await run("session-start", input(), c);
+		await run("user-prompt-submit", input({ prompt: "First.", turn_id: "t-1" }), c);
+		await run("stop", input({ last_assistant_message: "One.", turn_id: "t-1" }), c);
+		// /clear: Codex starts the new session's turn, then runs SessionStart.
+		expect(((await run("session-start", input({ session: "s2", source: "clear" }), c)) as Answer).systemMessage).toMatch(/· recording$/);
+		expect(liveSession(t.config.dataDir, CODEX)).toMatchObject({ codexSession: id("s2") });
+		writeHolder(t.agent.dir, { pid: process.pid, session: id("s2"), claudePid: CODEX, host: "codex", state: "recording", startedAt: Date.now(), updatedAt: Date.now() });
+		const before = state(t);
+		// The first session's rollout is still open in this Codex (as after a real /clear), its last turn over.
+		for (const source of ["resume", "startup", "fork", "clear"]) {
+			expect(await forged("session-start", input({ session: "s1", source }), c)).toEqual({
+				systemMessage: "Orrery: can't confirm this is this Codex's own session (Codex moves to a session with a turn of it running, and none is), so it opens no memory and records nothing.",
+			});
+		}
+		expect(state(t)).toEqual(before);
+		expect(started).toEqual([id("s1"), id("s2")]);
+		// A real /resume back to it: Codex starts its turn first.
+		expect(((await run("session-start", input({ session: "s1", source: "resume" }), c)) as Answer).systemMessage).toMatch(/· recording$/);
+		expect(liveSession(t.config.dataDir, CODEX)).toMatchObject({ codexSession: id("s1") });
 	});
 
 	it("SessionEnd leaves the host record and the decision while Codex lives, and the holder records on", async () => {

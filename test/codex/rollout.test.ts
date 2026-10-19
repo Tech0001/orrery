@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
-import { codexHome, confirmCodex, findRollout, holdsOpen, openFiles, parseLsof, parseRolloutMark, readerStart, RolloutReader, rolloutIn } from "../../src/codex/rollout.ts";
+import { codexHome, confirmCodex, findRollout, holdsOpen, openFiles, parseLsof, parseRolloutMark, readerStart, RolloutReader, rolloutIn, rolloutThread } from "../../src/codex/rollout.ts";
 import { tempDir } from "../agent/support.ts";
 import { type CodexHome, codexHomeIn, codexSession, rollout } from "./rollout-lines.ts";
 
@@ -38,12 +38,26 @@ describe("confirmCodex: what Codex's rollout says a hook's prompt or reply was",
 		}
 	});
 
-	it("drops a guardian's turn, or any trigger but user and exec, prompt and reply alike", () => {
-		for (const trigger of ["guardian_review", "memory_consolidation", "review", 7, null]) {
+	it("drops a guardian's turn, a message `codex queue` put in from outside, or any trigger but user and exec, prompt and reply alike", () => {
+		for (const trigger of ["guardian_review", "queue", "memory_consolidation", "review", 7, null]) {
 			const lines = rollout.turn("t-1", "Approve this command?", "Approved.", trigger as string);
 			expect(confirmCodex(lines, { kind: "prompt", turnId: "t-1", text: "Approve this command?" }), String(trigger)).toBe("drop");
 			expect(confirmCodex(lines, { kind: "reply", turnId: "t-1", text: "Approved." }), String(trigger)).toBe("drop");
 		}
+	});
+
+	it("drops a turn another agent started, whatever its trigger: a spawned agent's turns say exec (0.163.0)", () => {
+		const spawned = (attribution: object, trigger = "exec") => [rollout.started("t-1", trigger, attribution), rollout.user("t-1", "SUBTASK: list the files."), rollout.complete("t-1", "Listed.")];
+		for (const attribution of [{ parent_turn_id: "t-parent" }, { initiating_agent_path: "/root/agent-1" }, { parent_turn_id: "t-parent", initiating_agent_path: "/root" }]) {
+			for (const trigger of ["exec", "user"]) {
+				const lines = spawned(attribution, trigger);
+				expect(confirmCodex(lines, { kind: "prompt", turnId: "t-1", text: "SUBTASK: list the files." }), JSON.stringify(attribution)).toBe("drop");
+				expect(confirmCodex(lines, { kind: "reply", turnId: "t-1", text: "Listed." }), JSON.stringify(attribution)).toBe("drop");
+			}
+		}
+		// A start with neither field (an older Codex's) is the person's as ever.
+		const older = JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "t-2", turn_attribution: { turn_id: "t-2", turn_trigger: "user" } } });
+		expect(confirmCodex([older, rollout.user("t-2", "Hello.")], { kind: "prompt", turnId: "t-2", text: "Hello." })).toBe("user");
 	});
 
 	it("takes no model-input line of role user, no message of another turn, and no other words for proof: it waits", () => {
@@ -146,19 +160,50 @@ describe("codexHome and findRollout: a session's rollout, by its id, under Codex
 	});
 });
 
+describe("rolloutThread: a rollout's session_meta", () => {
+	it("says the session and the kind of thread: a person's own (user), or a spawned agent's (subagent)", () => {
+		const home = homeIn();
+		const [s1, sub] = [codexSession(), codexSession()];
+		expect(rolloutThread(home.begin(s1, { open: false }))).toEqual({ id: s1, threadSource: "user" });
+		expect(rolloutThread(home.begin(sub, { open: false, meta: rollout.subagentMeta(sub, s1) }))).toEqual({ id: sub, threadSource: "subagent" });
+	});
+
+	it("is none for a first line that is no session_meta, or not whole yet", () => {
+		const home = homeIn();
+		const [a, b] = [codexSession(), codexSession()];
+		expect(rolloutThread(home.begin(a, { open: false, meta: rollout.started("t-1") }))).toBeUndefined();
+		const file = home.begin(b, { open: false });
+		writeFileSync(file, rollout.meta(b));
+		expect(rolloutThread(file)).toBeUndefined();
+		expect(rolloutThread(join(home.home, "none.jsonl"))).toBeUndefined();
+	});
+});
+
 describe("holdsOpen: whether Codex's process has the rollout open", () => {
-	it("is true for a file this process holds open, false once closed, false for another process", () => {
+	it("is the file's device:inode for a file this process holds open, false once closed, false for another process", () => {
 		const home = homeIn();
 		const s1 = codexSession();
 		const file = home.begin(s1, { open: false });
 		expect(holdsOpen(process.pid, file)).toBe(false);
 		const fd = openSync(file, "a");
 		try {
-			expect(holdsOpen(process.pid, file)).toBe(true);
+			const stat = statSync(file);
+			expect(holdsOpen(process.pid, file)).toBe(`${stat.dev}:${stat.ino}`);
 			expect(holdsOpen(other.pid as number, file)).toBe(false);
 		} finally {
 			closeSync(fd);
 		}
+		expect(holdsOpen(process.pid, file)).toBe(false);
+	});
+
+	it.skipIf(process.platform !== "linux")("is false for another file put at the path since the process opened it (Linux judges the very file)", () => {
+		const dir = scratch();
+		const home = homeIn(dir);
+		const s1 = codexSession();
+		const file = home.begin(s1);
+		const forged = join(dir, "forged.jsonl");
+		writeFileSync(forged, `${rollout.meta(s1)}\n`);
+		renameSync(forged, file);
 		expect(holdsOpen(process.pid, file)).toBe(false);
 	});
 
@@ -170,7 +215,8 @@ describe("holdsOpen: whether Codex's process has the rollout open", () => {
 	it.skipIf(process.platform !== "linux")("reads lsof's names (macOS's way) as Linux's /proc gives them", () => {
 		const home = homeIn();
 		const file = home.begin(codexSession());
-		expect(openFiles(process.pid, "darwin")).toContain(file);
+		expect(openFiles(process.pid, "darwin")?.map((open) => open.path)).toContain(file);
+		expect(holdsOpen(process.pid, file, (pid) => openFiles(pid, "darwin"))).toMatch(/^\d+:\d+$/);
 		expect(parseLsof("p123\nfcwd\nn/home/u\nf3\nn/x/rollout.jsonl\nf4\ntREG\n")).toEqual(["/home/u", "/x/rollout.jsonl"]);
 	});
 });
@@ -180,20 +226,22 @@ describe("readerStart: where a session's rollout is read from, at its SessionSta
 		const home = homeIn();
 		const s1 = codexSession();
 		const file = home.begin(s1);
-		const size = () => Buffer.byteLength(`${rollout.meta(s1)}\n`);
-		expect(readerStart(file)).toBe(size());
+		expect(readerStart(file)).toEqual({ offset: Buffer.byteLength(`${rollout.meta(s1)}\n`), running: false });
 		home.add(s1, ...rollout.turn("t-1", "One.", "Done."));
 		const done = readerStart(file);
+		expect(done?.running).toBe(false);
 		home.add(s1, rollout.started("t-2", "user"), rollout.responseUser("t-2", "Two."));
-		expect(readerStart(file)).toBe(done);
+		expect(readerStart(file)).toEqual({ offset: done?.offset, running: true });
 		home.add(s1, rollout.aborted("t-2"));
-		const aborted = readerStart(file) as number;
-		expect(aborted).toBeGreaterThan(done as number);
+		const aborted = readerStart(file);
+		expect(aborted?.running).toBe(false);
+		expect(aborted?.offset).toBeGreaterThan(done?.offset as number);
 		// A line being written is not read into.
 		home.add(s1, rollout.started("t-3"));
 		const third = readerStart(file);
+		expect(third?.running).toBe(true);
 		writeFileSync(file, '{"type":"event_msg","payl', { flag: "a" });
-		expect(readerStart(file)).toBe(third);
+		expect(readerStart(file)).toEqual(third);
 		expect(readerStart(join(home.home, "none.jsonl"))).toBeUndefined();
 	});
 });
@@ -208,7 +256,7 @@ describe("RolloutReader: one session's rollout, read as Codex appends to it", ()
 		const s1 = codexSession();
 		const file = home.begin(s1);
 		home.add(s1, ...rollout.turn("t-0", "Old words.", "Old reply."), rollout.started("t-1", "user"));
-		const r = reader(home, s1, readerStart(file) as number);
+		const r = reader(home, s1, readerStart(file)?.offset as number);
 		home.add(s1, rollout.user("t-1", "New words."), rollout.agent("t-1", "New reply."), rollout.complete("t-1", "New reply."));
 		r.read();
 		expect(r.confirm(prompt("t-0", "Old words.")).verdict).toBe("wait");
@@ -278,23 +326,42 @@ describe("RolloutReader: one session's rollout, read as Codex appends to it", ()
 		expect(r.confirm(prompt("t-1", "From outside.")).verdict).toBe("wait");
 	});
 
-	it("reads another file put at the path, or a shorter one, from its start", () => {
+	it("never reads another file put at the path than the one SessionStart saw Codex hold, nor one written anew shorter", () => {
 		const dir = scratch();
 		const home = homeIn(dir);
 		const s1 = codexSession();
 		const file = home.begin(s1, { open: false });
+		const held = statSync(file);
 		home.add(s1, ...rollout.turn("t-1", "First file.", "One."));
-		const r = reader(home, s1, 0);
+		const r = new RolloutReader({ path: file, home: home.home, offset: 0, file: `${held.dev}:${held.ino}` });
 		r.read();
 		expect(r.confirm(prompt("t-1", "First file.")).verdict).toBe("user");
 		const replacement = join(dir, "replacement.jsonl");
 		writeFileSync(replacement, `${rollout.meta(s1)}\n${rollout.turn("t-2", "Second file, and a longer one than the first.", "Two.").join("\n")}\n${"x".repeat(2000)}\n`);
 		renameSync(replacement, file);
 		r.read();
-		expect(r.confirm(prompt("t-2", "Second file, and a longer one than the first.")).verdict).toBe("user");
+		expect(r.confirm(prompt("t-2", "Second file, and a longer one than the first.")).verdict).toBe("wait");
+		// A reader that doesn't know the file yet takes the first it reads, then holds to it.
+		const fresh = reader(home, s1, 0);
+		fresh.read();
+		expect(fresh.confirm(prompt("t-2", "Second file, and a longer one than the first.")).verdict).toBe("user");
 		writeFileSync(file, `${rollout.turn("t-3", "Short.", "Three.").join("\n")}\n`);
-		r.read();
-		expect(r.confirm(prompt("t-3", "Short.")).verdict).toBe("user");
+		fresh.read();
+		expect(fresh.confirm(prompt("t-3", "Short.")).verdict).toBe("wait");
+	});
+
+	it("lets lines go after a while, but keeps them all while told an earlier event waits", () => {
+		const home = homeIn();
+		const s1 = codexSession();
+		home.begin(s1);
+		const now = Date.now();
+		const r = reader(home, s1, 0);
+		home.add(s1, ...rollout.turn("t-1", "Kept a long while.", "Yes."));
+		r.read(now);
+		r.read(now + 11 * 60_000, true);
+		expect(r.confirm(prompt("t-1", "Kept a long while.")).verdict).toBe("user");
+		r.read(now + 22 * 60_000);
+		expect(r.confirm(reply("t-1", "Yes.")).verdict).toBe("wait");
 	});
 
 	it("parseRolloutMark takes only a whole mark", () => {

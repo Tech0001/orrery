@@ -11,7 +11,7 @@ import { type CodexGuardContext, runCodexGuard } from "../../src/codex/guard.ts"
 import { type CodexHookContext, runCodexHook } from "../../src/codex/hooks.ts";
 import { codexAgent } from "../../src/codex/pick.ts";
 import { cleanup, world } from "../pi/world.ts";
-import { type CodexHome, codexHomeIn, codexSession } from "./rollout-lines.ts";
+import { type CodexHome, codexHomeIn, codexSession, rollout } from "./rollout-lines.ts";
 
 const recorded: { dataDir: string; pid: number }[] = [];
 const children: ChildProcess[] = [];
@@ -94,11 +94,18 @@ const hookCtx = (w: ReturnType<typeof codexWorld>, extra: Partial<CodexHookConte
 });
 const input = (session: string, extra: object = {}) => JSON.stringify({ session_id: id(session), cwd: "/tmp/anywhere", hook_event_name: "x", ...extra });
 type Answer = { systemMessage?: string; hookSpecificOutput?: { additionalContext: string } };
-/** A hook as Codex runs it: before its first SessionStart, the session's rollout is there, held open by this process (the Codex) unless made already. */
+let turns = 0;
+/**
+ * A hook as Codex runs it: before SessionStart, the session's rollout is there, held open by this process (the Codex)
+ * unless made already, with the turn that brought the session on already started (Codex starts it first).
+ */
 const run = async (event: string, json: string, c: CodexHookContext): Promise<Answer | ""> => {
 	const session = (JSON.parse(json) as { session_id: string }).session_id;
 	const home = homes.get(c.env.CODEX_HOME ?? "");
-	if (home !== undefined && event === "session-start" && !home.has(session)) home.begin(session);
+	if (home !== undefined && event === "session-start") {
+		if (!home.has(session)) home.begin(session);
+		home.add(session, rollout.started(`turn-at-start-${++turns}`, "user"));
+	}
 	const out = await runCodexHook(event, json, c);
 	return out === "" ? "" : (JSON.parse(out) as Answer);
 };
@@ -239,15 +246,21 @@ describe("one decision per Codex process: a nested Codex stays nested", () => {
 			const exited = spawn("sleep", ["0"], { stdio: "ignore" });
 			exited.on("exit", () => resolve(exited.pid as number));
 		});
-		const c = hookCtx(w, { codexPid: gone, codexParent: gone, alive: () => true });
-		// Gone, it holds no rollout open: nothing confirms the session is its own, so the pick isn't even asked.
+		// Its rollout counts as open in it (as a Codex whose start can't be read would hold it): the pick is asked.
+		const held = (session: string) => [{ path: w.codex.path(id(session)) }];
+		const c = hookCtx(w, { codexPid: gone, codexParent: gone, alive: () => true, openFiles: () => held("s1") });
 		expect(await run("session-start", input("s1", { source: "startup" }), c)).toEqual({
-			systemMessage: "Orrery: can't confirm this is this Codex's own session (Codex doesn't have its rollout open), so it opens no memory and records nothing.",
+			systemMessage: "Orrery: this Codex's start time can't be read, so which agent it is can't be recorded; this session runs without memory.",
 		});
 		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
 		expect(existsSync(join(w.dataDir, "codex-processes", `${gone}.json`))).toBe(false);
-		await run("user-prompt-submit", input("s1", { prompt: "Not memory." }), c);
+		await run("user-prompt-submit", input("s1", { prompt: "Not memory.", turn_id: "t-1" }), c);
 		expect(spooled(w.birch.dir, "s1")).toEqual([]);
+		// As it is gone, it holds no rollout open: nothing confirms the session is its own, so the pick isn't even asked.
+		expect(await run("session-start", input("s1", { source: "startup" }), hookCtx(w, { codexPid: gone, codexParent: gone, alive: () => true }))).toEqual({
+			systemMessage: "Orrery: can't confirm this is this Codex's own session (Codex doesn't have its rollout open), so it opens no memory and records nothing.",
+		});
+		expect(existsSync(join(w.dataDir, "codex-processes", `${gone}.json`))).toBe(false);
 	});
 
 	it("a nested Codex whose decision can't be recorded stays nested through a compaction and /clear after the outer session ends: no claim, no memory", async () => {

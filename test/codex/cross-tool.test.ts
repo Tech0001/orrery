@@ -77,6 +77,8 @@ function scene(t: TestAgent) {
 		return out === "" ? {} : (JSON.parse(out) as Answer);
 	};
 	const inCodex = async (event: string, input: { session_id: string } & Record<string, unknown>): Promise<Answer> => {
+		// Codex starts the turn that brings a session on before its SessionStart.
+		if (event === "session-start") codexHome.add(input.session_id, rollout.started(`turn-at-start-${input.session_id}`, "user"));
 		const out = await runCodexHook(event, JSON.stringify({ cwd: t.folder, ...input }), codex);
 		// Codex writes a turn into its rollout as it goes.
 		const turn = input.turn_id;

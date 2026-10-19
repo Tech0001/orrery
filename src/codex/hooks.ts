@@ -23,8 +23,12 @@
  * ORRERY_AGENT and token) can run this command with made-up input, and nothing about the caller tells them apart (spec
  * 2026-10-18-agent-permissions §3c). So no event changes what such a call could abuse:
  * - SessionStart takes a session only when this Codex holds its rollout open, found by the session's id under Codex's
- *   own folder, before it decides, claims or records anything: no other process can name a session. One this Codex's
- *   host record already names changes nothing (no record, no resume note, no new rollout place, the holder kept).
+ *   own folder, and the rollout says it is a person's own thread (not a spawned agent's), before it decides, claims or
+ *   records anything: no other process can name a session. Moving this Codex to another session than its host record
+ *   names takes a turn of that session running: Codex starts the turn before SessionStart (startup, /clear, /resume,
+ *   /fork, `codex resume` and `codex fork` alike), so an earlier session it still holds open can't be named again. One
+ *   this Codex's host record already names changes nothing (no record, no resume note, no new rollout place, the
+ *   holder kept).
  * - UserPromptSubmit and Stop spool only for the session this Codex's host record names, and what they spool is held
  *   until the rollout confirms it, then dropped and counted if it doesn't.
  * - SessionEnd changes nothing: the host record and the process's decision go stale once Codex is gone, and the holder
@@ -32,7 +36,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
@@ -48,7 +52,7 @@ import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
 import { MemoryStore, MemoryView } from "../memory/index.ts";
 import { codexAgent } from "./pick.ts";
 import { codexSessionOf, recordCodexSession } from "./resume.ts";
-import { codexHome, findRollout, holdsOpen, readerStart } from "./rollout.ts";
+import { codexHome, findRollout, holdsOpen, type OpenFile, readerStart, rolloutThread } from "./rollout.ts";
 
 /** The events `orrery codex-hook` records (pre-tool-use is the guard, src/codex/guard.ts). */
 export const CODEX_RECORD_EVENTS = ["session-start", "user-prompt-submit", "stop", "session-end"] as const;
@@ -70,6 +74,8 @@ export interface CodexHookContext {
 	readonly env: NodeJS.ProcessEnv;
 	/** The home folder ~/.codex is in when CODEX_HOME is not set (default os.homedir()). */
 	readonly home?: string;
+	/** The files a process has open (default src/codex/rollout.ts openFiles); tests give their own. */
+	readonly openFiles?: (pid: number) => readonly OpenFile[] | undefined;
 	/** Codex's process (src/codex/host.ts): the token's owner and the holder's host. */
 	readonly codexPid: number;
 	/**
@@ -191,26 +197,36 @@ function readMemory(agent: AgentConfig, withSection: boolean): { readonly messag
 	}
 }
 
-/** A Codex session's rollout, as this Codex holds it: the file, Codex's folder, and where to read it from. */
+/** A Codex session's rollout, as this Codex holds it: the file and Codex's folder as they really are, the file Codex holds, where to read it from, and whether a turn of it runs. */
 interface OwnRollout {
 	readonly path: string;
 	readonly home: string;
+	readonly file: string;
 	readonly offset: number;
+	readonly running: boolean;
 }
 
 /**
  * Session `session` as this Codex's own: its rollout, found by its id under Codex's folder (never where the input says),
- * held open by this Codex's process; else why it can't be confirmed.
+ * a person's own thread by its session_meta, held open by this Codex's process; else why it can't be confirmed.
  */
 function ownRollout(session: string, ctx: CodexHookContext): OwnRollout | string {
 	const home = codexHome(ctx.env, ctx.home ?? homedir());
 	const path = findRollout(home, session);
 	if (path === undefined) return `no rollout of it under ${home}`;
-	const open = holdsOpen(ctx.codexPid, path);
-	if (open === "unknown") return "this system can't tell which files Codex has open";
-	if (!open) return "Codex doesn't have its rollout open";
-	const offset = readerStart(path);
-	return offset === undefined ? "its rollout can't be read" : { path, home, offset };
+	const thread = rolloutThread(path);
+	if (thread?.id !== session) return "its rollout doesn't say it is this session";
+	if (thread.threadSource !== "user") return "it is no thread of the person's own, but a spawned agent's or another kind";
+	const file = holdsOpen(ctx.codexPid, path, ctx.openFiles);
+	if (file === "unknown") return "this system can't tell which files Codex has open";
+	if (file === false) return "Codex doesn't have its rollout open";
+	const start = readerStart(path);
+	if (start === undefined) return "its rollout can't be read";
+	try {
+		return { path: realpathSync(path), home: realpathSync(home), file, ...start };
+	} catch {
+		return "its rollout can't be read";
+	}
 }
 
 /**
@@ -220,9 +236,13 @@ function ownRollout(session: string, ctx: CodexHookContext): OwnRollout | string
 export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext): Promise<object | undefined> {
 	if (input.agent_id !== undefined || !validSession(input.session_id)) return undefined;
 	const session = input.session_id;
+	const refuse = (why: string) => ({ systemMessage: `Orrery: can't confirm this is this Codex's own session (${safeText(why)}), so it opens no memory and records nothing.` });
 	// Before anything is decided, claimed or recorded: is this session this Codex's own?
 	const rollout = ownRollout(session, ctx);
-	if (typeof rollout === "string") return { systemMessage: `Orrery: can't confirm this is this Codex's own session (${safeText(rollout)}), so it opens no memory and records nothing.` };
+	if (typeof rollout === "string") return refuse(rollout);
+	// Moving this Codex to another session than its record names: Codex starts that session's turn before SessionStart.
+	const recorded = liveSession(ctx.config.dataDir, ctx.codexPid);
+	if (recorded?.tool === "codex" && recorded.codexSession !== session && !rollout.running) return refuse("Codex moves to a session with a turn of it running, and none is");
 	// A session's start (or resume) may be the process's first asker: it decides, and may claim the token, unless the
 	// memory server has already. A compaction or /clear never is (src/codex/pick.ts).
 	const pick = agentOf(ctx, session, input.source === "startup" || input.source === "resume");
@@ -240,7 +260,7 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 	// The holder's cut-off: this session's events from now on belong to this run.
 	const since = Date.now();
 	// Where the holder reads this session's rollout from: a session new to this Codex's record only.
-	if (hosted && !current) spoolEvent(agent.dir, session, { kind: "rollout", at: since, claudePid: ctx.codexPid, path: rollout.path, home: rollout.home, offset: rollout.offset });
+	if (hosted && !current) spoolEvent(agent.dir, session, { kind: "rollout", at: since, claudePid: ctx.codexPid, path: rollout.path, home: rollout.home, offset: rollout.offset, file: rollout.file });
 	// At resume (and a fork) the session's history holds the view it had: another would sit beside it.
 	const withView = input.source !== "resume" && input.source !== "fork";
 	const warnings: string[] = [];

@@ -5,7 +5,8 @@
  * held until the rollout says what it was:
  * - a prompt is the user's when an `event_msg` `item_completed` of `item.type` "UserMessage" has the hook's `turn_id`
  *   and the same words, in a turn whose `task_started` says `turn_attribution.turn_trigger` "user" (the TUI) or "exec"
- *   (`codex exec`). Another trigger (a guardian's review, say) drops it; a `response_item` of role user proves nothing
+ *   (`codex exec`) and names no parent turn or initiating agent. Another trigger (a guardian's review, `codex queue`'s
+ *   "queue" from outside the session) or a spawned agent's turn drops it; a `response_item` of role user proves nothing
  *   (the environment context is one too);
  * - a reply is the turn's when its `task_complete` says `last_agent_message` is those words; other words drop it;
  * - not seen yet: the holder waits, until the turn is over plus a grace (src/claude/holder.ts), then drops it and counts it.
@@ -14,15 +15,18 @@
  *
  * Which rollout: the session's, found by its id under Codex's own folder ($CODEX_HOME, else ~/.codex: sessions/YYYY/MM/
  * DD/, then archived_sessions/), never where the hook's input says. SessionStart takes a session as this Codex's only
- * when the Codex process holds that rollout open (Linux: /proc/<pid>/fd; macOS: lsof), so a hook call made by any other
- * process (the agent's shell, or another tool's) can't name a session: Codex keeps each session's rollout open from its
- * SessionStart to its end. SessionStart then says where to read from: the end of what is there, but the start of a turn
- * still running (Codex starts the turn before it runs SessionStart).
+ * when its `session_meta` says it is a person's own thread (`thread_source` "user": a spawned agent's says "subagent")
+ * and the Codex process holds that very file open (Linux: /proc/<pid>/fd, by device and inode; macOS: lsof, by path),
+ * so a hook call made by any other process (the agent's shell, or another tool's) can't name a session: Codex keeps
+ * each session's rollout open from its SessionStart to its end. SessionStart then says where to read from: the end of
+ * what is there, but the start of a turn still running (Codex starts the turn before it runs SessionStart: at startup,
+ * /clear, /resume, /fork, `codex resume` and `codex fork` alike, 0.163.0).
  *
  * The rollout is read only from that place on, a whole line at a time, through no link at its own place and never once
- * it leads out of Codex's folder (on Linux, judged by the file opened). A file replaced, or written anew shorter, is read
- * from its start. Only the lines that could confirm something are kept, for a while; each confirms one prompt or reply,
- * and one recorded before (by its turn and line: a resume or a fork reads history again) is not recorded again.
+ * it leads out of Codex's folder (on Linux, judged by the file opened). Codex only appends to the file it holds: another
+ * file at the path, or this one shorter, is not read at all. Only the lines that could confirm something are kept, for a
+ * while (all of them while an earlier event of the session waits); each confirms one prompt or reply, and one recorded
+ * before (by its turn and line: a resume or a fork reads history again) is not recorded again.
  *
  * Under Codex's workspace-write sandbox the shell can't write the rollout; with full access a deliberate forger who
  * writes it can still fake a turn (the design's Limits).
@@ -30,7 +34,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, type Dirent, existsSync, fstatSync, openSync, readdirSync, readlinkSync, readSync, realpathSync } from "node:fs";
+import { closeSync, constants, type Dirent, existsSync, fstatSync, openSync, readdirSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 
 /** A spooled prompt or reply of a Codex turn. */
@@ -57,6 +61,12 @@ const ROLLOUT_NAME = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([0-9a-f-]{36
 
 type Line = Record<string, unknown>;
 const record = (value: unknown): Line | undefined => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Line) : undefined);
+
+/**
+ * The trigger of a turn another agent started (`turn_attribution.parent_turn_id` or `initiating_agent_path` set): a
+ * spawned agent's turns say "exec" or "user" too (0.163.0: "exec"), so they are told by their parent, not their trigger.
+ */
+const SPAWNED = Symbol("spawned");
 
 /** What one rollout line says, of what the check reads. */
 type Said =
@@ -88,7 +98,8 @@ function sayOf(text: string): Said | undefined {
 		const attribution = record(payload.turn_attribution);
 		const turnId = attribution?.turn_id;
 		if (typeof turnId !== "string" || (payload.turn_id !== undefined && payload.turn_id !== turnId)) return undefined;
-		return { kind: "start", turnId, trigger: attribution?.turn_trigger };
+		const spawned = (attribution?.parent_turn_id ?? null) !== null || (attribution?.initiating_agent_path ?? null) !== null;
+		return { kind: "start", turnId, trigger: spawned ? SPAWNED : attribution?.turn_trigger };
 	}
 	if (typeof payload.turn_id !== "string") return undefined;
 	if (payload.type === "item_completed") {
@@ -205,11 +216,27 @@ export function parseLsof(output: string): string[] {
 /** lsof where macOS (and most Linux systems) keep it: never one found on a PATH the caller may have chosen. */
 const LSOF = ["/usr/sbin/lsof", "/usr/bin/lsof"];
 
+/** A file a process has open: its path, and on Linux the very file ("device:inode") behind the descriptor. */
+export interface OpenFile {
+	readonly path: string;
+	readonly file?: string;
+}
+
+/** A file's "device:inode", or undefined when it can't be read. */
+function fileId(path: string): string | undefined {
+	try {
+		const stat = statSync(path);
+		return `${stat.dev}:${stat.ino}`;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
- * The files process `pid` has open, as paths: Linux reads /proc/<pid>/fd (none for a process that is gone), macOS asks
- * lsof. Undefined when this system can't tell.
+ * The files process `pid` has open: Linux reads /proc/<pid>/fd (none for a process that is gone), each with the file the
+ * descriptor holds; macOS asks lsof for their paths. Undefined when this system can't tell.
  */
-export function openFiles(pid: number, platform: NodeJS.Platform = process.platform): string[] | undefined {
+export function openFiles(pid: number, platform: NodeJS.Platform = process.platform): OpenFile[] | undefined {
 	if (!Number.isInteger(pid) || pid <= 0) return [];
 	if (platform === "linux") {
 		let fds: string[];
@@ -218,10 +245,11 @@ export function openFiles(pid: number, platform: NodeJS.Platform = process.platf
 		} catch (error) {
 			return (error as NodeJS.ErrnoException).code === "ENOENT" && existsSync("/proc/self/fd") ? [] : undefined;
 		}
-		const files: string[] = [];
+		const files: OpenFile[] = [];
 		for (const fd of fds) {
 			try {
-				files.push(readlinkSync(`/proc/${pid}/fd/${fd}`));
+				const id = fileId(`/proc/${pid}/fd/${fd}`);
+				files.push({ path: readlinkSync(`/proc/${pid}/fd/${fd}`), ...(id === undefined ? {} : { file: id }) });
 			} catch {
 				// closed meanwhile
 			}
@@ -234,16 +262,17 @@ export function openFiles(pid: number, platform: NodeJS.Platform = process.platf
 		const run = spawnSync(lsof, ["-w", "-n", "-P", "-Fn", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
 		// lsof says 1 for a process with nothing to list, and for one that is gone.
 		if (run.error !== undefined || (run.status !== 0 && run.status !== 1)) return undefined;
-		return parseLsof(run.stdout ?? "");
+		return parseLsof(run.stdout ?? "").map((path) => ({ path }));
 	}
 	return undefined;
 }
 
 /**
- * Whether process `pid` has `path` open (Codex holds each of its sessions' rollouts open): "unknown" when this system
- * can't tell. `files` reads a process's open files (default openFiles).
+ * Whether process `pid` has the file at `path` open (Codex holds each of its sessions' rollouts open): that file's
+ * "device:inode" when it does (on Linux the very file the descriptor holds, so one put at the path since is not it),
+ * false when not, "unknown" when this system can't tell. `files` reads a process's open files (default openFiles).
  */
-export function holdsOpen(pid: number, path: string, files: (pid: number) => readonly string[] | undefined = openFiles): boolean | "unknown" {
+export function holdsOpen(pid: number, path: string, files: (pid: number) => readonly OpenFile[] | undefined = openFiles): string | false | "unknown" {
 	const open = files(pid);
 	if (open === undefined) return "unknown";
 	let real: string;
@@ -252,17 +281,52 @@ export function holdsOpen(pid: number, path: string, files: (pid: number) => rea
 	} catch {
 		return false;
 	}
-	return open.some((file) => file === real || file === path);
+	const id = fileId(real);
+	if (id === undefined) return false;
+	return open.some((held) => (held.file !== undefined ? held.file === id : held.path === real || held.path === path)) ? id : false;
+}
+
+/** A rollout's first line, its `session_meta`: the session it records and the kind of thread ("user": a person's own). */
+export interface RolloutThread {
+	readonly id: unknown;
+	readonly threadSource: unknown;
+}
+
+/** The most of a rollout's first line read (its session_meta holds the session's instructions: some 20 KB). */
+const META_MAX = 1024 * 1024;
+
+/** What a rollout's `session_meta` says, or undefined when its first line is none (or can't be read). */
+export function rolloutThread(path: string): RolloutThread | undefined {
+	let fd: number;
+	try {
+		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	} catch {
+		return undefined;
+	}
+	try {
+		const buffer = Buffer.alloc(Math.min(META_MAX, fstatSync(fd).size));
+		const got = buffer.length === 0 ? 0 : readSync(fd, buffer, 0, buffer.length, 0);
+		const end = buffer.subarray(0, got).indexOf(10);
+		if (end < 0) return undefined;
+		const line = record(JSON.parse(buffer.toString("utf8", 0, end)));
+		const payload = record(line?.payload);
+		if (line?.type !== "session_meta" || payload === undefined) return undefined;
+		return { id: payload.id, threadSource: payload.thread_source };
+	} catch {
+		return undefined;
+	} finally {
+		closeSync(fd);
+	}
 }
 
 /** The most of a rollout's end SessionStart reads back for a turn still running. */
 const TAIL = 4 * 1024 * 1024;
 
 /**
- * Where a session's rollout is read from, at its SessionStart: the end of its last whole line, or the start of a turn
- * still running (its `task_started`, with no end after it). Undefined when it can't be read.
+ * Where a session's rollout is read from, at its SessionStart: the start of a turn still running (its `task_started`,
+ * with no end after it; `running`), else the end of its last whole line. Undefined when it can't be read.
  */
-export function readerStart(path: string): number | undefined {
+export function readerStart(path: string): { readonly offset: number; readonly running: boolean } | undefined {
 	let fd: number;
 	try {
 		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -276,7 +340,7 @@ export function readerStart(path: string): number | undefined {
 		const buffer = Buffer.alloc(stat.size - from);
 		const got = buffer.length === 0 ? 0 : readSync(fd, buffer, 0, buffer.length, from);
 		const end = buffer.lastIndexOf(10, got - 1);
-		if (end < 0) return from === 0 ? 0 : stat.size;
+		if (end < 0) return { offset: from === 0 ? 0 : stat.size, running: false };
 		// Whole lines only: the first one is cut unless the read began at the file's start.
 		const first = from === 0 ? 0 : buffer.indexOf(10) + 1;
 		let stop = end;
@@ -284,10 +348,10 @@ export function readerStart(path: string): number | undefined {
 			const start = buffer.lastIndexOf(10, stop - 1) + 1;
 			const say = sayOf(buffer.toString("utf8", Math.max(start, first), stop));
 			if (say?.kind === "final" || say?.kind === "aborted") break;
-			if (say?.kind === "start") return from + Math.max(start, first);
+			if (say?.kind === "start") return { offset: from + Math.max(start, first), running: true };
 			stop = start - 1;
 		}
-		return from + end + 1;
+		return { offset: from + end + 1, running: false };
 	} catch {
 		return undefined;
 	} finally {
@@ -304,7 +368,7 @@ export interface RolloutMark {
 	readonly offset: number;
 	/** The lines that confirmed what was recorded lately (RolloutReader.remember), so a replay is recorded once. */
 	readonly recorded?: readonly string[];
-	/** The file read so far ("device:inode"): another file at the path is read from its start. */
+	/** The file Codex held open at SessionStart ("device:inode"): another file at the path is never read. */
 	readonly file?: string;
 }
 
@@ -363,7 +427,7 @@ export class RolloutReader {
 	/** Where the start line of a turn still running is (a reader restarted from the mark reads it again). */
 	#running: number | undefined;
 	readonly #recorded: string[];
-	/** The file read so far, "device:inode". */
+	/** The file Codex holds, "device:inode" (the first one read when SessionStart didn't say). */
 	#file: string | undefined;
 
 	constructor(mark: RolloutMark) {
@@ -374,17 +438,11 @@ export class RolloutReader {
 		this.#file = mark.file;
 	}
 
-	/** Starts over at the file's start: another file at the path, or this one written anew. */
-	#restart(): void {
-		this.#offset = 0;
-		this.#skipping = false;
-		this.#kept = [];
-		this.#turns.clear();
-		this.#running = undefined;
-	}
-
-	/** Reads what was appended since the last read. A file that isn't there, or can't be read now, is read later. */
-	read(now = Date.now()): void {
+	/**
+	 * Reads what was appended since the last read. A file that isn't there, or can't be read now, is read later. `keep`:
+	 * an earlier event of the session waits, so no line read is let go for its age.
+	 */
+	read(now = Date.now(), keep = false): void {
 		let fd: number;
 		try {
 			// Never through a link at the rollout's own place, and never waiting on a FIFO put there.
@@ -397,10 +455,11 @@ export class RolloutReader {
 			// On Linux, the file this opened, whatever was swapped in on the way; elsewhere (macOS), the path as it is now.
 			const opened = process.platform === "linux" ? readlinkSync(`/proc/self/fd/${fd}`) : realpathSync(this.path);
 			if (!stat.isFile() || !rolloutFolders(this.home).some((folder) => under(opened, folder))) return;
-			// A rollout is only appended to: another file, or a shorter one, was written anew; read from its start.
+			// Codex only appends to the file it holds (SessionStart saw which): another file at the path, or this one
+			// shorter, is not its rollout, and nothing in it is read.
 			const file = `${stat.dev}:${stat.ino}`;
-			if ((this.#file !== undefined && this.#file !== file) || stat.size < this.#offset) this.#restart();
-			this.#file = file;
+			this.#file ??= file;
+			if (this.#file !== file || stat.size < this.#offset) return;
 			while (this.#offset < stat.size) {
 				const want = Math.min(stat.size - this.#offset, CHUNK);
 				const buffer = Buffer.alloc(want);
@@ -427,7 +486,7 @@ export class RolloutReader {
 		} finally {
 			closeSync(fd);
 		}
-		const fresh = this.#kept.filter((kept) => now - kept.readAt < KEEP_MS);
+		const fresh = keep ? this.#kept : this.#kept.filter((kept) => now - kept.readAt < KEEP_MS);
 		this.#kept = fresh.slice(-KEEP_LINES);
 	}
 
