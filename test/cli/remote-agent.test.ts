@@ -1,11 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { openAgentCommand } from "../../src/cli/agent.ts";
+import { editAgentCommand, openAgentCommand } from "../../src/cli/agent.ts";
 import { agentRemoteCommand, pullAgentCommand, setStorageForTests } from "../../src/cli/remote.ts";
 import { setAgentKey, editConfigFile } from "../../src/agent/config-edit.ts";
-import { loadConfig } from "../../src/agent/config.ts";
+import { loadConfig, readConfigFile } from "../../src/agent/config.ts";
 import { OverviewCache } from "../../src/agent/overview.ts";
 import { WITHOUT_ORRERY_QUESTION, WITHOUT_ORRERY_SAID } from "../../src/codex/check.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
@@ -17,6 +17,7 @@ import { RemoteSession } from "../../src/remote/session.ts";
 import { RemoteError, STALE_MS } from "../../src/remote/types.ts";
 import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { tempDir } from "../agent/support.ts";
+import { fifos, readOnce, stopWriters } from "./read-once.ts";
 
 let dir: string;
 let path: string;
@@ -261,6 +262,116 @@ describe("agent local", () => {
 			await storage.drop("Atlas", held.lock); await seed(); return true;
 		} })).rejects.toThrow(/changed/);
 		expect((await storage.list())[0]).toMatchObject({ newestSave: 0, lock: { held: false } });
+	});
+});
+
+describe("the config as the gate read it: never read again, written only while unchanged", () => {
+	afterEach(stopWriters);
+	/** `text` (the config at `file`) as the gate read it there; its next read would get a config of another data folder, with no agents. */
+	async function judged(file: string, text = readFileSync(file, "utf8")) {
+		rmSync(file);
+		return readOnce(file, text, `data_dir = ${JSON.stringify(join(dir, "elsewhere"))}\n`);
+	}
+
+	it.skipIf(!fifos)("push, local, pull and takeover run with it", async () => {
+		let once = await judged(source);
+		expect(await agentRemoteCommand(once.file, ["push", "Atlas"], { to: "home" })).toContain("Pushed Atlas to remote home.");
+		expect(await once.readAgain()).toBe(false);
+		expect(loadConfig(source).agents.get("Atlas")?.remote).toBe("home");
+		once = await judged(source);
+		expect(await agentRemoteCommand(once.file, ["local", "Atlas"])).toContain("Atlas now keeps its memory locally.");
+		expect(await once.readAgain()).toBe(false);
+		expect(loadConfig(source).agents.get("Atlas")?.remote).toBeUndefined();
+		once = await judged(path);
+		expect(await agentRemoteCommand(once.file, ["pull", "Atlas"], { from: "home", folder })).toContain("Pulled Atlas from remote home");
+		expect(await once.readAgain()).toBe(false);
+		expect(texts()).toEqual(["from the first machine"]);
+		await storage.take("Atlas", peer);
+		clock += STALE_MS + 1;
+		once = await judged(path);
+		expect(await agentRemoteCommand(once.file, ["takeover", "Atlas"], { yes: true })).toContain("Taken over and released");
+		expect(await once.readAgain()).toBe(false);
+		expect((await storage.list())[0].lock).toMatchObject({ held: false, holder: { machine: "pc" } });
+	});
+
+	it("in a coding tool's session push, local, takeover and pull refuse a config whose file was swapped or written since, before the remote is asked; the file put there is left alone", async () => {
+		const changed = (file: string) => `The config (${file}) changed after Orrery read it, so nothing was written to it. Run the command again.`;
+		// Atlas on the remote, pulled into `path`, its lock held by another machine and stale; a third config without it.
+		await seed();
+		await pull();
+		await storage.take("Atlas", peer);
+		clock += STALE_MS + 1;
+		const third = join(dir, "third.toml");
+		config(third, join(dir, "third-data"));
+		// Each read as the gate reads it in a coding tool's session; then each file swapped or written by another.
+		const checked = (file: string) => ({ ...readConfigFile(file), checked: true });
+		const pushed = checked(source);
+		const pulled = checked(path);
+		const pulling = checked(third);
+		const swapped = `# swapped in\ndata_dir = ${JSON.stringify(join(dir, "elsewhere"))}\n`;
+		writeFileSync(`${source}.new`, swapped);
+		renameSync(`${source}.new`, source);
+		for (const file of [path, third]) writeFileSync(file, `${readFileSync(file, "utf8")}# theirs\n`);
+		// The remote must not be asked at all.
+		const asked: string[] = [];
+		for (const method of ["take", "renew", "release", "save", "snapshot", "fetch", "list", "log", "getCheck", "putCheck", "drop"] as const) {
+			storage[method] = async () => {
+				asked.push(method);
+				throw new Error("the remote was asked");
+			};
+		}
+		await expect(agentRemoteCommand(pushed, ["push", "Atlas"], { to: "home" })).rejects.toThrow(changed(source));
+		await expect(agentRemoteCommand(pulled, ["local", "Atlas"])).rejects.toThrow(changed(path));
+		await expect(agentRemoteCommand(pulled, ["takeover", "Atlas"], { yes: true })).rejects.toThrow(changed(path));
+		await expect(agentRemoteCommand(pulling, ["pull", "Atlas"], { from: "home", folder })).rejects.toThrow(changed(third));
+		expect(asked).toEqual([]);
+		expect(readFileSync(source, "utf8")).toBe(swapped);
+		for (const file of [path, third]) expect(readFileSync(file, "utf8")).toMatch(/# theirs\n$/);
+	});
+
+	it("in the user's own terminal push and local keep an edit made since the read and finish, as 0.9.0", async () => {
+		const mine = (file: string) => ({ ...readConfigFile(file), checked: false });
+		let read = mine(source);
+		writeFileSync(source, `${readFileSync(source, "utf8")}# theirs\n`);
+		expect(await agentRemoteCommand(read, ["push", "Atlas"], { to: "home" })).toContain("Pushed Atlas to remote home.");
+		expect(readFileSync(source, "utf8")).toContain("# theirs\n");
+		expect(loadConfig(source).agents.get("Atlas")?.remote).toBe("home");
+		read = mine(source);
+		writeFileSync(source, `${readFileSync(source, "utf8")}# theirs again\n`);
+		expect(await agentRemoteCommand(read, ["local", "Atlas"])).toContain("Atlas now keeps its memory locally.");
+		expect(readFileSync(source, "utf8")).toContain("# theirs again\n");
+		expect(loadConfig(source).agents.get("Atlas")?.remote).toBeUndefined();
+	});
+
+	it.skipIf(!fifos)("opening an agent and editing its instructions run with it", async () => {
+		const bin = join(dir, "bin");
+		mkdirSync(bin);
+		writeFileSync(join(bin, "codex"), '#!/bin/sh\n[ "$1" = "--version" ] && echo "codex-cli 0.162.1"\nexit 0\n', { mode: 0o755 });
+		vi.stubEnv("PATH", `${bin}:/usr/bin:/bin`);
+		vi.stubEnv("HOME", dir);
+		vi.stubEnv("ORRERY_HOME", join(dir, ".orrery"));
+		try {
+			const text = readFileSync(source, "utf8");
+			let once = await judged(source, text);
+			const ran: unknown[] = [];
+			const io = { say: () => {}, confirm: async () => false, askPerson: async () => true };
+			const deps = {
+				takeover: async () => { throw new Error("must not take over"); },
+				codexGate: async () => ({ ok: false as const, text: "Orrery's hooks don't load in Codex 0.162.1: x." }),
+				run: async (plan: unknown) => (ran.push(plan), { code: 0, signal: null }),
+				config: once.file,
+			};
+			expect(await openAgentCommand(undefined, "Atlas", { tool: "codex", args: [], cwd: folder }, io, deps)).toBe(0);
+			expect(ran).toHaveLength(1);
+			expect(await once.readAgain()).toBe(false);
+			once = await judged(source, text);
+			const edited: string[] = [];
+			expect(await editAgentCommand(once.file, "Atlas", { say: () => {}, confirm: async () => true }, async (file) => (edited.push(file), { code: 0, signal: null }), true)).toBe(0);
+			expect(edited).toEqual([join(dir, "source", "agents", "Atlas", "instructions.md")]);
+			expect(await once.readAgain()).toBe(false);
+		} finally {
+			vi.unstubAllEnvs();
+		}
 	});
 });
 

@@ -29,13 +29,20 @@ order:
    (`ORRERY_AGENT_TOKEN`) that the first Claude Code process claims, so a tool the agent starts itself, which inherits
    both variables, is not the agent too. A name that is not configured gives a notice and no memory.
 2. The agent whose default folder holds the project folder, so `cd <folder> && claude` still works.
-3. None: Claude Code runs without recording. No recorder starts, nothing is kept, and the memory stays free for pi.
-   The first line the model gets says so, and so does a message to you. The guard still applies there.
+3. None: a session that is no agent's. Claude Code runs without recording. No recorder starts, nothing is kept, and
+   the memory stays free for pi. The first line the model gets says so, and so does a message to you. The guard keeps
+   Orrery's own rules there (see [The guard](#the-guard)), and `orrery` run from it shows no agent and changes nothing
+   (README, [Sessions that are no agent's](../README.md#sessions-that-are-no-agents)).
 
 A Claude Code started from inside any agent's session (a `claude -p` from an agent's shell, in its folder or another
 agent's) opens no memory and records nothing, and says so: `Orrery: started inside Atlas's session (pi), so this one
 opens no memory and records nothing.` The guard stays on with that agent's rules (both agents' rules, in another
 agent's folder). Its prompts are the agent's, not yours.
+
+So does one started from a coding tool's session that is no agent's, such as a `claude -p` that a Claude Code in
+another project runs in an agent's folder: `Orrery: started inside a Claude Code session that is no agent's, so this
+one opens no memory and records nothing.` Its guard keeps the rules of the agent whose folder it runs in. Outside every
+agent's folder it is a session that is no agent's, and says nothing.
 
 A picked agent records only where it is set up (below): in its default folder after `orrery claude-setup <Name>`, or
 in any folder after `orrery claude-setup <Name> --mod`.
@@ -49,7 +56,7 @@ recorder makes the daily check in the background (README, Updating and uninstall
 answer. Both notices are messages to you, not the model. Without that
 launcher the hooks do nothing: they exit quietly and print nothing. Claude Code then lists the `orrery` MCP server as failed to connect.
 
-**Sessions open across the update to 0.9.0.** The update says `Restart open agent sessions now: sessions left open
+**Sessions open across the update from 0.8.0.** The update says `Restart open agent sessions now: sessions left open
 across the update aren't recorded until they restart.` Restart them. Until then:
 
 - a session opened with `orrery agent <Name>` (it has a launch token) keeps recording through the previous version's
@@ -101,6 +108,8 @@ was deleted.
   can't be opened from the app.
 - Orrery's status line and its notices did not show in the app.
 - The mod (`--mod`) is not yet checked in the app.
+- A session the app starts in a folder that is no agent's is a session that is no agent's: `orrery` there shows no
+  agent and changes nothing, and the guard keeps Orrery's own rules.
 - Claude Code on the web runs in the cloud and can't reach the memory on your machine.
 
 ## Set up an agent, once
@@ -310,10 +319,12 @@ orrery claude-mod view --cwd DIR [--session ID] [--agent NAME [--agent-token T]]
 In the plugin's commands, `.` is the session's agent, as Orrery recorded it when the session opened, wherever a `cd`
 in the Bash tool has moved its shell since. The same goes for `orrery status .` that the model, or a `!` command you
 type, runs there; `claude-setup`, `agent set` and every other command that changes something are refused inside the
-session, so run those in another terminal. In a session that is no agent's, `.` is the folder of the Bash tool's shell
-(Claude Code gives these commands no `CLAUDE_PROJECT_DIR`): with `ORRERY_AGENT` set, that agent; otherwise any folder
-inside an agent's default folder names it. From a folder outside every agent's folder, the command answers that the
-folder is in no agent's folder; `orrery <command> <Name>` in a shell still works.
+session, so run those in another terminal. In a session that is no agent's, `orrery` runs only `help`, `--version`,
+`status` and `usage`, and those show no agent: `/orrery:memory` answers `This is a Claude Code session that is no
+agent's (process 4242), so it shows no agent. Run orrery status in your own terminal or the TUI.` (and the same line
+for `usage`), and `/orrery:compactor` and `/orrery:browse` are refused (`orrery browse can't run here: this is a Claude
+Code session that is no agent's (process 4242), and those can't read or change Orrery's memory or settings. Run it in
+your own terminal or the TUI.`). Run them in your own terminal with the agent's name.
 
 `orrery compactor` tests the model with one call, using Orrery's own logins, before it switches. If the model is switched
 while a Claude Code session records the agent, that session's recorder applies it, and the command waits up to 10 seconds for it. While pi holds the
@@ -323,6 +334,9 @@ agent, use `/compactor` in pi.
 
 The model gets `zoom`, `date` and `search` (named `mcp__plugin_orrery_orrery__…`), plus `agents` and `agent_memory` for
 readers like Birch. They read snapshots of the agent's memory. In a session that is no agent's they list no tools.
+Where Orrery finds a reason the server serves no agent before the session is recorded (its parent is not the session's
+Claude Code, its config is not your Orrery home's, the folder or `ORRERY_AGENT` differs from what Claude Code was
+started with), the server writes one line to stderr, `orrery: mcp serves no agent here: …`, for the MCP client's log.
 
 ## One writer
 
@@ -345,6 +359,29 @@ config and the installed program are read-only to agents: no tool may change eit
 searches are refused it, by their path or a symbolic link to it (a hard link is not caught). Writes stay inside the folder the agent was opened in and its
 `allowed_roots`. Setup commands that name the installed app folder (the plugin install above, for one) are refused to
 agents, so run them in your own terminal.
+
+**In a session that is no agent's** (no agent picked, in any folder, the desktop app's sessions included) the guard
+runs too, with Orrery's own rules only:
+
+- Orrery's data folder, its home and its `credentials.json`: no tool reads or writes them. Its config and installed
+  program: read, never written.
+- Where your agents' sessions load code from outside Orrery's home: this plugin's copy, its marketplace folder and the
+  records that name them (`~/.claude/plugins/cache/orrery`, `plugins/marketplaces/orrery`, `known_marketplaces.json`,
+  `installed_plugins.json`, or under `$CLAUDE_CONFIG_DIR`), and pi's and OMP's extensions folders: read, never
+  written, and not named in a Bash command.
+- Every agent's memory view (`.orrery/view.md`), by its path or a symbolic link to it.
+- Claude Code's and Codex's session records: Read, Grep and Glob may read them, no tool writes them, and a Bash command
+  that names their folders is refused.
+- A Bash command that runs or names an `orrery` command other than `help`, `--version`, `status` and `usage`, or the
+  hook plumbing: `orrery browse can't run from a session that is no agent's: it can't read or change Orrery's memory or
+  settings (only orrery help, status, usage and --version run there). Run it in your own terminal or the TUI. …`
+- A Grep, Glob or LS whose folder holds Orrery's data folder (a search from your home folder, say), and a Grep whose
+  folder holds an agent's memory view (a folder above your agents' folders, say): search a narrower folder.
+- A call too large to check, as below.
+
+Nothing else: writes go wherever Claude Code's own permissions let them, and `.env` files, home logins (Claude Code's
+own among them), OpenCode's config, skills and `[guard] protect` are not checked there. A session that is no agent's
+works with its own project's files as it did before.
 
 Shell text that runs Orrery's hook plumbing is refused too: the hook commands (`claude-hook`, `codex-hook`) named
 anywhere, or Orrery's program with the word `holder`. An agent that ran a hook by hand could feed it made-up input and
@@ -431,8 +468,7 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
 - Project folders collide the way Claude Code's own folders do (`/a-b` and `/a/b` share one).
 - One call is checked for about 2 seconds at most. A call that names more paths than that, or whose paths take longer
   to check, is refused. So is a command line, Grep glob or Glob pattern over 64 KB, and a hook input over 1 MB (a
-  single `Write` over 1 MB included). The 1 MB rule holds even outside an agent's folder when `CLAUDE_PROJECT_DIR` is
-  unset; Claude Code always sets it for hooks.
+  single `Write` over 1 MB included). The 1 MB rule holds in every session, an agent's or not.
 - A filesystem call that blocks (a hung network mount, a macOS automount such as `/net/<host>`) can still hold the hook
   past Claude Code's timeout, and that call then runs unchecked.
 
@@ -473,6 +509,13 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
   words in the transcript differ from what the hook got is counted there too.
 - "can't run inside an agent session" from a `!` command or the model's Bash: run that command in another terminal;
   see the README's [Leftover markers](../README.md#leftover-markers) if it happens in a terminal of your own.
+- "can't run here: this is a Claude Code session that is no agent's", or `orrery status` showing no agent: the
+  session is no agent's (README, [Sessions that are no agent's](../README.md#sessions-that-are-no-agents)). Run the
+  command in your own terminal, or open the agent with `orrery agent <Name>`. With `found CLAUDECODE` (or another
+  variable) in a terminal of your own, see [Leftover markers](../README.md#leftover-markers).
+- "started inside a Claude Code session that is no agent's, so this one opens no memory": this Claude Code was started
+  from another coding tool's session. Start it from your own terminal, or with `orrery agent <Name>`. With `found
+  CLAUDECODE` in a terminal of your own, see [Leftover markers](../README.md#leftover-markers).
 
 ## Testing
 
@@ -513,9 +556,13 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
   guide](architecture.md#limits) lists the session rules' limits in full.
 - The `/orrery:*` command events are not checked against the transcript: an injected one can only drop the agent's
   own reply.
-- Sessions left open across the update to 0.9.0: one opened with `orrery agent` keeps recording without the
+- Sessions left open across the update from 0.8.0: one opened with `orrery agent` keeps recording without the
   transcript check until its next session start, and the others stop recording until they restart (see Install,
   once per machine).
-- On macOS the caller check (`LOCAL_PEERPID`) is not yet verified with a real Claude Code.
+- On macOS the caller check (`LOCAL_PEERPID`) is not yet verified with a real Claude Code, nor how Orrery tells a
+  session that is no agent's there (`ps`).
+- In a session that is no agent's the guard is Orrery's own rules only, and the command check reads processes and
+  variables: the README's [Sessions that are no agent's](../README.md#sessions-that-are-no-agents) lists what gets past
+  them.
 
 For launching this tool through Ori, see [Ori](ori.md).

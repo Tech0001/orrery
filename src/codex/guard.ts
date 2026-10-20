@@ -47,6 +47,7 @@ import type { HarnessConfig } from "../agent/config.ts";
 import { agentViews, GuardCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials, RUST_SPACE } from "../agent/guard-paths.ts";
 import { inAnyReading, NEW_TEXT, patchNewText, type SkillShellRead, shellWord, skillShellRead, skillsNamed } from "../agent/guard-rules.ts";
 import { nestedRules, type WriteRules } from "../agent/nested-rules.ts";
+import type { PlainDeps } from "../agent/plain-nested.ts";
 import { workArea } from "../agent/pick.ts";
 import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from "../claude/guard.ts";
 import { TOOL_INPUT_MAX } from "../claude/hooks.ts";
@@ -383,6 +384,8 @@ export interface CodexGuardContext {
 	 * from the process's start, src/codex/guard-exit.ts); default JUDGE_MS from now. The guard has at most JUDGE_MS.
 	 */
 	readonly deadline?: number;
+	/** How a coding tool's session that is no agent's is looked for (src/agent/plain-nested.ts); tests pass their own. */
+	readonly plain?: PlainDeps;
 }
 
 /** The fields of Codex's PreToolUse input the guard reads; each is checked before use. */
@@ -419,7 +422,7 @@ export function runCodexGuard(stdin: string | undefined, ctx: CodexGuardContext)
  */
 function writeRules(pick: CodexPicked, ctx: CodexGuardContext, cwd: string): WriteRules {
 	if (pick.kind === "agent") return { workArea: workArea(pick.agent, cwd), allowedRoots: pick.agent.allowedRoots };
-	const nested = pick.kind === "nested" ? pick : pick.undecided === true ? codexNested(ctx.config, ctx.env, ctx.codexPid) : undefined;
+	const nested = pick.kind === "nested" ? pick : pick.undecided === true ? codexNested(ctx.config, ctx.env, ctx.codexPid, ctx.plain) : undefined;
 	const outer = nested?.kind === "nested" ? nestedRules(ctx.config, nested.outer, cwd) : undefined;
 	return outer ?? { workArea: workArea({}, cwd), allowedRoots: [] };
 }

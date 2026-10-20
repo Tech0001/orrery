@@ -2,6 +2,7 @@ import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSyn
 import { basename, dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { codexHookGate } from "../../src/codex/check.ts";
+import { orreryEntries } from "../../src/agent/guard-paths.ts";
 import { checkTools, codexVersion, orreryVersion, probeOri, shortHome, toolVersionNumber, installSteps, ompAgentDir, ompExtensionFile, ompExtensionText, orreryRoot, piExtensionFile, piExtensionText, pluginVersion, runInstall, runningRoot, wiringRoot, type Runner, type ToolCheck } from "../../src/agent/tools.ts";
 import { tempDir } from "./support.ts";
 
@@ -216,6 +217,19 @@ describe("OMP", () => {
 		expect(ompAgentDir({ HOME: "/h" })).toBe("/h/.omp/agent");
 		expect(ompAgentDir({ HOME: "/h", PI_CONFIG_DIR: ".omp-test" })).toBe("/h/.omp-test/agent");
 		expect(ompAgentDir({ HOME: "/h", PI_CODING_AGENT_DIR: "/srv/agent" })).toBe("/srv/agent");
+	});
+
+	it("the extensions folders it writes into are those a session that is no agent's may not write (orreryEntries), wherever the variables put them", () => {
+		for (const env of [{ HOME: "/h" }, { HOME: "/h", PI_CODING_AGENT_DIR: "/srv/agent" }, { HOME: "/h", PI_CONFIG_DIR: ".omp-test" }]) {
+			const { folders } = orreryEntries(env, "/h");
+			expect(folders, JSON.stringify(env)).toContain(dirname(piExtensionFile(env)));
+			expect(folders, JSON.stringify(env)).toContain(dirname(ompExtensionFile(env)));
+		}
+		// Claude Code's plugin, in ~/.claude and where CLAUDE_CONFIG_DIR moves it: its copy, its marketplace's folder, and
+		// the records that name them.
+		const claude = orreryEntries({ CLAUDE_CONFIG_DIR: "/c" }, "/h");
+		expect(claude.folders.filter((path) => path.includes("plugins"))).toEqual(["/h/.claude/plugins/cache/orrery", "/h/.claude/plugins/marketplaces/orrery", "/c/plugins/cache/orrery", "/c/plugins/marketplaces/orrery"]);
+		expect(claude.files).toEqual(["/h/.claude/plugins/known_marketplaces.json", "/h/.claude/plugins/installed_plugins.json", "/c/plugins/known_marketplaces.json", "/c/plugins/installed_plugins.json"]);
 	});
 
 	it("calls an absolute re-export 'other' (OMP cannot load it) and replaces it with a relative one", () => {

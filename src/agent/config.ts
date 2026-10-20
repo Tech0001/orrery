@@ -1,6 +1,6 @@
 /** orrery configuration: one TOML file describing data paths, custom model servers, SSH hosts and agents. */
 
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { type BigIntStats, closeSync, existsSync, fstatSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { parse } from "smol-toml";
@@ -575,13 +575,139 @@ export function loadConfig(file: string = defaultConfigPath()): HarnessConfig {
 	try {
 		text = readFileSync(file, "utf8");
 	} catch (error) {
-		// Neither <home>/config.toml nor the server path exists: say where Orrery looks, not the server path alone.
-		if (file === DEFAULT_CONFIG_PATH && (error as { code?: unknown }).code === "ENOENT" && !process.env.ORRERY_CONFIG) {
-			throw Object.assign(new Error(`no Orrery config at ${join(orreryHome(), "config.toml")}; run orrery to set one up`), { code: "ENOENT" });
-		}
-		throw error;
+		throw noConfigError(file, error, process.env);
 	}
 	return { ...parseConfig(text, dirname(resolve(file))), file: resolve(file) };
+}
+
+/** A failed read of the config `file`: when neither <home>/config.toml nor the server path exists, where Orrery looks. */
+function noConfigError(file: string, error: unknown, env: NodeJS.ProcessEnv): unknown {
+	if (file === DEFAULT_CONFIG_PATH && (error as { code?: unknown }).code === "ENOENT" && !env.ORRERY_CONFIG) {
+		return Object.assign(new Error(`no Orrery config at ${join(orreryHome(env), "config.toml")}; run orrery to set one up`), { code: "ENOENT" });
+	}
+	return error;
+}
+
+/** Where a new config goes: $ORRERY_CONFIG, else <home>/config.toml. */
+export function userConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+	return env.ORRERY_CONFIG || join(orreryHome(env), "config.toml");
+}
+
+/**
+ * A config file as one read found it (readConfigFile): the config a command runs with, never read again (a file read
+ * twice may change between), and the file it may write that config back to (editConfigOnce, src/agent/config-edit.ts).
+ */
+export interface ConfigFile {
+	/** The file read, absolute (links kept, as HarnessConfig.file); when none was there, where a new one goes. */
+	readonly path: string;
+	/** What it held, and its text; absent when it could not be read or loaded (`error` says why). */
+	readonly config?: HarnessConfig;
+	readonly text?: string;
+	/** The file itself, as it was read; absent when there was none to read. */
+	readonly id?: FileId;
+	readonly error?: unknown;
+	/**
+	 * Whether a write must find the file as it was read (src/agent/config-edit.ts writeConfigOnce): set by the gate when
+	 * it found a coding tool's session (src/cli/gate.ts), where another process may swap the file in between. Else (the
+	 * user's own terminal, or a path read here) a write reads the file's text again and keeps what others wrote, as 0.9.0.
+	 */
+	readonly checked?: boolean;
+	/**
+	 * Set when there is no config to read and no place for one: none named (--config, ORRERY_CONFIG), and an ORRERY_HOME
+	 * that is no absolute path (`error` says so). `path` (the server path's) is then no file to read or write in its
+	 * place: the gate hands such a file to no command (src/cli/gate.ts), and writeConfigOnce refuses it.
+	 */
+	readonly unplaced?: true;
+}
+
+/** A file as it was read: its real path, device and inode, and its size and times (`stamp`), which any write changes. */
+export interface FileId {
+	readonly real: string;
+	readonly dev: bigint;
+	readonly ino: bigint;
+	readonly stamp: string;
+}
+
+/** A file's size and its modification and change times, to the nanosecond: a write changes them, and none can set back the change time. */
+export const fileStamp = (stats: BigIntStats): string => `${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`;
+
+/**
+ * Reads the config a command runs with, once: `file` (--config), else the default (defaultConfigPath); when there is
+ * none, where a new one goes instead (`file`, else userConfigPath). The text, and the file's identity, come from one
+ * open: the path must still lead to the file read when the read is done, or nothing was read. Never throws: with no
+ * default to read (an ORRERY_HOME that is no absolute path) it says why, and that the config has no place (`unplaced`).
+ */
+export function readConfigFile(file: string | undefined, env: NodeJS.ProcessEnv = process.env): ConfigFile {
+	let named: string;
+	try {
+		named = file ?? defaultConfigPath(env);
+	} catch (error) {
+		return { path: DEFAULT_CONFIG_PATH, error, unplaced: true };
+	}
+	const path = resolve(named);
+	let fd: number;
+	try {
+		fd = openSync(path, "r");
+	} catch (error) {
+		if ((error as { code?: unknown }).code !== "ENOENT") return { path, error };
+		let fresh = path;
+		try {
+			fresh = resolve(file ?? userConfigPath(env));
+		} catch {
+			// an ORRERY_HOME that is no absolute path: the path looked at stands
+		}
+		return { path: fresh, error: noConfigError(named, error, env) };
+	}
+	let text: string;
+	let id: FileId;
+	try {
+		text = readFileSync(fd, "utf8");
+		// Its size and times once read to the end: a write before then is in the text.
+		const read = fstatSync(fd, { bigint: true });
+		const real = realpathSync(path);
+		const there = statSync(real, { bigint: true });
+		if (there.dev !== read.dev || there.ino !== read.ino) return { path, error: new Error(`${path} was replaced while Orrery read it; run the command again.`) };
+		id = { real, dev: read.dev, ino: read.ino, stamp: fileStamp(read) };
+	} catch (error) {
+		return { path, error };
+	} finally {
+		closeSync(fd);
+	}
+	try {
+		return { path, text, id, config: { ...parseConfig(text, dirname(path)), file: path } };
+	} catch (error) {
+		return { path, text, id, error };
+	}
+}
+
+/** A config as a command is given it: the file the gate read (ConfigFile, src/cli/gate.ts), or a path to read once. */
+export type ConfigSource = ConfigFile | string | undefined;
+
+/** The config file `source` names, read once (readConfigFile) when it is a path. */
+export const configFileOf = (source: ConfigSource, env: NodeJS.ProcessEnv = process.env): ConfigFile => (typeof source === "object" ? source : readConfigFile(source, env));
+
+/** The config `file` holds; when it holds none, why (its read's error). */
+export function configOf(file: ConfigFile): HarnessConfig {
+	if (file.config === undefined) throw file.error ?? new ConfigError(`${file.path} holds no config`);
+	return file.config;
+}
+
+/** Whether `file` was not there when read (and nothing else kept it from being read). */
+export const configAbsent = (file: ConfigFile): boolean => file.id === undefined && (file.error as { code?: unknown } | undefined)?.code === "ENOENT";
+
+/**
+ * Whether `file` is still as it was read: its path leads to the same file (real path, device and inode), written by
+ * none since (stamp); when none was there, still none. Only then may a command write it back (editConfigOnce).
+ */
+export function unchangedConfig(file: ConfigFile): boolean {
+	if (file.id === undefined) return configAbsent(file) && !existsSync(file.path);
+	try {
+		if (realpathSync(file.path) !== file.id.real) return false;
+		const now = statSync(file.id.real, { bigint: true });
+		return now.dev === file.id.dev && now.ino === file.id.ino && fileStamp(now) === file.id.stamp;
+	} catch {
+		return false;
+	}
 }
 
 /**

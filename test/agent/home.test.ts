@@ -1,7 +1,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { userInfo } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { orreryHome } from "../../src/agent/home.ts";
+import { orreryHome, passwordHome, systemPasswordHome } from "../../src/agent/home.ts";
 import { DEFAULT_CONFIG_PATH, defaultConfigPath } from "../../src/agent/config.ts";
 import { newConfigText, userConfigPath } from "../../src/agent/config-edit.ts";
 import { parseConfig } from "../../src/agent/config.ts";
@@ -39,5 +40,52 @@ describe("finding the config", () => {
 		expect(newConfigText()).not.toMatch(/data_dir/);
 		expect(parseConfig(newConfigText(), join(home, ".orrery")).dataDir).toBe(join(home, ".orrery"));
 		expect(newConfigText("/srv/memory")).toMatch(/^data_dir = "\/srv\/memory"$/m);
+	});
+});
+
+describe("the password database's home", () => {
+	it("is this user's record in the system, never $HOME (the test run's HOME is a scratch folder)", () => {
+		const home = passwordHome();
+		expect(home !== undefined && isAbsolute(home)).toBe(true);
+		expect(home).not.toBe(process.env.HOME);
+		// Read without Node's userInfo, as under Bun, whose userInfo().homedir is $HOME: the same record.
+		if (process.platform === "linux" || process.platform === "darwin") expect(systemPasswordHome()).toBe(home);
+		if (process.versions.bun === undefined) expect(home).toBe(userInfo().homedir);
+	});
+
+	it("Linux: the uid's line in /etc/passwd, else getent's (NSS), each by its full path", () => {
+		const passwd = "root:x:0:0:root:/root:/bin/bash\nu:x:1000:1000:U Person,,,:/home/u:/bin/bash\nshadow:x:1000:1000::/home/shadow:/bin/sh\n";
+		const asked: string[][] = [];
+		const run = (program: string, args: readonly string[]) => (asked.push([program, ...args]), args[1] === "1001" ? "n:*:1001:1001:N:/home/n:/usr/bin/zsh\n" : undefined);
+		const there = (...files: string[]) => (file: string) => files.includes(file);
+		const linux = (uid: number, exists = there("/usr/bin/getent", "/bin/getent")) => systemPasswordHome({ uid, platform: "linux", read: () => passwd, run, exists });
+		// The first line for the uid, as getpwuid gives it.
+		expect(linux(1000)).toBe("/home/u");
+		expect(asked).toEqual([]);
+		expect(linux(1001)).toBe("/home/n");
+		expect(asked).toEqual([["/usr/bin/getent", "passwd", "1001"]]);
+		// Neither knows it: none (the caller fails closed), with getent asked once: /bin/getent only when /usr/bin's isn't there.
+		expect(linux(1002)).toBeUndefined();
+		expect(asked).toEqual([["/usr/bin/getent", "passwd", "1001"], ["/usr/bin/getent", "passwd", "1002"]]);
+		expect(linux(1001, there("/bin/getent"))).toBe("/home/n");
+		expect(asked.at(-1)).toEqual(["/bin/getent", "passwd", "1001"]);
+		expect(linux(1001, there())).toBeUndefined();
+		expect(asked).toHaveLength(3);
+		// No /etc/passwd to read.
+		expect(systemPasswordHome({ uid: 1001, platform: "linux", read: () => { throw new Error("EACCES"); }, run, exists: there("/usr/bin/getent") })).toBe("/home/n");
+		// A home that is no absolute path, or a line that is no record: none.
+		expect(systemPasswordHome({ uid: 7, platform: "linux", read: () => "x:x:7:7::home/x:/bin/sh\n7:7\n", run: () => undefined })).toBeUndefined();
+	});
+
+	it("macOS: id -P's record of this user (Directory Services), checked against the uid", () => {
+		const asked: string[][] = [];
+		const record = "u:********:501:20::0:0:U Person:/Users/u:/bin/zsh\n";
+		const run = (program: string, args: readonly string[]) => (asked.push([program, ...args]), record);
+		expect(systemPasswordHome({ uid: 501, platform: "darwin", read: () => "", run })).toBe("/Users/u");
+		expect(asked).toEqual([["/usr/bin/id", "-P"]]);
+		expect(systemPasswordHome({ uid: 502, platform: "darwin", read: () => "", run })).toBeUndefined();
+		expect(systemPasswordHome({ uid: 501, platform: "darwin", read: () => "", run: () => undefined })).toBeUndefined();
+		// Elsewhere: none.
+		expect(systemPasswordHome({ uid: 501, platform: "win32", read: () => "", run })).toBeUndefined();
 	});
 });

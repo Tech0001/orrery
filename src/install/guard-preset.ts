@@ -10,7 +10,8 @@
 
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { addGuardPreset, configWritable, saveConfigText, userConfigPath } from "../agent/config-edit.ts";
+import { addGuardPreset, configText, configWritable, userConfigPath, writeConfigOnce } from "../agent/config-edit.ts";
+import type { ConfigFile } from "../agent/config.ts";
 import { orreryHome } from "../agent/home.ts";
 import { writePrivate } from "../agent/private-file.ts";
 
@@ -64,22 +65,32 @@ function spellings(path: string): string[] {
 }
 
 /**
- * Offers the preset to the config in use (ORRERY_CONFIG, else <home>/config.toml): the line setup prints when it adds the
- * block, or undefined when it adds nothing. Never throws: setup goes on whatever happens here.
+ * Offers the preset to the user's own config (ORRERY_CONFIG, else <home>/config.toml), as 0.9.0 did: through the file
+ * the gate read for this command (`judged`, src/cli/gate.ts Gated.configFile) when that is the same file, however it
+ * was spelled. A config the gate read elsewhere (--config, the server path's when the home has none) is left alone. The
+ * line setup prints when it adds the block, or undefined when it adds nothing. The gate's config is written back as
+ * every command writes it (writeConfigOnce): in a coding tool's session only while the file is as the gate read it,
+ * never read again. Never throws: setup goes on whatever happens here.
  */
-export function offerGuardPreset(env: NodeJS.ProcessEnv): string | undefined {
+export function offerGuardPreset(env: NodeJS.ProcessEnv, judged?: ConfigFile): string | undefined {
 	try {
-		const path = userConfigPath(env);
+		const own = userConfigPath(env);
+		const path = judged?.path ?? own;
 		const names = spellings(path);
+		if (judged !== undefined && !spellings(own).some((name) => names.includes(name))) return undefined;
 		const done = offered(env);
 		if (names.some((name) => done.includes(name))) return undefined;
 		if (absent(path)) {
 			remember(env, names);
 			return undefined;
 		}
+		// No gate's read: the file at the path, read when written, as 0.9.0 did.
+		const file: ConfigFile = judged ?? { path: resolve(path) };
 		let next: string | undefined;
 		try {
-			next = addGuardPreset(readFileSync(path, "utf8"), dirname(resolve(path)));
+			const text = configText(file);
+			if (text === undefined) return undefined;
+			next = addGuardPreset(text, dirname(resolve(path)));
 		} catch {
 			return undefined; // a config Orrery cannot read (a link that leads nowhere yet among them): left alone
 		}
@@ -90,7 +101,7 @@ export function offerGuardPreset(env: NodeJS.ProcessEnv): string | undefined {
 		if (!configWritable(path)) return undefined;
 		const real = names.at(-1) as string;
 		try {
-			saveConfigText(path, next);
+			writeConfigOnce(file, next);
 		} catch (error) {
 			return `config: could not add a [guard] example to ${path}: ${error instanceof Error ? error.message : String(error)}`;
 		}

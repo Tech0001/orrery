@@ -600,13 +600,16 @@ describe("an entry loaded in the other tool", () => {
 			expect(omp.tools.size).toBe(3);
 		});
 
-		it(`${name}: outside agent folders, does nothing and says nothing`, async () => {
+		it(`${name}: outside agent folders, says nothing and keeps Orrery's own rules (spec 2026-10-19-no-agent-sessions §3)`, async () => {
 			const { root, config } = world();
 			const host = start(join(root, "plain"), config);
 			await host.emit("session_start");
 			expect(host.notices).toEqual([]);
-			expect(host.events()).toEqual(["session_start", "message_end", "agent_end", "session_shutdown"]);
-			expect(await host.emit("tool_call", { toolName: "read", toolCallId: "t1", input: { path: config.credentialsPath } })).toEqual([]);
+			expect(host.events()).toEqual(["session_start", "message_end", "agent_end", "session_shutdown", "tool_call"]);
+			expect(await host.emit("tool_call", { toolName: "read", toolCallId: "t1", input: { path: config.credentialsPath } })).toEqual([
+				{ block: true, reason: expect.stringMatching(/sensitive file/) },
+			]);
+			expect(await host.emit("tool_call", { toolName: "write", toolCallId: "t2", input: { path: join(root, "elsewhere.txt"), content: "x" } })).toEqual([undefined]);
 			expect(host.tools.size + host.commands.size).toBe(0);
 		});
 	}

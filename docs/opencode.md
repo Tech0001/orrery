@@ -47,7 +47,11 @@ plugin (the installed program's `extensions/opencode` folder), the agent, and th
   launch says so and OpenCode starts with Orrery's plugin config alone. Comments in yours don't reach OpenCode.
 - **A plain `opencode` is not an agent's session,** even in the agent's folder: no memory, no recording, no guard.
   Opening by folder would need Orrery's plugin in OpenCode's global config and its shared service, which Orrery does
-  not write.
+  not write. It is a session that is no agent's, and gets the command check only: `orrery` run from its shell runs only
+  `help`, `--version`, `status` and `usage`, and those show no agent (`This is an OpenCode session that is no agent's
+  (process 4242), so it shows no agent. …`); everything else is refused (README,
+  [Sessions that are no agent's](../README.md#sessions-that-are-no-agents)). With no guard, its shell and file tools
+  can still read and write Orrery's files directly, as any file of yours.
 - **The token file.** OpenCode's environment and its config content reach the model's shell commands and MCP servers,
   so the agent's one-time token goes in neither. The launch writes it to a file only you can read
   (`tokens/opencode-<pid>-<random>` in Orrery's home, mode 0600 in a 0700 folder) just before OpenCode starts, and
@@ -57,7 +61,7 @@ plugin (the installed program's `extensions/opencode` folder), the agent, and th
   `ORRERY_AGENT_TOKEN` are taken out of OpenCode's environment, so a tool the model starts is not the agent; an OpenCode
   it starts (`opencode run` from the agent's shell) inherits the config, but runs inside the agent's session: it opens
   no memory, records nothing and says so, and its guard keeps the agent's rules (both agents' rules, in another agent's
-  folder).
+  folder). The same holds for an OpenCode given Orrery's plugin from inside a coding tool's session that is no agent's.
 - `orrery agent` refuses an agent whose memory is still being built, and asks before opening an agent that is already
   open elsewhere (a second session is read-only), as for every tool.
 - **Ori** does not open OpenCode agents yet: an agent with `launcher = "ori"` is refused in OpenCode, with how to
@@ -319,6 +323,9 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
 - `NO GUARD, NO MEMORY` in the footer: OpenCode turned the plugin off. Quit OpenCode and open the agent again.
 - No footer status and no memory: the session was a plain `opencode`. Open the agent with `orrery agent <Name> --tool
   opencode`.
+- "can't run here: this is an OpenCode session that is no agent's", or `orrery status` showing no agent: the shell is
+  a plain `opencode`'s. Run the command in your own terminal. With `found OPENCODE` (or another variable) in a terminal
+  of your own, see the README's [Leftover markers](../README.md#leftover-markers).
 - `read-only`: the agent is open elsewhere, in the tool the notice names. `orrery status` shows it.
 - `no memory`: a notice says why (Orrery's config can't be read, the token file, an agent not in the config, a memory
   that could not open). Fix it and open the agent again.

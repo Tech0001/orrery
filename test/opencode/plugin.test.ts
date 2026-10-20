@@ -21,6 +21,7 @@ import { type Feed, readFeed } from "../../src/opencode/feed.ts";
 import { COMPACTION_SUMMARY, openCodePlugin, type OpenCodePluginOptions, sessionTitle } from "../../src/opencode/plugin.ts";
 import { configContent } from "../../src/opencode/options.ts";
 import { feedFileOf } from "../../src/opencode/token-file.ts";
+import { OPENCODE, plainDeps, type Proc, STARTS } from "../agent/plain-support.ts";
 import { fauxModels, tempDir } from "../agent/support.ts";
 import { messages, seed, waitUntil } from "../claude/support.ts";
 import { BASE, FakeHost } from "./fake-host.ts";
@@ -34,6 +35,11 @@ afterEach(async () => {
 
 /** The TUI's pid as the plugin is told it. */
 const TUI = 4242;
+/**
+ * For the check of a session started from a coding tool's session that is no agent's: this test's process as OpenCode's
+ * private server under its --standalone TUI, as OpenCode starts them, below `chain`.
+ */
+const underTui = (s: { readonly config: HarnessConfig }, chain: readonly Proc[]) => plainDeps(process.pid, [OPENCODE.tui, ...chain], s.config.dataDir, { host: OPENCODE.server });
 
 /** Agent Atlas (folder ws, OpenCode), Birch (a reader), a plain folder, and a launch token for Atlas in Orrery's home. */
 function scene(summaries: { readonly model: string; readonly thinking: string } = { model: "faux-compactor/faux-1", thinking: "off" }) {
@@ -809,6 +815,53 @@ describe("Orrery's OpenCode plugin: sessions (spec 2026-10-18-agent-permissions 
 		expect(hosts(s)).toEqual([]);
 		expect(shell.ORRERY_HOST).toBe("1");
 	});
+
+	it("started from a coding tool's session that is no agent's (spec 2026-10-19-no-agent-sessions §4c): no memory, no claim, nothing recorded, why said once", async () => {
+		const s = scene();
+		const shell: NodeJS.ProcessEnv = {};
+		const host = hostFor(s);
+		await start(s, host, { shellEnv: shell, plain: underTui(s, STARTS.claude) });
+		expect(claimedBy(s.atlas.dir, s.token)).toBeUndefined();
+		expect(host.registered).toBe(false);
+		expect(host.guarded).toBe(true);
+		expect(feedOf(s)?.line).toBe("Orrery · no memory");
+		expect(noticesOf(s)).toEqual(["Orrery: started inside a Claude Code session that is no agent's, so this one opens no memory and records nothing."]);
+		expect(hosts(s)).toEqual([]);
+		expect(shell.ORRERY_HOST).toBeUndefined();
+		expect(existsSync(join(s.atlas.dir, "memory.sqlite"))).toBe(false);
+		expect(await host.call("read", { path: join(s.ws, ".orrery", "view.md") })).toMatch(/^Orrery guard: .*sensitive/);
+		// A second folder's plugin in the same server says nothing more.
+		await start(s, hostFor(s, s.plain));
+		expect(noticesOf(s)).toHaveLength(1);
+	});
+
+	it("opens as today as the private server of its own --standalone TUI, started from the user's terminal or orrery agent", async () => {
+		for (const chain of [STARTS.terminal, STARTS.agent]) {
+			const s = scene();
+			const host = hostFor(s);
+			const stop = await start(s, host, { plain: underTui(s, chain) });
+			expect(claimedBy(s.atlas.dir, s.token)).toBe(process.pid);
+			expect(host.registered).toBe(true);
+			await opened(s);
+			await stop();
+		}
+	});
+
+	it("an OpenCode its plain outer OpenCode's shell started (the outer server past its own TUI) is no agent's", async () => {
+		const s = scene();
+		const host = hostFor(s);
+		await start(s, host, { plain: underTui(s, [OPENCODE.server, OPENCODE.tui, ...STARTS.terminal]) });
+		expect(host.registered).toBe(false);
+		expect(noticesOf(s)).toEqual(["Orrery: started inside an OpenCode session that is no agent's, so this one opens no memory and records nothing."]);
+	});
+
+	it("found by another tool's variable (left over in the terminal): the notice names it", async () => {
+		const s = scene();
+		const host = hostFor(s);
+		await start(s, host, { env: { ...s.env, PI_CODING_AGENT: "true" }, plain: underTui(s, STARTS.terminal) });
+		expect(host.registered).toBe(false);
+		expect(noticesOf(s)).toEqual(['Orrery: started inside a pi session that is no agent\'s (found PI_CODING_AGENT; see "Leftover markers" in the README), so this one opens no memory and records nothing.']);
+	});
 });
 
 describe("Orrery's OpenCode plugin: the guard", () => {
@@ -891,7 +944,8 @@ describe("Orrery's OpenCode plugin: the guard", () => {
 		}) as HarnessConfig;
 		const lines: string[] = [];
 		const host = hostFor(s);
-		await start(s, host, { config, log: (line) => lines.push(line) });
+		// Started from the user's terminal, whatever runs this test: under a coding tool the config would be read sooner.
+		await start(s, host, { config, log: (line) => lines.push(line), plain: underTui(s, STARTS.terminal) });
 		expect(lines.at(-1)).toBe("Orrery: the plugin could not start: a broken config");
 		expect(await host.call("read", { path: "a.ts" })).toBe("Orrery guard: Orrery's plugin could not start (a broken config), so no call can be checked; nothing was run.");
 	});

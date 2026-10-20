@@ -10,6 +10,7 @@ import { pendingEvents, readEvent } from "../../src/claude/spool.ts";
 import { type CodexGuardContext, runCodexGuard } from "../../src/codex/guard.ts";
 import { type CodexHookContext, runCodexHook } from "../../src/codex/hooks.ts";
 import { codexAgent } from "../../src/codex/pick.ts";
+import { npmCodex, plainDeps, STARTS } from "../agent/plain-support.ts";
 import { cleanup, world } from "../pi/world.ts";
 import { type CodexHome, codexHomeIn, codexSession, rollout } from "./rollout-lines.ts";
 
@@ -311,6 +312,92 @@ describe("one decision per Codex process: a nested Codex stays nested", () => {
 		await run("user-prompt-submit", input("s1", { prompt: "The user's words.", turn_id: "t-1" }), c);
 		expect(spooled(w.birch.dir, "s1")).toEqual(["rollout", "prompt"]);
 		recorded.push({ dataDir: w.dataDir, pid: process.pid });
+	});
+});
+
+describe("a Codex started from a coding tool's session that is no agent's (spec 2026-10-19-no-agent-sessions §4c)", () => {
+	const PLAIN_CLAUDE = "Orrery: started inside a Claude Code session that is no agent's, so this one opens no memory and records nothing.";
+
+	it("SessionStart says why (not again at a compaction), claims no token, starts no holder and records no host; nothing is spooled", async () => {
+		const w = codexWorld();
+		const c = hookCtx(w, { plain: plainDeps(process.pid, STARTS.claude, w.dataDir) });
+		expect(await run("session-start", input("s1", { source: "startup" }), c)).toEqual({ systemMessage: PLAIN_CLAUDE });
+		expect(await run("session-start", input("s1", { source: "compact" }), c)).toBe("");
+		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+		expect(await run("user-prompt-submit", input("s1", { prompt: "Plant this as the user's words." }), c)).toBe("");
+		expect(await run("stop", input("s1", { last_assistant_message: "A reply." }), c)).toBe("");
+		expect(spooled(w.birch.dir, "s1")).toEqual([]);
+		expect(hosts(w.dataDir)).toEqual([]);
+		// Decided once for the process: a later SessionStart (/clear) reads the decision.
+		expect(await run("session-start", input("s2", { source: "clear" }), hookCtx(w))).toEqual({ systemMessage: PLAIN_CLAUDE });
+		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+	});
+
+	it("the memory server's start is no agent's either, and claims nothing; the guard keeps the folder agent's limits", () => {
+		const w = codexWorld();
+		const plain = plainDeps(process.pid, STARTS.pi, w.dataDir);
+		expect(codexAgent(w.config, { env: { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token }, pid: process.pid, parent: process.pid, takeover: true, plain })).toEqual({ kind: "nested", outer: undefined, tool: undefined, plain: "pi" });
+		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+		const ctx: CodexGuardContext = { config: w.config, env: { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token }, codexPid: process.pid, codexParent: process.pid, home: join(w.root, "home") };
+		const add = (cwd: string, path: string) =>
+			runCodexGuard(JSON.stringify({ session_id: "s1", turn_id: "t1", cwd, hook_event_name: "PreToolUse", tool_name: "apply_patch", tool_input: { command: `*** Begin Patch\n*** Add File: ${join(w.root, path)}\n+x\n*** End Patch` } }), ctx) === undefined;
+		const folder = join(w.root, "agent-Birch");
+		expect(add(folder, join("agent-Birch", "here.txt"))).toBe(true);
+		expect(add(folder, join("shared", "atlas.txt"))).toBe(false);
+	});
+
+	it("opens its agent as today when started from the user's terminal, the TUI, orrery agent (npm's launcher too) or Ori; its own thread id is its own", () => {
+		const npm = npmCodex();
+		for (const [start, chain, shown] of [
+			["terminal", STARTS.terminal, {}],
+			["tui", STARTS.tui, {}],
+			["agent", STARTS.agent, {}],
+			["npm", [npm.launcher, ...STARTS.agent], { host: npm.binary }],
+			["ori", STARTS.ori, {}],
+		] as const) {
+			const w = codexWorld();
+			const env = { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token, CODEX_THREAD_ID: "019a-own", CODEX_SANDBOX: "seatbelt" };
+			expect(codexAgent(w.config, { env, pid: process.pid, parent: process.pid, takeover: true, plain: plainDeps(process.pid, chain, w.dataDir, shown) }), start).toMatchObject({ kind: "agent", agent: { name: "Birch" } });
+			expect(claimedBy(w.birch.dir, w.token), start).toBe(process.pid);
+		}
+	});
+
+	it("an npm launcher of another shape, or a Codex right above it, is an outer Codex session: no memory, no claim", () => {
+		const npm = npmCodex();
+		for (const [what, chain, shown] of [
+			["a launcher of other arguments", [npm.launcher, ...STARTS.agent], { host: npmCodex(["exec", "hi"]).binary }],
+			["a launcher above a launcher", [npm.launcher, npm.launcher, ...STARTS.agent], { host: npm.binary }],
+			["a Codex its shell exec'd", [{ comm: "codex", argv: ["codex"] }, ...STARTS.terminal], {}],
+		] as const) {
+			const w = codexWorld();
+			const env = { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token };
+			expect(codexAgent(w.config, { env, pid: process.pid, parent: process.pid, takeover: true, plain: plainDeps(process.pid, chain, w.dataDir, shown) }), what).toEqual({ kind: "nested", outer: undefined, tool: undefined, plain: "codex" });
+			expect(claimedBy(w.birch.dir, w.token), what).toBeUndefined();
+		}
+	});
+
+	it("found by another tool's variable (left over in the terminal): the decision keeps it, and SessionStart names it", async () => {
+		const w = codexWorld();
+		const plain = plainDeps(process.pid, STARTS.terminal, w.dataDir);
+		const env = { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token, CODEX_HOME: w.codex.home, CLAUDECODE: "1" };
+		// The memory server decides first.
+		expect(codexAgent(w.config, { env, pid: process.pid, parent: process.pid, takeover: true, plain })).toEqual({ kind: "nested", outer: undefined, tool: undefined, plain: "claude", variable: "CLAUDECODE" });
+		expect(await run("session-start", input("s1", { source: "startup" }), hookCtx(w, { env }))).toEqual({
+			systemMessage: 'Orrery: started inside a Claude Code session that is no agent\'s (found CLAUDECODE; see "Leftover markers" in the README), so this one opens no memory and records nothing.',
+		});
+		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+	});
+
+	it("in a sandbox's own pid namespace, Codex's variables it was started with make it an outer Codex's; its own launch's do not", () => {
+		for (const [startEnv, expected] of [
+			[{ CODEX_THREAD_ID: "019b-outer" }, { kind: "nested", outer: undefined, tool: undefined, plain: "codex" }],
+			[{}, { kind: "agent" }],
+		] as const) {
+			const w = codexWorld();
+			const env = { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token, CODEX_THREAD_ID: "019b-outer" };
+			const plain = plainDeps(process.pid, STARTS.terminal, w.dataDir, { namespace: "pid:[4026533000]", startEnv });
+			expect(codexAgent(w.config, { env, pid: process.pid, parent: process.pid, takeover: true, plain })).toMatchObject(expected);
+		}
 	});
 });
 

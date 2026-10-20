@@ -1,12 +1,13 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it } from "vitest";
-import { guardToolCall, movedAgentDirCredentials } from "../../src/pi/guard.ts";
+import { guardOmpToolCall, guardToolCall, movedAgentDirCredentials } from "../../src/pi/guard.ts";
 import { type HarnessConfig, parseConfig } from "../../src/agent/config.ts";
+import { ompExtensionFile, piExtensionFile } from "../../src/agent/tools.ts";
 import { createOrrery } from "../../src/pi/index.ts";
-import { fakeOmp, ompCleanup, track } from "../omp/world.ts";
+import { fakeOmp, ompCleanup, ompOrrery, track } from "../omp/world.ts";
 import type { PiRun } from "./harness.ts";
 import { cleanup, isolatedHome, pi, scratchHome, summarySourcesFor, world } from "./world.ts";
 
@@ -402,6 +403,249 @@ describe("pi: only the agent that owns a folder's memory view reads it", () => {
 		refused(await call(run, "bash", { command: "cat .orrery/view.md" }));
 		refused(await call(run, "read", { path: birchView }));
 	}, 20_000);
+});
+
+describe("pi and OMP in a folder that is no agent's: Orrery's own rules only (spec 2026-10-19-no-agent-sessions §3)", () => {
+	afterEach(async () => {
+		await ompCleanup();
+		await cleanup();
+	});
+	// pi's real bash runs a command the guard lets through, under a scratch HOME: these name no real path.
+	isolatedHome();
+
+	async function call(run: PiRun, name: string, args: Parameters<typeof fauxToolCall>[1]): Promise<string> {
+		run.setResponses([fauxAssistantMessage([fauxToolCall(name, args)]), fauxAssistantMessage("done")]);
+		await run.session.prompt(`${name}, please`);
+		const results = run.session.messages.filter((m: { role: string }) => m.role === "toolResult") as { content: { text?: string }[] }[];
+		return results.at(-1)?.content.map((c) => c.text ?? "").join("") ?? "";
+	}
+
+	/** The world, with memory in Atlas's data folder, a .env file in the plain folder and a key in the guard's home. */
+	function plainWorld() {
+		const made = world();
+		dir = made.root;
+		const plain = join(made.root, "plain");
+		const memory = join(made.root, "data", "agents", "Atlas", "notes.md");
+		const key = join(made.root, "home", ".ssh", "id_test");
+		for (const [file, text] of [
+			[memory, "Atlas's memory: hidden-value"],
+			[join(plain, ".env"), "KEY=plain-value"],
+			[key, "fake key: plain-value"],
+		]) {
+			mkdirSync(join(file, ".."), { recursive: true });
+			writeFileSync(file, text);
+		}
+		return { ...made, plain, memory, key };
+	}
+
+	/** A tool call in a fake host: the guard's answer. */
+	const answer = (host: ReturnType<typeof fakeOmp>) => async (toolName: string, input: object) => (await host.emit("tool_call", { toolName, toolCallId: "t1", input }))[0];
+	const blocked = { block: true, reason: expect.any(String) };
+
+	it("a plain OMP folder takes ordinary brace and extended globs in its searches and ast_edit, and refuses a group that reaches out", async () => {
+		const { root, config, plain } = plainWorld();
+		for (const file of ["src/a.ts", "src/b.tsx", "src/gen/d.ts", "lib/c.ts"]) {
+			mkdirSync(join(plain, file, ".."), { recursive: true });
+			writeFileSync(join(plain, file), "export const a = 1;\n");
+		}
+		const tool = answer(await ompOrrery(plain, config));
+		const edit = (paths: string[]) => ({ ops: [{ pat: "a", out: "b" }], paths });
+		for (const path of ["src/**/*.{ts,tsx}", "*.{ts,tsx}", "{src,lib}", "{src,lib}/**/*.ts", "src/**/@(a|b).ts", "@src/**/*.{ts,tsx}", '"src/**/*.{ts,tsx}"']) {
+			for (const toolName of ["grep", "glob", "find"]) expect([toolName, path, await tool(toolName, { pattern: "x", path })]).toEqual([toolName, path, undefined]);
+			expect(["ast_edit", path, await tool("ast_edit", edit([path]))]).toEqual(["ast_edit", path, undefined]);
+		}
+		// A negation only narrows what the other paths reach.
+		expect(await tool("ast_edit", edit(["src/**/*.ts", "!src/gen/**"]))).toBeUndefined();
+		// A group that holds "/", "..", "~" or "$", or is unbalanced, and ".." after a wildcard: refused.
+		// And a group whose expansion moves the base: {,}~/… is ~/…, {,}/abs/… is absolute, .{.,}/… is ../….
+		const moving = ["{,}~/x/**", "{,}/abs/**", ".{.,}/x/**", "{,}~/.orr*/agents/**", ".{.,}/.o*/app/**", "src/.{.,}/x/*.ts"];
+		// Read as OMP reads a path, its "@", ":" and quotes gone, before the groups are put in place.
+		const prefixed = ["@{,~}/x/**", ":{,/abs}/x/**", '"@{,~}/x/**"', "@{,}~/x/**", ":{,}/abs/x/**", '"@{,}~/x/**"', "@{,}/abs/**", "{,file:}//x/**"];
+		for (const path of ["{src,~/.orrery}/**", "{src,../..}/*.ts", "{src,$HOME}/*.ts", "src/{a,b", "@(src|../x)/**", "src/*/../../..", "!{src,~/.orrery}/**", ...moving, ...prefixed]) {
+			const searches = path.startsWith("!") ? [] : ["grep", "glob"];
+			for (const toolName of searches) expect([toolName, path, await tool(toolName, { pattern: "x", path })]).toEqual([toolName, path, blocked]);
+			expect(["ast_edit", path, await tool("ast_edit", edit([path]))]).toEqual(["ast_edit", path, blocked]);
+		}
+		// Orrery's home in a group's alternatives is read as a name, as before.
+		expect(await tool("grep", { pattern: "x", path: `${root}/{data,plain}` })).toEqual(blocked);
+	});
+
+	it("an agent's OMP session keeps refusing brace globs, negations and extended globs, as before", async () => {
+		const { root, config } = plainWorld();
+		const tool = answer(await ompOrrery(join(root, "agent-Atlas"), config));
+		expect(await tool("grep", { pattern: "x", path: "src/**/*.{ts,tsx}" })).toEqual({ block: true, reason: expect.stringMatching(/brace or parent patterns/) });
+		expect(await tool("ast_edit", { ops: [{ pat: "a", out: "b" }], paths: ["src/**/*.ts", "!src/gen/**"] })).toEqual({ block: true, reason: expect.stringMatching(/can't tell which files/) });
+	});
+
+	it("a plain OMP session whose folder holds or is inside Orrery's files has its language server's edits refused", async () => {
+		const { root, config, plain } = plainWorld();
+		const host = await ompOrrery(root, config);
+		const tool = answer(host);
+		const rename = { action: "rename", file: "a.ts", line: 1, symbol: "a", new_name: "b" };
+		// The folder holds Orrery's data folder.
+		expect(await tool("lsp", rename)).toEqual({ block: true, reason: expect.stringMatching(/language server.*Orrery's files/) });
+		expect(await tool("lsp", { action: "code_actions", file: "a.ts", apply: true, query: "fix" })).toEqual(blocked);
+		expect(await tool("lsp", { action: "hover", file: "a.ts", line: 1 })).toBeUndefined();
+		// Inside it.
+		host.cwd = join(root, "data", "agents");
+		expect(await tool("lsp", rename)).toEqual(blocked);
+		// A project beside it.
+		host.cwd = plain;
+		expect(await tool("lsp", rename)).toBeUndefined();
+	});
+
+	it("a plain OMP session's language server edits are judged by the file they name, and where it really is", () => {
+		dir = realpathSync(mkdtempSync(join(tmpdir(), "orrery-lsp-")));
+		const home = join(dir, "home");
+		const data = join(home, ".orrery");
+		const program = join(data, "app", "current", "src", "main.ts");
+		const project = join(dir, "project");
+		mkdirSync(join(program, ".."), { recursive: true });
+		mkdirSync(project);
+		writeFileSync(program, "export const a = 1;\n");
+		writeFileSync(join(project, "a.ts"), "export const a = 1;\n");
+		symlinkSync(join(data, "app", "current", "src"), join(project, "linked-app"));
+		const options = { orreryOnly: true, folder: project, allowedRoots: [] as string[], cwd: project, home, foreignViews: [] as string[], orreryData: data, credentials: [join(data, "credentials.json")], configFile: join(data, "config.toml"), orreryHome: data };
+		const lsp = (input: Record<string, unknown>) => guardOmpToolCall("lsp", input, options);
+		for (const file of [program, "~/.orrery/app/current/src/main.ts", "linked-app/main.ts"]) {
+			for (const input of [{ action: "rename", file, line: 1, symbol: "a", new_name: "b" }, { action: "code_actions", file, apply: true, query: "fix" }]) {
+				expect([input, lsp(input)]).toEqual([input, expect.stringMatching(/installed program|Orrery's files/)]);
+			}
+			// Reading actions name the file to read it: they pass, as before.
+			expect(lsp({ action: "hover", file, line: 1 })).toBeUndefined();
+		}
+		expect(lsp({ action: "rename", file: "a.ts", line: 1, symbol: "a", new_name: "b" })).toBeUndefined();
+		expect(lsp({ action: "code_actions", file: join(project, "a.ts"), apply: true, query: "fix" })).toBeUndefined();
+	});
+
+	it("a plain pi or OMP session writes nothing where agents' sessions load code from: the extensions folders, Claude Code's plugin copy", () => {
+		dir = realpathSync(mkdtempSync(join(tmpdir(), "orrery-entries-")));
+		const home = join(dir, "home");
+		const data = join(home, ".orrery");
+		const project = join(dir, "project");
+		mkdirSync(project, { recursive: true });
+		const env = { ...process.env, HOME: home };
+		const options = { orreryOnly: true, folder: project, allowedRoots: [] as string[], cwd: project, home, foreignViews: [] as string[], orreryData: data, credentials: [join(data, "credentials.json")], configFile: join(data, "config.toml"), orreryHome: data };
+		const piFolder = dirname(piExtensionFile(env));
+		const entries = [piExtensionFile(env), ompExtensionFile(env), join(piFolder, "mine.ts"), join(home, ".claude", "plugins", "cache", "orrery", "orrery", "0.9.1", "hooks", "hooks.json")];
+		for (const file of entries) {
+			expect([file, guardToolCall("write", { path: file, content: "export {}" }, options)]).toEqual([file, expect.stringMatching(/where your agents' sessions load code from/)]);
+			expect([file, guardToolCall("edit", { path: file, edits: [{ oldText: "a", newText: "b" }] }, options)]).toEqual([file, expect.stringMatching(/load code from/)]);
+			expect([file, guardOmpToolCall("write", { path: file, content: "export {}" }, options)]).toEqual([file, expect.stringMatching(/load code from/)]);
+			expect([file, guardToolCall("read", { path: file }, options)]).toEqual([file, undefined]);
+		}
+		// Shell text into the folder, a redirect or a copy: refused.
+		expect(guardToolCall("bash", { command: `cp evil.ts ${piFolder}/` }, options)).toMatch(/sensitive/);
+		expect(guardOmpToolCall("bash", { command: `printf x > ${piFolder.replace(home, "~")}/z.ts` }, options)).toMatch(/sensitive/);
+		// pi's own settings and the user's shell profile: theirs.
+		expect(guardToolCall("write", { path: join(dirname(piFolder), "settings.json"), content: "{}" }, options)).toBeUndefined();
+		expect(guardToolCall("bash", { command: "echo 'export X=1' >> ~/.profile" }, options)).toBeUndefined();
+	});
+
+	it("a plain pi folder takes ordinary brace and extended globs", async () => {
+		const { root, config, plain } = plainWorld();
+		const host = track(fakeOmp(plain, [createOrrery({ config, summarySources: async (cfg: HarnessConfig) => summarySourcesFor(cfg), ...scratchHome(root) })], { omp: false }));
+		await host.emit("session_start");
+		const tool = answer(host);
+		expect(await tool("grep", { pattern: "x", glob: "*.{ts,tsx}" })).toBeUndefined();
+		expect(await tool("find", { pattern: "src/**/*.{ts,tsx}" })).toBeUndefined();
+		expect(await tool("find", { pattern: "{src,lib}/**/@(a|b).ts" })).toBeUndefined();
+		expect(await tool("bash", { command: "ls src/**/*.{ts,tsx} {src,lib}/*.md" })).toBeUndefined();
+		expect(await tool("grep", { pattern: "x", glob: "**/{.orrery,x}/*" })).toEqual(blocked);
+	});
+
+	it("a plain pi folder gets it", async () => {
+		const { root, config, plain, memory, key } = plainWorld();
+		const run = await pi(root, plain, config);
+		expect(run.tool("zoom")).toBeUndefined();
+		expect(run.notices).toEqual([]);
+		// Orrery's memory and settings, its commands that change them, and the session records it checks prompts against.
+		const read = await call(run, "read", { path: memory });
+		expect(read).toMatch(/sensitive/);
+		expect(read).not.toContain("hidden-value");
+		const planted = join(root, "data", "planted.txt");
+		expect(await call(run, "write", { path: planted, content: "planted" })).toMatch(/sensitive/);
+		expect(existsSync(planted)).toBe(false);
+		expect(await call(run, "write", { path: join(root, "data", "config.toml"), content: "planted" })).toMatch(/Orrery's config/);
+		expect(await call(run, "bash", { command: "echo orrery restore Atlas" })).toMatch(/can't run from a session that is no agent's/);
+		expect(await call(run, "bash", { command: "echo scratch/.claude/projects" })).toMatch(/session records/);
+		// Everything else, as in plain pi: .env files, keys under home, writes outside the folder.
+		expect(await call(run, "read", { path: ".env" })).toContain("KEY=plain-value");
+		expect(await call(run, "bash", { command: "cat .env" })).toContain("KEY=plain-value");
+		expect(await call(run, "read", { path: key })).toContain("fake key");
+		const elsewhere = join(root, "agent-Birch", "from-plain.txt");
+		await call(run, "write", { path: elsewhere, content: "written" });
+		expect(readFileSync(elsewhere, "utf8")).toBe("written");
+	}, 20_000);
+
+	it("a plain OMP folder gets it too, its language server's edits pass, and a move into an agent's folder gets that agent's guard", async () => {
+		const { root, config, plain, memory } = plainWorld();
+		const host = await ompOrrery(plain, config);
+		const tool = async (toolName: string, input: object) => (await host.emit("tool_call", { toolName, toolCallId: "t1", input }))[0];
+		const refused = (reason: RegExp) => ({ block: true, reason: expect.stringMatching(reason) });
+		expect(host.notices).toEqual([]);
+		expect(await tool("read", { path: memory })).toEqual(refused(/sensitive/));
+		expect(await tool("eval", { language: "sh", code: "echo orrery restore Atlas" })).toEqual(refused(/no agent's/));
+		expect(await tool("edit", { path: join(root, "data", "config.toml"), edits: [{ oldText: "x", newText: "y" }] })).toEqual(refused(/Orrery's config/));
+		const escape = `${root}-escape.txt`;
+		for (const input of [{ path: escape, content: "x" }, { path: ".env", content: "x" }]) expect(await tool("write", input)).toBeUndefined();
+		expect(await tool("read", { path: ".env" })).toBeUndefined();
+		// A symbol rename names no file: in a session that is no agent's, the language server edits the project it has open.
+		expect(await tool("lsp", { action: "rename", file: "a.ts", line: 1, symbol: "a", new_name: "b" })).toBeUndefined();
+		expect(await tool("lsp", { action: "rename_file", file: "a.ts", new_name: join(root, "data", "a.ts") })).toEqual(refused(/sensitive/));
+		// Moved into Atlas's folder (OMP's /move): Atlas's guard from the next message on.
+		host.cwd = join(root, "agent-Atlas");
+		await host.emit("before_agent_start", { systemPrompt: [] });
+		expect(await tool("write", { path: escape, content: "x" })).toEqual(refused(/outside this agent's folder/));
+		expect(await tool("lsp", { action: "rename", file: "a.ts", line: 1, symbol: "a", new_name: "b" })).toEqual(refused(/language server/));
+		// And back out: Orrery's own rules again.
+		host.cwd = plain;
+		await host.emit("before_agent_start", { systemPrompt: [] });
+		expect(await tool("write", { path: escape, content: "x" })).toBeUndefined();
+		expect(await tool("read", { path: memory })).toEqual(refused(/sensitive/));
+	});
+
+	/** The plain world with a memory view in each agent's folder (Claude Code's file mode keeps it there). */
+	function viewsWorld() {
+		const made = plainWorld();
+		const view = (name: string) => join(made.root, `agent-${name}`, ".orrery", "view.md");
+		for (const name of ["Atlas", "Birch"]) {
+			mkdirSync(join(view(name), ".."), { recursive: true });
+			writeFileSync(view(name), `${name}'s view: hidden-value`);
+		}
+		return { ...made, atlasView: view("Atlas"), birchView: view("Birch") };
+	}
+
+	it("a plain pi folder reads no agent's memory view, and the rest of the agents' folders as before", async () => {
+		const { root, config, plain, atlasView, birchView } = viewsWorld();
+		symlinkSync(birchView, join(plain, "notes.md"));
+		const run = await pi(root, plain, config);
+		for (const [name, args] of [
+			["read", { path: atlasView }],
+			["read", { path: "notes.md" }],
+			["edit", { path: birchView, edits: [{ oldText: "hidden-value", newText: "planted" }] }],
+			["bash", { command: `cat ${atlasView}` }],
+		] as [string, Parameters<typeof fauxToolCall>[1]][]) {
+			const text = await call(run, name, args);
+			expect([name, args, text]).toEqual([name, args, expect.stringMatching(/sensitive|memory view/)]);
+			expect(text).not.toContain("hidden-value");
+		}
+		expect(readFileSync(birchView, "utf8")).toBe("Birch's view: hidden-value");
+		expect(await call(run, "read", { path: join(root, "agent-Atlas", "AGENTS.md") })).toContain("You are Atlas.");
+	}, 20_000);
+
+	it("a plain OMP folder searches no folder that holds an agent's view, and lists it", async () => {
+		const { root, config, plain } = viewsWorld();
+		const host = await ompOrrery(plain, config);
+		const tool = async (toolName: string, input: object) => (await host.emit("tool_call", { toolName, toolCallId: "t1", input }))[0];
+		const atlas = join(root, "agent-Atlas");
+		for (const toolName of ["grep", "ast_grep"]) {
+			expect([toolName, await tool(toolName, { pattern: "hidden", path: atlas })]).toEqual([toolName, { block: true, reason: expect.stringMatching(/memory view/) }]);
+		}
+		expect(await tool("glob", { pattern: "**/*.md", path: atlas })).toBeUndefined();
+		expect(await tool("read", { path: join(atlas, "AGENTS.md") })).toBeUndefined();
+		expect(await tool("grep", { pattern: "x", path: plain })).toBeUndefined();
+	});
 });
 
 describe("pi: [guard] protect and .env files", () => {

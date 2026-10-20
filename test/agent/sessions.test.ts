@@ -19,6 +19,7 @@ import {
 	liveSession,
 	nestedNotice,
 	processStart,
+	recordedPlain,
 	recordSession,
 	type SessionDeps,
 	type SessionTool,
@@ -747,6 +748,36 @@ describe("nestedNotice", () => {
 		expect(nestedNotice(inside(undefined, "pi"))).toBe("Orrery: started inside an agent's session (pi), so this one opens no memory and records nothing.");
 		expect(nestedNotice(inside("Birch", undefined))).toBe("Orrery: started inside Birch's session, so this one opens no memory and records nothing.");
 		expect(nestedNotice(inside(undefined, undefined))).toBe("Orrery: started inside an agent's session, so this one opens no memory and records nothing.");
+	});
+
+	it("started inside a coding tool's session that is no agent's (`plain`, spec 2026-10-19-no-agent-sessions §4c): names that tool", () => {
+		const plain = (tool: string): Inside => ({ agent: undefined, tool: undefined, via: "ancestry", dataDir: "/data", plain: tool });
+		expect(nestedNotice(plain("claude"))).toBe("Orrery: started inside a Claude Code session that is no agent's, so this one opens no memory and records nothing.");
+		expect(nestedNotice(plain("codex"))).toBe("Orrery: started inside a Codex session that is no agent's, so this one opens no memory and records nothing.");
+		expect(nestedNotice(plain("pi"))).toBe("Orrery: started inside a pi session that is no agent's, so this one opens no memory and records nothing.");
+		// "an" before a vowel, as the CLI's refusal says it (src/cli/gate.ts).
+		expect(nestedNotice(plain("opencode"))).toBe("Orrery: started inside an OpenCode session that is no agent's, so this one opens no memory and records nothing.");
+		expect(nestedNotice(plain("omp"))).toBe("Orrery: started inside an OMP session that is no agent's, so this one opens no memory and records nothing.");
+		expect(nestedNotice(plain("gemini"))).toBe("Orrery: started inside a Gemini session that is no agent's, so this one opens no memory and records nothing.");
+	});
+
+	it("recordedPlain reads a decision record's `plain` and `variable`, or calls the record unreadable", () => {
+		expect(recordedPlain({})).toEqual({});
+		expect(recordedPlain({ plain: "claude" })).toEqual({ plain: "claude" });
+		expect(recordedPlain({ plain: "codex", variable: "CODEX_THREAD_ID" })).toEqual({ plain: "codex", variable: "CODEX_THREAD_ID" });
+		for (const value of [{ plain: "Claude" }, { plain: 1 }, { variable: "CLAUDECODE" }, { plain: "claude", variable: "HOME" }, { plain: "claude", variable: 2 }]) {
+			expect(recordedPlain(value), JSON.stringify(value)).toBe("unreadable");
+		}
+	});
+
+	it("found by a variable (not a process): names it, and where the README says what to do about one left over", () => {
+		const marked = (tool: string, variable: string): Inside => ({ agent: undefined, tool: undefined, via: "marker", dataDir: "/data", plain: tool, variable });
+		expect(nestedNotice(marked("claude", "CLAUDECODE"))).toBe(
+			'Orrery: started inside a Claude Code session that is no agent\'s (found CLAUDECODE; see "Leftover markers" in the README), so this one opens no memory and records nothing.',
+		);
+		expect(nestedNotice(marked("opencode", "OPENCODE_SESSION_ID"))).toBe(
+			'Orrery: started inside an OpenCode session that is no agent\'s (found OPENCODE_SESSION_ID; see "Leftover markers" in the README), so this one opens no memory and records nothing.',
+		);
 	});
 });
 

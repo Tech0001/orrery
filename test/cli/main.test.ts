@@ -1,12 +1,14 @@
 import { execFileSync, type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { addUnconfirmed } from "../../src/claude/transcript.ts";
 import { statusCommand } from "../../src/cli/commands.ts";
+import { noAgentText } from "../../src/cli/gate.ts";
 import { parseConfig } from "../../src/agent/config.ts";
 import { runningRoot, versionLine, versionNumber } from "../../src/agent/running.ts";
-import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
+import { forgetSession, recordSession, type ToolSession } from "../../src/agent/sessions.ts";
 import { localIso, MemoryStore } from "../../src/memory/index.ts";
 import { cliCommand } from "../claude/support.ts";
 import { agentConfigToml, tempDir } from "../agent/support.ts";
@@ -154,6 +156,98 @@ describe("orrery", () => {
 		}
 		// Outside it again: every command runs (remote key fails on its own, naming the missing remote).
 		expect(run(["remote", "key", "home"]).stderr).not.toContain("inside an agent session");
+	});
+
+	it("status in a tool session prints the exact line, and nothing else", () => {
+		// What `orrery status` and `orrery usage` print in a coding tool's session that is no agent's (src/cli/gate.ts).
+		const claude: ToolSession = { tool: "claude", via: "ancestry", pid: 4242 };
+		expect(noAgentText("status", claude, false)).toBe("This is a Claude Code session that is no agent's (process 4242), so it shows no agent. Run orrery status in your own terminal or the TUI.\n");
+		expect(noAgentText("usage", claude, false)).toBe("This is a Claude Code session that is no agent's (process 4242), so it shows no agent. Run orrery usage in your own terminal or the TUI.\n");
+		const marker: ToolSession = { tool: "codex", via: "marker", variable: "CODEX_THREAD_ID" };
+		expect(noAgentText("status", marker, false)).toBe("This is a Codex session that is no agent's (found CODEX_THREAD_ID), so it shows no agent. Run orrery status in your own terminal or the TUI.\n");
+		expect(noAgentText("status", { tool: "opencode", via: "ancestry", pid: 9 }, false)).toBe("This is an OpenCode session that is no agent's (process 9), so it shows no agent. Run orrery status in your own terminal or the TUI.\n");
+	});
+
+	it("--json gives agents [] and session", () => {
+		for (const command of ["status", "usage"] as const) {
+			expect(JSON.parse(noAgentText(command, { tool: "claude", via: "ancestry", pid: 4242 }, true)), command).toEqual({ agents: [], session: { tool: "claude", noAgent: true } });
+			expect(JSON.parse(noAgentText(command, { tool: "codex", via: "marker", variable: "CODEX_SANDBOX" }, true)), command).toEqual({ agents: [], session: { tool: "codex", noAgent: true } });
+		}
+	});
+
+	it("status shows the tool an open agent runs in (openIn over tool)", () => {
+		const dir = tempDir("orrery-main-");
+		dirs.push(dir);
+		// Set up for pi, opened in Codex.
+		const config = parseConfig(agentConfigToml({ dataDir: join(dir, "data"), folder: join(dir, "ws"), extra: 'tool = "pi"\n' }), dir);
+		const agentDir = config.agents.get("Test")!.dir;
+		mkdirSync(agentDir, { recursive: true });
+		expect(statusCommand(config)).toMatch(/^Test\s+closed\s+pi\s/);
+		const status = (busy: boolean) => ({
+			agent: "Test", pid: process.pid, open: true, busy, model: "codex", thinking: "off",
+			compactor: { stopped: false, failing: 0, model: "a/b", thinking: "off", source: "config" }, trouble: null, lastError: null, updatedAt: localIso(),
+		});
+		writeFileSync(join(agentDir, "status.json"), JSON.stringify(status(false)));
+		expect(statusCommand(config)).toMatch(/^Test\s+open\s+Codex\s/);
+		writeFileSync(join(agentDir, "status.json"), JSON.stringify(status(true)));
+		expect(statusCommand(config)).toMatch(/^Test\s+working\s+Codex\s/);
+		// --json keeps both: the tool set up, and the one it is open in.
+		expect(JSON.parse(statusCommand(config, undefined, { json: true })).agents[0]).toMatchObject({ tool: "pi", openIn: "codex", state: "working" });
+		// Closed again (its tool gone): the tool set up.
+		writeFileSync(join(agentDir, "status.json"), JSON.stringify({ ...status(false), open: false }));
+		expect(statusCommand(config)).toMatch(/^Test\s+closed\s+pi\s/);
+	});
+
+	it("reads its config once, in the gate, and never again after it", async () => {
+		const dir = tempDir("orrery-main-");
+		dirs.push(dir);
+		// A config that can be read once: a second read would wait for a writer that never comes.
+		const fifo = join(dir, "config.toml");
+		expect(spawnSync("mkfifo", [fifo]).status).toBe(0);
+		const text = agentConfigToml({ dataDir: join(dir, "data"), folder: join(dir, "ws") });
+		const writer = spawn("sh", ["-c", 'printf "%s" "$CONFIG" > "$0"', fifo], { env: { ...process.env, CONFIG: text }, stdio: "ignore" });
+		const c = cliCommand(["status", "--config", fifo]);
+		const run = spawn(c.cmd, c.args, { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+		let stdout = "";
+		let stderr = "";
+		run.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
+		run.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+		const stop = setTimeout(() => run.kill(), 15_000);
+		const [code] = (await once(run, "close")) as [number | null];
+		clearTimeout(stop);
+		writer.kill();
+		expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+		expect(stdout).toMatch(/^Test\s+closed/);
+	}, 20_000);
+
+	it("the program under a parent process named claude still runs status normally against a scratch home", () => {
+		const dir = tempDir("orrery-main-");
+		dirs.push(dir);
+		const configPath = join(dir, "config.toml");
+		writeFileSync(configPath, agentConfigToml({ dataDir: join(dir, "data"), folder: join(dir, "ws") }));
+		mkdirSync(join(dir, "home"));
+		const env = { ...process.env, HOME: join(dir, "home"), ORRERY_HOME: join(dir, "home", ".orrery"), ORRERY_CONFIG: "" };
+		// A scratch waiting helper named claude: it runs its arguments as its child and waits, as a coding tool runs a
+		// command; Linux names a script's process after the script, and macOS's ps shows it as sh's script.
+		const claude = join(dir, "bin", "claude");
+		mkdirSync(dirname(claude));
+		writeFileSync(claude, '#!/bin/sh\n"$@"\nexit $?\n', { mode: 0o755 });
+		// It is a coding tool's session to the lookup: a child of it finds it, by its process.
+		const sessions = new URL("../../src/agent/sessions.ts", import.meta.url).pathname;
+		const code = `import(${JSON.stringify(sessions)}).then((m) => process.stdout.write(JSON.stringify(m.toolSession({}))))`;
+		const probe = spawnSync(claude, [process.execPath, ...(process.versions.bun === undefined ? ["--disable-warning=ExperimentalWarning"] : []), "-e", code], { encoding: "utf8", env });
+		expect(probe.stderr).toBe("");
+		expect(JSON.parse(probe.stdout)).toEqual({ tool: "claude", via: "ancestry", pid: probe.pid });
+		// The command touches only the scratch home: it runs as anywhere else.
+		const run = (args: string[]) => {
+			const c = cliCommand([...args, "--config", configPath]);
+			return spawnSync(claude, [c.cmd, ...c.args], { encoding: "utf8", env });
+		};
+		const status = run(["status"]);
+		expect([status.status, status.stderr]).toEqual([0, ""]);
+		expect(status.stdout).toMatch(/^Test\s+closed/);
+		expect(JSON.parse(run(["status", "--json"]).stdout).agents.map((row: { name: string }) => row.name)).toEqual(["Test"]);
+		expect(run(["usage"]).stdout).toBe("No usage recorded.\n");
 	});
 
 	it("strips control sequences from status.json text", () => {

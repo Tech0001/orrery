@@ -190,7 +190,9 @@ which also lets Claude Code open the agent in any folder. Codex needs nothing in
 instructions on Codex's command line and writes nothing to `~/.codex`. A plain `codex` is not an agent's session.
 Neither does OpenCode: `orrery agent Atlas --tool opencode` (or the agent's tool set to `opencode`) starts
 `opencode --standalone` with Orrery's plugin for that launch, after checking once per OpenCode version that the plugin
-loads, and writes nothing to OpenCode's config. A plain `opencode` is not an agent's session either.
+loads, and writes nothing to OpenCode's config. A plain `opencode` is not an agent's session either. Inside a plain
+session of any coding tool, `orrery` reads no agent's memory and changes nothing; see
+[Sessions that are no agent's](#sessions-that-are-no-agents).
 
 The Claude Code desktop app works too: after `orrery claude-setup <Name>`, start a session in the agent's folder, and
 the app's Claude Code records it and loads the memory (tested with the Linux app). Claude Code on the web runs in the
@@ -206,7 +208,12 @@ itself and the agents it may read; and `compactor` for the agent itself, choosin
 servers already saved. Everything else, the TUI included, is refused there with a message: the person runs it in
 their own terminal or the TUI (see [Safety](#safety)).
 
-Outside an agent's session, start here:
+**In any other coding tool's session** (Claude Code, Codex, OpenCode, pi, OMP or another coding tool started outside
+the person's agents), `orrery` runs only `help`, `--version`, `status` and `usage`, and those show no agent.
+Everything else is refused there with a message (see [Sessions that are no agent's](#sessions-that-are-no-agents)):
+ask the person to run the commands below in their own terminal, and to share what you need.
+
+In the person's own terminal, start here:
 
 | To | Run |
 | --- | --- |
@@ -238,7 +245,9 @@ that names one to a file (`git commit -F`). So are shell commands that name Clau
 config (`opencode.json`, a `.opencode` folder, OpenCode's own folders) or a skills folder (`.claude/skills`,
 `.agents/skills`): read those with your file tools. You can't write OpenCode's config, so ask the person to set up
 OpenCode for a project; skills you may write with your file tools, with plain YAML front matter. Your own memory has
-its own tools: `zoom`, `date` and `search` (`memory_search` in OMP; in Codex, from the `orrery` MCP server).
+its own tools: `zoom`, `date` and `search` (`memory_search` in OMP; in Codex, from the `orrery` MCP server). In a
+session that is no agent's, the guard keeps only Orrery's own files, the session records and Orrery's commands from
+you; see [Sessions that are no agent's](#sessions-that-are-no-agents).
 
 ## Memory that follows you
 
@@ -284,7 +293,8 @@ deletes `~/.orrery`, after you type `delete`.
 
 The install script also takes `--yes` (answer every question yes; with no terminal and no `--yes`, it skips the
 questions, lists them and exits non-zero), `ORRERY_VERSION` (a specific release) and `ORRERY_HOME` (somewhere other
-than `~/.orrery`; set it in your shell profile too, since every `orrery` run and coding tool reads it):
+than `~/.orrery`, as an absolute path; set it in your shell profile too, since every `orrery` run and coding tool
+reads it):
 `curl -fsSL … | ORRERY_VERSION=0.6.0 sh -s -- --yes`.
 
 ## How it works
@@ -348,8 +358,9 @@ refused.
 
 If `config.toml` cannot be read, pi and OMP sessions keep the built-in rules, and its `[guard] protect` when that part
 of the file reads cleanly; if it does not (the TOML is broken around it, or an entry is refused), they refuse every
-tool call until the config is fixed, as Claude Code does for any config it cannot read. A `[guard] protect` that lists
-nothing, as a new config has it, counts as no entries even when the TOML is broken elsewhere.
+tool call until the config is fixed, as Claude Code does for any config it cannot read (in every Claude Code session,
+an agent's or not). A `[guard] protect` that lists nothing, as a new config has it, counts as no entries even when the
+TOML is broken elsewhere.
 
 **Agents can't change memory or settings from their shell.** Inside an agent's session, the `orrery` command runs
 only:
@@ -381,6 +392,10 @@ starts from its shell opens no memory, records nothing and says so (`Orrery: sta
 this one opens no memory and records nothing.`). Its guard keeps that agent's rules, and both agents' at once when it
 runs in another agent's folder. Its prompts come from the agent, not from you, so they never enter memory as your
 words. `orrery run` and `orrery agent` are refused there.
+
+**Coding tools outside your agents get the same limits.** A Claude Code in another project, a plain `codex`, or any
+other coding tool's session that is no agent's can't read or change Orrery's memory or settings through `orrery`, and
+a tool it starts opens no memory: see [Sessions that are no agent's](#sessions-that-are-no-agents).
 
 **Prompts are checked against the tool's own record.** Claude Code and Codex record through hooks, which are commands
 any program of yours could run, so Orrery checks what they say. In Claude Code, a hook counts only when Claude Code
@@ -421,7 +436,9 @@ through its shell, one plain `cat`, `head`, `tail`, `sed -n`, `ls` or `wc` of sk
 `.claude/settings.json` stay writable.
 
 **It is a guard, not a sandbox.** It checks file paths and the text of shell commands, so a determined program can get
-around it; the [architecture guide](docs/architecture.md#the-credential-guard) lists the known limits, and
+around it: shell text that spells Orrery's home with a wildcard (`ls -d ~/.orr*`), a recursive shell command rooted
+above it (`find ~`, `grep -r`), a name built at run time or a script still reaches Orrery's files, in every session.
+The [architecture guide](docs/architecture.md#the-credential-guard) lists the known limits, and
 [Codex's](docs/codex.md#its-limits-in-codex) and [OpenCode's](docs/opencode.md#its-limits-in-opencode) guides the ones
 that are their own. The session rules above are a seatbelt too: an agent that deliberately detaches a process from
 its session, clears or sidesteps its markers (pointing `ORRERY_CONFIG` at a scratch config, say) and hides Orrery's
@@ -432,24 +449,143 @@ records. Only an operating-system sandbox closes that; the
 Logins are kept in private files (mode 0600), never in the config. Your agents' memory on disk is not encrypted;
 copies sent to a remote are. Model providers see whatever context is sent to them, memory included.
 
+### Sessions that are no agent's
+
+A coding tool you start outside your agents is a session that is no agent's: Claude Code in another project (the
+desktop app's too), a plain `codex`, `opencode`, `pi` or `omp`, or another coding tool. Its shell runs as you, so
+without a check it could read any agent's memory with `orrery browse`, or plant made-up messages with `orrery import`.
+So there `orrery` reads no agent's memory and changes nothing.
+
+**Who counts.** Orrery looks above the command for a coding tool's program: `claude`, `codex`, `opencode`, `pi`,
+`omp`, `gemini`, `qwen`, `cursor-agent`, `aider`, `goose`, `amp`, `crush`, `droid` or `copilot` (also a script of that
+name run by Node, Bun, Deno, Python, bash or sh). Wherever it finds no tool above (a chain cut by Codex's sandboxed
+shell or a detached process, or a variable left over), it looks for a variable the tool gives its shell: `CLAUDECODE`
+or `CLAUDE_CODE_ENTRYPOINT` (Claude Code), `CODEX_THREAD_ID`, `CODEX_SESSION_ID` or `CODEX_SANDBOX` (Codex),
+`OPENCODE` or `OPENCODE_SESSION_ID` (OpenCode), and `PI_CODING_AGENT` (pi). An agent's own session is told first, and keeps the rules in [Safety](#safety).
+
+**What runs there.** Only `help`, `--version`, `status` and `usage`, and those show no agent:
+
+```
+This is a Claude Code session that is no agent's (process 4242), so it shows no agent. Run orrery status in your own terminal or the TUI.
+```
+
+With `--json` they give no agents and the session's tool: `"agents": []` and `"session": {"tool": "claude",
+"noAgent": true}`. Everything else, the TUI included, is refused:
+
+```
+orrery browse can't run here: this is a Claude Code session that is no agent's (process 4242), and those can't read or change Orrery's memory or settings. Run it in your own terminal or the TUI.
+```
+
+When a variable found the session, the message says `found CLAUDECODE` (or the variable it found) in place of the
+process, and a refusal then points to [Leftover markers](#leftover-markers). The rule guards your real Orrery data:
+`~/.orrery` in your home folder as the system's user database records it (never `$HOME`), the data folder its config
+keeps elsewhere (`data_dir`), the logins and SSH keys that config names, and what `/etc/orrery/config.toml` names. A
+command that touches only a scratch home is not judged, so test suites that run `orrery` against scratch homes work from
+any session. Your own terminal and the TUI keep full access.
+
+**The guard there.** Claude Code's plugin runs the guard in every session, and pi's and OMP's extension in every
+folder, once Orrery has a config. In a session that is no agent's it keeps Orrery's own files only:
+
+- Orrery's home and data folder and its logins file: no reads or writes. Its config and installed program: read,
+  never written.
+- Where your agents' sessions load code from outside Orrery's home: pi's and OMP's extensions folders
+  (`~/.pi/agent/extensions`, `~/.omp/agent/extensions`, which hold Orrery's `orrery.ts` and load every file there),
+  and Claude Code's plugin copy, its marketplace folder and the records that name them
+  (`~/.claude/plugins/cache/orrery`, `plugins/marketplaces/orrery`, `known_marketplaces.json`,
+  `installed_plugins.json`): read by file tools, never written, and not named in shell text.
+- Every agent's memory view (`.orrery/view.md` in an agent's folder): not read or written.
+- Claude Code's and Codex's session records (`~/.claude/projects`, `~/.codex/sessions`): file tools may read them, no
+  tool writes them, and shell text may not name them.
+- Shell text that runs or names an `orrery` command other than `help`, `--version`, `status` and `usage`, or Orrery's
+  hook plumbing.
+- A search whose folder holds Orrery's home (one from your home folder, say), and a content search (grep) whose folder
+  holds an agent's memory view (a folder above your agents' folders, say): search a narrower folder.
+- In OMP, a language-server edit (a rename, an applied code action) when the session's folder, or the file it names,
+  holds or is inside Orrery's files.
+- A call too large to check (a Claude Code input over 1 MB, say) or that can't be checked in time.
+
+Nothing else: no folder limits, no `.env` or home-login rules, no `[guard] protect`. The session works with its own
+project's files as it did before. Plain Codex, OpenCode and the other tools that don't load Orrery's plugin get the
+command check only, with no guard: their shells and file tools can still read Orrery's files directly, and write them
+where their own sandbox allows.
+
+**Tools it starts open no memory.** A tool that such a session starts (a `claude -p` or `pi -p` in an agent's folder,
+say) opens no memory, records nothing and, in an agent's folder, says so:
+
+```
+Orrery: started inside a Claude Code session that is no agent's, so this one opens no memory and records nothing.
+```
+
+When a variable found the outer session, the notice names it: `… no agent's (found CLAUDECODE; see "Leftover markers"
+in the README), so …`. Its prompts come from that session, so they never enter memory as your words. In an agent's
+folder its guard keeps that agent's rules; anywhere else it is a session that is no agent's, with no notice. On Linux
+this holds for a tool of the same kind started detached or in the background too (`setsid claude -p …` from a plain
+Claude Code), with no tool above it: a tool started with `CLAUDECODE`, `PI_CODING_AGENT` or `CODEX_THREAD_ID` in its
+environment counts as started from that tool's session (the desktop app's own `claude` aside, and never by
+`CLAUDE_CODE_ENTRYPOINT`, which VS Code and the SDK set). Agents still open as before from your own terminal
+(`orrery agent`, or a tool started in an agent's folder), the TUI, Ori and the Claude Code desktop app; `orrery agent`
+and the TUI start the tool without any coding tool's variables.
+
+**`orrery status` names the tool an agent is open in.** While an agent is open or working, its line shows the tool it
+runs in (Codex, say), not the one it is set up for.
+
+**Limits.** These rules are a seatbelt, like the guard:
+
+- The guard reads command text. Shell text that spells Orrery's home with a wildcard (`ls -d ~/.orr*`), a recursive
+  shell command rooted above it (`find ~`, `grep -r`), a name built at run time or a script can still reach Orrery's
+  files, in agent sessions too.
+- An editor's built-in terminal (VS Code, Cursor, Zed and the like) is yours: an editor's own agent that runs commands
+  in it can't be told from you. A coding tool from the list above, run inside an editor, is still found.
+- An `orrery` command that both detaches from its tool (`setsid`, `systemd-run`, a new tmux server) and clears the
+  tool's variables is not found by the command check. In Claude Code, pi and OMP the guard still refuses shell text
+  that runs a refused `orrery` command.
+- A coding tool that such a session starts detached or in the background has no tool above it. On Linux it is found
+  by the variable it was started with (`CLAUDECODE`, `PI_CODING_AGENT` or `CODEX_THREAD_ID`, or any variable of another
+  tool); started with those cleared (`env -u CLAUDECODE setsid claude -p …`), it opens the folder's agent and records
+  its prompt as yours. On macOS a tool of the same kind started that way is not found even with its variable set, since
+  a tool's own variables count there only where its process chain is cut.
+- OMP and the tools without a variable above (Gemini, Qwen Code and the rest) are found by their program only: a
+  process detached from one of them is not found.
+- A session that is no agent's can still change your other files that run later in agents' sessions: shell profiles
+  (`~/.bashrc`), Claude Code's settings and hooks, systemd units, other programs. The guard keeps only Orrery's own
+  and the folders above, by their paths: a spelling it can't see (a relative path after a `cd`, a parent folder
+  replaced whole) gets through.
+- A scratch home whose files are hard links to your real memory files is not told from a scratch home (symbolic links
+  are followed).
+- An Orrery home kept outside `~/.orrery` (`ORRERY_HOME`) is not guarded by this rule. While `~/.orrery` also exists,
+  the agent sessions of that other home count as sessions that are no agent's.
+- With no entry for your user in the system's user database (some containers), Orrery can't tell which data is
+  yours, so it judges every command in a coding tool's session, agents' sessions included (it fails closed).
+
 ### Leftover markers
 
 `orrery` may refuse in a terminal of your own, saying `The session is known only by ORRERY_HOST` (or another of the
-variables below) and pointing here. The terminal carries an agent session's markers, though no agent's session runs
-above it. The usual cause is a tmux server first started from an agent's shell: tmux keeps the environment it started
-with as its global environment, so every pane you open later inherits that session's markers: `ORRERY_HOST`,
-`ORRERY_AGENT` and `ORRERY_AGENT_TOKEN`, `CLAUDE_PID` from Claude Code, `OPENCODE_CONFIG_CONTENT` from OpenCode, and
-`CODEX_THREAD_ID` from Codex (that refusal blames Codex's sandbox instead, but the fix is the same). Most count only
-while that agent's session runs; `ORRERY_AGENT` naming one of
-your agents, and an `OPENCODE_CONFIG_CONTENT` that carries Orrery's plugin, count for as long as they are set, so one
-set by hand in your shell profile does the same. Clear each variable the message names, in tmux and in the pane:
+variables below), or `this is a Claude Code session that is no agent's (found CLAUDECODE)`, and pointing here. The
+terminal carries a session's markers, though no such session runs above it. The usual cause is a tmux server first
+started from an agent's shell or a coding tool's: tmux keeps the environment it started with as its global
+environment, so every pane you open later inherits that session's markers:
+
+- an agent session's: `ORRERY_HOST`, `ORRERY_AGENT` and `ORRERY_AGENT_TOKEN`, `CLAUDE_PID` from Claude Code,
+  `OPENCODE_CONFIG_CONTENT` from OpenCode, and `CODEX_THREAD_ID` from Codex (that refusal blames Codex's sandbox
+  instead, but the fix is the same);
+- any coding tool's: `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT` from Claude Code, `CODEX_THREAD_ID`, `CODEX_SESSION_ID`
+  and `CODEX_SANDBOX` from Codex, `OPENCODE` and `OPENCODE_SESSION_ID` from OpenCode, and `PI_CODING_AGENT` from pi.
+
+Most of an agent session's markers count only while that session runs; `ORRERY_AGENT` naming one of your agents, and
+an `OPENCODE_CONFIG_CONTENT` that carries Orrery's plugin, count for as long as they are set, so one set by hand in your
+shell profile does the same. A coding tool's variable counts for as long as it is set: `orrery` there runs only `help`,
+`--version`, `status` and `usage`, and a coding tool you start there in an agent's folder opens no memory, with a
+notice that names the variable: any tool when the variable is another tool's (a `pi` in a pane that carries
+`CLAUDECODE`, say), and on Linux a tool of the same kind too when the variable is `CLAUDECODE`, `PI_CODING_AGENT` or
+`CODEX_THREAD_ID` (a `claude` in that pane). The tools `orrery agent` and the TUI start get none of these variables.
+Clear each variable the message names, in tmux and in the pane:
 
 ```bash
 tmux setenv -gu ORRERY_HOST   # tmux's global environment, for the panes you open later
 unset ORRERY_HOST             # this pane
 ```
 
-Or open a terminal outside that tmux server.
+The same goes for `CLAUDECODE` and the rest. Or open a terminal outside that tmux server.
 
 ## Development
 

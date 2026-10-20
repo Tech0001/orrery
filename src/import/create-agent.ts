@@ -5,10 +5,10 @@
  * the memory build. The source chats are never touched: only the preview is read.
  */
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { addAgent, editConfigFile } from "../agent/config-edit.ts";
-import { ConfigError, type HarnessConfig, agentNameProblem, type AgentTool, loadConfig, type ModelChoice } from "../agent/config.ts";
+import { addAgent, configText, editConfigOnce } from "../agent/config-edit.ts";
+import { agentNameProblem, type AgentTool, ConfigError, type ConfigFile, configFileOf, configOf, type ConfigSource, type HarnessConfig, type ModelChoice } from "../agent/config.ts";
 import { instructionsTemplate, readInstructions, writeInstructions } from "../agent/instructions.ts";
 import { MemoryStore } from "../memory/index.ts";
 import { commitPreview, type PreviewLine, readPreview } from "./preview.ts";
@@ -28,10 +28,11 @@ export interface NewAgentFromChat {
 export interface CreateSteps {
 	readonly writeInstructions: (agentDir: string, text: string) => void;
 	readonly commit: (store: MemoryStore, lines: readonly PreviewLine[]) => number;
-	readonly editConfig: (path: string, edit: (text: string, configDir: string) => string) => HarnessConfig;
+	/** Writes the config back: the file as it was read, while it is unchanged since (editConfigOnce). */
+	readonly editConfig: (file: ConfigFile, edit: (text: string, configDir: string) => string) => HarnessConfig;
 }
 
-const STEPS: CreateSteps = { writeInstructions, commit: commitPreview, editConfig: editConfigFile };
+const STEPS: CreateSteps = { writeInstructions, commit: commitPreview, editConfig: (file, edit) => configOf(editConfigOnce(file, edit)) };
 
 /** Whether anything (a file, a folder, a symlink, even a broken one) is at `path`. */
 function present(path: string): boolean {
@@ -70,14 +71,17 @@ interface ConfigEdit {
  * Adds the agent and fills its memory from the preview. Everything that can refuse (the name, the preview, a memory
  * store already in its data folder, a config that would not take it) is checked before anything is written. On a later
  * failure the folders and files this call made are removed, and the config and its .bak put back only while they hold
- * what this call wrote there; nothing that was there before, or that another process made meanwhile, is removed.
+ * what this call wrote there; nothing that was there before, or that another process made meanwhile, is removed. The
+ * config is `source` as read once (the TUI's, as its gate judged it), written back by editConfigOnce: in a coding tool's
+ * session only while that file is unchanged.
  */
-export function createFromPreview(configPath: string, request: NewAgentFromChat, steps: Partial<CreateSteps> = {}): { readonly agentDir: string; readonly messages: number } {
+export function createFromPreview(source: ConfigSource, request: NewAgentFromChat, steps: Partial<CreateSteps> = {}): { readonly agentDir: string; readonly messages: number } {
 	const step = { ...STEPS, ...steps };
 	const problem = agentNameProblem(request.name);
 	if (problem !== undefined) throw new ConfigError(problem);
 	const lines = readPreview(request.previewPath);
-	const config = loadConfig(configPath);
+	const file = configFileOf(source);
+	const config = configOf(file);
 	const agentDir = join(config.dataDir, "agents", request.name);
 	const block = (text: string, dir: string) =>
 		addAgent(text, dir, {
@@ -87,9 +91,9 @@ export function createFromPreview(configPath: string, request: NewAgentFromChat,
 			compactorModel: `${request.summary.provider}/${request.summary.modelId}`,
 			compactorThinking: request.summary.thinking,
 		});
-	// The config would take it (a free name, a valid block): asked of today's text before anything is written.
-	const configTarget = existsSync(configPath) ? realpathSync(configPath) : configPath;
-	block(textOf(configTarget) ?? "", dirname(configTarget));
+	// The config would take it (a free name, a valid block): asked of its text (configText) before anything is written.
+	const configTarget = file.id?.real ?? file.path;
+	block(configText(file) ?? "", dirname(file.path));
 	const refusal = storeRefusal(config.dataDir, request.name);
 	if (refusal !== undefined) throw new Error(refusal);
 	// The first folder mkdir made (undefined: the agent's data folder was there): what a failure takes away, and no more.
@@ -105,7 +109,7 @@ export function createFromPreview(configPath: string, request: NewAgentFromChat,
 		} finally {
 			store.close();
 		}
-		step.editConfig(configPath, (text, dir) => {
+		step.editConfig(file, (text, dir) => {
 			const wrote = block(text, dir);
 			// Read here, just before the save copies the config over it.
 			edit = { target: configTarget, from: text, wrote, bak: textOf(`${configTarget}.bak`) };

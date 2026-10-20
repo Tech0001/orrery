@@ -84,6 +84,12 @@ describe("orrery help", () => {
 		expect(all.stdout).toContain('An agent named "." (status, usage, browse, compactor, claude-setup)');
 		expect(all.stdout).toContain("Config: --config FILE, $ORRERY_CONFIG");
 		expect(all.stdout).toContain("Inside an agent's session (its shell, or a ! command typed in its tool) only help, --version,");
+		// The notes as one text, whatever the wrapping.
+		const text = all.stdout.replace(/\s+/g, " ");
+		expect(text).toContain("the agent it was opened as; elsewhere (in your own terminal) ORRERY_AGENT, else the agent whose folder holds the current folder.");
+		expect(text).toContain(
+			"In a coding tool's session that is no agent's (Claude Code, Codex, pi or another coding tool started outside your agents) only help, --version, status and usage run, and they show no agent; run the rest in your own terminal or the TUI.",
+		);
 	});
 
 	it("help <command> and <command> --help print every line of that command, and nothing runs", () => {

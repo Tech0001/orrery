@@ -6,9 +6,10 @@
  *   SessionStart, and read by every later event.
  * - They never write the store, and they return quickly: SessionEnd gets about 1.5 s.
  * - Subagent events (agent_id) are not memory.
- * - Outside an agent they print and write nothing. An ORRERY_AGENT that is refused (it names no agent, its token is
- *   malformed, the folder is another agent's set up the file way, or the process's decision could not be recorded or is
- *   missing) gets a notice at SessionStart, records nothing, and keeps the guard.
+ * - Outside an agent they write nothing, and print nothing but PreToolUse's refusals: there the guard keeps Orrery's
+ *   own rules (preToolUse, spec 2026-10-19-no-agent-sessions §3). An ORRERY_AGENT that is refused (it names no agent, its
+ *   token is malformed, the folder is another agent's set up the file way, or the process's decision could not be
+ *   recorded or is missing) gets a notice at SessionStart, records nothing, and keeps the guard.
  * - They record only where `orrery claude-setup` ran: in mod mode in any folder, in file mode for the agent's
  *   folder. In any other agent they start no holder and spool nothing, SessionStart says the session is not recorded,
  *   and the guard still applies.
@@ -16,6 +17,9 @@
  *   src/claude/pick.ts), or whose CLAUDE_PID is not its own (claudeHookPid), opens no memory and records nothing:
  *   SessionStart says why (not again at a compaction), nothing is spooled, no holder starts, and the guard keeps the
  *   outer agent's rules, never looser than the folder's own (src/agent/nested-rules.ts).
+ * - So does one started from a coding tool's session that is no agent's (spec 2026-10-19-no-agent-sessions §4c,
+ *   src/agent/plain-nested.ts), with the guard of the agent whose folder it runs in. In a folder that is no agent's it
+ *   is a plain session (plainHere): Orrery's own guard alone, and SessionStart says nothing unless ORRERY_AGENT is set.
  * - One whose process can't be confirmed at SessionStart (its start time can't be read) opens no memory either, and its
  *   SessionStart marks the session read-only for the agent it would be (markUnconfirmed): its later events are not
  *   spooled, no holder takes them in, and a later SessionStart of the session in the same process starts none, even
@@ -43,8 +47,10 @@ import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { type HarnessConfig, type AgentConfig, agentForCwd } from "../agent/config.ts";
 import { agentViews, GuardCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials } from "../agent/guard-paths.ts";
+import { orreryHome } from "../agent/home.ts";
 import { cutNotice, readInstructions } from "../agent/instructions.ts";
 import { nestedRules, type WriteRules } from "../agent/nested-rules.ts";
+import { opensHere, type PlainDeps } from "../agent/plain-nested.ts";
 import { AGENT_ENV, agentNamed, workArea } from "../agent/pick.ts";
 import { writePrivate } from "../agent/private-file.ts";
 import { processAlive } from "../agent/process.ts";
@@ -134,6 +140,8 @@ export interface HookContext {
 	readonly hostUnverified?: boolean;
 	/** How Claude Code's start time is read (default processStart, src/agent/sessions.ts); tests pass their own. */
 	readonly processStart?: (pid: number) => string | undefined;
+	/** How a coding tool's session that is no agent's is looked for (src/agent/plain-nested.ts); tests pass their own. */
+	readonly plain?: PlainDeps;
 	/**
 	 * Who is on the other end of the hook's stdin (default stdinPeer, src/claude/peer.ts): asked by writing hooks only. The
 	 * CLI asks before it reads stdin and passes the answer; tests pass their own.
@@ -174,8 +182,22 @@ interface Here {
  */
 function pickFor(ctx: HookContext, projectDir: string, start = false): ClaudePicked {
 	if (ctx.hostUnverified === true) return { kind: "nested", outer: undefined, tool: undefined };
-	return claudeSession(ctx.config, { env: ctx.env, cwd: projectDir, pid: ctx.claudePid, decide: start, ...(ctx.processStart === undefined ? {} : { start: ctx.processStart }) });
+	return claudeSession(ctx.config, {
+		env: ctx.env,
+		cwd: projectDir,
+		pid: ctx.claudePid,
+		decide: start,
+		...(ctx.processStart === undefined ? {} : { start: ctx.processStart }),
+		...(ctx.plain === undefined ? {} : { plain: ctx.plain }),
+	});
 }
+
+/**
+ * Whether `pick` is a session that is no agent's in `projectDir`: none, or one started from a coding tool's session that
+ * is no agent's, in a folder that is no agent's (src/agent/plain-nested.ts), which is a plain one there.
+ */
+const plainHere = (pick: ClaudePicked, config: HarnessConfig, projectDir: string): boolean =>
+	pick.kind === "none" || (pick.kind === "nested" && pick.plain !== undefined && agentForCwd(config, projectDir) === undefined);
 
 function pickHere(input: HookInput, ctx: HookContext, start = false): { readonly pick: ClaudePicked; readonly projectDir: string } | undefined {
 	const projectDir = ctx.env.CLAUDE_PROJECT_DIR || (typeof input.cwd === "string" ? input.cwd : undefined);
@@ -432,7 +454,11 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	const { pick, projectDir } = picked;
 	if (pick.kind === "none") return undefined;
 	// Started inside an agent's session: said to the person, once a session (not again at a compaction); nothing recorded.
-	if (pick.kind === "nested") return input.agent_id === undefined && input.source !== "compact" ? { systemMessage: claudeRefusedNotice(pick) } : undefined;
+	// One started from a coding tool's session that is no agent's says so only where an agent would have opened.
+	if (pick.kind === "nested") {
+		if (pick.plain !== undefined && !opensHere(ctx.config, ctx.env, projectDir)) return undefined;
+		return input.agent_id === undefined && input.source !== "compact" ? { systemMessage: claudeRefusedNotice(pick) } : undefined;
+	}
 	// A process that can't be confirmed: the session is marked not recorded, so nothing of it is, whatever comes later.
 	if (pick.kind === "unconfirmed") {
 		if (input.agent_id === undefined) markUnconfirmed(input.session_id, projectDir, ctx);
@@ -565,56 +591,80 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: `Orrery guard: ${reason}` } });
 
 /**
- * A PreToolUse input over TOOL_INPUT_MAX, refused unread: wherever the guard runs (an agent's session, or a refused
- * ORRERY_AGENT's, by CLAUDE_PROJECT_DIR), and when Claude Code does not say where the call runs, since only the unread
- * input would.
+ * A PreToolUse input over TOOL_INPUT_MAX, refused unread, in every session: an agent's, a refused ORRERY_AGENT's, one
+ * that is no agent's (spec 2026-10-19-no-agent-sessions §3), and one Claude Code does not say the folder of.
  */
-function unreadToolCall(ctx: HookContext): object | undefined {
-	const projectDir = ctx.env.CLAUDE_PROJECT_DIR;
-	try {
-		if (projectDir && pickFor(ctx, projectDir).kind === "none") return undefined;
-	} catch (error) {
-		// A pick that cannot be made is no proof the folder is no agent's.
-		return deny(`this call could not be checked (${errorText(error)}).`);
-	}
+function unreadToolCall(): object {
 	return deny("this call's input is over 1 MB, too long to check; nothing was run.");
 }
 
 /**
- * The guard (spec §4 PreToolUse): every tool call of an agent's session, subagents' too, whatever the memory's mode. It
- * may write where the session works (workArea: the agent's folder, or the folder it was opened in) and the agent's
- * allowed roots, and Claude Code's own state (claudeStateRoots). A session whose ORRERY_AGENT was refused keeps the
- * guard with the rules of the agent whose folder it runs in, or outside agents those of an agent with no folder (its own
- * folder, no allowed roots), as pi's refusedGuard does. No session reads another agent's memory view file (agentViews):
- * a refused one is no agent's, so every agent's view is another's. A call it cannot judge is refused, since a hook that
- * crashed would let it through: the pick too (the folder's agent, the process's decision) is made inside the check.
+ * The guard (spec §4 PreToolUse): every tool call of every session, subagents' too, whatever the memory's mode. In an
+ * agent's session it may write where the session works (workArea: the agent's folder, or the folder it was opened in)
+ * and the agent's allowed roots, and Claude Code's own state (claudeStateRoots). A session whose ORRERY_AGENT was refused
+ * keeps the guard with the rules of the agent whose folder it runs in, or outside agents those of an agent with no folder
+ * (its own folder, no allowed roots), as pi's refusedGuard does. No such session reads another agent's memory view file
+ * (agentViews): a refused one is no agent's, so every agent's view is another's. A session that is no agent's (the pick
+ * is none) gets Orrery's own rules alone (GuardOptions.orreryOnly, spec 2026-10-19-no-agent-sessions §3): Orrery's home,
+ * its credentials file, config and installed program, every agent's memory view (agentViews with no agent), the session
+ * records, and Orrery's commands in shell text. A call it cannot judge is refused, since a hook that crashed would let
+ * it through: the pick too (the folder's agent, the process's decision) is made inside the check.
  */
 export function preToolUse(input: HookInput, ctx: HookContext): object | undefined {
 	let reason: string | undefined;
 	try {
 		const found = pickHere(input, ctx);
-		if (found === undefined || found.pick.kind === "none" || typeof input.tool_name !== "string") return undefined;
+		if (found === undefined || typeof input.tool_name !== "string") return undefined;
 		const { pick, projectDir } = found;
-		const rules = writeRules(pick, ctx.config, projectDir);
 		const toolInput = typeof input.tool_input === "object" && input.tool_input !== null ? (input.tool_input as Record<string, unknown>) : {};
 		const home = ctx.home ?? homedir();
-		reason = claudeGuard(input.tool_name, toolInput, {
+		const cwd = typeof input.cwd === "string" ? input.cwd : projectDir;
+		const configFile = ctx.configFile === undefined ? {} : { configFile: ctx.configFile };
+		if (plainHere(pick, ctx.config, projectDir)) {
 			// One guard call: the rules every path it names is judged by are worked out once (guard-paths.ts GuardCall).
-			call: new GuardCall(),
-			folder: rules.workArea,
-			allowedRoots: [...rules.allowedRoots, ...claudeStateRoots(projectDir, home, ctx.env)],
-			cwd: typeof input.cwd === "string" ? input.cwd : projectDir,
-			credentials: [ctx.config.credentialsPath, ...movedAgentDirCredentials(ctx.env, home), ...movedConfigDirCredentials(ctx.env), ...ompCredentials(ctx.env, home), ...openCodeCredentials(ctx.env, home)],
-			orreryData: ctx.config.dataDir,
-			home,
-			protect: ctx.config.guard.protect,
-			...agentViews(ctx.config, pick.kind === "agent" ? pick.agent : undefined),
-			...(ctx.configFile === undefined ? {} : { configFile: ctx.configFile }),
-		});
+			// Orrery's credentials file alone: the tools' own logins are no files of Orrery's. Every agent's view is
+			// another's: the session reads no agent's memory. The Orrery home the environment names, for its program.
+			reason = claudeGuard(input.tool_name, toolInput, {
+				call: new GuardCall(),
+				orreryOnly: true,
+				folder: projectDir,
+				allowedRoots: [],
+				cwd,
+				credentials: [ctx.config.credentialsPath],
+				orreryData: ctx.config.dataDir,
+				home,
+				...agentViews(ctx.config),
+				...configFile,
+				...namedHome({ ...ctx.env, HOME: home }),
+			});
+		} else {
+			const rules = writeRules(pick, ctx.config, projectDir);
+			reason = claudeGuard(input.tool_name, toolInput, {
+				call: new GuardCall(),
+				folder: rules.workArea,
+				allowedRoots: [...rules.allowedRoots, ...claudeStateRoots(projectDir, home, ctx.env)],
+				cwd,
+				credentials: [ctx.config.credentialsPath, ...movedAgentDirCredentials(ctx.env, home), ...movedConfigDirCredentials(ctx.env), ...ompCredentials(ctx.env, home), ...openCodeCredentials(ctx.env, home)],
+				orreryData: ctx.config.dataDir,
+				home,
+				protect: ctx.config.guard.protect,
+				...agentViews(ctx.config, pick.kind === "agent" ? pick.agent : undefined),
+				...configFile,
+			});
+		}
 	} catch (error) {
 		reason = `this call could not be checked (${errorText(error)}).`;
 	}
 	return reason === undefined ? undefined : deny(reason);
+}
+
+/** The Orrery home `env` names (orreryHome), for the guard of a session that is no agent's; none when it can't be read. */
+function namedHome(env: NodeJS.ProcessEnv): { readonly orreryHome?: string } {
+	try {
+		return { orreryHome: orreryHome(env) };
+	} catch {
+		return {}; // a relative ORRERY_HOME: no folder beside a config counts as Orrery's home
+	}
 }
 
 /**
@@ -638,7 +688,7 @@ export async function runHook(event: string, stdin: string | undefined, ctx: Hoo
 	if (!(HOOK_EVENTS as readonly string[]).includes(event)) throw new Error(`unknown hook event ${event}; expected one of ${HOOK_EVENTS.join(", ")}`);
 	// Before parsing: what the hook does not keep, it does not read.
 	if (stdin === undefined || Buffer.byteLength(stdin) > hookInputMax(event)) {
-		const output = event === "pre-tool-use" ? unreadToolCall(ctx) : undefined;
+		const output = event === "pre-tool-use" ? unreadToolCall() : undefined;
 		return output === undefined ? "" : JSON.stringify(output);
 	}
 	let input: HookInput;

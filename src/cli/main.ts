@@ -9,7 +9,8 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
 import type { ReaderTool } from "../agent/memory-tools.ts";
 import type { Inside } from "../agent/sessions.ts";
-import { defaultConfigPath, findAgent, type HarnessConfig, type AgentConfig, loadConfig } from "../agent/config.ts";
+import type { Gated } from "./gate.ts";
+import { type AgentConfig, type ConfigFile, defaultConfigPath, findAgent, type HarnessConfig, loadConfig } from "../agent/config.ts";
 import { armCodexGuard, CODEX_GUARD_DEADLINE_MS, isCodexGuard } from "../codex/guard-exit.ts";
 import { exitWhenFlushed } from "./exit.ts";
 import { allHelp, commandHelp, isCommand, shortHelp, UsageError } from "./help.ts";
@@ -72,12 +73,15 @@ async function toolsCommand(positionals: string[], values: { json?: boolean; yes
 
 const say = (line: string) => process.stdout.write(`${line}\n`);
 
-/** `orrery setup [--yes]`: wires the orrery command, pi, OMP, Claude Code and the backup service to app/current. 1 when something is left. */
-async function setupCommand(values: { yes?: boolean }): Promise<number> {
+/**
+ * `orrery setup [--yes]`: wires the orrery command, pi, OMP, Claude Code and the backup service to app/current. 1 when
+ * something is left. `config`: the config the gate read and judged, which the [guard] example goes to.
+ */
+async function setupCommand(values: { yes?: boolean }, config: ConfigFile): Promise<number> {
 	const [{ existsSync }, { orreryHome }, { wireReport, leftWarning }, { terminalConfirm }] = await Promise.all([import("node:fs"), import("../agent/home.ts"), import("../install/wire.ts"), import("../install/ask.ts")]);
 	if (!existsSync(join(orreryHome(process.env), "app", "current"))) throw new Error("Orrery is not installed yet: see the install line in the README");
 	// Each line is printed as it happens: Ctrl-C at a later question stops the process, and what was done is shown.
-	const { left, unchecked } = await wireReport(process.env, { confirm: terminalConfirm({ yes: values.yes === true, say }), onLine: say });
+	const { left, unchecked } = await wireReport(process.env, { confirm: terminalConfirm({ yes: values.yes === true, say }), onLine: say, config });
 	if (left.length > 0 || unchecked.length > 0) {
 		for (const line of leftWarning(left, unchecked)) say(line);
 		return 1;
@@ -92,14 +96,14 @@ const RESTART_SESSIONS = "Restart open agent sessions now: sessions left open ac
  * `orrery install --from DIR | --rollback | --list [--yes]`: install a release folder or switch back a version, each
  * followed by setup; or list the installed copies in the home's app folder.
  */
-async function installCommand(values: { from?: string; rollback?: boolean; list?: boolean; yes?: boolean }): Promise<number> {
+async function installCommand(values: { from?: string; rollback?: boolean; list?: boolean; yes?: boolean }, config: ConfigFile): Promise<number> {
 	const { installFrom, listVersions, rollback, versionLines } = await import("../install/install.ts");
 	if (values.from !== undefined) {
 		if (values.rollback === true || values.list === true) throw new Error("install takes one of --from DIR, --rollback or --list.");
 		const { version, previous, removed } = installFrom({ from: values.from, env: process.env, log: say });
 		say(`Installed ${version}.`);
 		if (removed.length > 0) say(`Removed older versions: ${removed.join(", ")}.`);
-		const status = await setupCommand(values);
+		const status = await setupCommand(values, config);
 		const [{ existsSync }, { homedir }, { defaultConfigPath }, { pathAdvice }] = await Promise.all([import("node:fs"), import("node:os"), import("../agent/config.ts"), import("../install/ask.ts")]);
 		// Said even when setup left something (a tool not connected): the install itself is done.
 		if (!existsSync(defaultConfigPath(process.env))) {
@@ -119,7 +123,7 @@ async function installCommand(values: { from?: string; rollback?: boolean; list?
 	if (values.rollback === true) {
 		const { from, to } = rollback(process.env);
 		say(`Switched back from ${from} to ${to}.`);
-		const status = await setupCommand(values);
+		const status = await setupCommand(values, config);
 		// A session open across it runs the older version's hooks against the newer recorder (or the other way round),
 		// which drops what it can't confirm, and pi and OMP keep the version they loaded: all until they restart.
 		const [{ existsSync }, { defaultConfigPath }] = await Promise.all([import("node:fs"), import("../agent/config.ts")]);
@@ -252,24 +256,25 @@ async function agentArg(config: HarnessConfig, name: string, inside: Inside | un
 /**
  * `orrery agent add <Name> --folder DIR --tool T --summary provider/id [--thinking L]`, `orrery agent set <Name> --tool T |
  * --folder DIR | --view-kb N | --summary-kb N | --jobs N | --compact-at TOKENS | --reads all|none|A,B` (`add` takes --reads too), `orrery agent archive <Name>`.
+ * The config is the one the gate read and judged (`file`: --config, else $ORRERY_CONFIG, else the default config when it
+ * exists, else where a new one goes), never read again; an edit is written to that file only while it is unchanged.
  */
-async function agentCommand(args: string[], values: Record<string, string | boolean | string[] | undefined>): Promise<number> {
-	const [{ addAgent, archiveAgent, configWritable, editConfigFile, parseReads, readOnlyConfigText, setAgentKey, userConfigPath }, { defaultConfigPath, parseConfig }, { homedir }, { existsSync }, { archiveRefusal, agentOverview, TOOL_LABELS }] = await Promise.all([
+async function agentCommand(args: string[], values: Record<string, string | boolean | string[] | undefined>, file: ConfigFile): Promise<number> {
+	const [{ addAgent, archiveAgent, configWritable, editConfigOnce, parseReads, readOnlyConfigText, setAgentKey }, { configAbsent, configOf, parseConfig }, { homedir }, { archiveRefusal, agentOverview, TOOL_LABELS }] = await Promise.all([
 		import("../agent/config-edit.ts"),
 		import("../agent/config.ts"),
 		import("node:os"),
-		import("node:fs"),
 		import("../agent/overview.ts"),
 	]);
 	const [action, name] = args;
-	// --config, else $ORRERY_CONFIG, else the default config when it exists, else the user's config path.
-	let path = values.config as string | undefined;
-	if (path === undefined) path = process.env.ORRERY_CONFIG || (existsSync(defaultConfigPath()) ? defaultConfigPath() : userConfigPath());
+	const path = file.path;
 	if (["push", "pull", "takeover", "local"].includes(action)) {
 		const { agentRemoteCommand } = await import("./remote.ts");
-		process.stdout.write(await agentRemoteCommand(path, args, { to: values.to as string | undefined, from: values.from as string | undefined, folder: values.folder as string | undefined, yes: values.yes === true, "delete-remote": values["delete-remote"] === true }, { confirm: askYes }));
+		process.stdout.write(await agentRemoteCommand(file, args, { to: values.to as string | undefined, from: values.from as string | undefined, folder: values.folder as string | undefined, yes: values.yes === true, "delete-remote": values["delete-remote"] === true }, { confirm: askYes }));
 		return 0;
 	}
+	/** The config as read; a config not there yet is an empty one (add makes it), and one that can't be read is its error. */
+	const known = () => (configAbsent(file) ? parseConfig("", dirname(path)) : configOf(file));
 	const fullPath = (value: string) => resolvePath(value === "~" || value.startsWith("~/") ? `${homedir()}${value.slice(1)}` : value);
 	const kb = (flag: string) => {
 		const n = Number(values[flag]);
@@ -282,14 +287,14 @@ async function agentCommand(args: string[], values: Record<string, string | bool
 		const thinking = (values.thinking as string | undefined) ?? "low";
 		const tool = required(values.tool as string | undefined, "--tool pi|omp|claude-code|codex|opencode");
 		const folder = fullPath(required(values.folder as string | undefined, "--folder DIR"));
-		const reads = values.reads === undefined ? undefined : parseReads(values.reads as string, existsSync(path) ? loadConfig(path) : parseConfig("", dirname(path)), agent);
-		editConfigFile(path, (text, dir) => addAgent(text, dir, { name: agent, folder, tool: tool as never, compactorModel: summary, compactorThinking: thinking as never, ...(reads === undefined ? {} : { reads }) }));
+		const reads = values.reads === undefined ? undefined : parseReads(values.reads as string, known(), agent);
+		editConfigOnce(file, (text, dir) => addAgent(text, dir, { name: agent, folder, tool: tool as never, compactorModel: summary, compactorThinking: thinking as never, ...(reads === undefined ? {} : { reads }) }));
 		process.stdout.write(`Added agent ${agent}: ${folder}, ${(TOOL_LABELS as Record<string, string>)[tool] ?? tool}, summaries ${summary} (${thinking}).\n`);
 		return 0;
 	}
 	if (action === "set") {
 		// The name as the config spells it (`orrery agent set rowan` finds Rowan), as every other command does.
-		const agent = existsSync(path) ? findAgent(loadConfig(path), required(name, "agent name")).name : required(name, "agent name");
+		const agent = configAbsent(file) ? required(name, "agent name") : findAgent(configOf(file), required(name, "agent name")).name;
 		const changes: [Parameters<typeof setAgentKey>[3], Parameters<typeof setAgentKey>[4]][] = [];
 		if (args.length > 2) {
 			const key = args[2];
@@ -304,22 +309,22 @@ async function agentCommand(args: string[], values: Record<string, string | bool
 		if (values["summary-kb"] !== undefined) changes.push(["compactor_context_bytes", kb("summary-kb")]);
 		if (values.jobs !== undefined) changes.push(["compactor_jobs", Number(values.jobs)]);
 		if (values["compact-at"] !== undefined) changes.push(["compact_at", Number(values["compact-at"])]);
-		if (values.reads !== undefined) changes.push(["reads", parseReads(values.reads as string, existsSync(path) ? loadConfig(path) : parseConfig("", dirname(path)), agent)]);
+		if (values.reads !== undefined) changes.push(["reads", parseReads(values.reads as string, known(), agent)]);
 		if (changes.length === 0) throw new UsageError("agent set needs one of --launcher, --ori-model, --tool, --folder, --view-kb, --summary-kb, --jobs, --compact-at, --reads.");
-		editConfigFile(path, (text, dir) => changes.reduce((acc, [key, value]) => setAgentKey(acc, dir, agent, key, value), text));
+		editConfigOnce(file, (text, dir) => changes.reduce((acc, [key, value]) => setAgentKey(acc, dir, agent, key, value), text));
 		for (const [key, value] of changes) process.stdout.write(`Set agents.${agent}.${key} = ${typeof value === "string" || typeof value === "number" ? value : value.length === 0 ? "none" : value.includes("*") ? "all" : value.join(", ")}. It applies when ${agent} next opens.\n`);
 		return 0;
 	}
 	if (action === "archive") {
 		// The same refusals as the TUI's A: the agent must be closed and the config writable.
-		const config = loadConfig(path);
+		const config = configOf(file);
 		const agent = findAgent(config, required(name, "agent name")).name;
 		const row = agentOverview(config).find((r) => r.name === agent);
 		const refusal = row === undefined ? undefined : archiveRefusal(row);
 		if (refusal !== undefined) throw new Error(refusal);
 		if (!configWritable(path)) throw new Error(readOnlyConfigText(path));
 		const { localIso } = await import("../memory/index.ts");
-		editConfigFile(path, (text, dir) => archiveAgent(text, dir, agent, localIso(new Date()).slice(0, 10)));
+		editConfigOnce(file, (text, dir) => archiveAgent(text, dir, agent, localIso(new Date()).slice(0, 10)));
 		process.stdout.write(`Archived ${agent}.\n`);
 		return 0;
 	}
@@ -491,6 +496,16 @@ async function unknownCommand(command: string): Promise<number> {
 	return 2;
 }
 
+/**
+ * The file the gate read the config from, as it read it (src/cli/gate.ts Gated.configFile): what a command that reads or
+ * writes the config by path runs with, never read again. The gate gives it to every command that runs outside every
+ * session; inside one, none of those runs.
+ */
+function judgedFile(gated: Gated): ConfigFile {
+	if (gated.configFile === undefined) throw gated.configError ?? new Error("orrery could not read its config.");
+	return gated.configFile;
+}
+
 /** Runs the command: everything but help and the version. */
 async function dispatch(positionals: string[], values: ReturnType<typeof parseCommandLine>["values"], updateVersion: string | undefined, toolArgs: string[]): Promise<number> {
 	const [command, arg] = positionals;
@@ -498,59 +513,71 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 	// decision governs them, so they skip the gate's look at the process tree.
 	if (command === "claude-hook") return claudeHook(arg, values.config);
 	if (command === "codex-hook") return codexHook(arg, values.config);
-	const { GateRefusal, gateCommand, readableBy } = await import("./gate.ts");
-	let inside: Inside | undefined;
-	// Inside a session, the config that holds its memory (src/cli/gate.ts): every command there runs with it.
-	let trusted: HarnessConfig | undefined;
+	const { GateRefusal, gateCommand, noAgentText, readableBy } = await import("./gate.ts");
+	let gated: Gated;
 	try {
-		({ inside, config: trusted } = gateCommand(command, positionals, values, process.env));
+		gated = gateCommand(command, positionals, values, process.env);
 	} catch (error) {
 		// The mod reads one JSON line, never stderr (claudeModCommand).
 		if (command === "claude-mod" && error instanceof GateRefusal) return modReply({ error: modError(error) });
 		throw error;
 	}
+	const inside = gated.inside;
+	// A coding tool's session that is no agent's: status and usage show no agent, and say why; nothing else is read.
+	if (gated.tool !== undefined) {
+		process.stdout.write(noAgentText(command === "usage" ? "usage" : "status", gated.tool, values.json === true));
+		return 0;
+	}
 	await registerReleaseOAuthFlows();
+	const judged = () => judgedFile(gated);
 	if (command === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true) {
 		const { runTui } = await import("../tui/run.ts");
-		return runTui(values.config);
+		const file = judged();
+		// The TUI reads its config again every 2 s: each read after a change is the gate's, judged again, for that file.
+		const judge = () => judgedFile(gateCommand(undefined, [], { ...values, config: file.path }, process.env));
+		return runTui(values.config, { config: { file, judge } });
 	}
 	if (command === undefined) {
 		process.stdout.write(shortHelp(await helpVersion()));
 		return 0;
 	}
-	if (command === "claude-mod") return claudeModCommand(arg, values, inside, trusted);
-	if (command === "mcp") return mcpServer(values.config, values.tool, inside, trusted);
+	if (command === "claude-mod") return claudeModCommand(arg, values, gated);
+	if (command === "mcp") return mcpServer(values.config, values.tool, gated);
 	if (command === "remote") {
 		const { remoteCommand } = await import("./remote.ts");
-		process.stdout.write(await remoteCommand(values.config, positionals.slice(1), { json: values.json === true, yes: values.yes === true, server: values.server, cloudflare: values.cloudflare, "token-file": values["token-file"], "code-file": values["code-file"], new: values.new === true }));
+		process.stdout.write(await remoteCommand(judged(), positionals.slice(1), { json: values.json === true, yes: values.yes === true, server: values.server, cloudflare: values.cloudflare, "token-file": values["token-file"], "code-file": values["code-file"], new: values.new === true }));
 		return 0;
 	}
 	if (command === "tools") return toolsCommand(positionals, values);
-	if (command === "install") return installCommand(values);
-	if (command === "setup") return setupCommand(values);
+	if (command === "install") return installCommand(values, judged());
+	if (command === "setup") return setupCommand(values, judged());
 	if (command === "update") return updateCommand({ check: values.check, version: updateVersion, yes: values.yes });
 	if (command === "uninstall") return uninstallCommand(values);
 	if (command === "agent") {
 		// The config and remote subcommands. No agent may take one of their names (RESERVED_NAMES, src/agent/config.ts).
 		const sub = positionals[1];
-		if (sub !== undefined && ["add", "set", "archive", "push", "pull", "takeover", "local"].includes(sub)) return agentCommand(positionals.slice(1), values);
+		if (sub !== undefined && ["add", "set", "archive", "push", "pull", "takeover", "local"].includes(sub)) return agentCommand(positionals.slice(1), values, judged());
 		const [{ editAgentCommand, openAgentCommand }, { agentRemoteCommand }] = await Promise.all([import("./agent.ts"), import("./remote.ts")]);
 		// A question only a person answers (starting Codex without Orrery's memory and guard) needs a terminal; --yes is no answer to it.
 		const terminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
 		const io = { say, confirm: (question: string) => (values.yes === true ? Promise.resolve(true) : askYes(question)), ...(terminal ? { askPerson: (question: string) => askYes(question, "y/N") } : {}) };
 		if (positionals[1] === "edit") {
 			if (positionals.length > 3) throw new Error(`orrery agent edit takes one agent name (got ${positionals.slice(2).join(" ")}).`);
-			return editAgentCommand(values.config, required(positionals[2], "agent name"), io);
+			return editAgentCommand(judged(), required(positionals[2], "agent name"), io);
 		}
 		if (positionals.length > 2) {
 			const name = positionals[1] as string;
 			throw new Error(`orrery agent takes one agent name; ${positionals.slice(2).join(" ")} would be dropped. The tool's arguments go after --: orrery agent ${name} -- ${positionals.slice(2).join(" ")}`);
 		}
+		const file = judged();
 		return openAgentCommand(values.config, required(positionals[1], "agent name"), { tool: values.tool, args: toolArgs, cwd: process.cwd() }, io, {
-			takeover: (name) => agentRemoteCommand(values.config, ["takeover", name], { yes: true }),
+			takeover: (name) => agentRemoteCommand(file, ["takeover", name], { yes: true }),
+			config: file,
 		});
 	}
-	const config = trusted ?? loadConfig(values.config);
+	// The config the gate read and judged (src/cli/gate.ts Gated.config), never read again: a file may change between.
+	if (gated.config === undefined) throw gated.configError ?? new Error("orrery could not read its config.");
+	const config = gated.config;
 	// Inside an agent's session status and usage list only what that agent may read.
 	const readable = inside?.agent === undefined ? {} : { readable: readableBy(config, inside.agent) };
 	switch (command) {
@@ -747,23 +774,32 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /**
- * The orrery config for a process Claude Code starts (a hook, the MCP server), or undefined. Without any config
- * (none named, and no file at the default paths) it says nothing: the plugin is installed for every folder, and Claude
- * Code then runs plain. A config that is named but missing, or broken, gets one stderr line, `label` first.
+ * The orrery config for a process Claude Code starts (a hook), or none, and whether a config is there (or named) but
+ * could not be read: `broken`. Without any config (none named, and no file at the default paths) it says nothing: the
+ * plugin is installed for every folder, and Claude Code then runs plain. A config that is named but missing, or broken,
+ * gets one stderr line, `label` first.
  */
-function optionalConfig(configPath: string | undefined, label: string): HarnessConfig | undefined {
-	return foundConfig(configPath, label).config;
-}
-
-/** optionalConfig, and whether a config is there (or named) but could not be read: `broken`. */
 function foundConfig(configPath: string | undefined, label: string): { readonly config?: HarnessConfig; readonly broken: boolean } {
 	try {
 		return { config: loadConfig(configPath), broken: false };
 	} catch (error) {
-		const absent = (error as { code?: unknown }).code === "ENOENT" && configPath === undefined && !process.env.ORRERY_CONFIG;
+		const absent = absentConfig(error, configPath);
 		if (!absent) process.stderr.write(`${label}: ${errorText(error)}\n`);
 		return { broken: !absent };
 	}
+}
+
+/** Whether `error`, from loading the config, says only that there is none: none named, and none at the default paths. */
+const absentConfig = (error: unknown, configPath: string | undefined): boolean => (error as { code?: unknown }).code === "ENOENT" && configPath === undefined && !process.env.ORRERY_CONFIG;
+
+/**
+ * The config for a plugin command the gate let run (mcp): the one it read and judged (src/cli/gate.ts Gated.config),
+ * never read again. Its error, when it couldn't, is said as foundConfig says it.
+ */
+function gatedConfig(gated: Gated, configPath: string | undefined, label: string): HarnessConfig | undefined {
+	if (gated.config !== undefined || gated.configError === undefined) return gated.config;
+	if (!absentConfig(gated.configError, configPath)) process.stderr.write(`${label}: ${errorText(gated.configError)}\n`);
+	return undefined;
 }
 
 /** PreToolUse's answer that refuses the call, made here so it needs nothing that may have failed to load. */
@@ -784,13 +820,18 @@ const denyToolCall = (reason: string) =>
  * change whose session the host is. A Claude Code that one of its SessionStarts found unconfirmed (src/claude/hooks.ts:
  * its start couldn't be read) gets no tools, as its view gets none (markedUnconfirmed, src/claude/pick.ts); one that
  * started after that mark reuses a gone Claude Code's pid, and gets them.
+ * In a coding tool's session that is no agent's (`gated.hostAgent`) it serves only the agent its host's own launch names;
+ * with none it picks nothing, so it decides nothing for its parent either.
  */
-async function mcpServer(configPath: string | undefined, tool: string | undefined, inside: Inside | undefined, trusted: HarnessConfig | undefined): Promise<number> {
+async function mcpServer(configPath: string | undefined, tool: string | undefined, gated: Gated): Promise<number> {
 	if (tool !== undefined && tool !== "claude-code" && tool !== "codex") throw new UsageError(`mcp: --tool takes claude-code or codex (not ${tool}).`);
 	const { agentTools, runMcp } = await import("../claude/mcp.ts");
 	let tools: ReaderTool[] = [];
-	const config = trusted ?? optionalConfig(configPath, "orrery mcp");
-	const ours = (agent: AgentConfig) => inside === undefined || agent.name === inside.agent;
+	const { inside, hostAgent } = gated;
+	// Why it serves no agent, where the gate found a reason: its client logs stderr, and stdout stays the protocol.
+	if (gated.notice !== undefined) process.stderr.write(`${gated.notice}\n`);
+	const config = hostAgent === null ? undefined : gatedConfig(gated, configPath, "orrery mcp");
+	const ours = (agent: AgentConfig) => (inside === undefined || agent.name === inside.agent) && (hostAgent === undefined || agent.name === hostAgent);
 	if (config !== undefined && tool === "codex") {
 		const [{ codexAgent }, { codexPid }] = await Promise.all([import("../codex/pick.ts"), import("../codex/host.ts")]);
 		// Codex starts its servers itself: codexPid() is this server's parent, unless it passed over one by its name.
@@ -930,14 +971,15 @@ async function codexHook(event: string | undefined, configPath: string | undefin
  * read them from Claude Code's environment.
  * It prints one JSON line; exit 1 with { error } when the config or memory cannot be read, or the gate refused it.
  * Nothing goes to stderr. No config at all (none named, none at the default paths) is not an error: the reply is
- * { lane: null }. Inside an agent's session (`inside`, src/cli/gate.ts) it gives that agent's view or none, with the
- * config that holds the session's memory (`trusted`).
+ * { lane: null }. It runs with the config the gate read and judged (`gated.config`, src/cli/gate.ts), never read again.
+ * Inside an agent's session (`gated.inside`) it gives that agent's view or none, with the config that holds the
+ * session's memory; in a coding tool's session that is no agent's, only the view of the agent its host's own launch
+ * names (`gated.hostAgent`), or none.
  */
 async function claudeModCommand(
 	action: string | undefined,
 	values: { config?: string; cwd?: string; session?: string; "wait-ms"?: string; "spool-only"?: boolean; agent?: string; "agent-token"?: string },
-	inside: Inside | undefined,
-	trusted: HarnessConfig | undefined,
+	gated: Gated,
 ): Promise<number> {
 	let reply: object;
 	try {
@@ -945,17 +987,13 @@ async function claudeModCommand(
 		const { modView } = await import("../claude/mod-view.ts");
 		const waitMs = values["wait-ms"] === undefined ? 0 : Number(values["wait-ms"]);
 		if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > 120_000) throw new Error("--wait-ms takes 0 to 120000");
-		let config = trusted;
-		if (config === undefined) {
-			try {
-				config = loadConfig(values.config);
-			} catch (error) {
-				const absent = (error as { code?: unknown }).code === "ENOENT" && values.config === undefined && !process.env.ORRERY_CONFIG;
-				if (!absent) throw error;
-			}
-		}
+		const { inside, hostAgent } = gated;
+		if (hostAgent === null) return modReply({ lane: null });
+		const config = gated.config;
+		if (config === undefined && gated.configError !== undefined && !absentConfig(gated.configError, values.config)) throw gated.configError;
 		const agent = values.agent === undefined ? {} : { agent: values.agent, ...(values["agent-token"] === undefined ? {} : { agentToken: values["agent-token"] }) };
-		const only = inside?.agent === undefined ? {} : { only: inside.agent };
+		const serves = inside?.agent ?? hostAgent;
+		const only = serves === undefined ? {} : { only: serves };
 		reply = await modView(config, { cwd: values.cwd ?? process.cwd(), ...(values.session === undefined ? {} : { session: values.session }), waitMs, spoolOnly: values["spool-only"] === true, ...agent, ...only });
 	} catch (error) {
 		reply = { error: modError(error) };

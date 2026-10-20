@@ -48,6 +48,15 @@ export interface GuardOptions {
 	 * Codex gate judges each file it reads as a read.
 	 */
 	readonly shellReadsSkills?: boolean;
+	/**
+	 * A session that is no agent's (spec 2026-10-19-no-agent-sessions §3): Orrery's own rules and nothing more. Orrery's
+	 * home (by its path, src/agent/guard-paths.ts orreryData, and by its .orrery name), its credentials file (the caller's
+	 * credentials), the config and the installed program (read, never written), every agent's memory view (foreignViews:
+	 * the session is no agent's, so each is another's), Claude Code's and Codex's session records, Orrery's commands and
+	 * hook plumbing in shell text, and what the guard can't judge in time. No folder confinement or allowed roots, no
+	 * [guard] protect, no .env, built-in secret or home-secret rules, and no OpenCode or skills rules: those are an agent's.
+	 */
+	readonly orreryOnly?: boolean;
 }
 
 const SENSITIVE = [
@@ -206,9 +215,10 @@ export const PLUMBING_REFUSED = "This command runs Orrery's hook plumbing (codex
 // Inside an agent session the CLI runs only the commands that read (ALLOWED_INSIDE); this rule is the second belt, in
 // every gate, in the plumbing rule's blunt style. Shell text is refused where Orrery's program (orrery, orrery.exe, the
 // Claude Code plugin's orrery-run, a path ending in one, or the source's cli/main.ts) is followed, as the first word
-// that is no option, by a command the CLI knows that does not run inside a session (REFUSED_COMMANDS). It matches in
-// any reading of the text, anywhere: a search pattern or a commit message that names one is refused too (CONTRIBUTING:
-// search with a file tool, git commit -F).
+// that is no option, by a command the CLI knows that does not run inside a session (REFUSED_COMMANDS; in a session that
+// is no agent's, every command the CLI refuses it, PLAIN_REFUSED_COMMANDS). It matches in any reading of the text,
+// anywhere: a search pattern or a commit message that names one is refused too (CONTRIBUTING: search with a file tool,
+// git commit -F).
 // - The options main.ts knows are skipped, a valued one with its value, and so are redirections. Where the guard can't
 //   tell where the options end (an option main.ts doesn't know, an expansion or a substitution, a list in code, more
 //   words than a command line has), it fails closed: any refused command named as a word before the next separator
@@ -240,7 +250,16 @@ export const ORRERY_COMMANDS: readonly string[] = [
  * as it does --version.
  */
 export const REFUSED_COMMANDS: readonly string[] = ORRERY_COMMANDS.filter((command) => !ALLOWED_INSIDE.has(command) && command !== "version");
-const REFUSED = new Set(REFUSED_COMMANDS);
+
+/**
+ * The commands shell text may not run in a session that is no agent's (GuardOptions.orreryOnly): all but help, version,
+ * status and usage, the ones the CLI runs there, so the text rule backs the CLI's check where a process detaches. browse and compactor among them, and the plumbing
+ * typed in shell text too: the mod's view and the memory tools' server (claude-mod, mcp), which the CLI never judges,
+ * since Orrery starts them for a session before it is recorded (so a shell that detaches one gets past the CLI), and the
+ * hooks and the recorder, which runsPlumbing refuses first, as in an agent's session. Orrery's tools never start them
+ * through a session's shell, so its plumbing is unchanged.
+ */
+export const PLAIN_REFUSED_COMMANDS: readonly string[] = ORRERY_COMMANDS.filter((command) => !["help", "version", "status", "usage"].includes(command));
 
 /** main.ts's options (OPTIONS), pinned by the same test: those whose next word is their value, and the flags. */
 export const ORRERY_OPTIONS: { readonly valued: ReadonlySet<string>; readonly flags: ReadonlySet<string> } = {
@@ -264,8 +283,19 @@ export const ORRERY_OPTIONS: { readonly valued: ReadonlySet<string>; readonly fl
 
 /** Orrery's program as a word (ORRERY_PROGRAM's names and orrery-run), its name in group 1; also after "[" or "!" (code's list, a git alias). */
 const PROGRAM_RUN = new RegExp(`(?:${PLUMBING_START}|[[!])(orrery(?:\\.exe|-run)?|cli/main\\.[cm]?[jt]s)(?=$|[\\s"';|&()<>\`{}$\\\\,\\]])`, "g");
-/** A refused command named as a word, in group 1, with the plumbing's edges: what fails closed looks for. */
-const REFUSED_WORD = new RegExp(`${PLUMBING_START}(${REFUSED_COMMANDS.map(literal).join("|")})${PLUMBING_END}`, "g");
+/**
+ * A set of refused commands: the list, for globs; the set, for words; and a refused command named as a word, in group 1,
+ * with the plumbing's edges: what fails closed looks for.
+ */
+interface CommandSet {
+	readonly list: readonly string[];
+	readonly set: ReadonlySet<string>;
+	readonly word: RegExp;
+}
+const commandSet = (list: readonly string[]): CommandSet => ({ list, set: new Set(list), word: new RegExp(`${PLUMBING_START}(${list.map(literal).join("|")})${PLUMBING_END}`, "g") });
+/** An agent's session's (REFUSED_COMMANDS), and a session's that is no agent's (PLAIN_REFUSED_COMMANDS). */
+const AGENT_REFUSED = commandSet(REFUSED_COMMANDS);
+const PLAIN_REFUSED = commandSet(PLAIN_REFUSED_COMMANDS);
 /** Characters that end a command's words. */
 const COMMAND_ENDS = new Set([";", "|", "&", "(", "\n"]);
 /** A redirection operator, after a file descriptor's number or a {name} for one, at lastIndex. */
@@ -497,15 +527,15 @@ function wordAt(form: string, start: number, work: { left: number }): { readonly
 
 /**
  * The refused command a word names (the commands are plain words: setup, not setup.md or remote:/srv), or one a glob
- * could match (re*ore), or undefined.
+ * could match (re*ore), or undefined; `refused`: the session's set of refused commands.
  */
-function commandName(text: string): string | undefined {
-	const globbed = globCouldName(text, REFUSED_COMMANDS);
+function commandName(text: string, refused: CommandSet): string | undefined {
+	const globbed = globCouldName(text, refused.list);
 	if (globbed !== undefined) return globbed;
 	const bare = text.replace(/^[[\](){},]+/, "");
 	const name = /^[a-z][a-z0-9-]*/.exec(bare)?.[0];
 	if (name === undefined || /^[._/=:@+~%]/.test(bare.slice(name.length))) return undefined;
-	return REFUSED.has(name) ? name : undefined;
+	return refused.set.has(name) ? name : undefined;
 }
 
 /** What follows Orrery's program (its name ending at `at`): the refused command it runs, where the guard can't tell, or none. */
@@ -513,9 +543,10 @@ type After = { readonly refused: string } | { readonly unclear: number } | undef
 
 /**
  * The command Orrery's program runs in a reading, its name ending at `at` (above): its options and redirections skipped.
- * `work`: what the reading may still spend, so a long text is read in linear time; past it, unclear.
+ * `work`: what the reading may still spend, so a long text is read in linear time; past it, unclear. `refused`: the
+ * session's set of refused commands.
  */
-function commandAfter(form: string, at: number, work: { left: number }): After {
+function commandAfter(form: string, at: number, work: { left: number }, refused: CommandSet): After {
 	if (work.left <= 0) return { unclear: at };
 	let i = at;
 	// The rest of the program's word: a quote or a substitution closing around it, an empty string glued to it. A name
@@ -572,8 +603,8 @@ function commandAfter(form: string, at: number, work: { left: number }): After {
 			else if (equals !== -1 || !ORRERY_OPTIONS.flags.has(name)) return { unclear: start };
 			continue;
 		}
-		const refused = commandName(text);
-		return refused === undefined ? undefined : { refused };
+		const command = commandName(text, refused);
+		return command === undefined ? undefined : { refused: command };
 	}
 }
 
@@ -634,11 +665,11 @@ function separatorsOf(form: string): number[] {
 }
 
 /**
- * Where a reading fails closed: the refused command named as a word (REFUSED_WORD) between `from` and the next
+ * Where a reading fails closed: a command of `refused` named as a word (CommandSet.word) between `from` and the next
  * separator (separatorsOf), or anywhere in it (`all`). The words and separators are found once per reading.
  */
-function namedAfter(form: string): (from: number, all?: boolean) => string | undefined {
-	const named = [...form.matchAll(REFUSED_WORD)];
+function namedAfter(form: string, refused: CommandSet): (from: number, all?: boolean) => string | undefined {
+	const named = [...form.matchAll(refused.word)];
 	const ends = named.map((match) => match.index + match[0].length);
 	const separators = separatorsOf(form);
 	return (from, all = false) => {
@@ -648,8 +679,8 @@ function namedAfter(form: string): (from: number, all?: boolean) => string | und
 	};
 }
 
-/** The refused command a reading runs (above), or undefined. Linear in the reading's length. */
-function refusedCommand(form: string): string | undefined {
+/** The command of `refused` a reading runs (above), or undefined. Linear in the reading's length. */
+function refusedCommand(form: string, refused: CommandSet): string | undefined {
 	if (!form.includes("orrery") && !form.includes("cli/main.") && !GLOB.test(form)) return undefined;
 	const work = { left: 4 * form.length + 4096 };
 	const xargs = XARGS.test(form);
@@ -661,22 +692,22 @@ function refusedCommand(form: string): string | undefined {
 	].sort((a, b) => a.end - b.end);
 	for (const { start, end } of programs) {
 		if (folderOf(form, start)) continue;
-		const fed = xargs ? (named ??= namedAfter(form))(0, true) : undefined;
+		const fed = xargs ? (named ??= namedAfter(form, refused))(0, true) : undefined;
 		if (fed !== undefined) return fed;
-		const after = commandAfter(form, end, work);
+		const after = commandAfter(form, end, work, refused);
 		if (after === undefined) continue;
 		if ("refused" in after) return after.refused;
-		const found = (named ??= namedAfter(form))(after.unclear);
+		const found = (named ??= namedAfter(form, refused))(after.unclear);
 		if (found !== undefined) return found;
 	}
 	return undefined;
 }
 
-/** The refused command any of a text's readings runs (above), or undefined. */
-function orreryCommandIn(reading: Reading): string | undefined {
+/** The command of `refused` (by default an agent's session's) any of a text's readings runs (above), or undefined. */
+function orreryCommandIn(reading: Reading, refused: CommandSet = AGENT_REFUSED): string | undefined {
 	for (const form of [...reading.forms, ...reading.pieces]) {
-		const refused = refusedCommand(form);
-		if (refused !== undefined) return refused;
+		const command = refusedCommand(form, refused);
+		if (command !== undefined) return command;
 	}
 	return undefined;
 }
@@ -690,6 +721,10 @@ export function runsOrreryCommand(text: string): string | undefined {
 export const ORRERY_COMMAND_REFUSED = (command: string) =>
 	`orrery ${command} can't run from an agent's shell: agents can't change memory or settings (only orrery help, status, usage, browse, compactor and --version run here). Run it in your own terminal or the TUI. Text that only names it is refused too: search with a file tool, and give git a message that names it from a file (git commit -F).`;
 
+/** The same in a session that is no agent's (GuardOptions.orreryOnly, PLAIN_REFUSED_COMMANDS). */
+export const ORRERY_COMMAND_REFUSED_PLAIN = (command: string) =>
+	`orrery ${command} can't run from a session that is no agent's: it can't read or change Orrery's memory or settings (only orrery help, status, usage and --version run there). Run it in your own terminal or the TUI. Text that only names it is refused too: search with a file tool, and give git a message that names it from a file (git commit -F).`;
+
 /**
  * How far around a brace group the readings look (Reading.pieces) for the built-in rules: room for the longest fixed
  * name they look for (.terraform.d/credentials.tfrc.json, .pi/agent/models.json, .dev.vars.template) and its edges.
@@ -700,10 +735,11 @@ const ENV_REACH = 48;
  * Case-insensitive: on a case-insensitive file system (macOS) ~/.SSH is ~/.ssh. The text is judged as written and as the
  * shell reads it (readings), each by the credential patterns, the built-in secret names (.env and the like) and
  * Orrery's own names. `views`: which agent view file the text may name (viewRules); by default none. The built-in home
- * secrets named only from home (HOME_ONLY) need the guard's home: secretText and secretPath.
+ * secrets named only from home (HOME_ONLY) need the guard's home: secretText and secretPath. `orreryOnly`: Orrery's own
+ * names alone (GuardOptions.orreryOnly).
  */
-export function sensitive(text: string, views: ViewRule = NO_VIEW): boolean {
-	return flagged(readings(text), views, false);
+export function sensitive(text: string, views: ViewRule = NO_VIEW, orreryOnly = false): boolean {
+	return flagged(readings(text), views, false, [], true, !orreryOnly);
 }
 
 /**
@@ -711,11 +747,12 @@ export function sensitive(text: string, views: ViewRule = NO_VIEW): boolean {
  * built-in secret names, or a built-in home secret spelt from home, then a [guard] protect path entry. Not .env, the
  * other built-in names or a protect name, which its content may name as text (a line of a .gitignore, code that loads
  * it): the edit's targets are still judged as paths, by every rule. Its readings are made once for all, as checkToolCall
- * makes a command's.
+ * makes a command's. `orreryOnly`: Orrery's own names alone (GuardOptions.orreryOnly).
  */
-export function editTextRefusal(text: string, views: ViewRule, protect: Protection): string | undefined {
+export function editTextRefusal(text: string, views: ViewRule, protect: Protection, orreryOnly = false): string | undefined {
 	const reading = readings(text, protect.reach);
-	if (flagged(reading, views, false, [], false) || secretIn(reading, protect)) return "This edit touches sensitive files (keys, credentials or Orrery's private data).";
+	if (flagged(reading, views, false, [], false, !orreryOnly) || (!orreryOnly && secretIn(reading, protect))) return "This edit touches sensitive files (keys, credentials or Orrery's private data).";
+	if (orreryOnly) return undefined;
 	const entry = protect.spelled === undefined ? undefined : protectedIn(reading, protect, false);
 	return entry === undefined ? undefined : `This edit touches ${entry}, ${PROTECTED_BY}.`;
 }
@@ -726,10 +763,11 @@ export function editTextRefusal(text: string, views: ViewRule, protect: Protecti
  * the config file in use by any of `config`, its spellings (configSpellings); file tools may still read it. `names`:
  * the built-in secret names (.env and .dev.vars, SECRET_NAMES). The credential patterns and the secret names also read
  * the pieces of brace groups the readings could not expand (Reading.pieces), as [guard] protect does; Orrery's own names
- * have their own rule for those (readings).
+ * have their own rule for those (readings). `secrets` false: neither the credential patterns nor the secret names, only
+ * Orrery's own names and the config's spellings (GuardOptions.orreryOnly).
  */
-function flagged(reading: Reading, views: ViewRule, shell: boolean, config: readonly string[] = [], names = true): boolean {
-	const builtIn = (text: string) => CREDENTIALS.some((pattern) => pattern.test(text)) || (names && (ENV_FILE.test(text) || SECRET_NAMES.test(text)));
+function flagged(reading: Reading, views: ViewRule, shell: boolean, config: readonly string[] = [], names = true, secrets = true): boolean {
+	const builtIn = (text: string) => secrets && (CREDENTIALS.some((pattern) => pattern.test(text)) || (names && (ENV_FILE.test(text) || SECRET_NAMES.test(text))));
 	return reading.forms.some((form) => builtIn(form) || orreryNamed(form, views, shell) || config.some((spelling) => form.includes(spelling))) || reading.pieces.some(builtIn);
 }
 
@@ -1135,6 +1173,12 @@ export const orreryAppNamed = (path: string) => /(^|\/)\.orrery\/app(\/|$)/.test
 
 /** Why a write to Orrery's installed program is refused: the hooks and extensions every agent runs are in it. */
 export const APP_READ_ONLY = (path: string) => `${path} is Orrery's installed program: agents may read it, not change it.`;
+
+/** CONFIG_READ_ONLY and APP_READ_ONLY worded for any session (GuardOptions.orreryOnly). */
+export const CONFIG_READ_ONLY_PLAIN = (path: string) => `${path} is Orrery's config: it may be read, not changed.`;
+export const APP_READ_ONLY_PLAIN = (path: string) => `${path} is Orrery's installed program: it may be read, not changed.`;
+/** Why a session that is no agent's may not write where agents' sessions load code from outside Orrery's home. */
+export const ENTRY_READ_ONLY_PLAIN = (path: string) => `${path} is where your agents' sessions load code from (pi's and OMP's extensions, Orrery's Claude Code plugin and its records): it may be read, not changed.`;
 
 /** Where a gate hands what a write puts in a file to the shared rules (a key no tool's own input has). */
 export const NEW_TEXT: unique symbol = Symbol("orrery.newText");
@@ -1561,6 +1605,12 @@ export const TRANSCRIPT_COMMAND =
 export const TRANSCRIPT_READ_ONLY = (path: string) =>
 	`${path} is in Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions), which Orrery checks prompts against: agents may read them, not change them.`;
 
+/** TRANSCRIPT_COMMAND and TRANSCRIPT_READ_ONLY worded for any session (GuardOptions.orreryOnly). */
+export const TRANSCRIPT_COMMAND_PLAIN =
+	"This command names Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions), which Orrery checks prompts against: they may be read with file tools, not with commands.";
+export const TRANSCRIPT_READ_ONLY_PLAIN = (path: string) =>
+	`${path} is in Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions), which Orrery checks prompts against: they may be read, not changed.`;
+
 // ---- A plain read of skill files, for Codex's own shell ----
 //
 // Codex reads files only through its shell, so refusing every command that names a skills folder would leave it no way
@@ -1741,6 +1791,7 @@ export function within(path: string, root: string): boolean {
 /**
  * A cheap pre-filter on the raw arguments; the authoritative file check is checkResolvedPath. `views`: viewRules;
  * `config`: configSpellings; `protect`: protection, with the built-in home secrets, "~" from the OS's home by default.
+ * In a session that is no agent's (GuardOptions.orreryOnly) only Orrery's own rules apply.
  */
 export function checkToolCall(
 	call: { readonly name: string; readonly arguments: Readonly<Record<string, unknown>> },
@@ -1749,6 +1800,7 @@ export function checkToolCall(
 	config: readonly string[] = configSpellings(options),
 	protect: Protection = protection(options.protect),
 ): string | undefined {
+	const agent = options.orreryOnly !== true;
 	let rule = options.openCode;
 	const openCode = () => (rule ??= openCodeRule(process.env, (options as { readonly home?: string }).home ?? homedir()));
 	let records = options.transcripts;
@@ -1756,32 +1808,36 @@ export function checkToolCall(
 	const command = call.arguments.command;
 	if (call.name === "bash" && typeof command === "string") {
 		// Shell text's readings, made once: sensitive by flagged's rules for shell text and the built-in home secrets spelt
-		// from home, then the [guard] protect entries.
+		// from home, then the [guard] protect entries (an agent's: Orrery's own names alone in a session that is no agent's).
 		const reading = readings(command, protect.reach);
-		if (flagged(reading, views.command, true, config) || secretIn(reading, protect)) return "This command touches sensitive files (keys, credentials or Orrery's private data).";
-		const entry = protectedIn(reading, protect);
+		if (flagged(reading, views.command, true, config, true, agent) || (agent && secretIn(reading, protect))) return "This command touches sensitive files (keys, credentials or Orrery's private data).";
+		const entry = agent ? protectedIn(reading, protect) : undefined;
 		if (entry !== undefined) return `This command touches ${entry}, ${PROTECTED_BY}.`;
 		if (reading.forms.some(runsPlumbing) || reading.pieces.some(runsPlumbing)) return PLUMBING_REFUSED;
 		// The readings made above, once for every rule.
 		const inReading = (test: (form: string) => boolean) => reading.forms.some(test) || reading.pieces.some(test);
-		const own = [...openCode().own, ...(openCode().spelled ?? [])];
-		if (inReading((form) => OPENCODE_NAMED.test(form) || namesOpenCodeFolder(form, own))) return OPENCODE_COMMAND;
-		if (inReading((form) => SKILLS_NAMED.test(form)) && !(options.shellReadsSkills === true && skillShellRead(command) !== undefined)) return SKILL_SHELL;
-		// Last, so a command refused before keeps its reason: Orrery's commands that change memory or settings, and the
-		// tools' session records.
-		const orrery = orreryCommandIn(reading);
-		if (orrery !== undefined) return ORRERY_COMMAND_REFUSED(orrery);
-		if (transcriptsNamed(command, reading, protect.reach, transcripts())) return TRANSCRIPT_COMMAND;
+		if (agent) {
+			const own = [...openCode().own, ...(openCode().spelled ?? [])];
+			if (inReading((form) => OPENCODE_NAMED.test(form) || namesOpenCodeFolder(form, own))) return OPENCODE_COMMAND;
+			if (inReading((form) => SKILLS_NAMED.test(form)) && !(options.shellReadsSkills === true && skillShellRead(command) !== undefined)) return SKILL_SHELL;
+		}
+		// Last, so a command refused before keeps its reason: Orrery's commands that change memory or settings (in a
+		// session that is no agent's, every one the CLI refuses it: PLAIN_REFUSED_COMMANDS), and the tools' session records.
+		const orrery = orreryCommandIn(reading, agent ? AGENT_REFUSED : PLAIN_REFUSED);
+		if (orrery !== undefined) return agent ? ORRERY_COMMAND_REFUSED(orrery) : ORRERY_COMMAND_REFUSED_PLAIN(orrery);
+		if (transcriptsNamed(command, reading, protect.reach, transcripts())) return agent ? TRANSCRIPT_COMMAND : TRANSCRIPT_COMMAND_PLAIN;
 	}
 	const raw = call.arguments.path;
 	if (typeof raw !== "string") return undefined;
 	const path = posix.normalize(posix.isAbsolute(raw) ? raw : posix.join(options.cwd ?? options.folder, raw));
 	const named = views.path(path);
-	if (sensitive(raw, named) || sensitive(path, named) || secretPath(raw, protect) || secretPath(path, protect)) return `${path} is a sensitive file (keys, credentials or Orrery's private data).`;
-	if (pathProtected(raw, protect) !== undefined || pathProtected(path, protect) !== undefined) return PROTECTED_FILE(path);
+	if (sensitive(raw, named, !agent) || sensitive(path, named, !agent) || (agent && (secretPath(raw, protect) || secretPath(path, protect)))) return `${path} is a sensitive file (keys, credentials or Orrery's private data).`;
+	if (agent && (pathProtected(raw, protect) !== undefined || pathProtected(path, protect) !== undefined)) return PROTECTED_FILE(path);
 	const writes = call.name === "write" || call.name === "edit";
-	if (writes && (orreryConfigNamed(path) || config.includes(path.toLowerCase()))) return CONFIG_READ_ONLY(path);
-	if (writes && orreryAppNamed(path)) return APP_READ_ONLY(path);
+	if (writes && (orreryConfigNamed(path) || config.includes(path.toLowerCase()))) return agent ? CONFIG_READ_ONLY(path) : CONFIG_READ_ONLY_PLAIN(path);
+	if (writes && orreryAppNamed(path)) return agent ? APP_READ_ONLY(path) : APP_READ_ONLY_PLAIN(path);
+	// A session that is no agent's: its writes go anywhere but those, and the session records.
+	if (!agent) return writes && transcriptPath(path, transcripts()) ? TRANSCRIPT_READ_ONLY_PLAIN(path) : undefined;
 	if (writes && openCodeLoads(path, openCode())) return OPENCODE_READ_ONLY(path);
 	// A whole write to a skill is judged here; an edit, which needs the file's text, by the caller that can read it.
 	const written = newTextIn(call.name, call.arguments);

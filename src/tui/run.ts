@@ -3,10 +3,9 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { ProcessTerminal, type TUI, TuiAltScreen } from "@earendil-works/pi-tui";
-import { defaultConfigPath } from "../agent/config.ts";
-import { userConfigPath } from "../agent/config-edit.ts";
+import { defaultConfigPath, userConfigPath } from "../agent/config.ts";
 import { App, type Page } from "./app.ts";
-import { realDeps } from "./deps.ts";
+import { type JudgedConfig, realDeps } from "./deps.ts";
 import { agentsPage } from "./pages/agents.ts";
 import { loginsPage } from "./pages/logins.ts";
 import { toolsPage } from "./pages/tools.ts";
@@ -62,17 +61,21 @@ export function stopTui(tui: TUI): void {
 	}
 }
 
-/** Runs the TUI until q (or Ctrl+C); returns the exit code. An uncaught error restores the terminal before it is printed. */
-export async function runTui(configOption?: string, options: { createDeps?: typeof realDeps; notice?: string } = {}): Promise<number> {
+/**
+ * Runs the TUI until q (or Ctrl+C); returns the exit code. An uncaught error restores the terminal before it is printed.
+ * `config`: the config as orrery's gate read and judged it, and how to judge it again (src/tui/deps.ts JudgedConfig);
+ * every config the TUI reads after is judged first.
+ */
+export async function runTui(configOption?: string, options: { createDeps?: typeof realDeps; notice?: string; config?: JudgedConfig } = {}): Promise<number> {
 	useConfigOption(configOption);
-	const configPath = tuiConfigPath(configOption);
+	const configPath = options.config?.file.path ?? tuiConfigPath(configOption);
 	const terminal = new ProcessTerminal();
 	const tui = new TuiAltScreen(terminal);
 	let finish: (code: number) => void = () => {};
 	const finished = new Promise<number>((resolve) => {
 		finish = resolve;
 	});
-	const app = new App((options.createDeps ?? realDeps)({ configPath, tui, quit: () => finish(0) }), PAGES);
+	const app = new App((options.createDeps ?? realDeps)({ configPath, tui, quit: () => finish(0), ...(options.config === undefined ? {} : { config: options.config }) }), PAGES);
 	let stopped = false;
 	const restore = () => {
 		if (stopped) return;

@@ -1,12 +1,13 @@
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { claudeGuard, claudeProjectFolder, claudeStateRoots } from "../../src/claude/guard.ts";
+import { claudeGuard, claudeProjectFolder, claudeStateRoots, JUDGE_MS } from "../../src/claude/guard.ts";
 import { type HookContext, type HookInput, preToolUse, runHook } from "../../src/claude/hooks.ts";
 import { VIEW_IMPORT, writeSetupMarker } from "../../src/claude/view-file.ts";
 import { type HarnessConfig, parseConfig } from "../../src/agent/config.ts";
 import { ownFolder } from "../../src/agent/private-file.ts";
+import { ompExtensionFile, piExtensionFile } from "../../src/agent/tools.ts";
 import { cleanupDirs, hookCli, testAgent } from "./support.ts";
 
 let dir: string | undefined;
@@ -613,7 +614,7 @@ describe("the PreToolUse hook answers in time, whatever the size of the call (fi
 		expect(await answer(call("Read", { file_path: `${slowPath(60 * KB)}notes.md` }))).toBeUndefined();
 	}, 120_000);
 
-	it("refuses a hook input over 1 MB unread, in under 1 s, unless Claude Code says the project is no agent's", async () => {
+	it("refuses a hook input over 1 MB unread, in under 1 s, in every session, an agent's or not", async () => {
 		const { t, c, call, answer } = hook();
 		const big = call("Write", { file_path: join(t.folder, "a.txt"), content: "x".repeat(1024 * KB) });
 		const started = performance.now();
@@ -623,8 +624,8 @@ describe("the PreToolUse hook answers in time, whatever the size of the call (fi
 		expect(await answer(call("Write", { file_path: join(t.folder, "a.txt"), content: "é".repeat(600 * KB) }))).toMatch(/over 1 MB/);
 		// Without CLAUDE_PROJECT_DIR only the unread input says where the call runs: refused all the same.
 		expect(await answer(big, { ...c, env: {} })).toMatch(/over 1 MB/);
-		// Claude Code says the project is no agent's: nothing to say, as for any call outside an agent.
-		expect(await answer(big, { ...c, env: { CLAUDE_PROJECT_DIR: t.dir } })).toBeUndefined();
+		// A project that is no agent's keeps the rule too (spec 2026-10-19-no-agent-sessions §3).
+		expect(await answer(big, { ...c, env: { CLAUDE_PROJECT_DIR: t.dir } })).toBe("Orrery guard: this call's input is over 1 MB, too long to check; nothing was run.");
 	});
 
 	it("still lets through a normal command, and a large Write or Edit: what a tool writes is never pattern-checked", async () => {
@@ -696,6 +697,31 @@ describe("Claude Code: only the agent that owns a folder's memory view reads it"
 		};
 	};
 	const REFUSED = expect.stringMatching(/^Orrery guard: .*(sensitive|memory view)/);
+
+	it("denies a session that is no agent's every agent's view, and leaves it the rest of the agents' folders (spec 2026-10-19-no-agent-sessions §3)", async () => {
+		const { home, config, atlas, birch, atlasView, birchView } = viewAgents();
+		const plain = join(atlas, "..", "plain");
+		mkdirSync(plain);
+		symlinkSync(birchView, join(plain, "notes.md"));
+		writeFileSync(join(atlas, "README.md"), "Atlas's readme");
+		const { tool } = session(config, home, plain);
+		for (const view of [atlasView, birchView]) {
+			const calls: [string, object][] = [
+				["Read", { file_path: view }],
+				["Edit", { file_path: view, old_string: "secret", new_string: "planted" }],
+				["Bash", { command: `cat ${view}` }],
+			];
+			for (const [name, input] of calls) expect([name, input, await tool(name, input)]).toEqual([name, input, REFUSED]);
+		}
+		// A link to a view under another name, and a content search whose root holds one.
+		expect(await tool("Read", { file_path: join(plain, "notes.md") })).toEqual(REFUSED);
+		expect(await tool("Grep", { pattern: "secret", path: atlas })).toMatch(/^Orrery guard: .*memory view; search a narrower folder/);
+		// The rest of the agents' folders, as any other files: a listing reads names only.
+		expect(await tool("Read", { file_path: join(atlas, "README.md") })).toBe("allowed");
+		expect(await tool("Write", { file_path: join(birch, "notes.md"), content: "x" })).toBe("allowed");
+		expect(await tool("Glob", { pattern: "**/*.md", path: atlas })).toBe("allowed");
+		expect(await tool("Bash", { command: `cat ${join(atlas, "README.md")}` })).toBe("allowed");
+	});
 
 	it("denies Atlas Read, Edit, Grep, Glob and Bash cat and grep -r of Birch's view, and allows them on its own", async () => {
 		const { home, config, atlas, birch, atlasView, birchView } = viewAgents();
@@ -813,8 +839,8 @@ describe("Claude Code: only the agent that owns a folder's memory view reads it"
 		const denied = { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: expect.stringMatching(/^Orrery guard: .*agents unreadable/) } };
 		expect(preToolUse(input, c)).toEqual(denied);
 		expect(JSON.parse(await runHook("pre-tool-use", JSON.stringify(input), c))).toEqual(denied);
-		// An input too long to read, judged by the folder alone: the pick throws there too.
-		expect(JSON.parse(await runHook("pre-tool-use", undefined, c))).toEqual(denied);
+		// An input too long to read is refused unread in every session (spec 2026-10-19-no-agent-sessions §3): no pick is made.
+		expect(JSON.parse(await runHook("pre-tool-use", undefined, c)).hookSpecificOutput.permissionDecisionReason).toMatch(/over 1 MB/);
 	});
 
 	it("denies a refused ORRERY_AGENT every agent's view, the folder's own agent's too", async () => {
@@ -847,4 +873,239 @@ describe("claudeGuard: a tool named for neither writing nor only reading, and Op
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+});
+
+describe("claudeGuard in a session that is no agent's: Orrery's own rules only (spec 2026-10-19-no-agent-sessions §3)", () => {
+	/**
+	 * A plain project, and a scratch home with an Orrery home in it (memory, logins, config, installed program), Orrery's
+	 * credentials file moved out of it by the config, Claude Code's and Codex's session records, a key and a .env file.
+	 */
+	function plain() {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "orrery-claude-plain-")));
+		dir = root;
+		const home = join(root, "home");
+		const project = join(root, "project");
+		const data = join(home, ".orrery");
+		const files = {
+			memory: join(data, "agents", "Atlas", "memory.sqlite"),
+			remotes: join(data, "remotes.json"),
+			login: join(data, "credentials.json"),
+			config: join(data, "config.toml"),
+			program: join(data, "app", "0.9.1", "src", "main.ts"),
+			moved: join(root, "secrets", "orrery-logins.json"),
+			transcript: join(home, ".claude", "projects", "-project", "s1.jsonl"),
+			rollout: join(home, ".codex", "sessions", "2026", "r.jsonl"),
+			key: join(home, ".ssh", "id_ed25519"),
+			env: join(project, ".env"),
+		};
+		for (const file of Object.values(files)) {
+			mkdirSync(dirname(file), { recursive: true });
+			writeFileSync(file, "x");
+		}
+		const options = { orreryOnly: true as const, folder: project, allowedRoots: [] as string[], cwd: project, home, foreignViews: [] as string[], orreryData: data, credentials: [files.moved], configFile: files.config };
+		return { root, home, project, data, files, options, guard: (tool: string, input: Readonly<Record<string, unknown>>) => claudeGuard(tool, input, options) };
+	}
+
+	it("orreryOnly refuses ~/.orrery reads and writes, credentials, the orrery command text, transcript folder text", () => {
+		const { root, home, data, files, guard } = plain();
+		// Orrery's home: no reads or writes, by any spelling, and no search over it.
+		for (const file of [files.memory, files.remotes, files.login, "~/.orrery/remotes.json"]) {
+			expect([file, guard("Read", { file_path: file })]).toEqual([file, expect.stringMatching(/sensitive/)]);
+			expect([file, guard("Write", { file_path: file, content: "x" })]).toEqual([file, expect.stringMatching(/sensitive/)]);
+		}
+		expect(guard("Read", { file_path: files.moved })).toMatch(/sensitive/);
+		expect(guard("Edit", { file_path: files.moved, old_string: "x", new_string: "y" })).toMatch(/sensitive/);
+		expect(guard("Grep", { pattern: "x", path: data })).toMatch(/sensitive/);
+		expect(guard("Grep", { pattern: "x", path: home })).toMatch(/narrower folder/);
+		expect(guard("Grep", { pattern: "x", path: join(root, "secrets") })).toMatch(/narrower folder/);
+		expect(guard("Glob", { pattern: "**/*.json", path: "~" })).toMatch(/narrower folder/);
+		expect(guard("Grep", { pattern: "x", glob: "**/.orrery/**" })).toMatch(/sensitive/);
+		// Its config and installed program: read, never written.
+		expect(guard("Read", { file_path: files.config })).toBeUndefined();
+		expect(guard("Write", { file_path: files.config, content: "x" })).toMatch(/Orrery's config/);
+		expect(guard("Read", { file_path: files.program })).toBeUndefined();
+		expect(guard("Edit", { file_path: files.program, old_string: "x", new_string: "y" })).toMatch(/installed program/);
+		// Shell text: Orrery's home by name, its config by its path, its commands that change memory or settings, its plumbing.
+		expect(guard("Bash", { command: "cat ~/.orrery/remotes.json" })).toMatch(/sensitive/);
+		expect(guard("Bash", { command: `sed -i s/a/b/ ${files.config}` })).toMatch(/sensitive/);
+		// Orrery's credentials file by its path, wherever the config puts it: an agent's guard refuses it by the credential
+		// names, which a session that is no agent's has none of.
+		expect(guard("Bash", { command: `cp ${files.moved} /tmp/x` })).toMatch(/sensitive/);
+		expect(guard("Bash", { command: `cp ${join(root, "secrets", "notes.json")} /tmp/x` })).toBeUndefined();
+		for (const command of ["orrery restore Atlas --from /tmp/x", "orrery import --commit x.json", "orrery agent set Atlas reads Birch"]) {
+			expect([command, guard("Bash", { command })]).toEqual([command, expect.stringMatching(/can't run from a session that is no agent's/)]);
+		}
+		expect(guard("Bash", { command: "orrery claude-hook stop < reply.json" })).toMatch(/hook plumbing/);
+		// Claude Code's and Codex's session records: read by file tools, never written, never named in shell text.
+		expect(guard("Read", { file_path: files.transcript })).toBeUndefined();
+		expect(guard("Write", { file_path: files.transcript, content: "x" })).toMatch(/session records/);
+		expect(guard("Edit", { file_path: files.rollout, old_string: "x", new_string: "y" })).toMatch(/session records/);
+		for (const command of ["ls ~/.claude/projects", `grep -r prompt ${join(home, ".codex", "sessions")}`]) {
+			expect([command, guard("Bash", { command })]).toEqual([command, expect.stringMatching(/session records/)]);
+		}
+	});
+
+	it("orreryOnly allows writes anywhere else, .env reads, ~/.ssh reads, skill writes", () => {
+		const { root, home, project, files, options, guard } = plain();
+		// Writes in the project and outside it: no folder confinement, no allowed roots.
+		for (const file of [join(project, "src", "a.ts"), join(root, "elsewhere", "notes.md"), join(home, "notes.md"), "~/.claude/settings.json"]) {
+			expect([file, guard("Write", { file_path: file, content: "x" })]).toEqual([file, undefined]);
+		}
+		// .env files and the other built-in secret names, keys and the tools' own logins under home: not Orrery's.
+		expect(guard("Read", { file_path: files.env })).toBeUndefined();
+		expect(guard("Edit", { file_path: ".env", old_string: "x", new_string: "y" })).toBeUndefined();
+		expect(guard("Bash", { command: "cat .env .dev.vars secrets.toml" })).toBeUndefined();
+		expect(guard("Read", { file_path: files.key })).toBeUndefined();
+		expect(guard("Bash", { command: "cat ~/.ssh/id_ed25519 ~/.aws/credentials ~/.npmrc /proc/self/environ" })).toBeUndefined();
+		for (const login of [join(home, ".claude.json"), join(home, ".claude", ".credentials.json"), join(home, ".pi", "agent", "auth.json"), join(home, ".omp", "agent", "agent.db")]) {
+			expect([login, guard("Read", { file_path: login })]).toEqual([login, undefined]);
+		}
+		expect(guard("Grep", { pattern: "token", path: join(home, ".ssh") })).toBeUndefined();
+		// Skills and OpenCode's config and code: no rules for them here.
+		expect(guard("Write", { file_path: join(project, ".claude", "skills", "x", "SKILL.md"), content: "---js\nrun()\n---\n" })).toBeUndefined();
+		expect(guard("Bash", { command: "ls .claude/skills && cat .opencode/plugins/x.ts" })).toBeUndefined();
+		expect(guard("Write", { file_path: join(project, "opencode.json"), content: "{}" })).toBeUndefined();
+		expect(guard("mcp__box__put", { to: "opencode.json", body: "{}" })).toBeUndefined();
+		// [guard] protect is an agent rule, even when a caller passes it.
+		expect(claudeGuard("Read", { file_path: join(project, "secrets.yml") }, { ...options, protect: ["secrets.yml"] })).toBeUndefined();
+		// And what any session does with its own project.
+		expect(guard("Grep", { pattern: "x" })).toBeUndefined();
+		expect(guard("Glob", { pattern: "**/*.ts" })).toBeUndefined();
+		expect(guard("Bash", { command: "npm test && git status && orrery status" })).toBeUndefined();
+	});
+
+	it("orreryOnly keeps where agents' sessions load code from outside Orrery's home: pi's and OMP's extensions folders, Claude Code's plugin copy and its records", () => {
+		const { home, guard, options } = plain();
+		const env = { ...process.env, HOME: home };
+		const plugins = join(home, ".claude", "plugins");
+		const piFolder = dirname(piExtensionFile(env));
+		const ompFolder = dirname(ompExtensionFile(env));
+		const copy = join(plugins, "cache", "orrery");
+		const entries = [
+			piExtensionFile(env),
+			ompExtensionFile(env),
+			// Any other file in those folders runs in the agents' sessions too: pi and OMP load every extension there.
+			join(piFolder, "added.ts"),
+			join(ompFolder, "added.ts"),
+			join(copy, "orrery", "0.9.1", "hooks", "hooks.json"),
+			join(plugins, "marketplaces", "orrery", ".claude-plugin", "marketplace.json"),
+			join(plugins, "known_marketplaces.json"),
+			join(plugins, "installed_plugins.json"),
+		];
+		for (const file of entries) {
+			mkdirSync(dirname(file), { recursive: true });
+			writeFileSync(file, "x");
+			expect([file, guard("Read", { file_path: file })]).toEqual([file, undefined]);
+			expect([file, guard("Write", { file_path: file, content: "x" })]).toEqual([file, `${file} is where your agents' sessions load code from (pi's and OMP's extensions, Orrery's Claude Code plugin and its records): it may be read, not changed.`]);
+			expect([file, guard("Edit", { file_path: file, old_string: "x", new_string: "y" })]).toEqual([file, expect.stringMatching(/where your agents' sessions load code from/)]);
+			expect([file, guard("Bash", { command: `echo 'export {}' > ${file}` })]).toEqual([file, expect.stringMatching(/sensitive/)]);
+		}
+		// Shell text that writes into those folders, names no file in them, or replaces them: refused.
+		const tilde = (path: string) => path.replace(home, "~");
+		for (const command of [
+			`cp evil.ts ${tilde(piFolder)}/`,
+			`cp evil.ts ${tilde(ompFolder)}`,
+			`mv /tmp/x.ts ${piFolder}/`,
+			`ln -sf /tmp/evil ${tilde(copy)}/orrery/0.9.1/hooks`,
+			`echo x | tee ${tilde(copy)}/orrery/0.9.1/run.sh`,
+			`cat evil > ${tilde(piFolder)}/z.ts`,
+			`rm -rf ${tilde(copy)} && cp -r /tmp/evil ${tilde(copy)}`,
+			`cp /tmp/known_marketplaces.json ${tilde(plugins)}/`,
+			`cp /tmp/x.json ${tilde(join(plugins, "marketplaces", "orrery"))}/.claude-plugin/`,
+		]) {
+			expect([command, guard("Bash", { command })]).toEqual([command, expect.stringMatching(/sensitive/)]);
+		}
+		// The rest of your dotfiles and tools' folders stay yours: other plugins, settings, shell profiles, other units.
+		const yours = [
+			join(dirname(piFolder), "settings.json"),
+			join(plugins, "cache", "other", "tool", "1.0.0", "hooks", "hooks.json"),
+			join(home, ".claude", "settings.json"),
+			join(home, ".bashrc"),
+			join(home, ".config", "systemd", "user", "x.service"),
+		];
+		for (const file of yours) expect([file, guard("Write", { file_path: file, content: "x" })]).toEqual([file, undefined]);
+		expect(guard("Bash", { command: "echo 'export X=1' >> ~/.bashrc && ls ~/.claude/plugins/cache/other" })).toBeUndefined();
+		// An agent's session is unchanged: those folders are outside its folder, where its file tools don't write.
+		const { orreryOnly: _plain, ...agent } = options;
+		expect(claudeGuard("Write", { file_path: join(piFolder, "added.ts"), content: "x" }, agent)).toMatch(/outside this agent's folder/);
+		expect(claudeGuard("Read", { file_path: piExtensionFile(env) }, agent)).toBeUndefined();
+	});
+
+	it("orreryOnly words its refusals for any session, and keeps the program of an Orrery home not named .orrery", () => {
+		const { root, files, options, guard } = plain();
+		const reasons = [
+			guard("Write", { file_path: files.config, content: "x" }),
+			guard("Edit", { file_path: files.program, old_string: "x", new_string: "y" }),
+			guard("Write", { file_path: files.transcript, content: "x" }),
+			guard("Bash", { command: "ls ~/.claude/projects" }),
+			guard("Bash", { command: "orrery browse Atlas" }),
+		];
+		for (const reason of reasons) expect(reason).toMatch(/^(?![^]*(agents may|agent's shell))[^]+$/);
+		expect(reasons[0]).toBe(`${files.config} is Orrery's config: it may be read, not changed.`);
+		expect(reasons[4]).toMatch(/^orrery browse can't run from a session that is no agent's/);
+		// Its data folder moved elsewhere and its home not named .orrery: the program beside the config is still read-only.
+		const moved = join(root, "orrery-home");
+		const program = join(moved, "app", "0.9.1", "src", "main.ts");
+		mkdirSync(dirname(program), { recursive: true });
+		writeFileSync(program, "x");
+		// The config's folder counts only when it is the Orrery home (ORRERY_HOME, orreryHome()).
+		const elsewhere = { ...options, orreryData: join(root, "moved-data"), configFile: join(moved, "config.toml"), orreryHome: moved };
+		expect(claudeGuard("Write", { file_path: program, content: "x" }, elsewhere)).toBe(`${program} is Orrery's installed program: it may be read, not changed.`);
+		expect(claudeGuard("Edit", { file_path: join(moved, "app", "new.ts"), old_string: "x", new_string: "y" }, elsewhere)).toMatch(/installed program/);
+		expect(claudeGuard("Read", { file_path: program }, elsewhere)).toBeUndefined();
+		expect(claudeGuard("Write", { file_path: join(moved, "notes.md"), content: "x" }, elsewhere)).toBeUndefined();
+		// A config named by --config or ORRERY_CONFIG in a folder that is no Orrery home: its folder's
+		// app/ is the project's own.
+		const loose = { ...elsewhere, configFile: join(root, "config.toml"), orreryHome: join(root, "home", ".orrery") };
+		mkdirSync(join(root, "app"), { recursive: true });
+		expect(claudeGuard("Write", { file_path: join(root, "app", "main.ts"), content: "x" }, loose)).toBeUndefined();
+		expect(claudeGuard("Write", { file_path: join(root, "config.toml"), content: "x" }, loose)).toMatch(/Orrery's config/);
+	});
+
+	it("orreryOnly leaves ordinary brace and extended globs alone, and reads Orrery's home in their alternatives", () => {
+		const { guard } = plain();
+		expect(guard("Grep", { pattern: "x", glob: "*.{ts,tsx}" })).toBeUndefined();
+		expect(guard("Glob", { pattern: "src/**/*.{ts,tsx}" })).toBeUndefined();
+		expect(guard("Glob", { pattern: "{src,lib}/**/@(a|b).ts" })).toBeUndefined();
+		expect(guard("Bash", { command: "prettier --write 'src/**/*.{ts,tsx}' && ls {src,lib}/*.md" })).toBeUndefined();
+		expect(guard("Grep", { pattern: "x", glob: "**/{.orrery,x}/*" })).toMatch(/sensitive/);
+		expect(guard("Bash", { command: "cat ~/{.orrery,x}/remotes.json" })).toMatch(/sensitive/);
+	});
+
+	it("judges each of 300 calls of a plain session, and of an agent's, within the guard's time (JUDGE_MS)", () => {
+		const t = testAgent();
+		const { home } = setup();
+		const plainFolder = join(t.dir, "plain");
+		mkdirSync(plainFolder);
+		const agent: HookContext = { config: t.config, env: { CLAUDE_PROJECT_DIR: t.folder }, claudePid: 1, startHolder: () => {}, home };
+		const calls = (folder: string): [string, object][] => [
+			["Read", { file_path: join(folder, "a.ts") }],
+			["Write", { file_path: join(folder, "b.ts"), content: "x" }],
+			["Edit", { file_path: join(folder, "a.ts"), old_string: "a", new_string: "b" }],
+			["Bash", { command: "npm test -- test/claude && git status --short" }],
+			["Bash", { command: "cat ~/.orrery/remotes.json" }],
+			["Bash", { command: "orrery restore Test --from /tmp/x" }],
+			["Grep", { pattern: "x" }],
+			["Glob", { pattern: "**/*.ts" }],
+			["Read", { file_path: t.config.credentialsPath }],
+			["mcp__fs__read_file", { path: join(folder, "c.md") }],
+		];
+		/** Each call's time, in ms: 30 rounds of the ten calls. */
+		const times = (ctx: HookContext, folder: string) => {
+			const each: number[] = [];
+			for (let round = 0; round < 30; round++) {
+				for (const [tool_name, tool_input] of calls(folder)) {
+					const started = performance.now();
+					preToolUse({ session_id: "s1", cwd: folder, tool_name, tool_input }, ctx);
+					each.push(performance.now() - started);
+				}
+			}
+			return each;
+		};
+		const plainTimes = times({ ...agent, env: { CLAUDE_PROJECT_DIR: plainFolder } }, plainFolder);
+		const agentTimes = times(agent, t.folder);
+		expect([plainTimes.length, agentTimes.length]).toEqual([300, 300]);
+		expect(plainTimes.filter((ms) => ms >= JUDGE_MS)).toEqual([]);
+		expect(agentTimes.filter((ms) => ms >= JUDGE_MS)).toEqual([]);
+	}, 60_000);
 });

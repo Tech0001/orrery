@@ -427,6 +427,24 @@ describe("the CLI", () => {
 		}
 	});
 
+	it("with an ORRERY_HOME that is no absolute path, answers one JSON line, never stderr: why the config can't be read, or inside an agent's session the refusal", () => {
+		const t = testAgent();
+		const view = (args: string[]) => {
+			const c = cliCommand(["claude-mod", "view", "--cwd", t.agent.folder, ...args]);
+			return spawnSync(c.cmd, c.args, { env: cleanEnv({ ORRERY_HOME: "relative-home" }), encoding: "utf8", timeout: 20_000 });
+		};
+		const outside = view([]);
+		expect([outside.status, JSON.parse(outside.stdout), outside.stderr]).toEqual([1, { error: "ORRERY_HOME must be an absolute path (got relative-home)" }, ""]);
+		// This test process, the view's parent, stands for Test's Claude Code, with its host recorded.
+		expect(recordSession(t.config.dataDir, { agent: "Test", tool: "claude-code", pid: process.pid })).toBe(true);
+		try {
+			const inside = view(["--config", t.configPath]);
+			expect([inside.status, JSON.parse(inside.stdout), inside.stderr]).toEqual([1, { error: "ORRERY_HOME can't be changed inside an agent session." }, ""]);
+		} finally {
+			forgetSession(t.config.dataDir, process.pid);
+		}
+	});
+
 	it("takes --spool-only with --wait-ms", () => {
 		const t = testAgent();
 		const c = cliCommand(["claude-mod", "view", "--cwd", t.agent.folder, "--session", SESSION, "--wait-ms", "3000", "--spool-only"]);
