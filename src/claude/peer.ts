@@ -9,8 +9,10 @@
  * macOS's LOCAL_PEERPID (the connected peer's pid). Claude Code closes its end of the hook's stdin before the hook runs.
  * Linux still names it then, so Linux asks stdin alone. macOS names no one once that end is closed (ENOTCONN), so there,
  * when stdin is a socket whose other end the system won't name, stdout is asked instead: Claude Code holds the hook's
- * stdout open until it has the answer. Stdin must still be a socket: a pipe or a file is refused, never passed over. An
- * agent's commands hold no stdout connected to Claude Code (a file on macOS); another hook Claude Code runs does, so on
+ * stdout open until it has the answer. Stdin must still be a socket: a pipe or a file is refused, never passed over.
+ * Stdout must be what Claude Code hands its hooks, an unnamed Unix stream socket pair (its other end has no address): a
+ * connection to a socket Claude Code listens on names Claude Code as well, and is refused. Only processes Claude Code
+ * itself starts hold such a stdout: an agent's commands don't (theirs is a file on macOS), but another hook does, so on
  * macOS one of the user's own hooks or plugins could pose as Orrery's (an accepted limit). Node has no getsockopt, so
  * under Node (tests, a dev run from source) nothing is known and every writing hook is refused. Asked first, before stdin
  * is read and before anything is written to stdout (src/cli/main.ts).
@@ -34,6 +36,15 @@ export type StdinPeer = number | "not-socket" | "unsupported";
  */
 export type Answer = number | "not-socket" | "unnamed";
 
+/**
+ * What stdout says on macOS: an Answer, or "not-pair" for a socket that is not an unnamed Unix stream socket pair (a
+ * connection to a listening socket, whose other end has an address, or another kind of socket).
+ */
+export type StdoutAnswer = Answer | "not-pair";
+
+/** macOS: SOL_SOCKET, SO_TYPE, SOCK_STREAM, AF_UNIX, and a sockaddr_un's size (sun_len, sun_family, 104 bytes of path). */
+const DARWIN = { solSocket: 0xffff, soType: 0x1008, sockStream: 1, afUnix: 1, sockaddrUn: 106 } as const;
+
 /** The getsockopt arguments for the peer's pid on a system. */
 interface Ask {
 	readonly lib: string;
@@ -50,19 +61,25 @@ const ASK: Partial<Record<NodeJS.Platform, Ask>> = {
 	darwin: { lib: "/usr/lib/libSystem.B.dylib", level: 0, name: 2, size: 4 },
 };
 
-/** bun:ffi's getsockopt, bound once per process (only the Bun binary runs this). */
-type GetSockOpt = (fd: number, level: number, name: number, value: Int32Array, length: Uint32Array) => number;
-let bound: GetSockOpt | undefined;
+/** bun:ffi's getsockopt and getpeername, bound once per process (only the Bun binary runs this). */
+interface Libc {
+	readonly getsockopt: (fd: number, level: number, name: number, value: Int32Array, length: Uint32Array) => number;
+	readonly getpeername: (fd: number, address: Uint8Array, length: Uint32Array) => number;
+}
+let bound: Libc | undefined;
 /** Why this process's last ask could not be made, past being Bun on a known system (unsupportedCause). */
 let failed: string | undefined;
 
-function getsockopt(lib: string): GetSockOpt {
+function libc(lib: string): Libc {
 	if (bound !== undefined) return bound;
 	const ffi = createRequire(import.meta.url)("bun:ffi") as {
-		dlopen(path: string, symbols: Record<string, { args: string[]; returns: string }>): { symbols: { getsockopt: GetSockOpt } };
+		dlopen(path: string, symbols: Record<string, { args: string[]; returns: string }>): { symbols: Libc };
 	};
 	try {
-		bound = ffi.dlopen(lib, { getsockopt: { args: ["i32", "i32", "i32", "ptr", "ptr"], returns: "i32" } }).symbols.getsockopt;
+		bound = ffi.dlopen(lib, {
+			getsockopt: { args: ["i32", "i32", "i32", "ptr", "ptr"], returns: "i32" },
+			getpeername: { args: ["i32", "ptr", "ptr"], returns: "i32" },
+		}).symbols;
 	} catch (error) {
 		// No glibc (musl, say) has no libc.so.6.
 		failed = `its C library ${lib} can't be loaded`;
@@ -71,32 +88,63 @@ function getsockopt(lib: string): GetSockOpt {
 	return bound;
 }
 
+/** Whether descriptor `fd` is a socket; one that can't be looked at is none. */
+const isSocket = (fd: number): boolean => {
+	try {
+		return fstatSync(fd).isSocket();
+	} catch {
+		return false;
+	}
+};
+
 /** What descriptor `fd` of this process says of its other end (Answer). Throws where bun:ffi can't ask. */
 function answer(fd: number, ask: Ask): Answer {
-	try {
-		if (!fstatSync(fd).isSocket()) return "not-socket";
-	} catch {
-		return "not-socket";
-	}
+	if (!isSocket(fd)) return "not-socket";
 	const value = new Int32Array(Math.ceil(ask.size / 4));
 	const length = new Uint32Array([ask.size]);
-	if (getsockopt(ask.lib)(fd, ask.level, ask.name, value, length) !== 0 || length[0] < 4) return "unnamed";
+	if (libc(ask.lib).getsockopt(fd, ask.level, ask.name, value, length) !== 0 || length[0] < 4) return "unnamed";
 	// A socket that is no Unix one names no process (pid 0): not the socket pair Claude Code hands its hooks.
 	return value[0] > 0 ? value[0] : "not-socket";
 }
 
 /**
- * The hook's caller from what its descriptors say (module doc): stdin's answer, and on macOS, when stdin is a socket the
- * system won't name the other end of, stdout's, where only a pid counts. Linux never asks stdout. `ask` asks descriptor
- * 0 or 1 (and may throw). An "unsupported" peer comes with why, for unsupportedCause.
+ * Whether a macOS peer address (`length` bytes of a sockaddr_un: sun_len, sun_family, then the path) is a Unix socket's
+ * with no path, as a socket pair's other end is. A connection to a listening socket gets the listener's path.
  */
-export function peerFrom(platform: NodeJS.Platform, ask: (fd: 0 | 1) => Answer): { readonly peer: StdinPeer; readonly cause?: string } {
-	const stdin = ask(0);
-	if (stdin !== "unnamed") return { peer: stdin };
+export function unnamedUnixPeer(address: Uint8Array, length: number): boolean {
+	return length >= 2 && address[1] === DARWIN.afUnix && (length === 2 || address[2] === 0);
+}
+
+/**
+ * What descriptor `fd` says on macOS when it must be the socket pair Claude Code hands its hooks (StdoutAnswer): a Unix
+ * stream socket whose other end has no address, else "not-pair". Throws where bun:ffi can't ask.
+ */
+function pairAnswer(fd: number, ask: Ask): StdoutAnswer {
+	if (!isSocket(fd)) return "not-socket";
+	const { getsockopt, getpeername } = libc(ask.lib);
+	const type = new Int32Array(1);
+	if (getsockopt(fd, DARWIN.solSocket, DARWIN.soType, type, new Uint32Array([4])) !== 0 || type[0] !== DARWIN.sockStream) return "not-pair";
+	const address = new Uint8Array(DARWIN.sockaddrUn);
+	const length = new Uint32Array([DARWIN.sockaddrUn]);
+	// It fails when stdout is connected to no one.
+	if (getpeername(fd, address, length) !== 0) return "unnamed";
+	return unnamedUnixPeer(address, length[0]) ? answer(fd, ask) : "not-pair";
+}
+
+/**
+ * The hook's caller from what its descriptors say (module doc): stdin's answer, and on macOS, when stdin is a socket the
+ * system won't name the other end of, stdout's, where only a pid counts. Linux never asks stdout. `stdin` and `stdout`
+ * ask their descriptor (and may throw). An "unsupported" peer comes with why, for unsupportedCause.
+ */
+export function peerFrom(platform: NodeJS.Platform, stdin: () => Answer, stdout: () => StdoutAnswer): { readonly peer: StdinPeer; readonly cause?: string } {
+	const fromStdin = stdin();
+	if (fromStdin !== "unnamed") return { peer: fromStdin };
 	if (platform !== "darwin") return { peer: "unsupported", cause: "the system would not name the socket's other end" };
 	// Claude Code closed its end of stdin before the hook ran; it holds stdout's until it has the answer.
-	const stdout = ask(1);
-	return typeof stdout === "number" ? { peer: stdout } : { peer: "unsupported", cause: "the system would not name the other end of stdin or stdout" };
+	const fromStdout = stdout();
+	if (typeof fromStdout === "number") return { peer: fromStdout };
+	const cause = fromStdout === "not-pair" ? "stdout is not the socket pair Claude Code hands its hooks" : "the system would not name the other end of stdin or stdout";
+	return { peer: "unsupported", cause };
 }
 
 /** The process that called this hook (module doc): the other end of stdin, or on macOS maybe of stdout. Never throws. */
@@ -104,7 +152,11 @@ export function stdinPeer(): StdinPeer {
 	const ask = ASK[process.platform];
 	if (process.versions.bun === undefined || ask === undefined) return "unsupported";
 	try {
-		const { peer, cause } = peerFrom(process.platform, (fd) => answer(fd, ask));
+		const { peer, cause } = peerFrom(
+			process.platform,
+			() => answer(0, ask),
+			() => pairAnswer(1, ask),
+		);
 		if (cause !== undefined) failed = cause;
 		return peer;
 	} catch {
