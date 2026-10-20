@@ -15,6 +15,8 @@ A coding agent forgets everything when its session ends, and a long project outg
 gives each of your agents a lasting memory: every message it has seen, plus a tree of summaries over them. The agent
 works from a compact view of its whole history and can look up the original messages whenever it needs them.
 
+<p align="center"><img src="assets/memory-tree.svg" width="800" alt="How Orrery remembers: 16 messages, all kept, with a tree of summaries over them in which each summary covers the two below it. A dashed cut through the tree picks one summary for messages 1 to 8, one for 9 to 12, one for 13 and 14, and the two newest messages, so 5 lines of the agent's view stand for all 16. zoom opens any summary into its two halves, down to the exact message."></p>
+
 The memory belongs to the agent, not to a session, a folder or a tool. Start a fresh session, change models, move
 from pi to Claude Code, open the agent in another project or carry on from another computer, and it still remembers.
 
