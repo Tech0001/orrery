@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkCaller, stdinPeer, unsupportedCause } from "../../src/claude/peer.ts";
+import { type Answer, checkCaller, peerFrom, type StdoutAnswer, stdinPeer, unnamedUnixPeer, unsupportedCause } from "../../src/claude/peer.ts";
 import { claudeSession } from "../../src/claude/pick.ts";
 import { newToken } from "../../src/agent/pick.ts";
 import { forgetSession, processStart } from "../../src/agent/sessions.ts";
@@ -23,6 +23,77 @@ describe("stdinPeer", () => {
 		expect(process.versions.bun).toBeUndefined();
 		expect(stdinPeer()).toBe("unsupported");
 		expect(unsupportedCause()).toBe("it runs under Node, not its own binary");
+	});
+});
+
+describe("peerFrom: stdin's answer, and on macOS stdout's when stdin is a socket that names no one", () => {
+	/** What each descriptor answers, and which were asked. */
+	const answers = (fromStdin: Answer, fromStdout: StdoutAnswer) => {
+		const asked: string[] = [];
+		const stdin = (): Answer => {
+			asked.push("stdin");
+			return fromStdin;
+		};
+		const stdout = (): StdoutAnswer => {
+			asked.push("stdout");
+			return fromStdout;
+		};
+		return { asked, stdin, stdout };
+	};
+
+	it("takes stdin's pid, or its not-socket (a pipe, a file), as it is on either system: stdout is never asked then", () => {
+		for (const platform of ["linux", "darwin"] as const) {
+			for (const fromStdin of [4321, "not-socket"] as const) {
+				const { asked, stdin, stdout } = answers(fromStdin, 1234);
+				expect(peerFrom(platform, stdin, stdout)).toEqual({ peer: fromStdin });
+				expect(asked).toEqual(["stdin"]);
+			}
+		}
+	});
+
+	it("on macOS, stdin a socket Claude Code already closed (ENOTCONN): stdout's peer is the caller", () => {
+		const { asked, stdin, stdout } = answers("unnamed", 1234);
+		expect(peerFrom("darwin", stdin, stdout)).toEqual({ peer: 1234 });
+		expect(asked).toEqual(["stdin", "stdout"]);
+	});
+
+	it("on macOS, stdout no socket (a file, as an agent's command has), one naming no process, or one the system won't name: unsupported, and says why", () => {
+		for (const fromStdout of ["not-socket", "unnamed"] as const) {
+			const { stdin, stdout } = answers("unnamed", fromStdout);
+			expect(peerFrom("darwin", stdin, stdout)).toEqual({ peer: "unsupported", cause: "the system would not name the other end of stdin or stdout" });
+		}
+	});
+
+	it("on macOS, stdout a socket that is not an unnamed stream socket pair (a connection to a socket Claude Code listens on): unsupported, and says why", () => {
+		const { stdin, stdout } = answers("unnamed", "not-pair");
+		expect(peerFrom("darwin", stdin, stdout)).toEqual({ peer: "unsupported", cause: "stdout is not the socket pair Claude Code hands its hooks" });
+	});
+
+	it("on Linux, stdin unnamed is unsupported, and stdout is never asked", () => {
+		const { asked, stdin, stdout } = answers("unnamed", 1234);
+		expect(peerFrom("linux", stdin, stdout)).toEqual({ peer: "unsupported", cause: "the system would not name the socket's other end" });
+		expect(asked).toEqual(["stdin"]);
+	});
+});
+
+describe("unnamedUnixPeer: a macOS peer address (sun_len, sun_family, path) as a socket pair's other end has it", () => {
+	/** A sockaddr_un as macOS's getpeername fills it: `length` bytes of sun_len, sun_family and `path`. */
+	const peer = (family: number, path: string, length = 2 + path.length + 1) => {
+		const address = new Uint8Array(106);
+		address.set([length, family, ...Buffer.from(path)]);
+		return [address, length] as const;
+	};
+
+	it("takes a Unix address with no path: a socket pair's other end (macOS gives a zeroed 16-byte address), or a bare family", () => {
+		expect(unnamedUnixPeer(...peer(1, "", 16))).toBe(true);
+		expect(unnamedUnixPeer(...peer(1, "", 2))).toBe(true);
+	});
+
+	it("refuses a path (a connection to a listening socket), another family, or too short an address to say", () => {
+		expect(unnamedUnixPeer(...peer(1, "/tmp/claude.sock"))).toBe(false);
+		expect(unnamedUnixPeer(...peer(2, "", 16))).toBe(false);
+		expect(unnamedUnixPeer(...peer(1, "", 1))).toBe(false);
+		expect(unnamedUnixPeer(...peer(1, "", 0))).toBe(false);
 	});
 });
 

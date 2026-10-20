@@ -506,15 +506,20 @@ any process of the person's can run, so what a hook says is checked against the 
 - **Claude Code.** A writing hook (session start, prompt, stop, session end) acts only when the other end of its stdin
   is the recorded Claude Code process, with the same start time (Linux `SO_PEERCRED`, macOS `LOCAL_PEERPID`, asked
   through the compiled program); a shell that pipes input into the hook command gets nothing written, decided or
-  started. A prompt is then held until Claude Code's transcript has it: a user line with the hook's prompt id and the
-  same words, typed, queued, or given to `claude -p` (Claude Code 2.1.302's fields). The transcript is the one a
-  checked session start named, read only under Claude Code's projects folder, and only what was appended since. A
-  message from a peer (a subagent's report, or anything sent to the session's inbox, the agent's own shell included)
-  is kept as `[subagent] …`, as the importer keeps subagent reports, and a task notification is dropped. Replies need
-  no transcript: only the real Claude Code can send the Stop that carries them. Where the caller can't be checked (a
-  development run under Node, a system Orrery doesn't know, a C library that won't load) or the transcript can't be
-  read (no `/proc` on Linux), the session says why and records nothing; if Claude Code stops handing its hooks a socket,
-  recording stops with `can't confirm prompts in this Claude Code version`, never by falling back.
+  started. Claude Code closes its end of the hook's stdin before the hook runs, and macOS then names no one there, so
+  on macOS, when stdin is a socket whose other end can't be named, the other end of stdout is asked instead: Claude
+  Code holds it until it has the answer. Stdout counts only as an unnamed Unix stream socket pair, as Claude Code hands
+  its hooks (a connection to a socket Claude Code listens on has its address, and is refused). A pipe or a file on
+  stdin is refused all the same. A prompt is then held until Claude Code's transcript has it: a user line with the
+  hook's prompt id and the same words, typed, queued, or given to `claude -p` (Claude Code 2.1.302's fields). The
+  transcript is the one a checked session start named, read only under Claude Code's projects folder, and only what
+  was appended since. A message from a peer (a subagent's report, or anything sent to the session's inbox, the agent's
+  own shell included) is kept as `[subagent] …`, as the importer keeps subagent reports, and a task notification is
+  dropped. Replies need no transcript: only the real Claude Code can send the Stop that carries them. Where the caller
+  can't be checked (a development run under Node, a system Orrery doesn't know, a C library that won't load) or the
+  transcript can't be read (no `/proc` on Linux), the session says why and records nothing; if Claude Code stops
+  handing its hooks a socket, recording stops with `can't confirm prompts in this Claude Code version`, never by
+  falling back.
 - **Codex.** Its hooks come through a pipe, so the session's rollout is the proof. The rollout is found by the session
   id under Codex's own folder, never where the hook's input says. A session start counts only when the rollout says it
   is the person's own top-level thread (a spawned agent's thread never is) and the Codex process holds that very file
@@ -565,7 +570,9 @@ command it was told to run.
 - Real files kept outside every Orrery data folder (credentials or an SSH identity elsewhere, in a layout of the
   person's own) are not judged by the CLI's check.
 - A second Orrery home inside the real data folder: tools started there from inside an agent's session count as nested.
-- macOS: Claude Code's caller check and Codex's checks (`lsof`, the file at that path) are not yet verified on a Mac.
+- macOS: another hook that Claude Code runs (the person's own hooks and plugins) holds such a stdout, a socket pair
+  with Claude Code, so it could pose as Orrery's hook. Only processes Claude Code itself starts hold one; agents'
+  commands don't. Codex's checks (`lsof`, the file at that path) are not yet verified on a Mac.
 - Claude Code's `/orrery:*` command events are not checked against the transcript: an injected one can only drop the
   agent's own reply.
 - Codex: when Orrery can't save a process's decision, resuming inside Codex's own window can decide again in the same

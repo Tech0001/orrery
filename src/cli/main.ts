@@ -878,8 +878,10 @@ async function claudeHook(event: string | undefined, configPath: string | undefi
 			return 0;
 		}
 		const [hooks, { claudeHookPid }, { stdinPeer }] = await Promise.all([import("../claude/hooks.ts"), import("../claude/pick.ts"), import("../claude/peer.ts")]);
-		// Who is on the other end of stdin, for a writing hook (src/claude/peer.ts): asked first, before stdin is read, since
-		// macOS answers only while the writer's end is still connected. PreToolUse never asks.
+		// Who called a writing hook (src/claude/peer.ts): asked first, before stdin is read and before anything is written to
+		// stdout. Claude Code closes its end of stdin before the hook runs, and macOS then names no one there, so on macOS
+		// stdout is asked instead: Claude Code holds it until it has the answer, so it must not be written or closed before
+		// this. PreToolUse never asks.
 		const peer = guarding ? "unsupported" : stdinPeer();
 		// A PreToolUse input over 1 MB is read but not kept (hookInputMax): the guard refuses it unread.
 		const stdin = await readStdin(hooks.hookInputMax(event ?? ""));

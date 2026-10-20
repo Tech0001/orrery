@@ -196,22 +196,55 @@ export interface FakeClaude {
 	readonly pid: number;
 	/**
 	 * `orrery claude-hook <event>` as Claude Code runs it: its child, with CLAUDE_PID its pid (unless `env` names one), the
-	 * input on stdin (a socket pair whose peer is this stand-in, as Claude Code's is).
+	 * input on stdin (a socket pair whose peer is this stand-in, as Claude Code's is). With `forge`, as an agent's command
+	 * could run it: stdin a socket pair the stand-in closes in full before the hook asks (the hook starts through `sh`
+	 * after a pause), and stdout either the file `out`, whose content is the answer's stdout, or a connection the stand-in
+	 * makes to the Unix socket listening at `listener`, which gets the answer (the answer's stdout is then empty).
 	 */
-	hook(event: string, input: object, env: Record<string, string>): Promise<{ readonly status: number | null; readonly stdout: string; readonly stderr: string }>;
+	hook(
+		event: string,
+		input: object,
+		env: Record<string, string>,
+		forge?: { readonly out: string } | { readonly listener: string },
+	): Promise<{ readonly status: number | null; readonly stdout: string; readonly stderr: string }>;
 	kill(): void;
 }
 
 const FAKE_CLAUDE = `
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
+const { closeSync, openSync, readFileSync } = require("node:fs");
+const { connect } = require("node:net");
+const reply = (answer) => process.stdout.write(JSON.stringify(answer) + "\\n");
+// The hook with stdin a socket pair closed in full before it asks, stdout the given one; done() gives the answer's stdout.
+function forged(id, cmd, args, env, input, stdout, done) {
+	const run = spawn("sh", ["-c", 'sleep 0.3; exec "$@"', "sh", cmd, ...args], { env, stdio: ["pipe", stdout, "pipe"] });
+	let stderr = "";
+	run.stderr.setEncoding("utf8").on("data", (part) => { stderr += part; });
+	run.on("close", (status) => reply({ id, status, stdout: done(), stderr }));
+	// A full close, not end(): the hook's stdin then has no peer on macOS (ENOTCONN).
+	run.stdin.write(input, () => run.stdin.destroy());
+}
 let buffer = "";
 process.stdin.setEncoding("utf8").on("data", (chunk) => {
 	buffer += chunk;
 	for (let at = buffer.indexOf("\\n"); at >= 0; at = buffer.indexOf("\\n")) {
-		const { id, cmd, args, env, input } = JSON.parse(buffer.slice(0, at));
+		const { id, cmd, args, env, input, out, listener } = JSON.parse(buffer.slice(0, at));
 		buffer = buffer.slice(at + 1);
-		const run = spawnSync(cmd, args, { env, input, encoding: "utf8", timeout: 20000 });
-		process.stdout.write(JSON.stringify({ id, status: run.status, stdout: run.stdout, stderr: run.stderr }) + "\\n");
+		if (out !== undefined) {
+			const file = openSync(out, "w");
+			forged(id, cmd, args, env, input, file, () => readFileSync(out, "utf8"));
+			closeSync(file);
+		} else if (listener !== undefined) {
+			const socket = connect(listener, () =>
+				forged(id, cmd, args, env, input, socket, () => {
+					socket.destroy();
+					return "";
+				}),
+			);
+		} else {
+			const run = spawnSync(cmd, args, { env, input, encoding: "utf8", timeout: 20000 });
+			reply({ id, status: run.status, stdout: run.stdout, stderr: run.stderr });
+		}
 	}
 });
 `;
@@ -237,13 +270,13 @@ export function fakeClaude(): FakeClaude {
 	});
 	return {
 		pid,
-		hook: (event, input, env) =>
+		hook: (event, input, env, forge) =>
 			new Promise((resolve) => {
 				const id = next++;
 				waiting.set(id, resolve);
 				const c = cliCommand(["claude-hook", event]);
 				// CLAUDE_PID is its own pid unless `env` names another (the shell of another Claude Code, forging a hook call).
-				child.stdin.write(`${JSON.stringify({ id, cmd: c.cmd, args: c.args, env: cleanEnv({ CLAUDE_PID: String(pid), ...env }), input: JSON.stringify(input) })}\n`);
+				child.stdin.write(`${JSON.stringify({ id, cmd: c.cmd, args: c.args, env: cleanEnv({ CLAUDE_PID: String(pid), ...env }), input: JSON.stringify(input), ...forge })}\n`);
 			}),
 		kill: () => child.kill(),
 	};

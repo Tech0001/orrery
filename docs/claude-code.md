@@ -254,13 +254,17 @@ Open the agent with `orrery agent <Name>`, or start Claude Code at the root of i
   (within 30 seconds of its turn's end) is dropped, and `orrery status` counts it: `N unconfirmed messages not
   recorded`.
 - Orrery records only when Claude Code itself calls its hooks, which the compiled `orrery` program checks (the other
-  end of the hook's input must be the Claude Code process). Where it can't check, the session says why and is not
-  recorded: `Orrery can't check who calls its hooks here (it runs under Node, not its own binary), so this session
-  isn't recorded.` The other reasons are a system Orrery doesn't know and a C library that won't load; without `/proc`
-  on Linux, Orrery can't read the transcript and says so. If a Claude Code version stops handing its hooks what Orrery
-  checks, recording stops with `Orrery: can't confirm prompts in this Claude Code version, so this session isn't
-  recorded.`, never silently. Running Orrery from a checkout (`src/cli/main.ts` under Node) therefore records nothing
-  in Claude Code; `npm run install-local` installs a compiled one ([CONTRIBUTING.md](../CONTRIBUTING.md)).
+  end of the hook's input must be the Claude Code process). Claude Code closes its end of the input before the hook
+  runs, and macOS then no longer names it, so on macOS Orrery asks the hook's output instead, which Claude Code holds
+  until it has the answer. The input must still be a socket, and the output must be the unnamed socket pair Claude
+  Code hands its hooks, not a connection to a socket Claude Code listens on. Where it can't check, the session says
+  why and is not recorded: `Orrery can't check who calls its hooks here (it runs under Node, not its own binary), so
+  this session isn't recorded.` The other reasons are a system Orrery doesn't know and a C library that won't load;
+  without `/proc` on Linux, Orrery can't read the transcript and says so. If a Claude Code version stops handing its
+  hooks what Orrery checks, recording stops with `Orrery: can't confirm prompts in this Claude Code version, so this
+  session isn't recorded.`, never silently. Running Orrery from a checkout (`src/cli/main.ts` under Node) therefore
+  records nothing in Claude Code; `npm run install-local` installs a compiled one
+  ([CONTRIBUTING.md](../CONTRIBUTING.md)).
 - The view loads when a session starts. A long session runs on the view it started with plus its own transcript.
   Start a fresh session (or `--resume`) to pick up a newer view. If a session was started by another agent, or in
   another agent's folder, and this agent resumes it, recording starts at its tail: the other agent's turns are not
@@ -559,8 +563,10 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
 - Sessions left open across the update from 0.8.0: one opened with `orrery agent` keeps recording without the
   transcript check until its next session start, and the others stop recording until they restart (see Install,
   once per machine).
-- On macOS the caller check (`LOCAL_PEERPID`) is not yet verified with a real Claude Code, nor how Orrery tells a
-  session that is no agent's there (`ps`).
+- On macOS another hook that Claude Code runs (your own hooks and plugins) could pose as Orrery's hook, since its
+  output is such a socket pair with Claude Code and the check asks the output there. Only processes Claude Code itself
+  starts have one; agents' commands don't.
+- On macOS how Orrery tells a session that is no agent's (`ps`) is not yet verified with a real Claude Code.
 - In a session that is no agent's the guard is Orrery's own rules only, and the command check reads processes and
   variables: the README's [Sessions that are no agent's](../README.md#sessions-that-are-no-agents) lists what gets past
   them.

@@ -26,12 +26,13 @@
  *   once the start can be read.
  * - Their stdout is only their JSON answer, and they never put message contents on stderr.
  * - A writing hook (all but PreToolUse) changes nothing unless its caller is its Claude Code (spec
- *   2026-10-18-agent-permissions §3c, src/claude/peer.ts): its stdin's peer must be the Claude Code process, and, past
- *   SessionStart, the one recorded with its start time. An agent's shell that runs the hook command itself (a pipe, a
- *   socket pair of its own) gets nothing written, decided, forgotten or started; a SessionStart that looks like a real one
- *   says the session isn't recorded, and why (callerNotice). A session left open across Orrery's update from 0.8.0
- *   (whose decision holds no start) goes on recording when its ORRERY_AGENT launch's token proves it; else its first
- *   refused prompt or reply says, once, to restart it (updatedSession).
+ *   2026-10-18-agent-permissions §3c, src/claude/peer.ts): its stdin's peer (on macOS, its stdout's when stdin's is
+ *   gone) must be the Claude Code process, and, past SessionStart, the one recorded with its start time. An agent's
+ *   shell that runs the hook command itself (a pipe, a socket pair of its own) gets nothing written, decided, forgotten
+ *   or started; a SessionStart that looks like a real one says the session isn't recorded, and why (callerNotice). A
+ *   session left open across Orrery's update from 0.8.0 (whose decision holds no start) goes on recording when its
+ *   ORRERY_AGENT launch's token proves it; else its first refused prompt or reply says, once, to restart it
+ *   (updatedSession).
  * - SessionStart spools where the session's transcript is (only under Claude Code's projects folder), and each prompt
  *   carries its promptId: the holder records a prompt only once that transcript confirms it (src/claude/transcript.ts).
  *   A session whose transcript can't be found there, or whose Claude Code isn't recorded, is marked read-only with the
@@ -143,8 +144,9 @@ export interface HookContext {
 	/** How a coding tool's session that is no agent's is looked for (src/agent/plain-nested.ts); tests pass their own. */
 	readonly plain?: PlainDeps;
 	/**
-	 * Who is on the other end of the hook's stdin (default stdinPeer, src/claude/peer.ts): asked by writing hooks only. The
-	 * CLI asks before it reads stdin and passes the answer; tests pass their own.
+	 * Who is on the other end of the hook's stdin, or on macOS maybe its stdout (default stdinPeer, src/claude/peer.ts):
+	 * asked by writing hooks only. The CLI asks before it reads stdin or writes stdout and passes the answer; tests pass
+	 * their own.
 	 */
 	readonly peer?: () => StdinPeer;
 	/** Why a transcript can't be read here (default unreadableHere, src/claude/transcript.ts); tests pass their own. */
