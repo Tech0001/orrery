@@ -196,22 +196,37 @@ export interface FakeClaude {
 	readonly pid: number;
 	/**
 	 * `orrery claude-hook <event>` as Claude Code runs it: its child, with CLAUDE_PID its pid (unless `env` names one), the
-	 * input on stdin (a socket pair whose peer is this stand-in, as Claude Code's is).
+	 * input on stdin (a socket pair whose peer is this stand-in, as Claude Code's is). With `out`, as an agent's command
+	 * could run it: stdin a socket pair the stand-in closes in full before the hook asks (the hook starts through `sh`
+	 * after a pause), stdout the file `out`, whose content is the answer's stdout.
 	 */
-	hook(event: string, input: object, env: Record<string, string>): Promise<{ readonly status: number | null; readonly stdout: string; readonly stderr: string }>;
+	hook(event: string, input: object, env: Record<string, string>, out?: string): Promise<{ readonly status: number | null; readonly stdout: string; readonly stderr: string }>;
 	kill(): void;
 }
 
 const FAKE_CLAUDE = `
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
+const { closeSync, openSync, readFileSync } = require("node:fs");
+const reply = (answer) => process.stdout.write(JSON.stringify(answer) + "\\n");
 let buffer = "";
 process.stdin.setEncoding("utf8").on("data", (chunk) => {
 	buffer += chunk;
 	for (let at = buffer.indexOf("\\n"); at >= 0; at = buffer.indexOf("\\n")) {
-		const { id, cmd, args, env, input } = JSON.parse(buffer.slice(0, at));
+		const { id, cmd, args, env, input, out } = JSON.parse(buffer.slice(0, at));
 		buffer = buffer.slice(at + 1);
-		const run = spawnSync(cmd, args, { env, input, encoding: "utf8", timeout: 20000 });
-		process.stdout.write(JSON.stringify({ id, status: run.status, stdout: run.stdout, stderr: run.stderr }) + "\\n");
+		if (out === undefined) {
+			const run = spawnSync(cmd, args, { env, input, encoding: "utf8", timeout: 20000 });
+			reply({ id, status: run.status, stdout: run.stdout, stderr: run.stderr });
+			continue;
+		}
+		const file = openSync(out, "w");
+		const run = spawn("sh", ["-c", 'sleep 0.3; exec "$@"', "sh", cmd, ...args], { env, stdio: ["pipe", file, "pipe"] });
+		closeSync(file);
+		let stderr = "";
+		run.stderr.setEncoding("utf8").on("data", (part) => { stderr += part; });
+		run.on("close", (status) => reply({ id, status, stdout: readFileSync(out, "utf8"), stderr }));
+		// A full close, not end(): the hook's stdin then has no peer on macOS (ENOTCONN).
+		run.stdin.write(input, () => run.stdin.destroy());
 	}
 });
 `;
@@ -237,13 +252,13 @@ export function fakeClaude(): FakeClaude {
 	});
 	return {
 		pid,
-		hook: (event, input, env) =>
+		hook: (event, input, env, out) =>
 			new Promise((resolve) => {
 				const id = next++;
 				waiting.set(id, resolve);
 				const c = cliCommand(["claude-hook", event]);
 				// CLAUDE_PID is its own pid unless `env` names another (the shell of another Claude Code, forging a hook call).
-				child.stdin.write(`${JSON.stringify({ id, cmd: c.cmd, args: c.args, env: cleanEnv({ CLAUDE_PID: String(pid), ...env }), input: JSON.stringify(input) })}\n`);
+				child.stdin.write(`${JSON.stringify({ id, cmd: c.cmd, args: c.args, env: cleanEnv({ CLAUDE_PID: String(pid), ...env }), input: JSON.stringify(input), out })}\n`);
 			}),
 		kill: () => child.kill(),
 	};

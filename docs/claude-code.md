@@ -254,7 +254,9 @@ Open the agent with `orrery agent <Name>`, or start Claude Code at the root of i
   (within 30 seconds of its turn's end) is dropped, and `orrery status` counts it: `N unconfirmed messages not
   recorded`.
 - Orrery records only when Claude Code itself calls its hooks, which the compiled `orrery` program checks (the other
-  end of the hook's input must be the Claude Code process). Where it can't check, the session says why and is not
+  end of the hook's input must be the Claude Code process). Claude Code closes its end of the input before the hook
+  runs, and macOS then no longer names it, so on macOS Orrery asks the hook's output instead, which Claude Code holds
+  until it has the answer (the input must still be a socket). Where it can't check, the session says why and is not
   recorded: `Orrery can't check who calls its hooks here (it runs under Node, not its own binary), so this session
   isn't recorded.` The other reasons are a system Orrery doesn't know and a C library that won't load; without `/proc`
   on Linux, Orrery can't read the transcript and says so. If a Claude Code version stops handing its hooks what Orrery
@@ -559,8 +561,9 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
 - Sessions left open across the update from 0.8.0: one opened with `orrery agent` keeps recording without the
   transcript check until its next session start, and the others stop recording until they restart (see Install,
   once per machine).
-- On macOS the caller check (`LOCAL_PEERPID`) is not yet verified with a real Claude Code, nor how Orrery tells a
-  session that is no agent's there (`ps`).
+- On macOS another hook that Claude Code runs (your own hooks and plugins) could pose as Orrery's hook, since its
+  output is connected to Claude Code and the check asks the output there. Agents' commands have no such output.
+- On macOS how Orrery tells a session that is no agent's (`ps`) is not yet verified with a real Claude Code.
 - In a session that is no agent's the guard is Orrery's own rules only, and the command check reads processes and
   variables: the README's [Sessions that are no agent's](../README.md#sessions-that-are-no-agents) lists what gets past
   them.

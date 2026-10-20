@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkCaller, stdinPeer, unsupportedCause } from "../../src/claude/peer.ts";
+import { type Answer, checkCaller, peerFrom, stdinPeer, unsupportedCause } from "../../src/claude/peer.ts";
 import { claudeSession } from "../../src/claude/pick.ts";
 import { newToken } from "../../src/agent/pick.ts";
 import { forgetSession, processStart } from "../../src/agent/sessions.ts";
@@ -23,6 +23,46 @@ describe("stdinPeer", () => {
 		expect(process.versions.bun).toBeUndefined();
 		expect(stdinPeer()).toBe("unsupported");
 		expect(unsupportedCause()).toBe("it runs under Node, not its own binary");
+	});
+});
+
+describe("peerFrom: stdin's answer, and on macOS stdout's when stdin is a socket that names no one", () => {
+	/** What each descriptor answers, and which were asked. */
+	const answers = (stdin: Answer, stdout: Answer) => {
+		const asked: number[] = [];
+		const ask = (fd: 0 | 1): Answer => {
+			asked.push(fd);
+			return fd === 0 ? stdin : stdout;
+		};
+		return { asked, ask };
+	};
+
+	it("takes stdin's pid, or its not-socket (a pipe, a file), as it is on either system: stdout is never asked then", () => {
+		for (const platform of ["linux", "darwin"] as const) {
+			for (const stdin of [4321, "not-socket"] as const) {
+				const { asked, ask } = answers(stdin, 1234);
+				expect(peerFrom(platform, ask)).toEqual({ peer: stdin });
+				expect(asked).toEqual([0]);
+			}
+		}
+	});
+
+	it("on macOS, stdin a socket Claude Code already closed (ENOTCONN): stdout's peer is the caller", () => {
+		const { asked, ask } = answers("unnamed", 1234);
+		expect(peerFrom("darwin", ask)).toEqual({ peer: 1234 });
+		expect(asked).toEqual([0, 1]);
+	});
+
+	it("on macOS, stdout no socket (a file, as an agent's command has), one naming no process, or one the system won't name: unsupported, and says why", () => {
+		for (const stdout of ["not-socket", "unnamed"] as const) {
+			expect(peerFrom("darwin", answers("unnamed", stdout).ask)).toEqual({ peer: "unsupported", cause: "the system would not name the other end of stdin or stdout" });
+		}
+	});
+
+	it("on Linux, stdin unnamed is unsupported, and stdout is never asked", () => {
+		const { asked, ask } = answers("unnamed", 1234);
+		expect(peerFrom("linux", ask)).toEqual({ peer: "unsupported", cause: "the system would not name the socket's other end" });
+		expect(asked).toEqual([0]);
 	});
 });
 

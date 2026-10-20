@@ -5,10 +5,15 @@
  * A writing hook (SessionStart, UserPromptSubmit, Stop, SessionEnd) changes nothing unless that process is the recorded
  * Claude Code.
  *
- * The peer is asked with getsockopt on fd 0 through bun:ffi: Linux's SO_PEERCRED (struct ucred, recorded when the pair
- * was made), macOS's LOCAL_PEERPID (the connected peer's pid). Node has no getsockopt, so under Node (tests, a dev run
- * from source) nothing is known and every writing hook is refused. Asked before stdin is read: macOS answers only while
- * the writer's end is still connected.
+ * The peer is asked with getsockopt through bun:ffi: Linux's SO_PEERCRED (struct ucred, recorded when the pair was made),
+ * macOS's LOCAL_PEERPID (the connected peer's pid). Claude Code closes its end of the hook's stdin before the hook runs.
+ * Linux still names it then, so Linux asks stdin alone. macOS names no one once that end is closed (ENOTCONN), so there,
+ * when stdin is a socket whose other end the system won't name, stdout is asked instead: Claude Code holds the hook's
+ * stdout open until it has the answer. Stdin must still be a socket: a pipe or a file is refused, never passed over. An
+ * agent's commands hold no stdout connected to Claude Code (a file on macOS); another hook Claude Code runs does, so on
+ * macOS one of the user's own hooks or plugins could pose as Orrery's (an accepted limit). Node has no getsockopt, so
+ * under Node (tests, a dev run from source) nothing is known and every writing hook is refused. Asked first, before stdin
+ * is read and before anything is written to stdout (src/cli/main.ts).
  */
 
 import { fstatSync } from "node:fs";
@@ -18,13 +23,27 @@ import { liveSession, processStart } from "../agent/sessions.ts";
 import { decidedFor } from "./pick.ts";
 
 /**
- * The pid on the other end of stdin; "not-socket" when stdin is no socket (or no Unix one); "unsupported" when it can't
- * be asked (unsupportedCause says why).
+ * The pid on the other end of stdin (on macOS, of stdout when stdin's can't be named); "not-socket" when stdin is no
+ * socket (or no Unix one); "unsupported" when it can't be asked (unsupportedCause says why).
  */
 export type StdinPeer = number | "not-socket" | "unsupported";
 
+/**
+ * What one descriptor says of its other end: the pid there; "not-socket" when it is no socket (or one that names no
+ * process); "unnamed" when it is a socket whose other end the system won't name.
+ */
+export type Answer = number | "not-socket" | "unnamed";
+
+/** The getsockopt arguments for the peer's pid on a system. */
+interface Ask {
+	readonly lib: string;
+	readonly level: number;
+	readonly name: number;
+	readonly size: number;
+}
+
 /** The getsockopt arguments for the peer's pid on this system, or undefined where Orrery doesn't know them. */
-const ASK: Partial<Record<NodeJS.Platform, { readonly lib: string; readonly level: number; readonly name: number; readonly size: number }>> = {
+const ASK: Partial<Record<NodeJS.Platform, Ask>> = {
 	// SOL_SOCKET, SO_PEERCRED (x64 and arm64): struct ucred { pid_t pid; uid_t uid; gid_t gid; }, the pid first.
 	linux: { lib: "libc.so.6", level: 1, name: 17, size: 12 },
 	// SOL_LOCAL, LOCAL_PEERPID: a pid_t.
@@ -52,24 +71,42 @@ function getsockopt(lib: string): GetSockOpt {
 	return bound;
 }
 
-/** The process on the other end of this process's stdin (module doc). Never throws. */
+/** What descriptor `fd` of this process says of its other end (Answer). Throws where bun:ffi can't ask. */
+function answer(fd: number, ask: Ask): Answer {
+	try {
+		if (!fstatSync(fd).isSocket()) return "not-socket";
+	} catch {
+		return "not-socket";
+	}
+	const value = new Int32Array(Math.ceil(ask.size / 4));
+	const length = new Uint32Array([ask.size]);
+	if (getsockopt(ask.lib)(fd, ask.level, ask.name, value, length) !== 0 || length[0] < 4) return "unnamed";
+	// A socket that is no Unix one names no process (pid 0): not the socket pair Claude Code hands its hooks.
+	return value[0] > 0 ? value[0] : "not-socket";
+}
+
+/**
+ * The hook's caller from what its descriptors say (module doc): stdin's answer, and on macOS, when stdin is a socket the
+ * system won't name the other end of, stdout's, where only a pid counts. Linux never asks stdout. `ask` asks descriptor
+ * 0 or 1 (and may throw). An "unsupported" peer comes with why, for unsupportedCause.
+ */
+export function peerFrom(platform: NodeJS.Platform, ask: (fd: 0 | 1) => Answer): { readonly peer: StdinPeer; readonly cause?: string } {
+	const stdin = ask(0);
+	if (stdin !== "unnamed") return { peer: stdin };
+	if (platform !== "darwin") return { peer: "unsupported", cause: "the system would not name the socket's other end" };
+	// Claude Code closed its end of stdin before the hook ran; it holds stdout's until it has the answer.
+	const stdout = ask(1);
+	return typeof stdout === "number" ? { peer: stdout } : { peer: "unsupported", cause: "the system would not name the other end of stdin or stdout" };
+}
+
+/** The process that called this hook (module doc): the other end of stdin, or on macOS maybe of stdout. Never throws. */
 export function stdinPeer(): StdinPeer {
 	const ask = ASK[process.platform];
 	if (process.versions.bun === undefined || ask === undefined) return "unsupported";
 	try {
-		if (!fstatSync(0).isSocket()) return "not-socket";
-	} catch {
-		return "not-socket";
-	}
-	try {
-		const value = new Int32Array(Math.ceil(ask.size / 4));
-		const length = new Uint32Array([ask.size]);
-		if (getsockopt(ask.lib)(0, ask.level, ask.name, value, length) !== 0 || length[0] < 4) {
-			failed = "the system would not name the socket's other end";
-			return "unsupported";
-		}
-		// A socket that is no Unix one names no process (pid 0): not the socket pair Claude Code hands its hooks.
-		return value[0] > 0 ? value[0] : "not-socket";
+		const { peer, cause } = peerFrom(process.platform, (fd) => answer(fd, ask));
+		if (cause !== undefined) failed = cause;
+		return peer;
 	} catch {
 		failed ??= "bun:ffi failed";
 		return "unsupported";
@@ -88,7 +125,7 @@ export type CallerCheck = "ok" | "not-socket" | "unsupported" | "other-process" 
 
 /**
  * Whether a writing hook's caller is Claude Code process `claudePid` (the hook's CLAUDE_PID, as claudeHookPid checked it):
- * the peer on its stdin must be that process. `recorded` (every event but SessionStart): it must also be the Claude Code
+ * its peer (stdinPeer) must be that process. `recorded` (every event but SessionStart): it must also be the Claude Code
  * Orrery recorded, its start time known and equal to the one its decision record holds (src/claude/pick.ts), else its
  * host record (src/agent/sessions.ts), so a pid that a gone Claude Code left to another process is not it. A decision
  * recorded before start times (0.8.0: a session left open across the update) counts for an ORRERY_AGENT launch whose
