@@ -70,7 +70,8 @@ Codex (see [codex.md](codex.md)) or OpenCode (see [opencode.md](opencode.md)), o
 
 **Which agent a session is** is decided when it starts, in this order: `ORRERY_AGENT` when it names a configured agent
 (`orrery agent` sets it; a name that is not configured gives a notice and no memory), then the agent whose default
-folder holds pi's folder, then none, and pi runs without Orrery's memory. `orrery agent` also gives the session a
+folder holds pi's folder, then none: a session that is no agent's, where pi runs without Orrery's memory and the guard
+keeps Orrery's own rules (see Limits). `orrery agent` also gives the session a
 one-time token that the first pi process claims, so a tool the agent starts itself, which inherits `ORRERY_AGENT`, is
 not the agent too. A session belongs to the agent that first ran in it: another agent that resumes it records from its
 tail.
@@ -302,6 +303,19 @@ still applies to it. Close the first one, or work in it.
   nothing.`); its guard keeps that agent's rules, and in another agent's folder both agents' rules at once. pi
   decides this once per run: such a pi stays without memory for the rest of its run (after `/new`, or once that
   agent's session has ended), and a pi started outside any agent's session is never made nested later.
+- So does a pi started from a coding tool's session that is no agent's (a `pi -p` that a Claude Code in another
+  project runs in an agent's folder): `Orrery: started inside a Claude Code session that is no agent's, so this one
+  opens no memory and records nothing.` Its guard keeps the rules of the agent whose folder it runs in. Outside every
+  agent's folder it is a session that is no agent's, and says nothing.
+- In a session that is no agent's (pi started in a folder that is no agent's, without `orrery agent`) the guard keeps
+  Orrery's own rules only: Orrery's home, data folder and logins file (no reads or writes), its config and installed
+  program, and where your agents' sessions load code from outside its home (pi's and OMP's extensions folders,
+  Claude Code's plugin copy and its records; not named in bash text either), all read, never written, every agent's
+  memory view, Claude Code's and Codex's session records (no writes, not named in bash text), bash text that runs or names an `orrery` command other than `help`, `--version`, `status` and
+  `usage`, and a search (grep, find, ls) whose folder holds Orrery's home, or a grep whose folder holds an agent's
+  memory view. Nothing else: no folder limits, no `.env` or home-login rules, no `[guard] protect`. `orrery` run there
+  shows no agent and changes nothing (README, [Sessions that are no agent's](../README.md#sessions-that-are-no-agents)).
+  With no Orrery config at all, pi runs as usual, with no guard.
 - bash text that names Claude Code's or Codex's session records (`~/.claude/projects`, `~/.codex/sessions`) is refused,
   and no tool writes there: Orrery checks those tools' prompts against them. `read` may read them.
 - The guard knows pi's built-in tools only. Tools added by other pi packages (for example context-mode's

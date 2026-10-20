@@ -8,10 +8,10 @@
  */
 
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, rmdirSync, rmSync } from "node:fs";
-import { homedir, userInfo } from "node:os";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { realTarget } from "../agent/guard-paths.ts";
-import { orreryHome } from "../agent/home.ts";
+import { orreryHome, passwordHome } from "../agent/home.ts";
 import { findOnPath, ompExtensionFile, orreryPlugin, piExtensionFile, type RunResult, type Runner } from "../agent/tools.ts";
 import { dropVersion, envRunner, holdInstallLock, isLeftover, agentVersions, removeVersion } from "./install.ts";
 import { ENTRY_TAILS, inApp, oneLineTarget, VERSION_NAME } from "./layout.ts";
@@ -279,14 +279,12 @@ function removeApp(report: Report, app: string, release: () => void): void {
 	report.lines.push(`removed ${app}${versions.length === 0 ? "" : ` (${versions.sort().join(", ")})`}`);
 }
 
-/** The user's home folder by every account Orrery can see: $HOME as given, the process's, and the system's record. */
+/**
+ * The user's home folder by every account Orrery can see: $HOME as given, the process's, and the system's record
+ * (passwordHome: under Bun, userInfo() gives $HOME).
+ */
 function userHomes(env: NodeJS.ProcessEnv): string[] {
-	const homes = [env.HOME, homedir()];
-	try {
-		homes.push(userInfo().homedir);
-	} catch {
-		// no passwd entry
-	}
+	const homes = [env.HOME, homedir(), passwordHome()];
 	return homes.filter((home): home is string => typeof home === "string" && home !== "");
 }
 

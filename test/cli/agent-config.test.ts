@@ -1,14 +1,17 @@
-import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { localIso } from "../../src/memory/index.ts";
 import { tempDir } from "../agent/support.ts";
+import { fifos, readableOnce, standInTool, stopWriters } from "./read-once.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
+	stopWriters();
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
@@ -52,6 +55,42 @@ describe("orrery agent", () => {
 		expect(out.stdout).toBe("Set agents.Gamma.compactor_jobs = 2. It applies when Gamma next opens.\n");
 		expect(readFileSync(config, "utf8")).toBe(`[agents.Gamma]\nfolder = "/w"\ncompactor_model = "a/b"\ncompactor_jobs = 2\n`);
 	});
+
+	it.skipIf(!fifos)("in a coding tool's session add, set and archive read the config once, in the gate, and write the file it read", async () => {
+		const dir = tempDir("orrery-agent-cli-");
+		dirs.push(dir);
+		const config = join(dir, "config.toml");
+		const tool = standInTool(dir);
+		/**
+		 * `args` run on `text` under a coding tool (there the config is written only as the gate read it), at a
+		 * config that can be read once: a second read would wait for a writer that never comes.
+		 */
+		const run = async (args: string[], text: string) => {
+			rmSync(config, { force: true });
+			readableOnce(config, text);
+			const c = cliCommand(args);
+			const child = spawn(tool, [c.cmd, ...c.args], { env: cleanEnv({ ORRERY_CONFIG: config }), cwd: dir, stdio: ["ignore", "pipe", "pipe"] });
+			let stdout = "";
+			let stderr = "";
+			child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
+			child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+			const stop = setTimeout(() => child.kill(), 15_000);
+			const [code] = (await once(child, "close")) as [number | null];
+			clearTimeout(stop);
+			expect(statSync(config).isFile(), args.join(" ")).toBe(true);
+			expect(readFileSync(`${config}.bak`, "utf8"), args.join(" ")).toBe(text);
+			return { code, stdout, stderr, text: readFileSync(config, "utf8") };
+		};
+		const start = `data_dir = ${JSON.stringify(join(dir, "data"))}\n[agents.Alpha]\nfolder = "/w/a"\ncompactor_model = "a/b"\n[agents.Beta]\nfolder = "/w/b"\ncompactor_model = "a/b"\n`;
+		const added = await run(["agent", "add", "Gamma", "--folder", "ws", "--tool", "claude-code", "--summary", "openai/gpt-6.1-sol", "--reads", "Alpha"], start);
+		expect({ code: added.code, stderr: added.stderr }).toEqual({ code: 0, stderr: "" });
+		expect(added.text).toContain("[agents.Gamma]");
+		const set = await run(["agent", "set", "gamma", "--view-kb", "96"], added.text);
+		expect(set).toMatchObject({ code: 0, stderr: "", stdout: "Set agents.Gamma.view_bytes = 96000. It applies when Gamma next opens.\n" });
+		const archived = await run(["agent", "archive", "Beta"], set.text);
+		expect(archived).toMatchObject({ code: 0, stderr: "", stdout: "Archived Beta.\n" });
+		expect(archived.text).toContain("# [agents.Beta]");
+	}, 60_000);
 
 	it("refuses an unknown option value with the reason and leaves the config alone", () => {
 		const dir = tempDir("orrery-agent-cli-");

@@ -398,6 +398,68 @@ describe.skipIf(pi === null)("a pi started inside an agent's session, as a real 
 	}, 90_000);
 });
 
+describe.skipIf(pi === null)("a pi started from a coding tool's session that is no agent's, against a scratch home, as a real pi", () => {
+	it("opens its agent as before: a scratch home is never the user's real data (spec 2026-10-19-no-agent-sessions §2, §4c)", async () => {
+		const root = mkdtempSync(join(tmpdir(), "orrery-plain-pi-"));
+		const model = await fakeModel("pong");
+		const data = join(root, "data");
+		try {
+			const home = join(root, "home");
+			const folder = join(root, "agent-Probe");
+			const piAgentDir = join(home, ".pi", "agent");
+			const orreryHome = join(home, ".orrery");
+			for (const dir of [piAgentDir, folder, orreryHome, join(root, "bin")]) mkdirSync(dir, { recursive: true });
+			writeModels(piAgentDir, "pi", model.baseUrl);
+			writeFileSync(
+				join(orreryHome, "config.toml"),
+				[
+					`data_dir = ${JSON.stringify(data)}`,
+					"[[providers]]",
+					'id = "local"',
+					`base_url = ${JSON.stringify(model.baseUrl)}`,
+					"[[providers.models]]",
+					'id = "m"',
+					'name = "m"',
+					"context_window = 128000",
+					"max_tokens = 4096",
+					"reasoning = false",
+					"[agents.Probe]",
+					`folder = ${JSON.stringify(folder)}`,
+					'tool = "pi"',
+					'compactor_model = "local/m"',
+					'compactor_thinking = "off"',
+					"",
+				].join("\n"),
+				{ mode: 0o600 },
+			);
+			// A scratch helper named claude runs pi as its child and waits, as a Claude Code's shell would; with Claude
+			// Code's variable too.
+			const claude = join(root, "bin", "claude");
+			writeFileSync(claude, '#!/bin/sh\n"$@"\nexit $?\n', { mode: 0o755 });
+			const env = { ...isolated(home), ORRERY_HOME: orreryHome, PI_CODING_AGENT_DIR: piAgentDir, CLAUDECODE: "1" };
+			const child = spawn(claude, [pi as string, "--mode", "rpc", "--provider", "local", "--model", "m", "--thinking", "off", "-ne", "-e", join(PI_DIR, "index.ts")], { cwd: folder, env });
+			const exited = new Promise<void>((done) => child.on("close", () => done()));
+			const { frames, send, waitFor, stderr } = rpc(child);
+			try {
+				await waitFor((f) => f.method === "setStatus" && f.statusKey === "orrery" && f.statusText === "Orrery · Probe · 0 msgs");
+				await send({ type: "prompt", message: "Recorded as ever." });
+				await waitFor((f) => f.type === "agent_end");
+				expect(frames.filter((f) => f.method === "notify" && String(f.message).includes("started inside"))).toEqual([]);
+				expect(`${stderr()}\n${JSON.stringify(frames)}`).not.toMatch(/Cannot find (package|module)|ResolveMessage/);
+			} finally {
+				child.stdin.end();
+				const stop = setTimeout(() => child.kill("SIGKILL"), 10_000);
+				await exited;
+				clearTimeout(stop);
+			}
+			expect(existsSync(join(data, "agents", "Probe", "memory.sqlite"))).toBe(true);
+		} finally {
+			model.close();
+			rmSync(root, { recursive: true, force: true });
+		}
+	}, 90_000);
+});
+
 /** spec §9: a real pi opens an agent, by ORRERY_AGENT, from a folder that is not its own, with its instructions and memory. */
 describe.skipIf(pi === null)("an agent opened outside its folder, inside a real pi", () => {
 	it("puts its instructions, then its memory, in the system prompt", async () => {

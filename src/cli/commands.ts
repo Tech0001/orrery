@@ -15,7 +15,7 @@ import { type AgentConfig, findAgent, type HarnessConfig, parseModelChoice } fro
 import { FileCredentialStore } from "../agent/credentials.ts";
 import { sshTarget } from "../agent/env.ts";
 import { writeBuild } from "../agent/build.ts";
-import { agentOverview, agentUsage, summaryText, TOOL_LABELS, totalCost, usageCost } from "../agent/overview.ts";
+import { type AgentRow, agentOverview, agentUsage, summaryText, TOOL_LABELS, totalCost, usageCost } from "../agent/overview.ts";
 import { agentCompactorTarget } from "../agent/compactor-target.ts";
 import { createAgentCompactor } from "../agent/agent.ts";
 import { createAgentModels, savedSummaryLoginsOnly } from "../agent/models.ts";
@@ -35,10 +35,13 @@ function readableOnly(config: HarnessConfig, readable: Readable | undefined): Ha
 	return readable === undefined ? config : { ...config, agents: new Map([...config.agents].filter(([, agent]) => readable(agent))) };
 }
 
+/** The tool status names for an agent: the one it is open in while open or working, else the one it is set up for. */
+const shownTool = (row: AgentRow): string => TOOL_LABELS[(row.state === "open" || row.state === "working") && row.openIn !== undefined ? row.openIn : row.tool];
+
 /**
- * `orrery status [<Name>] [--json]`: one line per agent (or the named one): state, tool, memory, summaries, and the
- * messages that Claude Code's transcript or Codex's rollout never confirmed, which were not recorded
- * (src/claude/transcript.ts, src/codex/rollout.ts), once there are any.
+ * `orrery status [<Name>] [--json]`: one line per agent (or the named one): state, tool (the one it is open in, while
+ * it is), memory, summaries, and the messages that Claude Code's transcript or Codex's rollout never confirmed, which
+ * were not recorded (src/claude/transcript.ts, src/codex/rollout.ts), once there are any.
  */
 export function statusCommand(config: HarnessConfig, only?: string, options: { json?: boolean; readable?: Readable } = {}): string {
 	const name = only === undefined ? undefined : findAgent(config, only).name;
@@ -49,12 +52,12 @@ export function statusCommand(config: HarnessConfig, only?: string, options: { j
 			return unconfirmed > 0 ? { ...row, unconfirmedMessages: unconfirmed } : row;
 		});
 	if (options.json === true) return `${JSON.stringify({ agents: rows }, null, 2)}\n`;
-	const toolWidth = Math.max(11, ...rows.map((row) => TOOL_LABELS[row.tool].length + (row.launcher === "ori" ? 6 : 0)));
+	const toolWidth = Math.max(11, ...rows.map((row) => shownTool(row).length + (row.launcher === "ori" ? 6 : 0)));
 	let out = "";
 	for (const row of rows) {
 		const memory = row.unreadable !== undefined ? `unreadable: ${row.unreadable}` : row.hasMemory ? `${row.messages} messages, view ${Math.round(row.viewBytes / 1000)}/${Math.round(row.viewBudget / 1000)} KB` : "no memory yet";
 		const unconfirmed = "unconfirmedMessages" in row ? ` · ${row.unconfirmedMessages} unconfirmed ${row.unconfirmedMessages === 1 ? "message" : "messages"} not recorded` : "";
-		out += `${row.name.padEnd(12)} ${row.state.padEnd(9)} ${`${TOOL_LABELS[row.tool]}${row.launcher === "ori" ? " · Ori" : ""}`.padEnd(toolWidth)} ${memory}  summaries ${summaryText(row)} · ${row.summaryModel.ref} ${row.summaryModel.thinking}${unconfirmed}\n`;
+		out += `${row.name.padEnd(12)} ${row.state.padEnd(9)} ${`${shownTool(row)}${row.launcher === "ori" ? " · Ori" : ""}`.padEnd(toolWidth)} ${memory}  summaries ${summaryText(row)} · ${row.summaryModel.ref} ${row.summaryModel.thinking}${unconfirmed}\n`;
 	}
 	// status.json carries provider and model error text: never pass its control sequences to the terminal.
 	return clean(out) || "No agents configured.\n";

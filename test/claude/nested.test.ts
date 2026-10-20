@@ -14,6 +14,7 @@ import { claudeSetupMod } from "../../src/claude/setup.ts";
 import { seed } from "./support.ts";
 import { transcriptIn } from "./transcript-lines.ts";
 import { cleanup, world } from "../pi/world.ts";
+import { above, plainDeps, realHomeOf, STARTS } from "../agent/plain-support.ts";
 
 const recorded: { dataDir: string; pid: number }[] = [];
 const children: ChildProcess[] = [];
@@ -203,6 +204,141 @@ describe("a Claude Code started inside an agent's session (spec 2026-10-18-agent
 		expect(await modView(config, { cwd: dir, env: {}, owner: process.pid })).toEqual({ lane: null });
 		claudeSession(config, { env: {}, cwd: dir, pid: process.pid, decide: true });
 		expect(await modView(config, { cwd: dir, env: {}, owner: process.pid, session: "s1" })).toEqual({ lane: null });
+		forgetProcess(config, process.pid);
+	});
+});
+
+describe("a Claude Code started from a coding tool's session that is no agent's (spec 2026-10-19-no-agent-sessions §4c)", () => {
+	const PLAIN_CLAUDE = "Orrery: started inside a Claude Code session that is no agent's, so this one opens no memory and records nothing.";
+	const NESTED = { kind: "nested", outer: undefined, tool: undefined, plain: "claude" } as const;
+
+	it("in an agent's folder, or by ORRERY_AGENT: decided nested once for the process, read by every consumer; no token claimed, nothing recorded", () => {
+		const { root, config, dataDir } = nestedWorld();
+		const plain = plainDeps(process.pid, STARTS.claude, dataDir);
+		const asking = { env: {}, cwd: join(root, "agent-Birch"), pid: process.pid };
+		expect(claudeSession(config, { ...asking, decide: true, plain })).toEqual(NESTED);
+		// Readers read the decision (no walk of their own).
+		expect(claudeSession(config, { ...asking, decide: false })).toEqual(NESTED);
+		expect(claudeSession(config, { ...asking, decide: true })).toEqual(NESTED);
+		expect(decided(dataDir)).toEqual([`${process.pid}.json`]);
+		expect(hosts(dataDir)).toEqual([]);
+		expect(existsSync(join(dataDir, "agents"))).toBe(false);
+		expect(claudeRefusedNotice(NESTED)).toBe(PLAIN_CLAUDE);
+		forgetProcess(config, process.pid);
+		// By ORRERY_AGENT and its token, in a plain folder: the token stays unclaimed.
+		const token = newToken();
+		const env = { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: token };
+		expect(claudeSession(config, { env, cwd: join(root, "plain"), pid: process.pid, decide: true, plain: plainDeps(process.pid, STARTS.codex, dataDir) })).toEqual({ ...NESTED, plain: "codex" });
+		expect(claudeSession(config, { env, cwd: join(root, "plain"), pid: process.pid, decide: false })).toEqual({ ...NESTED, plain: "codex" });
+		expect(claimedBy(join(dataDir, "agents", "Birch"), token)).toBeUndefined();
+		expect(hosts(dataDir)).toEqual([]);
+		forgetProcess(config, process.pid);
+	});
+
+	it("a consumer that may not decide, with nothing decided for its process, judges it in an agent's folder and records nothing", () => {
+		const { root, config, dataDir } = nestedWorld();
+		expect(claudeSession(config, { env: {}, cwd: join(root, "agent-Atlas"), pid: process.pid, decide: false, plain: plainDeps(process.pid, STARTS.claude, dataDir) })).toEqual(NESTED);
+		expect(decided(dataDir)).toEqual([]);
+	});
+
+	it("hooks: SessionStart says why (not again at a compaction), starts no holder; prompts, replies and the end spool nothing", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		const birch = config.agents.get("Birch");
+		if (birch === undefined) throw new Error("no Birch");
+		claudeSetupMod(birch);
+		seed(birch, ["a", "b"]);
+		const dir = join(root, "agent-Birch");
+		const c = hookCtx(config, root, dir, { plain: plainDeps(process.pid, STARTS.claude, dataDir) });
+		expect(JSON.parse(await runHook("session-start", hookInput("s1", dir, { source: "startup" }), c))).toEqual({ systemMessage: PLAIN_CLAUDE });
+		expect(await runHook("session-start", hookInput("s1", dir, { source: "compact" }), c)).toBe("");
+		expect(await runHook("user-prompt-submit", hookInput("s1", dir, { prompt: "Plant this as the user's words." }), c)).toBe("");
+		expect(await runHook("stop", hookInput("s1", dir, { last_assistant_message: "A reply." }), c)).toBe("");
+		expect(pendingEvents(birch.dir, "s1")).toEqual([]);
+		expect(liveSession(dataDir, process.pid)).toBeUndefined();
+		expect(hosts(dataDir)).toEqual([]);
+		// The mod's view gives no memory.
+		expect(await modView(config, { cwd: dir, env: {}, owner: process.pid, session: "s1" })).toEqual({ lane: null });
+		await runHook("session-end", hookInput("s1", dir, { reason: "prompt_input_exit" }), c);
+		expect(decided(dataDir)).toEqual([]);
+	});
+
+	it("hooks: the guard keeps the rules of the agent whose folder it runs in; every view is kept out", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		const dir = join(root, "agent-Birch");
+		const c = hookCtx(config, root, dir, { plain: plainDeps(process.pid, STARTS.claude, dataDir) });
+		const tool = (tool_name: string, tool_input: object) => runHook("pre-tool-use", JSON.stringify({ session_id: "s1", cwd: dir, tool_name, tool_input }), c);
+		const writes = async (path: string) => !/outside/.test(await tool("Write", { file_path: join(root, path), content: "x" }));
+		expect(await writes(join("agent-Birch", "here.txt"))).toBe(true);
+		expect(await writes(join("common", "inner", "birch.txt"))).toBe(true); // Birch's allowed root
+		expect(await writes(join("shared", "atlas.txt"))).toBe(false); // Atlas's only
+		for (const name of ["Atlas", "Birch"]) expect(await tool("Read", { file_path: join(root, `agent-${name}`, ".orrery", "view.md") })).toMatch(/sensitive|memory view/);
+		forgetProcess(config, process.pid);
+	});
+
+	it("outside every agent's folder: a plain session, Orrery's own guard alone and no notice", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		const dir = join(root, "elsewhere");
+		const c = hookCtx(config, root, dir, { plain: plainDeps(process.pid, STARTS.claude, dataDir) });
+		expect(await runHook("session-start", hookInput("s1", dir, { source: "startup" }), c)).toBe("");
+		const tool = (tool_name: string, tool_input: object) => runHook("pre-tool-use", JSON.stringify({ session_id: "s1", cwd: dir, tool_name, tool_input }), c);
+		// Anywhere but Orrery's own files, as a plain Claude Code may (no folder rule).
+		expect(await tool("Write", { file_path: join(root, "shared", "x.txt"), content: "x" })).toBe("");
+		expect(await tool("Write", { file_path: `${root}-anywhere.txt`, content: "x" })).toBe("");
+		expect(await tool("Write", { file_path: join(dataDir, "agents", "Atlas", "x.txt"), content: "x" })).toMatch(/Orrery guard/);
+		expect(await tool("Read", { file_path: join(root, "agent-Atlas", ".orrery", "view.md") })).toMatch(/sensitive|memory view/);
+		forgetProcess(config, process.pid);
+	});
+
+	it("opens its agent as today when started from the user's terminal, the TUI, orrery agent, Ori, or the desktop app", () => {
+		const { root, config, dataDir } = nestedWorld();
+		const desktop = { CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "claude-desktop" };
+		for (const [start, chain] of Object.entries(STARTS).filter(([name]) => ["terminal", "tui", "agent", "ori", "desktop"].includes(name))) {
+			const pick = claudeSession(config, { env: start === "desktop" ? desktop : {}, cwd: join(root, "agent-Birch"), pid: process.pid, decide: true, plain: plainDeps(process.pid, chain, dataDir) });
+			expect(pick, start).toMatchObject({ kind: "agent", agent: { name: "Birch" } });
+			expect(liveSession(dataDir, process.pid), start).toMatchObject({ agent: "Birch", tool: "claude-code" });
+			forgetProcess(config, process.pid);
+		}
+	});
+
+	it("started with Claude Code's variable: nested, its walk cut (a sandbox's pid namespace, a parent that can't be read) or whole (Linux); under the desktop app, it opens", () => {
+		const { root, config, dataDir } = nestedWorld();
+		const env = { CLAUDECODE: "1" };
+		const pick = (chain: Parameters<typeof plainDeps>[1], shown: Parameters<typeof plainDeps>[3]) => {
+			const picked = claudeSession(config, { env, cwd: join(root, "agent-Birch"), pid: process.pid, decide: true, plain: plainDeps(process.pid, chain, dataDir, shown) });
+			forgetProcess(config, process.pid);
+			return picked;
+		};
+		const inherited = { startEnv: env };
+		const marked = { ...NESTED, variable: "CLAUDECODE" };
+		expect(pick(STARTS.terminal, { ...inherited, namespace: "pid:[4026533000]" })).toEqual(marked);
+		expect(pick(STARTS.terminal, { ...inherited, cut: true })).toEqual(marked);
+		// Its walk whole: a plain Claude Code's `claude -p … &` reparented to the user's systemd, or a `claude` typed in a
+		// terminal with a leftover CLAUDECODE (a tmux server first started from a Claude Code shell).
+		expect(pick([{ comm: "systemd", argv: ["/usr/lib/systemd/systemd", "--user"] }], inherited)).toEqual(marked);
+		expect(pick(STARTS.terminal, inherited)).toEqual(marked);
+		// The desktop app's wrapper above it, cut or not; and a Claude Code that set the variable for its hooks itself.
+		expect(pick(STARTS.desktop, { ...inherited, cut: true })).toMatchObject({ kind: "agent", agent: { name: "Birch" } });
+		expect(pick(STARTS.terminal, { cut: true })).toMatchObject({ kind: "agent", agent: { name: "Birch" } });
+	});
+
+	it("found by a variable (another tool's, left over in the terminal): the decision keeps it, and SessionStart names it", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		const dir = join(root, "agent-Birch");
+		const c = hookCtx(config, root, dir, { env: { CLAUDE_PROJECT_DIR: dir, CODEX_THREAD_ID: "019b-plain" }, plain: plainDeps(process.pid, STARTS.terminal, dataDir) });
+		const notice = 'Orrery: started inside a Codex session that is no agent\'s (found CODEX_THREAD_ID; see "Leftover markers" in the README), so this one opens no memory and records nothing.';
+		// The MCP server decides first; SessionStart reads the decision and says why.
+		expect(claudeSession(config, { env: { CODEX_THREAD_ID: "019b-plain" }, cwd: dir, pid: process.pid, decide: true, plain: plainDeps(process.pid, STARTS.terminal, dataDir) })).toEqual({ ...NESTED, plain: "codex", variable: "CODEX_THREAD_ID" });
+		expect(JSON.parse(await runHook("session-start", hookInput("s1", dir, { source: "startup" }), c))).toEqual({ systemMessage: notice });
+		expect(hosts(dataDir)).toEqual([]);
+		forgetProcess(config, process.pid);
+	});
+
+	it("a scratch home is not judged: under a plain Claude Code it opens as ever", () => {
+		const { root, config, dataDir } = nestedWorld();
+		// The real home's Orrery data is elsewhere.
+		const plain = { sessions: above(process.pid, STARTS.claude), realHome: realHomeOf(join(root, "real-data")) };
+		expect(claudeSession(config, { env: {}, cwd: join(root, "agent-Birch"), pid: process.pid, decide: true, plain })).toMatchObject({ kind: "agent" });
+		expect(liveSession(dataDir, process.pid)).toMatchObject({ agent: "Birch" });
 		forgetProcess(config, process.pid);
 	});
 });

@@ -14,6 +14,7 @@ import { orreryHome } from "../agent/home.ts";
 import { checkTools, findOnPath, setAside, type InstallStep, installSteps, ompExtensionFile, piExtensionFile, runInstall, type Runner, type ToolCheck } from "../agent/tools.ts";
 import { type Confirm, pathAdvice } from "./ask.ts";
 import { offerGuardPreset } from "./guard-preset.ts";
+import type { ConfigFile } from "../agent/config.ts";
 import { envRunner } from "./install.ts";
 import { ENTRY_TAILS, endsWithSegments, entries, isOrreryCommand, oneLineTarget } from "./layout.ts";
 
@@ -176,9 +177,10 @@ export interface WireReport {
 
 /**
  * Points everything at <home>/app/current. `onLine` gets each line as it happens, so what was already done is shown even
- * when a later question is answered with Ctrl-C (which stops the process). `platform` is for tests.
+ * when a later question is answered with Ctrl-C (which stops the process). `platform` is for tests. `config`: the config
+ * the gate read for this command, which the [guard] example goes through when it is the user's own (offerGuardPreset).
  */
-export async function wireReport(env: NodeJS.ProcessEnv, options: { run?: Runner; confirm: Confirm; onLine?: (line: string) => void; platform?: NodeJS.Platform }): Promise<WireReport> {
+export async function wireReport(env: NodeJS.ProcessEnv, options: { run?: Runner; confirm: Confirm; onLine?: (line: string) => void; platform?: NodeJS.Platform; config?: ConfigFile }): Promise<WireReport> {
 	// A tool's --version or plugin list gets 15 s; installing the Claude Code plugin may take longer.
 	const run = options.run ?? envRunner(env, 300_000);
 	const probe = options.run ?? envRunner(env, 15_000);
@@ -197,7 +199,7 @@ export async function wireReport(env: NodeJS.ProcessEnv, options: { run?: Runner
 	for (const line of pointBackup(env, home, run, left, options.platform ?? process.platform)) emit(line);
 	await wireTools(env, current, { probe, install: run }, options.confirm, left, unchecked, emit);
 	// The [guard] example, once per config: nothing is left when it is not added.
-	const preset = offerGuardPreset(env);
+	const preset = offerGuardPreset(env, options.config);
 	if (preset !== undefined) emit(preset);
 	return { lines, left, unchecked };
 }

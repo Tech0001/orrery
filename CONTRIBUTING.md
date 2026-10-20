@@ -89,9 +89,10 @@ release).
   parity tests updated in the same pull request.
 - **Credentials and the guard.** Never log, print or send a key to a model. Credential files stay mode 0600. A guard
   change comes with tests for the bypass it closes. The guard is not a sandbox, and the docs say what it covers.
-- **Working on Orrery from an agent session.** The guard reads shell text bluntly, so some commands are refused even
-  when they only name something: Orrery's commands that change memory or settings (`orrery setup`, `orrery import`,
-  `orrery remote` and the like), its hook commands, and Claude Code's and Codex's session folders (`~/.claude/projects`,
+- **Working on Orrery from an agent session, or any coding tool's session.** The guard reads shell text bluntly, so
+  some commands are refused even when they only name something: Orrery's commands that change memory or settings
+  (`orrery setup`, `orrery import`, `orrery remote` and the like; in a session that is no agent's, `orrery browse` and
+  `orrery compactor` too), its hook commands, and Claude Code's and Codex's session folders (`~/.claude/projects`,
   `~/.codex/sessions`). Search for them with the agent's Grep or file tools rather than `grep` in the shell, and write
   a commit message that names one to a file and commit with `git commit -F <file>`. Run the refused commands themselves
   in your own terminal. Refusals to expect:
@@ -108,8 +109,10 @@ release).
   - a glob that could name a session folder: `ls ~/.claude/*`, `du -sh ~/.claude/* ~/.codex/*`.
 
   The tests run in a scratch `HOME` and start without an agent session's markers (`test/global-env.ts`,
-  `test/setup-env.ts`), so they pass inside an agent session; a test that starts the CLI or a real tool must keep it
-  that way. Running `src/cli/main.ts` by hand with your own `HOME` inside an agent session gets the agent's answers.
+  `test/setup-env.ts`), so they pass inside an agent session or any coding tool's session: a command that touches only
+  a scratch home is never judged as one. A test that starts the CLI or a real tool must keep it that way. Running
+  `src/cli/main.ts` by hand with your own `HOME` inside an agent session gets the agent's answers, and inside another
+  coding tool's session those of a session that is no agent's.
   The end-to-end scripts (`scripts/*-e2e.sh`) and the live check before a release run from your own terminal: an
   agent's shell is refused the commands they need.
 - **Claude Code records only through the compiled program.** Its hooks check that Claude Code itself called them, which

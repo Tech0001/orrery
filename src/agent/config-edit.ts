@@ -6,11 +6,24 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { accessSync, type BigIntStats, closeSync, constants, existsSync, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parse } from "smol-toml";
-import { ConfigError, type HarnessConfig, agentNameProblem, type AgentTool, type AgentLauncher, parseConfig, type ThinkingLevel } from "./config.ts";
-import { orreryHome } from "./home.ts";
+import {
+	type AgentLauncher,
+	type AgentTool,
+	agentNameProblem,
+	ConfigError,
+	type ConfigFile,
+	configAbsent,
+	type FileId,
+	fileStamp,
+	type HarnessConfig,
+	parseConfig,
+	type ThinkingLevel,
+	unchangedConfig,
+	userConfigPath,
+} from "./config.ts";
 
 /** The agent keys the TUI and `orrery agent set` may change. */
 export const EDITABLE_KEYS = ["remote", "launcher", "ori_model", "tool", "folder", "view_bytes", "compactor_context_bytes", "compactor_jobs", "compact_at", "compactor_model", "compactor_thinking", "reads"] as const;
@@ -348,15 +361,20 @@ export function addGuardPreset(text: string, configDir: string): string | undefi
  * one can take first, so nothing already there (a link planted at that name, or at `path`) is written through. A link
  * at `path` is replaced, never followed.
  */
-function replaceFile(path: string, data: string | Uint8Array, mode: number): void {
+function replaceFile(path: string, data: string | Uint8Array, mode: number): BigIntStats {
 	const temp = `${path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
-	writeFileSync(temp, data, { mode, flag: "wx" });
+	const fd = openSync(temp, "wx", mode);
 	try {
-		chmodSync(temp, mode);
+		writeFileSync(fd, data);
+		fchmodSync(fd, mode);
 		renameSync(temp, path);
+		// The file written, as it is now it has its name: what a later write of it checks (unchangedConfig).
+		return fstatSync(fd, { bigint: true });
 	} catch (error) {
 		rmSync(temp, { force: true });
 		throw error;
+	} finally {
+		closeSync(fd);
 	}
 }
 
@@ -365,7 +383,7 @@ function replaceFile(path: string, data: string | Uint8Array, mode: number): voi
  * config.toml.bak, written the same way: setup writes the config on its own (src/install/guard-preset.ts), so neither
  * file follows a link someone left at its name.
  */
-export function saveConfigText(path: string, next: string): void {
+export function saveConfigText(path: string, next: string): FileId {
 	const target = existsSync(path) ? realpathSync(path) : path;
 	let mode = 0o600;
 	if (existsSync(target)) {
@@ -374,7 +392,8 @@ export function saveConfigText(path: string, next: string): void {
 	} else {
 		mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
 	}
-	replaceFile(target, next, mode);
+	const written = replaceFile(target, next, mode);
+	return { real: target, dev: written.dev, ino: written.ino, stamp: fileStamp(written) };
 }
 
 /** Re-reads the config, applies `edit`, checks and saves the result; returns the new config. A missing file starts from newConfigText(). */
@@ -384,6 +403,83 @@ export function editConfigFile(path: string, edit: (text: string, configDir: str
 	const next = edit(text, configDir);
 	saveConfigText(path, next);
 	return parseConfig(next, configDir);
+}
+
+/** What a command says when the config it read changed before it could write it back. */
+export function configChangedText(path: string): string {
+	return `The config (${path}) changed after Orrery read it, so nothing was written to it. Run the command again.`;
+}
+
+/**
+ * Refuses (configChangedText) when `file` must be written back as it was read (ConfigFile.checked) and is no longer
+ * (unchangedConfig): before a command's first network step, so a mismatch fails before the remote changes, and before
+ * its write.
+ */
+export function checkConfigUnchanged(file: ConfigFile): void {
+	if (file.checked === true && !unchangedConfig(file)) throw new ConfigError(configChangedText(file.path));
+}
+
+/**
+ * The text an edit of `file` applies to: checked (ConfigFile.checked), the text the gate read, never read again; else the
+ * file's text now, as 0.9.0 read it. Undefined: no file there.
+ */
+export function configText(file: ConfigFile): string | undefined {
+	if (file.checked === true) return file.text;
+	return existsSync(file.path) ? readFileSync(file.path, "utf8") : undefined;
+}
+
+/**
+ * Whether the file `written` (writeConfigOnce's) still holds what was written, so an undo may put the old text back:
+ * checked, the same file unchanged since; else its text, as 0.9.0 compared it.
+ */
+export function stillWritten(written: ConfigFile): boolean {
+	if (written.checked === true) return unchangedConfig(written);
+	try {
+		return readFileSync(written.path, "utf8") === written.text;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Applies `edit` to `file`'s text (configText) and writes the result to that file (writeConfigOnce); a file that is not
+ * there starts from newConfigText(). Returns the file as written.
+ */
+export function editConfigOnce(file: ConfigFile, edit: (text: string, configDir: string) => string): ConfigFile {
+	let text = configText(file);
+	if (text === undefined) {
+		if (file.checked === true && !configAbsent(file)) throw file.error ?? new ConfigError(`${file.path} could not be read`);
+		text = newConfigText();
+	}
+	return writeConfigOnce(file, edit(text, dirname(file.path)));
+}
+
+/**
+ * Writes `next` to `file`'s config. Checked (ConfigFile.checked: the gate found a coding tool's session), only to the
+ * file it was read from and only while it is still as it was read (checkConfigUnchanged: the same file, written by none
+ * since; or still none): a command writes the config it judged, never a file put in its place, and never over what
+ * another wrote meanwhile; the text it was read with is kept as .bak. Else as 0.9.0: saveConfigText at its path.
+ * Returns the file as written: its text and config, and the file itself, for a later write to check. A config with no
+ * place (ConfigFile.unplaced) is never written: its error is the command's.
+ */
+export function writeConfigOnce(file: ConfigFile, next: string): ConfigFile {
+	if (file.unplaced === true) throw file.error ?? new ConfigError(`${file.path} has no place`);
+	checkConfigUnchanged(file);
+	const configDir = dirname(file.path);
+	const config = { ...parseConfig(next, configDir), file: file.path };
+	if (file.checked !== true) return { path: file.path, text: next, config, id: saveConfigText(file.path, next), checked: false };
+	let target: string;
+	let mode = 0o600;
+	if (file.id !== undefined && file.text !== undefined) {
+		target = file.id.real;
+		mode = statSync(target).mode & 0o777;
+		replaceFile(`${target}.bak`, file.text, mode);
+	} else {
+		mkdirSync(dirname(file.path), { recursive: true, mode: 0o700 });
+		target = join(realpathSync(dirname(file.path)), basename(file.path));
+	}
+	const written = replaceFile(target, next, mode);
+	return { path: file.path, text: next, config, id: { real: target, dev: written.dev, ino: written.ino, stamp: fileStamp(written) }, checked: true };
 }
 
 /** What the TUI and the CLI say when the config can't be written. */
@@ -414,9 +510,7 @@ export function configWritable(path: string): boolean {
 }
 
 /** Where a new config goes: $ORRERY_CONFIG, else <home>/config.toml. */
-export function userConfigPath(env: NodeJS.ProcessEnv = process.env): string {
-	return env.ORRERY_CONFIG || join(orreryHome(env), "config.toml");
-}
+export { userConfigPath };
 
 
 /** A remote's public settings; credentials are written separately, never to TOML. */

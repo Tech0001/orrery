@@ -14,11 +14,14 @@
  * Started inside an agent's session (spec 2026-10-18-agent-permissions §3b): the first decision asks, before any pick,
  * whether the Claude Code runs under an agent's session (src/agent/sessions.ts, the process as `self`). If so that is
  * its decision ("nested"), whatever ORRERY_AGENT or the folder says: no memory, no token claimed, nothing recorded, no
- * view, no tools, the guard on with the outer agent's rules. Without ORRERY_AGENT the decision is only that it is not
- * ("folder"): the folder still decides at each event, as it always has, but no hook walks the process tree. A reader
- * that finds no decision for its process (a Claude Code started before this version) judges it itself, recording
- * nothing. An agent's session records its Claude Code as the agent's host (src/agent/sessions.ts), which the decider
- * keeps up to date and forgetProcess removes.
+ * view, no tools, the guard on with the outer agent's rules. With no agent's session around it, the same holds for one
+ * started from a coding tool's session that is no agent's (spec 2026-10-19-no-agent-sessions §4c,
+ * src/agent/plain-nested.ts): "nested" with that tool (`plain`), and in a folder that is no agent's a plain session
+ * (src/claude/hooks.ts). Without ORRERY_AGENT the decision is only that it is neither ("folder"): the folder still
+ * decides at each event, as it always has, but no hook walks the process tree. A reader that finds no decision for its
+ * process (a Claude Code started before this version) judges it itself, recording nothing; where no agent would open
+ * it asks no further than for an agent's session. An agent's session records its Claude Code as the agent's host
+ * (src/agent/sessions.ts), which the decider keeps up to date and forgetProcess removes.
  *
  * A record of another identity is stale: another process's whose pid this one reuses (pids wrap, at 99999 on a Mac: its
  * process started at another time), or an ancestor's whose CLAUDE_PID a descendant inherited. A decider takes it down exclusively and records its own
@@ -44,7 +47,21 @@ import { type AgentConfig, type HarnessConfig, insideFolder } from "../agent/con
 import { beingMade, publish, removeStale, stray, temporaryOf } from "../agent/exclusive.ts";
 import { AGENT_ENV, type Picked, pickAgent, type Refused, refusedNotice, TOKEN_ENV, type Where } from "../agent/pick.ts";
 import { processAlive, processInfo, processStartedAt } from "../agent/process.ts";
-import { forgetSession, type Inside, insideSession, liveSession, nestedNotice, processStart, recordSession, SESSION_TOOLS, type SessionTool } from "../agent/sessions.ts";
+import { opensHere, type PlainDeps, plainNested } from "../agent/plain-nested.ts";
+import {
+	forgetSession,
+	type Inside,
+	insideSession,
+	liveSession,
+	nestedNotice,
+	type PlainFound,
+	plainFields,
+	processStart,
+	recordedPlain,
+	recordSession,
+	SESSION_TOOLS,
+	type SessionTool,
+} from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { listSessions, readMode } from "./spool.ts";
 import { agentMode } from "./view-file.ts";
@@ -60,9 +77,11 @@ export type ClaudeRefused =
 	| { readonly kind: "undecided" }
 	/**
 	 * The Claude Code was started inside an agent's session (spec 2026-10-18-agent-permissions §3b): `outer`'s, in `tool`,
-	 * either undefined when nothing proves it. It opens no memory and records nothing.
+	 * either undefined when nothing proves it; or, `plain`, inside that coding tool's session that is no agent's (spec
+	 * 2026-10-19-no-agent-sessions §4c, src/agent/plain-nested.ts), found by `variable` when not by a process. It opens no
+	 * memory and records nothing.
 	 */
-	| { readonly kind: "nested"; readonly outer: string | undefined; readonly tool: SessionTool | undefined }
+	| ({ readonly kind: "nested"; readonly outer: string | undefined; readonly tool: SessionTool | undefined } & PlainFound)
 	/**
 	 * The Claude Code's process can't be confirmed: its start time can't be read, so its own decision can't be told from a
 	 * dead process's under its pid, nor recorded. No memory, nothing recorded; the guard keeps the folder's agent's rules.
@@ -129,7 +148,7 @@ export function claudeRefusedNotice(pick: ClaudeRefused): string {
 		case "undecided":
 			return "Orrery: ORRERY_AGENT is set, but no choice of agent is recorded for this Claude Code under this ORRERY_AGENT; this session runs without memory.";
 		case "nested":
-			return nestedNotice({ agent: pick.outer, tool: pick.tool, via: "ancestry", dataDir: "" });
+			return nestedNotice({ agent: pick.outer, tool: pick.tool, via: "ancestry", dataDir: "", ...plainFields(pick) });
 		case "unconfirmed":
 			return UNCONFIRMED_NOTICE;
 		default:
@@ -150,6 +169,8 @@ export interface ClaudeProcess {
 	readonly alive?: (pid: number) => boolean;
 	/** How the process's start time is read (default processStart, src/agent/sessions.ts); tests pass their own. */
 	readonly start?: (pid: number) => string | undefined;
+	/** How a coding tool's session that is no agent's is looked for (src/agent/plain-nested.ts); tests pass their own. */
+	readonly plain?: PlainDeps;
 }
 
 /** A decision, as recorded: names only. */
@@ -157,8 +178,11 @@ type Decision =
 	| { readonly kind: "agent"; readonly name: string; readonly by: "env" | "folder" }
 	| { readonly kind: "none" }
 	| { readonly kind: "refused"; readonly why: "unknown" | "bad-token" | "in-view-folder"; readonly name: string; readonly host?: string }
-	/** Started inside `outer`'s session in `tool` (either left out when unknown): no memory. */
-	| { readonly kind: "nested"; readonly outer?: string; readonly tool?: SessionTool }
+	/**
+	 * Started inside `outer`'s session in `tool` (either left out when unknown), or `plain`, a tool's that is no agent's
+	 * (found by `variable`, when not by a process): no memory.
+	 */
+	| ({ readonly kind: "nested"; readonly outer?: string; readonly tool?: SessionTool } & PlainFound)
 	/** No ORRERY_AGENT, and started inside no agent's session: the folder decides, at each event. */
 	| { readonly kind: "folder" };
 
@@ -193,7 +217,7 @@ function toDecision(pick: ClaudePicked): Decision {
 		case "in-view-folder":
 			return { kind: "refused", why: pick.kind, name: pick.name, host: pick.host };
 		case "nested":
-			return { kind: "nested", ...(pick.outer === undefined ? {} : { outer: pick.outer }), ...(pick.tool === undefined ? {} : { tool: pick.tool }) };
+			return { kind: "nested", ...(pick.outer === undefined ? {} : { outer: pick.outer }), ...(pick.tool === undefined ? {} : { tool: pick.tool }), ...plainFields(pick) };
 		default:
 			return { kind: "none" };
 	}
@@ -212,7 +236,7 @@ function fromDecision(config: HarnessConfig, decision: Decision, where: Where): 
 		case "refused":
 			return decision.why === "in-view-folder" ? { kind: "in-view-folder", name: decision.name, host: decision.host ?? "" } : { kind: decision.why, name: decision.name };
 		case "nested":
-			return { kind: "nested", outer: decision.outer, tool: decision.tool };
+			return { kind: "nested", outer: decision.outer, tool: decision.tool, ...plainFields(decision) };
 		case "folder":
 			return claudePick(config, { ...where, takeover: false });
 	}
@@ -250,8 +274,14 @@ function readRecordFile(file: string): Recorded | "unreadable" | undefined {
 	if (value.kind === "refused" && typeof value.name === "string" && (value.why === "unknown" || value.why === "bad-token" || value.why === "in-view-folder")) {
 		return recorded({ kind: "refused", why: value.why, name: value.name, ...(typeof value.host === "string" ? { host: value.host } : {}) });
 	}
-	if (value.kind === "nested" && (value.outer === undefined || typeof value.outer === "string") && (value.tool === undefined || (typeof value.tool === "string" && SESSION_TOOLS.has(value.tool)))) {
-		return recorded({ kind: "nested", ...(value.outer === undefined ? {} : { outer: value.outer }), ...(value.tool === undefined ? {} : { tool: value.tool as SessionTool }) });
+	const plain = recordedPlain(value);
+	if (
+		value.kind === "nested" &&
+		(value.outer === undefined || typeof value.outer === "string") &&
+		(value.tool === undefined || (typeof value.tool === "string" && SESSION_TOOLS.has(value.tool))) &&
+		plain !== "unreadable"
+	) {
+		return recorded({ kind: "nested", ...(value.outer === undefined ? {} : { outer: value.outer }), ...(value.tool === undefined ? {} : { tool: value.tool as SessionTool }), ...plain });
 	}
 	return "unreadable";
 }
@@ -332,20 +362,24 @@ function prune(config: HarnessConfig, alive: (pid: number) => boolean): void {
 /**
  * The agent session Claude Code process `asking.pid` was started inside (src/agent/sessions.ts, with the process as
  * `self`, so its own launch's markers are its own), or undefined. Its pid hosting another tool's live session (a pi's, a
- * Codex's) makes it no Claude Code of its own: inside that session. A look that fails counts as a session whose agent is
+ * Codex's) makes it no Claude Code of its own: inside that session. With none, the coding tool's session that is no
+ * agent's it was started from (src/agent/plain-nested.ts): `plain` asks for it always, a reader only where an agent
+ * would open (elsewhere the pick is none, and the guard the same). A look that fails counts as a session whose agent is
  * unknown: a check that can't judge refuses.
  */
-function nestedIn(config: HarnessConfig, asking: ClaudeProcess): Inside | undefined {
+function nestedIn(config: HarnessConfig, asking: ClaudeProcess, plain: boolean): Inside | undefined {
 	try {
 		const own = liveSession(config.dataDir, asking.pid);
 		if (own !== undefined && own.tool !== "claude-code") return { agent: own.agent, tool: own.tool, via: "ancestry", dataDir: config.dataDir };
-		return insideSession([config.dataDir], asking.env, config, { self: asking.pid });
+		const inside = insideSession([config.dataDir], asking.env, config, { self: asking.pid });
+		if (inside !== undefined || !plain) return inside;
+		return plainNested(config, asking.env, { pid: asking.pid, tool: "claude-code" }, asking.plain);
 	} catch {
 		return { agent: undefined, tool: undefined, via: "marker", dataDir: config.dataDir };
 	}
 }
 
-const nestedPick = (inside: Inside): ClaudePicked => ({ kind: "nested", outer: inside.agent, tool: inside.tool });
+const nestedPick = (inside: Inside): ClaudePicked => ({ kind: "nested", outer: inside.agent, tool: inside.tool, ...plainFields(inside) });
 
 /**
  * A decider's pick, with the process's host record (spec 2026-10-18-agent-permissions §2) to match: an agent's session
@@ -391,11 +425,11 @@ export function claudeSession(config: HarnessConfig, asking: ClaudeProcess): Cla
 	// No record of its own (none, or a stale one: another identity's): only a decider makes this process's decision.
 	if (!asking.decide) {
 		if (byEnv) return { kind: "undecided" };
-		const inside = nestedIn(config, asking);
+		const inside = nestedIn(config, asking, opensHere(config, asking.env, asking.cwd));
 		return inside === undefined ? claudePick(config, { ...where, takeover: false }) : nestedPick(inside);
 	}
 	prune(config, asking.alive ?? processAlive);
-	const inside = nestedIn(config, asking);
+	const inside = nestedIn(config, asking, true);
 	const pick = inside === undefined ? claudePick(config, { ...where, takeover: byEnv }) : nestedPick(inside);
 	const decision: Decision = byEnv || pick.kind === "nested" ? toDecision(pick) : { kind: "folder" };
 	const written = recordDecision(config, asking.pid, { ...identity, ...decision }, recorded !== undefined);

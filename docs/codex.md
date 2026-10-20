@@ -39,7 +39,8 @@ own `AGENTS.md` loads as that project's rules.
   session, so `-- -m <model> exec "…"` is refused, with the order that works: `-- exec -m <model> "…"`. A resumed or
   forked session also stays off Codex's shared background server, as a new one does.
 - A plain `codex` is not an agent's session, even in the agent's folder: no memory, no recording, no guard. Opening by
-  folder would need Orrery's hooks in `~/.codex`, which Orrery does not write.
+  folder would need Orrery's hooks in `~/.codex`, which Orrery does not write. It gets the command check only: see
+  [A plain Codex](#a-plain-codex).
 - `orrery agent` refuses an agent whose memory is still being built, and asks before opening an agent that is already
   open elsewhere (a second session is read-only), as for every tool.
 
@@ -67,8 +68,8 @@ To turn existing Codex chats into an agent, see the README's Importing chats.
    `Start Codex anyway?` (default no). See Troubleshooting.
 3. **Codex starts** in the folder, with `ORRERY_AGENT` and a one-time `ORRERY_AGENT_TOKEN` that the first Codex process
    claims, so a Codex the agent starts from its own shell is not the agent. (A plain `codex` it starts is no agent's
-   session anyway; one given Orrery's flags, inside any agent's session, opens no memory and records nothing, and says
-   so.) Its command line adds:
+   session anyway; one given Orrery's flags, inside any agent's session or a coding tool's session that is no agent's,
+   opens no memory and records nothing, and says so.) Its command line adds:
    - Orrery's hooks for session start, each prompt, each turn's end, the session's end and every tool call, with the
      trust values Codex expects for them;
    - the `orrery` memory server (MCP);
@@ -271,6 +272,26 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
 - **macOS is not yet verified.** There Orrery asks `lsof` which files Codex holds open, and checks the file at that
   path; if that fails, the session start says so and records nothing.
 
+## A plain Codex
+
+A `codex` started without `orrery agent` loads none of Orrery: no hooks, no memory server, no guard. It is a session
+that is no agent's (README, [Sessions that are no agent's](../README.md#sessions-that-are-no-agents)), and gets the
+command check only. `orrery` run from its shell (Codex is above it, or, in its sandboxed shell, Codex's
+`CODEX_THREAD_ID`, `CODEX_SESSION_ID` or `CODEX_SANDBOX`) runs only `help`, `--version`, `status` and `usage`, and those
+show no agent:
+
+```
+This is a Codex session that is no agent's (process 4242), so it shows no agent. Run orrery status in your own terminal or the TUI.
+```
+
+Everything else is refused: `orrery browse can't run here: this is a Codex session that is no agent's (found
+CODEX_THREAD_ID), and those can't read or change Orrery's memory or settings. Run it in your own terminal or the TUI.`,
+followed, when a variable found it, by a pointer to the README's Leftover markers. A Codex id that an agent's open
+session has recorded is that agent's session, not a plain Codex.
+
+With no guard, a plain Codex's shell can still read Orrery's files directly, as it can any file of yours, and write
+them wherever Codex's sandbox lets it. Open an agent with `orrery agent <Name> --tool codex` to get the guard.
+
 ## Your own Codex settings still apply
 
 - Your `~/.codex/config.toml` (model, sandbox and approval settings, profiles), your own hooks, your MCP servers and
@@ -301,7 +322,7 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
 - "unconfirmed messages not recorded" in `orrery status`: prompts or replies the rollout never confirmed, such as
   words that came from outside your own turns.
 - After updating Orrery, restart open Codex sessions; the update says `Restart open agent sessions now: sessions left
-  open across the update aren't recorded until they restart.` A Codex session open across the update to 0.9.0 records
+  open across the update aren't recorded until they restart.` A Codex session open across the update from 0.8.0 records
   nothing until its next session start (a compaction, `/clear` or resume), and after that the previous version's
   recorder, while it still runs, records it without the rollout check. Prompts and replies the old version queued but
   had not saved are dropped and counted, as far as Orrery can tell them apart.
@@ -311,6 +332,10 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
   it. Resume the session (`orrery agent <Name> --tool codex -- resume`), or open the agent again.
 - `orrery status .` or `browse` refused in the agent's shell, "only help and the version run": that is Codex's
   sandbox (see The guard). Run them in your own terminal.
+- "can't run here: this is a Codex session that is no agent's", or `orrery status` showing no agent: that is a plain
+  `codex` (see A plain Codex). Run the command in your own terminal, or open the agent with `orrery agent <Name> --tool
+  codex`. With `found CODEX_THREAD_ID` (or another variable) in a terminal of your own, see the README's
+  [Leftover markers](../README.md#leftover-markers).
 - Summaries failing: check `orrery login`; switch the source with `orrery compactor <Name>`.
 - Summaries waiting: the agent's summary model is an OpenCode model (`opencode/…`, chosen in OpenCode), which works only
   while the agent is open in OpenCode. Switch with `orrery compactor <Name>`.

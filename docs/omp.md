@@ -40,7 +40,8 @@ OMP in the agent's default folder.
 
 Which agent a session is works as in pi: `ORRERY_AGENT` when it names a configured agent (`orrery agent` sets it, with
 a one-time token the first OMP process claims, so a tool the agent starts itself is not the agent), then the agent
-whose default folder holds OMP's folder, then none, and OMP runs without Orrery's memory.
+whose default folder holds OMP's folder, then none: a session that is no agent's, where OMP runs without Orrery's
+memory and the guard keeps Orrery's own rules (see [The guard](#the-guard)).
 
 The agent's `instructions.md` (up to 32 KB; more is cut, with a notice) goes into OMP's system prompt under
 `# Agent: <Name>`, before the memory section, as in pi's [Instructions](pi.md#instructions). OMP takes changed
@@ -72,7 +73,8 @@ Everything in [pi.md](pi.md)'s Daily use holds, with these differences:
 - `/resume` of a session from another folder, and `/move`, take the session out of the folder it was opened in. Orrery then closes
   the agent's memory (status closed, lock released), switches OMP's own features back on, and says so once. If the new
   folder is an agent's default folder, Orrery opens that agent and records only what comes after the move: the session's
-  earlier turns never enter that agent's memory (each agent's memory stays its own). Elsewhere OMP runs plain, without the guard.
+  earlier turns never enter that agent's memory (each agent's memory stays its own). Elsewhere OMP runs as a session
+  that is no agent's, with Orrery's own guard rules.
 - `/resume @claude` of a Claude Code session that the agent's Claude Code already recorded records its turns again: OMP
   gives them new ids.
 - With `OMP_TUI_DEBUG` set, OMP opens a local debug socket that types into the session as you would, so whatever comes
@@ -86,6 +88,10 @@ Everything in [pi.md](pi.md)'s Daily use holds, with these differences:
   OMP stays without memory after `/new`, in its subagents and after a reload, even once that agent's session has
   ended. `orrery` run from the agent's `bash` (or a `!` command you type) runs only what reads, as in pi: see the
   README's Safety.
+- So does an OMP started from a coding tool's session that is no agent's (one that a Claude Code in another project
+  starts in an agent's folder), with a notice that names that tool, as in [pi](pi.md#limits). It stays without memory
+  for its run, even after a `/move` into an agent's folder. OMP gives its shells no variable of its own, so a process
+  detached from a plain OMP is not known as one.
 - The reader tools (`agents`, `agent_memory`) come once per run, as in pi: an OMP that first opened an agent with no
   reads gets them only after a restart.
 
@@ -165,6 +171,25 @@ no tool may write: `bash` and `eval` text that runs or names one is refused (REA
 `bash` runs in the folder its `cwd` names, so that folder is judged as a read of it: a credential folder, Orrery's
 home or a protected folder as `cwd` is refused. A relative name in the command is then not seen, as after a `cd`.
 Tools from OMP plugins are not checked.
+
+**In a session that is no agent's** (OMP started in a folder that is no agent's, without `orrery agent`) the guard
+keeps Orrery's own rules only, as in [pi](pi.md#limits): Orrery's home, data folder and logins file, its config and
+installed program, and where your agents' sessions load code from outside its home (OMP's and pi's extensions
+folders, Claude Code's plugin copy and its records), all read, never written, every agent's memory view, Claude Code's
+and Codex's session records, and `bash` and `eval` text that runs or names an `orrery` command other than `help`,
+`--version`, `status` and `usage`. A search or `ast_grep` whose folder holds Orrery's home, or a content search whose
+folder holds an agent's memory view, is refused: search a narrower folder. Nothing else: no folder limits, no `.env`, home-login or OMP-store rules, no
+`[guard] protect`. Two of OMP's own tools differ there:
+
+- `lsp`'s edits (a symbol rename, an applied code action, a raw request) pass, unless the session's folder, or the file
+  the action names, holds or is inside Orrery's files (its home, data folder, logins file or installed program): then
+  they are refused, and the edit goes through `edit` or `write`.
+- A search or `ast_edit` glob may use ordinary braces (`src/**/*.{ts,tsx}`), extended patterns (`@(a|b)`) and
+  negations. One is refused when a group holds `/`, `..`, `~` or `$`, is unbalanced, or expands to a path that starts
+  somewhere else (`{,}~/x`); `..` after a wildcard is refused as for agents.
+
+The checks OMP's parsers need in every session still apply there: an edit line that looks like a target but doesn't
+read cleanly as one, a `file://` path the guard cannot read, and an `ast_edit` that reaches more than 50,000 files.
 
 Where OMP's own parsers may read more than the guard can, the guard refuses rather than guesses. In an agent's OMP
 session these calls are refused, and the model has to rephrase them:

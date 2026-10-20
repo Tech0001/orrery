@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseConfig, parseModelChoice } from "../../src/agent/config.ts";
 import { INSTRUCTIONS_MAX_BYTES, writeInstructions } from "../../src/agent/instructions.ts";
 import { Agent, readStatus } from "../../src/agent/agent.ts";
-import { forgetSession, HOST_ENV, liveSession, recordSession } from "../../src/agent/sessions.ts";
+import { forgetSession, HOST_ENV, liveSession, recordSession, TOOL_MARKERS } from "../../src/agent/sessions.ts";
+import { plainDeps, type Proc, STARTS } from "./plain-support.ts";
 import { INSTRUCTIONS_KEY } from "../../src/remote/instructions-sync.ts";
 import { statusVersion } from "../../src/agent/status-file.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
@@ -280,6 +281,28 @@ describe("orrery run's session record (spec 2026-10-18-agent-permissions §2, §
 			expect(liveSession(config.dataDir, process.pid)).toBeUndefined();
 		} finally {
 			forgetSession(config.dataDir, process.ppid);
+		}
+	});
+
+	it("refuses to start from a coding tool's session that is no agent's (spec 2026-10-19-no-agent-sessions §4c), by its process or a variable; opens from the user's terminal", async () => {
+		const { config } = fixture();
+		const dir = config.agents.get("Test")!.dir;
+		// Whatever runs this test: no tool's variables of its own.
+		for (const { variable } of TOOL_MARKERS) vi.stubEnv(variable, undefined);
+		const open = (chain: readonly Proc[]) => Agent.open({ config, agent: "Test", models: fauxModels().models, context: ctx, plain: plainDeps(process.pid, chain, config.dataDir) });
+		const refused = (tool: string, found = "") => new Error(`Orrery: started inside a ${tool} session that is no agent's${found}, so this one opens no memory and records nothing.`);
+		try {
+			await expect(open(STARTS.claude)).rejects.toThrow(refused("Claude Code"));
+			vi.stubEnv("CODEX_THREAD_ID", "019b-plain");
+			await expect(open(STARTS.terminal)).rejects.toThrow(refused("Codex", ' (found CODEX_THREAD_ID; see "Leftover markers" in the README)'));
+			expect(existsSync(join(dir, "memory.sqlite"))).toBe(false);
+			expect(liveSession(config.dataDir, process.pid)).toBeUndefined();
+			vi.stubEnv("CODEX_THREAD_ID", undefined);
+			const agent = await open(STARTS.terminal);
+			expect(liveSession(config.dataDir, process.pid)).toMatchObject({ agent: "Test", tool: "run" });
+			await agent.close();
+		} finally {
+			vi.unstubAllEnvs();
 		}
 	});
 });

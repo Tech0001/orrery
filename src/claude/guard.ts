@@ -21,6 +21,9 @@
  *   gate, src/codex/guard.ts, which judges Codex's tools through this one);
  * - Claude Code's login files are credentials too;
  * - the PreToolUse hook adds Claude Code's own state to the roots an agent may write (claudeStateRoots, ruling C10).
+ * In a session that is no agent's (orreryOnly, spec 2026-10-19-no-agent-sessions §3) only Orrery's own rules apply: not
+ * Claude Code's login, nor OpenCode's config and skills in a tool Orrery doesn't know. The caps on what can be judged in
+ * time (64 KB, the time budget, PATH_MAX) stay.
  */
 
 import { homedir } from "node:os";
@@ -78,7 +81,7 @@ const oneLine = (text: string) => !/[\r\n]/.test(text) && normalize(text).length
  * PreToolUse timeout is 10 s), and realTarget takes about 0.3 s for a missing path 2000 folders deep, so a call that
  * names more than can be judged in time is refused.
  */
-const JUDGE_MS = 2000;
+export const JUDGE_MS = 2000;
 
 /**
  * The longest text the guard runs its patterns on: 64 KB (65,536 characters) of a command line, a Grep glob, a Glob
@@ -191,10 +194,13 @@ function named(input: Readonly<Record<string, unknown>>): Named {
 	return found;
 }
 
-/** pi's judgment of one call (guardToolCall), then Claude Code's login by name: in a search's names, or in the path. */
+/**
+ * pi's judgment of one call (guardToolCall), then Claude Code's login by name: in a search's names, or in the path. Not
+ * in a session that is no agent's (orreryOnly): Claude Code's login is no file of Orrery's.
+ */
 function judge(tool: string, args: Readonly<Record<string, unknown>>, options: PathGuardOptions & { readonly home: string }): string | undefined {
 	const reason = guardToolCall(tool, args, options);
-	if (reason !== undefined) return reason;
+	if (reason !== undefined || options.orreryOnly === true) return reason;
 	const nameKey = tool === "grep" ? "glob" : tool === "find" ? "pattern" : undefined;
 	const names = nameKey === undefined ? undefined : args[nameKey];
 	if (typeof names === "string" && loginNamed(names)) return `${tool} ${nameKey} "${names}" names sensitive files (Claude Code's login).`;
@@ -228,12 +234,16 @@ export interface ClaudeGuardOptions extends PathGuardOptions {
 	readonly judgeMs?: number;
 }
 
-/** Why the call is refused, or undefined to let it through. */
+/**
+ * Why the call is refused, or undefined to let it through. In a session that is no agent's (orreryOnly) Orrery's own
+ * rules alone: Claude Code's login and the rules for OpenCode's config and skills are an agent's.
+ */
 export function claudeGuard(toolName: string, input: Readonly<Record<string, unknown>>, options: ClaudeGuardOptions): string | undefined {
 	const { judgeMs = JUDGE_MS, ...where } = options;
 	const deadline = performance.now() + judgeMs;
 	const home = where.home ?? homedir();
-	const guard = { ...where, home, credentials: [...(where.credentials ?? []), ...claudeLoginFiles(home)], resolvePath: where.resolvePath ?? claudeToolPath };
+	const agent = where.orreryOnly !== true;
+	const guard = { ...where, home, credentials: [...(where.credentials ?? []), ...(agent ? claudeLoginFiles(home) : [])], resolvePath: where.resolvePath ?? claudeToolPath };
 	const found = named(input);
 	const as = AS_PI[toolName];
 	// Text too long to check in time is refused before any pattern runs (paths in judgeBounded).
@@ -244,7 +254,7 @@ export function claudeGuard(toolName: string, input: Readonly<Record<string, unk
 	// A command line, whatever tool runs it.
 	for (const command of found.commands) {
 		if (performance.now() >= deadline) return "this call has more command lines than the guard can check in time; nothing was run.";
-		const reason = guardToolCall("bash", { command }, guard) ?? (loginNamed(command) ? "This command touches sensitive files (Claude Code's login)." : undefined);
+		const reason = guardToolCall("bash", { command }, guard) ?? (agent && loginNamed(command) ? "This command touches sensitive files (Claude Code's login)." : undefined);
 		if (reason !== undefined) return reason;
 	}
 	if (as === "grep") return judgeBounded("grep", { pattern: input.pattern, glob: input.glob, path: input.path }, guard);
@@ -275,7 +285,7 @@ export function claudeGuard(toolName: string, input: Readonly<Record<string, unk
 	// OpenCode's config and code (guard-rules.ts openCodeLoads), which no tool may write, are refused by every string
 	// that may be a path.
 	const last = toolName.split("__").at(-1) ?? toolName;
-	if (as === undefined && !verb && !READS_ONLY.test(last)) {
+	if (agent && as === undefined && !verb && !READS_ONLY.test(last)) {
 		const openCode = openCodeOf(guard, home);
 		for (const text of new Set([...how.keys(), ...found.words])) {
 			if (performance.now() >= deadline) return "this call names more paths than the guard can check in time; nothing was run.";

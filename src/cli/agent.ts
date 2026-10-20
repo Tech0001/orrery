@@ -8,7 +8,7 @@
  */
 
 import { resolve } from "node:path";
-import { findAgent, type AgentTool, loadConfig } from "../agent/config.ts";
+import { type AgentTool, type ConfigFile, configFileOf, configOf, type ConfigSource, findAgent, readConfigFile } from "../agent/config.ts";
 import { editInstructionsFile, runEditor } from "../agent/editor.ts";
 import { applyFix, checkCodexHooks, checkOpenCodePlugin, exitText, launchLabel, launchPlan, type LaunchPlan, remoteGate, runAgent, runTool, type ToolExit, withoutOrrery } from "../agent/launch.ts";
 import { withoutOrreryQuestion, withoutOrrerySaid } from "../agent/load-check.ts";
@@ -44,9 +44,11 @@ export async function openAgentCommand(
 		readonly opencodeGate?: (plan: LaunchPlan) => Promise<OpenCodeGate>;
 		/** Where the agents' rows and remotes are read (tests give one with their own storage). */
 		readonly cache?: OverviewCache;
+		/** The config as the gate read it (src/cli/gate.ts Gated.configFile), never read again; default: `configPath`'s, read once. */
+		readonly config?: ConfigFile;
 	},
 ): Promise<number> {
-	const config = loadConfig(configPath);
+	const config = configOf(deps.config ?? readConfigFile(configPath));
 	const agent = findAgent(config, name);
 	if (options.tool !== undefined && !OPENED_IN.includes(options.tool as AgentTool)) throw new Error(`--tool takes pi, omp, claude-code, codex or opencode (not ${options.tool}).`);
 	const cache = deps.cache ?? new OverviewCache();
@@ -127,14 +129,15 @@ async function checkedOrPlain(plan: LaunchPlan, name: string, io: AgentIo, gate:
  * own making and rewrite its own rules. A seatbelt, as the guard's shell rules are: a shell can make a pseudo-terminal.
  */
 export async function editAgentCommand(
-	configPath: string | undefined,
+	source: ConfigSource,
 	name: string,
 	io: AgentIo,
 	edit: (path: string) => Promise<ToolExit> = (path) => runEditor(path),
 	terminal = process.stdin.isTTY === true && process.stdout.isTTY === true,
 ): Promise<number> {
 	if (!terminal) throw new Error(`orrery agent edit needs a terminal: an agent's instructions are edited by a person, in a terminal (run orrery agent edit ${name} in yours).`);
-	const config = loadConfig(configPath);
+	// The config as the gate read it, or `source`'s read once: never read again.
+	const config = configOf(configFileOf(source));
 	const agent = findAgent(config, name);
 	let row: AgentRow | undefined;
 	const done = await editInstructionsFile(agent, () => (row = agentOverview(config).find((r) => r.name === agent.name)), edit);

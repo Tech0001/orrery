@@ -30,6 +30,7 @@ import { compactorModel, createAgentModels, modelContextWindow, savedSummaryLogi
 import { isOpenCodeChoice, OPENCODE_SOURCE } from "./opencode-source.ts";
 import { Projector } from "./projector.ts";
 import { leaveHostEnv } from "./host-env.ts";
+import { type PlainDeps, plainNested } from "./plain-nested.ts";
 import { forgetSession, insideSession, nestedNotice, recordSession } from "./sessions.ts";
 import { agentSummarizer } from "./summarizer.ts";
 export { type AgentStatus, type ModelSource, readStatus } from "./status-file.ts";
@@ -45,6 +46,8 @@ export interface OpenAgentOptions {
 	readonly models?: Models;
 	readonly context?: Context;
 	readonly onFatal?: (reason: string) => void;
+	/** How a coding tool's session that is no agent's is looked for (src/agent/plain-nested.ts); tests pass their own. */
+	readonly plain?: PlainDeps;
 }
 
 /** The summarizer for an agent's compactor model: the oversized-source rule and usage rows (spec §5.5). */
@@ -147,10 +150,12 @@ export class Agent {
 
 	/**
 	 * Opens the agent for `orrery run`: refused inside an agent's session (a tool the agent ran opens no memory, spec
-	 * 2026-10-18-agent-permissions §3b), and recorded as the agent's session host in the config's data folder until close.
+	 * 2026-10-18-agent-permissions §3b), or one started from a coding tool's session that is no agent's (spec
+	 * 2026-10-19-no-agent-sessions §4c), and recorded as the agent's session host in the config's data folder until close.
 	 */
 	static async open(options: OpenAgentOptions): Promise<Agent> {
-		const inside = insideSession([options.config.dataDir], process.env, options.config, { self: process.pid });
+		const self = { pid: process.pid, tool: "run" } as const;
+		const inside = insideSession([options.config.dataDir], process.env, options.config, { self: self.pid }) ?? plainNested(options.config, process.env, self, options.plain);
 		if (inside !== undefined) throw new Error(nestedNotice(inside));
 		const config = findAgent(options.config, options.agent);
 		const configModel = config.model;

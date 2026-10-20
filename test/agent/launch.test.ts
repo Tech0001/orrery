@@ -136,6 +136,38 @@ describe("launchPlan and runTool", () => {
 		expect(seen).toEqual([{ ORRERY_CONFIG: "/x.toml", ORRERY_AGENT: "A", ORRERY_AGENT_TOKEN: plan.env.ORRERY_AGENT_TOKEN }]);
 	});
 
+	it("starts every tool without the variables coding tools give their shells, even inherited (a pane a tmux server left them in)", async () => {
+		const leftover = { CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", PI_CODING_AGENT: "true", CODEX_THREAD_ID: "019b-plain", CODEX_SESSION_ID: "019b-plain", CODEX_SANDBOX: "seatbelt", OPENCODE: "1", OPENCODE_SESSION_ID: "ses_1" };
+		const seen: NodeJS.ProcessEnv[] = [];
+		const fake = ((_c: string, _a: string[], o: { env: NodeJS.ProcessEnv }) => {
+			seen.push(o.env);
+			const h: Record<string, (...a: unknown[]) => void> = {};
+			setTimeout(() => h.exit?.(0, null), 0);
+			return { on: (n: string, f: (...a: unknown[]) => void) => { h[n] = f; } };
+		}) as never;
+		for (const tool of ["pi", "omp", "claude-code", "codex", "opencode"]) {
+			const { config, row, tools, env } = setup(tool);
+			const plan = launchPlan(config, row, tools, { env });
+			await runTool(plan, { env: { ...env, ...leftover }, spawn: fake });
+			// Started without Orrery (plain Codex or OpenCode) too.
+			await runTool(withoutOrrery(plan), { env: { ...env, ...leftover }, spawn: fake });
+		}
+		expect(seen).toHaveLength(10);
+		for (const started of seen) {
+			expect(Object.keys(started).filter((name) => name in leftover)).toEqual([]);
+			expect(started.PATH).toBeDefined();
+		}
+		// Through Ori as well.
+		const { config, row, tools, env } = setup("pi", undefined, 'launcher = "ori"\n');
+		await runTool(launchPlan(config, row, tools, { env }), { env: { ...env, ...leftover }, spawn: fake });
+		expect(Object.keys(seen.at(-1) as NodeJS.ProcessEnv).filter((name) => name in leftover)).toEqual([]);
+		// The shell Codex runs the hooks in is checked with that environment.
+		const codex = setup("codex");
+		const shells: NodeJS.ProcessEnv[] = [];
+		await checkCodexHooks(launchPlan(codex.config, codex.row, codex.tools, { env: codex.env }), { env: { ...codex.env, ...leftover }, probe: async () => ({ ok: true as const }), shellCheck: (shellEnv) => (shells.push(shellEnv), { quiet: true as const }) });
+		expect(Object.keys(shells[0] as NodeJS.ProcessEnv).filter((name) => name in leftover)).toEqual([]);
+	});
+
 	it("asks before launching OMP without its extension, saying the file it writes, and installs it on yes; omp gets no arguments", () => {
 		const { config, row, tools, env } = setup("omp");
 		const plan = launchPlan(config, row, tools, { root: orreryRoot(), env });

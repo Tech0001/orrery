@@ -42,7 +42,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
-import { liveSession, nestedNotice, recordSession, type SessionRecord } from "../agent/sessions.ts";
+import type { PlainDeps } from "../agent/plain-nested.ts";
+import { liveSession, nestedNotice, plainFields, recordSession, type SessionRecord } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { memorySection } from "../agent/view-text.ts";
 import { noticeShownBefore, waitForMode } from "../claude/hooks.ts";
@@ -95,6 +96,8 @@ export interface CodexHookContext {
 	readonly alive?: (pid: number) => boolean;
 	/** Whether hooks show Orrery's update notices (src/claude/notices.ts updateNotice); the CLI turns them on. */
 	readonly updateNotices?: boolean;
+	/** How a coding tool's session that is no agent's is looked for (src/agent/plain-nested.ts); tests pass their own. */
+	readonly plain?: PlainDeps;
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -108,6 +111,7 @@ function agentOf(ctx: CodexHookContext, session: string | undefined, takeover = 
 		...(ctx.codexParent === undefined ? {} : { parent: ctx.codexParent }),
 		...(session === undefined ? {} : { session }),
 		...(ctx.alive === undefined ? {} : { alive: ctx.alive }),
+		...(ctx.plain === undefined ? {} : { plain: ctx.plain }),
 	});
 }
 
@@ -270,7 +274,10 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 	const pick = agentOf(ctx, session, input.source === "startup" || input.source === "resume");
 	if (pick.kind === "refused") return { systemMessage: pick.notice };
 	// Started inside an agent's session: said to the person, once a session (not again after a compaction).
-	if (pick.kind === "nested") return input.source === "compact" ? undefined : { systemMessage: nestedNotice({ agent: pick.outer, tool: pick.tool, via: "ancestry", dataDir: "" }) };
+	if (pick.kind === "nested") {
+		if (input.source === "compact") return undefined;
+		return { systemMessage: nestedNotice({ agent: pick.outer, tool: pick.tool, via: "ancestry", dataDir: "", ...plainFields(pick) }) };
+	}
 	const { agent } = pick;
 	// The session this Codex's host record names already: nothing to record again.
 	const current = hostOf(ctx, session)?.agent === agent.name;

@@ -1,8 +1,9 @@
 /**
  * Processes, asked about once for the whole agent code: whether one lives (status files, the CLI, Claude Code's holder),
  * its parent and name (Codex's own process, src/codex/host.ts), when it started, and on Linux the pid namespace it is
- * numbered in and this boot's id (session records, src/agent/sessions.ts; token claims, src/agent/pick.ts). Node
- * built-ins only: pi and OMP load this file.
+ * numbered in and this boot's id (session records, src/agent/sessions.ts; token claims, src/agent/pick.ts), and the
+ * folder and launch variables of a plugin command's host (src/cli/gate.ts). Node built-ins only: pi and OMP load this
+ * file.
  */
 
 import { spawnSync } from "node:child_process";
@@ -31,6 +32,73 @@ export function processAlive(pid: number): boolean {
 export function psOutput(args: readonly string[]): string | undefined {
 	const ps = spawnSync("/bin/ps", args, { encoding: "utf8", timeout: 2000, env: { ...process.env, LC_ALL: "C", TZ: "UTC" } });
 	return ps.status === 0 ? ps.stdout : undefined;
+}
+
+/**
+ * The folder process `pid` works in: Linux's /proc/<pid>/cwd link; macOS's `lsof -a -p <pid> -d cwd -Fn`, by its path.
+ * Undefined elsewhere, or when it can't be read (gone, another user's).
+ */
+export function processCwd(pid: number): string | undefined {
+	if (!Number.isInteger(pid) || pid < 1) return undefined;
+	if (process.platform === "linux") {
+		try {
+			return readlinkSync(`/proc/${pid}/cwd`);
+		} catch {
+			return undefined;
+		}
+	}
+	if (process.platform !== "darwin") return undefined;
+	const lsof = spawnSync("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8", timeout: 5000, env: { LC_ALL: "C" } });
+	if (lsof.status !== 0) return undefined;
+	// -F: one field a line, its letter first; n the name.
+	return lsof.stdout.split("\n").find((line) => line.startsWith("n/"))?.slice(1);
+}
+
+/** How processEnv reads a process's environment; each defaults to this system's own way (tests give fakes). */
+export interface ProcessEnvDeps {
+	readonly platform?: NodeJS.Platform;
+	/** macOS: ps's output for `args`, or undefined when it fails (default /bin/ps, in the C locale). */
+	readonly ps?: (args: readonly string[]) => string | undefined;
+	/** Linux: a file's text; throws when it can't be read (default readFileSync). */
+	readonly read?: (file: string) => string;
+}
+
+/** macOS's ps output for `args` in the C locale and no other environment, or undefined when it fails. */
+function psQuiet(args: readonly string[]): string | undefined {
+	const ps = spawnSync("/bin/ps", args, { encoding: "utf8", timeout: 2000, env: { LC_ALL: "C" } });
+	return ps.status === 0 ? ps.stdout : undefined;
+}
+
+/**
+ * The values of the variables `names` in the environment process `pid` was started with: Linux's /proc/<pid>/environ;
+ * macOS's `ps -E`, by its path, whose words they are (the environment follows the arguments, so the last word naming one
+ * is taken; a value holding a space is no value of these). Undefined elsewhere, or when it can't be read; on macOS also
+ * when ps shows no environment at all (neither PATH nor HOME): it may withhold another process's, and "started without
+ * it" must never be read from that.
+ */
+export function processEnv(pid: number, names: readonly string[], deps: ProcessEnvDeps = {}): Readonly<Record<string, string>> | undefined {
+	if (!Number.isInteger(pid) || pid < 1) return undefined;
+	const platform = deps.platform ?? process.platform;
+	let words: string[];
+	if (platform === "linux") {
+		try {
+			words = (deps.read ?? ((file: string) => readFileSync(file, "utf8")))(`/proc/${pid}/environ`).split("\0");
+		} catch {
+			return undefined;
+		}
+	} else if (platform === "darwin") {
+		const out = (deps.ps ?? psQuiet)(["-wwE", "-o", "command=", "-p", String(pid)]);
+		if (out === undefined) return undefined;
+		words = out.trim().split(/\s+/);
+		if (!words.some((word) => word.startsWith("PATH=") || word.startsWith("HOME="))) return undefined;
+	} else return undefined;
+	const found: Record<string, string> = {};
+	for (const word of words) {
+		const equals = word.indexOf("=");
+		const name = word.slice(0, equals);
+		if (equals > 0 && names.includes(name)) found[name] = word.slice(equals + 1);
+	}
+	return found;
 }
 
 /**

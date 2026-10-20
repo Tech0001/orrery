@@ -145,9 +145,10 @@ describe("Claude Code outside the agent's folder, by ORRERY_AGENT", () => {
 		expect(await write(dir, join(dir, "notes.md"))).toBe("");
 		expect(await write(dir, join(t.folder, "notes.md"))).toContain("Orrery guard");
 		expect(await read(dir)).toContain("Orrery guard");
-		// A PreToolUse input too long to read is refused unread there too.
+		// A PreToolUse input too long to read is refused unread there too, and in a session that is no agent's (spec
+		// 2026-10-19-no-agent-sessions §3).
 		expect(await runHook("pre-tool-use", undefined, c(dir))).toContain("Orrery guard");
-		expect(await runHook("pre-tool-use", undefined, at(t, dir, {}))).toBe("");
+		expect(await runHook("pre-tool-use", undefined, at(t, dir, {}))).toContain("over 1 MB");
 	});
 
 	it("a Claude Code the agent started (same variables, another Claude Code process): started inside the agent's session, it opens no memory, in the agent's folder too", async () => {

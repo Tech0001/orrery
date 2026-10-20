@@ -1,11 +1,12 @@
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseConfig } from "../../src/agent/config.ts";
+import { parseConfig, readConfigFile } from "../../src/agent/config.ts";
 import { GUARD_PRESET, newConfigText } from "../../src/agent/config-edit.ts";
 import { offerGuardPreset } from "../../src/install/guard-preset.ts";
 import { wire } from "../../src/install/wire.ts";
 import { cleanupScratch, fakeRun, installedScratch, tempDir } from "./support.ts";
+import { fifos, readOnce, stopWriters } from "../cli/read-once.ts";
 
 /**
  * Setup adds the [guard] preset once to a config that has no [guard] table (spec 2026-10-16-guard-presets): through the
@@ -192,5 +193,68 @@ describe("setup", () => {
 		expect(readFileSync(config, "utf8")).toContain(GUARD_PRESET);
 		const again = await wire(t.env, { run: fakeRun, confirm: connect });
 		expect(again.filter((line) => line.startsWith("config:"))).toEqual([]);
+	});
+});
+
+describe("the [guard] preset with the config the gate read", () => {
+	afterEach(stopWriters);
+
+	it.skipIf(!fifos)("in a coding tool's session goes to the file the gate read, from the text it read, never read again", async () => {
+		const t = scratch();
+		const once = await readOnce(t.config, OLD, "# another config\n");
+		expect(offerGuardPreset(t.env, once.file)).toMatch(/^config: added a \[guard\] example to /);
+		expect(await once.readAgain()).toBe(false);
+		expect(withoutPreset(readFileSync(t.config, "utf8"))).toBe(OLD);
+		expect(readFileSync(`${t.config}.bak`, "utf8")).toBe(OLD);
+	});
+
+	it("in a coding tool's session leaves a config swapped since alone, and offers it again later", () => {
+		const t = scratch();
+		writeFileSync(t.config, OLD);
+		const read = { ...readConfigFile(t.config), checked: true };
+		const swapped = "# swapped in\n";
+		writeFileSync(`${t.config}.new`, swapped);
+		renameSync(`${t.config}.new`, t.config);
+		expect(offerGuardPreset(t.env, read)).toBe(`config: could not add a [guard] example to ${t.config}: The config (${t.config}) changed after Orrery read it, so nothing was written to it. Run the command again.`);
+		expect(readFileSync(t.config, "utf8")).toBe(swapped);
+		expect(existsSync(`${t.config}.bak`)).toBe(false);
+		// Not counted as offered: a later setup's read gets it.
+		expect(offerGuardPreset(t.env, { ...readConfigFile(t.config), checked: true })).toMatch(/^config: added a \[guard\] example to /);
+	});
+
+	it("goes only to the user's own config (ORRERY_CONFIG, else the home's), as 0.9.0: a --config or the server's config the gate read is left alone", () => {
+		const t = scratch();
+		writeFileSync(t.config, OLD);
+		// --config naming another file: neither it nor the user's config is touched, and neither is counted.
+		const given = join(tempDir("orrery-preset-given-"), "given.toml");
+		writeFileSync(given, OLD);
+		for (const checked of [false, true]) expect(offerGuardPreset(t.env, { ...readConfigFile(given), checked }), `checked ${checked}`).toBeUndefined();
+		expect(readFileSync(given, "utf8")).toBe(OLD);
+		expect(existsSync(`${given}.bak`)).toBe(false);
+		expect(readFileSync(t.config, "utf8")).toBe(OLD);
+		// The server's config, the only one there (a stand-in at another path): left alone, the home's none counted.
+		const bare = scratch();
+		const server = join(tempDir("orrery-preset-server-"), "config.toml");
+		writeFileSync(server, OLD);
+		expect(offerGuardPreset(bare.env, { ...readConfigFile(server), checked: false })).toBeUndefined();
+		expect(readFileSync(server, "utf8")).toBe(OLD);
+		expect(existsSync(`${server}.bak`)).toBe(false);
+		expect(existsSync(join(bare.orrery, "guard-preset.json"))).toBe(false);
+		// The user's config, named by the gate however it was spelled: the example is added, as before.
+		const linked = join(t.home, "linked-orrery");
+		symlinkSync(t.orrery, linked);
+		expect(offerGuardPreset(t.env, { ...readConfigFile(join(linked, "config.toml")), checked: false })).toMatch(/^config: added a \[guard\] example to /);
+		expect(withoutPreset(readFileSync(t.config, "utf8"))).toBe(OLD);
+		expect(offerGuardPreset(t.env, { ...readConfigFile(given), checked: false })).toBeUndefined();
+		expect(readFileSync(given, "utf8")).toBe(OLD);
+	});
+
+	it("in the user's own terminal adds it to the config's text now, keeping an edit made since the read, as 0.9.0", () => {
+		const t = scratch();
+		writeFileSync(t.config, OLD);
+		const read = { ...readConfigFile(t.config), checked: false };
+		writeFileSync(t.config, `${OLD}# theirs\n`);
+		expect(offerGuardPreset(t.env, read)).toMatch(/^config: added a \[guard\] example to /);
+		expect(withoutPreset(readFileSync(t.config, "utf8"))).toBe(`${OLD}# theirs\n`);
 	});
 });

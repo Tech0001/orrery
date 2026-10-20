@@ -19,7 +19,13 @@
  * tools). Shell text may not run Orrery's commands that change memory or settings (guard-rules.ts runsOrreryCommand), nor
  * name Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions; guard-rules.ts
  * transcriptRule), which no tool writes, but a project's memory folder there (Claude Code's auto memory); file tools
- * may read them. Known limits:
+ * may read them. A session that is no agent's (GuardOptions.orreryOnly, spec 2026-10-19-no-agent-sessions §3) gets
+ * Orrery's own rules alone (orreryJudge): Orrery's home, its credentials file, config and installed program, where
+ * agents' sessions load code from outside its home (orreryEntries: read, never written, not named in shell text), every
+ * agent's memory view (each is another's: it reads no agent's memory), the session records, and Orrery's commands and
+ * plumbing in shell text. What the guard can't judge (a call too long, an OMP path it can't read) is still refused, but
+ * an OMP glob's ordinary groups pass (plainEscapingGlob), and so do an OMP language server's edits, which name no file,
+ * unless the session's folder holds or is inside Orrery's files. Known limits:
  * - A hard link is another name for the same file, and the guard does not count links: one to another agent's view (the
  *   copy goes stale once Orrery replaces the view on its next write), to the config file in use, or to a file of the
  *   installed program (app/), made before the guard ran or by a spelling it cannot see, reads or writes the file
@@ -59,10 +65,13 @@ import { agentMode } from "../claude/view-file.ts";
 import type { HarnessConfig, AgentConfig } from "./config.ts";
 import {
 	APP_READ_ONLY,
+	APP_READ_ONLY_PLAIN,
 	CONFIG_READ_ONLY,
+	CONFIG_READ_ONLY_PLAIN,
 	checkToolCall,
 	configSpellings,
 	editTextRefusal,
+	ENTRY_READ_ONLY_PLAIN,
 	foldName,
 	type GuardOptions,
 	HOME_SECRETS,
@@ -88,6 +97,7 @@ import {
 	secretText,
 	sensitive,
 	TRANSCRIPT_READ_ONLY,
+	TRANSCRIPT_READ_ONLY_PLAIN,
 	type TranscriptRule,
 	textProtected,
 	transcriptPath,
@@ -174,6 +184,12 @@ export interface PathGuardOptions extends GuardOptions {
 	readonly astEditLimit?: number;
 	/** The guard call this judgment is part of: its rules are worked out once for all its paths (GuardCall). */
 	readonly call?: GuardCall;
+	/**
+	 * The Orrery home the session's environment names (src/agent/home.ts orreryHome: $ORRERY_HOME, else ~/.orrery), for a
+	 * session that is no agent's: the config file's folder counts as Orrery's home, its app/ as the installed program, only
+	 * when it is this folder, not wherever --config or ORRERY_CONFIG puts a config (whose folder's app/ is a project's own).
+	 */
+	readonly orreryHome?: string;
 }
 
 /** What pathJudge works out from its options before it judges any path: each rule set, its paths where they really are. */
@@ -182,6 +198,11 @@ interface PathRules {
 	readonly views: ReturnType<typeof viewRules>;
 	readonly protect: Protection;
 	readonly config: string[];
+	/**
+	 * What shell text may not spell (checkToolCall's `config`): the config's spellings, and in a session that is no
+	 * agent's Orrery's credentials files' too, which an agent's guard refuses by the credential names.
+	 */
+	readonly shellNamed: string[];
 	readonly openCode: OpenCodeRule;
 	readonly transcripts: TranscriptRule;
 	readonly credentials: string[];
@@ -190,6 +211,19 @@ interface PathRules {
 	readonly data: string | undefined;
 	readonly setUp: ReadonlySet<string>;
 	readonly roots: GuardOptions;
+	/**
+	 * A session that is no agent's only (empty for an agent's): Orrery's installed program, its data folder's app/ and
+	 * the app/ beside the config file in use (an Orrery home not named .orrery, its data folder moved), where they really
+	 * are, folded.
+	 */
+	readonly programs: string[];
+	/**
+	 * The same only: where agents' sessions load code from outside Orrery's home (orreryEntries: folders and files), as
+	 * spelt and where each really is, folded.
+	 */
+	readonly entries: string[];
+	/** The same only: every place of Orrery's (its data folder, the config's folder, its credentials files, programs, entries). */
+	readonly places: string[];
 }
 
 /**
@@ -222,6 +256,8 @@ export class GuardCall {
 			options.orreryData ?? null,
 			options.openCode ?? null,
 			options.transcripts === undefined ? null : [options.transcripts.claude, options.transcripts.codex],
+			options.orreryOnly === true,
+			options.orreryHome ?? null,
 		]);
 		let rules = this.#rules.get(key);
 		if (rules === undefined) {
@@ -237,6 +273,36 @@ function movedAgentDir(env: NodeJS.ProcessEnv, home: string): string | undefined
 	const dir = env.PI_CODING_AGENT_DIR;
 	if (!dir) return undefined;
 	return dir === "~" ? home : dir.startsWith("~/") ? join(home, dir.slice(2)) : resolve(dir);
+}
+
+/** Where agents' sessions load code from outside Orrery's home (orreryEntries). */
+export interface OrreryEntries {
+	/** Folders whose every file is loaded or run: pi's and OMP's extensions folders, the plugin's copy and marketplace. */
+	readonly folders: string[];
+	/** The records that say where the plugin is: Claude Code's known_marketplaces.json and installed_plugins.json. */
+	readonly files: string[];
+}
+
+/** The records' names, which shell text may not hold anywhere (a copy into their folder names no more than this). */
+export const PLUGIN_RECORDS = ["known_marketplaces.json", "installed_plugins.json"] as const;
+
+/**
+ * Where agents' sessions load code from outside Orrery's home, as Orrery's setup installs it (src/agent/tools.ts
+ * installSteps): pi's and OMP's extensions folders, which hold Orrery's one-line extension (extensions/orrery.ts:
+ * piExtensionFile, ompExtensionFile) and whose every file pi and OMP load; and Claude Code's plugin, as `claude plugin
+ * marketplace add` and `claude plugin install` keep it, in ~/.claude and $CLAUDE_CONFIG_DIR: its installed copy
+ * (plugins/cache/orrery), its marketplace's folder (plugins/marketplaces/orrery, where Claude Code keeps one), and the
+ * records that name the marketplace and where the copy is (PLUGIN_RECORDS, in plugins/). A session that is no agent's may
+ * read them, never write them: what it put there would run in every agent's session. Shell profiles and the rest of the
+ * user's files that later run in sessions stay theirs (a documented limit).
+ */
+export function orreryEntries(env: NodeJS.ProcessEnv, home: string): OrreryEntries {
+	const moved = movedAgentDir(env, home);
+	const pi = join(moved ?? join(home, ".pi", "agent"), "extensions");
+	const omp = join(moved ?? join(home, env.PI_CONFIG_DIR || ".omp", "agent"), "extensions");
+	const claude = [join(home, ".claude"), ...(env.CLAUDE_CONFIG_DIR ? [resolve(env.CLAUDE_CONFIG_DIR)] : [])].map((dir) => join(dir, "plugins"));
+	const plugin = claude.flatMap((plugins) => [join(plugins, "cache", "orrery"), join(plugins, "marketplaces", "orrery")]);
+	return { folders: [...new Set([pi, omp, ...plugin])], files: claude.flatMap((plugins) => PLUGIN_RECORDS.map((name) => join(plugins, name))) };
 }
 
 /** OpenCode's data folder: $XDG_DATA_HOME/opencode, else ~/.local/share/opencode (util/src/global-roots.ts). */
@@ -340,9 +406,12 @@ function present(path: string): boolean {
 	}
 }
 
-/** The folder a path or glob starts from: everything before the segment holding its first wildcard ("~/**\/x" → "~"). */
-export function globBase(path: string): string {
-	const wild = path.search(/[*?[{]/);
+/**
+ * The folder a path or glob starts from: everything before the segment holding its first wildcard ("~/**\/x" → "~").
+ * `wildcards`: what counts as one; in a session that is no agent's a parenthesis (an extended glob's group) does too.
+ */
+export function globBase(path: string, wildcards: RegExp = /[*?[{]/): string {
+	const wild = path.search(wildcards);
 	if (wild === -1) return path;
 	const slash = path.lastIndexOf("/", wild);
 	return slash === -1 ? "." : slash === 0 ? "/" : path.slice(0, slash);
@@ -611,6 +680,125 @@ function escapingGlob(path: string): boolean {
 	return wild !== -1 && segments.slice(wild + 1).includes("..");
 }
 
+/** What starts a glob's matching in a session that is no agent's: a wildcard, a brace group or a parenthesis group. */
+const PLAIN_WILDCARDS = /[*?[{(]/;
+
+/**
+ * escapingGlob for a session that is no agent's (GuardOptions.orreryOnly), which keeps an ordinary group of the
+ * project's own (src/**\/*.{ts,tsx}, {src,lib}, @(a|b).ts), since such a session gets no new refusal on its own files: a
+ * brace or parenthesis group (an extended glob's, or a
+ * negation's) that holds "/", "..", "~" or "$", which may lead it out of its base folder, or one left unbalanced
+ * (`balanced`: the path as written; a piece OMP splits from it at a comma may hold half a group); or a ".." segment after
+ * one that holds a wildcard or a group. What a group's alternatives name is read as before (sensitive's brace readings).
+ * A group with nothing of those inside may still move the base once its alternatives are put in place ({,}~/x is ~/x,
+ * {,}/abs is absolute, .{.,}/x is ../x, and @{,}~/x is ~/x once OMP drops the "@"): the path is read as OMP reads it and
+ * every expansion (braceExpansions; more than MAX_EXPANSIONS refuse) that starts from elsewhere, or adds a ".." segment,
+ * is refused too (expansionMoves).
+ */
+function plainEscapingGlob(path: string, balanced: boolean): boolean {
+	if (expansionMoves(path)) return true;
+	let braces = 0;
+	let parens = 0;
+	for (let at = 0; at < path.length; at++) {
+		const c = path.charAt(at);
+		if (c === "{") braces++;
+		else if (c === "(") parens++;
+		else if (c === "}" || c === ")") {
+			if (c === "}") braces--;
+			else parens--;
+			if (braces < 0 || parens < 0) {
+				if (balanced) return true;
+				braces = Math.max(0, braces);
+				parens = Math.max(0, parens);
+			}
+		} else if ((braces > 0 || parens > 0) && (c === "/" || c === "~" || c === "$" || (c === "." && path.charAt(at + 1) === "."))) return true;
+	}
+	if (balanced && (braces !== 0 || parens !== 0)) return true;
+	const segments = path.split("/");
+	const wild = segments.findIndex((segment) => PLAIN_WILDCARDS.test(segment));
+	return wild !== -1 && segments.slice(wild + 1).includes("..");
+}
+
+/** How many paths a glob's brace groups may expand to before a session that is no agent's refuses it. */
+const MAX_EXPANSIONS = 256;
+
+/**
+ * The brace group of `text` that closes first and holds a comma at its own depth: where it opens and closes, and its
+ * alternatives. One pass: a group never closed, or one with no comma, is no group (a glob reads it as itself).
+ */
+function commaGroup(text: string): { readonly start: number; readonly end: number; readonly alternatives: string[] } | undefined {
+	const open: { start: number; commas: number[] }[] = [];
+	for (let at = 0; at < text.length; at++) {
+		const c = text.charAt(at);
+		if (c === "{") open.push({ start: at, commas: [] });
+		else if (c === "," && open.length > 0) open[open.length - 1]?.commas.push(at);
+		else if (c === "}" && open.length > 0) {
+			const group = open.pop() as { start: number; commas: number[] };
+			if (group.commas.length === 0) continue;
+			const cuts = [group.start, ...group.commas, at];
+			return { start: group.start, end: at, alternatives: cuts.slice(1).map((cut, i) => text.slice((cuts[i] as number) + 1, cut)) };
+		}
+	}
+	return undefined;
+}
+
+/** Every path a glob's brace groups expand to, alternative by alternative, nested ones too; undefined past MAX_EXPANSIONS. */
+function braceExpansions(path: string): string[] | undefined {
+	const out: string[] = [];
+	const todo = [path];
+	for (let text = todo.pop(); text !== undefined; text = todo.pop()) {
+		const group = commaGroup(text);
+		if (group === undefined) out.push(text);
+		else for (const alternative of group.alternatives) todo.push(text.slice(0, group.start) + alternative + text.slice(group.end + 1));
+		if (out.length + todo.length > MAX_EXPANSIONS) return undefined;
+	}
+	return out;
+}
+
+/**
+ * A path's text as OMP's tools read it before they resolve it (ompToolPath's first steps): trimmed and unquoted, a stray
+ * ":" before a path and a leading "@" dropped, unicode spaces to " ".
+ */
+function ompPathText(raw: string): string {
+	let path = unquote(raw.trim());
+	if (/^:(?=[/\\~]|\.\.?[/\\]|[A-Za-z]:)/.test(path)) path = path.slice(1);
+	if (path.startsWith("@")) path = path.slice(1);
+	return path.replace(UNICODE_SPACES, " ");
+}
+
+/** Where a path OMP reads (ompPathText) starts from: home, the root, a variable, a file URL, a drive, or its folder. */
+function pathAnchor(text: string): string {
+	if (/^file:\/\//i.test(text)) return "file";
+	if (/^[~/\\$]/.test(text)) return text.charAt(0) === "\\" ? "/" : text.charAt(0);
+	return /^[A-Za-z]:/.test(text) ? "drive" : ".";
+}
+
+/**
+ * Whether a glob's brace groups, put in place, move its base (plainEscapingGlob). The path is read as OMP reads it
+ * (ompPathText: its "@", ":" and quotes gone) before its groups are expanded, and each expansion is read so again (an
+ * "@" dropped after the expansion would otherwise hide one that starts from home). Refused: too many expansions; one that starts from elsewhere than the path as read (pathAnchor: home, the root, a
+ * variable, a file URL, a drive), or that holds more ".." segments than the path holds before its first group (what comes
+ * before that group's segment is in every expansion).
+ */
+function expansionMoves(path: string): boolean {
+	const written = ompPathText(path);
+	const first = written.indexOf("{");
+	if (first === -1) return false;
+	const expansions = braceExpansions(written);
+	if (expansions === undefined) return true;
+	const ups = (text: string) => text.split("/").filter((segment) => segment === "..").length;
+	const anchor = pathAnchor(written);
+	const fixed = ups(written.slice(0, written.lastIndexOf("/", first) + 1));
+	return expansions.some((expansion) => {
+		const read = ompPathText(expansion);
+		return pathAnchor(read) !== anchor || ups(read) > fixed;
+	});
+}
+
+/** Why a session that is no agent's refuses such a glob (plainEscapingGlob). */
+const GROUP_REACHES = (tool: string, path: string) =>
+	`${tool} path "${path}": a brace or parenthesis group holding "/", "..", "~" or "$", one left open, one whose alternatives move the glob's folder, or ".." after a wildcard may reach past the glob's folder, which OMP paths may not do here.`;
+
 const SENSITIVE_FILE = (path: string) => `${path} is a sensitive file (keys, credentials or Orrery's private data).`;
 const OTHER_VIEW = (path: string) => `${path} is another agent's memory view.`;
 
@@ -632,7 +820,9 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
  * really is) is worked out once, and each call is judged by the same rules.
  */
 export function pathJudge(options: PathGuardOptions): (toolName: string, input: Readonly<Record<string, unknown>>) => string | undefined {
-	const { home, views, protect, config, openCode, transcripts, credentials, foreign, realData, data, setUp, roots } = options.call?.rules(options, () => pathRules(options)) ?? pathRules(options);
+	const rules = options.call?.rules(options, () => pathRules(options)) ?? pathRules(options);
+	if (options.orreryOnly === true) return orreryJudge(options, rules);
+	const { home, views, protect, config, openCode, transcripts, credentials, foreign, realData, data, setUp, roots } = rules;
 	const fold = (path: string) => path.toLowerCase();
 	return (toolName, input) => {
 		const search = SEARCHES.has(toolName);
@@ -697,27 +887,115 @@ export function pathJudge(options: PathGuardOptions): (toolName: string, input: 
 	};
 }
 
-/** pathJudge's rules for `options` (PathRules), worked out now. */
+/**
+ * pathJudge in a session that is no agent's (GuardOptions.orreryOnly): Orrery's own rules, in pathJudge's order. Orrery's
+ * home by its .orrery name (in a path, a search's names) and by where it really is, Orrery's credentials file (the
+ * caller's `credentials`), a search whose root holds either, every agent's memory view (`foreignViews`: the session is
+ * no agent's, so each is another's) and a content search whose root holds one, the config, installed program and where
+ * agents' sessions load code from (orreryEntries) written by no tool, and the session records written by no tool;
+ * then checkToolCall's own rules for the command a call may carry. No folder confinement, home secrets, .env or other
+ * built-in names, [guard] protect, OpenCode or skills.
+ */
+function orreryJudge(options: PathGuardOptions, rules: PathRules): (toolName: string, input: Readonly<Record<string, unknown>>) => string | undefined {
+	const { home, views, protect, config, shellNamed, openCode, transcripts, credentials, foreign, realData, data, setUp, roots, programs, entries } = rules;
+	const fold = (path: string) => path.toLowerCase();
+	return (toolName, input) => {
+		const search = SEARCHES.has(toolName);
+		const nameKey = toolName === "grep" ? "glob" : toolName === "find" ? "pattern" : undefined;
+		const names = nameKey === undefined ? undefined : input[nameKey];
+		if (typeof names === "string" && sensitive(names, views.path(), true)) return `${toolName} ${nameKey} "${names}" names sensitive files (keys, credentials or Orrery's private data).`;
+		const given = typeof input.path === "string" && input.path !== "" ? input.path : undefined;
+		const raw = given ?? (search ? "." : undefined);
+		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode, transcripts }, views, shellNamed, protect);
+		const resolved = (options.resolvePath ?? piToolPath)(raw, options.cwd, home);
+		const named = views.path(resolved);
+		if (sensitive(raw, named, true) || sensitive(resolved, named, true)) return SENSITIVE_FILE(raw);
+		const target = realTarget(resolved);
+		if (sensitive(target, views.path(target), true)) return SENSITIVE_FILE(raw);
+		const writes = toolName === "write" || toolName === "edit";
+		const isConfig = (path: string) => orreryConfigNamed(path) || config.includes(path.toLowerCase());
+		if (writes && (isConfig(resolved) || isConfig(target))) return CONFIG_READ_ONLY_PLAIN(raw);
+		if (writes && (orreryAppNamed(resolved) || orreryAppNamed(target))) return APP_READ_ONLY_PLAIN(raw);
+		const where = fold(target);
+		if (credentials.some((location) => within(where, location))) return SENSITIVE_FILE(raw);
+		// An agent's view file, as given and where it really is: no tool reads or writes it, by any spelling or link.
+		if (foreign.some((view) => within(where, fold(view)))) return OTHER_VIEW(raw);
+		if (realData !== undefined && inOrreryHome(where, realData) && !(search && where === data)) return SENSITIVE_FILE(raw);
+		if (writes && realData !== undefined && where === fold(join(realData, "config.toml"))) return CONFIG_READ_ONLY_PLAIN(raw);
+		// The installed program: in the data folder, or beside the config file in use (an Orrery home not named .orrery).
+		if (writes && programs.some((program) => within(where, program))) return APP_READ_ONLY_PLAIN(raw);
+		// Where agents' sessions load code from outside Orrery's home (orreryEntries): in one of those folders, or one of
+		// the records, as given and where it really is.
+		if (writes && entries.some((entry) => within(where, entry) || within(fold(resolved), entry))) return ENTRY_READ_ONLY_PLAIN(raw);
+		// A search reads everything under its root, hidden files too: one at Orrery's home or above it, or holding its
+		// credentials file, reads them.
+		if (search && (credentials.some((location) => within(location, where)) || (data !== undefined && within(data, where)))) {
+			return `${toolName} on ${target} would search Orrery's private data (its home or credentials file); search a narrower folder.`;
+		}
+		// A content search whose root holds an agent's view file, one that is there or whose agent is set up the file way
+		// (pathJudge's rule); a listing reads names only.
+		if (search && !LISTINGS.has(toolName) && foreign.some((view) => within(fold(view), where) && (setUp.has(fold(view)) || present(view)))) {
+			return `${toolName} on ${target} would search another agent's memory view; search a narrower folder.`;
+		}
+		const rest = checkToolCall({ name: toolName, arguments: { ...input, path: target } }, roots, views, shellNamed, protect);
+		return rest ?? (writes && transcriptPath(resolved, transcripts) ? TRANSCRIPT_READ_ONLY_PLAIN(raw) : undefined);
+	};
+}
+
+/** An OpenCode rule that names nothing: a session that is no agent's has no OpenCode rules (GuardOptions.orreryOnly). */
+const NO_OPENCODE: OpenCodeRule = { own: [], plans: [], data: [] };
+
+/**
+ * pathJudge's rules for `options` (PathRules), worked out now. In a session that is no agent's (GuardOptions.orreryOnly)
+ * only what Orrery's own rules need: no home credentials, [guard] protect or OpenCode folders, and no own view.
+ */
 function pathRules(options: PathGuardOptions): PathRules {
+	const agent = options.orreryOnly !== true;
 	const home = options.home ?? homedir();
-	const views = viewsOf(options, home);
+	const views = agent ? viewsOf(options, home) : viewRules({ ...options, home }, []);
 	// [guard] protect: its path entries from this home, and where they really are.
-	const protect = protection(options.protect, home, realTarget);
+	const protect = agent ? protection(options.protect, home, realTarget) : protection([], home);
 	// The config file in use, as given and where it really is: named in no command, written by no tool.
 	const config = configSpellings({ ...options, home }, options.configFile === undefined ? undefined : realTarget(options.configFile));
-	const openCode = openCodeOf(options, home);
+	// A session that is no agent's: where agents' sessions load code from outside Orrery's home (orreryEntries).
+	const loaded = agent ? { folders: [], files: [] } : orreryEntries(process.env, home);
+	const entryPaths = [...loaded.folders, ...loaded.files];
+	// A session that is no agent's has no credential names: Orrery's credentials files are named in no command by their
+	// paths, spelt as the config's are (its caller's `credentials` are Orrery's alone), and nor are those places: their
+	// folders (a copy, a link or a redirect into one names no more than the folder), and the plugin's records by name.
+	const spelt = (file: string) => configSpellings({ configFile: file, home }, realTarget(file));
+	const shellNamed = agent ? config : [...config, ...(options.credentials ?? []).flatMap(spelt), ...entryPaths.flatMap(spelt), ...PLUGIN_RECORDS];
+	const openCode = agent ? openCodeOf(options, home) : NO_OPENCODE;
 	// Claude Code's and Codex's session records, where they are and where they really are.
 	const transcripts = options.transcripts ?? transcriptRule(process.env, home, realTarget);
 	// The credential locations themselves, symlinks followed (a ~/.ssh linked from a dotfiles folder, say). Compared
 	// ignoring case: on a case-insensitive file system (macOS) ~/.SSH and /USERS are the same folders.
 	const fold = (path: string) => path.toLowerCase();
-	const credentials = [...HOME_CREDENTIALS.map((entry) => join(home, entry)), ...(options.credentials ?? [])].map((path) => fold(realTarget(path)));
+	const credentials = [...(agent ? HOME_CREDENTIALS.map((entry) => join(home, entry)) : []), ...(options.credentials ?? [])].map((path) => fold(realTarget(path)));
 	const foreign = options.foreignViews.flatMap((view) => [view, realTarget(view)]);
 	const realData = options.orreryData === undefined ? undefined : realTarget(options.orreryData);
 	const data = realData === undefined ? undefined : fold(realData);
 	const setUp = new Set((options.fileModeViews ?? []).flatMap((view) => [view, realTarget(view)]).map(fold));
-	const roots = { folder: realRoot(options.folder), allowedRoots: options.allowedRoots.map(realRoot), cwd: realRoot(options.cwd), foreignViews: options.foreignViews, openCode, transcripts };
-	return { home, views, protect, config, openCode, transcripts, credentials, foreign, realData, data, setUp, roots };
+	const roots = {
+		folder: realRoot(options.folder),
+		allowedRoots: options.allowedRoots.map(realRoot),
+		cwd: realRoot(options.cwd),
+		foreignViews: options.foreignViews,
+		openCode,
+		transcripts,
+		...(agent ? {} : { orreryOnly: true }),
+	};
+	// A session that is no agent's: the installed program by where it is (an agent's guard keeps it by name and by its
+	// folder rule), and every place of Orrery's, for OMP's language server (guardOmpToolCall). The config file's folder
+	// counts as Orrery's home only when it is the Orrery home (PathGuardOptions.orreryHome): a config anywhere else would
+	// make its folder's app/ read-only to a project that has one.
+	const configDir = agent || options.configFile === undefined ? undefined : realTarget(dirname(resolve(options.configFile)));
+	const homeDir = agent || options.orreryHome === undefined ? undefined : realTarget(resolve(options.orreryHome));
+	const configHome = configDir !== undefined && homeDir !== undefined && fold(configDir) === fold(homeDir) ? configDir : undefined;
+	const programs = agent ? [] : [...(data === undefined ? [] : [join(data, "app")]), ...(configHome === undefined ? [] : [fold(realTarget(join(configHome, "app")))])];
+	const entries = [...new Set(entryPaths.flatMap((path) => [fold(resolve(path)), fold(realTarget(path))]))];
+	const places = agent ? [] : [...(data === undefined ? [] : [data]), ...(configHome === undefined ? [] : [fold(configHome)]), ...credentials, ...programs, ...entries];
+	return { home, views, protect, config, shellNamed, openCode, transcripts, credentials, foreign, realData, data, setUp, roots, programs, entries, places };
 }
 
 /** How many entries filesBelow looks at, at most. */
@@ -770,6 +1048,8 @@ function isFolder(path: string): boolean {
 /** The lsp actions that only read (OMP's lsp tool, src/lsp/types.ts): code_actions reads too unless it applies one. */
 const LSP_READS = new Set(["diagnostics", "definition", "references", "hover", "symbols", "type_definition", "implementation", "status", "reload", "capabilities"]);
 const LSP_EDITS = (action: string) => `lsp ${action} has the language server edit files no argument names, which Orrery's guard can't judge; nothing was run. Make the edit with edit or write.`;
+const LSP_NEAR_ORRERY = (action: string) =>
+	`lsp ${action} has the language server edit files no argument names, and this session's folder holds or is inside Orrery's files (its home, data, credentials or installed program); nothing was run. Make the edit with edit or write.`;
 
 /** A file's text, for judging an edit on what it would leave (at most 1 MB); undefined when it can't be read. */
 function readSmall(file: string): string | undefined {
@@ -824,13 +1104,15 @@ const EDIT_UNREADABLE = "Orrery could not read every target of this edit; use a 
 export function guardOmpToolCall(toolName: string, input: Readonly<Record<string, unknown>>, options: PathGuardOptions): string | undefined {
 	const omp: PathGuardOptions = { ...options, resolvePath: ompToolPath };
 	if (toolName === "eval") return guardToolCall("bash", { command: typeof input.code === "string" ? input.code : "" }, omp);
+	// A session that is no agent's: Orrery's own rules (GuardOptions.orreryOnly).
+	const only = omp.orreryOnly === true;
 	// Names in a search path or an ast_edit target are read like a command's words, "~/" from the guard's home included
 	// (named); an edit's text is read as a command's (inText).
 	const home = omp.home ?? homedir();
-	const rules = viewsOf(omp, home);
+	const rules = only ? viewRules({ ...omp, home }, []) : viewsOf(omp, home);
 	const named = rules.tool;
 	const inText = rules.command;
-	const protect = protection(omp.protect, home, realTarget);
+	const protect = only ? protection([], home) : protection(omp.protect, home, realTarget);
 	const judge = (tool: string, args: Readonly<Record<string, unknown>>) =>
 		typeof args.path === "string" && unreadableFileUrl(args.path) ? `${args.path}: Orrery cannot read this file:// URL; use a plain path.` : guardToolCall(tool, args, omp);
 	// A write target: as written, and the path inside a [path#TAG] header; with `selectors`, each also cut before a ":" or
@@ -843,20 +1125,25 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 	// A glob in a search or ast_edit: one that reaches past its base folder is refused; else its base folder is judged,
 	// and the path itself too, since OMP takes an existing literal path over the glob (tools/path-utils.ts:893-901).
 	// `tool`: how pi's guard judges it (grep reads contents, find lists names, edit writes).
+	// In a session that is no agent's an ordinary group passes (plainEscapingGlob); each piece is read for what its own
+	// groups hold, the path as written for its balance too (groupsOpen, before it is split).
+	const base = (path: string) => (only ? globBase(path, PLAIN_WILDCARDS) : globBase(path));
 	const glob = (tool: "grep" | "find" | "edit", part: string) => {
 		const path = part.replace(/\\/g, "/"); // OMP reads either slash in these (tools/path-utils.ts:559)
-		if (escapingGlob(path)) return `${toolName} path "${part}": brace or parent patterns are not allowed in OMP paths.`;
-		if (sensitive(part, named) || sensitive(path, named) || secretText(part, protect) || secretText(path, protect)) return tool === "edit" ? SENSITIVE_FILE(part) : `${toolName} path "${part}" names sensitive files (keys, credentials or Orrery's private data).`;
-		const entry = textProtected(part, protect) ?? textProtected(path, protect);
+		if (only ? plainEscapingGlob(path, false) : escapingGlob(path)) return only ? GROUP_REACHES(toolName, part) : `${toolName} path "${part}": brace or parent patterns are not allowed in OMP paths.`;
+		if (sensitive(part, named, only) || sensitive(path, named, only) || (!only && (secretText(part, protect) || secretText(path, protect)))) return tool === "edit" ? SENSITIVE_FILE(part) : `${toolName} path "${part}" names sensitive files (keys, credentials or Orrery's private data).`;
+		const entry = only ? undefined : (textProtected(part, protect) ?? textProtected(path, protect));
 		if (entry !== undefined) return tool === "edit" ? PROTECTED_FILE(part) : `${toolName} path "${part}" names ${entry}, ${PROTECTED_BY}.`;
-		return firstRefusal([...new Set([globBase(path), path, part])], (form) => judge(tool, { path: form }));
+		return firstRefusal([...new Set([base(path), path, part])], (form) => judge(tool, { path: form }));
 	};
+	/** A session that is no agent's: the first of the paths as written whose groups are unbalanced or reach out. */
+	const groupsOpen = (paths: readonly string[]) => (only ? paths.find((path) => plainEscapingGlob(path.replace(/\\/g, "/"), true)) : undefined);
 	if (toolName === "edit") {
 		const text = [input.input, input._input].filter((value): value is string => typeof value === "string").join("\n");
 		// Like a bash command: an edit whose text names a credential file, or a [guard] protect path entry, is refused, its
 		// content included. Not .env or a protect name entry, which a .gitignore line or code that loads it names as text
 		// (spec 2026-10-15-guard-protect): the edit's targets are judged as paths below, by those rules too.
-		const refusal = editTextRefusal(text, inText, protect);
+		const refusal = editTextRefusal(text, inText, protect, only);
 		if (refusal !== undefined) return refusal;
 		const read = readEditText(text);
 		if (read.unreadable) return EDIT_UNREADABLE;
@@ -893,21 +1180,43 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 			return firstRefusal(files, (file) => each("edit", { path: file, [NEW_TEXT]: undefined }) ?? each("edit", { path: join(destination, relative(source, file)), [NEW_TEXT]: undefined }));
 		}
 		const reads = typeof action === "string" && (LSP_READS.has(action) || (action === "code_actions" && (input.apply === undefined || input.apply === false)));
-		return reads ? judge(toolName, input) : LSP_EDITS(typeof action === "string" ? action : "request");
+		const name = typeof action === "string" ? action : "request";
+		if (reads) return judge(toolName, input);
+		if (!only) return LSP_EDITS(name);
+		// In a session that is no agent's the language server's edits pass: they edit the project it has open, and such a
+		// session gets no new refusal on its own files.
+		// The file the action names is judged as an edit, as a path tool's target is; and neither the session's folder (its
+		// cwd, which follows OMP's moves) nor where that file really is may hold, or be inside, a place of Orrery's: then
+		// the project may be Orrery's own files.
+		const file = typeof input.file === "string" && input.file !== "" ? input.file : undefined;
+		const edited = file === undefined ? undefined : target("edit", file, { [NEW_TEXT]: undefined });
+		if (edited !== undefined) return edited;
+		const places = (omp.call?.rules(omp, () => pathRules(omp)) ?? pathRules(omp)).places;
+		const near = (path: string) => {
+			const at = realTarget(resolve(path)).toLowerCase();
+			return /(^|\/)\.orrery(\/|$)/.test(at) || places.some((place) => within(at, place) || within(place, at));
+		};
+		return near(omp.cwd) || (file !== undefined && near(ompToolPath(file, omp.cwd, home))) ? LSP_NEAR_ORRERY(name) : judge(toolName, input);
 	}
 	// ast_edit rewrites what its patterns match, in files its globs reach: a skill among them is one whose text the guard
 	// can't see (guard-rules.ts openCodeSkillRefusal).
 	if (toolName === "ast_edit") {
-		const parts = strings(input.paths).flatMap(pathParts);
+		const given = strings(input.paths);
+		const open = groupsOpen(given);
+		if (open !== undefined) return GROUP_REACHES(toolName, open);
+		// In a session that is no agent's a negation only narrows what the other paths reach: it is judged as the paths it
+		// names, walked too, which judges more files than the edit can touch, never fewer.
+		const parts = given.flatMap(pathParts).map((part) => (only && part.startsWith("!") ? part.slice(1) : part));
 		const named = firstRefusal(parts, (part) => glob("edit", part));
 		if (named !== undefined) return named;
-		// Glob forms the guard doesn't expand itself (a negation, extended globs): refused rather than read loosely.
-		const unread = parts.find((part) => /^!/.test(part) || (/[*?[]/.test(part) && /[()|+@]/.test(part)));
+		// Glob forms the guard doesn't expand itself (a negation, extended globs): an agent's are refused rather than read
+		// loosely. In a session that is no agent's those that pass plainEscapingGlob stay within their base folder.
+		const unread = only ? undefined : parts.find((part) => /^!/.test(part) || (/[*?[]/.test(part) && /[()|+@]/.test(part)));
 		if (unread !== undefined) return `ast_edit path "${unread}": Orrery's guard can't tell which files this pattern reaches; give plain paths or simple globs.`;
 		// A folder or a glob rewrites files below its base: every one of them is judged as a write, by every rule.
 		const each = pathJudge(omp);
 		for (const part of parts) {
-			const files = filesBelow(ompToolPath(globBase(part.replace(/\\/g, "/")), omp.cwd, home), omp.astEditLimit ?? BELOW_LIMIT);
+			const files = filesBelow(ompToolPath(base(part.replace(/\\/g, "/")), omp.cwd, home), omp.astEditLimit ?? BELOW_LIMIT);
 			if (files === "too many") return `ast_edit ${part} reaches more files than Orrery's guard can look through; give a narrower path.`;
 			const reason = firstRefusal(files, (file) => each("edit", { path: file, [NEW_TEXT]: undefined }));
 			if (reason !== undefined) return reason;
@@ -917,7 +1226,11 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 	const raw = typeof input.path === "string" && input.path.trim() !== "" ? input.path : undefined;
 	// Judged as pi's grep is: a root at home or above, or holding credentials, is refused. glob lists names only, so it is
 	// judged as pi's find (a listing); grep, ast_grep and find (which takes grep_keywords) read contents.
-	if (OMP_SEARCHES.has(toolName)) return firstRefusal(pathParts(raw ?? "."), (part) => glob(toolName === "glob" ? "find" : "grep", part));
+	if (OMP_SEARCHES.has(toolName)) {
+		const open = groupsOpen([raw ?? "."]);
+		if (open !== undefined) return GROUP_REACHES(toolName, open);
+		return firstRefusal(pathParts(raw ?? "."), (part) => glob(toolName === "glob" ? "find" : "grep", part));
+	}
 	if (toolName === "read" && raw !== undefined) {
 		const parts = pathParts(raw).flatMap((part) => [part, ...selectorPrefixes(part)]);
 		return firstRefusal([...new Set(parts)], (part) => judge("read", { ...input, path: part }));

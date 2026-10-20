@@ -3,7 +3,7 @@ import { readFileSync, statSync, renameSync, rmSync, symlinkSync, unlinkSync, wr
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { remoteCommand, setStorageForTests } from "../../src/cli/remote.ts";
-import { loadConfig } from "../../src/agent/config.ts";
+import { loadConfig, readConfigFile } from "../../src/agent/config.ts";
 import { createKey, keyToCode, codeToKey, keyMatches, seal, sealCheck } from "../../src/remote/crypto.ts";
 import { RemoteError } from "../../src/remote/types.ts";
 import { FakeStorage } from "../../src/remote/fake.ts";
@@ -12,6 +12,7 @@ import { openStorage } from "../../src/remote/index.ts";
 import { readRemoteSecret, removeRemoteSecret, saveRemoteSecret } from "../../src/remote/secrets.ts";
 import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { tempDir } from "../agent/support.ts";
+import { fifos, readableOnce, readOnce, standInTool, stopWriters } from "./read-once.ts";
 
 let dir: string;
 let path: string;
@@ -431,5 +432,78 @@ describe("remote test, key and log", () => {
 		const take = await storage.take("Atlas", peer); if (!take.ok) throw new Error("held");
 		await storage.save("Atlas", take.lock, 1, new Uint8Array([1]), seal(key, "Atlas", "save", 1, Buffer.from("private malformed text")));
 		await expect(remoteCommand(path, ["log", "Atlas"], { json: true })).rejects.toThrow(/decrypt/);
+	});
+});
+
+describe("the config as the gate read it: never read again, written only while unchanged", () => {
+	afterEach(stopWriters);
+	/** `text` as the gate read it at the config's path; its next read would get a config with no remotes and no agents. */
+	const judged = (text: string) => {
+		rmSync(path, { force: true });
+		return readOnce(path, text, `data_dir = "${dir}/data"\n`);
+	};
+
+	it.skipIf(!fifos)("remote test, key, agents, log, add and remove run with it", async () => {
+		const atlas = `[agents.Atlas]\nfolder = "${dir}"\ncompactor_model = "openai/gpt-6.1-sol"\nremote = "home"\n`;
+		const key = createKey();
+		saveRemoteSecret(loadConfig(path), "home", { key: keyToCode(key), token });
+		await storage.putCheck(sealCheck(key));
+		const taken = await storage.take("Atlas", peer);
+		if (!taken.ok) throw new Error("held");
+		await storage.release("Atlas", taken.lock);
+		const text = `${readFileSync(path, "utf8")}${atlas}`;
+		for (const args of [["test", "home"], ["key", "home"], ["agents", "home"], ["log", "Atlas"]]) {
+			const once = await judged(text);
+			await remoteCommand(once.file, args);
+			expect(await once.readAgain(), args.join(" ")).toBe(false);
+		}
+		let once = await judged(text);
+		const secret = async (prompt: string) => (/token/i.test(prompt) ? "spare-token" : keyToCode(key));
+		expect(await remoteCommand(once.file, ["add", "spare"], { cloudflare: "https://spare.example.com" }, { secret })).toBe("Added remote spare.\n");
+		expect(await once.readAgain()).toBe(false);
+		expect([...loadConfig(path).remotes.keys()]).toEqual(["home", "spare"]);
+		once = await judged(readFileSync(path, "utf8"));
+		expect(await remoteCommand(once.file, ["remove", "spare"], { yes: true })).toContain("Removed remote spare.");
+		expect(await once.readAgain()).toBe(false);
+		expect([...loadConfig(path).remotes.keys()]).toEqual(["home"]);
+	});
+
+	it("in a coding tool's session remote remove refuses a config whose file was swapped since, and leaves the file put there alone", async () => {
+		const read = { ...readConfigFile(path), checked: true };
+		const swapped = `# swapped in\n${BASE}`;
+		writeFileSync(`${path}.new`, swapped);
+		renameSync(`${path}.new`, path);
+		await expect(remoteCommand(read, ["remove", "home"], { yes: true })).rejects.toThrow(`The config (${path}) changed after Orrery read it, so nothing was written to it. Run the command again.`);
+		expect(readFileSync(path, "utf8")).toBe(swapped);
+		expect(readRemoteSecret(read.config!, "home")?.token).toBe(token);
+	});
+
+	it("in the user's own terminal remote remove keeps an edit made since the read, as 0.9.0", async () => {
+		const read = { ...readConfigFile(path), checked: false };
+		writeFileSync(path, `${readFileSync(path, "utf8")}# theirs\n`);
+		expect(await remoteCommand(read, ["remove", "home"], { yes: true })).toContain("Removed remote home.");
+		expect(readFileSync(path, "utf8")).toContain("# theirs\n");
+		expect(readFileSync(path, "utf8")).not.toContain("[remotes.home]");
+	});
+
+	it.skipIf(!fifos)("in a coding tool's session the CLI's remote command reads its config once, in the gate, and writes the file it read", () => {
+		const text = readFileSync(path, "utf8");
+		const tool = standInTool(dir);
+		/** The CLI under a coding tool (there the config is written only as the gate read it). */
+		const underTool = (...args: string[]) => {
+			const c = cliCommand(["--config", path, ...args]);
+			return spawnSync(tool, [c.cmd, ...c.args], { env: cleanEnv({}), encoding: "utf8", timeout: 15000 });
+		};
+		// A config that can be read once: a second read would wait for a writer that never comes.
+		rmSync(path);
+		readableOnce(path, text);
+		expect(underTool("remote", "key", "home")).toMatchObject({ status: 0, stdout: `This is a secret.\n${code}\n` });
+		rmSync(path);
+		readableOnce(path, text);
+		const removed = underTool("remote", "remove", "home", "--yes");
+		expect({ status: removed.status, stderr: removed.stderr }).toEqual({ status: 0, stderr: "" });
+		expect(statSync(path).isFile()).toBe(true);
+		expect(readFileSync(path, "utf8")).not.toContain("[remotes.home]");
+		expect(readFileSync(`${path}.bak`, "utf8")).toBe(text);
 	});
 });

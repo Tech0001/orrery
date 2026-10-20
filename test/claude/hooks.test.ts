@@ -190,6 +190,34 @@ describe("UserPromptSubmit, Stop and SessionEnd", () => {
 	});
 });
 
+describe("PreToolUse in a Claude Code session that is no agent's (spec 2026-10-19-no-agent-sessions §3)", () => {
+	it("a plain Claude Code session (pick none) gets the orreryOnly guard", async () => {
+		const t = testAgent();
+		const plain = join(t.dir, "plain");
+		mkdirSync(plain);
+		const home = join(t.dir, "home");
+		const c = ctx(t, { env: { CLAUDE_PROJECT_DIR: plain } });
+		const call = async (tool_name: string, tool_input: object) => {
+			const out = await runHook("pre-tool-use", JSON.stringify({ session_id: "s1", cwd: plain, tool_name, tool_input }), c);
+			return out === "" ? undefined : (JSON.parse(out).hookSpecificOutput.permissionDecisionReason as string);
+		};
+		// Orrery's memory, logins and settings, its commands that change them, and the session records it checks prompts against.
+		expect(await call("Read", { file_path: join(t.agent.dir, "memory.sqlite") })).toMatch(/^Orrery guard: .*sensitive/);
+		expect(await call("Read", { file_path: t.config.credentialsPath })).toMatch(/^Orrery guard: .*sensitive/);
+		expect(await call("Write", { file_path: t.configPath, content: "x" })).toMatch(/^Orrery guard: .*Orrery's config/);
+		expect(await call("Grep", { pattern: "x", path: t.config.dataDir })).toMatch(/^Orrery guard: .*narrower folder/);
+		expect(await call("Bash", { command: "orrery restore Test --from /tmp/x" })).toMatch(/^Orrery guard: orrery restore can't run from a session that is no agent's/);
+		expect(await call("Bash", { command: "ls ~/.claude/projects" })).toMatch(/^Orrery guard: .*session records/);
+		expect(await call("Write", { file_path: join(home, ".claude", "projects", "-x", "s.jsonl"), content: "x" })).toMatch(/^Orrery guard: .*session records/);
+		// Everything else as before: writes anywhere, .env files, keys under home, Orrery's commands that only read.
+		expect(await call("Write", { file_path: join(plain, "a.ts"), content: "x" })).toBeUndefined();
+		expect(await call("Write", { file_path: join(t.dir, "elsewhere.md"), content: "x" })).toBeUndefined();
+		expect(await call("Read", { file_path: join(plain, ".env") })).toBeUndefined();
+		expect(await call("Read", { file_path: join(home, ".ssh", "id_ed25519") })).toBeUndefined();
+		expect(await call("Bash", { command: "cat .env ~/.ssh/id_ed25519 && orrery status" })).toBeUndefined();
+	});
+});
+
 const CALLER_NOTICE = "Orrery: can't confirm prompts in this Claude Code version, so this session isn't recorded.";
 /** What a session whose hooks' caller can't be checked says, by cause. */
 const cannotCheck = (cause: string) => `Orrery can't check who calls its hooks here (${cause}), so this session isn't recorded.`;

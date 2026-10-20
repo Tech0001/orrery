@@ -2,7 +2,10 @@
  * orrery inside pi: an agent folder, or any folder when ORRERY_AGENT names an agent, gets OptChat memory (spec
  * 2026-10-06-pi-extension-design; src/agent/pick.ts). Install with a one-line ~/.pi/agent/extensions/orrery.ts that
  * re-exports this file by absolute path (docs/pi.md); a symlink to this directory breaks the relative imports, because pi
- * resolves them from the link. Anywhere else this extension does nothing.
+ * resolves them from the link. pi and OMP load that entry in every session, so anywhere else (a folder that is no
+ * agent's) it runs the guard with Orrery's own rules alone (plainGuard), and nothing more.
+ * A pi or OMP started inside an agent's session, or from a coding tool's session that is no agent's (spec
+ * 2026-10-19-no-agent-sessions §4c, src/agent/plain-nested.ts), opens no memory and records nothing (nestedIn).
  * In OMP, src/omp/index.ts builds this with `host: "omp"` (docs/omp.md).
  */
 
@@ -22,6 +25,7 @@ import { NO_AGENT, noteSession, sessionStanding, settleVisit } from "../agent/se
 import { forgetSession, type Inside, insideSession, nestedNotice, recordSession } from "../agent/sessions.ts";
 import { leaveHostEnv } from "../agent/host-env.ts";
 import { nestedRules } from "../agent/nested-rules.ts";
+import { opensHere, type PlainDeps, plainNested } from "../agent/plain-nested.ts";
 import { runningVersion } from "../agent/running.ts";
 import { takeRequest } from "../agent/settings-request.ts";
 import { safeText } from "../agent/source-labels.ts";
@@ -120,6 +124,8 @@ export interface OrreryOptions {
 	readonly remoteStorage?: (config: HarnessConfig, remote: string) => Storage;
 	/** The process ORRERY_AGENT_TOKEN claims are made for (src/agent/pick.ts); default this process. Tests pass another. */
 	readonly owner?: number;
+	/** How a coding tool's session that is no agent's is looked for (src/agent/plain-nested.ts); tests pass their own. */
+	readonly plain?: PlainDeps;
 	/**
 	 * Update notices (spec 2026-10-15-update-notices): the environment whose Orrery home holds the installed version and
 	 * the daily check's cache. Left out, a session shows none and asks nothing: the entries (this file's default export,
@@ -138,9 +144,12 @@ interface Guarded {
 	readonly agent?: AgentConfig;
 	/**
 	 * How the session found its agent: ORRERY_AGENT, its folder, or neither, because ORRERY_AGENT was refused, Orrery's
-	 * config could not be read (unreadableGuard), or the session was started inside an agent's session (nestedGuard).
+	 * config could not be read (unreadableGuard), the session was started inside an agent's session (nestedGuard), or it
+	 * is no agent's (plainGuard).
 	 */
-	readonly by: "env" | "folder" | "refused" | "unreadable" | "nested";
+	readonly by: "env" | "folder" | "refused" | "unreadable" | "nested" | "plain";
+	/** Orrery's own rules alone (GuardOptions.orreryOnly): a session that is no agent's (plainGuard). */
+	readonly orreryOnly?: boolean;
 	/** Where writes may go besides allowedRoots (src/agent/pick.ts workArea). */
 	readonly workArea: string;
 	readonly allowedRoots: readonly string[];
@@ -159,6 +168,8 @@ interface Guarded {
 	readonly protect: readonly string[];
 	/** The config could not be read and its [guard] protect is unknown: every tool call is refused (unreadableGuard). */
 	readonly blind?: boolean;
+	/** The Orrery home the environment names (PathGuardOptions.orreryHome): a session that is no agent's (plainGuard). */
+	readonly orreryHome?: string;
 }
 
 /** Why a session whose config's [guard] protect is unknown refuses a tool call. */
@@ -212,6 +223,38 @@ function guarded(agent: AgentConfig, by: "env" | "folder", cwd: string, config: 
 }
 
 /**
+ * The guard for a session that is no agent's (spec 2026-10-19-no-agent-sessions §3): Orrery's own rules alone
+ * (GuardOptions.orreryOnly). Orrery's home and its credentials file (not the tools' own logins), its config and installed
+ * program, every agent's memory view (it is no agent's, so each is another's), the session records, and Orrery's
+ * commands in shell text; no work area or allowed roots, and no [guard] protect. Nothing is noted or recorded for it
+ * (noteRun).
+ */
+function plainGuard(cwd: string, config: HarnessConfig, options: OrreryOptions): Guarded {
+	const configFile = configFiles.get(config);
+	const home = options.home ?? homedir();
+	// The Orrery home the environment names, for the program beside the config (none when ORRERY_HOME is relative).
+	let named: string | undefined;
+	try {
+		named = orreryHome({ ...(options.env ?? process.env), HOME: home });
+	} catch {
+		named = undefined;
+	}
+	return {
+		by: "plain",
+		orreryOnly: true,
+		workArea: cwd,
+		allowedRoots: [],
+		home,
+		orreryData: config.dataDir,
+		credentials: [config.credentialsPath],
+		protect: [],
+		...agentViews(config),
+		...(configFile === undefined ? {} : { configFile }),
+		...(named === undefined ? {} : { orreryHome: named }),
+	};
+}
+
+/**
  * The guard for a session whose ORRERY_AGENT was refused: no agent and no memory, but the same rules as the agent whose
  * folder it runs in, or, outside agents, an agent's with no default folder (the session's folder, no allowed roots). It
  * is no agent's, so every agent's view is another's, the folder's agent's too.
@@ -232,11 +275,13 @@ const NESTED_DECISIONS = Symbol.for("orrery.pi.nested");
  * an ancestor of this tool's process recorded in the config's data folder, or, when the ancestry is cut, the markers in
  * its environment. This tool's own launch (its ORRERY_AGENT and token, its own record) is no such session. A look that
  * fails (it should never throw) counts as a session whose agent is unknown: a check that can't judge refuses.
+ * With none, the coding tool's session that is no agent's it was started from (`plain`, spec
+ * 2026-10-19-no-agent-sessions §4c, src/agent/plain-nested.ts), `tool` (pi or OMP) being the one this runs in.
  * Decided once per process and data folder, as Claude Code, Codex and OpenCode decide it: kept where every load of this
  * extension in the process finds it (a new session, an OMP subagent, a reload), so a pi or OMP started inside a session
  * stays without memory once that session ends, and one started outside stays outside.
  */
-function nestedIn(config: HarnessConfig, options: OrreryOptions): Inside | undefined {
+function nestedIn(config: HarnessConfig, options: OrreryOptions, tool: "pi" | "omp"): Inside | undefined {
 	const self = hostPid(options);
 	const key = `${self}\u0000${resolve(config.dataDir)}`;
 	const store = globalThis as unknown as Record<symbol, Map<string, { readonly inside: Inside | undefined }> | undefined>;
@@ -245,7 +290,8 @@ function nestedIn(config: HarnessConfig, options: OrreryOptions): Inside | undef
 	if (found !== undefined) return found.inside;
 	let inside: Inside | undefined;
 	try {
-		inside = insideSession([config.dataDir], options.env ?? process.env, config, { self });
+		const env = options.env ?? process.env;
+		inside = insideSession([config.dataDir], env, config, { self }) ?? plainNested(config, env, { pid: self, tool }, options.plain);
 	} catch {
 		inside = { agent: undefined, tool: undefined, via: "marker", dataDir: config.dataDir };
 	}
@@ -254,13 +300,24 @@ function nestedIn(config: HarnessConfig, options: OrreryOptions): Inside | undef
 }
 
 /**
+ * Whether a session started inside another (`inside`) says so: always, but one started from a coding tool's session that
+ * is no agent's says it only where an agent would have opened (src/agent/plain-nested.ts opensHere); elsewhere it is a
+ * plain session, which says nothing.
+ */
+const nestedSaid = (inside: Inside, config: HarnessConfig, options: OrreryOptions, cwd: string): boolean =>
+	inside.plain === undefined || opensHere(config, options.env ?? process.env, cwd);
+
+/**
  * The guard for a session started inside an agent's session: no agent and no memory, and the outer agent's rules (its
  * work area from the session's folder, its allowed roots), never looser than the folder's own guard. In another agent's
  * folder both agents' rules apply (src/agent/nested-rules.ts). It reads no memory, so every agent's view is another's, the outer
  * agent's too. When whose session it is can't be told, or the config has no such agent, the rules of a session with no
- * agent (refusedGuard): the folder's agent's, stricter than a plain folder's, which has no guard.
+ * agent (refusedGuard): the folder's agent's, stricter than a plain folder's, which has Orrery's own rules alone
+ * (plainGuard). One started from a coding tool's session that is no agent's (`plain`) is a plain one outside agents'
+ * folders: plainGuard's rules.
  */
 function nestedGuard(inside: Inside, cwd: string, config: HarnessConfig, options: OrreryOptions): Guarded {
+	if (inside.plain !== undefined && agentForCwd(config, cwd) === undefined) return { ...plainGuard(cwd, config, options), by: "nested" };
 	const rules = nestedRules(config, inside.agent, cwd);
 	if (rules === undefined) return { ...refusedGuard(cwd, config, options), by: "nested" };
 	return { by: "nested", ...rules, ...guardBase(config, options), ...agentViews(config) };
@@ -297,12 +354,12 @@ const subagent = (ctx: ExtensionContext) => (ctx as { agent?: { kind?: string } 
  * Notes that the agent this session runs as (its agent, or NO_AGENT under a refused ORRERY_AGENT) ran in the session now
  * open (src/agent/session-owner.ts): when it opens, at each message's and run's end, and at shutdown, so a visitor still
  * running after the owner opened marks the turns it says later, even one killed before its run ended. Both entries do
- * it, the other tool's too. Not in OMP subagents, nor in a session started inside another (it records nothing). Cheap,
- * and it never throws: a note that fails never stops a message, a run's end or a shutdown (which releases the agent);
- * the session then has no record, as before.
+ * it, the other tool's too. Not in OMP subagents, nor in a session started inside another (it records nothing), nor in
+ * a folder that is no agent's (plainGuard), as before it had a guard. Cheap, and it never throws: a note that fails
+ * never stops a message, a run's end or a shutdown (which releases the agent); the session then has no record, as before.
  */
 function noteRun(state: OrreryState, ctx: ExtensionContext): void {
-	if (state.config === undefined || state.guarded === undefined || state.guarded.by === "nested" || subagent(ctx)) return;
+	if (state.config === undefined || state.guarded === undefined || state.guarded.by === "nested" || state.guarded.by === "plain" || subagent(ctx)) return;
 	try {
 		noteSession(state.config.dataDir, ctx.sessionManager.getSessionId(), state.guarded.agent?.name ?? NO_AGENT);
 	} catch {
@@ -426,16 +483,21 @@ export function createOrrery(options: OrreryOptions = {}): ExtensionFactory {
 			state.config = config;
 			// Started inside an agent's session (a tool the agent ran): before the pick, which may claim a token. No memory, no
 			// tools, no record, no copy; only the outer agent's guard, and why, once (spec 2026-10-18-agent-permissions §3b).
-			const inside = nestedIn(config, options);
+			const inside = nestedIn(config, options, host);
 			if (inside !== undefined) {
 				state.nested = inside;
 				state.guarded = nestedGuard(inside, ctx.cwd, config, options);
 				guard(pi, state, host);
-				if (!subagent(ctx)) warn(ctx, nestedNotice(inside));
+				if (!subagent(ctx) && nestedSaid(inside, config, options, ctx.cwd)) warn(ctx, nestedNotice(inside));
 				return;
 			}
 			const pick = pickFor(config, options, ctx.cwd);
-			if (pick.kind === "none") return;
+			// A folder that is no agent's: Orrery's own rules, and nothing else (no memory, tools, record or notice).
+			if (pick.kind === "none") {
+				state.guarded = plainGuard(ctx.cwd, config, options);
+				guard(pi, state, host);
+				return;
+			}
 			if (pick.kind === "unknown" || pick.kind === "bad-token") {
 				// No memory and no agent, but the guard runs, and the session is no agent's to copy later.
 				state.guarded = refusedGuard(ctx.cwd, config, options);
@@ -1039,17 +1101,22 @@ function mismatched(pi: ExtensionAPI, options: OrreryOptions, omp: boolean): voi
 			return;
 		}
 		// Started inside an agent's session: the outer agent's guard, nothing noted or recorded, and that notice alone.
-		const inside = nestedIn(config, options);
+		const inside = nestedIn(config, options, tool);
 		if (inside !== undefined) {
 			state.config = config;
 			state.guarded = nestedGuard(inside, ctx.cwd, config, options);
 			guard(pi, state, tool);
-			if (!subagent(ctx)) warn(ctx, nestedNotice(inside));
+			if (!subagent(ctx) && nestedSaid(inside, config, options, ctx.cwd)) warn(ctx, nestedNotice(inside));
 			return;
 		}
 		const pick = pickFor(config, options, ctx.cwd);
-		if (pick.kind === "none") return;
 		state.config = config;
+		// A folder that is no agent's: Orrery's own rules, silently, as the right entry runs them.
+		if (pick.kind === "none") {
+			state.guarded = plainGuard(ctx.cwd, config, options);
+			guard(pi, state, tool);
+			return;
+		}
 		state.guarded = pick.kind === "agent" ? guarded(pick.agent, pick.by, ctx.cwd, config, options) : refusedGuard(ctx.cwd, config, options);
 		guard(pi, state, tool);
 		// One notice per session: OMP starts each subagent too (its task tool), and a subagent says nothing.
@@ -1078,8 +1145,9 @@ function guard(pi: ExtensionAPI, state: OrreryState, host: "pi" | "omp"): void {
 	pi.on("tool_call", (event, ctx) => {
 		if (state.guarded === undefined) return;
 		if (state.guarded.blind === true) return { block: true, reason: PROTECT_UNKNOWN };
-		const { workArea: area, allowedRoots, credentials, orreryData, home, foreignViews, fileModeViews, ownView, configFile, protect } = state.guarded;
-		const options = { folder: area, allowedRoots, cwd: ctx.cwd, credentials, orreryData, home, foreignViews, fileModeViews, ownView, configFile, protect };
+		const { workArea: area, allowedRoots, credentials, orreryData, home, foreignViews, fileModeViews, ownView, configFile, protect, orreryOnly, orreryHome: named } = state.guarded;
+		const plain = orreryOnly === true ? { orreryOnly, ...(named === undefined ? {} : { orreryHome: named }) } : {};
+		const options = { folder: area, allowedRoots, cwd: ctx.cwd, credentials, orreryData, home, foreignViews, fileModeViews, ownView, configFile, protect, ...plain };
 		const reason = judge(event.toolName, event.input as Record<string, unknown>, options);
 		return reason === undefined ? undefined : { block: true, reason };
 	});

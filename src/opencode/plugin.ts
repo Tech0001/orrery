@@ -25,7 +25,9 @@
  *   agent's session host (the process that runs the model's shell commands) and leaves its pid to their environment
  *   (HOST_ENV), until the last plugin lets go. An OpenCode started inside an agent's session (a recorded ancestor, or
  *   markers such as an inherited launch config whose token another live process holds) opens no memory, claims and
- *   records nothing, says why once, and keeps the guard with the outer agent's rules (src/agent/nested-rules.ts).
+ *   records nothing, says why once, and keeps the guard with the outer agent's rules (src/agent/nested-rules.ts). So does
+ *   one started from a coding tool's session that is no agent's (spec 2026-10-19-no-agent-sessions §4c,
+ *   src/agent/plain-nested.ts; its TUI, the server's parent, is its own), with no agent's rules.
  * Every hook body is wrapped: a failure says so in a notice and the turn goes on (a throw in the context hook would fail
  * the person's turn). The last plugin's cleanup releases the writer lock: a reload runs cleanup, then setup again, in the
  * same process.
@@ -46,6 +48,7 @@ import { COMPACTOR_MODEL_KEY, storedChoice } from "../agent/choices.ts";
 import { leaveHostEnv } from "../agent/host-env.ts";
 import { nestedRules } from "../agent/nested-rules.ts";
 import { AGENT_ENV, pickAgent, TOKEN_ENV } from "../agent/pick.ts";
+import { type PlainDeps, plainNested } from "../agent/plain-nested.ts";
 import { forgetSession, type Inside, insideSession, nestedNotice, recordSession } from "../agent/sessions.ts";
 import { runningVersion } from "../agent/running.ts";
 import { statusVersion } from "../agent/status-file.ts";
@@ -102,6 +105,8 @@ export interface OpenCodePluginOptions {
 	readonly openCodeWaitMs?: number;
 	/** The Orrery version this plugin is (default the running one's): plugins of other versions don't share a memory. */
 	readonly version?: string;
+	/** How a coding tool's session that is no agent's is looked for (src/agent/plain-nested.ts); tests pass their own. */
+	readonly plain?: PlainDeps;
 }
 
 /** What a compaction of a recorded session is: memory has the conversation, and the view comes back with it. */
@@ -789,7 +794,9 @@ class OrreryInOpenCode {
 
 	/**
 	 * The agent session this OpenCode was started inside (src/agent/sessions.ts, the server as `self`, so its own launch's
-	 * config and HOST_ENV are its own), or undefined. A look that fails counts as one whose agent is unknown (fail closed).
+	 * config and HOST_ENV are its own), or with none the coding tool's session that is no agent's it was started from
+	 * (src/agent/plain-nested.ts: past its own TUI, the server's parent); else undefined. A look that fails counts as one
+	 * whose agent is unknown (fail closed).
 	 * Decided once per server and data folder, in the state its plugins share: another folder's plugin, and a reload
 	 * (cleanup, then setup in the same process), read it, so a server started inside a session stays without memory once
 	 * that session ends.
@@ -802,7 +809,7 @@ class OrreryInOpenCode {
 		if (found !== undefined) return found.inside;
 		let inside: Inside | undefined;
 		try {
-			inside = insideSession([config.dataDir], env, config, { self });
+			inside = insideSession([config.dataDir], env, config, { self }) ?? plainNested(config, env, { pid: self, tool: "opencode" }, this.#options.plain);
 		} catch {
 			inside = { agent: undefined, tool: undefined, via: "marker", dataDir: config.dataDir };
 		}

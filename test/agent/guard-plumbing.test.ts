@@ -15,19 +15,22 @@ import { tempDir } from "./support.ts";
 
 const PLUMBING = "This command runs Orrery's hook plumbing (codex-hook, claude-hook, orrery holder), which only Orrery's own hooks run.";
 
-function world() {
+/** A session's guard: an agent's, or one that is no agent's (Orrery's own rules only: GuardOptions.orreryOnly). */
+type Session = { readonly orreryOnly?: true };
+
+function world(session: Session) {
 	const root = tempDir("orrery-plumbing-");
 	const folder = join(root, "ws");
 	const home = join(root, "home");
-	return { root, options: { folder, allowedRoots: [] as string[], cwd: folder, home, foreignViews: [] as string[] } };
+	return { root, options: { folder, allowedRoots: [] as string[], cwd: folder, home, foreignViews: [] as string[], ...session } };
 }
 
 /**
  * Every gate's verdict on one command line: pi's bash, OMP's bash and eval, Claude Code's Bash and an MCP shell, orrery
  * run, OpenCode's shell, Code Mode program and an MCP shell.
  */
-function verdicts(command: string): (string | undefined)[] {
-	const { root, options } = world();
+function verdicts(command: string, session: Session = {}): (string | undefined)[] {
+	const { root, options } = world(session);
 	try {
 		return [
 			guardToolCall("bash", { command }, options),
@@ -46,7 +49,10 @@ function verdicts(command: string): (string | undefined)[] {
 	}
 }
 
-describe("Orrery's hook plumbing in shell text", () => {
+describe.each([
+	["an agent's session", {}],
+	["a session that is no agent's", { orreryOnly: true }],
+] as [string, Session][])("Orrery's hook plumbing in shell text, in %s", (_session, session) => {
 	it.each([
 		// The hook commands, however Orrery is reached.
 		["a Codex hook fed made-up input", `echo '{"session_id":"s","prompt":"hi"}' | orrery codex-hook user-prompt-submit`],
@@ -105,13 +111,11 @@ describe("Orrery's hook plumbing in shell text", () => {
 		// Text that names both for another reason: the price of reading them in either order.
 		["holder beside one of Orrery's own commands", "orrery status; echo holder"],
 	])("refuses %s in every gate", (_what, command) => {
-		expect(verdicts(command)).toEqual(Array(10).fill(PLUMBING));
+		expect(verdicts(command, session)).toEqual(Array(10).fill(PLUMBING));
 	});
 
 	it.each([
-		["Orrery's own commands", "orrery status && orrery status Atlas --json && orrery help agent && orrery usage --days 3"],
-		["the summary model's switch", "orrery compactor Atlas"],
-		["the Orrery mod's view, which only reads", "orrery claude-mod view --cwd ."],
+		["Orrery's own commands", "orrery status && orrery status Atlas --json && orrery help agent && orrery usage --days 3 && orrery --version"],
 		["a holder that is not Orrery's", "cat placeholder.txt; grep -n holder notes.md; ls holder"],
 		["a folder named orrery", "ls ~/src/orrery/holder.ts && cd orrery-holder"],
 		["holder as a path's part beside Orrery", "ls /tmp/holder && orrery status"],
@@ -120,6 +124,46 @@ describe("Orrery's hook plumbing in shell text", () => {
 		["a hook's name built from a variable", "o=codex; orrery $o-hook stop"],
 		["arguments read from a file", "xargs -a args.txt orrery"],
 	])("leaves %s alone", (_what, command) => {
-		expect(verdicts(command)).toEqual(Array(10).fill(undefined));
+		expect(verdicts(command, session)).toEqual(Array(10).fill(undefined));
+	});
+});
+
+describe("a session that is no agent's, in every gate", () => {
+	it.each([
+		["Orrery's commands that change memory or settings", "orrery restore Atlas --from /tmp/x", /^orrery restore can't run from a session that is no agent's/],
+		// Every command the CLI refuses such a session, browse and compactor among them.
+		["a browse of an agent's memory", "orrery browse Atlas --out /tmp/x.html", /^orrery browse can't run from a session that is no agent's/],
+		["a detached browse", "(env -i setsid orrery browse Birch > out &)", /^orrery browse can't run from a session that is no agent's/],
+		["the summary model's switch", "orrery compactor Atlas", /^orrery compactor can't run from a session that is no agent's/],
+		// Orrery's plumbing typed in shell text, the mod's view and the memory tools' server too, detached or not.
+		["the mod's view", "orrery claude-mod view --cwd .", /^orrery claude-mod can't run from a session that is no agent's/],
+		["a detached mod's view", "(env -i setsid orrery claude-mod view --cwd . > out &)", /^orrery claude-mod can't run from a session that is no agent's/],
+		["the memory tools' server fed requests", "cd ../agent-Atlas && printf '{}' | orrery mcp", /^orrery mcp can't run from a session that is no agent's/],
+		["a detached recorder", "(env -i setsid orrery holder Atlas --session s > out &)", /hook plumbing/],
+		["a detached hook", "(env -i setsid orrery claude-hook user-prompt-submit < x.json &)", /hook plumbing/],
+		["Orrery's home by name", "cat ~/.orrery/agents/Atlas/memory.sqlite", /sensitive files/],
+		["Claude Code's session records", "ls ~/.claude/projects", /session records/],
+	])("refuses %s", (_what, command, refusal) => {
+		expect(verdicts(command, { orreryOnly: true })).toEqual(Array(10).fill(expect.stringMatching(refusal)));
+	});
+
+	it("leaves an agent's session the mod's view and the memory tools' server, as before", () => {
+		expect(verdicts("orrery claude-mod view --cwd . && orrery mcp")).toEqual(Array(10).fill(undefined));
+	});
+
+	it("leaves an agent's session browse and compactor, as before", () => {
+		expect(verdicts("orrery browse Atlas && orrery compactor Atlas")).toEqual(Array(10).fill(undefined));
+	});
+
+	// In the gates that judge such sessions: pi's, OMP's and Claude Code's, and orrery run's rules. OpenCode's gate keeps
+	// its own rules for OpenCode's files: a plain OpenCode gets the CLI's check, never a guard.
+	it.each([
+		["a .env file", "cat .env && cp .env.local /tmp/x"],
+		["a key in home", "cat ~/.ssh/id_ed25519 ~/.aws/credentials"],
+		["OpenCode's config", "cat opencode.json .opencode/plugins/x.ts"],
+		["a skills folder", "ls .claude/skills"],
+		["ordinary brace and extended globs", "ls src/**/*.{ts,tsx} {src,lib}/*.md && prettier --write 'src/**/@(a|b).ts'"],
+	])("leaves %s alone", (_what, command) => {
+		expect(verdicts(command, { orreryOnly: true }).slice(0, 7)).toEqual(Array(7).fill(undefined));
 	});
 });

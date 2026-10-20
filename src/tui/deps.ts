@@ -9,8 +9,8 @@ import { createFromPreview } from "../import/create-agent.ts";
 import { dryRun } from "../import/dry-run.ts";
 import { startBuild } from "../agent/build.ts";
 import { agentCompactorTarget } from "../agent/compactor-target.ts";
-import { defaultConfigPath, loadConfig } from "../agent/config.ts";
-import { configWritable, editConfigFile } from "../agent/config-edit.ts";
+import { type ConfigFile, configOf, readConfigFile, unchangedConfig } from "../agent/config.ts";
+import { configWritable, editConfigOnce } from "../agent/config-edit.ts";
 import { configureHttp } from "../agent/http.ts";
 import { pageOpener } from "../agent/agent-commands.ts";
 import { runEditor } from "../agent/editor.ts";
@@ -26,27 +26,55 @@ import { openStorage } from "../remote/index.ts";
 import type { AppDeps } from "./app.ts";
 import { colorWanted, makeTheme } from "./theme.ts";
 
+/**
+ * The config the TUI runs with: the file as its gate read and judged it (src/cli/gate.ts Gated.configFile), and how to
+ * read and judge it again (the gate, run again for the same file).
+ */
+export interface JudgedConfig {
+	readonly file: ConfigFile;
+	readonly judge: () => ConfigFile;
+}
+
+/**
+ * The TUI's config, read as the gate reads it: the file as last judged, while it is unchanged (unchangedConfig); once it
+ * changed (another program wrote it, or this TUI did), judged again before it is used. Never a read the gate didn't
+ * judge. Without `judged` (the TUI as a library, tests): `configPath`, read once each time it changed.
+ */
+export function judgedConfig(configPath: string, judged?: JudgedConfig): () => ConfigFile {
+	const judge = judged?.judge ?? (() => readConfigFile(configPath));
+	let file = judged?.file;
+	return () => {
+		if (file === undefined || !unchangedConfig(file)) file = judge();
+		return file;
+	};
+}
+
 /** AppDeps for a real terminal. */
-export function realDeps(options: { configPath: string; tui: TUI; quit: () => void }): AppDeps {
+export function realDeps(options: { configPath: string; tui: TUI; quit: () => void; config?: JudgedConfig }): AppDeps {
 	configureHttp();
 	const cache = new OverviewCache({ changed: () => options.tui.requestRender() });
 	const { tui } = options;
+	const current = judgedConfig(options.configPath, options.config);
 	return {
 		configPath: options.configPath,
 		cwd: process.cwd(),
 		theme: makeTheme(colorWanted()),
-		loadConfig: () => loadConfig(options.configPath),
+		loadConfig: () => configOf(current()),
 		configWritable: () => configWritable(options.configPath),
-		editConfig: (edit) => editConfigFile(options.configPath, edit),
+		// What it wrote is judged too before it is used: the next read finds the file changed.
+		editConfig: (edit) => {
+			editConfigOnce(current(), edit);
+			return configOf(current());
+		},
 		overview: (config) => agentOverview(config, { cache }),
 		remotes: (config) => cache.remotes(config),
 		refreshRemote: (config, name) => cache.refreshRemote(config, name),
-		takeoverAgent: (name) => agentRemoteCommand(options.configPath, ["takeover", name], { yes: true }),
-		addRemote: (name, request, interaction) => addRemoteCommand(options.configPath, name, request, interaction),
+		takeoverAgent: (name) => agentRemoteCommand(current(), ["takeover", name], { yes: true }),
+		addRemote: (name, request, interaction) => addRemoteCommand(current(), name, request, interaction),
 		remoteAgents: (config, name) => openStorage(config, name).list(),
-		pullAgent: (name, remote, folder) => pullAgentCommand(options.configPath, name, remote, folder),
-		pushAgent: (name, remote) => agentRemoteCommand(options.configPath, ["push", name], { to: remote }),
-		localAgent: (name) => agentRemoteCommand(options.configPath, ["local", name]),
+		pullAgent: (name, remote, folder) => pullAgentCommand(current(), name, remote, folder),
+		pushAgent: (name, remote) => agentRemoteCommand(current(), ["push", name], { to: remote }),
+		localAgent: (name) => agentRemoteCommand(current(), ["local", name]),
 		usage: (config, days, only) => agentUsage(config, days, only),
 		tools: (options) => checkTools(options),
 		ori: () => probeOri(),
@@ -91,7 +119,7 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 		},
 		chats: () => listChats(),
 		importPreview: (input) => dryRun(input),
-		importCommit: (request) => createFromPreview(options.configPath, request),
+		importCommit: (request) => createFromPreview(current(), request),
 		startBuild: (name, agentDir) => startBuild(name, agentDir, { configPath: options.configPath }),
 		writeInstructions,
 		openUrl: (url) => {
@@ -103,7 +131,7 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 		updateNotice: async () => {
 			let enabled = true;
 			try {
-				enabled = loadConfig(defaultConfigPath(process.env)).updates.check;
+				enabled = configOf(current()).updates.check;
 			} catch {
 				// no config yet (first run) or one that does not load: the TUI says that elsewhere; check anyway
 			}

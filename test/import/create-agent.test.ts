@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type CreateSteps, createFromPreview, type NewAgentFromChat, storeRefusal } from "../../src/import/create-agent.ts";
 import { commitPreview, writePreview } from "../../src/import/preview.ts";
-import { addAgent, editConfigFile } from "../../src/agent/config-edit.ts";
+import { addAgent, editConfigFile, editConfigOnce } from "../../src/agent/config-edit.ts";
 import { loadConfig } from "../../src/agent/config.ts";
 import { instructionsTemplate, writeInstructions } from "../../src/agent/instructions.ts";
 import { holdWriterLock, MemoryStore } from "../../src/memory/index.ts";
@@ -178,8 +178,8 @@ describe("createFromPreview when a step fails", () => {
 		writeFileSync(`${s.configPath}.bak`, "an older config\n");
 		const config = readFileSync(s.configPath, "utf8");
 		const files = tree(s.dir);
-		const failing = (path: string, edit: (text: string, dir: string) => string) => {
-			editConfigFile(path, edit);
+		const failing: CreateSteps["editConfig"] = (file, edit) => {
+			editConfigOnce(file, edit);
 			throw new Error("after the write");
 		};
 		expect(() => createFromPreview(s.configPath, s.request, { editConfig: failing })).toThrow(/after the write/);
@@ -209,10 +209,10 @@ describe("createFromPreview when a step fails", () => {
 		writeFileSync(`${s.configPath}.bak`, "an older config\n");
 		// The save writes the .bak, then fails before the config is replaced (a full disk, say). Its temporary files have
 		// names no one can take first, so the failure is made here, at the step.
-		const failing: CreateSteps["editConfig"] = (path, edit) => {
-			const text = readFileSync(path, "utf8");
-			edit(text, dirname(path));
-			writeFileSync(`${path}.bak`, text);
+		const failing: CreateSteps["editConfig"] = (file, edit) => {
+			const text = file.text ?? "";
+			edit(text, dirname(file.path));
+			writeFileSync(`${file.path}.bak`, text);
 			throw new Error("ENOSPC: no space left on device");
 		};
 		const config = readFileSync(s.configPath, "utf8");

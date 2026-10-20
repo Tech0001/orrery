@@ -2,7 +2,8 @@
  * Opening an agent in its tool (spec 2026-10-08-orrery-tui-design §4.5; spec 2026-10-13-orrery-agents-design §4): what
  * runs and where, what to ask first, fixing what can be fixed, and running the tool with the terminal attached, as the
  * agent (ORRERY_AGENT and a fresh ORRERY_AGENT_TOKEN, src/agent/pick.ts). `orrery agent` and the TUI's Enter and L use
- * it. Codex gets Orrery's hooks, memory tools and instructions on its command line (src/codex/launch.ts), after the hook
+ * it. No tool gets a coding tool's variables (toolEnv), even ones this process inherited.
+ * Codex gets Orrery's hooks, memory tools and instructions on its command line (src/codex/launch.ts), after the hook
  * check (src/codex/check.ts). OpenCode gets Orrery's plugin through OPENCODE_CONFIG_CONTENT and the agent's token as a
  * file, never in its environment (src/opencode/launch.ts, src/opencode/token-file.ts), after the plugin check
  * (src/opencode/check.ts). Node only.
@@ -24,6 +25,7 @@ import { buildRunning, readBuild } from "./build.ts";
 import { findAgent, type HarnessConfig, insideFolder, type AgentConfig, type AgentLauncher, type AgentTool } from "./config.ts";
 import { type AgentRow, TOOL_LABELS } from "./overview.ts";
 import { AGENT_ENV, claimedBy, newToken, releaseClaim, TOKEN_ENV, workArea } from "./pick.ts";
+import { TOOL_MARKERS } from "./sessions.ts";
 import { BINARIES, codexVersion, findOnPath, installSteps, orreryVersion, wiringRoot, type Runner, realRunner, runInstall, type ToolCheck } from "./tools.ts";
 
 const HINTS: Record<AgentTool, string> = { pi: "Get it at https://pi.dev", "claude-code": "Get it at https://claude.com/claude-code", codex: "Get it at https://github.com/openai/codex", omp: "Get it at https://omp.sh", opencode: "Get it at https://opencode.ai" };
@@ -238,9 +240,7 @@ export async function checkCodexHooks(
 		...(options.onCheck === undefined ? {} : { onCheck: () => options.onCheck?.(`Checking that Orrery's hooks load in Codex${version === undefined ? "" : ` ${version}`}…`) }),
 	});
 	if (!hooks.ok) return hooks;
-	const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env), ...plan.env };
-	for (const name of plan.unsetEnv ?? []) delete env[name];
-	const shell = (options.shellCheck ?? checkHookShell)(env, plan.cwd);
+	const shell = (options.shellCheck ?? checkHookShell)(toolEnv(plan, options.env ?? process.env), plan.cwd);
 	return shell.quiet ? { ok: true } : { ok: false, text: noisyShellText(plan.agent, shell), noisyShell: true, question: NOISY_SHELL_QUESTION };
 }
 
@@ -303,8 +303,24 @@ export interface ToolExit {
 }
 
 /**
- * Runs the tool in the plan's folder with this terminal attached, the plan's variables over `env`'s (less unsetEnv);
- * Ctrl-C goes to the tool, not to orrery.
+ * The variables coding tools give their shells (src/agent/sessions.ts TOOL_MARKERS). A tool started with one of them
+ * counts as started inside that tool's session, and opens no memory (src/agent/plain-nested.ts): one left over in the
+ * user's terminal (a tmux server first started from a tool's shell) must not reach a tool Orrery starts.
+ */
+const TOOL_VARIABLES: readonly string[] = TOOL_MARKERS.map((marker) => marker.variable);
+
+/** The environment the plan's tool starts with: `env`, less the coding tools' variables, then the plan's (less unsetEnv). */
+function toolEnv(plan: LaunchPlan, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const started: NodeJS.ProcessEnv = { ...env };
+	for (const name of TOOL_VARIABLES) delete started[name];
+	Object.assign(started, plan.env);
+	for (const name of plan.unsetEnv ?? []) delete started[name];
+	return started;
+}
+
+/**
+ * Runs the tool in the plan's folder with this terminal attached, the plan's variables over `env`'s (less unsetEnv and
+ * the coding tools' variables, toolEnv); Ctrl-C goes to the tool, not to orrery.
  */
 export function runTool(plan: LaunchPlan, options: { spawn?: typeof spawn; env?: NodeJS.ProcessEnv } = {}): Promise<ToolExit> {
 	if (plan.command === undefined) return Promise.reject(new Error(plan.blocked ?? "Nothing to run."));
@@ -313,8 +329,7 @@ export function runTool(plan: LaunchPlan, options: { spawn?: typeof spawn; env?:
 	return new Promise((done, fail) => {
 		let child: ReturnType<typeof spawn>;
 		try {
-			const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env), ...plan.env };
-			for (const name of plan.unsetEnv ?? []) delete env[name];
+			const env = toolEnv(plan, options.env ?? process.env);
 			child = (options.spawn ?? spawn)(plan.command as string, [...plan.args], { cwd: plan.cwd, stdio: "inherit", env });
 		} catch (error) {
 			process.off("SIGINT", ignore);

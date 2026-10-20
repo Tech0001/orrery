@@ -8,7 +8,10 @@
  *
  * A Codex started inside an agent's session (spec 2026-10-18-agent-permissions §3b: a recorded ancestor, or markers
  * pointing at another live session, src/agent/sessions.ts) is no agent's either: the first to ask checks before it
- * claims, so a nested Codex never claims its token, and every later event finds no claim of its own.
+ * claims, so a nested Codex never claims its token, and every later event finds no claim of its own. With no agent's
+ * session around it, so is one started from a coding tool's session that is no agent's (spec
+ * 2026-10-19-no-agent-sessions §4c, src/agent/plain-nested.ts; npm's `node …/codex` launcher above it is its own): nested,
+ * with that tool (`plain`), and its guard keeps the nested rules.
  *
  * One decision per Codex process: the first to ask decides whether this Codex is the agent's, refused, or nested. Only
  * an asker that may be a process's first may decide, and take a claim (`takeover`): the memory server's start, and a
@@ -43,7 +46,8 @@ import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { beingMade, publish, removeStale, stray, temporaryOf } from "../agent/exclusive.ts";
 import { AGENT_ENV, agentNamed, claimToken, refusedNotice, TOKEN_ENV, tokenForm, tokenHeld } from "../agent/pick.ts";
 import { processAlive } from "../agent/process.ts";
-import { insideSession, liveSession, processStart, SESSION_TOOLS, type SessionTool } from "../agent/sessions.ts";
+import { type PlainDeps, plainNested } from "../agent/plain-nested.ts";
+import { insideSession, liveSession, type PlainFound, plainFields, processStart, recordedPlain, SESSION_TOOLS, type SessionTool } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 
 export type CodexPicked =
@@ -54,8 +58,12 @@ export type CodexPicked =
 	 * inside an agent's session is not known yet; only the guard looks that up, for its rules.
 	 */
 	| { readonly kind: "refused"; readonly notice: string; readonly undecided?: true }
-	/** Started inside `outer`'s session in `tool` (either undefined when nothing proves it): no memory, nothing recorded. */
-	| { readonly kind: "nested"; readonly outer: string | undefined; readonly tool: SessionTool | undefined };
+	/**
+	 * Started inside `outer`'s session in `tool` (either undefined when nothing proves it), or `plain`, inside that coding
+	 * tool's session that is no agent's (src/agent/plain-nested.ts), found by `variable` when not by a process: no memory,
+	 * nothing recorded.
+	 */
+	| ({ readonly kind: "nested"; readonly outer: string | undefined; readonly tool: SessionTool | undefined } & PlainFound);
 
 export interface CodexAsker {
 	readonly env: NodeJS.ProcessEnv;
@@ -72,6 +80,8 @@ export interface CodexAsker {
 	readonly parent?: number;
 	/** The Codex session the asker's event is of (the hook's session_id); the memory server has none. */
 	readonly session?: string;
+	/** How a coding tool's session that is no agent's is looked for (src/agent/plain-nested.ts); tests pass their own. */
+	readonly plain?: PlainDeps;
 }
 
 /** Started inside a session whose agent and tool nothing proves: what a check that can't judge says (fail closed). */
@@ -103,18 +113,21 @@ function anotherTool(config: HarnessConfig, pid: number): CodexPicked | undefine
 	}
 }
 
-/** The agent session this Codex was started inside (src/agent/sessions.ts, the Codex as `self`), or undefined. */
-export function codexNested(config: HarnessConfig, env: NodeJS.ProcessEnv, pid: number): CodexPicked | undefined {
+/**
+ * The agent session this Codex was started inside (src/agent/sessions.ts, the Codex as `self`), or with none the coding
+ * tool's session that is no agent's it was started from (src/agent/plain-nested.ts); else undefined.
+ */
+export function codexNested(config: HarnessConfig, env: NodeJS.ProcessEnv, pid: number, plain?: PlainDeps): CodexPicked | undefined {
 	try {
-		const inside = insideSession([config.dataDir], env, config, { self: pid });
-		return inside === undefined ? undefined : { kind: "nested", outer: inside.agent, tool: inside.tool };
+		const inside = insideSession([config.dataDir], env, config, { self: pid }) ?? plainNested(config, env, { pid, tool: "codex" }, plain);
+		return inside === undefined ? undefined : { kind: "nested", outer: inside.agent, tool: inside.tool, ...plainFields(inside) };
 	} catch {
 		return UNKNOWN;
 	}
 }
 
 /** A Codex process's decision, as recorded (module doc): names only. */
-type Decision = { readonly kind: "agent" } | { readonly kind: "refused" } | { readonly kind: "nested"; readonly outer?: string; readonly tool?: SessionTool };
+type Decision = { readonly kind: "agent" } | { readonly kind: "refused" } | ({ readonly kind: "nested"; readonly outer?: string; readonly tool?: SessionTool } & PlainFound);
 
 /** Whose decision it is: ORRERY_AGENT (trimmed), its token's sha256 ("" for none), and when the process started. */
 interface Identity {
@@ -148,8 +161,15 @@ function readDecision(file: string): { readonly identity: Identity; readonly dec
 	if (typeof value !== "object" || value === null || typeof value.agent !== "string" || typeof value.token !== "string" || typeof value.start !== "string") return "unreadable";
 	const identity: Identity = { agent: value.agent, token: value.token, start: value.start };
 	if (value.kind === "agent" || value.kind === "refused") return { identity, decision: { kind: value.kind } };
-	if (value.kind === "nested" && (value.outer === undefined || typeof value.outer === "string") && (value.tool === undefined || (typeof value.tool === "string" && SESSION_TOOLS.has(value.tool)))) {
-		return { identity, decision: { kind: "nested", ...(value.outer === undefined ? {} : { outer: value.outer }), ...(value.tool === undefined ? {} : { tool: value.tool as SessionTool }) } };
+	const plain = recordedPlain(value);
+	if (
+		value.kind === "nested" &&
+		(value.outer === undefined || typeof value.outer === "string") &&
+		(value.tool === undefined || (typeof value.tool === "string" && SESSION_TOOLS.has(value.tool))) &&
+		plain !== "unreadable"
+	) {
+		const decision: Decision = { kind: "nested", ...(value.outer === undefined ? {} : { outer: value.outer }), ...(value.tool === undefined ? {} : { tool: value.tool as SessionTool }), ...plain };
+		return { identity, decision };
 	}
 	return "unreadable";
 }
@@ -211,9 +231,9 @@ function prune(config: HarnessConfig, alive: (pid: number) => boolean): void {
 }
 
 const toDecision = (pick: CodexPicked): Decision =>
-	pick.kind === "nested" ? { kind: "nested", ...(pick.outer === undefined ? {} : { outer: pick.outer }), ...(pick.tool === undefined ? {} : { tool: pick.tool }) } : { kind: pick.kind };
+	pick.kind === "nested" ? { kind: "nested", ...(pick.outer === undefined ? {} : { outer: pick.outer }), ...(pick.tool === undefined ? {} : { tool: pick.tool }), ...plainFields(pick) } : { kind: pick.kind };
 
-const nestedPick = (decision: Extract<Decision, { kind: "nested" }>): CodexPicked => ({ kind: "nested", outer: decision.outer, tool: decision.tool });
+const nestedPick = (decision: Extract<Decision, { kind: "nested" }>): CodexPicked => ({ kind: "nested", outer: decision.outer, tool: decision.tool, ...plainFields(decision) });
 
 /**
  * The session's agent, or why there is none, as the notice says it. The first asker of a Codex process decides (and may
@@ -242,7 +262,7 @@ export function codexAgent(config: HarnessConfig, asking: CodexAsker): CodexPick
 	if (own !== undefined) return settled(own);
 	// The process's first decision: before its claim, whether this Codex was started inside an agent's session.
 	prune(config, asking.alive ?? processAlive);
-	const pick = codexNested(config, asking.env, asking.pid) ?? claimed(config, asking, true);
+	const pick = codexNested(config, asking.env, asking.pid, asking.plain) ?? claimed(config, asking, true);
 	const written = recordDecision(config, asking.pid, identity, toDecision(pick), recorded !== undefined);
 	if (written === true) return pick;
 	if (written === "exists") {

@@ -7,6 +7,8 @@ import { parseConfig } from "../../src/agent/config.ts";
 import { agentModelSource } from "../../src/agent/model-source.ts";
 import { forgetSession, HOST_ENV, liveSession, recordSession, type SessionTool } from "../../src/agent/sessions.ts";
 import { Holder } from "../../src/claude/holder.ts";
+import { above, plainDeps, realHomeOf, STARTS } from "../agent/plain-support.ts";
+import { ompCleanup, ompOrrery } from "../omp/world.ts";
 import { fauxModels } from "../agent/support.ts";
 import type { PiRun } from "./harness.ts";
 import { cleanup, close, isolatedHome, pi, world } from "./world.ts";
@@ -219,6 +221,108 @@ describe("a pi started inside an agent's session (spec 2026-10-18-agent-permissi
 		expect(outside.notices.filter((n) => n.message.includes("started inside"))).toEqual([]);
 		await close(outside);
 	}, 30_000);
+});
+
+describe("a pi started from a coding tool's session that is no agent's (spec 2026-10-19-no-agent-sessions §4c)", () => {
+	const PLAIN_CLAUDE = { type: "warning", message: "Orrery: started inside a Claude Code session that is no agent's, so this one opens no memory and records nothing." };
+
+	it("in an agent's folder: opens no memory, registers no tools, records nothing, says why once, and keeps that agent's guard", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		// A clean environment: this test's own (a Claude Code's, maybe) carries markers of its own.
+		const run = await pi(root, join(root, "agent-Birch"), config, undefined, { env: {}, plain: plainDeps(process.pid, STARTS.claude, dataDir) });
+		expect(run.notices).toEqual([PLAIN_CLAUDE]);
+		for (const tool of ["zoom", "date", "search", "agents", "agent_memory"]) expect(run.tool(tool)).toBeUndefined();
+		expect(run.status("orrery")).toBeUndefined();
+		// Birch's rules: its folder and its allowed roots, nothing else; every view kept out.
+		const writes = async (path: string) => !/outside/.test(await call(run, "write", { path: join(root, path), content: "x" }));
+		expect(await writes(join("agent-Birch", "here.txt"))).toBe(true);
+		expect(await writes(join("common", "inner", "birch.txt"))).toBe(true);
+		expect(await writes(join("shared", "atlas.txt"))).toBe(false);
+		for (const name of ["Atlas", "Birch"]) expect(await call(run, "read", { path: join(root, `agent-${name}`, ".orrery", "view.md") })).toMatch(/sensitive|memory view/);
+		expect(existsSync(join(dataDir, "agents"))).toBe(false);
+		expect(existsSync(join(dataDir, "session-owners"))).toBe(false);
+		expect(hosts(dataDir)).toEqual([]);
+		expect(process.env[HOST_ENV]).toBeUndefined();
+		await close(run);
+	}, 30_000);
+
+	it("by ORRERY_AGENT outside its folder: the same, its token never claimed", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		const run = await pi(root, join(root, "plain"), config, undefined, { env: { ORRERY_AGENT: "Birch" }, plain: plainDeps(process.pid, STARTS.codex, dataDir) });
+		expect(run.notices).toEqual([{ ...PLAIN_CLAUDE, message: PLAIN_CLAUDE.message.replace("a Claude Code", "a Codex") }]);
+		expect(run.tool("zoom")).toBeUndefined();
+		expect(hosts(dataDir)).toEqual([]);
+		await close(run);
+	}, 20_000);
+
+	it("outside every agent's folder: a plain session, Orrery's own guard alone and no notice", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		const run = await pi(root, join(root, "plain"), config, undefined, { env: {}, plain: plainDeps(process.pid, STARTS.claude, dataDir) });
+		expect(run.notices).toEqual([]);
+		// No folder rule: outside its own folder too, as plain pi.
+		expect(await call(run, "write", { path: join(root, "shared", "anywhere.txt"), content: "x" })).not.toMatch(/outside|Orrery guard/);
+		expect(readFileSync(join(root, "shared", "anywhere.txt"), "utf8")).toBe("x");
+		expect(await call(run, "write", { path: join(dataDir, "agents", "Atlas", "x.txt"), content: "x" })).toMatch(/Orrery guard|sensitive/);
+		expect(existsSync(join(dataDir, "session-owners"))).toBe(false);
+		await close(run);
+	}, 20_000);
+
+	it("found by another tool's variable (left over in the terminal, Ori in a tmux a Claude Code shell started): the notice names it", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		const run = await pi(root, join(root, "agent-Birch"), config, undefined, { env: { CLAUDECODE: "1" }, plain: plainDeps(process.pid, STARTS.ori, dataDir) });
+		expect(run.notices).toEqual([
+			{ type: "warning", message: 'Orrery: started inside a Claude Code session that is no agent\'s (found CLAUDECODE; see "Leftover markers" in the README), so this one opens no memory and records nothing.' },
+		]);
+		expect(run.tool("zoom")).toBeUndefined();
+		await close(run);
+	}, 20_000);
+
+	it("is decided once for the process: a new session stays without memory", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		const run = await pi(root, join(root, "agent-Birch"), config, undefined, { env: {}, plain: plainDeps(process.pid, STARTS.pi, dataDir) });
+		const notice = { ...PLAIN_CLAUDE, message: PLAIN_CLAUDE.message.replace("a Claude Code", "a pi") };
+		expect(run.notices).toEqual([notice]);
+		await run.runtime.newSession();
+		expect(run.notices).toEqual([notice, notice]);
+		expect(run.tool("zoom")).toBeUndefined();
+		expect(hosts(dataDir)).toEqual([]);
+		await close(run);
+	}, 30_000);
+
+	it("opens its agent as today when started from the user's terminal, the TUI, orrery agent or Ori", async () => {
+		for (const start of ["terminal", "tui", "agent", "ori"] as const) {
+			const { root, config, dataDir } = nestedWorld();
+			const run = await pi(root, join(root, "agent-Birch"), config, undefined, { env: {}, plain: plainDeps(process.pid, STARTS[start], dataDir) });
+			expect(run.status("orrery"), start).toBe("Orrery · Birch · 0 msgs");
+			expect(run.notices, start).toEqual([]);
+			expect(liveSession(dataDir, process.pid), start).toMatchObject({ agent: "Birch", tool: "pi" });
+			await close(run);
+		}
+	}, 60_000);
+
+	it("OMP started in a plain folder stays without memory when it moves into an agent's folder, under that agent's guard", async () => {
+		const { root, config, dataDir } = nestedWorld();
+		const host = await ompOrrery(join(root, "plain"), config, { env: {}, plain: plainDeps(process.pid, STARTS.claude, dataDir) });
+		const tool = async (toolName: string, input: object) => (await host.emit("tool_call", { toolName, toolCallId: "t1", input }))[0];
+		expect(host.notices).toEqual([]);
+		expect(await tool("write", { path: join(root, "shared", "x.txt"), content: "x" })).toBeUndefined();
+		// OMP's /move into Birch's folder: still no memory, and Birch's guard from the next message on.
+		host.cwd = join(root, "agent-Birch");
+		await host.emit("before_agent_start", { systemPrompt: [] });
+		expect(host.status("orrery")).toBeUndefined();
+		expect(host.tools.has("zoom")).toBe(false);
+		expect(await tool("write", { path: join(root, "shared", "x.txt"), content: "x" })).toEqual({ block: true, reason: expect.stringMatching(/outside this agent's folder/) });
+		expect(existsSync(join(dataDir, "agents"))).toBe(false);
+		expect(hosts(dataDir)).toEqual([]);
+		await ompCleanup();
+	}, 20_000);
+
+	it("a scratch home is not judged: under a plain Claude Code it opens as ever", async () => {
+		const { root, config } = nestedWorld();
+		const run = await pi(root, join(root, "agent-Birch"), config, undefined, { env: {}, plain: { sessions: above(process.pid, STARTS.claude), realHome: realHomeOf(join(root, "real-data")) } });
+		expect(run.status("orrery")).toBe("Orrery · Birch · 0 msgs");
+		await close(run);
+	}, 20_000);
 });
 
 describe("a pi session's host record (spec 2026-10-18-agent-permissions §2)", () => {

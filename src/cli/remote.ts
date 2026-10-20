@@ -1,10 +1,10 @@
 /** Remote agent commands shared by the CLI and TUI; credentials never appear in listings. */
 
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { ConfigError, defaultConfigPath, findAgent, type HarnessConfig, type AgentConfig, agentNameProblem, loadConfig, parseConfig } from "../agent/config.ts";
-import { addAgent, addRemote, configWritable, type NewAgent, type NewRemote, editConfigFile, readOnlyConfigText, removeRemote, saveConfigText, setAgentKey } from "../agent/config-edit.ts";
+import { type AgentConfig, agentNameProblem, ConfigError, type ConfigFile, configFileOf, configOf, type ConfigSource, findAgent, type HarnessConfig, parseConfig } from "../agent/config.ts";
+import { addAgent, addRemote, checkConfigUnchanged, configText, configWritable, editConfigOnce, type NewAgent, type NewRemote, readOnlyConfigText, removeRemote, setAgentKey, stillWritten, writeConfigOnce } from "../agent/config-edit.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { holdWriterLock, type WriterLock } from "../memory/store.ts";
 import { writePrivate } from "../agent/private-file.ts";
@@ -114,10 +114,16 @@ function keyFor(config: HarnessConfig, name: string): Uint8Array {
 	return codeToKey(secret.key);
 }
 
-/** Sets up a remote for the CLI or TUI. The caller decides how to present the optional new recovery code. */
-export async function addRemoteCommand(configPath: string | undefined, name: string, options: RemoteOptions, interaction: RemoteInteraction = terminalInteraction): Promise<RemoteAddResult> {
-	const path = configPath ?? defaultConfigPath();
-	const config = loadConfig(path);
+/**
+ * Sets up a remote for the CLI or TUI. The caller decides how to present the optional new recovery code. The config is
+ * `source` as read once (configFileOf), as every command here takes it, and is written back by editConfigOnce: in a
+ * coding tool's session (ConfigFile.checked) only while that file is unchanged, checked before the first network step
+ * too (checkConfigUnchanged), so a mismatch fails before the remote changes.
+ */
+export async function addRemoteCommand(source: ConfigSource, name: string, options: RemoteOptions, interaction: RemoteInteraction = terminalInteraction): Promise<RemoteAddResult> {
+	const file = configFileOf(source);
+	const config = configOf(file);
+	const dir = dirname(file.path);
 	const existing = config.remotes.get(name);
 	if (existing === undefined && (options.server === undefined) === (options.cloudflare === undefined)) throw new Error("Choose exactly one of --server <host>:<folder> or --cloudflare <url>.");
 	let remote: NewRemote;
@@ -130,7 +136,7 @@ export async function addRemoteCommand(configPath: string | undefined, name: str
 		remote = { name, kind: "server", host: options.server.slice(0, colon), folder: options.server.slice(colon + 1) };
 	} else remote = { name, kind: "cloudflare", url: options.cloudflare! };
 	if (remote.kind === "server" && options["token-file"] !== undefined) throw new Error("--token-file is only for a Cloudflare remote.");
-	const candidate = existing === undefined ? parseConfig(addRemote(readFileSync(path, "utf8"), dirname(resolve(path)), remote), dirname(resolve(path))) : config;
+	const candidate = existing === undefined ? parseConfig(addRemote(configText(file) ?? "", dir, remote), dir) : config;
 	const previous = readRemoteSecret(config, name);
 	let token: string | undefined;
 	let code: string | undefined;
@@ -139,6 +145,8 @@ export async function addRemoteCommand(configPath: string | undefined, name: str
 		token = remote.kind === "cloudflare"
 			? options["token-file"] === undefined && previous?.token ? previous.token : await secretValue(options["token-file"], "Cloudflare access token", "--token-file", interaction)
 			: undefined;
+		// A new remote is written to the config last: a config that write would refuse fails before the remote is asked.
+		if (existing === undefined) checkConfigUnchanged(file);
 		const storage = storageFor(candidate, name, token === undefined ? undefined : { key: "", token });
 		const check = await storage.getCheck();
 		let key: Uint8Array;
@@ -174,7 +182,7 @@ export async function addRemoteCommand(configPath: string | undefined, name: str
 			const stored = await storage.getCheck();
 			if (stored === undefined || !keyMatches(key, stored)) throw new RemoteError("corrupt", "Another setup chose this remote's key; add it with that recovery code.");
 		}
-		if (existing === undefined) editConfigFile(path, (text, dir) => addRemote(text, dir, remote));
+		if (existing === undefined) editConfigOnce(file, (text, dir) => addRemote(text, dir, remote));
 		return { name, ...(showCode ? { recoveryCode: code } : {}) };
 	} catch (error) {
 		// If uploading a key may have succeeded, retain it so a retry can verify and finish registration.
@@ -227,7 +235,7 @@ function logHeader(plain: Uint8Array, n: number): SaveHeader {
 }
 
 /** Remote management commands, shared with the TUI. Only explicit key display and creation return secrets. */
-export async function remoteCommand(configPath: string | undefined, args: readonly string[], options: RemoteOptions = {}, interaction: RemoteInteraction = terminalInteraction): Promise<string> {
+export async function remoteCommand(source: ConfigSource, args: readonly string[], options: RemoteOptions = {}, interaction: RemoteInteraction = terminalInteraction): Promise<string> {
 	const [action, name] = args;
 	if (args.length !== 2 || !name || !["add", "test", "key", "log", "agents", "remove"].includes(action)) {
 		throw new UsageError("Use orrery remote add|test|key|log|agents|remove <name>. Lists and logs accept --json.");
@@ -235,12 +243,12 @@ export async function remoteCommand(configPath: string | undefined, args: readon
 	if (action !== "agents" && action !== "log" && options.json === true) throw new Error("--json is only for remote agents and remote log.");
 	if (options.yes === true && action !== "remove") throw new Error("--yes is only for remote remove.");
 	if (action === "add") {
-		const added = await addRemoteCommand(configPath, name, options, interaction);
+		const added = await addRemoteCommand(source, name, options, interaction);
 		return `Added remote ${name}.\n${added.recoveryCode === undefined ? "" : `${added.recoveryCode}\nKeep this recovery code somewhere safe. Another machine needs it to read this remote.\n`}`;
 	}
 	if (options.server !== undefined || options.cloudflare !== undefined || options["token-file"] !== undefined || options["code-file"] !== undefined) throw new Error("Remote connection and secret-file options are only for remote add.");
-	const path = configPath ?? defaultConfigPath();
-	const config = loadConfig(path);
+	const file = configFileOf(source);
+	const config = configOf(file);
 	if (action === "log") {
 		const agent = findAgent(config, name);
 		if (agent.remote === undefined) throw new Error(`${agent.name} keeps its memory locally.`);
@@ -261,27 +269,25 @@ export async function remoteCommand(configPath: string | undefined, args: readon
 	}
 	// Validate the credential file before changing the config. Removal is local: remote data is never deleted.
 	readRemoteSecret(config, name);
-	removeRemote(readFileSync(path, "utf8"), dirname(resolve(path)), name);
+	removeRemote(configText(file) ?? "", dirname(file.path), name);
 	const warning = `Removing remote ${name} deletes this machine's saved encryption key. Keep its recovery code somewhere safe; without it, this remote's memory cannot be recovered on this machine.`;
 	if (options.yes !== true) {
 		if (interaction.confirm === undefined) throw new Error(`${warning} Run orrery remote key ${name} to save it, then rerun remote remove ${name} --yes.`);
 		if (!(await interaction.confirm(`${warning} Remove it?`))) return "Not removed.\n";
 	}
 	let before = "";
-	let after = "";
-	editConfigFile(path, (text, dir) => {
+	const written = editConfigOnce(file, (text, dir) => {
 		before = text;
-		after = removeRemote(text, dir, name);
-		return after;
+		return removeRemote(text, dir, name);
 	});
 	try {
 		removeRemoteSecret(config, name);
 	} catch (error) {
 		// Keep a failed removal retryable, without overwriting a concurrent hand edit.
-		if (readFileSync(path, "utf8") !== after) {
+		if (!stillWritten(written)) {
 			throw new Error(`Could not remove remote ${name}'s credentials, and the config changed before it could be restored. Restore its remote entry before retrying.`, { cause: error });
 		}
-		saveConfigText(path, before);
+		writeConfigOnce(written, before);
 		throw error;
 	}
 	return `${warning}\nRemoved remote ${name}. Its remote data is unchanged.\n`;
@@ -326,10 +332,12 @@ function sessionOptions(config: HarnessConfig, agent: AgentConfig, storage: Stor
  * Pull shared by the CLI and N: copy portable settings once, then check out and close to fetch the working copy and its
  * instructions.md. Without a folder the agent has no default folder: it opens wherever it is opened.
  */
-export async function pullAgentCommand(configPath: string | undefined, name: string, remote: string, folderArg?: string): Promise<string> {
-	const path = configPath ?? defaultConfigPath();
-	writable(path);
-	const config = loadConfig(path);
+export async function pullAgentCommand(source: ConfigSource, name: string, remote: string, folderArg?: string): Promise<string> {
+	const file = configFileOf(source);
+	writable(file.path);
+	const config = configOf(file);
+	// Before anything is fetched: a config its write would refuse (checkConfigUnchanged) fails here.
+	checkConfigUnchanged(file);
 	if ([...config.agents.keys()].some((n) => n.toLowerCase() === name.toLowerCase())) throw new ConfigError(`An agent named ${shown(name)} already exists.`);
 	const problem = agentNameProblem(name);
 	if (problem !== undefined) throw new ConfigError(problem);
@@ -344,7 +352,7 @@ export async function pullAgentCommand(configPath: string | undefined, name: str
 	const storage = remoteStorage(config, remote);
 	const secret = readRemoteSecret(config, remote);
 	let before: string | undefined;
-	let after: string | undefined;
+	let written: ConfigFile | undefined;
 	let writer: WriterLock | undefined;
 	const agentDir = join(config.dataDir, "agents", name);
 	const existed = existsSync(agentDir);
@@ -358,20 +366,20 @@ export async function pullAgentCommand(configPath: string | undefined, name: str
 		// An older snapshot names the agent's instructions file, a key the config no longer takes: it is dropped.
 		const { instructions: _old, ...portable } = settings;
 		const agent: NewAgent = { ...portable, name, ...(folder === undefined ? {} : { folder }), remote, tool: portable.tool as NewAgent["tool"], compactorThinking: portable.compactorThinking as NewAgent["compactorThinking"] };
-		const updated = editConfigFile(path, (text, dir) => {
-			const next = addAgent(text, dir, agent);
-			before = text; after = next;
-			return next;
+		written = editConfigOnce(file, (text, dir) => {
+			before = text;
+			return addAgent(text, dir, agent);
 		});
+		const updated = configOf(written);
 		const notices: string[] = [];
 		const session = await RemoteSession.checkOut({ ...sessionOptions(updated, updated.agents.get(name)!, storage, (m) => notices.push(shown(m))), writer });
 		await session.close();
 		return [...notices, `Pulled ${name} from remote ${remote}${folder === undefined ? "" : ` into ${shown(folder)}`}.\n`].join("\n");
 	} catch (error) {
 		failed = true;
-		if (before !== undefined && after !== undefined) {
-			if (readFileSync(path, "utf8") !== after) throw new Error(`Pull failed: ${errorText(error, secret?.key, secret?.token)}. The config changed during the fetch; review agents.${name} before retrying.`);
-			saveConfigText(path, before);
+		if (before !== undefined && written !== undefined) {
+			if (!stillWritten(written)) throw new Error(`Pull failed: ${errorText(error, secret?.key, secret?.token)}. The config changed during the fetch; review agents.${name} before retrying.`);
+			writeConfigOnce(written, before);
 		}
 		throw new Error(errorText(error, secret?.key, secret?.token));
 	} finally {
@@ -382,17 +390,21 @@ export async function pullAgentCommand(configPath: string | undefined, name: str
 }
 
 /** Moves agent memory between its local working copy and remote home; independent of agent checkout adapters. */
-export async function agentRemoteCommand(configPath: string | undefined, args: readonly string[], options: AgentRemoteOptions = {}, interaction: AgentRemoteInteraction = terminalAgentInteraction): Promise<string> {
+export async function agentRemoteCommand(source: ConfigSource, args: readonly string[], options: AgentRemoteOptions = {}, interaction: AgentRemoteInteraction = terminalAgentInteraction): Promise<string> {
 	const [action, name] = args;
 	if (args.length !== 2 || !name || !["push", "pull", "takeover", "local"].includes(action)) throw new UsageError("Use orrery agent push|pull|takeover|local <Name>.");
 	if ((options.to !== undefined && action !== "push") || ((options.from !== undefined || options.folder !== undefined) && action !== "pull") || (options.yes === true && action !== "takeover") || (options["delete-remote"] === true && action !== "local")) throw new Error("These options do not apply to this agent command.");
 	if (action === "pull") {
 		if (!options.from) throw new Error("agent pull needs --from <remote> (and --folder <dir> for a default folder).");
-		return pullAgentCommand(configPath, name, options.from, options.folder);
+		return pullAgentCommand(source, name, options.from, options.folder);
 	}
-	const path = configPath ?? defaultConfigPath();
-	const config = loadConfig(path);
+	const file = configFileOf(source);
+	const path = file.path;
+	const config = configOf(file);
 	const agent = findAgent(config, name);
+	// Before anything is sent or fetched (push, local, takeover): a config its write would refuse (checkConfigUnchanged)
+	// fails here, so the remote is never changed for a config left as it was.
+	checkConfigUnchanged(file);
 	const remote = action === "push" ? options.to : agent.remote;
 	if (!remote) throw new Error(action === "push" ? "agent push needs --to <remote>." : `${agent.name} keeps its memory locally.`);
 	const storage = remoteStorage(config, remote);
@@ -404,9 +416,9 @@ export async function agentRemoteCommand(configPath: string | undefined, args: r
 			writable(path);
 			if (agent.remote !== undefined && agent.remote !== remote) throw new Error(`${agent.name} already keeps its memory on remote ${agent.remote}; run orrery agent local ${agent.name} first.`);
 			// Validate the edit before sending anything; write it only once the upload succeeds.
-			setAgentKey(readFileSync(path, "utf8"), dirname(resolve(path)), agent.name, "remote", remote);
+			setAgentKey(configText(file) ?? "", dirname(path), agent.name, "remote", remote);
 			await RemoteSession.push(sessionOptions(config, agent, storage, (m) => notices.push(shown(m))));
-			editConfigFile(path, (text, dir) => setAgentKey(text, dir, agent.name, "remote", remote));
+			editConfigOnce(file, (text, dir) => setAgentKey(text, dir, agent.name, "remote", remote));
 			return [...notices, `Pushed ${agent.name} to remote ${remote}.\n`].join("\n");
 		}
 		writer = holdWriterLock(join(agent.dir, "memory.sqlite"));
@@ -424,11 +436,11 @@ export async function agentRemoteCommand(configPath: string | undefined, args: r
 			return `${message}. Taken over and released; the next open fetches its memory.\n`;
 		}
 		writable(path);
-		setAgentKey(readFileSync(path, "utf8"), dirname(resolve(path)), agent.name, "remote", "");
+		setAgentKey(configText(file) ?? "", dirname(path), agent.name, "remote", "");
 		const session = await RemoteSession.checkOut({ ...sessionOptions(config, agent, storage, (m) => notices.push(shown(m))), writer });
 		await session.close();
 		const state = JSON.parse(readFileSync(join(agent.dir, "remote-state.json"), "utf8")) as { save: number; lock: number };
-		editConfigFile(path, (text, dir) => setAgentKey(text, dir, agent.name, "remote", ""));
+		editConfigOnce(file, (text, dir) => setAgentKey(text, dir, agent.name, "remote", ""));
 		let deleted = false;
 		if (options["delete-remote"] === true && await interaction.confirm(`Delete ${agent.name}'s copy on remote ${remote}? Its updated local copy stays on this machine.`)) {
 			const taken = await storage.take(agent.name, holderFor(config));
