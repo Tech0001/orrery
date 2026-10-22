@@ -12,8 +12,8 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { claudeSetup, claudeSetupMod, modSetupReport, setupReport } from "../claude/setup.ts";
-import { agentMode, markedHere, readSetupMarker } from "../claude/view-file.ts";
+import { claudeSetupMod, modSetupReport } from "../claude/setup.ts";
+import { agentMode, readSetupMarker } from "../claude/view-file.ts";
 import { type CodexGate, codexHookGate, type probeHooks } from "../codex/check.ts";
 import { codexArgs, codexLaunch, misplacedSubcommand, orreryCommand, subcommandFirst } from "../codex/launch.ts";
 import { checkHookShell, NOISY_SHELL_QUESTION, noisyShellText, type ShellCheck } from "../codex/shell.ts";
@@ -30,7 +30,7 @@ import { BINARIES, codexVersion, findOnPath, installSteps, orreryVersion, wiring
 
 const HINTS: Record<AgentTool, string> = { pi: "Get it at https://pi.dev", "claude-code": "Get it at https://claude.com/claude-code", codex: "Get it at https://github.com/openai/codex", omp: "Get it at https://omp.sh", opencode: "Get it at https://opencode.ai" };
 
-export type LaunchFix = "create-folder" | "install-pi" | "install-omp" | "install-claude-code" | "claude-setup" | "claude-setup-mod";
+export type LaunchFix = "create-folder" | "install-pi" | "install-omp" | "install-claude-code" | "claude-setup-mod";
 
 export interface LaunchStep {
 	readonly text: string;
@@ -185,8 +185,6 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 		if (check.wiring === "missing" || check.wiring === "update available") {
 			steps.push({ text: installQuestion(`The Orrery plugin for Claude Code is ${check.wiring === "missing" ? "not installed" : "out of date"}`, check, options), confirm: true, fix: "install-claude-code" });
 		}
-		// Outside its folder only the mod opens it (claudeCodeRefusal), and the mod needs no file in any folder.
-		if (inFolder && !markedHere(agent)) steps.push({ text: `Claude Code does not load ${row.name}'s memory in this folder yet. Set it up now (orrery claude-setup)?`, confirm: true, fix: "claude-setup" });
 	}
 	// Codex: Orrery's hooks, memory tools and instructions go on its command line, before the person's arguments.
 	const codex = tool === "codex" ? codexLaunch(agent, options.orrery ?? orreryCommand(options.env ?? process.env)) : undefined;
@@ -288,7 +286,6 @@ export function applyFix(fix: LaunchFix, config: HarnessConfig, row: AgentRow, t
 		mkdirSync(folder, { recursive: true });
 		return `Created ${folder}.`;
 	}
-	if (fix === "claude-setup") return setupReport(claudeSetup(findAgent(config, row.name)));
 	if (fix === "claude-setup-mod") return modSetupReport(claudeSetupMod(findAgent(config, row.name)));
 	const check = tools.find((t) => t.id === (fix === "install-pi" ? "pi" : fix === "install-omp" ? "omp" : "claude-code"));
 	if (check === undefined) throw new Error("That tool was not checked.");

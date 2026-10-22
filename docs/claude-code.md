@@ -44,8 +44,9 @@ another project runs in an agent's folder: `Orrery: started inside a Claude Code
 one opens no memory and records nothing.` Its guard keeps the rules of the agent whose folder it runs in. Outside every
 agent's folder it is a session that is no agent's, and says nothing.
 
-A picked agent records only where it is set up (below): in its default folder after `orrery claude-setup <Name>`, or
-in any folder after `orrery claude-setup <Name> --mod`.
+A picked agent records in any folder, with no setup: the Orrery mod brings its memory (Claude Code 2.1.287 or newer;
+see [Mod mode](#mod-mode)). An agent set up the file way (`orrery claude-setup <Name>`) gets it from the view file in
+its default folder instead.
 
 The plugin runs `~/.local/bin/orrery`, so it uses the installed version (`~/.orrery/app/current`) and this
 machine's Orrery. After `orrery update`, new hook processes use the new
@@ -88,9 +89,9 @@ claude-code` picks it for one session.
 
 Two cases are refused, with the reason and the fix:
 
-- **Outside the agent's default folder without the mod.** The file setup works in the agent's default folder only
-  (`orrery claude-setup <Name>` needs a `folder` in the config). Anywhere else, only the Orrery mod brings the memory
-  and instructions into Claude Code: `orrery claude-setup <Name> --mod` (Claude Code 2.1.287 or newer).
+- **Outside the default folder of an agent set up the file way.** The file setup works in the agent's default folder
+  only. Anywhere else, only the Orrery mod brings the memory and instructions into Claude Code:
+  `orrery claude-setup <Name> --mod` switches the agent back to it.
 - **A folder that another agent holds the file way.** In another agent's default folder, or inside it, the
   `CLAUDE.md` or `CLAUDE.local.md` that `claude-setup` wrote loads that agent's memory view into every Claude Code
   session there, and Claude Code loads the files of every ancestor folder too. Two agents would share one prompt, so
@@ -99,22 +100,22 @@ Two cases are refused, with the reason and the fix:
 ### The desktop app
 
 The Claude Code desktop app runs its own copy of Claude Code on your machine, with the same plugins, so an agent
-set up the file way works there: run `orrery claude-setup <Name>` once, then start a session in the agent's default
-folder. The app's sessions record into the agent and load its memory like terminal ones. Checked with the Linux app
-and the Claude Code it bundles (2.1.299): a session recorded, and a new session recalled it after the first chat
-was deleted.
+works there: start a session in the agent's default folder. The app's sessions record into the agent and load its memory like terminal ones. Checked with the Linux app,
+the Claude Code it bundles (2.1.299) and the file setup: a session recorded, and a new session recalled it after the
+first chat was deleted.
 
 - `orrery agent <Name>` starts Claude Code in a terminal, not in the app, so an agent without a default folder
   can't be opened from the app.
 - Orrery's status line and its notices did not show in the app.
-- The mod (`--mod`) is not yet checked in the app.
+- The mod, which an agent uses unless it is set up the file way, is not yet checked in the app.
 - A session the app starts in a folder that is no agent's is a session that is no agent's: `orrery` there shows no
   agent and changes nothing, and the guard keeps Orrery's own rules.
 - Claude Code on the web runs in the cloud and can't reach the memory on your machine.
 
-## Set up an agent, once
+## The file setup
 
-Opening a Claude Code agent from the TUI (`L`) offers this setup the first time.
+An agent needs no setup: the Orrery mod brings its memory into Claude Code 2.1.287 or newer, in any folder. The file
+setup is for an older Claude Code, or for an agent you want to load its memory from a file in its folder:
 
 ```bash
 orrery claude-setup <Name>
@@ -151,16 +152,14 @@ only the Orrery mod brings them.
 Moving an agent over (the spec's section 6):
 
 1. close it in pi, OMP, Codex or OpenCode;
-2. run `orrery claude-setup <Name>` (or add `--mod`);
-3. `orrery agent <Name>`, or `cd <agent folder> && claude` for the file setup.
+2. `orrery agent <Name> --tool claude-code`, or `cd <agent folder> && claude`.
 
-Only agents where `claude-setup` ran record in Claude Code. In the others the guard still applies, and memory is not
-touched. The agent can go back to pi later.
+The agent can go back to pi later.
 
 ## Mod mode
 
-With Claude Code 2.1.287 or newer and the Orrery plugin 0.3.0, an agent can get its instructions and memory from the
-Orrery mod instead of the view file:
+With Claude Code 2.1.287 or newer and the Orrery plugin 0.3.0, an agent gets its instructions and memory from the
+Orrery mod, with no setup. An agent set up the file way switches back to the mod with:
 
     orrery claude-setup <Name> --mod
 
@@ -179,9 +178,10 @@ Orrery mod instead of the view file:
   Esc there) keeps everything, and its memory section can then stay stale until the next compaction.
 - **The conversation compacts itself** once it passes the agent's `compact_at` (default 200,000 tokens, at least
   100,000): `orrery agent set <Name> --compact-at 150000`, or the TUI's `C`. Only interactive sessions; `claude -p`
-  compacts at `/compact` and Claude Code's own threshold. If a compaction the mod started cannot be answered, the
-  conversation stays as it is and the mod starts no more in that session; when only the last turn was too large to
-  keep, it tries again after a later turn.
+  compacts at `/compact` and Claude Code's own threshold. A compaction the mod starts while a turn runs, which newer
+  Claude Code refuses, starts again when the turn ends. If one still cannot be answered, the conversation stays as it
+  is and the mod starts no more in that session; when only the last turn was too large to keep, it tries again after a
+  later turn.
 - **Fallbacks.** When the view cannot be read, the agent has no memory yet, or the last turn alone is over half of
   `compact_at`, Claude Code compacts its own way and one line says why. If the mod is not loaded at all (an older
   Claude Code, or mods turned off), the session runs without the memory view and the model is told to say so.
@@ -191,8 +191,8 @@ Orrery mod instead of the view file:
 - **Switching back:** plain `orrery claude-setup <Name>` puts the view file and its import line back (in CLAUDE.md for
   a folder that is not a git repo, CLAUDE.local.md in a repo). It works in the agent's default folder only, and from
   then on `orrery agent` refuses to open the agent elsewhere in Claude Code. Either switch takes effect at the next
-  session start. Before going back to an older Orrery version, run plain `orrery claude-setup <Name>`: older versions
-  do not know mod mode and stop recording the agent.
+  session start. Before going back to an Orrery version before 0.9.3, run `orrery claude-setup <Name> --mod`: those
+  versions record only agents that `claude-setup` ran for.
 - After a compaction Claude Code does not list its deferred tools again; the memory section tells the model to load
   `zoom`, `date` and `search` with ToolSearch when they are not listed.
 
@@ -239,8 +239,7 @@ is imported once.
 Open the agent with `orrery agent <Name>`, or start Claude Code at the root of its default folder.
 
 - The first line the model gets is `orrery · <Name> · N msgs · recording`, or `read-only: this session is not
-  recorded`, `not recording yet` (the recorder did not answer in time), `not set up for Claude Code here, so this
-  session is not recorded` (run `orrery claude-setup <Name>`), or `no memory yet` in place of the message count. When
+  recorded`, `not recording yet` (the recorder did not answer in time), or `no memory yet` in place of the message count. When
   something is off, the line after it says why: the agent is open elsewhere (it names the tool), the recorder did not
   answer, `CLAUDE.md` does not load the view, or git is the problem (below).
 - Memory keeps your prompts and each turn's final reply. Tool calls, tool output, thinking, subagents' own turns and
@@ -272,8 +271,9 @@ Open the agent with `orrery agent <Name>`, or start Claude Code at the root of i
 - If git cannot answer whether `.orrery/` is ignored (git missing, a broken repo, a timeout), the view is taken out of
   the folder until git can answer again. The session that takes it out says so at the start; the next write that
   passes the check puts it back silently.
-- If `.orrery/` becomes visible to git after setup, SessionStart removes the marker and the view and says why. That
-  session, and every later one, is not recorded until you fix the repo and run `orrery claude-setup <Name>` again.
+- If `.orrery/` becomes visible to git after setup, SessionStart removes the marker and the view and says why. New
+  sessions then get the memory from the Orrery mod; to use the view file again, fix the repo and run
+  `orrery claude-setup <Name>` again.
 - Claude Code also loads your claude.ai connectors. One that needs authorization can make the model add a note like
   "…connectors won't work until you authorize them" to its replies, and those replies are memory. Authorize or remove
   those connectors on claude.ai. In Claude Code 2.1.291 (seen in its binary), `ENABLE_CLAUDEAI_MCP_SERVERS=0` in the
@@ -498,7 +498,6 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
 - "did not answer": read `holder.log`.
 - "read-only": the agent is open in the tool the notice names (pi, OMP, Codex, OpenCode or another Claude Code session).
   `orrery status` shows it.
-- "not set up for Claude Code here": run `orrery claude-setup <Name>`, then start a new session.
 - "open outside its folder, where only the Orrery mod brings its memory": run `orrery claude-setup <Name> --mod`, then
   start a new session.
 - No view: run `orrery claude-setup <Name>`, and start Claude Code at the root of the agent's folder.

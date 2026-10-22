@@ -83,9 +83,12 @@ describe("orrery claude-mod view", () => {
 		expect(await view(OTHER)).toMatchObject({ lane: "Test" });
 	});
 
-	it("mode none and file: no section", async () => {
+	it("no setup: the mod's section; file mode: no section", async () => {
 		const t = testAgent();
-		expect(await modView(t.config, { cwd: t.agent.folder })).toMatchObject({ lane: t.agent.name, mode: "none", compactAt: 200_000, section: null });
+		seed(t.agent, ["one"]);
+		const reply = await modView(t.config, { cwd: t.agent.folder });
+		expect(reply).toMatchObject({ lane: t.agent.name, mode: "mod", compactAt: 200_000, messages: 1 });
+		expect((reply as { section: string }).section).toMatch(/^# Memory\n/);
 		writeSetupMarker(t.agent.dir, t.agent.folder, "CLAUDE.md");
 		expect(await modView(t.config, { cwd: t.agent.folder })).toMatchObject({ mode: "file", section: null });
 	});

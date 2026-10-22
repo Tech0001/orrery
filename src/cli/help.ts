@@ -127,7 +127,7 @@ const GROUPS: readonly Group[] = [
 		short: [
 			["update [--check]", "install the newest release"],
 			["tools", "coding tools found, and Orrery's side in each"],
-			["claude-setup <Name>", "load memory in Claude Code"],
+			["claude-setup <Name>", "Claude Code: the file setup (the mod needs none)"],
 			["setup, install, uninstall", ""],
 		],
 		detail: [
@@ -136,7 +136,7 @@ const GROUPS: readonly Group[] = [
 			["tools install <pi|claude-code|omp> [--yes]", "install or update Orrery's side of a tool (shows what it does first)"],
 			[
 				"claude-setup <Name> [--mod]",
-				"make Claude Code load the agent's memory view (CLAUDE.md, or CLAUDE.local.md in a repo); --mod: from the Orrery mod, in the system prompt",
+				"the file setup: Claude Code loads the agent's memory view from CLAUDE.md (CLAUDE.local.md in a repo), for Claude Code before 2.1.287; --mod: back to the Orrery mod, which needs no setup",
 			],
 			[
 				"setup [--yes]",

@@ -18,6 +18,7 @@ import { systemCommand } from "../install/support.ts";
 import { tempDir } from "../agent/support.ts";
 import { fakeOpenCode } from "../opencode/fake-opencode.ts";
 import { codexHomeIn } from "../codex/rollout-lines.ts";
+import { writeSetupMarker } from "../../src/claude/view-file.ts";
 
 const SCRIPT = systemCommand("script");
 const hasScript = process.platform === "linux" && SCRIPT !== undefined && spawnSync(SCRIPT, ["--version"]).status === 0;
@@ -493,8 +494,9 @@ describe("orrery agent", () => {
 		expect(ran[0]?.opencode).toBeUndefined();
 	});
 
-	it("refuses Claude Code outside the agent's folder without the mod, and starts nothing", () => {
+	it("refuses Claude Code outside the folder of an agent set up the file way, and starts nothing", () => {
 		const s = scene();
+		writeSetupMarker(s.agentDir, join(s.dir, "agent-Atlas"), "CLAUDE.md");
 		writeFileSync(join(s.dir, "bin", "claude"), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 2.1.300; exit 0; fi\nif [ "$1" = "plugin" ]; then echo '[]'; exit 0; fi\ntouch ${JSON.stringify(s.out)}\n`, { mode: 0o755 });
 		const r = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "claude-code", "--yes");
 		expect(r.status).toBe(1);
