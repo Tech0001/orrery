@@ -164,29 +164,24 @@ describe("UserPromptSubmit, Stop and SessionEnd", () => {
 		await expect(runHook("nonsense", input(t), ctx(t))).rejects.toThrow(/unknown hook event nonsense/);
 	});
 
-	it("record nothing in an agent where claude-setup never ran: no holder, no spool, the guard still on, and a status that says so", async () => {
+	it("record in an agent where claude-setup never ran, through the Orrery mod: its holder starts, and the guard is on", async () => {
 		const t = testAgent();
 		seed(t.agent, ["Use pnpm here."]);
+		let started = 0;
 		const c = ctx(t, {
-			startHolder: () => {
-				throw new Error("must not start");
+			startHolder: (...args: Parameters<ReturnType<typeof answer>>) => {
+				started++;
+				answer("recording")(...args);
 			},
 		});
 		const out = JSON.parse(await runHook("session-start", input(t, { source: "startup" }), c));
-		const status = "Orrery · Test · 1 msgs · not set up for Claude Code here, so this session is not recorded; run `orrery claude-setup Test` to record it";
-		expect(out).toEqual({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: status }, systemMessage: status });
-		expect(await runHook("user-prompt-submit", input(t, { prompt: "An ad-hoc chat." }), c)).toBe("");
-		expect(await runHook("user-prompt-submit", input(t, { prompt: "/orrery:memory" }), c)).toBe("");
-		expect(await runHook("stop", input(t, { last_assistant_message: "An ad-hoc reply." }), c)).toBe("");
-		expect(await runHook("session-end", input(t, { reason: "other" }), c)).toBe("");
-		expect(existsSync(join(t.agent.dir, "claude"))).toBe(false);
+		expect(started).toBe(1);
+		expect(out.hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · 1 msgs · recording · memory from the Orrery mod\n/);
 		const denied = JSON.parse(await runHook("pre-tool-use", input(t, { tool_name: "Read", tool_input: { file_path: t.config.credentialsPath } }), c));
 		expect(denied.hookSpecificOutput.permissionDecision).toBe("deny");
-		// A marker that names another folder is no setup here either.
+		// A marker that names another folder is the mod here too.
 		writeSetupMarker(t.agent.dir, t.dir, "CLAUDE.md");
-		await runHook("user-prompt-submit", input(t, { prompt: "Still ad hoc." }), c);
-		expect(listSessions(t.agent.dir)).toEqual([]);
-		expect(JSON.parse(await runHook("session-start", input(t), c)).hookSpecificOutput.additionalContext).toContain("not set up for Claude Code here");
+		expect(JSON.parse(await runHook("session-start", input(t, { source: "compact" }), c)).hookSpecificOutput.additionalContext).toContain("memory from the Orrery mod");
 	});
 });
 
@@ -314,10 +309,7 @@ describe("the caller check (spec 2026-10-18-agent-permissions 3c): a writing hoo
 		expect(liveSession(t.config.dataDir, CLAUDE)).toMatchObject({ agent: "Other" });
 	});
 
-	it("says nothing to a forged SessionStart where nothing would be recorded: outside agents, not set up, a compaction, a subagent", async () => {
-		const t = testAgent();
-		const forged = ctx(t, { peer: () => "not-socket" });
-		expect(await runHook("session-start", input(t, { source: "startup" }), forged)).toBe("");
+	it("says nothing to a forged SessionStart where nothing would be recorded: outside agents, a compaction, a subagent", async () => {
 		const u = testAgent({ setup: true });
 		const there = ctx(u, { peer: () => "not-socket" });
 		expect(await runHook("session-start", input(u, { source: "compact" }), there)).toBe("");
@@ -510,13 +502,6 @@ describe("a Claude Code session left open across the update from 0.8.0: its deci
 		claudeSession(t.config, { env: c.env, cwd: t.folder, pid: CLAUDE, decide: true, start: () => "another start" });
 		forgetSession(t.config.dataDir, CLAUDE);
 		expect(await prompt()).toBe("");
-		// Not set up for Claude Code here.
-		const u = testAgent();
-		const v = ctx(u);
-		rmSync(join(u.config.dataDir, "claude-processes", `${CLAUDE}.json`));
-		forgetSession(u.config.dataDir, CLAUDE);
-		recording(u);
-		expect(await runHook("user-prompt-submit", input(u, { prompt: "Words.", prompt_id: "p-1" }), v)).toBe("");
 		expect(spooled(t)).toEqual([]);
 	});
 });
@@ -632,9 +617,9 @@ describe("SessionStart", () => {
 			expect(out.systemMessage).toContain("orrery claude-setup Test");
 			expect(existsSync(setupMarker(t.agent.dir))).toBe(false);
 			expect(existsSync(viewFile(t.folder))).toBe(false);
-			// Setup is taken back, so this session is not recorded either.
-			expect(out.hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · 1 msgs · not set up for Claude Code here/);
-			expect(listSessions(t.agent.dir)).toEqual([]);
+			// The file setup is taken back: the session records, and new sessions get the memory from the mod.
+			expect(out.hookSpecificOutput.additionalContext).toMatch(/^Orrery · Test · 1 msgs · recording\n/);
+			expect(out.systemMessage).toContain("New sessions get its memory from the Orrery mod");
 		}
 	});
 

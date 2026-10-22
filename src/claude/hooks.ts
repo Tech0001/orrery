@@ -10,9 +10,8 @@
  *   own rules (preToolUse, spec 2026-10-19-no-agent-sessions §3). An ORRERY_AGENT that is refused (it names no agent, its
  *   token is malformed, the folder is another agent's set up the file way, or the process's decision could not be
  *   recorded or is missing) gets a notice at SessionStart, records nothing, and keeps the guard.
- * - They record only where `orrery claude-setup` ran: in mod mode in any folder, in file mode for the agent's
- *   folder. In any other agent they start no holder and spool nothing, SessionStart says the session is not recorded,
- *   and the guard still applies.
+ * - They record in every agent: through the Orrery mod in any folder, which needs no setup, or through the view file
+ *   in the agent's folder where `orrery claude-setup` set that up (agentMode, src/claude/view-file.ts).
  * - A Claude Code started inside an agent's session (spec 2026-10-18-agent-permissions §3b: the process's decision,
  *   src/claude/pick.ts), or whose CLAUDE_PID is not its own (claudeHookPid), opens no memory and records nothing:
  *   SessionStart says why (not again at a compaction), nothing is spooled, no holder starts, and the guard keeps the
@@ -66,7 +65,7 @@ import { type CallerCheck, checkCaller, type StdinPeer, stdinPeer, unsupportedCa
 import { type ClaudePicked, claudeRefusedNotice, claudeSession, decidedBeforeUpdate, forgetProcess, markedUnconfirmed, UNCONFIRMED_NOTICE } from "./pick.ts";
 import { readMode, type SessionMode, spoolEvent, writeMode } from "./spool.ts";
 import { projectsFolder, transcriptIn, unreadableHere } from "./transcript.ts";
-import { markedHere, refreshViewFile, type ViewGate, viewGate } from "./view-file.ts";
+import { refreshViewFile, type ViewGate, viewGate } from "./view-file.ts";
 
 /**
  * Whether this recorder start's notice was already shown to this session (a /compact reuses the recorder and runs
@@ -220,13 +219,12 @@ export function slashCommand(input: HookInput): boolean {
 }
 
 /**
- * The session's own memory events: main-thread events of a real session id, in an agent where claude-setup ran
- * (markedHere), unless it runs read-only. In an agent never set up nothing is spooled, so no later holder adopts it.
+ * The session's own memory events: main-thread events of a real session id in an agent, unless it runs read-only.
  */
 function recordable(input: HookInput, ctx: HookContext): (Here & { session: string }) | undefined {
 	if (input.agent_id !== undefined) return undefined;
 	const found = here(input, ctx);
-	if (found === undefined || !validSession(input.session_id) || !markedHere(found.agent)) return undefined;
+	if (found === undefined || !validSession(input.session_id)) return undefined;
 	if (readMode(found.agent.dir, input.session_id)?.mode === "read-only") return undefined;
 	return { ...found, session: input.session_id };
 }
@@ -293,8 +291,7 @@ export function sessionEnd(input: HookInput, ctx: HookContext): void {
 }
 
 /**
- * Marks `session` read-only for the agent this session would be (ORRERY_AGENT's, else the folder's), where Claude Code is
- * set up to record it: its hooks then spool nothing (recordable), a holder takes none of its events in (none came before
+ * Marks `session` read-only for the agent this session would be (ORRERY_AGENT's, else the folder's): its hooks then spool nothing (recordable), a holder takes none of its events in (none came before
  * the mark), and markedUnconfirmed (src/claude/pick.ts) keeps a later SessionStart of it in this process from starting
  * one; the mark's time (`since`) tells a Claude Code that reuses the pid later from this one. Never throws.
  */
@@ -302,7 +299,7 @@ function markUnconfirmed(id: string, projectDir: string, ctx: HookContext): void
 	try {
 		const name = ctx.env[AGENT_ENV]?.trim();
 		const agent = name ? agentNamed(ctx.config, name) : agentForCwd(ctx.config, projectDir);
-		if (agent === undefined || !markedHere(agent)) return;
+		if (agent === undefined) return;
 		writeMode(agent.dir, id, { mode: "read-only", pid: process.pid, claudePid: ctx.claudePid, nonce: randomUUID(), since: Date.now(), reason: UNCONFIRMED_NOTICE });
 	} catch {
 		// unmarked: its later hooks judge it as they can
@@ -389,15 +386,15 @@ function refusedStart(input: HookInput, ctx: HookContext, check: Exclude<CallerC
 }
 
 /**
- * The agent a session would be recorded for, where Claude Code is set up to record it: ORRERY_AGENT's, else the project
- * folder's (CLAUDE_PROJECT_DIR, else the hook's cwd); undefined when it is no agent's or not set up there.
+ * The agent a session would be recorded for: ORRERY_AGENT's, else the project folder's (CLAUDE_PROJECT_DIR, else the
+ * hook's cwd); undefined when it is no agent's.
  */
 function wouldRecord(input: HookInput, ctx: HookContext): AgentConfig | undefined {
 	const projectDir = ctx.env.CLAUDE_PROJECT_DIR || (typeof input.cwd === "string" ? input.cwd : undefined);
 	if (projectDir === undefined) return undefined;
 	const name = ctx.env[AGENT_ENV]?.trim();
 	const agent = name ? agentNamed(ctx.config, name) : agentForCwd(ctx.config, projectDir);
-	return agent !== undefined && markedHere(agent) ? agent : undefined;
+	return agent;
 }
 
 /** What a session that was recording when Orrery was updated says once its hooks stop recording it (updatedSession). */
@@ -445,8 +442,7 @@ const MOD_CHECK = "If your system prompt has no Orrery memory section (its text 
 /**
  * Brings the view file up to date (in mod mode it writes none, and deletes a stale one) and starts this session's holder, unless one already records it (/compact). It
  * then tells the model the agent, its size and whether this session records. What the user should fix is also
- * shown to them. In an agent where claude-setup never ran (or its gate just took the setup back), it starts no holder:
- * the session is not recorded, and the status says so to both. Under a refused ORRERY_AGENT it only tells the person.
+ * shown to them. Under a refused ORRERY_AGENT it only tells the person.
  */
 export async function sessionStart(input: HookInput, ctx: HookContext): Promise<object | undefined> {
 	if (!validSession(input.session_id)) return undefined;
@@ -491,8 +487,6 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	}
 	// No memory yet, so no write and no gate: ask it anyway, for the warnings.
 	gate ??= viewGate(agent);
-	// After the gate, which takes the setup back where git would see the view.
-	const setUp = markedHere(agent);
 	// Without ORRERY_AGENT a decision that could not be recorded is judged again at each event: said once a session.
 	if (pick.notRecorded !== undefined && input.source !== "compact") warnings.push(`Orrery: which agent this Claude Code is could not be recorded (${safeText(pick.notRecorded)}), so each of its hooks works it out again.`);
 	// The decision recorded this Claude Code as the agent's host (src/claude/pick.ts); one that could not be is said.
@@ -502,7 +496,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	let state = "recording";
 	// Where the session's prompts are confirmed (src/claude/transcript.ts), or why they can't be. Subagents' events are
 	// not memory.
-	const confirm = setUp && input.agent_id === undefined ? confirmable(input, ctx) : undefined;
+	const confirm = input.agent_id === undefined ? confirmable(input, ctx) : undefined;
 	let unconfirmable = confirm !== undefined && "notice" in confirm ? confirm : undefined;
 	if (confirm !== undefined && !("notice" in confirm)) {
 		try {
@@ -525,8 +519,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 		const claudeProcess = `${ctx.claudePid}:${(ctx.processStart ?? processStart)(ctx.claudePid) ?? ""}`;
 		if (!noticeShownBefore(agent.dir, `${session}:caller`, `${claudeProcess}:${said}`)) warnings.push(said);
 	}
-	if (!setUp) state = `not set up for Claude Code here, so this session is not recorded; run \`orrery claude-setup ${agent.name}\` to record it`;
-	else if (unconfirmable !== undefined && !keep) {
+	if (unconfirmable !== undefined && !keep) {
 		// Its prompts can't be confirmed: none of it is recorded, whatever comes later.
 		markNotConfirmable(agent, session, ctx, unconfirmable.notice);
 		state = "read-only: this session is not recorded";
@@ -555,7 +548,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	// Said to the person and the model, as this session gets them: the mod's section, and the view file in the agent's own
 	// folder, carry the first 32 KB; anywhere else none reach the model.
 	if (cut) warnings.push(mod || (gate.open && !outside) ? cutNotice(agent.name) : cutNoneNotice(agent.name));
-	const fix =`Make git ignore .orrery/ and track nothing there, then run \`orrery claude-setup ${agent.name}\`.`;
+	const fix = `New sessions get its memory from the Orrery mod; to use the view file again, make git ignore .orrery/ and track nothing there, then run \`orrery claude-setup ${agent.name}\`.`;
 	if (mod) {
 		// The mod puts the view in the prompt: no view-file warnings, but a stale view that stays is said.
 		if (gate.failed !== undefined) warnings.push(`Orrery: ${agent.name}'s old memory view file could not be removed (${gate.failed}); remove ${agent.folder}/.orrery/view.md yourself.`);
@@ -569,22 +562,20 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 		warnings.push(
 			`Orrery: ${agent.name}'s memory view could not be checked against git this time (${gate.unchecked}), so it is taken out of ${agent.folder}/.orrery/ until git answers again; nothing to set up, a later session puts it back.`,
 		);
-	} else if (setUp && outside) {
+	} else if (outside) {
 		warnings.push(`Orrery: ${agent.name} is open outside its folder, where only the Orrery mod brings its memory and instructions into Claude Code; run \`orrery claude-setup ${agent.name} --mod\`, then start a new session.`);
-	} else if (setUp && !gate.open) {
-		// (Where nothing is set up, the status already says what to run.)
+	} else if (!gate.open) {
 		warnings.push(`Orrery: CLAUDE.md does not load ${agent.name}'s memory view; run \`orrery claude-setup ${agent.name}\`, then start a new session.`);
-	} else if (setUp && agent.folder !== undefined && !samePath(projectDir, agent.folder)) {
+	} else if (agent.folder !== undefined && !samePath(projectDir, agent.folder)) {
 		warnings.push(`Orrery: Claude Code started in a subfolder of ${agent.folder}; start it there, or CLAUDE.md may not load the memory view.`);
 	}
 	// For the user only (systemMessage), never the model's context; this also records the session's key.
 	const summaries = notice(input, ctx) as { systemMessage?: string } | undefined;
-	const status = `Orrery · ${agent.name} · ${messages === undefined ? "no memory yet" : `${messages} msgs`} · ${state}${mod && setUp ? " · memory from the Orrery mod" : ""}`;
-	// A session that is not recorded because nothing was set up: the user sees that too.
-	const shown = [...(setUp ? warnings : [status, ...warnings]), ...(summaries?.systemMessage ? [summaries.systemMessage] : [])];
+	const status = `Orrery · ${agent.name} · ${messages === undefined ? "no memory yet" : `${messages} msgs`} · ${state}${mod ? " · memory from the Orrery mod" : ""}`;
+	const shown = [...warnings, ...(summaries?.systemMessage ? [summaries.systemMessage] : [])];
 	return {
 		// With no memory yet the mod adds no section by design, so there is nothing for the model to look for.
-		hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: [status, ...warnings, ...(mod && setUp && messages !== undefined ? [MOD_CHECK] : [])].join("\n").slice(0, CONTEXT_LIMIT) },
+		hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: [status, ...warnings, ...(mod && messages !== undefined ? [MOD_CHECK] : [])].join("\n").slice(0, CONTEXT_LIMIT) },
 		...(shown.length > 0 ? { systemMessage: shown.join("\n") } : {}),
 	};
 }

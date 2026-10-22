@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { setupMarker, viewFile } from "../../src/claude/paths.ts";
 import { claudeSetup } from "../../src/claude/setup.ts";
-import { agentMode, markedHere, readSetupMarker, refreshViewFile, VIEW_IMPORT, viewGate, viewImported, writeSetupMarker, writeViewFile } from "../../src/claude/view-file.ts";
+import { agentMode, readSetupMarker, refreshViewFile, VIEW_IMPORT, viewGate, viewImported, writeSetupMarker, writeViewFile } from "../../src/claude/view-file.ts";
 import { memorySection } from "../../src/agent/view-text.ts";
 import { MemoryStore, MemoryView } from "../../src/memory/index.ts";
 import { brokenGit, cleanupDirs, gitIn, seed, type TestAgent, testAgent, withEnv, withGit } from "./support.ts";
@@ -21,13 +21,13 @@ function withView(t: TestAgent, use: (view: MemoryView) => void): void {
 }
 
 describe("the view file", () => {
-	it("reads a mod-mode marker, and agentMode tells none, file and mod apart; a mod marker holds for any folder", () => {
+	it("reads a mod-mode marker, and agentMode tells file and mod apart: the mod with no setup, and in any folder", () => {
 		const t = testAgent({ setup: false });
-		expect(agentMode(t.agent)).toBe("none");
+		expect(agentMode(t.agent)).toBe("mod");
 		writeSetupMarker(t.agent.dir, t.agent.folder, "CLAUDE.md");
 		expect(agentMode(t.agent)).toBe("file");
 		writeSetupMarker(t.agent.dir, "/somewhere/else", "CLAUDE.md");
-		expect(agentMode(t.agent)).toBe("none");
+		expect(agentMode(t.agent)).toBe("mod");
 		writeSetupMarker(t.agent.dir, t.agent.folder, "mod");
 		expect(readSetupMarker(t.agent.dir)?.file).toBe("mod");
 		expect(agentMode(t.agent)).toBe("mod");
@@ -45,13 +45,12 @@ describe("the view file", () => {
 		expect(JSON.parse(readFileSync(setupMarker(t.agent.dir), "utf8"))).toMatchObject({ workspace: t.agent.folder, file: "CLAUDE.md" });
 	});
 
-	it("for an agent without a folder: no mode, no gate, and no view written, even with a marker", () => {
+	it("for an agent without a folder: the mod, and no view written, even with a file marker", () => {
 		const t = testAgent({ setup: true });
 		seed(t.agent, ["one", "two"]);
 		const { folder: _, ...nomad } = t.agent;
-		expect(agentMode(nomad)).toBe("none");
-		expect(markedHere(nomad)).toBe(false);
-		expect(viewGate(nomad)).toEqual({ open: false });
+		expect(agentMode(nomad)).toBe("mod");
+		expect(viewGate(nomad)).toEqual({ open: false, mod: true });
 		withView(t, (view) => expect(writeViewFile(nomad, view)).toBe(false));
 		expect(existsSync(viewFile(t.folder))).toBe(false);
 	});
@@ -67,7 +66,7 @@ describe("the view file", () => {
 		expect(existsSync(viewFile(t.agent.folder))).toBe(false);
 		expect(refreshViewFile(t.agent)).toBe(2);
 		expect(existsSync(viewFile(t.agent.folder))).toBe(false);
-		expect(markedHere(t.agent)).toBe(true);
+		expect(agentMode(t.agent)).toBe("mod");
 	});
 
 	it("in mod mode the gate says why a stale view could not be deleted", () => {

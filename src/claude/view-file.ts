@@ -167,8 +167,8 @@ export function deleteViewFile(folder: string): boolean {
 	return deleted;
 }
 
-/** How the agent gets its memory into Claude Code: the Orrery mod (in any folder), the view file, or not set up. */
-export type AgentMode = "mod" | "file" | "none";
+/** How the agent gets its memory into Claude Code: the Orrery mod (in any folder), or the view file claude-setup set up. */
+export type AgentMode = "mod" | "file";
 
 /**
  * Whether the marker names `folder`, the folder claude-setup set up. An agent switched to the mod with no folder has
@@ -179,14 +179,13 @@ function names(marker: SetupMarker, folder: string | undefined): folder is strin
 }
 
 /**
- * "mod" when the marker says mod, wherever the session runs (the mod needs no file in any folder); "file" when it names
- * the agent's folder; else "none" (no marker, a malformed one, or a file-mode marker for another folder).
+ * "file" when claude-setup set up the view file in the agent's folder (a file-mode marker naming it); else "mod",
+ * wherever the session runs: the mod needs no setup and no file in any folder (no marker, a mod marker, a malformed
+ * one, or a file-mode marker for another folder).
  */
 export function agentMode(agent: AgentConfig): AgentMode {
 	const marker = readSetupMarker(agent.dir);
-	if (marker === undefined) return "none";
-	if (marker.file === "mod") return "mod";
-	return names(marker, agent.folder) ? "file" : "none";
+	return marker !== undefined && marker.file !== "mod" && names(marker, agent.folder) ? "file" : "mod";
 }
 
 /** The agent's message count, read-only; undefined when it has no memory yet. */
@@ -199,14 +198,6 @@ export function messageCount(agent: AgentConfig): number | undefined {
 	} finally {
 		store.close();
 	}
-}
-
-/**
- * Whether claude-setup ran for this agent: in mod mode for any folder, in file mode for its folder. Only then does a
- * Claude Code session of it record (src/claude/hooks.ts).
- */
-export function markedHere(agent: AgentConfig): boolean {
-	return agentMode(agent) !== "none";
 }
 
 /**
@@ -268,8 +259,8 @@ export interface ViewGate {
  * - git must not see the view (gitExposure). When it would, the view is withdrawn (withdrawView) and `exposed` says
  *   why. When git cannot say, the view is taken out until it can (takeOutView) and `unchecked` says why;
  * - the marker's file must still import the view, and nothing may be planted at .orrery.
- * In mod mode (marker file "mod") none of that applies: the gate is closed (`mod`), a stale view file in the folder
- * the marker names is deleted (deleteUntrackedView: not one git tracks), and `failed` says why when it could not be.
+ * In mod mode (a "mod" marker, or no file setup for this folder) none of that applies: the gate is closed (`mod`), and
+ * with a mod marker a stale view file in the folder it names is deleted (deleteUntrackedView: not one git tracks), and `failed` says why when it could not be.
  * A check that throws counts as unchecked: the view is taken out as far as it can be, and nothing is written.
  */
 export function viewGate(agent: AgentConfig): ViewGate {
@@ -287,7 +278,9 @@ export function viewGate(agent: AgentConfig): ViewGate {
 				return { open: false, mod: true, failed: errorText(error) };
 			}
 		}
-		if (marker === undefined || !names(marker, folder) || !existsSync(folder)) return { open: false };
+		// No setup, or a file setup for another folder: the mod, with no view file (one there without a marker is the repo's own).
+		if (marker === undefined || !names(marker, folder)) return { open: false, mod: true };
+		if (!existsSync(folder)) return { open: false };
 		const exposure = gitExposure(folder);
 		if (exposure?.kind === "unchecked") return { open: false, unchecked: exposure.reason, removed: takeOutView(agent) };
 		if (exposure !== undefined) {

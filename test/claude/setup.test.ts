@@ -76,12 +76,12 @@ describe("claude-setup --mod", () => {
 		writeFileSync(claudeMd, "@AGENTS.md\n@.orrery/view.md\n");
 		writeFileSync(join(t.agent.folder, "CLAUDE.local.md"), `@.orrery/view.md\n${"x".repeat(300 * 1024)}`);
 		expect(() => claudeSetupMod(t.agent)).toThrow(/larger than 256 KB/);
-		expect(agentMode(t.agent)).toBe("none");
+		expect(readSetupMarker(t.agent.dir)).toBeUndefined();
 		expect(readFileSync(claudeMd, "utf8")).toBe("@AGENTS.md\n@.orrery/view.md\n");
 		rmSync(join(t.agent.folder, "CLAUDE.local.md"));
 		mkdirSync(join(t.agent.folder, "CLAUDE.local.md"));
 		expect(() => claudeSetupMod(t.agent)).toThrow(/cannot be edited safely/);
-		expect(agentMode(t.agent)).toBe("none");
+		expect(readSetupMarker(t.agent.dir)).toBeUndefined();
 		expect(readFileSync(claudeMd, "utf8")).toBe("@AGENTS.md\n@.orrery/view.md\n");
 	});
 

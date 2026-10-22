@@ -75,6 +75,8 @@ let fetching: { readonly session: string; readonly done: Promise<Held> } | undef
 let compacting: { readonly session: string; answered: boolean } | undefined;
 /** The session in which a mod-started compaction was refused or skipped for a lasting cause (ruling 3). */
 let stopped: string | undefined;
+/** The session whose mod-started compaction failed while a turn ran: it is tried once more when the turn completes. */
+let due: string | undefined;
 /** The session in which the mod said it could not compact for now (a last turn too large), so it says so only once. */
 let toldLater: string | undefined;
 /**
@@ -209,6 +211,35 @@ function logSoon($: EngineInterface, lines: readonly (string | undefined)[]): vo
  * At the next event after a compaction no one else shows the line of (Claude Code's own threshold): shows it. Never
  * while a /compact or the mod's own compaction is running (they show their own), and it never throws.
  */
+/**
+ * Starts the mod's own compaction of `session` and says what came of it. One that throws mid-turn (Claude Code 2.1.308
+ * compacts only between turns: "a turn is running") is tried once more when the turn completes (`due`); one that throws
+ * there, or that Claude Code refuses, stops the mod's compactions in the session.
+ */
+async function compactNow($: EngineInterface, session: string, turnOver: boolean): Promise<void> {
+	const own = { session, answered: false };
+	compacting = own;
+	try {
+		const done = await $.session.compact();
+		// The line the mod's own hook kept for this compaction, now that it is done. A skip the mod's own hook answered
+		// has already said why (and stopped the session when the cause lasts).
+		const kept = take(session);
+		const refused = done.skip !== undefined && !own.answered;
+		if (refused) stopped = session;
+		logSoon($, [kept, refused ? stopLine(done.skip) : undefined]);
+	} catch (error) {
+		if (turnOver) {
+			stopped = session;
+			logSoon($, [take(session), stopLine(String(error))]);
+		} else {
+			due = session;
+			logSoon($, [take(session)]);
+		}
+	} finally {
+		compacting = undefined;
+	}
+}
+
 async function flush($: EngineInterface): Promise<void> {
 	if (pending === undefined || compacting !== undefined || commanding !== undefined) return;
 	try {
@@ -431,6 +462,14 @@ export const register: Register = (on) => {
 	on("turn.complete", async ($, e, next) => {
 		const result = await next(e);
 		if (turnRefetches(e.agentId, display)) refetchAfterTurn($);
+		// A compaction refused mid-turn starts now, after this handler returns: Claude Code compacts between turns.
+		if (e.agentId === undefined && due !== undefined) {
+			const session = await $.session.id();
+			if (due === session && compacting === undefined && stopped !== session) {
+				due = undefined;
+				$.clock.after(0, () => void compactNow($, session, true));
+			}
+		}
 		return result;
 	}).catch(($, e, next) => next(e));
 
@@ -440,23 +479,8 @@ export const register: Register = (on) => {
 		// Only a measurement where the context moved: the cost or a rate limit moving says nothing about its size.
 		if (!e.changed.includes("context")) return result;
 		const session = await $.session.id();
-		if (compacting !== undefined || stopped === session || held?.session !== session || !shouldCompact(e.context.tokens, held.reply)) return result;
-		const own = { session, answered: false };
-		compacting = own;
-		try {
-			const done = await $.session.compact();
-			// The line the mod's own hook kept for this compaction, now that it is done. A skip the mod's own hook answered
-			// has already said why (and stopped the session when the cause lasts).
-			const kept = take(session);
-			const refused = done.skip !== undefined && !own.answered;
-			if (refused) stopped = session;
-			logSoon($, [kept, refused ? stopLine(done.skip) : undefined]);
-		} catch (error) {
-			stopped = session;
-			logSoon($, [take(session), stopLine(String(error))]);
-		} finally {
-			compacting = undefined;
-		}
+		if (compacting !== undefined || stopped === session || due === session || held?.session !== session || !shouldCompact(e.context.tokens, held.reply)) return result;
+		await compactNow($, session, false);
 		return result;
 	}).catch(($, e, next) => next(e));
 

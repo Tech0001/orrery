@@ -185,9 +185,9 @@ the one in that environment variable.
 | OpenCode | A plugin for each `orrery agent` launch: memory, recording, the memory tools, the guard, compaction from memory and `/compactor` | [docs/opencode.md](docs/opencode.md) |
 
 Connect a tool with **I** on the **Tools** page, or `orrery tools install pi`. Each guide lists the versions tested
-and the known limits. Claude Code needs one more step per agent before it records, described in its guide:
-`orrery claude-setup Atlas` loads the memory in the agent's default folder, and `--mod` loads it through the mod,
-which also lets Claude Code open the agent in any folder. Codex needs nothing installed: open its agents with
+and the known limits. Claude Code needs no step per agent: with Claude Code 2.1.287 or newer, the Orrery mod brings
+an agent's memory into a session started in its folder (`claude`, `claude --resume`) and into `orrery agent Atlas` in
+any folder, and records it. `orrery claude-setup Atlas` is only for the older file setup, described in its guide. Codex needs nothing installed: open its agents with
 `orrery agent Atlas --tool codex` (or set the agent's tool to `codex`), which brings Orrery's hooks, memory tools and
 instructions on Codex's command line and writes nothing to `~/.codex`. A plain `codex` is not an agent's session.
 Neither does OpenCode: `orrery agent Atlas --tool opencode` (or the agent's tool set to `opencode`) starts
@@ -196,8 +196,8 @@ loads, and writes nothing to OpenCode's config. A plain `opencode` is not an age
 session of any coding tool, `orrery` reads no agent's memory and changes nothing; see
 [Sessions that are no agent's](#sessions-that-are-no-agents).
 
-The Claude Code desktop app works too: after `orrery claude-setup <Name>`, start a session in the agent's folder, and
-the app's Claude Code records it and loads the memory (tested with the Linux app). Claude Code on the web runs in the
+The Claude Code desktop app works too: start a session in the agent's folder, and the app's Claude Code records it
+and loads the memory (tested with the Linux app and the file setup). Claude Code on the web runs in the
 cloud and can't reach the memory on your machine.
 
 ## If you are an agent helping someone with Orrery

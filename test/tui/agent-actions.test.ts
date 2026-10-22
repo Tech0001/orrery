@@ -11,6 +11,7 @@ import type { ToolCheck } from "../../src/agent/tools.ts";
 import { agentsPage } from "../../src/tui/pages/agents.ts";
 import { tempDir } from "../agent/support.ts";
 import { answer, fakeDeps, keys, makeApp, row, screen, settle, typed } from "./support.ts";
+import { writeSetupMarker } from "../../src/claude/view-file.ts";
 
 const ENTER = "\r";
 const DOWN = "\x1b[B";
@@ -303,10 +304,11 @@ describe("Enter opens an agent", () => {
 		expect(deps.launched).toEqual(["Alpha"]);
 	});
 
-	it("refuses Claude Code here without the mod, before it asks anything more", async () => {
+	it("refuses Claude Code here for an agent set up the file way, before it asks anything more", async () => {
 		const here = scratch("orrery-tui-here-");
 		const folder = scratch("orrery-tui-folder-");
 		const data = scratch("orrery-tui-data-");
+		writeSetupMarker(alpha(folder, data).agents.get("Alpha")!.dir, folder, "CLAUDE.md");
 		const deps = fakeDeps({ cwd: here, loadConfig: () => alpha(folder, data), tools: () => [tool("claude-code")] }, [row({ name: "Alpha", tool: "claude-code", folder: folder })]);
 		const app = makeApp(deps, [agentsPage]);
 		keys(app, ENTER);
@@ -667,15 +669,11 @@ describe("N empty agent with no default folder", () => {
 		expect(screen(app)).toContain("Added Nomad. Press Enter to open it, E to write its instructions.");
 	});
 
-	it("offers a Claude Code agent the switch to the Orrery mod, which it needs to open anywhere", async () => {
+	it("asks nothing more of a Claude Code agent with no folder: the mod opens it anywhere, with no setup", async () => {
 		const { app, fixes } = await following([tool("claude-code")]);
 		await add(app, "Nomad", "Claude");
-		await answer(app, "Switch Nomad to the mod");
-		expect(app.host.current?.title.replaceAll("\n", " ")).toBe("Claude Code opens Nomad only through the Orrery mod (Claude Code 2.1.287 or newer). Switch Nomad to the mod now?");
-		await answer(app, "Switch Nomad to the mod", "y");
-		await answer(app, "Done", ENTER);
 		await app.idle();
-		expect(fixes).toEqual(["claude-setup-mod"]);
+		expect(fixes).toEqual([]);
 		expect(screen(app)).toContain("Added Nomad.");
 	});
 

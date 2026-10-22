@@ -58,14 +58,14 @@ describe("an agent's instructions in Claude Code", () => {
 		expect(await modView(t.config, { cwd: t.folder, env: {}, owner: 1 })).toMatchObject({ section: null, instructions: "# Agent: Test\n\nYou are Test." });
 	});
 
-	it("claude-mod view sends them only in mod mode: in file mode and unset up the mod has no use for them", async () => {
+	it("claude-mod view sends them only in mod mode, which needs no setup: in file mode the mod has no use for them", async () => {
 		const t = testAgent({ setup: true });
 		seed(t.agent, ["Use pnpm here.", "Switched to pnpm."]);
 		writeInstructions(t.agent.dir, "You are Test.\n");
 		expect(await modView(t.config, { cwd: t.folder, env: {}, owner: 1 })).toMatchObject({ lane: "Test", mode: "file", instructions: null });
 		const u = testAgent();
 		writeInstructions(u.agent.dir, "You are Test.\n");
-		expect(await modView(u.config, { cwd: u.folder, env: {}, owner: 1 })).toMatchObject({ lane: "Test", mode: "none", instructions: null });
+		expect(await modView(u.config, { cwd: u.folder, env: {}, owner: 1 })).toMatchObject({ lane: "Test", mode: "mod", instructions: "# Agent: Test\n\nYou are Test." });
 	});
 
 	it("file mode with no memory yet: the view file holds the instructions alone", () => {
@@ -114,7 +114,7 @@ describe("an agent's instructions in Claude Code", () => {
 		expect(out.systemMessage).toContain("Orrery: Test's instructions are over 32 KB; only the first 32 KB reach the model. Shorten instructions.md.");
 	});
 
-	it("SessionStart over 32 KB in file mode outside its folder, or not set up: says none of them reach the model", async () => {
+	it("SessionStart over 32 KB in file mode outside its folder: says none of them reach the model; with no setup the mod carries 32 KB", async () => {
 		const none = "Orrery: Test's instructions are over 32 KB, and none of them reach the model in this session: only the Orrery mod, or the view file in Test's folder, brings them. Shorten instructions.md.";
 		const t = testAgent({ setup: true });
 		seed(t.agent, ["Use pnpm here.", "Switched to pnpm."]);
@@ -126,7 +126,7 @@ describe("an agent's instructions in Claude Code", () => {
 		const u = testAgent();
 		writeInstructions(u.agent.dir, "a".repeat(INSTRUCTIONS_MAX_BYTES + 10));
 		const unset = JSON.parse(await runHook("session-start", JSON.stringify({ session_id: "s5", cwd: u.folder, transcript_path: transcriptIn(u.dir).path("s5") }), hookContext(u))) as { systemMessage?: string };
-		expect(unset.systemMessage).toContain(none);
+		expect(unset.systemMessage).toContain("only the first 32 KB reach the model");
 	});
 
 	it("SessionStart says nothing of instructions within 32 KB", async () => {

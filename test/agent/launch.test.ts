@@ -70,10 +70,10 @@ describe("launchPlan and runTool", () => {
 		}
 	});
 
-	it("asks to set up Claude Code's memory import, and to install the plugin, listing the commands", () => {
+	it("asks to install the plugin, listing the commands, and nothing to set up: the mod needs no setup", () => {
 		const { config, row, tools, env } = setup("claude-code");
 		const plan = launchPlan(config, row, tools, { root: orreryRoot(), env });
-		expect(plan.steps.map((s) => s.fix)).toEqual(["install-claude-code", "claude-setup"]);
+		expect(plan.steps.map((s) => s.fix)).toEqual(["install-claude-code"]);
 		expect(plan.steps[0].text).toBe(`The Orrery plugin for Claude Code is not installed. Installing it will:\n  claude plugin marketplace add ${orreryRoot()}\n  claude plugin install orrery@orrery\nInstall it now?`);
 	});
 
@@ -82,7 +82,7 @@ describe("launchPlan and runTool", () => {
 		const unknown = tools.map((t) => (t.id === "claude-code" ? { ...t, wiring: "unknown" as const, detail: "?" } : t));
 		const plan = launchPlan(config, row, unknown);
 		expect(plan.blocked).toBeUndefined();
-		expect(plan.steps.map((s) => s.fix)).toEqual(["claude-setup"]);
+		expect(plan.steps.map((s) => s.fix).filter((fix) => fix !== undefined)).toEqual([]);
 	});
 
 	it("opens an agent without a folder in the current folder, with nothing to create", () => {
@@ -249,26 +249,27 @@ describe("opening an agent in a folder (orrery agent, the TUI)", () => {
 		expect(existsSync(missing)).toBe(true);
 	});
 
-	it("Claude Code outside the agent's folder: refused without the mod, opened with it", () => {
+	it("Claude Code outside the agent's folder: opened through the mod, refused only for the file setup", () => {
 		const { config, row, tools, ws } = setup("claude-code");
 		const elsewhere = elsewhereDir();
+		// No setup: the mod, which needs no setup step in any folder.
+		const plan = launchPlan(config, row, tools, { cwd: elsewhere });
+		expect(plan.blocked).toBeUndefined();
+		expect(plan.steps.map((s) => s.fix)).toEqual(["install-claude-code"]);
+		// Set up the file way, for its own folder: refused elsewhere.
+		writeSetupMarker(config.agents.get("A")!.dir, ws, "CLAUDE.md");
 		expect(launchPlan(config, row, tools, { cwd: elsewhere }).blocked).toBe(
 			"Claude Code opens A outside its folder only through the Orrery mod: run orrery claude-setup A --mod (Claude Code 2.1.287 or newer), then open it again.",
 		);
-		// Set up the file way, for its own folder: still refused elsewhere.
-		writeSetupMarker(config.agents.get("A")!.dir, ws, "CLAUDE.md");
-		expect(launchPlan(config, row, tools, { cwd: elsewhere }).blocked).toContain("only through the Orrery mod");
 		expect(launchPlan(config, row, tools, { cwd: ws }).blocked).toBeUndefined();
 		writeSetupMarker(config.agents.get("A")!.dir, ws, "mod");
-		const plan = launchPlan(config, row, tools, { cwd: elsewhere });
-		expect(plan.blocked).toBeUndefined();
-		// The mod needs no setup step in any folder.
-		expect(plan.steps.map((s) => s.fix)).not.toContain("claude-setup");
+		expect(launchPlan(config, row, tools, { cwd: elsewhere }).blocked).toBeUndefined();
 	});
 
-	it("the claude-setup-mod fix switches the agent to the mod, after which it opens elsewhere", () => {
-		const { config, row, tools } = setup("claude-code");
+	it("the claude-setup-mod fix switches a file-setup agent to the mod, after which it opens elsewhere", () => {
+		const { config, row, tools, ws } = setup("claude-code");
 		const elsewhere = elsewhereDir();
+		writeSetupMarker(config.agents.get("A")!.dir, ws, "CLAUDE.md");
 		expect(launchPlan(config, row, tools, { cwd: elsewhere }).blocked).toContain("only through the Orrery mod");
 		expect(applyFix("claude-setup-mod", config, row, tools)).toContain("A: mod mode.");
 		expect(agentMode(config.agents.get("A")!)).toBe("mod");
@@ -309,7 +310,6 @@ describe("Ori launch plans", () => {
 			else expect(plan.args).toEqual(ori);
 			expect(plan.cwd).toBe(ws);
 			expect(plan.steps.at(-1)?.text).toBe(`Launching ${tool === "claude-code" ? "Claude Code" : tool === "omp" ? "OMP" : tool === "codex" ? "Codex" : tool} through Ori in ${ws}`);
-			if (tool === "claude-code") expect(plan.steps.some((s) => s.fix === "claude-setup")).toBe(true);
 		}
 	});
 
