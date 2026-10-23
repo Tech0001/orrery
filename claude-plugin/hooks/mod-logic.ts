@@ -351,6 +351,19 @@ export function sectionFailedLine(text: string): string {
 	return `Orrery: no memory in this session's prompt (${plain(text)}). Recording is not affected.`;
 }
 
+/** When the mod tries a compaction Claude Code refused for a running turn again, in ms after the turn's end. */
+export const RETRY_AFTER_TURN_MS: readonly number[] = [1000, 5000, 15_000, 60_000];
+
+/**
+ * Whether Claude Code refused a compaction only because a turn runs: "a turn is running (…); the conversation compacts
+ * between turns" (2.1.308), "a turn is in flight; the conversation compacts between turns" (2.1.309), or a newer turn
+ * that began before it could be applied.
+ */
+export function turnBusy(error: unknown): boolean {
+	const text = error instanceof Error ? error.message : String(error);
+	return text.includes("the conversation compacts between turns") || text.includes("a newer turn began before the compaction could be applied");
+}
+
 /** The status line for a session where the mod stops starting compactions. */
 export function stopLine(reason: string): string {
 	return `Orrery will not start compactions in this session (${plain(reason)}); /compact still uses Orrery.`;

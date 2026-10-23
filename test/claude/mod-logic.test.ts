@@ -30,6 +30,7 @@ import {
 	skipLine,
 	stopLine,
 	TURN_WAIT_MS,
+	turnBusy,
 	turnRefetches,
 	turnReplyShown,
 	viewArgs,
@@ -126,6 +127,14 @@ describe("the last turn", () => {
 });
 
 describe("compaction", () => {
+	it("tells a refusal for a running turn (tried again after the turn) from a lasting one", () => {
+		expect(turnBusy(new Error("orrery: $.session.compact: a turn is running (f4e2); the conversation compacts between turns, so call it from turn.complete or later"))).toBe(true);
+		expect(turnBusy(new Error("orrery: $.session.compact: a turn is in flight; the conversation compacts between turns"))).toBe(true);
+		expect(turnBusy("a newer turn began before the compaction could be applied")).toBe(true);
+		expect(turnBusy(new Error("the compaction produced no summary"))).toBe(false);
+		expect(turnBusy(new Error("plugin compaction refused"))).toBe(false);
+	});
+
 	it("routes: subagents and other agents pass, precompute is skipped in a mod agent, the rest fetch", () => {
 		expect(compactRoute("manual", "agent-1", MOD)).toBe("pass");
 		expect(compactRoute("manual", undefined, { kind: "outside" })).toBe("pass");
