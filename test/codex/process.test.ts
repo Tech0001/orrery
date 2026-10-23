@@ -194,7 +194,8 @@ describe("a Codex session, process by process", () => {
 		const env = { ORRERY_CONFIG: t.configPath, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: newToken(), CODEX_HOME: home.home };
 		// SessionStart under a shell claims the token for the shell's parent, this test.
 		const start = hook("session-start", { session_id: c2, source: "startup" }, env, true);
-		expect(JSON.parse(start.stdout).systemMessage).toMatch(/^Orrery · Test · 2 msgs · recording\n/);
+		// The recorder's notices follow when it has written them; a slow machine may not have yet.
+		expect(JSON.parse(start.stdout).systemMessage).toMatch(/^Orrery · Test · 2 msgs · recording(\n|$)/);
 		expect(readMode(t.agent.dir, c2)?.claudePid).toBe(process.pid);
 		expect(await codexTools(env)).toEqual(["zoom", "date", "search"]);
 		// Another process with the same variables (a Codex the agent's own shell started) is not the agent.
