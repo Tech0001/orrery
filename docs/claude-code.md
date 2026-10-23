@@ -179,7 +179,7 @@ Orrery mod, with no setup. An agent set up the file way switches back to the mod
 - **The conversation compacts itself** once it passes the agent's `compact_at` (default 200,000 tokens, at least
   100,000): `orrery agent set <Name> --compact-at 150000`, or the TUI's `C`. Only interactive sessions; `claude -p`
   compacts at `/compact` and Claude Code's own threshold. A compaction the mod starts while a turn runs, which newer
-  Claude Code refuses, starts again when the turn ends. If one still cannot be answered, the conversation stays as it
+  Claude Code refuses, is tried again after the turn ends (for up to a minute, then after later turns). If one still cannot be answered, the conversation stays as it
   is and the mod starts no more in that session; when only the last turn was too large to keep, it tries again after a
   later turn.
 - **Fallbacks.** When the view cannot be read, the agent has no memory yet, or the last turn alone is over half of

@@ -34,12 +34,14 @@ import {
 	laterLine,
 	parseViewReply,
 	personPrompt,
+	RETRY_AFTER_TURN_MS,
 	SECTION_ID,
 	sectionFailedLine,
 	shouldCompact,
 	skipLine,
 	stopLine,
 	TURN_WAIT_MS,
+	turnBusy,
 	turnRefetches,
 	turnReplyShown,
 	type ViewReply,
@@ -75,8 +77,10 @@ let fetching: { readonly session: string; readonly done: Promise<Held> } | undef
 let compacting: { readonly session: string; answered: boolean } | undefined;
 /** The session in which a mod-started compaction was refused or skipped for a lasting cause (ruling 3). */
 let stopped: string | undefined;
-/** The session whose mod-started compaction failed while a turn ran: it is tried once more when the turn completes. */
+/** The session whose mod-started compaction Claude Code refused while a turn ran: it is tried again after a turn ends. */
 let due: string | undefined;
+/** Whether a round of tries after a turn's end (retryAfterTurn) is under way. */
+let retrying = false;
 /** The session in which the mod said it could not compact for now (a last turn too large), so it says so only once. */
 let toldLater: string | undefined;
 /**
@@ -212,15 +216,16 @@ function logSoon($: EngineInterface, lines: readonly (string | undefined)[]): vo
  * while a /compact or the mod's own compaction is running (they show their own), and it never throws.
  */
 /**
- * Starts the mod's own compaction of `session` and says what came of it. One that throws mid-turn (Claude Code 2.1.308
- * compacts only between turns: "a turn is running") is tried once more when the turn completes (`due`); one that throws
- * there, or that Claude Code refuses, stops the mod's compactions in the session.
+ * Starts the mod's own compaction of `session` and says what came of it. Claude Code compacts only between turns
+ * (turnBusy): one refused for a running turn is left `due`, quietly, for retryAfterTurn. Any other error, or a skip
+ * Claude Code makes itself, stops the mod's compactions in the session.
  */
-async function compactNow($: EngineInterface, session: string, turnOver: boolean): Promise<void> {
+async function compactNow($: EngineInterface, session: string): Promise<void> {
 	const own = { session, answered: false };
 	compacting = own;
 	try {
 		const done = await $.session.compact();
+		due = undefined;
 		// The line the mod's own hook kept for this compaction, now that it is done. A skip the mod's own hook answered
 		// has already said why (and stopped the session when the cause lasts).
 		const kept = take(session);
@@ -228,16 +233,29 @@ async function compactNow($: EngineInterface, session: string, turnOver: boolean
 		if (refused) stopped = session;
 		logSoon($, [kept, refused ? stopLine(done.skip) : undefined]);
 	} catch (error) {
-		if (turnOver) {
-			stopped = session;
-			logSoon($, [take(session), stopLine(String(error))]);
-		} else {
+		if (turnBusy(error)) {
 			due = session;
 			logSoon($, [take(session)]);
+		} else {
+			stopped = session;
+			logSoon($, [take(session), stopLine(String(error))]);
 		}
 	} finally {
 		compacting = undefined;
 	}
+}
+
+/**
+ * Tries a `due` compaction of `session` after a turn's end, at each of RETRY_AFTER_TURN_MS while Claude Code still
+ * counts a turn as running; one round at a time. Still refused after the last, it stays due for the next turn's end.
+ */
+function retryAfterTurn($: EngineInterface, session: string, attempt = 0): void {
+	retrying = true;
+	$.clock.after(RETRY_AFTER_TURN_MS[attempt], async () => {
+		if (due === session && compacting === undefined && stopped !== session) await compactNow($, session);
+		if (due === session && stopped !== session && attempt + 1 < RETRY_AFTER_TURN_MS.length) retryAfterTurn($, session, attempt + 1);
+		else retrying = false;
+	});
 }
 
 async function flush($: EngineInterface): Promise<void> {
@@ -462,13 +480,10 @@ export const register: Register = (on) => {
 	on("turn.complete", async ($, e, next) => {
 		const result = await next(e);
 		if (turnRefetches(e.agentId, display)) refetchAfterTurn($);
-		// A compaction refused mid-turn starts now, after this handler returns: Claude Code compacts between turns.
-		if (e.agentId === undefined && due !== undefined) {
+		// A compaction refused mid-turn is tried again once this handler returns: Claude Code compacts between turns.
+		if (e.agentId === undefined && due !== undefined && !retrying) {
 			const session = await $.session.id();
-			if (due === session && compacting === undefined && stopped !== session) {
-				due = undefined;
-				$.clock.after(0, () => void compactNow($, session, true));
-			}
+			if (due === session && stopped !== session) retryAfterTurn($, session);
 		}
 		return result;
 	}).catch(($, e, next) => next(e));
@@ -480,7 +495,7 @@ export const register: Register = (on) => {
 		if (!e.changed.includes("context")) return result;
 		const session = await $.session.id();
 		if (compacting !== undefined || stopped === session || due === session || held?.session !== session || !shouldCompact(e.context.tokens, held.reply)) return result;
-		await compactNow($, session, false);
+		await compactNow($, session);
 		return result;
 	}).catch(($, e, next) => next(e));
 
