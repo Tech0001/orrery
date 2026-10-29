@@ -44,12 +44,12 @@
 import { homedir } from "node:os";
 import { isAbsolute, normalize, resolve } from "node:path";
 import type { HarnessConfig } from "../agent/config.ts";
-import { agentViews, GuardCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials, RUST_SPACE } from "../agent/guard-paths.ts";
+import { GuardCall, RUST_SPACE } from "../agent/guard-paths.ts";
 import { inAnyReading, NEW_TEXT, patchNewText, type SkillShellRead, shellWord, skillShellRead, skillsNamed } from "../agent/guard-rules.ts";
 import { nestedRules, type WriteRules } from "../agent/nested-rules.ts";
 import type { PlainDeps } from "../agent/plain-nested.ts";
 import { workArea } from "../agent/pick.ts";
-import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from "../claude/guard.ts";
+import { agentGuardOptions, type ClaudeGuardOptions, claudeGuard } from "../claude/guard.ts";
 import { TOOL_INPUT_MAX } from "../claude/hooks.ts";
 import { codexAgent, type CodexPicked, codexNested } from "./pick.ts";
 
@@ -321,6 +321,18 @@ function byContent(input: Readonly<Record<string, unknown>>, timed: () => Claude
 	return undefined;
 }
 
+/**
+ * The guard by what a call carries (byContent), for another tool's gate that judges its tools through Claude Code's
+ * (Grok's, src/grok/guard.ts): shell text under input or code, apply_patch run from a shell, and patch text in any
+ * string, within `options.judgeMs` (at most JUDGE_MS) of now.
+ */
+export function contentGuard(input: Readonly<Record<string, unknown>>, options: ClaudeGuardOptions): string | undefined {
+	const deadline = performance.now() + Math.min(options.judgeMs ?? JUDGE_MS, JUDGE_MS);
+	const call = options.call ?? new GuardCall();
+	if (deadline <= performance.now()) return OUT_OF_TIME;
+	return byContent(input, () => ({ ...options, call, judgeMs: deadline - performance.now() }));
+}
+
 /** Each file a plain read of skill files reads (guard-rules.ts skillShellRead) as a read, and a folder ls lists as a listing. */
 function judgeReads(read: SkillShellRead, timed: () => ClaudeGuardOptions): string | undefined {
 	for (const path of read.paths) {
@@ -454,16 +466,5 @@ function judgeCall(stdin: string | undefined, ctx: CodexGuardContext): string | 
 	const agent = pick.kind === "agent" ? pick.agent : undefined;
 	const rules = writeRules(pick, ctx, call.cwd);
 	const home = ctx.home ?? homedir();
-	return codexGuard(call.tool_name, call.tool_input, {
-		judgeMs: by - performance.now(),
-		folder: rules.workArea,
-		allowedRoots: rules.allowedRoots,
-		cwd: call.cwd,
-		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...movedConfigDirCredentials(env), ...ompCredentials(env, home), ...openCodeCredentials(env, home)],
-		orreryData: config.dataDir,
-		home,
-		protect: config.guard.protect,
-		...agentViews(config, agent),
-		...(ctx.configFile === undefined ? {} : { configFile: ctx.configFile }),
-	});
+	return codexGuard(call.tool_name, call.tool_input, { ...agentGuardOptions(config, env, home, call.cwd, rules, agent, ctx.configFile), judgeMs: by - performance.now() });
 }

@@ -5,7 +5,7 @@ import { parse } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 import { GROK_HOOK_EVENTS } from "../../src/grok/hooks.ts";
 import { checkTools, type ToolCheck } from "../../src/agent/tools.ts";
-import { addGrokConfig, grokHookFile, grokHooksInstalled, grokStatusCommand, isOrreryHookFile, removeGrokConfig } from "../../src/grok/install.ts";
+import { addGrokConfig, grokGuardSwitchedOff, grokHookFile, grokHooksInstalled, grokStatusCommand, isOrreryHookFile, removeGrokConfig } from "../../src/grok/install.ts";
 import { wireReport } from "../../src/install/wire.ts";
 import { cleanupScratch, fakeRun, grokScratch, tempDir } from "../install/support.ts";
 
@@ -153,6 +153,33 @@ describe("Grok's hook file", () => {
 				chmodSync(hooks, 0o600);
 			}
 		}
+	});
+
+	it("knows whether the guard of Orrery's hook file is switched off in Grok's /hooks tab: its disabled-hooks file, as Grok 1.0.70 writes it", () => {
+		const t = grokScratch();
+		const disabled = join(t.grok, "disabled-hooks");
+		// No file: nothing is switched off.
+		expect(grokGuardSwitchedOff(t.env)).toBe(false);
+		// Other hooks switched off, Orrery's other events among them (seen live: one name per line).
+		writeFileSync(disabled, "global/orrery:user_prompt_submit[0].hooks[0]\nproject/log:pre_tool_use[0].hooks[0]\nglobal/other:pre_tool_use[0].hooks[0]\n");
+		expect(grokGuardSwitchedOff(t.env)).toBe(false);
+		// Orrery's guard switched off (Space on its PreToolUse hook).
+		writeFileSync(disabled, "global/orrery:user_prompt_submit[0].hooks[0]\nglobal/orrery:pre_tool_use[0].hooks[0]\n");
+		expect(grokGuardSwitchedOff(t.env)).toBe(true);
+		writeFileSync(disabled, "global/orrery:pre_tool_use[0].hooks[0]\r\n");
+		expect(grokGuardSwitchedOff(t.env)).toBe(true);
+		// A file that can't be read: it can't be told, so taken as switched off.
+		if (process.getuid?.() !== 0) {
+			chmodSync(disabled, 0o000);
+			try {
+				expect(grokGuardSwitchedOff(t.env)).toBe(true);
+			} finally {
+				chmodSync(disabled, 0o600);
+			}
+		}
+		rmSync(disabled);
+		mkdirSync(disabled);
+		expect(grokGuardSwitchedOff(t.env)).toBe(true);
 	});
 });
 

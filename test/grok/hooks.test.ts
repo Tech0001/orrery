@@ -653,7 +653,7 @@ describe("a plain grok (no ORRERY_AGENT): Orrery's hooks run in every Grok sessi
 });
 
 describe("runGrokHook", () => {
-	it("answers unreadable input with nothing, lets every tool call through (the guard comes later), and refuses an event it doesn't know", async () => {
+	it("answers unreadable input with nothing, says nothing for a tool call (the guard answers by its exit code: src/grok/guard.ts), and refuses an event it doesn't know", async () => {
 		const t = testAgent();
 		for (const event of GROK_HOOK_EVENTS) {
 			expect(await runGrokHook(event, "not json", ctx(t))).toBe("");

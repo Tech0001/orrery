@@ -29,8 +29,11 @@
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { guardToolCall, openCodeOf, type PathGuardOptions, realTarget } from "../agent/guard-paths.ts";
+import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
+import { agentViews, GuardCall, guardToolCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials, openCodeOf, type PathGuardOptions, realTarget } from "../agent/guard-paths.ts";
 import { NEW_TEXT, type NewText, OPENCODE_READ_ONLY, openCodeLoads, openCodeSkillPath, SKILL_UNSEEN } from "../agent/guard-rules.ts";
+import { orreryHome } from "../agent/home.ts";
+import type { WriteRules } from "../agent/nested-rules.ts";
 import { ownFolder } from "../agent/private-file.ts";
 
 /** Claude Code's tool names as pi's guard knows them. */
@@ -232,6 +235,59 @@ function judgeBounded(tool: string, args: Readonly<Record<string, unknown>>, opt
 export interface ClaudeGuardOptions extends PathGuardOptions {
 	/** The time the guard may take to judge one call, in ms (default 2000): a call it cannot judge in time is refused. */
 	readonly judgeMs?: number;
+}
+
+/**
+ * The guard's options for a hook's session that is an agent's, or judged by an agent's rules (a nested one's, a refused
+ * one's): where it may write (`rules`), every agent's view but `agent`'s (none: every view is another's), Orrery's
+ * credentials file and the tools' logins it knows, Orrery's home and config file, and [guard] protect. One guard call
+ * (GuardCall). Claude Code's hook adds its own state to the roots (claudeStateRoots); Codex's and Grok's gates take it
+ * as it is.
+ */
+export function agentGuardOptions(config: HarnessConfig, env: NodeJS.ProcessEnv, home: string, cwd: string, rules: WriteRules, agent?: AgentConfig, configFile?: string): ClaudeGuardOptions {
+	return {
+		call: new GuardCall(),
+		folder: rules.workArea,
+		allowedRoots: rules.allowedRoots,
+		cwd,
+		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...movedConfigDirCredentials(env), ...ompCredentials(env, home), ...openCodeCredentials(env, home)],
+		orreryData: config.dataDir,
+		home,
+		protect: config.guard.protect,
+		...agentViews(config, agent),
+		...(configFile === undefined ? {} : { configFile }),
+	};
+}
+
+/**
+ * The guard's options for a hook's session that is no agent's (orreryOnly, spec 2026-10-19-no-agent-sessions §3):
+ * Orrery's own rules in `folder`. Orrery's credentials file alone (the tools' own logins are no files of Orrery's), every
+ * agent's view another's (the session reads no agent's memory), and the Orrery home the environment names, for its
+ * program (namedHome). One guard call (GuardCall).
+ */
+export function plainGuardOptions(config: HarnessConfig, env: NodeJS.ProcessEnv, home: string, folder: string, cwd: string, configFile?: string): ClaudeGuardOptions {
+	return {
+		call: new GuardCall(),
+		orreryOnly: true,
+		folder,
+		allowedRoots: [],
+		cwd,
+		credentials: [config.credentialsPath],
+		orreryData: config.dataDir,
+		home,
+		...agentViews(config),
+		...(configFile === undefined ? {} : { configFile }),
+		...namedHome({ ...env, HOME: home }),
+	};
+}
+
+/** The Orrery home `env` names (orreryHome), for the guard of a session that is no agent's; none when it can't be read. */
+function namedHome(env: NodeJS.ProcessEnv): { readonly orreryHome?: string } {
+	try {
+		return { orreryHome: orreryHome(env) };
+	} catch {
+		return {}; // a relative ORRERY_HOME: no folder beside a config counts as Orrery's home
+	}
 }
 
 /**

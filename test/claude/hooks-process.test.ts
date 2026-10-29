@@ -544,7 +544,7 @@ describe("Orrery's Claude Code plugin under Grok, which runs it through its Clau
 		expect(readHolder(t.agent.dir)).toBeUndefined();
 	}, 60_000);
 
-	it("under Grok without Orrery's own Grok hooks for this install (none, another Orrery's, not Orrery's, unreadable), the plugin's guard keeps guarding; the recording events still stand down", () => {
+	it("under Grok without Orrery's own Grok guard for this install (none, another Orrery's, not Orrery's, unreadable, switched off in Grok's /hooks tab, a switch file that can't be read), the plugin's guard keeps guarding; the recording events still stand down", () => {
 		const t = testAgent({ setup: true });
 		const broken = join(t.dir, "broken.toml");
 		writeFileSync(broken, "[");
@@ -552,12 +552,22 @@ describe("Orrery's Claude Code plugin under Grok, which runs it through its Clau
 		mkdirSync(join(unreadable, "hooks"), { recursive: true });
 		writeFileSync(join(unreadable, "hooks", "orrery.json"), grokHookFile(entries(cliRoot).cli));
 		chmodSync(join(unreadable, "hooks", "orrery.json"), 0o000);
+		// Orrery's own hook file, its guard switched off in Grok's /hooks tab (the disabled-hooks file, as Grok 1.0.70 writes it).
+		const switchedOff = join(t.dir, "switched-off-grok-home");
+		const unreadableSwitch = join(t.dir, "unreadable-switch-grok-home");
+		for (const home of [switchedOff, unreadableSwitch]) {
+			mkdirSync(join(home, "hooks"), { recursive: true });
+			writeFileSync(join(home, "hooks", "orrery.json"), grokHookFile(entries(cliRoot).cli));
+			writeFileSync(join(home, "disabled-hooks"), "global/orrery:pre_tool_use[0].hooks[0]\n");
+		}
+		chmodSync(join(unreadableSwitch, "disabled-hooks"), 0o000);
 		const homes = {
 			none: grokHome(t),
 			"another Orrery's": join(t.dir, "other-grok-home"),
 			"not Orrery's": join(t.dir, "foreign-grok-home"),
+			"switched off": switchedOff,
 			// Root reads any file: there it reads as Orrery's, and the guard stands down, so it is not asked.
-			...(process.getuid?.() === 0 ? {} : { unreadable }),
+			...(process.getuid?.() === 0 ? {} : { unreadable, "a switch that can't be read": unreadableSwitch }),
 		};
 		for (const [home, text] of [[homes["another Orrery's"], grokHookFile("/opt/other/app/current/bin/orrery")], [homes["not Orrery's"], '{"hooks":{}}\n']] as const) {
 			mkdirSync(join(home, "hooks"), { recursive: true });
@@ -576,6 +586,7 @@ describe("Orrery's Claude Code plugin under Grok, which runs it through its Clau
 			}
 		} finally {
 			chmodSync(join(unreadable, "hooks", "orrery.json"), 0o600);
+			chmodSync(join(unreadableSwitch, "disabled-hooks"), 0o600);
 		}
 		expect(listSessions(t.agent.dir)).toEqual([]);
 	}, 60_000);

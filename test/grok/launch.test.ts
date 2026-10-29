@@ -116,9 +116,21 @@ describe("grokArgsRefusal", () => {
 			for (const args of [["--leader"], ["-c", "--leader"], ["--leader=true"], ["--leader", "--rules", "x"], ["agent", "leader"], ["agent", "--plugin-dir", "/p", "leader"]]) {
 				expect(grokArgsRefusal("Atlas", launch, args), args.join(" ")).toBe(refusal);
 			}
-			for (const args of [["--", "--leader"], ["--", "agent", "leader"], ["--leaderx"], ["--no-leader"], ["--leader-socket", "/s"], ["leader", "agent"], ["agent", "stdio"]]) {
+			for (const args of [["--", "--leader"], ["--", "agent", "leader"], ["--leaderx"], ["--no-leader"], ["--leader-socket", "/s"], ["agent", "stdio"]]) {
 				expect(grokArgsRefusal("Atlas", launch, args), args.join(" ")).toBeUndefined();
 			}
+		}
+	});
+
+	it("refuses Grok's commands that run a leader in the calling process (`leader worker start`, `worker start`), and any leader or worker command, before a --", () => {
+		const refusal = "Orrery opens Grok with --no-leader: in leader mode Grok runs every session's hooks and memory tools in one shared process, where one agent's session can't be told from another's. Open Atlas without --leader.";
+		// Grok 1.0.70's help: `grok leader worker start` and `grok worker start` "Run a leader in this terminal until Ctrl+C".
+		for (const args of [["leader", "worker", "start"], ["worker", "start"], ["--debug", "leader", "worker", "start"], ["-m", "grok-4", "worker", "start", "--name", "x"], ["leader", "list"], ["leader", "agent"], ["--resume", "leader"]]) {
+			expect(grokArgsRefusal("Atlas", withBoth, args), args.join(" ")).toBe(refusal);
+		}
+		// The value of an option that takes one is no command; after a -- nothing is Grok's.
+		for (const args of [["-p", "leader"], ["--agent", "worker"], ["--model", "leader"], ["--rules=leader"], ["--", "leader", "worker", "start"], ["fix the leader election"]]) {
+			expect(grokArgsRefusal("Atlas", grokLaunch(agent, "", undefined), args), args.join(" ")).toBeUndefined();
 		}
 	});
 });

@@ -13,6 +13,10 @@
  * exits is lost (on macOS pipes are asynchronous), and exit 2 with nothing on stderr lets the call through. This module
  * loads nothing else, so it is armed before the guard's modules are. What fails before it is armed (the runtime, or a
  * module main.ts loads first) is Codex's to let through: a documented limit.
+ * Orrery's Grok guard (`orrery grok-hook pre-tool-use`, src/grok/guard.ts) has the same last line: Grok Build 1.0.70
+ * blocks a call only on an explicit deny or exit 2, with the first line of stderr as the reason, and lets it through when
+ * its hook crashes, fails or runs past its timeout (10 s, which Orrery's hook file sets: src/grok/install.ts). The same
+ * deadline (4 s) and watchdog (6 s) answer well inside it.
  */
 
 import { writeSync } from "node:fs";
@@ -26,6 +30,11 @@ export const CODEX_GUARD_WATCHDOG_MS = 6000;
 /** Whether a command line is the guard's: `codex-hook pre-tool-use`, whatever options come with it. */
 export function isCodexGuard(argv: readonly string[]): boolean {
 	return argv.some((word, at) => word === "codex-hook" && argv[at + 1] === "pre-tool-use");
+}
+
+/** Whether a command line is Grok's guard: `grok-hook pre-tool-use`, whatever options come with it. */
+export function isGrokGuard(argv: readonly string[]): boolean {
+	return argv.some((word, at) => word === "grok-hook" && argv[at + 1] === "pre-tool-use");
 }
 
 /** What arming needs from the process; tests pass their own. */

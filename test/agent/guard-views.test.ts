@@ -261,6 +261,59 @@ describe("Orrery's config: file tools may read it, nothing may change it, and sh
 	});
 });
 
+describe("Grok Build's folder (Orrery's Grok hook file and config entries in it): file tools may read it, nothing may change it, and shell text may not name it, in an agent's session and one that is no agent's", () => {
+	/** An agent opened in its home, so the work area holds Grok's folder; and a session that is no agent's there. */
+	function inHome() {
+		const t = agents();
+		const grok = join(t.home, ".grok");
+		for (const file of ["hooks/orrery.json", "config.toml", "trusted_folders.toml", "requirements.toml", "disabled-hooks", "installed-plugins/p/hooks.json", "docs/x.md"]) {
+			mkdirSync(join(grok, file, ".."), { recursive: true });
+			writeFileSync(join(grok, file), "x");
+		}
+		symlinkSync(join(grok, "hooks"), join(t.home, "hooks-link"));
+		const options = { ...asAtlas(t, t.home), folder: t.home };
+		const plain = { folder: t.home, allowedRoots: [] as string[], cwd: t.home, home: t.home, orreryOnly: true, ...agentViews(t.config) };
+		return { ...t, grok, options, plain };
+	}
+
+	it("refuses its writes to every file tool, by any spelling or link, though the work area holds it", () => {
+		const { home, grok, options, plain } = inHome();
+		const paths = [join(grok, "hooks", "orrery.json"), "~/.grok/hooks/new.json", join(grok, "config.toml"), "~/.grok/trusted_folders.toml", join(grok, "requirements.toml"), "~/.grok/disabled-hooks", join(grok, "installed-plugins", "p", "hooks.json"), join(home, ".GROK", "Config.toml"), "hooks-link/x.json"];
+		for (const tool of ["write", "edit"]) {
+			for (const path of paths) {
+				expect([tool, path, guardToolCall(tool, { path, content: "x" }, options)]).toEqual([tool, path, expect.stringMatching(/is in Grok's folder .*: agents may read it, not change it\.$/)]);
+				expect([tool, path, guardToolCall(tool, { path, content: "x" }, plain)]).toEqual([tool, path, expect.stringMatching(/is in Grok's folder .*: it may be read, not changed\.$/)]);
+			}
+			expect(guardOmpToolCall(tool, { path: join(grok, "hooks", "orrery.json"), input: "x", content: "x" }, options)).toMatch(/Grok's folder/);
+		}
+		for (const path of [join(grok, "hooks", "orrery.json"), "~/.grok/config.toml", "~/.grok/docs/x.md"]) {
+			expect([path, guardToolCall("read", { path }, options)]).toEqual([path, undefined]);
+			expect([path, guardToolCall("read", { path }, plain)]).toEqual([path, undefined]);
+		}
+		expect(guardToolCall("write", { path: join(home, "notes.md"), content: "x" }, options)).toBeUndefined();
+		expect(guardToolCall("write", { path: join(home, ".grokrc"), content: "x" }, options)).toBeUndefined();
+	});
+
+	it("refuses shell text that names it, in both sessions", () => {
+		const { grok, options, plain } = inHome();
+		for (const command of ["rm ~/.grok/hooks/orrery.json", "echo 'global/orrery:pre_tool_use[0].hooks[0]' >> ~/.grok/disabled-hooks", `sed -i /orrery/d ${grok}/config.toml`, "cp x $GROK_HOME/hooks/", "cat ${HOME}/.grok/requirements.toml"]) {
+			expect([command, bash(command, options)]).toEqual([command, expect.stringMatching(/^This command names Grok's folder .*: agents may read it with file tools, not with commands\.$/)]);
+			expect([command, bash(command, plain)]).toEqual([command, expect.stringMatching(/^This command names Grok's folder .*: it may be read with file tools, not with commands\.$/)]);
+		}
+		// Its session records, by their tail anywhere, in a session that is no agent's too.
+		expect(bash("ls /elsewhere/.grok/sessions", plain)).toMatch(/session records/);
+		for (const command of ["cat ~/.grokrc", "ls .grok/hooks", "grok --help"]) expect([command, bash(command, plain)]).toEqual([command, undefined]);
+	});
+
+	it("refuses its writes in the durable harness too", async () => {
+		const { grok, options } = inHome();
+		const env = new NodeExecutionEnv({ cwd: options.folder });
+		expect(await checkResolvedPath(env, join(grok, "hooks", "orrery.json"), "write", options, ctx)).toMatch(/Grok's folder/);
+		expect(await checkResolvedPath(env, join(grok, "sessions", "x", "y", "updates.jsonl"), "write", options, ctx)).toBeDefined();
+		expect(await checkResolvedPath(env, join(grok, "hooks", "orrery.json"), "read", options, ctx)).toBeUndefined();
+	});
+});
+
 describe("Orrery's installed program: file tools may read it, nothing may change it, and shell text may not name it (fix round 3)", () => {
 	/** An agent opened in its home, so the work area holds Orrery's home and its installed program (app/current). */
 	function inHome() {

@@ -21,12 +21,13 @@
  *   session, for the holder to drop and count.
  * - SessionEnd changes nothing: the host record and the process's decision go stale once Grok is gone, and the holder
  *   ends when Grok does (a made-up SessionEnd would look the same).
- * - PreToolUse is the guard; until it comes, every call goes through.
+ * - PreToolUse is the guard (src/grok/guard.ts runGrokGuard), which answers by its exit code (src/cli/main.ts
+ *   grokGuardHook), not here: runGrokHook says nothing for it.
  * - Grok's shared leader (leader mode, which Orrery opens agents without: src/grok/launch.ts grokArgs) runs every
  *   session's hooks in one process, with its first client's environment, so one session's agent can't be told from
  *   another's there: a hook whose host is the leader, or one whose command line can't be read (src/grok/host.ts
  *   grokHostRefusal), decides, claims, records and spools nothing, whatever its environment names; SessionStart in a Grok
- *   opened as an agent says why.
+ *   opened as an agent says why. The guard still judges there, by Orrery's own rules (src/grok/guard.ts).
  * - Their stdout is only their JSON answer (nothing at all when there is none), and they never put message contents on
  *   stderr or in a log.
  *
@@ -388,7 +389,7 @@ export async function runGrokHook(event: string, stdin: string, ctx: GrokHookCon
 			stop(input, ctx);
 			break;
 		// The interrupted turn's prompt is spooled already; its reply never came. The session's end changes nothing (module
-		// doc), and the guard (pre-tool-use) lets every call through until it comes.
+		// doc), and the guard (pre-tool-use) answers by its exit code, in src/cli/main.ts grokGuardHook.
 		case "stop-cancelled":
 		case "session-end":
 		case "pre-tool-use":

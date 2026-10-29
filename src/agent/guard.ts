@@ -2,7 +2,7 @@
  * A seatbelt, not a sandbox (spec §6).
  *
  * - write/edit must land inside the folder and allowed roots, and never in Orrery's config or installed program, nor in
- *   Claude Code's or Codex's session records (but a project's memory folder there).
+ *   Claude Code's, Codex's or Grok's session records (but a project's memory folder there), nor in Grok's folder.
  * - bash may not run Orrery's commands that change memory or settings, nor name those session records (guard-rules.ts).
  * - No file tool may touch ssh keys or credential stores (tool logins under home such as ~/.npmrc among them), .env
  *   files and the other built-in secret names, what the config's [guard] protect names, or another agent's memory view
@@ -35,6 +35,10 @@ import {
 	CONFIG_READ_ONLY,
 	checkToolCall,
 	foldName,
+	GROK_READ_ONLY,
+	grokFolders,
+	grokLoads,
+	grokRule,
 	type GuardOptions,
 	inOrreryHome,
 	type NewText,
@@ -166,6 +170,11 @@ export async function checkResolvedPath(
 		// OpenCode's config and code (guard-rules.ts openCodeLoads), where the tool writes and where that really is.
 		const openCode = options.openCode ?? openCodeRule(process.env, options.home ?? homedir());
 		if (openCodeLoads(target, openCode) || openCodeLoads(real, openCode)) return OPENCODE_READ_ONLY(real);
+		// Grok's folder (guard-rules.ts grokRule), where the tool writes and where that really is; its folders as given and
+		// where they really are.
+		const grok = options.grok ?? grokRule(process.env, options.home ?? homedir());
+		const realGrok = { own: (await Promise.all(grokFolders(process.env, options.home ?? homedir()).map((folder) => realPath(env, folder, context)))).map((folder) => folder.toLowerCase()), spelled: [] };
+		if ([grok, realGrok].some((rule) => grokLoads(target, rule) || grokLoads(real, rule))) return GROK_READ_ONLY(real);
 		// A skill OpenCode loads: not with front matter it may run as code (guard-rules.ts), an edit judged on the file it
 		// would leave, read where the tool runs.
 		if (openCodeSkillPath(target) || openCodeSkillPath(real)) {
@@ -175,11 +184,11 @@ export async function checkResolvedPath(
 		}
 		const roots = await Promise.all([options.folder, ...options.allowedRoots].map((root) => realPath(env, root, context)));
 		if (!roots.some((root) => within(real, root))) return `${real} is outside this agent's folder and allowed roots.`;
-		// Claude Code's and Codex's session records (guard-rules.ts transcriptRule), where the tool writes and where that
+		// Claude Code's, Codex's and Grok's session records (guard-rules.ts transcriptRule), where the tool writes and where that
 		// really is; the folders as given and where they really are (a ~/.claude that is a link).
 		const records = options.transcripts ?? transcriptRule(process.env, options.home ?? homedir());
 		const reals = async (folders: readonly string[]) => Promise.all(folders.map((folder) => realPath(env, folder, context)));
-		const realRecords = { claude: await reals(records.claude), codex: await reals(records.codex) };
+		const realRecords = { claude: await reals(records.claude), codex: await reals(records.codex), grok: await reals(records.grok ?? []) };
 		if ([records, realRecords].some((rule) => transcriptPath(target, rule) || transcriptPath(real, rule))) return TRANSCRIPT_READ_ONLY(real);
 	}
 	return undefined;

@@ -284,13 +284,38 @@ function readHookFile(hooks: string): HookFile {
 /**
  * Whether Grok runs Orrery's own hooks for the Orrery at `root`: its hook file is exactly Orrery's, running this root's
  * command (grokWiring's "installed" also needs the config tables). Undefined when the file can't be read. Under Grok, the
- * Claude Code plugin's guard stands down only when this is true (src/cli/main.ts claudeHook).
+ * Claude Code plugin's guard stands down only when this is true and its guard isn't switched off (grokGuardSwitchedOff,
+ * src/cli/main.ts claudeHook).
  */
 export function grokHooksInstalled(root: string, env: NodeJS.ProcessEnv): boolean | undefined {
 	const file = readHookFile(grokFiles(env).hooks);
 	if (file.kind === "unreadable") return undefined;
 	const target = file.kind === "text" ? grokHookTarget(file.text) : undefined;
 	return target !== undefined && sameCommand(target, entries(root).cli);
+}
+
+/** Grok's switch for each hook (its /hooks tab's Space): the file naming every hook switched off, one per line. */
+const DISABLED_HOOKS = "disabled-hooks";
+
+/**
+ * The name Grok 1.0.70 gives the guard of Orrery's hook file (hooks/orrery.json, PreToolUse) in that file: seen live,
+ * `global/orrery:pre_tool_use[0].hooks[0]`.
+ */
+const ORRERY_GUARD_HOOK = /^global\/orrery:pre_tool_use\[\d+\]\.hooks\[\d+\]$/;
+
+/**
+ * Whether the guard of Orrery's Grok hook file is switched off in Grok's /hooks tab (its disabled-hooks file names it),
+ * or that can't be told (a file there that can't be read). Under Grok the Claude Code plugin's guard then keeps guarding
+ * (src/cli/main.ts grokGuarded). No file: nothing is switched off.
+ */
+export function grokGuardSwitchedOff(env: NodeJS.ProcessEnv): boolean {
+	let text: string;
+	try {
+		text = readFileSync(join(grokFiles(env).home, DISABLED_HOOKS), "utf8");
+	} catch (error) {
+		return (error as { code?: unknown }).code !== "ENOENT";
+	}
+	return text.split("\n").some((line) => ORRERY_GUARD_HOOK.test(line.trim()));
 }
 
 /**

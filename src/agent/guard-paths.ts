@@ -17,13 +17,16 @@
  * file tools, but only where the guard can see the file will not start with front matter that may run as code
  * (guard-rules.ts openCodeSkillRefusal, fail-closed), and shell text may not name them (skills are read with the file
  * tools). Shell text may not run Orrery's commands that change memory or settings (guard-rules.ts runsOrreryCommand), nor
- * name Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions; guard-rules.ts
- * transcriptRule), which no tool writes, but a project's memory folder there (Claude Code's auto memory); file tools
- * may read them. A session that is no agent's (GuardOptions.orreryOnly, spec 2026-10-19-no-agent-sessions §3) gets
- * Orrery's own rules alone (orreryJudge): Orrery's home, its credentials file, config and installed program, where
- * agents' sessions load code from outside its home (orreryEntries: read, never written, not named in shell text), every
- * agent's memory view (each is another's: it reads no agent's memory), the session records, and Orrery's commands and
- * plumbing in shell text. What the guard can't judge (a call too long, an OMP path it can't read) is still refused, but
+ * name Claude Code's, Codex's or Grok's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions,
+ * ~/.grok/sessions; guard-rules.ts transcriptRule), which no tool writes, but a project's memory folder there (Claude
+ * Code's auto memory); file tools may read Claude Code's and Codex's. Grok Build's folder (~/.grok, $GROK_HOME:
+ * guard-rules.ts grokRule), whose hooks (Orrery's hook file among them), settings, plugins and session records Grok loads
+ * and runs, is written by no tool and named in no shell text, in every session; its login and session records are read
+ * by no agent's session either (HOME_SECRETS, grokCredentials). A session that is no agent's (GuardOptions.orreryOnly,
+ * spec 2026-10-19-no-agent-sessions §3) gets Orrery's own rules alone (orreryJudge): Orrery's home, its credentials file,
+ * config and installed program, where agents' sessions load code from outside its home (orreryEntries: read, never
+ * written, not named in shell text), Grok's folder, every agent's memory view (each is another's: it reads no agent's
+ * memory), the session records, and Orrery's commands and plumbing in shell text. What the guard can't judge (a call too long, an OMP path it can't read) is still refused, but
  * an OMP glob's ordinary groups pass (plainEscapingGlob), and so do an OMP language server's edits, which name no file,
  * unless the session's folder holds or is inside Orrery's files. Known limits:
  * - A hard link is another name for the same file, and the guard does not count links: one to another agent's view (the
@@ -73,6 +76,12 @@ import {
 	editTextRefusal,
 	ENTRY_READ_ONLY_PLAIN,
 	foldName,
+	GROK_READ_ONLY,
+	GROK_READ_ONLY_PLAIN,
+	type GrokRule,
+	grokFolders,
+	grokLoads,
+	grokRule,
 	type GuardOptions,
 	HOME_SECRETS,
 	inOrreryHome,
@@ -204,6 +213,7 @@ interface PathRules {
 	 */
 	readonly shellNamed: string[];
 	readonly openCode: OpenCodeRule;
+	readonly grok: GrokRule;
 	readonly transcripts: TranscriptRule;
 	readonly credentials: string[];
 	readonly foreign: string[];
@@ -255,7 +265,8 @@ export class GuardCall {
 			options.credentials ?? null,
 			options.orreryData ?? null,
 			options.openCode ?? null,
-			options.transcripts === undefined ? null : [options.transcripts.claude, options.transcripts.codex],
+			options.grok ?? null,
+			options.transcripts === undefined ? null : [options.transcripts.claude, options.transcripts.codex, options.transcripts.grok ?? null],
 			options.orreryOnly === true,
 			options.orreryHome ?? null,
 		]);
@@ -303,6 +314,16 @@ export function orreryEntries(env: NodeJS.ProcessEnv, home: string): OrreryEntri
 	const claude = [join(home, ".claude"), ...(env.CLAUDE_CONFIG_DIR ? [resolve(env.CLAUDE_CONFIG_DIR)] : [])].map((dir) => join(dir, "plugins"));
 	const plugin = claude.flatMap((plugins) => [join(plugins, "cache", "orrery"), join(plugins, "marketplaces", "orrery")]);
 	return { folders: [...new Set([pi, omp, ...plugin])], files: claude.flatMap((plugins) => PLUGIN_RECORDS.map((name) => join(plugins, name))) };
+}
+
+/**
+ * Grok Build's login and session records in the folder GROK_HOME moves Grok's to (HOME_SECRETS has ~/.grok's): an agent's
+ * session reads neither (guard-rules.ts grokRule).
+ */
+export function grokCredentials(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] {
+	return grokFolders(env, home)
+		.filter((folder) => folder !== join(home, ".grok"))
+		.flatMap((folder) => [join(folder, "auth.json"), join(folder, "sessions")]);
 }
 
 /** OpenCode's data folder: $XDG_DATA_HOME/opencode, else ~/.local/share/opencode (util/src/global-roots.ts). */
@@ -822,7 +843,7 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
 export function pathJudge(options: PathGuardOptions): (toolName: string, input: Readonly<Record<string, unknown>>) => string | undefined {
 	const rules = options.call?.rules(options, () => pathRules(options)) ?? pathRules(options);
 	if (options.orreryOnly === true) return orreryJudge(options, rules);
-	const { home, views, protect, config, openCode, transcripts, credentials, foreign, realData, data, setUp, roots } = rules;
+	const { home, views, protect, config, openCode, grok, transcripts, credentials, foreign, realData, data, setUp, roots } = rules;
 	const fold = (path: string) => path.toLowerCase();
 	return (toolName, input) => {
 		const search = SEARCHES.has(toolName);
@@ -835,7 +856,7 @@ export function pathJudge(options: PathGuardOptions): (toolName: string, input: 
 		if (namedEntry !== undefined) return `${toolName} ${nameKey} "${names}" names ${namedEntry}, ${PROTECTED_BY}.`;
 		const given = typeof input.path === "string" && input.path !== "" ? input.path : undefined;
 		const raw = given ?? (search ? "." : undefined);
-		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode, transcripts }, views, config, protect);
+		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode, grok, transcripts }, views, config, protect);
 		// All three forms: what the model wrote, where the tool resolves it, and where it really lands.
 		const resolved = (options.resolvePath ?? piToolPath)(raw, options.cwd, home);
 		const named = views.path(resolved);
@@ -850,6 +871,8 @@ export function pathJudge(options: PathGuardOptions): (toolName: string, input: 
 		if (writes && (orreryAppNamed(resolved) || orreryAppNamed(target))) return APP_READ_ONLY(raw);
 		// And OpenCode's config and code, which OpenCode loads and runs (guard-rules.ts openCodeLoads).
 		if (writes && (openCodeLoads(resolved, openCode) || openCodeLoads(target, openCode))) return OPENCODE_READ_ONLY(raw);
+		// And Grok's folder, whose hooks, settings and session records Grok loads and runs (guard-rules.ts grokRule).
+		if (writes && (grokLoads(resolved, grok) || grokLoads(target, grok))) return GROK_READ_ONLY(raw);
 		// A skill OpenCode loads may be written, but not given front matter it runs as code (guard-rules.ts).
 		const skills = writes && (openCodeSkillPath(resolved) || openCodeSkillPath(target));
 		const skill = skills ? openCodeSkillRefusal(resolved, target, newTextIn(toolName, input), readSmall(target)) : undefined;
@@ -892,12 +915,12 @@ export function pathJudge(options: PathGuardOptions): (toolName: string, input: 
  * home by its .orrery name (in a path, a search's names) and by where it really is, Orrery's credentials file (the
  * caller's `credentials`), a search whose root holds either, every agent's memory view (`foreignViews`: the session is
  * no agent's, so each is another's) and a content search whose root holds one, the config, installed program and where
- * agents' sessions load code from (orreryEntries) written by no tool, and the session records written by no tool;
- * then checkToolCall's own rules for the command a call may carry. No folder confinement, home secrets, .env or other
- * built-in names, [guard] protect, OpenCode or skills.
+ * agents' sessions load code from (orreryEntries, and Grok's folder, where Orrery's Grok hooks and config entries are)
+ * written by no tool, and the session records written by no tool; then checkToolCall's own rules for the command a call
+ * may carry. No folder confinement, home secrets, .env or other built-in names, [guard] protect, OpenCode or skills.
  */
 function orreryJudge(options: PathGuardOptions, rules: PathRules): (toolName: string, input: Readonly<Record<string, unknown>>) => string | undefined {
-	const { home, views, protect, config, shellNamed, openCode, transcripts, credentials, foreign, realData, data, setUp, roots, programs, entries } = rules;
+	const { home, views, protect, config, shellNamed, openCode, grok, transcripts, credentials, foreign, realData, data, setUp, roots, programs, entries } = rules;
 	const fold = (path: string) => path.toLowerCase();
 	return (toolName, input) => {
 		const search = SEARCHES.has(toolName);
@@ -906,7 +929,7 @@ function orreryJudge(options: PathGuardOptions, rules: PathRules): (toolName: st
 		if (typeof names === "string" && sensitive(names, views.path(), true)) return `${toolName} ${nameKey} "${names}" names sensitive files (keys, credentials or Orrery's private data).`;
 		const given = typeof input.path === "string" && input.path !== "" ? input.path : undefined;
 		const raw = given ?? (search ? "." : undefined);
-		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode, transcripts }, views, shellNamed, protect);
+		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode, grok, transcripts }, views, shellNamed, protect);
 		const resolved = (options.resolvePath ?? piToolPath)(raw, options.cwd, home);
 		const named = views.path(resolved);
 		if (sensitive(raw, named, true) || sensitive(resolved, named, true)) return SENSITIVE_FILE(raw);
@@ -916,6 +939,7 @@ function orreryJudge(options: PathGuardOptions, rules: PathRules): (toolName: st
 		const isConfig = (path: string) => orreryConfigNamed(path) || config.includes(path.toLowerCase());
 		if (writes && (isConfig(resolved) || isConfig(target))) return CONFIG_READ_ONLY_PLAIN(raw);
 		if (writes && (orreryAppNamed(resolved) || orreryAppNamed(target))) return APP_READ_ONLY_PLAIN(raw);
+		if (writes && (grokLoads(resolved, grok) || grokLoads(target, grok))) return GROK_READ_ONLY_PLAIN(raw);
 		const where = fold(target);
 		if (credentials.some((location) => within(where, location))) return SENSITIVE_FILE(raw);
 		// An agent's view file, as given and where it really is: no tool reads or writes it, by any spelling or link.
@@ -966,12 +990,15 @@ function pathRules(options: PathGuardOptions): PathRules {
 	const spelt = (file: string) => configSpellings({ configFile: file, home }, realTarget(file));
 	const shellNamed = agent ? config : [...config, ...(options.credentials ?? []).flatMap(spelt), ...entryPaths.flatMap(spelt), ...PLUGIN_RECORDS];
 	const openCode = agent ? openCodeOf(options, home) : NO_OPENCODE;
-	// Claude Code's and Codex's session records, where they are and where they really are.
+	// Grok's folder, in every session: where it is and where it really is.
+	const grok = options.grok ?? grokRule(process.env, home, realTarget);
+	// Claude Code's, Codex's and Grok's session records, where they are and where they really are.
 	const transcripts = options.transcripts ?? transcriptRule(process.env, home, realTarget);
 	// The credential locations themselves, symlinks followed (a ~/.ssh linked from a dotfiles folder, say). Compared
-	// ignoring case: on a case-insensitive file system (macOS) ~/.SSH and /USERS are the same folders.
+	// ignoring case: on a case-insensitive file system (macOS) ~/.SSH and /USERS are the same folders. A moved Grok
+	// folder's login and session records too (grokCredentials).
 	const fold = (path: string) => path.toLowerCase();
-	const credentials = [...(agent ? HOME_CREDENTIALS.map((entry) => join(home, entry)) : []), ...(options.credentials ?? [])].map((path) => fold(realTarget(path)));
+	const credentials = [...(agent ? [...HOME_CREDENTIALS.map((entry) => join(home, entry)), ...grokCredentials(process.env, home)] : []), ...(options.credentials ?? [])].map((path) => fold(realTarget(path)));
 	const foreign = options.foreignViews.flatMap((view) => [view, realTarget(view)]);
 	const realData = options.orreryData === undefined ? undefined : realTarget(options.orreryData);
 	const data = realData === undefined ? undefined : fold(realData);
@@ -982,6 +1009,7 @@ function pathRules(options: PathGuardOptions): PathRules {
 		cwd: realRoot(options.cwd),
 		foreignViews: options.foreignViews,
 		openCode,
+		grok,
 		transcripts,
 		...(agent ? {} : { orreryOnly: true }),
 	};
@@ -995,7 +1023,7 @@ function pathRules(options: PathGuardOptions): PathRules {
 	const programs = agent ? [] : [...(data === undefined ? [] : [join(data, "app")]), ...(configHome === undefined ? [] : [fold(realTarget(join(configHome, "app")))])];
 	const entries = [...new Set(entryPaths.flatMap((path) => [fold(resolve(path)), fold(realTarget(path))]))];
 	const places = agent ? [] : [...(data === undefined ? [] : [data]), ...(configHome === undefined ? [] : [fold(configHome)]), ...credentials, ...programs, ...entries];
-	return { home, views, protect, config, shellNamed, openCode, transcripts, credentials, foreign, realData, data, setUp, roots, programs, entries, places };
+	return { home, views, protect, config, shellNamed, openCode, grok, transcripts, credentials, foreign, realData, data, setUp, roots, programs, entries, places };
 }
 
 /** How many entries filesBelow looks at, at most. */

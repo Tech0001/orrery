@@ -83,12 +83,28 @@ export function grokRules(agent: AgentConfig, readOnly: boolean): GrokLaunch {
 /** Grok's spellings of `--rules`. */
 const RULES_FLAGS = ["--rules", "--append-system-prompt"];
 
-/** Whether the person's arguments start Grok's shared leader (`--leader`, or `agent … leader`, Grok's own) before a `--`. */
+/**
+ * Grok 1.0.70's options that take a value (`grok --help`): the word after one is its value, never a command. The optional
+ * values of --resume and --worktree are not among them, so a command after either is still read as one.
+ */
+const VALUE_OPTIONS = new Set([
+	...["--add-dir", "--agent", "--agents", "--allow", "--allowedTools", "--allowed-tools", "--cwd", "--debug-file", "--deny", "--disallowedTools", "--disallowed-tools"],
+	...["--json-schema", "--leader-socket", "-m", "--model", "--output-format", "-p", "--single", "--permission-mode", "--prompt-file", "--prompt-json"],
+	...["--reasoning-effort", "--effort", "--rules", "--append-system-prompt", "-s", "--session-id", "--sandbox", "--system-prompt-override", "--system-prompt"],
+	...["--tools", "--worktree-ref", "--ref"],
+]);
+
+/**
+ * Whether the person's arguments start Grok's shared leader before a `--`: `--leader`; `agent … leader`, Grok's own; or
+ * Grok's commands that run a leader in the calling process, `leader worker start` and `worker start` (1.0.70's help:
+ * "Run a leader in this terminal"), read as any `leader` or `worker` word that is no option's value.
+ */
 function startsLeader(args: readonly string[]): boolean {
 	const until = args.indexOf("--");
 	const own = until < 0 ? args : args.slice(0, until);
 	const agent = own.indexOf("agent");
-	return hasFlag(own, ["--leader"]) || (agent >= 0 && own.indexOf("leader", agent + 1) > agent);
+	if (hasFlag(own, ["--leader"]) || (agent >= 0 && own.indexOf("leader", agent + 1) > agent)) return true;
+	return own.some((word, at) => (word === "leader" || word === "worker") && !VALUE_OPTIONS.has(own[at - 1] ?? ""));
 }
 
 /**

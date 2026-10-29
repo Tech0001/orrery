@@ -11,7 +11,7 @@ import type { ReaderTool } from "../agent/memory-tools.ts";
 import type { Inside } from "../agent/sessions.ts";
 import type { Gated } from "./gate.ts";
 import { type AgentConfig, type ConfigFile, defaultConfigPath, findAgent, type HarnessConfig, loadConfig } from "../agent/config.ts";
-import { armCodexGuard, CODEX_GUARD_DEADLINE_MS, isCodexGuard } from "../codex/guard-exit.ts";
+import { armCodexGuard, CODEX_GUARD_DEADLINE_MS, isCodexGuard, isGrokGuard } from "../codex/guard-exit.ts";
 import { exitWhenFlushed } from "./exit.ts";
 import { allHelp, commandHelp, isCommand, shortHelp, UsageError } from "./help.ts";
 
@@ -905,13 +905,14 @@ async function readStdin(max: number): Promise<string | undefined> {
 }
 
 /**
- * Whether Grok runs Orrery's own hooks for this install (src/grok/install.ts grokHooksInstalled: its hook file, running
- * app/current's command, else this checkout's), whose guard is the one there. False when that can't be read.
+ * Whether Grok runs Orrery's own guard for this install (src/grok/install.ts grokHooksInstalled: its hook file, running
+ * app/current's command, else this checkout's), and it is not switched off in Grok's /hooks tab (grokGuardSwitchedOff).
+ * False when either can't be read.
  */
 async function grokGuarded(): Promise<boolean> {
 	try {
-		const [{ grokHooksInstalled }, { wiringRoot }] = await Promise.all([import("../grok/install.ts"), import("../agent/running.ts")]);
-		return grokHooksInstalled(wiringRoot(process.env).root, process.env) === true;
+		const [{ grokGuardSwitchedOff, grokHooksInstalled }, { wiringRoot }] = await Promise.all([import("../grok/install.ts"), import("../agent/running.ts")]);
+		return grokHooksInstalled(wiringRoot(process.env).root, process.env) === true && !grokGuardSwitchedOff(process.env);
 	} catch {
 		return false;
 	}
@@ -924,9 +925,9 @@ async function grokGuarded(): Promise<boolean> {
  * read denies every call until it is fixed, and so does an error. Without any config Claude Code runs plain.
  * Grok runs these hooks too (its Claude Code compatibility): when the hook's own host is a Grok (src/grok/host.ts
  * hostIsGrok), each recording one reads its input, prints nothing and records nothing, so Orrery's Grok hooks are the
- * only ones recording there. Its guard stands down there only when Grok runs Orrery's own hooks for this install
- * (grokGuarded); else, or when that can't be read, it guards as in Claude Code. A Claude Code started from a Grok shell
- * is its hooks' host, and keeps them.
+ * only ones recording there. Its guard stands down there only when Grok runs Orrery's own guard for this install, not
+ * switched off in Grok's /hooks tab (grokGuarded); else, or when that can't be read, it guards as in Claude Code. A Claude
+ * Code started from a Grok shell is its hooks' host, and keeps them.
  */
 async function claudeHook(event: string | undefined, configPath: string | undefined): Promise<number> {
 	const guarding = event === "pre-tool-use";
@@ -965,10 +966,11 @@ async function claudeHook(event: string | undefined, configPath: string | undefi
 }
 
 /**
- * A Codex PreToolUse refusal: the reason on stderr and exit code 2. Codex runs a hook through the account's shell
+ * A Codex or Grok PreToolUse refusal: the reason on stderr and exit code 2. Codex runs a hook through the account's shell
  * (`<shell> -c`: bash, zsh or sh, src/codex/shell.ts), whose startup files (bash's $BASH_ENV, zsh's .zshenv) may print to
  * stdout: a JSON answer there would arrive garbled and the call would go through. With exit 2 Codex reads only stderr,
- * so the refusal holds whatever is on stdout. The reason has no final period: Codex adds one.
+ * so the refusal holds whatever is on stdout. The reason has no final period: Codex adds one. Grok 1.0.70 blocks on exit
+ * 2 whatever stdout holds, and takes the first line of stderr as the reason.
  */
 function denyCodexCall(reason: string): number {
 	process.stderr.write(reason);
@@ -1032,17 +1034,48 @@ async function codexHook(event: string | undefined, configPath: string | undefin
 }
 
 /**
+ * `orrery grok-hook pre-tool-use`, the guard (src/grok/guard.ts), in every Grok session: a call it lets through gets exit
+ * 0 and nothing on stdout; a refusal is denyCodexCall's (exit 2, the reason on stderr). Grok lets a call through when its
+ * hook fails or times out, so everything that keeps the guard from judging refuses: input over 1 MB (read to its end,
+ * not kept), a config that is there, or named, but cannot be read, any error, and a judgment not done by
+ * CODEX_GUARD_DEADLINE_MS after the process started; past that, a crash or a stall is refused by src/codex/guard-exit.ts
+ * (6 s, inside the 10 s Orrery's hook file gives it). Without any config (none named, none at the default paths) there
+ * is no Orrery data to keep: every call goes through, as in a plain Claude Code.
+ */
+async function grokGuardHook(configPath: string | undefined): Promise<number> {
+	try {
+		const guard = await import("../grok/guard.ts");
+		const stdin = await readStdin(guard.GROK_TOOL_INPUT_MAX);
+		let config: HarnessConfig;
+		try {
+			// A synchronous read the watchdog (src/codex/guard-exit.ts) can't interrupt.
+			config = loadConfig(configPath);
+		} catch (error) {
+			if (absentConfig(error, configPath)) return 0;
+			return denyCodexCall(guard.grokRefusal(`Orrery's config could not be read (${errorText(error)}), so no call can be checked; nothing was run. Fix the config file.`));
+		}
+		const { grokPid } = await import("../grok/host.ts");
+		// The file the config came from, as loadConfig found it: the guard keeps it read-only, wherever it is.
+		const configFile = resolvePath(configPath ?? defaultConfigPath());
+		const refusal = guard.runGrokGuard(stdin, { config, env: process.env, grokPid: grokPid(), grokParent: process.ppid, configFile, deadline: CODEX_GUARD_DEADLINE_MS });
+		return refusal === undefined ? 0 : denyCodexCall(refusal);
+	} catch (error) {
+		return denyCodexCall(`Orrery guard: this call could not be checked (${errorText(error).replace(/\s*[\r\n]+\s*/g, " ").replace(/\.+$/, "")}); nothing was run`);
+	}
+}
+
+/**
  * `orrery grok-hook <event>`: the hooks Orrery's install gives Grok Build (src/grok/hooks.ts), global, so they run in
- * every Grok session. They never fail the session: exit 0 (a 2 would block the prompt, or keep a turn going), only their
- * JSON answer on stdout, and an error in one stderr line, never with message contents. A config that cannot be read is
- * said at SessionStart in a Grok opened as an agent; anywhere else (a plain grok, or no config at all) they say nothing.
- * pre-tool-use is the guard: until it comes, every call goes through (exit 0, nothing on stdout). Run by Grok's shared
- * leader (leader mode), every event decides, claims and records nothing (src/grok/hooks.ts runGrokHook).
+ * every Grok session. pre-tool-use is the guard (grokGuardHook). The others never fail the session: exit 0 (a 2 would
+ * block the prompt, or keep a turn going), only their JSON answer on stdout, and an error in one stderr line, never with
+ * message contents. A config that cannot be read is said at SessionStart in a Grok opened as an agent; anywhere else (a
+ * plain grok, or no config at all) they say nothing. Run by Grok's shared leader (leader mode), every event but the guard
+ * decides, claims and records nothing (src/grok/hooks.ts runGrokHook); the guard judges there by Orrery's own rules.
  */
 async function grokHook(event: string | undefined, configPath: string | undefined): Promise<number> {
+	if (event === "pre-tool-use") return grokGuardHook(configPath);
 	try {
 		const stdin = (await readStdin(Number.POSITIVE_INFINITY)) ?? "";
-		if (event === "pre-tool-use") return 0;
 		const hooks = await import("../grok/hooks.ts");
 		let config: HarnessConfig;
 		try {
@@ -1107,17 +1140,18 @@ function modReply(reply: object): number {
 	return "error" in reply ? 1 : 0;
 }
 
-// Codex's guard refuses on anything that goes wrong, since Codex lets a call through when its hook fails (src/codex/guard-exit.ts).
-const codexGuardExit = isCodexGuard(process.argv.slice(2)) ? armCodexGuard() : undefined;
+// Codex's and Grok's guards refuse on anything that goes wrong, since both let a call through when their hook fails
+// (src/codex/guard-exit.ts).
+const guardExit = isCodexGuard(process.argv.slice(2)) || isGrokGuard(process.argv.slice(2)) ? armCodexGuard() : undefined;
 
 main(process.argv.slice(2)).then(
 	(code) => {
-		codexGuardExit?.disarm();
+		guardExit?.disarm();
 		exitWhenFlushed(code);
 	},
 	(error: unknown) => {
-		if (codexGuardExit !== undefined) {
-			codexGuardExit.refuse(`this call could not be checked (${errorText(error).replace(/\.+$/, "")}); nothing was run`);
+		if (guardExit !== undefined) {
+			guardExit.refuse(`this call could not be checked (${errorText(error).replace(/\.+$/, "")}); nothing was run`);
 			return;
 		}
 		process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);

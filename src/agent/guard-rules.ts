@@ -38,8 +38,13 @@ export interface GuardOptions {
 	 */
 	readonly openCode?: OpenCodeRule;
 	/**
-	 * Claude Code's and Codex's session records (transcriptRule), which no tool writes and no shell text names; default:
-	 * from this process's environment and the guard's home.
+	 * Grok Build's folder (grokRule), which no tool writes and no shell text names, in every session; default: from this
+	 * process's environment and the guard's home.
+	 */
+	readonly grok?: GrokRule;
+	/**
+	 * Claude Code's, Codex's and Grok's session records (transcriptRule), which no tool writes and no shell text names;
+	 * default: from this process's environment and the guard's home.
 	 */
 	readonly transcripts?: TranscriptRule;
 	/**
@@ -52,8 +57,9 @@ export interface GuardOptions {
 	 * A session that is no agent's (spec 2026-10-19-no-agent-sessions §3): Orrery's own rules and nothing more. Orrery's
 	 * home (by its path, src/agent/guard-paths.ts orreryData, and by its .orrery name), its credentials file (the caller's
 	 * credentials), the config and the installed program (read, never written), every agent's memory view (foreignViews:
-	 * the session is no agent's, so each is another's), Claude Code's and Codex's session records, Orrery's commands and
-	 * hook plumbing in shell text, and what the guard can't judge in time. No folder confinement or allowed roots, no
+	 * the session is no agent's, so each is another's), Claude Code's, Codex's and Grok's session records, Grok's folder
+	 * (where Orrery's Grok hooks and config entries are: grokRule), Orrery's commands and hook plumbing in shell text,
+	 * and what the guard can't judge in time. No folder confinement or allowed roots, no
 	 * [guard] protect, no .env, built-in secret or home-secret rules, and no OpenCode or skills rules: those are an agent's.
 	 */
 	readonly orreryOnly?: boolean;
@@ -142,6 +148,9 @@ export const HOME_SECRETS: readonly string[] = [
 	".huggingface/token",
 	".password-store",
 	".config/op",
+	// Grok Build's login, and its session records: each session's system prompt (an agent's memory) and its words.
+	".grok/auth.json",
+	".grok/sessions",
 ];
 
 /**
@@ -1249,14 +1258,22 @@ export function openCodeRule(env: NodeJS.ProcessEnv = process.env, home: string 
 	const homes = [home, real(home)];
 	const xdgData = env.XDG_DATA_HOME && posix.isAbsolute(env.XDG_DATA_HOME) ? env.XDG_DATA_HOME : posix.join(home, ".local", "share");
 	const own = both(openCodeOwnFolders(env, home));
-	const homeFolded = [...new Set(homes.map((at) => posix.normalize(at).toLowerCase().replace(/\/+$/, "")))].filter((at) => at !== "");
-	const spelled = own.flatMap((root) => homeFolded.filter((at) => root.startsWith(`${at}/`)).flatMap((at) => ["~", "$home", "${home}"].map((start) => `${start}${root.slice(at.length)}`)));
 	return {
 		own,
-		spelled: [...new Set(spelled)],
+		spelled: spelledFromHome(own, homes),
 		plans: [...new Set(homes.map((at) => posix.join(posix.normalize(at), ".opencode", "plan").toLowerCase()))],
 		data: both([posix.join(xdgData, "opencode"), posix.join(home, ".local", "share", "opencode")]),
 	};
+}
+
+/**
+ * Each of `roots` (folded) under one of `homes` (a home as given and where it really is) as shell text may spell it from
+ * there: "~", "$home" or "${home}", then the rest of its path, folded.
+ */
+function spelledFromHome(roots: readonly string[], homes: readonly string[]): string[] {
+	const homeFolded = [...new Set(homes.map((at) => posix.normalize(at).toLowerCase().replace(/\/+$/, "")))].filter((at) => at !== "");
+	const spelled = roots.flatMap((root) => homeFolded.filter((at) => root.startsWith(`${at}/`)).flatMap((at) => ["~", "$home", "${home}"].map((start) => `${start}${root.slice(at.length)}`)));
+	return [...new Set(spelled)];
 }
 
 /** Whether an absolute path is OpenCode's config or code (above): one spelling of it, folded and normalized here. */
@@ -1294,14 +1311,15 @@ const OPENCODE_NAMED = new RegExp(
 	].join("|"),
 );
 
-/** A character that carries a name on past one of OpenCode's own folders (opencode-notes.txt beside ~/.config/opencode). */
+/** A character that carries a name on past a folder (opencode-notes.txt beside ~/.config/opencode, ~/.grokrc beside ~/.grok). */
 const NAME_GOES_ON = /^[a-z0-9._-]$/;
 
 /**
- * Whether a reading names one of OpenCode's own folders (`roots`, folded) by its path: the folder itself or a path below
- * it, not a longer name beside it. Whatever else follows (an end, "/", a space, a quote, ";", a glob, a "$") names it.
+ * Whether a reading names one of `roots` (folded: OpenCode's own folders, Grok's) by its path: the folder itself or a
+ * path below it, not a longer name beside it. Whatever else follows (an end, "/", a space, a quote, ";", a glob, a "$")
+ * names it.
  */
-function namesOpenCodeFolder(form: string, roots: readonly string[]): boolean {
+function namesFolder(form: string, roots: readonly string[]): boolean {
 	return roots.some((root) => {
 		for (let at = form.indexOf(root); at !== -1; at = form.indexOf(root, at + 1)) {
 			if (!NAME_GOES_ON.test(form.charAt(at + root.length))) return true;
@@ -1312,8 +1330,71 @@ function namesOpenCodeFolder(form: string, roots: readonly string[]): boolean {
 
 /** Whether text a shell may run names OpenCode's config or code, in any reading of it; `rule`'s own folders by their path too. */
 export function openCodeNamed(text: string, rule?: OpenCodeRule): boolean {
-	const named = (form: string) => OPENCODE_NAMED.test(form) || (rule !== undefined && namesOpenCodeFolder(form, [...rule.own, ...(rule.spelled ?? [])]));
+	const named = (form: string) => OPENCODE_NAMED.test(form) || (rule !== undefined && namesFolder(form, [...rule.own, ...(rule.spelled ?? [])]));
 	return inAnyReading(text, named);
+}
+
+// ---- Grok Build's folder (spec 2026-10-29-grok-build-design, "Guard"): no tool writes it, in any gate or session ----
+//
+// Grok 1.0.70 loads and runs what is in its folder ($GROK_HOME, else ~/.grok; its manual, 10-hooks.md and
+// 26-config-reference.md): every hooks/*.json is a hook file (Orrery's hooks/orrery.json among them), config.toml holds
+// hooks, MCP servers and the status row (Orrery's entries among them), requirements.toml and managed_config.toml hold
+// hooks and a pin that switches every other hook off, disabled-hooks is the /hooks tab's switch, trusted_folders.toml is
+// the trust that holds a folder's hooks back or lets them run, and installed-plugins/, agents/, skills/ and workflows/
+// load code and instructions; it keeps its login (auth.json) and its session records (sessions/, which Orrery checks
+// typed prompts against) there too. A file a tool wrote there could switch Orrery's guard or recording off, or put words
+// in a session's record, so every gate refuses writes anywhere in it, and shell text that names it, in an agent's
+// session and in one that is no agent's (Orrery's hook file and config entries are Orrery's own). File tools may read
+// it (its docs/, its bundled skills), but for its login and session records, which an agent's session may not read at
+// all (HOME_SECRETS; a moved folder's by src/agent/guard-paths.ts). Limits, as for every shell-text rule: a spelling
+// through another variable or a link the guard doesn't know, and a relative one after a cd into it. A project's own
+// .grok folder is the project's.
+
+/** Grok's folders for `home` and `env`: ~/.grok, and the one GROK_HOME names (absolute, as given; realTarget is the caller's). */
+export function grokFolders(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] {
+	const folders = new Set([posix.join(home, ".grok")]);
+	if (env.GROK_HOME) folders.add(posix.resolve(env.GROK_HOME));
+	return [...folders].map((folder) => posix.normalize(folder));
+}
+
+/** What the Grok rule judges against: Grok's folders, as given and where they really are, folded. */
+export interface GrokRule {
+	readonly own: readonly string[];
+	/** Each of `own` under home as shell text may spell it from there ("~", "$HOME", "${HOME}"), folded. */
+	readonly spelled: readonly string[];
+}
+
+/** The rule for `home` and `env`; `real` follows links (realTarget), so a folder reached through one counts too. */
+export function grokRule(env: NodeJS.ProcessEnv = process.env, home: string = homedir(), real: (path: string) => string = (path) => path): GrokRule {
+	const own = [...new Set(grokFolders(env, home).flatMap((path) => [path, real(path)]).map((path) => posix.normalize(path).toLowerCase().replace(/(.)\/+$/, "$1")))];
+	return { own, spelled: spelledFromHome(own, [home, real(home)]) };
+}
+
+/** Whether an absolute path is in Grok's folder (above): one spelling of it, folded and normalized here. */
+export function grokLoads(path: string, rule: GrokRule): boolean {
+	const folded = posix.normalize(path).toLowerCase();
+	return rule.own.some((root) => within(folded, root));
+}
+
+/** Why a write in Grok's folder is refused. */
+export const GROK_READ_ONLY = (path: string) =>
+	`${path} is in Grok's folder (~/.grok: its hooks, settings, plugins, login and session records), which Grok loads and runs: agents may read it, not change it.`;
+
+/** Why shell text naming Grok's folder is refused. */
+export const GROK_COMMAND =
+	"This command names Grok's folder (~/.grok: its hooks, settings, plugins, login and session records), which Grok loads and runs: agents may read it with file tools, not with commands.";
+
+/** GROK_READ_ONLY and GROK_COMMAND worded for any session (GuardOptions.orreryOnly). */
+export const GROK_READ_ONLY_PLAIN = (path: string) => `${path} is in Grok's folder (~/.grok: its hooks, settings, plugins, login and session records), which Grok loads and runs: it may be read, not changed.`;
+export const GROK_COMMAND_PLAIN =
+	"This command names Grok's folder (~/.grok: its hooks, settings, plugins, login and session records), which Grok loads and runs: it may be read with file tools, not with commands.";
+
+/** $GROK_HOME in shell text (readings are lower case), as a word: whatever the session's environment holds, it is Grok's folder. */
+const GROK_HOME_VARIABLE = /\$(?:grok_home(?![a-z0-9_])|\{grok_home[^}\s$]*\})/;
+
+/** Whether a reading of shell text names Grok's folder: $GROK_HOME, or one of `rule`'s folders by its path. */
+function grokNamed(form: string, rule: GrokRule): boolean {
+	return GROK_HOME_VARIABLE.test(form) || namesFolder(form, [...rule.own, ...rule.spelled]);
 }
 
 // ---- OpenCode's skills: written as anyone writes them, never with front matter that may run as code ----
@@ -1462,15 +1543,17 @@ export function skillsNamed(text: string): boolean {
 	return inAnyReading(text, (form) => SKILLS_NAMED.test(form));
 }
 
-// ---- Claude Code's and Codex's session records (spec 2026-10-18-agent-permissions §3c) ----
+// ---- Claude Code's, Codex's and Grok's session records (spec 2026-10-18-agent-permissions §3c) ----
 //
 // Orrery keeps a prompt as the person's words only once the tool's own record of the session has it: Claude Code's
-// transcripts in its projects folder (~/.claude/projects, or $CLAUDE_CONFIG_DIR/projects) and Codex's rollouts in its
-// sessions folders (~/.codex/sessions and archived_sessions, or under $CODEX_HOME). An agent that wrote a line there
+// transcripts in its projects folder (~/.claude/projects, or $CLAUDE_CONFIG_DIR/projects), Codex's rollouts in its
+// sessions folders (~/.codex/sessions and archived_sessions, or under $CODEX_HOME) and Grok's session logs in its
+// sessions folder (~/.grok/sessions, or under $GROK_HOME; Grok's whole folder is kept so too, and an agent's session may
+// not even read Grok's records, which hold each session's system prompt: grokRule, HOME_SECRETS). An agent that wrote a line there
 // could fake one, so no file tool writes there, in any gate, and no shell text names them; file tools may read them. A
 // project's memory folder there (Claude Code's auto memory, ruling C10) stays writable: it is no record of a session. In
-// shell text they are named by their tails anywhere (.claude/projects, .codex/sessions, .codex/archived_sessions, and
-// the same after $CLAUDE_CONFIG_DIR or $CODEX_HOME), with the readings every name gets, by a glob that could name one
+// shell text they are named by their tails anywhere (.claude/projects, .codex/sessions, .codex/archived_sessions,
+// .grok/sessions, and the same after $CLAUDE_CONFIG_DIR, $CODEX_HOME or $GROK_HOME), with the readings every name gets, by a glob that could name one
 // beside its parent's name (~/.claude/pro*, ~/.c*/projects, ~/.config/claude/pro* where CLAUDE_CONFIG_DIR is
 // ~/.config/claude; not ~/.claude/*.json), and by their paths where they are elsewhere (moved, or reached through a
 // link, spelt from home too); a file tool's write by its path and by those names. Limits, as for every shell-text rule:
@@ -1484,6 +1567,8 @@ export interface TranscriptRule {
 	readonly claude: readonly string[];
 	/** Codex's sessions and archived sessions folders, the same way. */
 	readonly codex: readonly string[];
+	/** Grok's sessions folders, the same way (transcriptRule gives them; a rule made without them has none). */
+	readonly grok?: readonly string[];
 	/** Those of them that their tails don't name, spelt as a [guard] protect path entry is (protection); none for none. */
 	readonly spelled?: Protection;
 	/**
@@ -1497,15 +1582,19 @@ export interface TranscriptRule {
 /** Codex's folders of session records under its home. */
 const CODEX_RECORDS = ["sessions", "archived_sessions"];
 
+/** Grok's folder of session records under its home. */
+const GROK_RECORDS = ["sessions"];
+
 /** The session records for `env` and `home`; `real` follows links (realTarget), so a folder reached through one counts too. */
 export function transcriptRule(env: NodeJS.ProcessEnv = process.env, home: string = homedir(), real: (path: string) => string = (path) => path): TranscriptRule {
 	const claude = [posix.join(home, ".claude", "projects"), ...(env.CLAUDE_CONFIG_DIR ? [posix.join(posix.resolve(env.CLAUDE_CONFIG_DIR), "projects")] : [])];
 	const codexHomes = [posix.join(home, ".codex"), ...(env.CODEX_HOME ? [posix.resolve(env.CODEX_HOME)] : [])];
 	const codex = codexHomes.flatMap((at) => CODEX_RECORDS.map((name) => posix.join(at, name)));
+	const grok = grokFolders(env, home).flatMap((at) => GROK_RECORDS.map((name) => posix.join(at, name)));
 	const both = (paths: readonly string[]) => [...new Set(paths.flatMap((path) => [path, real(path)]).map((path) => posix.normalize(path).replace(/(.)\/+$/, "$1")))];
-	const folders = { claude: both(claude), codex: both(codex) };
+	const folders = { claude: both(claude), codex: both(codex), grok: both(grok) };
 	// As written (protection folds them itself, after spelling them from home, which may hold capitals).
-	const elsewhere = [...folders.claude, ...folders.codex].filter((path) => !/\/\.(?:claude\/projects|codex\/(?:archived_)?sessions)$/i.test(path));
+	const elsewhere = [...folders.claude, ...folders.codex, ...folders.grok].filter((path) => !/\/\.(?:claude\/projects|codex\/(?:archived_)?sessions|grok\/sessions)$/i.test(path));
 	if (elsewhere.length === 0) return folders;
 	const parents = new Map<string, string[]>();
 	for (const path of elsewhere) parents.set(posix.dirname(path), [...(parents.get(posix.dirname(path)) ?? []), posix.basename(path).toLowerCase()]);
@@ -1514,14 +1603,15 @@ export function transcriptRule(env: NodeJS.ProcessEnv = process.env, home: strin
 
 /**
  * Whether a path (one spelling of it) is in the session records (above): in one of their folders, or below
- * .claude/projects, .codex/sessions or .codex/archived_sessions anywhere; not in a project's memory folder in Claude
- * Code's. Ignoring case.
+ * .claude/projects, .codex/sessions, .codex/archived_sessions or .grok/sessions anywhere; not in a project's memory
+ * folder in Claude Code's. Ignoring case.
  */
-export function transcriptPath(path: string, rule: Pick<TranscriptRule, "claude" | "codex">): boolean {
+export function transcriptPath(path: string, rule: Pick<TranscriptRule, "claude" | "codex" | "grok">): boolean {
 	const folded = posix.normalize(path).toLowerCase();
 	const parts = folded.split("/");
 	for (let at = 0; at + 1 < parts.length; at++) {
 		if (parts[at] === ".codex" && CODEX_RECORDS.includes(parts[at + 1] as string)) return true;
+		if (parts[at] === ".grok" && GROK_RECORDS.includes(parts[at + 1] as string)) return true;
 		if (parts[at] === ".claude" && parts[at + 1] === "projects" && parts[at + 3] !== "memory") return true;
 	}
 	// What follows a folder in the path, or undefined when the path is not in it.
@@ -1529,7 +1619,7 @@ export function transcriptPath(path: string, rule: Pick<TranscriptRule, "claude"
 		const root = posix.normalize(folder.toLowerCase()).replace(/(.)\/+$/, "$1");
 		return within(folded, root) ? folded.slice(root.length + 1) : undefined;
 	};
-	if (rule.codex.some((folder) => inside(folder) !== undefined)) return true;
+	if ([...rule.codex, ...(rule.grok ?? [])].some((folder) => inside(folder) !== undefined)) return true;
 	return rule.claude.some((folder) => {
 		const rest = inside(folder);
 		return rest !== undefined && rest.split("/")[1] !== "memory";
@@ -1538,19 +1628,25 @@ export function transcriptPath(path: string, rule: Pick<TranscriptRule, "claude"
 
 /** The session records named in shell text by their tails (readings are lower case). */
 const TRANSCRIPTS_NAMED = new RegExp(
-	`(?:${OC_START}\\.claude|\\$(?:claude_config_dir|\\{claude_config_dir[^}\\s$]*\\}))/+projects${OC_END}|(?:${OC_START}\\.codex|\\$(?:codex_home|\\{codex_home[^}\\s$]*\\}))/+(?:archived_)?sessions${OC_END}`,
+	[
+		`(?:${OC_START}\\.claude|\\$(?:claude_config_dir|\\{claude_config_dir[^}\\s$]*\\}))/+projects${OC_END}`,
+		`(?:${OC_START}\\.codex|\\$(?:codex_home|\\{codex_home[^}\\s$]*\\}))/+(?:archived_)?sessions${OC_END}`,
+		`(?:${OC_START}\\.grok|\\$(?:grok_home|\\{grok_home[^}\\s$]*\\}))/+sessions${OC_END}`,
+	].join("|"),
 );
 
 /** The records' parents and folders as a glob may name them: the parent's name (or the variable for it) and the folders'. */
 const RECORD_FOLDERS = [
 	{ parent: ".claude", variable: /^\$\{?claude_config_dir\}?$/, folders: ["projects"] },
 	{ parent: ".codex", variable: /^\$\{?codex_home\}?$/, folders: CODEX_RECORDS },
+	{ parent: ".grok", variable: /^\$\{?grok_home\}?$/, folders: GROK_RECORDS },
 ];
 
 /**
- * Whether a reading names the session records with a glob (narrowly): a path part right after .claude/, .codex/,
- * $CLAUDE_CONFIG_DIR/ or $CODEX_HOME/ that could match their folders (projects, sessions, archived_sessions), or a part
- * that could match .claude or .codex (starting with its dot, as a shell's glob must) before one of those; and a part
+ * Whether a reading names the session records with a glob (narrowly): a path part right after .claude/, .codex/, .grok/,
+ * $CLAUDE_CONFIG_DIR/, $CODEX_HOME/ or $GROK_HOME/ that could match their folders (projects, sessions,
+ * archived_sessions), or a part that could match .claude, .codex or .grok (starting with its dot, as a shell's glob must)
+ * before one of those; and a part
  * that could match a moved folder's name right after its parent spelt out (`parents`: ~/.config/claude/pro*), each
  * parent on its own and at every place it is spelt. Each word is read once per pattern.
  */
@@ -1599,17 +1695,17 @@ function transcriptsNamed(command: string, reading: Reading, reach: number, rule
 
 /** Why shell text naming the session records is refused. */
 export const TRANSCRIPT_COMMAND =
-	"This command names Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions), which Orrery checks prompts against: agents may read them with file tools, not with commands.";
+	"This command names Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions) or Grok's (~/.grok/sessions), which Orrery checks prompts against: agents may read them with file tools, not with commands.";
 
 /** Why a write there is refused. */
 export const TRANSCRIPT_READ_ONLY = (path: string) =>
-	`${path} is in Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions), which Orrery checks prompts against: agents may read them, not change them.`;
+	`${path} is in Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions) or Grok's (~/.grok/sessions), which Orrery checks prompts against: agents may read them, not change them.`;
 
 /** TRANSCRIPT_COMMAND and TRANSCRIPT_READ_ONLY worded for any session (GuardOptions.orreryOnly). */
 export const TRANSCRIPT_COMMAND_PLAIN =
-	"This command names Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions), which Orrery checks prompts against: they may be read with file tools, not with commands.";
+	"This command names Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions) or Grok's (~/.grok/sessions), which Orrery checks prompts against: they may be read with file tools, not with commands.";
 export const TRANSCRIPT_READ_ONLY_PLAIN = (path: string) =>
-	`${path} is in Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions), which Orrery checks prompts against: they may be read, not changed.`;
+	`${path} is in Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions) or Grok's (~/.grok/sessions), which Orrery checks prompts against: they may be read, not changed.`;
 
 // ---- A plain read of skill files, for Codex's own shell ----
 //
@@ -1805,6 +1901,8 @@ export function checkToolCall(
 	const openCode = () => (rule ??= openCodeRule(process.env, (options as { readonly home?: string }).home ?? homedir()));
 	let records = options.transcripts;
 	const transcripts = () => (records ??= transcriptRule(process.env, (options as { readonly home?: string }).home ?? homedir()));
+	let folder = options.grok;
+	const grok = () => (folder ??= grokRule(process.env, (options as { readonly home?: string }).home ?? homedir()));
 	const command = call.arguments.command;
 	if (call.name === "bash" && typeof command === "string") {
 		// Shell text's readings, made once: sensitive by flagged's rules for shell text and the built-in home secrets spelt
@@ -1818,14 +1916,16 @@ export function checkToolCall(
 		const inReading = (test: (form: string) => boolean) => reading.forms.some(test) || reading.pieces.some(test);
 		if (agent) {
 			const own = [...openCode().own, ...(openCode().spelled ?? [])];
-			if (inReading((form) => OPENCODE_NAMED.test(form) || namesOpenCodeFolder(form, own))) return OPENCODE_COMMAND;
+			if (inReading((form) => OPENCODE_NAMED.test(form) || namesFolder(form, own))) return OPENCODE_COMMAND;
 			if (inReading((form) => SKILLS_NAMED.test(form)) && !(options.shellReadsSkills === true && skillShellRead(command) !== undefined)) return SKILL_SHELL;
 		}
 		// Last, so a command refused before keeps its reason: Orrery's commands that change memory or settings (in a
-		// session that is no agent's, every one the CLI refuses it: PLAIN_REFUSED_COMMANDS), and the tools' session records.
+		// session that is no agent's, every one the CLI refuses it: PLAIN_REFUSED_COMMANDS), the tools' session records,
+		// and Grok's folder, in every session.
 		const orrery = orreryCommandIn(reading, agent ? AGENT_REFUSED : PLAIN_REFUSED);
 		if (orrery !== undefined) return agent ? ORRERY_COMMAND_REFUSED(orrery) : ORRERY_COMMAND_REFUSED_PLAIN(orrery);
 		if (transcriptsNamed(command, reading, protect.reach, transcripts())) return agent ? TRANSCRIPT_COMMAND : TRANSCRIPT_COMMAND_PLAIN;
+		if (inReading((form) => grokNamed(form, grok()))) return agent ? GROK_COMMAND : GROK_COMMAND_PLAIN;
 	}
 	const raw = call.arguments.path;
 	if (typeof raw !== "string") return undefined;
@@ -1836,6 +1936,7 @@ export function checkToolCall(
 	const writes = call.name === "write" || call.name === "edit";
 	if (writes && (orreryConfigNamed(path) || config.includes(path.toLowerCase()))) return agent ? CONFIG_READ_ONLY(path) : CONFIG_READ_ONLY_PLAIN(path);
 	if (writes && orreryAppNamed(path)) return agent ? APP_READ_ONLY(path) : APP_READ_ONLY_PLAIN(path);
+	if (writes && grokLoads(path, grok())) return agent ? GROK_READ_ONLY(path) : GROK_READ_ONLY_PLAIN(path);
 	// A session that is no agent's: its writes go anywhere but those, and the session records.
 	if (!agent) return writes && transcriptPath(path, transcripts()) ? TRANSCRIPT_READ_ONLY_PLAIN(path) : undefined;
 	if (writes && openCodeLoads(path, openCode())) return OPENCODE_READ_ONLY(path);

@@ -46,8 +46,6 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { type HarnessConfig, type AgentConfig, agentForCwd } from "../agent/config.ts";
-import { agentViews, GuardCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials } from "../agent/guard-paths.ts";
-import { orreryHome } from "../agent/home.ts";
 import { cutNotice, readInstructions } from "../agent/instructions.ts";
 import { nestedRules, type WriteRules } from "../agent/nested-rules.ts";
 import { opensHere, type PlainDeps } from "../agent/plain-nested.ts";
@@ -58,7 +56,7 @@ import { liveSession, processStart } from "../agent/sessions.ts";
 import { selfCommand } from "../agent/running.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { type HolderHost, holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
-import { claudeGuard, claudeStateRoots, movedConfigDirCredentials } from "./guard.ts";
+import { agentGuardOptions, claudeGuard, claudeStateRoots, plainGuardOptions } from "./guard.ts";
 import { summaryNotice, updateNotice } from "./notices.ts";
 import { holderLog, samePath, validSession } from "./paths.ts";
 import { type CallerCheck, checkCaller, type StdinPeer, stdinPeer, unsupportedCause } from "./peer.ts";
@@ -612,52 +610,18 @@ export function preToolUse(input: HookInput, ctx: HookContext): object | undefin
 		const toolInput = typeof input.tool_input === "object" && input.tool_input !== null ? (input.tool_input as Record<string, unknown>) : {};
 		const home = ctx.home ?? homedir();
 		const cwd = typeof input.cwd === "string" ? input.cwd : projectDir;
-		const configFile = ctx.configFile === undefined ? {} : { configFile: ctx.configFile };
 		if (plainHere(pick, ctx.config, projectDir)) {
-			// One guard call: the rules every path it names is judged by are worked out once (guard-paths.ts GuardCall).
-			// Orrery's credentials file alone: the tools' own logins are no files of Orrery's. Every agent's view is
-			// another's: the session reads no agent's memory. The Orrery home the environment names, for its program.
-			reason = claudeGuard(input.tool_name, toolInput, {
-				call: new GuardCall(),
-				orreryOnly: true,
-				folder: projectDir,
-				allowedRoots: [],
-				cwd,
-				credentials: [ctx.config.credentialsPath],
-				orreryData: ctx.config.dataDir,
-				home,
-				...agentViews(ctx.config),
-				...configFile,
-				...namedHome({ ...ctx.env, HOME: home }),
-			});
+			reason = claudeGuard(input.tool_name, toolInput, plainGuardOptions(ctx.config, ctx.env, home, projectDir, cwd, ctx.configFile));
 		} else {
+			// The session's write rules, and Claude Code's own state (claudeStateRoots).
 			const rules = writeRules(pick, ctx.config, projectDir);
-			reason = claudeGuard(input.tool_name, toolInput, {
-				call: new GuardCall(),
-				folder: rules.workArea,
-				allowedRoots: [...rules.allowedRoots, ...claudeStateRoots(projectDir, home, ctx.env)],
-				cwd,
-				credentials: [ctx.config.credentialsPath, ...movedAgentDirCredentials(ctx.env, home), ...movedConfigDirCredentials(ctx.env), ...ompCredentials(ctx.env, home), ...openCodeCredentials(ctx.env, home)],
-				orreryData: ctx.config.dataDir,
-				home,
-				protect: ctx.config.guard.protect,
-				...agentViews(ctx.config, pick.kind === "agent" ? pick.agent : undefined),
-				...configFile,
-			});
+			const options = agentGuardOptions(ctx.config, ctx.env, home, cwd, rules, pick.kind === "agent" ? pick.agent : undefined, ctx.configFile);
+			reason = claudeGuard(input.tool_name, toolInput, { ...options, allowedRoots: [...rules.allowedRoots, ...claudeStateRoots(projectDir, home, ctx.env)] });
 		}
 	} catch (error) {
 		reason = `this call could not be checked (${errorText(error)}).`;
 	}
 	return reason === undefined ? undefined : deny(reason);
-}
-
-/** The Orrery home `env` names (orreryHome), for the guard of a session that is no agent's; none when it can't be read. */
-function namedHome(env: NodeJS.ProcessEnv): { readonly orreryHome?: string } {
-	try {
-		return { orreryHome: orreryHome(env) };
-	} catch {
-		return {}; // a relative ORRERY_HOME: no folder beside a config counts as Orrery's home
-	}
 }
 
 /**
