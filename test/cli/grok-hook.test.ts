@@ -1,8 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanEnv, cleanupDirs, cliCommand, testAgent } from "../claude/support.ts";
+import { newToken } from "../../src/agent/pick.ts";
+import { listSessions } from "../../src/claude/spool.ts";
+import { cleanEnv, cleanupDirs, cliCommand, grokLeaderFolder, grokLeaderLaunch, testAgent } from "../claude/support.ts";
 
 afterEach(cleanupDirs);
 
@@ -50,6 +52,32 @@ describe("orrery grok-hook", () => {
 		for (const event of ["session-start", "user-prompt-submit", "stop"]) {
 			expect(hook(event, input({ source: "new", prompt: "Codename Saffron.", lastAssistantMessage: "Noted.", reason: "end_turn" }), env, t.folder), event).toEqual({ status: 0, stdout: "", stderr: "" });
 		}
+	});
+
+	it("run by Grok's shared leader (leader mode), every event decides, claims and records nothing, whatever agent and token it has; SessionStart says why", () => {
+		const t = testAgent();
+		const token = newToken();
+		const leaderHook = (event: string, given: object, env: Record<string, string>) => {
+			const c = cliCommand(["grok-hook", event]);
+			const [cmd, args] = grokLeaderLaunch(c.cmd, c.args);
+			const r = spawnSync(cmd, args, { cwd: grokLeaderFolder(), env: cleanEnv(env), input: JSON.stringify(given), encoding: "utf8", timeout: 30_000 });
+			return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+		};
+		// The leader's environment is its first client's: here an agent's, with a token nobody has claimed.
+		const env = { ORRERY_CONFIG: t.configPath, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token };
+		const start = leaderHook("session-start", input({ source: "new" }), env);
+		expect([start.status, start.stderr]).toEqual([0, ""]);
+		expect(JSON.parse(start.stdout)).toEqual({ systemMessage: "Orrery: Grok runs this session's hooks and memory tools in its shared leader process (leader mode), where one session's agent can't be told from another's; Orrery opens its agents with --no-leader. This session records nothing and gets no memory tools." });
+		for (const event of ["user-prompt-submit", "pre-tool-use", "stop", "stop-cancelled", "session-end"]) {
+			expect(leaderHook(event, input({ prompt: "Codename Saffron.", promptId: "p-1", lastAssistantMessage: "Noted.", reason: "end_turn", toolName: "run_terminal_command", toolInput: { command: "ls" } }), env), event).toEqual({ status: 0, stdout: "", stderr: "" });
+		}
+		// A plain window's leader: nothing said at all.
+		expect(leaderHook("session-start", input({ source: "new" }), { ORRERY_CONFIG: t.configPath })).toEqual({ status: 0, stdout: "", stderr: "" });
+		// Nothing decided, claimed, hosted or spooled.
+		expect(existsSync(join(t.config.dataDir, "grok-processes"))).toBe(false);
+		expect(existsSync(join(t.config.dataDir, "session-hosts"))).toBe(false);
+		expect(existsSync(join(t.agent.dir, "claims"))).toBe(false);
+		expect(listSessions(t.agent.dir)).toEqual([]);
 	});
 
 	it("says an unknown event on stderr, never quoting the input, and still exits 0", () => {

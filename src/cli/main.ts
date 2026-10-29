@@ -530,6 +530,19 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 		await runMcp(process.stdin, process.stdout, []);
 		return 0;
 	}
+	// Orrery's own server for Grok, started by Grok's shared leader (leader mode), which starts every session's with its
+	// first client's environment: one session's agent can't be told from another's, so it serves nothing and decides
+	// nothing (src/grok/host.ts grokHostRefusal). Its client logs stderr.
+	if (command === "mcp" && values.tool === "grok") {
+		const { grokHostNotice, grokHostRefusal, grokPid } = await import("../grok/host.ts");
+		const refused = grokHostRefusal(grokPid());
+		if (refused !== undefined) {
+			process.stderr.write(`${grokHostNotice(refused)}\n`);
+			const { runMcp } = await import("../claude/mcp.ts");
+			await runMcp(process.stdin, process.stdout, []);
+			return 0;
+		}
+	}
 	const { GateRefusal, gateCommand, noAgentText, readableBy } = await import("./gate.ts");
 	let gated: Gated;
 	try {
@@ -892,18 +905,33 @@ async function readStdin(max: number): Promise<string | undefined> {
 }
 
 /**
+ * Whether Grok runs Orrery's own hooks for this install (src/grok/install.ts grokHooksInstalled: its hook file, running
+ * app/current's command, else this checkout's), whose guard is the one there. False when that can't be read.
+ */
+async function grokGuarded(): Promise<boolean> {
+	try {
+		const [{ grokHooksInstalled }, { wiringRoot }] = await Promise.all([import("../grok/install.ts"), import("../agent/running.ts")]);
+		return grokHooksInstalled(wiringRoot(process.env).root, process.env) === true;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * `orrery claude-hook <event>`: Claude Code's hooks never fail a session. They exit 0, print only their JSON answer,
  * and note any error in one stderr line, never with message contents. PreToolUse never lets a call through on a failure
  * of its own (Claude Code allows a call the hook says nothing about): a config that is there, or named, but cannot be
  * read denies every call until it is fixed, and so does an error. Without any config Claude Code runs plain.
  * Grok runs these hooks too (its Claude Code compatibility): when the hook's own host is a Grok (src/grok/host.ts
- * hostIsGrok), each one reads its input, prints nothing and records nothing, so Orrery's Grok hooks are the only ones
- * there. A Claude Code started from a Grok shell is its hooks' host, and keeps them.
+ * hostIsGrok), each recording one reads its input, prints nothing and records nothing, so Orrery's Grok hooks are the
+ * only ones recording there. Its guard stands down there only when Grok runs Orrery's own hooks for this install
+ * (grokGuarded); else, or when that can't be read, it guards as in Claude Code. A Claude Code started from a Grok shell
+ * is its hooks' host, and keeps them.
  */
 async function claudeHook(event: string | undefined, configPath: string | undefined): Promise<number> {
 	const guarding = event === "pre-tool-use";
 	try {
-		if ((await import("../grok/host.ts")).hostIsGrok()) {
+		if ((await import("../grok/host.ts")).hostIsGrok() && (!guarding || (await grokGuarded()))) {
 			await readStdin(0); // read to its end all the same, so Grok's write completes
 			return 0;
 		}
@@ -1008,7 +1036,8 @@ async function codexHook(event: string | undefined, configPath: string | undefin
  * every Grok session. They never fail the session: exit 0 (a 2 would block the prompt, or keep a turn going), only their
  * JSON answer on stdout, and an error in one stderr line, never with message contents. A config that cannot be read is
  * said at SessionStart in a Grok opened as an agent; anywhere else (a plain grok, or no config at all) they say nothing.
- * pre-tool-use is the guard: until it comes, every call goes through (exit 0, nothing on stdout).
+ * pre-tool-use is the guard: until it comes, every call goes through (exit 0, nothing on stdout). Run by Grok's shared
+ * leader (leader mode), every event decides, claims and records nothing (src/grok/hooks.ts runGrokHook).
  */
 async function grokHook(event: string | undefined, configPath: string | undefined): Promise<number> {
 	try {

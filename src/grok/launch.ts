@@ -1,7 +1,7 @@
 /**
- * What opening an agent in Grok Build adds to its command line: one `--rules` value, which Grok appends to the system
- * prompt for the whole session and keeps through /compact. It holds the agent's memory section, then its instructions.
- * Grok 1.0.70 accepts `--rules` once only ("cannot be used multiple times"), and Linux takes at most 128 KiB in one
+ * What opening an agent in Grok Build adds to its command line: `--no-leader` (grokArgs), and one `--rules` value, which
+ * Grok appends to the system prompt for the whole session and keeps through /compact. It holds the agent's memory
+ * section, then its instructions. Grok 1.0.70 accepts `--rules` once only ("cannot be used multiple times"), and Linux takes at most 128 KiB in one
  * argument. The instructions go in whole (at most 32 KB, as for every tool: readInstructions), and the memory section
  * takes the room they leave: a view at a smaller ceiling when the agent's own is too large, or that view's newest
  * lines, the older left out, which the zoom and search tools still reach (fitMemory, src/agent/memory-read.ts).
@@ -83,11 +83,21 @@ export function grokRules(agent: AgentConfig, readOnly: boolean): GrokLaunch {
 /** Grok's spellings of `--rules`. */
 const RULES_FLAGS = ["--rules", "--append-system-prompt"];
 
+/** Whether the person's arguments start Grok's shared leader (`--leader`, or `agent … leader`, Grok's own) before a `--`. */
+function startsLeader(args: readonly string[]): boolean {
+	const until = args.indexOf("--");
+	const own = until < 0 ? args : args.slice(0, until);
+	const agent = own.indexOf("agent");
+	return hasFlag(own, ["--leader"]) || (agent >= 0 && own.indexOf("leader", agent + 1) > agent);
+}
+
 /**
- * Why the person's arguments can't open `name` in Grok beside Orrery's `--rules` (`launch`), or undefined: rules of their
- * own, which Grok refuses as a second `--rules`.
+ * Why the person's arguments can't open `name` in Grok beside Orrery's flags (`launch`, grokArgs), or undefined: Grok's
+ * leader mode, which Orrery opens agents without (grokArgs), or rules of their own, which Grok refuses as a second
+ * `--rules`.
  */
 export function grokArgsRefusal(name: string, launch: GrokLaunch, args: readonly string[]): string | undefined {
+	if (startsLeader(args)) return `Orrery opens Grok with --no-leader: in leader mode Grok runs every session's hooks and memory tools in one shared process, where one agent's session can't be told from another's. Open ${name} without --leader.`;
 	if (launch.holds.length === 0 || !hasFlag(args, RULES_FLAGS)) return undefined;
 	return `Orrery gives Grok ${name}'s ${launch.holds.join(" and ")} as its --rules, which Grok takes once: put your rules in ${name}'s instructions.md, or open ${name} without them.`;
 }
@@ -113,7 +123,13 @@ export function grokResumeNotice(name: string, args: readonly string[]): string 
 	return `Orrery: a resumed Grok session keeps ${name}'s memory as it was at that session's first launch; newer memory is reachable with the zoom and search tools. Start a new session for a fresh view.`;
 }
 
-/** Grok's command line for `launch` and the person's arguments: Orrery's `--rules` first. */
+/**
+ * Grok's command line for `launch` and the person's arguments: Orrery's flags first, `--no-leader` (once: Grok refuses it
+ * twice, so not when the person gives it) and `--rules`. Grok's leader mode (`--leader`, or `[cli] use_leader = true` in
+ * its config, which --no-leader overrides: seen live, 1.0.70) runs every session's hooks and memory tools in one shared
+ * process with its first client's environment, where this session's agent can't be told from another's
+ * (src/grok/host.ts isGrokLeader); the person's own `--leader` is refused (grokArgsRefusal).
+ */
 export function grokArgs(launch: GrokLaunch, userArgs: readonly string[]): string[] {
-	return [...launch.args, ...userArgs];
+	return [...(hasFlag(userArgs, ["--no-leader"]) ? [] : ["--no-leader"]), ...launch.args, ...userArgs];
 }

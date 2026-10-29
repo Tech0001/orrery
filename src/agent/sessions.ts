@@ -90,7 +90,7 @@
  * config.ts, and with it smol-toml and the memory module, which pi and OMP load already.
  */
 
-import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { isGrokProcess } from "../grok/names.ts";
 import { namesOrreryPlugin } from "../install/layout.ts";
@@ -100,7 +100,7 @@ import type { AgentConfig, HarnessConfig } from "./config.ts";
 import { removeStale, stray } from "./exclusive.ts";
 import { AGENT_ENV, agentNamed, claimHeld, reused, TOKEN_ENV } from "./pick.ts";
 import { readPrivate, writePrivate } from "./private-file.ts";
-import { bootId, pidNamespace, processAlive, processEnv, processStart, procStat, psOutput, readProcStat } from "./process.ts";
+import { bootId, pidNamespace, processAlive, processArgv, processEnv, processStart, procStat, psOutput, readProcStat } from "./process.ts";
 import { safeText } from "./source-labels.ts";
 
 export { ALLOWED_INSIDE } from "./inside-commands.ts";
@@ -991,35 +991,10 @@ function toolOf(pid: number, seen: Processes, cmdline: (pid: number) => readonly
 	return argv === undefined ? undefined : toolOfArgv(argv, !linux);
 }
 
-/** This system's way to read a process's argv (SessionDeps.cmdline); macOS's takes argv[0] from `seen`'s snapshot. */
+/** This system's way to read a process's argv (SessionDeps.cmdline, processArgv); macOS's takes argv[0] from `seen`'s snapshot. */
 function argvReader(deps: SessionDeps, seen: Processes): (pid: number) => readonly string[] | undefined {
-	if (onLinux(deps)) {
-		return (pid) => {
-			try {
-				const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
-				if (argv.at(-1) === "") argv.pop();
-				return argv.length > 0 ? argv : undefined;
-			} catch {
-				return undefined;
-			}
-		};
-	}
-	if (onMac(deps)) {
-		return (pid) => {
-			const args = (deps.ps ?? psOutput)(["-ww", "-o", "args=", "-p", String(pid)])?.trim();
-			if (args === undefined || args === "") return undefined;
-			// ps joins argv with spaces; argv[0], comm, may hold some itself.
-			const first = seen.nameOf(pid);
-			if (first !== undefined && args.startsWith(first) && (args.length === first.length || /\s/.test(args.charAt(first.length)))) {
-				return [first, ...args.slice(first.length).split(/\s+/).filter((arg) => arg !== "")];
-			}
-			// Args that don't start with comm (comm the program's short name, say): argv[0] ends at the first word with
-			// comm's file name, else at the first space.
-			const words = args.split(/\s+/);
-			const end = first === undefined ? -1 : words.findIndex((word) => basename(word) === basename(first));
-			return end > 0 ? [words.slice(0, end + 1).join(" "), ...words.slice(end + 1)] : words;
-		};
-	}
+	if (onLinux(deps)) return (pid) => processArgv(pid, { platform: "linux" });
+	if (onMac(deps)) return (pid) => processArgv(pid, { platform: "darwin", ...(deps.ps === undefined ? {} : { ps: deps.ps }), comm: (of) => seen.nameOf(of) });
 	return () => undefined;
 }
 

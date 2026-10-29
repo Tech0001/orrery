@@ -145,9 +145,9 @@ function unwireOldGrok(env: NodeJS.ProcessEnv, version: string | undefined, left
 
 /**
  * pi, Claude Code, OMP and Grok through checkTools and installSteps against app/current: "update available" (Orrery's
- * own wiring of the other shape or an older plugin, or Grok's config without Orrery's entries) runs without asking;
- * "missing" (no Orrery wiring yet) and "other" (another Orrery, or not Orrery's file) only after confirm, and a file
- * that is not Orrery's is set aside first. A missing pi or OMP extension is written only when that tool is on PATH, and
+ * own wiring of the other shape or an older plugin) runs without asking; "missing" (no Orrery wiring yet, or Grok's
+ * config without an entry of Orrery's, which the person may have removed) and "other" (another Orrery, or not Orrery's
+ * file) only after confirm, and a file that is not Orrery's is set aside first. A missing pi or OMP extension is written only when that tool is on PATH, and
  * Grok's when grok is on PATH or Grok's folder is there; a version without Grok's hooks gets Grok's wiring removed.
  */
 async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: Runner; install: Runner }, confirm: Confirm, left: string[], unchecked: string[], emit: (line: string) => void): Promise<void> {

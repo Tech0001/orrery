@@ -16,7 +16,7 @@ import { writeMode } from "../../src/claude/spool.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { seedAtlas } from "../agent/support.ts";
 import { cleanup, isolatedHome, pi, world } from "../pi/world.ts";
-import { cleanEnv, cliCommand, grokLaunch } from "./support.ts";
+import { cleanEnv, cliCommand, grokLaunch, grokLeaderFolder, grokLeaderLaunch } from "./support.ts";
 
 afterEach(cleanup);
 // One test starts a real pi; the MCP processes below get a scratch HOME of their own (the world's root).
@@ -347,11 +347,11 @@ describe("Orrery's MCP server", () => {
 });
 
 describe("the memory tools in Grok Build (spec 2026-10-29-grok-build)", () => {
-	/** `orrery mcp [args]`, run by `launch` (default: this test), in `root`: its exit, the tool names it lists, a search's text, and stderr. */
-	const serve = async (root: string, args: string[], env: Record<string, string>, launch: (cmd: string, args: string[]) => [string, string[]] = (cmd, rest) => [cmd, rest]) => {
+	/** `orrery mcp [args]`, run by `launch` (default: this test), in `cwd` (default `root`): its exit, the tool names it lists, a search's text, and stderr. */
+	const serve = async (root: string, args: string[], env: Record<string, string>, launch: (cmd: string, args: string[]) => [string, string[]] = (cmd, rest) => [cmd, rest], cwd = root) => {
 		const c = cliCommand(["mcp", ...args]);
 		const [cmd, rest] = launch(c.cmd, c.args);
-		const child = spawn(cmd, rest, { env: cleanEnv({ HOME: root, ...env }), cwd: root });
+		const child = spawn(cmd, rest, { env: cleanEnv({ HOME: root, ...env }), cwd });
 		let out = "";
 		let err = "";
 		child.stdout.setEncoding("utf8").on("data", (chunk: string) => (out += chunk));
@@ -416,5 +416,19 @@ describe("the memory tools in Grok Build (spec 2026-10-29-grok-build)", () => {
 		}
 		// No config at all: quiet, no tools.
 		if (!existsSync("/etc/orrery/config.toml")) expect(await serve(root, ["--tool", "grok"], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: newToken() })).toMatchObject({ code: 0, tools: [] });
+	});
+
+	it("`mcp --tool grok` started by Grok's shared leader (leader mode) serves no tools and decides and claims nothing, whatever agent and token it is given", { timeout: 60_000 }, async () => {
+		const { root, config, configPath } = world();
+		seedAtlas(root);
+		const token = newToken();
+		// The leader starts every session's server: Grok gives each one its own client's ORRERY_AGENT and token.
+		const served = await serve(root, ["--tool", "grok"], { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token }, grokLeaderLaunch, grokLeaderFolder());
+		expect([served.code, served.tools]).toEqual([0, []]);
+		expect(served.err).toBe("Orrery: Grok runs this session's hooks and memory tools in its shared leader process (leader mode), where one session's agent can't be told from another's; Orrery opens its agents with --no-leader. This session records nothing and gets no memory tools.\n");
+		expect(existsSync(join(config.dataDir, "grok-processes"))).toBe(false);
+		expect(claimedBy(join(root, "data", "agents", "Atlas"), token)).toBeUndefined();
+		// The same server started by a session's own grok serves Atlas.
+		expect((await serve(root, ["--tool", "grok"], { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token })).tools).toEqual(["zoom", "date", "search"]);
 	});
 });

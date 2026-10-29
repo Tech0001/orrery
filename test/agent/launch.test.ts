@@ -205,16 +205,17 @@ describe("opening an agent in Grok", () => {
 		const plan = launchPlan(config, row, checkTools({ root: orreryRoot(), env }), { cwd: here, args: ["--resume", "abc"] });
 		expect(plan).toMatchObject({ tool: "grok", command: join(env.PATH, "grok"), cwd: here, steps: [{ text: resumedNotice, confirm: false }] });
 		expect(plan.blocked).toBeUndefined();
-		expect(plan.args.slice(0, 1)).toEqual(["--rules"]);
-		expect(plan.args[1]).toContain("# Agent: A");
-		expect(plan.args.slice(2)).toEqual(["--resume", "abc"]);
+		// Orrery's flags first: --no-leader (Grok's leader mode would run every session's hooks in one shared process), then --rules.
+		expect(plan.args.slice(0, 2)).toEqual(["--no-leader", "--rules"]);
+		expect(plan.args[2]).toContain("# Agent: A");
+		expect(plan.args.slice(3)).toEqual(["--resume", "abc"]);
 		const token = plan.env.ORRERY_AGENT_TOKEN as string;
 		expect(token).toMatch(/^[0-9a-f]{32}$/);
 		// What Grok's hooks do at its start: claim the token.
 		expect(claimToken(plan.agentDir, token, 999_999)).toBe(true);
 		expect(await runAgent(plan, (p) => runTool(p, { env }))).toEqual({ code: 0, signal: null, claimedBy: 999_999 });
-		const [agent, seen, cwd, flag, ...rest] = readFileSync(out, "utf8").split("\n");
-		expect([agent, seen, realpathSync(cwd as string), flag]).toEqual(["A", token, realpathSync(here), "--rules"]);
+		const [agent, seen, cwd, leader, flag, ...rest] = readFileSync(out, "utf8").split("\n");
+		expect([agent, seen, realpathSync(cwd as string), leader, flag]).toEqual(["A", token, realpathSync(here), "--no-leader", "--rules"]);
 		expect(rest.slice(0, 2)).toEqual(["# Agent: A", ""]);
 		expect(rest.slice(-3, -1)).toEqual(["--resume", "abc"]);
 		expect(readdirSync(join(plan.agentDir, "claims"))).toEqual([]);
@@ -239,7 +240,7 @@ describe("opening an agent in Grok", () => {
 		const plan = launchPlan(config, row, tools, { tool: "grok", args: ["-x"] });
 		expect(plan).toMatchObject({ tool: "grok", command: join(env.PATH, "grok") });
 		expect(plan.codex).toBeUndefined();
-		expect(plan.args).toEqual(["-x"]);
+		expect(plan.args).toEqual(["--no-leader", "-x"]);
 		// The agent's own tool is untouched.
 		expect(launchPlan(config, row, tools)).toMatchObject({ tool: "codex" });
 	});
@@ -254,8 +255,8 @@ describe("opening an agent in Grok", () => {
 		store.close();
 		writeInstructions(agentDir, "Keep notes.\n");
 		const plan = launchPlan(config, row, tools);
-		const rules = plan.args[1] as string;
-		expect(plan.args[0]).toBe("--rules");
+		const rules = plan.args[2] as string;
+		expect(plan.args.slice(0, 2)).toEqual(["--no-leader", "--rules"]);
 		expect(rules.startsWith("# Memory")).toBe(true);
 		expect(rules).toContain("look for the zoom, date and search tools");
 		expect(rules).toContain("remember the Cedar plan");
@@ -265,12 +266,12 @@ describe("opening an agent in Grok", () => {
 		const open = { ...row, state: "open" as const, openIn: "omp" as const };
 		const second = launchPlan(config, open, tools);
 		expect(second.steps).toEqual([{ text: "A is already open in OMP. A second session won't record. Launch anyway?", confirm: true, asAgent: true }]);
-		expect(second.args[1]).toContain("This session is read-only, though: another session has the agent");
+		expect(second.args[2]).toContain("This session is read-only, though: another session has the agent");
 	});
 
 	it("opens with no memory yet and no instructions: nothing added, only the person's arguments", () => {
 		const { config, row, tools } = setup("grok");
-		expect(launchPlan(config, row, tools, { args: ["-p", "hi"] }).args).toEqual(["-p", "hi"]);
+		expect(launchPlan(config, row, tools, { args: ["-p", "hi"] }).args).toEqual(["--no-leader", "-p", "hi"]);
 	});
 
 	/** What the person is told when the session starts with the memory's newest lines, from line `from`. */
@@ -290,8 +291,8 @@ describe("opening an agent in Grok", () => {
 		// Over 32 KB: cut there, as for every tool.
 		writeInstructions(agentDir, "Instruction line with \u00e9 and more words.\n".repeat(850));
 		const plan = launchPlan(config, row, tools);
-		expect(plan.args).toHaveLength(2);
-		const rules = plan.args[1] as string;
+		expect(plan.args).toHaveLength(3);
+		const rules = plan.args[2] as string;
 		expect(Buffer.byteLength(rules)).toBeLessThanOrEqual(GROK_ARG_MAX);
 		// The instructions whole, at the 32 KB every tool gets; the memory's newest lines before them.
 		expect(rules.endsWith(`|user: 29 ${"\u20ac".repeat(1400)}\n</chat>\n\n${instructionsSection("A", readInstructions(agentDir)!)}`)).toBe(true);
@@ -324,8 +325,8 @@ describe("opening an agent in Grok", () => {
 		const plan = launchPlan(config, row, checkTools({ root: orreryRoot(), env }));
 		expect(plan.blocked).toBeUndefined();
 		expect(plan.steps).toEqual([{ text: "Orrery: A's memory view is too large for Grok's command line, so this session starts with a smaller view of it.", confirm: false }]);
-		const rules = plan.args[1] as string;
-		expect(plan.args[0]).toBe("--rules");
+		const rules = plan.args[2] as string;
+		expect(plan.args.slice(0, 2)).toEqual(["--no-leader", "--rules"]);
 		expect(Buffer.byteLength(rules)).toBeLessThanOrEqual(GROK_ARG_MAX);
 		expect(rules.startsWith("# Memory\n\n")).toBe(true);
 		expect(rules).toContain(`|user: ${line(1249)}\n</chat>\n\n# Agent: A\n\nKeep notes.`);
@@ -347,7 +348,7 @@ describe("opening an agent in Grok", () => {
 		const text = "Instruction line with \u00e9 and more words.\n".repeat(799);
 		writeInstructions(agentDir, text);
 		const plan = launchPlan(config, row, tools);
-		const rules = plan.args[1] as string;
+		const rules = plan.args[2] as string;
 		expect(Buffer.byteLength(rules)).toBeLessThanOrEqual(GROK_ARG_MAX);
 		expect(rules.startsWith("# Memory\n\n")).toBe(true);
 		expect(rules).toContain("summary of 0+");
@@ -366,8 +367,8 @@ describe("opening an agent in Grok", () => {
 		const before = savedView(agentDir);
 		const plan = launchPlan(config, row, tools);
 		expect(plan.blocked).toBeUndefined();
-		const rules = plan.args[1] as string;
-		expect(plan.args).toEqual(["--rules", rules]);
+		const rules = plan.args[2] as string;
+		expect(plan.args).toEqual(["--no-leader", "--rules", rules]);
 		expect(Buffer.byteLength(rules)).toBeLessThanOrEqual(GROK_ARG_MAX);
 		// The normal section: Grok's words and its tool pointer.
 		expect(rules.startsWith("# Memory\n\n")).toBe(true);
@@ -399,7 +400,7 @@ describe("opening an agent in Grok", () => {
 		fillMemory(join(agentDir, "memory.sqlite"), 2, (i) => (i === 1 ? "x".repeat(140_000) : "hello"), false);
 		writeInstructions(agentDir, "Keep notes.\n");
 		const plan = launchPlan(config, row, tools);
-		expect(plan.args).toEqual(["--rules", "# Agent: A\n\nKeep notes."]);
+		expect(plan.args).toEqual(["--no-leader", "--rules", "# Agent: A\n\nKeep notes."]);
 		expect(plan.steps).toEqual([{ text: "Orrery: A's memory doesn't fit on Grok's command line, not even its newest line, so this session starts without it.", confirm: false }]);
 	});
 
@@ -411,6 +412,14 @@ describe("opening an agent in Grok", () => {
 		expect(plan).toMatchObject({ steps: [], blocked: "Orrery gives Grok A's instructions as its --rules, which Grok takes once: put your rules in A's instructions.md, or open A without them." });
 		fillMemory(join(agentDir, "memory.sqlite"), 1, () => "hello", false);
 		expect(launchPlan(config, row, tools, { args: ["--rules=be brief"] }).blocked).toBe("Orrery gives Grok A's memory and instructions as its --rules, which Grok takes once: put your rules in A's instructions.md, or open A without them.");
+	});
+
+	it("refuses the person's own --leader (or Grok's `agent leader`): Orrery opens Grok with --no-leader", () => {
+		const { config, row, tools } = setup("grok");
+		const refusal = "Orrery opens Grok with --no-leader: in leader mode Grok runs every session's hooks and memory tools in one shared process, where one agent's session can't be told from another's. Open A without --leader.";
+		for (const args of [["--leader"], ["-c", "--leader"], ["agent", "leader"]]) expect(launchPlan(config, row, tools, { args }), args.join(" ")).toMatchObject({ steps: [], blocked: refusal });
+		// The person's own --no-leader is given once (Grok refuses it twice).
+		expect(launchPlan(config, row, tools, { args: ["--no-leader", "-p", "hi"] }).args).toEqual(["--no-leader", "-p", "hi"]);
 	});
 });
 

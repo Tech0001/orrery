@@ -195,6 +195,44 @@ describe("SessionStart for a Grok session", () => {
 	});
 });
 
+describe("Grok's shared leader (leader mode), which runs every session's hooks with its first client's environment", () => {
+	/** Grok 1.0.70's leader, as seen live. */
+	const leader = () => ["/home/u/.grok/downloads/grok-linux-x86_64", "agent", "leader", "--no-exit-on-disconnect"];
+
+	it("a hook whose host is the leader decides, claims, hosts, starts and spools nothing, where its own grok would record", async () => {
+		const t = testAgent();
+		const started: string[] = [];
+		const token = tokenOf(t);
+		const c = ctx(t, { startHolder: answer("recording", started), argvOf: leader }, token);
+		expect(await run("session-start", input({ source: "new" }), c)).toEqual({
+			systemMessage: "Orrery: Grok runs this session's hooks and memory tools in its shared leader process (leader mode), where one session's agent can't be told from another's; Orrery opens its agents with --no-leader. This session records nothing and gets no memory tools.",
+		});
+		for (const event of ["user-prompt-submit", "pre-tool-use", "stop", "stop-cancelled", "session-end"]) {
+			expect(await run(event, input({ prompt: "Codename Saffron.", promptId: "p-1", lastAssistantMessage: "Noted.", reason: "end_turn" }), c), event).toBe("");
+		}
+		expect(state(t)).toEqual({});
+		expect(started).toEqual([]);
+		// A plain window's leader (no ORRERY_AGENT): nothing said.
+		expect(await run("session-start", input({ session: "s2", source: "new" }), ctx(t, { env: { GROK_HOME: homeOf(t).home }, argvOf: leader }))).toBe("");
+		// A host whose command line can't be read is refused the same way.
+		const unread = (await run("session-start", input({ session: "s3", source: "new" }), ctx(t, { argvOf: () => undefined }))) as Answer;
+		expect(unread.systemMessage).toBe("Orrery: Grok's command line can't be read. This session records nothing and gets no memory tools.");
+		expect(state(t)).toEqual({});
+	});
+
+	it("after its own grok's SessionStart, an event whose host reads as the leader spools nothing", async () => {
+		const t = testAgent();
+		const c = ctx(t, { startHolder: answer("recording") });
+		await run("session-start", input({ source: "new" }), c);
+		await run("user-prompt-submit", input({ prompt: "Own words.", promptId: "p-1" }), { ...c, argvOf: leader });
+		await run("stop", input({ lastAssistantMessage: "A reply.", promptId: "p-1", reason: "end_turn" }), { ...c, argvOf: leader });
+		expect(spooled(t, "s1").map((event) => event.kind)).toEqual(["grok-log"]);
+		// Its own grok's, as ever.
+		await run("user-prompt-submit", input({ prompt: "Own words.", promptId: "p-2" }), c);
+		expect(spooled(t, "s1").map((event) => event.kind)).toEqual(["grok-log", "prompt"]);
+	});
+});
+
 describe("hook calls forged by the agent's own shell: Grok's session folder is the proof", () => {
 	it("opens nothing for a session this Grok doesn't hold open, for a subagent's, or for none, and changes nothing", async () => {
 		const t = testAgent();

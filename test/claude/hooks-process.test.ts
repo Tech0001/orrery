@@ -1,9 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { grokHookFile } from "../../src/grok/install.ts";
+import { entries } from "../../src/install/layout.ts";
 import { claudeSession } from "../../src/claude/pick.ts";
 import { listSessions, pendingEvents, readEvent, readMode, writeMode } from "../../src/claude/spool.ts";
 import { newToken } from "../../src/agent/pick.ts";
@@ -494,15 +497,35 @@ describe.skipIf(!claudeReady || !binary)("the hooks in the installed Claude Code
 });
 
 describe("Orrery's Claude Code plugin under Grok, which runs it through its Claude Code compatibility (spec 2026-10-29-grok-build)", () => {
-	it("under Grok, every claude-hook event reads stdin, prints nothing, records nothing", () => {
+	/** The Orrery the CLI under test is, as it finds its own install (wiringRoot: not installed here): the built binary's release folder, else this checkout. */
+	const cliRoot = binary ? resolve(dirname(process.env.ORRERY_TEST_BIN as string), "..") : fileURLToPath(new URL("../..", import.meta.url));
+	/** A Grok folder (GROK_HOME) for agent `t`, with `hooks` as its hooks/orrery.json, or none. */
+	const grokHome = (t: TestAgent, hooks?: string): string => {
+		const home = join(t.dir, "grok-home");
+		mkdirSync(join(home, "hooks"), { recursive: true });
+		if (hooks !== undefined) writeFileSync(join(home, "hooks", "orrery.json"), hooks);
+		return home;
+	};
+	/** `orrery claude-hook <event>` run by a stand-in Grok, with input over a pipe's buffer (read to its end all the same, so Grok's write completes). */
+	const underGrok = (event: string, input: object, env: NodeJS.ProcessEnv) => {
+		const c = cliCommand(["claude-hook", event]);
+		const [cmd, args] = grokLaunch(c.cmd, c.args);
+		const run = spawnSync(cmd, args, { env, input: JSON.stringify({ ...input, padding: "x".repeat(1 << 18) }), encoding: "utf8", timeout: 30_000 });
+		return [run.status, run.stdout, run.stderr];
+	};
+	/** A call the plugin's guard refuses in Claude Code: a write to the config file ORRERY_CONFIG names (fix round 2). */
+	const configWrite = (t: TestAgent, config: string) => ({ session_id: "s1", cwd: t.folder, tool_name: "Write", tool_input: { file_path: config, content: "[" } });
+
+	it("under Grok, every claude-hook event reads stdin, prints nothing, records nothing, once Grok runs Orrery's own hooks for this install", () => {
 		const t = testAgent({ setup: true });
 		const token = newToken();
-		const env = cleanEnv({ ORRERY_CONFIG: t.configPath, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PROJECT_DIR: t.folder });
+		const home = grokHome(t, grokHookFile(entries(cliRoot).cli));
+		const env = cleanEnv({ ORRERY_CONFIG: t.configPath, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PROJECT_DIR: t.folder, GROK_HOME: home });
 		const at = { session_id: "s1", cwd: t.folder };
 		const inputs: Record<string, object> = {
 			"session-start": { ...at, source: "startup" },
 			"user-prompt-submit": { ...at, prompt: "Codename Saffron." },
-			"pre-tool-use": { ...at, tool_name: "Read", tool_input: { file_path: join(t.folder, ".env") } },
+			"pre-tool-use": configWrite(t, t.configPath),
 			stop: { ...at, last_assistant_message: "Noted: Saffron." },
 			"session-end": { ...at, reason: "other" },
 		};
@@ -510,11 +533,7 @@ describe("Orrery's Claude Code plugin under Grok, which runs it through its Clau
 		writeFileSync(broken, "[");
 		for (const config of [t.configPath, broken]) {
 			for (const [event, input] of Object.entries(inputs)) {
-				const c = cliCommand(["claude-hook", event]);
-				const [cmd, args] = grokLaunch(c.cmd, c.args);
-				// Input over a pipe's buffer: read to its end all the same, so Grok's write completes.
-				const run = spawnSync(cmd, args, { env: { ...env, ORRERY_CONFIG: config }, input: JSON.stringify({ ...input, padding: "x".repeat(1 << 18) }), encoding: "utf8", timeout: 30_000 });
-				expect([config, event, run.status, run.stdout, run.stderr]).toEqual([config, event, 0, "", ""]);
+				expect([config, event, ...underGrok(event, input, { ...env, ORRERY_CONFIG: config })]).toEqual([config, event, 0, "", ""]);
 			}
 		}
 		// Nothing decided, claimed, recorded or spooled: Orrery's Grok hooks are the only ones in a Grok session.
@@ -523,6 +542,42 @@ describe("Orrery's Claude Code plugin under Grok, which runs it through its Clau
 		expect(existsSync(join(t.agent.dir, "claims"))).toBe(false);
 		expect(listSessions(t.agent.dir)).toEqual([]);
 		expect(readHolder(t.agent.dir)).toBeUndefined();
+	}, 60_000);
+
+	it("under Grok without Orrery's own Grok hooks for this install (none, another Orrery's, not Orrery's, unreadable), the plugin's guard keeps guarding; the recording events still stand down", () => {
+		const t = testAgent({ setup: true });
+		const broken = join(t.dir, "broken.toml");
+		writeFileSync(broken, "[");
+		const unreadable = join(t.dir, "unreadable-grok-home");
+		mkdirSync(join(unreadable, "hooks"), { recursive: true });
+		writeFileSync(join(unreadable, "hooks", "orrery.json"), grokHookFile(entries(cliRoot).cli));
+		chmodSync(join(unreadable, "hooks", "orrery.json"), 0o000);
+		const homes = {
+			none: grokHome(t),
+			"another Orrery's": join(t.dir, "other-grok-home"),
+			"not Orrery's": join(t.dir, "foreign-grok-home"),
+			// Root reads any file: there it reads as Orrery's, and the guard stands down, so it is not asked.
+			...(process.getuid?.() === 0 ? {} : { unreadable }),
+		};
+		for (const [home, text] of [[homes["another Orrery's"], grokHookFile("/opt/other/app/current/bin/orrery")], [homes["not Orrery's"], '{"hooks":{}}\n']] as const) {
+			mkdirSync(join(home, "hooks"), { recursive: true });
+			writeFileSync(join(home, "hooks", "orrery.json"), text);
+		}
+		try {
+			for (const [which, home] of Object.entries(homes)) {
+				const env = cleanEnv({ ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: t.folder, GROK_HOME: home });
+				// As it guards in Claude Code: the config file stays read-only, and a config that can't be read denies every call.
+				const [status, stdout] = underGrok("pre-tool-use", configWrite(t, t.configPath), env);
+				expect([which, status, JSON.parse(stdout as string).hookSpecificOutput.permissionDecision]).toEqual([which, 0, "deny"]);
+				const [brokenStatus, brokenOut] = underGrok("pre-tool-use", configWrite(t, t.configPath), { ...env, ORRERY_CONFIG: broken });
+				expect([which, brokenStatus, JSON.parse(brokenOut as string).hookSpecificOutput.permissionDecisionReason]).toEqual([which, 0, expect.stringMatching(/^Orrery guard: Orrery's config could not be read/)]);
+				// The recording events stand down all the same.
+				expect([which, ...underGrok("user-prompt-submit", { session_id: "s1", cwd: t.folder, prompt: "Codename Saffron." }, env)]).toEqual([which, 0, "", ""]);
+			}
+		} finally {
+			chmodSync(join(unreadable, "hooks", "orrery.json"), 0o600);
+		}
+		expect(listSessions(t.agent.dir)).toEqual([]);
 	}, 60_000);
 
 	it("Claude Code started from a Grok shell still records: its hooks' host is that Claude Code, not Grok", () => {

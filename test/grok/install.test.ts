@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parse } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 import { GROK_HOOK_EVENTS } from "../../src/grok/hooks.ts";
-import { addGrokConfig, grokHookFile, grokStatusCommand, isOrreryHookFile, removeGrokConfig } from "../../src/grok/install.ts";
+import { checkTools, type ToolCheck } from "../../src/agent/tools.ts";
+import { addGrokConfig, grokHookFile, grokHooksInstalled, grokStatusCommand, isOrreryHookFile, removeGrokConfig } from "../../src/grok/install.ts";
 import { wireReport } from "../../src/install/wire.ts";
 import { cleanupScratch, fakeRun, grokScratch, tempDir } from "../install/support.ts";
 
@@ -92,6 +93,67 @@ describe("Grok's hook file", () => {
 		expect(isOrreryHookFile(grokHookFile(ORRERY).replace('exec \\"$o\\"', 'exec \\"$o\\" --flag'))).toBe(false);
 		for (const text of ["", "{}", "not json", '{"hooks":{}}', "null"]) expect(isOrreryHookFile(text)).toBe(false);
 	});
+
+	it("a foreign orrery.json is set aside, Orrery's own is replaced", async () => {
+		const t = grokScratch();
+		const hooks = join(t.grok, "hooks", "orrery.json");
+		const config = join(t.grok, "config.toml");
+		const orrery = join(t.current, "bin", "orrery");
+		mkdirSync(dirname(hooks), { recursive: true });
+		const foreign = '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"my-notifier"}]}]}}\n';
+		writeFileSync(hooks, foreign);
+		const replaceForeign = `Grok: replace ${hooks} (now not Orrery's hook file) with Orrery's hooks for every Grok session, then add Orrery's status row and memory tools to ${config} unless it has its own (a copy of it first)?`;
+		// Declined: left as it is, nothing set aside, and listed.
+		const asked: string[] = [];
+		const declined = await wireReport(t.env, { run: fakeRun, confirm: async (what) => (asked.push(what), !what.startsWith("Grok: ")) });
+		expect(asked.filter((what) => what.startsWith("Grok"))).toEqual([replaceForeign]);
+		expect([readFileSync(hooks, "utf8"), asides(hooks), existsSync(config)]).toEqual([foreign, [], false]);
+		expect(declined.left).toEqual([`Grok (still wired to ${hooks} is not Orrery's hook file; tested with Grok 1.0.70)`]);
+		// Confirmed: set aside under setAside's name, then Orrery's written.
+		asked.length = 0;
+		const first = await wireReport(t.env, { run: fakeRun, confirm: async (what) => (asked.push(what), true) });
+		expect(asked.filter((what) => what.startsWith("Grok"))).toEqual([replaceForeign]);
+		const [aside, ...more] = asides(hooks);
+		expect(more).toEqual([]);
+		expect(aside).toMatch(/\/orrery\.json\.before-orrery-\d{4}-\d{2}-\d{2}$/);
+		expect(readFileSync(aside as string, "utf8")).toBe(foreign);
+		expect(readFileSync(hooks, "utf8")).toBe(grokHookFile(orrery));
+		expect(first.lines).toContain(`Grok: set ${hooks} aside as ${aside}`);
+		expect(first.lines).toContain(`Grok: wrote ${hooks}`);
+		expect(first.left).toEqual([]);
+		// Another Orrery's hook file: asked, then replaced without a copy (Orrery's own text, which the other Orrery rewrites).
+		writeFileSync(hooks, grokHookFile("/opt/other/app/current/bin/orrery"));
+		asked.length = 0;
+		const second = await wireReport(t.env, { run: fakeRun, confirm: async (what) => (asked.push(what), true) });
+		expect(asked.filter((what) => what.startsWith("Grok"))).toEqual([`Grok: replace ${hooks} (now runs /opt/other/app/current/bin/orrery) with Orrery's hooks for every Grok session?`]);
+		expect(readFileSync(hooks, "utf8")).toBe(grokHookFile(orrery));
+		expect(asides(hooks)).toEqual([aside]);
+		expect(second.lines.filter((line) => line.startsWith("Grok: "))).toEqual([`Grok: wrote ${hooks}`]);
+	});
+
+	it("knows whether Grok runs Orrery's own hooks for an install: exactly its file, running that install's command", () => {
+		const t = grokScratch();
+		const hooks = join(t.grok, "hooks", "orrery.json");
+		expect(grokHooksInstalled(t.current, t.env)).toBe(false);
+		mkdirSync(dirname(hooks), { recursive: true });
+		writeFileSync(hooks, grokHookFile(join(t.current, "bin", "orrery")));
+		expect(grokHooksInstalled(t.current, t.env)).toBe(true);
+		// Another Orrery's, or not Orrery's: no.
+		writeFileSync(hooks, grokHookFile("/opt/other/app/current/bin/orrery"));
+		expect(grokHooksInstalled(t.current, t.env)).toBe(false);
+		writeFileSync(hooks, '{"hooks":{}}\n');
+		expect(grokHooksInstalled(t.current, t.env)).toBe(false);
+		// One that can't be read: can't be told.
+		if (process.getuid?.() !== 0) {
+			writeFileSync(hooks, grokHookFile(join(t.current, "bin", "orrery")));
+			chmodSync(hooks, 0o000);
+			try {
+				expect(grokHooksInstalled(t.current, t.env)).toBeUndefined();
+			} finally {
+				chmodSync(hooks, 0o600);
+			}
+		}
+	});
 });
 
 describe("Grok's config entries", () => {
@@ -150,6 +212,58 @@ describe("Grok's config entries", () => {
 		expect(lines.filter((line) => line.startsWith("Grok: "))).toEqual([`Grok: already wired (${hooks}; tested with Grok 1.0.70)`]);
 		expect({ hooks: readFileSync(hooks, "utf8"), config: readFileSync(config, "utf8"), asides: asides(config), changed: statSync(config).mtimeMs, written: statSync(hooks).mtimeMs }).toEqual(was);
 		expect(addGrokConfig(was.config, join(t.current, "bin", "orrery"))).toEqual({ next: was.config, added: [], kept: [] });
+	});
+
+	it("a table of Orrery's the person removed is asked about again, never re-added on its own; no copy unless something is written", async () => {
+		const t = grokScratch();
+		const config = join(t.grok, "config.toml");
+		const hooks = join(t.grok, "hooks", "orrery.json");
+		writeFileSync(config, '[ui]\npermission_mode = "auto"\n');
+		await wireReport(t.env, { run: fakeRun, confirm: async () => true });
+		// The person removes Orrery's status row.
+		const wired = readFileSync(config, "utf8");
+		const removed = wired.replace(/\n\[ui\.status_line\]\n(?:[^[\n].*\n)*/, "");
+		expect(removed).not.toBe(wired);
+		expect((parse(removed) as { ui: object }).ui).toEqual({ permission_mode: "auto" });
+		writeFileSync(config, removed);
+		const copies = asides(config);
+		const grok = () => checkTools({ root: t.current, env: t.env }).find((check) => check.id === "grok") as ToolCheck;
+		expect(grok()).toMatchObject({ wiring: "missing", detail: `${config} has no [ui.status_line]; tested with Grok 1.0.70` });
+		// Setup (and an update's) asks, as it asks to connect; declined, nothing is written and no copy made.
+		const asked: string[] = [];
+		const declined = await wireReport(t.env, { run: fakeRun, confirm: async (what) => (asked.push(what), !what.startsWith("Connect Orrery to Grok? (")) });
+		expect(asked.filter((what) => what.includes("Grok"))).toEqual([`Connect Orrery to Grok? (adds Orrery's status row and memory tools to ${config})`]);
+		expect(declined.lines).toContain("Grok: not connected");
+		expect(declined.left).toEqual(["Grok (not connected)"]);
+		expect([readFileSync(config, "utf8"), asides(config)]).toEqual([removed, copies]);
+		// Confirmed: the row comes back, after one more copy, and the hook file is left as it was.
+		const hookFile = readFileSync(hooks, "utf8");
+		const accepted = await wireReport(t.env, { run: fakeRun, confirm: async () => true });
+		expect(accepted.left).toEqual([]);
+		expect(parse(readFileSync(config, "utf8"))).toEqual(parse(wired));
+		const [copy, ...none] = asides(config).filter((path) => !copies.includes(path));
+		expect(none).toEqual([]);
+		expect(readFileSync(copy as string, "utf8")).toBe(removed);
+		expect(accepted.lines).toContain(`Grok: added [ui.status_line] to ${config}`);
+		expect(readFileSync(hooks, "utf8")).toBe(hookFile);
+		expect(grok()).toMatchObject({ wiring: "installed" });
+	});
+
+	it("moves Orrery's hook file of the other install shape without asking, and touches no config that has Orrery's tables", async () => {
+		const t = grokScratch();
+		const config = join(t.grok, "config.toml");
+		const hooks = join(t.grok, "hooks", "orrery.json");
+		await wireReport(t.env, { run: fakeRun, confirm: async () => true });
+		const configText = readFileSync(config, "utf8");
+		const copies = asides(config);
+		const changed = statSync(config).mtimeMs;
+		// The hook file as a source-shape install of this home wrote it.
+		writeFileSync(hooks, grokHookFile(join(t.current, "src", "cli", "main.ts")));
+		const { lines, left } = await wireReport(t.env, { run: fakeRun, confirm: async (what) => !what.includes("Grok") });
+		expect(left).toEqual([]);
+		expect(readFileSync(hooks, "utf8")).toBe(grokHookFile(join(t.current, "bin", "orrery")));
+		expect(lines.filter((line) => line.startsWith("Grok: "))).toEqual([`Grok: wrote ${hooks}`]);
+		expect([readFileSync(config, "utf8"), asides(config), statSync(config).mtimeMs]).toEqual([configText, copies, changed]);
 	});
 
 	it("removeGrokConfig removes only entries that still read as Orrery wrote them", () => {

@@ -22,6 +22,11 @@
  * - SessionEnd changes nothing: the host record and the process's decision go stale once Grok is gone, and the holder
  *   ends when Grok does (a made-up SessionEnd would look the same).
  * - PreToolUse is the guard; until it comes, every call goes through.
+ * - Grok's shared leader (leader mode, which Orrery opens agents without: src/grok/launch.ts grokArgs) runs every
+ *   session's hooks in one process, with its first client's environment, so one session's agent can't be told from
+ *   another's there: a hook whose host is the leader, or one whose command line can't be read (src/grok/host.ts
+ *   grokHostRefusal), decides, claims, records and spools nothing, whatever its environment names; SessionStart in a Grok
+ *   opened as an agent says why.
  * - Their stdout is only their JSON answer (nothing at all when there is none), and they never put message contents on
  *   stderr or in a log.
  *
@@ -66,6 +71,7 @@ import { summaryNotice, updateNotice } from "../claude/notices.ts";
 import { holderLog, validSession } from "../claude/paths.ts";
 import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
 import { grokAgent } from "../codex/pick.ts";
+import { grokHostNotice, grokHostRefusal } from "./host.ts";
 import { type GrokHeld, grokHeldSessions, grokLogStart, grokSessionKind, grokStartHome } from "./log.ts";
 import { GROK_HOOK_EVENTS } from "./names.ts";
 
@@ -114,6 +120,8 @@ export interface GrokHookContext {
 	readonly updateNotices?: boolean;
 	/** How a coding tool's session that is no agent's is looked for (src/agent/plain-nested.ts); tests pass their own. */
 	readonly plain?: PlainDeps;
+	/** A process's command line (default processArgv): whether grokPid is Grok's shared leader (src/grok/host.ts). */
+	readonly argvOf?: (pid: number) => readonly string[] | undefined;
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -356,6 +364,9 @@ export async function sessionStart(input: GrokHookInput, ctx: GrokHookContext): 
 /** The hook's stdout for `event` (an empty string: nothing to say). An event it does not know throws. */
 export async function runGrokHook(event: string, stdin: string, ctx: GrokHookContext): Promise<string> {
 	if (!(GROK_HOOK_EVENTS as readonly string[]).includes(event)) throw new Error(`unknown hook event ${event}; expected one of ${GROK_HOOK_EVENTS.join(", ")}`);
+	// Before anything is read, decided, claimed or recorded: a leader hosts no agent's session (module doc).
+	const refused = grokHostRefusal(ctx.grokPid, ctx.argvOf);
+	if (refused !== undefined) return event === "session-start" && opened(ctx) ? JSON.stringify({ systemMessage: grokHostNotice(refused) }) : "";
 	let input: GrokHookInput;
 	try {
 		const parsed = JSON.parse(stdin) as unknown;

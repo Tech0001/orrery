@@ -179,10 +179,37 @@ export function grokLaunch(cmd: string, args: readonly string[]): [string, strin
 	return [join(grokFolder, "grok"), ["-c", '"$@"; exit $?', "grok", cmd, ...args]];
 }
 
+let leaderFolder: string | undefined;
+
+/**
+ * The folder to start grokLeaderLaunch's command in: it holds the script `agent`, which node runs from there as `node
+ * agent leader …`, so that process's command line is Grok's shared leader's (`<grok> agent leader …`, leader mode).
+ */
+export function grokLeaderFolder(): string {
+	if (leaderFolder === undefined || !existsSync(leaderFolder)) {
+		leaderFolder = tempDir("orrery-grok-leader-");
+		// Runs the command its last argument names, as its child, with the leader's stdin, stdout and stderr; exits as it does.
+		writeFileSync(join(leaderFolder, "agent"), `import("node:child_process").then(({ spawn }) => {\n\tconst [cmd, ...args] = JSON.parse(process.argv[process.argv.length - 1]);\n\tspawn(cmd, args, { stdio: "inherit" }).on("exit", (code) => process.exit(code ?? 1));\n});\n`);
+	}
+	return leaderFolder;
+}
+
+/**
+ * `cmd args` as a child of a stand-in for Grok's shared leader (leader mode: Grok 1.0.70 starts it as `<grok binary>
+ * agent leader --no-exit-on-disconnect …`), which runs every session's hooks and MCP servers. Spawn it in
+ * grokLeaderFolder(). Returns what to spawn.
+ */
+export function grokLeaderLaunch(cmd: string, args: readonly string[]): [string, string[]] {
+	grokLeaderFolder();
+	return [process.execPath, ["agent", "leader", "--no-exit-on-disconnect", JSON.stringify([cmd, ...args])]];
+}
+
 // Imported at the top of a test file, this hook is that file's.
 afterAll(() => {
 	if (grokFolder !== undefined) rmSync(grokFolder, { recursive: true, force: true });
 	grokFolder = undefined;
+	if (leaderFolder !== undefined) rmSync(leaderFolder, { recursive: true, force: true });
+	leaderFolder = undefined;
 	if (childHome !== undefined) rmSync(childHome, { recursive: true, force: true });
 	childHome = undefined;
 	if (transcriptsRoot !== undefined) rmSync(transcriptsRoot, { recursive: true, force: true });

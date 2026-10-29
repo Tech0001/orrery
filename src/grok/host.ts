@@ -6,7 +6,7 @@
  * Codex (src/codex/host.ts).
  */
 
-import { type ProcessInfo, processInfo } from "../agent/process.ts";
+import { type ProcessInfo, processArgv, processInfo } from "../agent/process.ts";
 import { hostPid } from "../codex/host.ts";
 import { isGrokProcess } from "./names.ts";
 
@@ -24,4 +24,33 @@ export function grokPid(start: number = process.ppid, info: (pid: number) => Pro
 export function hostIsGrok(start: number = process.ppid, info: (pid: number) => ProcessInfo | undefined = processInfo): boolean {
 	const name = info(hostPid(start, info))?.name;
 	return name !== undefined && isGrokProcess(name);
+}
+
+/**
+ * Whether `argv` is Grok's shared leader's (leader mode: `--leader`, or `[cli] use_leader = true`), which runs every
+ * session's hooks and MCP servers in one process, with its first client's environment: `<grok> agent [options] leader …`.
+ * Seen live in 1.0.70: started by the first session's grok from Grok's own binary as `<binary> agent leader
+ * --no-exit-on-disconnect …`, and kept running, its parent gone, after that session ends. Read from its first argument
+ * on, so a session's own (Orrery's flags first, its --rules value one argument, or on macOS many words) never reads as it.
+ */
+export function isGrokLeader(argv: readonly string[]): boolean {
+	return argv[1] === "agent" && argv.indexOf("leader", 2) > 1;
+}
+
+/** Why a leader hosts no agent's session (isGrokLeader). */
+export const GROK_LEADER_REFUSAL = "Grok runs this session's hooks and memory tools in its shared leader process (leader mode), where one session's agent can't be told from another's; Orrery opens its agents with --no-leader";
+
+/**
+ * Why Grok's process `pid` (grokPid's) can host no agent's session, or undefined: it is Grok's shared leader, or its
+ * command line can't be read. Judged by its own command line only, never its parent, which a leader may have lost.
+ */
+export function grokHostRefusal(pid: number, argvOf: (pid: number) => readonly string[] | undefined = processArgv): string | undefined {
+	const argv = argvOf(pid);
+	if (argv === undefined) return "Grok's command line can't be read";
+	return isGrokLeader(argv) ? GROK_LEADER_REFUSAL : undefined;
+}
+
+/** What a Grok hook or memory server says when it refuses its host (grokHostRefusal's `why`). */
+export function grokHostNotice(why: string): string {
+	return `Orrery: ${why}. This session records nothing and gets no memory tools.`;
 }

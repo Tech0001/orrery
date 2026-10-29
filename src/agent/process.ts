@@ -233,6 +233,48 @@ export function processStartedAt(pid: number, deps: StartDeps & { readonly bootT
 	return Date.UTC(year, month, day, hours, minutes, seconds);
 }
 
+/** How processArgv reads a process's arguments: each defaults to this system's own way (tests give fakes). */
+export interface ArgvDeps {
+	readonly platform?: NodeJS.Platform;
+	/** macOS: ps's output for `args` (default psOutput). */
+	readonly ps?: (args: readonly string[]) => string | undefined;
+	/** macOS: the process's comm, its whole argv[0] (default: ps's `comm=`). */
+	readonly comm?: (pid: number) => string | undefined;
+}
+
+/**
+ * The arguments process `pid` was started with, argv[0] first, or undefined when they can't be read (gone, or no way to
+ * ask here). Linux: /proc/<pid>/cmdline, exactly. macOS: ps's `args=`, which joins them with spaces: argv[0] is comm
+ * (whole, spaces and all) when the line starts with it, else it ends at the first word with comm's file name, else at
+ * the first space; each word after it is one argument, so an argument holding a space comes as several.
+ */
+export function processArgv(pid: number, deps: ArgvDeps = {}): readonly string[] | undefined {
+	if (!Number.isInteger(pid) || pid < 1) return undefined;
+	const platform = deps.platform ?? process.platform;
+	if (platform === "linux") {
+		try {
+			const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+			if (argv.at(-1) === "") argv.pop();
+			return argv.length > 0 ? argv : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+	if (platform !== "darwin") return undefined;
+	const ps = deps.ps ?? psOutput;
+	const args = ps(["-ww", "-o", "args=", "-p", String(pid)])?.trim();
+	if (args === undefined || args === "") return undefined;
+	const first = (deps.comm ?? ((of: number) => ps(["-o", "comm=", "-p", String(of)])?.trim() || undefined))(pid);
+	if (first !== undefined && args.startsWith(first) && (args.length === first.length || /\s/.test(args.charAt(first.length)))) {
+		return [first, ...args.slice(first.length).split(/\s+/).filter((arg) => arg !== "")];
+	}
+	// Args that don't start with comm (comm the program's short name, say): argv[0] ends at the first word with comm's
+	// file name, else at the first space.
+	const words = args.split(/\s+/);
+	const end = first === undefined ? -1 : words.findIndex((word) => basename(word) === basename(first));
+	return end > 0 ? [words.slice(0, end + 1).join(" "), ...words.slice(end + 1)] : words;
+}
+
 /** A process's parent and name, or undefined when it cannot be read (gone, or no way to ask here). */
 export function processInfo(pid: number): ProcessInfo | undefined {
 	if (!Number.isInteger(pid) || pid < 1) return undefined;

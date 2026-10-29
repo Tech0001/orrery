@@ -268,25 +268,48 @@ export function grokConfigEdit(orrery: string, config: string): (text: string) =
 /** Whether `path` is `root`'s Orrery command (`entry`), by its literal path: app/current stays in it. */
 const sameCommand = (path: string, entry: string) => resolve(path) === resolve(entry);
 
+/** Grok's hook file as it is: its text, or why there is none to read. */
+type HookFile = { readonly kind: "text"; readonly text: string } | { readonly kind: "none" | "not a plain file" | "unreadable" };
+
+/** Reads Grok's hook file at `hooks`, a link there not followed. */
+function readHookFile(hooks: string): HookFile {
+	try {
+		if (!lstatSync(hooks).isFile()) return { kind: "not a plain file" };
+		return { kind: "text", text: readFileSync(hooks, "utf8") };
+	} catch (error) {
+		return { kind: (error as { code?: unknown }).code === "ENOENT" ? "none" : "unreadable" };
+	}
+}
+
+/**
+ * Whether Grok runs Orrery's own hooks for the Orrery at `root`: its hook file is exactly Orrery's, running this root's
+ * command (grokWiring's "installed" also needs the config tables). Undefined when the file can't be read. Under Grok, the
+ * Claude Code plugin's guard stands down only when this is true (src/cli/main.ts claudeHook).
+ */
+export function grokHooksInstalled(root: string, env: NodeJS.ProcessEnv): boolean | undefined {
+	const file = readHookFile(grokFiles(env).hooks);
+	if (file.kind === "unreadable") return undefined;
+	const target = file.kind === "text" ? grokHookTarget(file.text) : undefined;
+	return target !== undefined && sameCommand(target, entries(root).cli);
+}
+
 /**
  * Grok's row in the tools check: Orrery's hook file and config tables in Grok's folder, for the Orrery at `root`.
- * - "missing": no hook file. "other": a hook file that is not Orrery's, or Orrery's for another Orrery (`now` says which).
- * - "update available": Orrery's for this root's other install shape, or the config lacks a table of Orrery's.
+ * - "missing": no hook file; or Orrery's, for this root, with a table of Orrery's missing from the config (none written
+ *   yet, or the person removed it): adding one is asked, as connecting is, and never done by an update on its own.
+ * - "other": a hook file that is not Orrery's, or Orrery's for another Orrery (`now` says which).
+ * - "update available": Orrery's for this root's other install shape, the config tables there.
  * - "installed": the hook file runs this root's command and the config has both tables (a status line of the person's
  *   own counts). "unknown": a file that can't be read, or a config that is not TOML.
  */
 export function grokWiring(root: string, env: NodeJS.ProcessEnv): Pick<ToolCheck, "wiring" | "detail" | "now"> {
 	const { hooks, config } = grokFiles(env);
 	const orrery = entries(root).cli;
-	let hookText: string | undefined;
-	try {
-		if (!lstatSync(hooks).isFile()) return { wiring: "other", detail: `${safeText(hooks)} is not a plain file`, now: "not a plain file" };
-		hookText = readFileSync(hooks, "utf8");
-	} catch (error) {
-		if ((error as { code?: unknown }).code !== "ENOENT") return { wiring: "unknown", detail: `cannot read ${safeText(hooks)}` };
-	}
-	const target = hookText === undefined ? undefined : grokHookTarget(hookText);
-	if (hookText !== undefined && target === undefined) return { wiring: "other", detail: `${safeText(hooks)} is not Orrery's hook file`, now: "not Orrery's hook file" };
+	const file = readHookFile(hooks);
+	if (file.kind === "not a plain file") return { wiring: "other", detail: `${safeText(hooks)} is not a plain file`, now: "not a plain file" };
+	if (file.kind === "unreadable") return { wiring: "unknown", detail: `cannot read ${safeText(hooks)}` };
+	const target = file.kind === "text" ? grokHookTarget(file.text) : undefined;
+	if (file.kind === "text" && target === undefined) return { wiring: "other", detail: `${safeText(hooks)} is not Orrery's hook file`, now: "not Orrery's hook file" };
 	let configText = "";
 	try {
 		configText = readFileSync(config, "utf8");
@@ -301,12 +324,12 @@ export function grokWiring(root: string, env: NodeJS.ProcessEnv): Pick<ToolCheck
 		return { wiring: "unknown", detail: `${safeText(config)}: ${safeText(why)}` };
 	}
 	if (target === undefined) return { wiring: "missing", detail: `no ${safeText(hooks)}` };
-	if (!sameCommand(target, orrery)) {
-		const otherShape = ENTRY_TAILS.cli.map((tail) => join(root, tail)).some((entry) => sameCommand(target, entry));
-		if (otherShape) return { wiring: "update available", detail: `Orrery's hook file runs this Orrery's other install shape; setup moves it to this version's`, now: `runs ${safeText(target)}` };
-		return { wiring: "other", detail: `${safeText(hooks)} runs another Orrery: ${safeText(target)}`, now: `runs ${safeText(target)}` };
-	}
-	if (added.length > 0) return { wiring: "update available", detail: `${safeText(config)} has no ${added.map((name) => `[${name}]`).join(" or ")}` };
+	const own = sameCommand(target, orrery);
+	const otherShape = !own && ENTRY_TAILS.cli.map((tail) => join(root, tail)).some((entry) => sameCommand(target, entry));
+	if (!own && !otherShape) return { wiring: "other", detail: `${safeText(hooks)} runs another Orrery: ${safeText(target)}`, now: `runs ${safeText(target)}` };
+	const moved = otherShape ? { now: `runs ${safeText(target)}` } : {};
+	if (added.length > 0) return { wiring: "missing", detail: `${safeText(config)} has no ${added.map((name) => `[${name}]`).join(" or ")}`, ...moved };
+	if (otherShape) return { wiring: "update available", detail: `Orrery's hook file runs this Orrery's other install shape; setup moves it to this version's`, ...moved };
 	return { wiring: "installed", detail: safeText(hooks) };
 }
 

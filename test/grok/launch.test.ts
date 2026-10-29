@@ -13,10 +13,10 @@ function rules(args: readonly string[]): string[] {
 }
 
 describe("grokLaunch and grokArgs", () => {
-	it("gives the memory section and the instructions through --rules, before the person's arguments", () => {
+	it("gives the memory section and the instructions through --rules, after --no-leader and before the person's arguments", () => {
 		const memory = "# Memory\n\nthe view";
 		const args = grokArgs(grokLaunch(agent, memory, instructions("Keep notes.\n")), ["--resume", "abc"]);
-		expect(args.slice(0, 1)).toEqual(["--rules"]);
+		expect(args.slice(0, 2)).toEqual(["--no-leader", "--rules"]);
 		expect(args.slice(-2)).toEqual(["--resume", "abc"]);
 		const text = rules(args).join("\n");
 		expect(text).toContain(memory);
@@ -74,7 +74,17 @@ describe("grokLaunch and grokArgs", () => {
 
 	it("opens with the memory only when there are no instructions, and with nothing to add when there is neither", () => {
 		expect(grokLaunch(agent, "# Memory", undefined)).toEqual({ args: ["--rules", "# Memory"], holds: ["memory"], notices: [] });
-		expect(grokArgs(grokLaunch(agent, "", undefined), ["-p", "hi"])).toEqual(["-p", "hi"]);
+		expect(grokArgs(grokLaunch(agent, "", undefined), ["-p", "hi"])).toEqual(["--no-leader", "-p", "hi"]);
+	});
+
+	it("always opens Grok with --no-leader, and gives it once when the person gives it too (Grok takes it once)", () => {
+		// Grok's leader mode ([cli] use_leader, --leader) runs every session's hooks and memory tools in one shared process,
+		// with the first client's environment; --no-leader keeps this session's in its own grok (seen live, 1.0.70).
+		const launch = grokLaunch(agent, "# Memory", undefined);
+		expect(grokArgs(launch, [])).toEqual(["--no-leader", "--rules", "# Memory"]);
+		expect(grokArgs(launch, ["--no-leader", "-c"])).toEqual(["--rules", "# Memory", "--no-leader", "-c"]);
+		// After a --, a prompt's words: Orrery's own still goes first.
+		expect(grokArgs(launch, ["--", "--no-leader"])).toEqual(["--no-leader", "--rules", "# Memory", "--", "--no-leader"]);
 	});
 });
 
@@ -97,6 +107,19 @@ describe("grokArgsRefusal", () => {
 
 	it("lets them through when Orrery passes no --rules (no memory, no instructions)", () => {
 		expect(grokArgsRefusal("Atlas", grokLaunch(agent, "", undefined), ["--rules", "x"])).toBeUndefined();
+	});
+
+	it("refuses the person's own --leader before a --, with or without Orrery's --rules: Orrery opens Grok with --no-leader", () => {
+		const refusal = "Orrery opens Grok with --no-leader: in leader mode Grok runs every session's hooks and memory tools in one shared process, where one agent's session can't be told from another's. Open Atlas without --leader.";
+		for (const launch of [withBoth, grokLaunch(agent, "", undefined)]) {
+			// Grok's own leader is `grok agent leader`, which Grok parses after Orrery's flags too.
+			for (const args of [["--leader"], ["-c", "--leader"], ["--leader=true"], ["--leader", "--rules", "x"], ["agent", "leader"], ["agent", "--plugin-dir", "/p", "leader"]]) {
+				expect(grokArgsRefusal("Atlas", launch, args), args.join(" ")).toBe(refusal);
+			}
+			for (const args of [["--", "--leader"], ["--", "agent", "leader"], ["--leaderx"], ["--no-leader"], ["--leader-socket", "/s"], ["leader", "agent"], ["agent", "stdio"]]) {
+				expect(grokArgsRefusal("Atlas", launch, args), args.join(" ")).toBeUndefined();
+			}
+		}
 	});
 });
 

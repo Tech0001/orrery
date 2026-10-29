@@ -49,10 +49,11 @@ describe("checkTools", () => {
 		expect(install.ok, install.output).toBe(true);
 		expect(grok()).toMatchObject({ wiring: "installed", detail: `${hooks}; tested with Grok 1.0.70` });
 		expect(installSteps(grok(), root, found.env)).toEqual([]);
-		// A config entry gone: Orrery's own wiring to finish, without asking.
+		// A config entry gone (the person may have removed it): missing, so adding it again is asked, as connecting is.
 		const config = join(found.home, ".grok", "config.toml");
 		writeFileSync(config, readFileSync(config, "utf8").replace(/\[ui\.status_line\][^[]*/, ""));
-		expect(grok()).toMatchObject({ wiring: "update available", detail: `${config} has no [ui.status_line]; tested with Grok 1.0.70` });
+		expect(grok()).toMatchObject({ wiring: "missing", detail: `${config} has no [ui.status_line]; tested with Grok 1.0.70` });
+		expect(installSteps(grok(), root, found.env).map((step) => step.kind)).toEqual(["edit"]);
 		const newer = fakeBin({ grok: 'echo "grok 1.1.0 (abc) [stable]"' });
 		expect(checkTools({ root, env: newer.env }).find((t) => t.id === "grok")?.detail).toContain("tested with Grok 1.0.70, this is 1.1.0");
 		const none = fakeBin({});
