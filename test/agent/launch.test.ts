@@ -4,9 +4,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { agentMode, writeSetupMarker } from "../../src/claude/view-file.ts";
 import { parseConfig } from "../../src/agent/config.ts";
 import { applyFix, checkCodexHooks, checkOpenCodePlugin, exitText, launchLabel, launchPlan, runAgent, runTool, withoutOrrery } from "../../src/agent/launch.ts";
-import { cutNotice, writeInstructions } from "../../src/agent/instructions.ts";
+import { cutNotice, instructionsSection, readInstructions, writeInstructions } from "../../src/agent/instructions.ts";
 import { codexLaunch } from "../../src/codex/launch.ts";
-import { GROK_ARG_MAX, grokCutNote, grokCutNotice } from "../../src/grok/launch.ts";
+import { GROK_ARG_MAX } from "../../src/grok/launch.ts";
+import { grokLeftOut, memorySection } from "../../src/agent/view-text.ts";
 import { claimToken } from "../../src/agent/pick.ts";
 import { agentOverview } from "../../src/agent/overview.ts";
 import { MemoryStore, MemoryView, Part } from "../../src/memory/index.ts";
@@ -258,7 +259,10 @@ describe("opening an agent in Grok", () => {
 		expect(launchPlan(config, row, tools, { args: ["-p", "hi"] }).args).toEqual(["-p", "hi"]);
 	});
 
-	it("keeps every argument within Grok's limit for a large memory of multi-byte text, saying the instructions were cut", () => {
+	/** What the person is told when the session starts with the memory's newest lines, from line `from`. */
+	const newestNotice = (from: string) => `Orrery: A's memory is too large for Grok's command line, so this session starts with its newest lines, from line ${from}; older lines are left out, and the zoom and search tools reach them.`;
+
+	it("keeps every argument within Grok's limit for a large memory of multi-byte text: the instructions whole, the memory's newest lines", () => {
 		const { config, row, tools } = setup("grok", undefined, "[agents.A.memory]\nview_bytes = 125000\n");
 		const agentDir = config.agents.get("A")!.dir;
 		mkdirSync(agentDir, { recursive: true });
@@ -269,13 +273,17 @@ describe("opening an agent in Grok", () => {
 			store.saveNode(new Part(0, i), `user: ${i} ${"\u20ac".repeat(1400)}`);
 		}
 		store.close();
+		// Over 32 KB: cut there, as for every tool.
 		writeInstructions(agentDir, "Instruction line with \u00e9 and more words.\n".repeat(850));
 		const plan = launchPlan(config, row, tools);
-		for (const arg of plan.args) expect(Buffer.byteLength(arg)).toBeLessThanOrEqual(GROK_ARG_MAX);
-		expect(plan.args[1]).toContain("\u20ac\u20ac\u20ac");
-		// Its own view fits; the instructions don't all fit beside it, and the model is told so.
-		expect(plan.args[1]?.endsWith(grokCutNote("A"))).toBe(true);
-		expect(plan.steps.map((step) => step.text)).toEqual([grokCutNotice("A")]);
+		expect(plan.args).toHaveLength(2);
+		const rules = plan.args[1] as string;
+		expect(Buffer.byteLength(rules)).toBeLessThanOrEqual(GROK_ARG_MAX);
+		// The instructions whole, at the 32 KB every tool gets; the memory's newest lines before them.
+		expect(rules.endsWith(`|user: 29 ${"\u20ac".repeat(1400)}\n</chat>\n\n${instructionsSection("A", readInstructions(agentDir)!)}`)).toBe(true);
+		const from = /\nThe view below starts at line (\d+\+1):/.exec(rules)?.[1] as string;
+		expect(rules).toContain(`\n\n${grokLeftOut(from)}\n<chat>\n${from}|user: ${Number.parseInt(from, 10)} \u20ac`);
+		expect(plan.steps.map((step) => step.text)).toEqual([newestNotice(from), cutNotice("A")]);
 	});
 
 	/** Short lines of multi-byte text, about 100 bytes each. */
@@ -316,23 +324,79 @@ describe("opening an agent in Grok", () => {
 		expect(readFileSync(out, "utf8")).toContain(`${rules}\n`);
 	});
 
-	it("starts without the memory, saying so, when no smaller view fits for want of summaries", () => {
+	it("gives the instructions their room first: 32 KB of them go in whole beside a smaller view near the ceiling", () => {
 		const { config, row, tools } = setup("grok");
 		const agentDir = config.agents.get("A")!.dir;
 		mkdirSync(agentDir, { recursive: true });
-		fillMemory(join(agentDir, "memory.sqlite"), 1250, line, false);
-		writeInstructions(agentDir, "Keep notes.\n");
+		fillMemory(join(agentDir, "memory.sqlite"), 1250, line, true);
+		// 32,759 bytes: under 32 KB, so whole for every tool.
+		const text = "Instruction line with \u00e9 and more words.\n".repeat(799);
+		writeInstructions(agentDir, text);
 		const plan = launchPlan(config, row, tools);
-		expect(plan.blocked).toBeUndefined();
-		expect(plan.args).toEqual(["--rules", "# Agent: A\n\nKeep notes."]);
-		expect(plan.steps).toEqual([{ text: "Orrery: A's memory doesn't fit on Grok's command line until more of it is summarized, so this session starts without it.", confirm: false }]);
+		const rules = plan.args[1] as string;
+		expect(Buffer.byteLength(rules)).toBeLessThanOrEqual(GROK_ARG_MAX);
+		expect(rules.startsWith("# Memory\n\n")).toBe(true);
+		expect(rules).toContain("summary of 0+");
+		expect(rules).not.toContain("are left out");
+		expect(rules.endsWith(`|user: ${line(1249)}\n</chat>\n\n# Agent: A\n\n${text.trimEnd()}`)).toBe(true);
+		expect(plan.steps).toEqual([{ text: "Orrery: A's memory view is too large for Grok's command line, so this session starts with a smaller view of it.", confirm: false }]);
 	});
 
-	it("refuses the person's own --rules beside Orrery's, which Grok would refuse as a second one", () => {
+	it("starts with the memory's newest lines, saying so to the model and the person, when no smaller view fits for want of summaries", () => {
 		const { config, row, tools } = setup("grok");
-		writeInstructions(config.agents.get("A")!.dir, "Keep notes.\n");
+		const agentDir = config.agents.get("A")!.dir;
+		mkdirSync(agentDir, { recursive: true });
+		// Summaries stalled: about 127 KB of short lines kept word for word, none merged.
+		fillMemory(join(agentDir, "memory.sqlite"), 1250, line, false);
+		writeInstructions(agentDir, "Keep notes.\n");
+		const before = savedView(agentDir);
+		const plan = launchPlan(config, row, tools);
+		expect(plan.blocked).toBeUndefined();
+		const rules = plan.args[1] as string;
+		expect(plan.args).toEqual(["--rules", rules]);
+		expect(Buffer.byteLength(rules)).toBeLessThanOrEqual(GROK_ARG_MAX);
+		// The normal section: Grok's words and its tool pointer.
+		expect(rules.startsWith("# Memory\n\n")).toBe(true);
+		expect(rules).toContain("look for the zoom, date and search tools");
+		// The right first line: the oldest from which the section still fits beside the instructions (one by one here).
+		const instructions = "\n\n# Agent: A\n\nKeep notes.";
+		const store = MemoryStore.openReadOnly(join(agentDir, "memory.sqlite"));
+		try {
+			const view = new MemoryView(store, 128_000);
+			const k = view.parts.findIndex((part, at) => at > 0 && Buffer.byteLength(memorySection(view, "grok", { from: part }) + instructions) <= GROK_ARG_MAX);
+			expect(k).toBeGreaterThan(0);
+			const from = view.parts[k]!.address;
+			expect(from).toBe(`${k}+1`);
+			expect(rules).toContain(`\n\n${grokLeftOut(from)}\n<chat>\n${from}|user: ${line(k)}\n`);
+			expect(rules).not.toContain(`\n${k - 1}+1|`);
+			expect(rules).toBe(`${memorySection(view, "grok", { from: view.parts[k] })}${instructions}`);
+			expect(plan.steps).toEqual([{ text: newestNotice(from), confirm: false }]);
+		} finally {
+			store.close();
+		}
+		expect(rules.endsWith(`|user: ${line(1249)}\n</chat>${instructions}`)).toBe(true);
+		expect(savedView(agentDir)).toBe(before);
+	});
+
+	it("starts without the memory, saying so, when not even its newest line fits", () => {
+		const { config, row, tools } = setup("grok");
+		const agentDir = config.agents.get("A")!.dir;
+		mkdirSync(agentDir, { recursive: true });
+		fillMemory(join(agentDir, "memory.sqlite"), 2, (i) => (i === 1 ? "x".repeat(140_000) : "hello"), false);
+		writeInstructions(agentDir, "Keep notes.\n");
+		const plan = launchPlan(config, row, tools);
+		expect(plan.args).toEqual(["--rules", "# Agent: A\n\nKeep notes."]);
+		expect(plan.steps).toEqual([{ text: "Orrery: A's memory doesn't fit on Grok's command line, not even its newest line, so this session starts without it.", confirm: false }]);
+	});
+
+	it("refuses the person's own --rules beside Orrery's, which Grok would refuse as a second one, naming what Orrery passes", () => {
+		const { config, row, tools } = setup("grok");
+		const agentDir = config.agents.get("A")!.dir;
+		writeInstructions(agentDir, "Keep notes.\n");
 		const plan = launchPlan(config, row, tools, { args: ["--rules", "be brief"] });
-		expect(plan).toMatchObject({ steps: [], blocked: "Orrery gives Grok A's memory and instructions as its --rules, which Grok takes once: put your rules in A's instructions.md, or open A without them." });
+		expect(plan).toMatchObject({ steps: [], blocked: "Orrery gives Grok A's instructions as its --rules, which Grok takes once: put your rules in A's instructions.md, or open A without them." });
+		fillMemory(join(agentDir, "memory.sqlite"), 1, () => "hello", false);
+		expect(launchPlan(config, row, tools, { args: ["--rules=be brief"] }).blocked).toBe("Orrery gives Grok A's memory and instructions as its --rules, which Grok takes once: put your rules in A's instructions.md, or open A without them.");
 	});
 });
 

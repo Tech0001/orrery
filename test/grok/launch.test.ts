@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { cutNotice, type Instructions } from "../../src/agent/instructions.ts";
-import { GROK_ARG_MAX, grokArgs, grokArgsRefusal, grokCutNote, grokCutNotice, grokLaunch, grokMemoryRoom } from "../../src/grok/launch.ts";
+import { cutNotice, INSTRUCTIONS_MAX_BYTES, type Instructions } from "../../src/agent/instructions.ts";
+import { GROK_ARG_MAX, grokArgs, grokArgsRefusal, grokLaunch, grokMemoryRoom } from "../../src/grok/launch.ts";
 import { isGrokProcess } from "../../src/grok/names.ts";
 
 const agent = { name: "Atlas", dir: "/unused" };
@@ -26,50 +26,45 @@ describe("grokLaunch and grokArgs", () => {
 		expect(text.indexOf(memory)).toBeLessThan(text.indexOf("# Agent: Atlas"));
 	});
 
-	it("keeps the value within GROK_ARG_MAX UTF-8 bytes, the memory whole, the instructions cut at a line and ended with a note saying so", () => {
-		const memory = "€".repeat(42_333); // 126,999 bytes
-		const text = "Instruction line with é and more words.\n".repeat(900); // about 36 KB
-		const launch = grokLaunch(agent, memory, instructions(text));
+	it("passes the instructions whole beside a memory of multi-byte text at its room: one value of at most GROK_ARG_MAX UTF-8 bytes", () => {
+		// The most a file gives (32 KB), of multi-byte lines.
+		const given = instructions("Instruction line with é and more words.\n".repeat(Math.floor(INSTRUCTIONS_MAX_BYTES / 41)));
+		const room = grokMemoryRoom("Atlas", given);
+		const memory = "€".repeat(Math.floor(room / 3));
+		const launch = grokLaunch(agent, memory, given);
 		const [value, ...more] = rules(launch.args);
 		expect(more).toEqual([]);
+		expect(value).toBe(`${memory}\n\n# Agent: Atlas\n\n${given.text.trimEnd()}`);
 		expect(bytes(value as string)).toBeLessThanOrEqual(GROK_ARG_MAX);
-		expect(value?.startsWith(`${memory}\n\n# Agent: Atlas\n\n`)).toBe(true);
-		// The model is told the instructions were cut to fit Grok's command line, not that the file is over 32 KB.
-		expect(value?.endsWith(`\n\n${grokCutNote("Atlas")}`)).toBe(true);
-		expect(value).not.toContain(cutNotice("Atlas"));
-		expect(launch.notices).toEqual([grokCutNotice("Atlas")]);
-		// What is kept of the instructions ends where a line of them ends.
-		const kept = (value as string).slice(memory.length + 2, -bytes(`\n\n${grokCutNote("Atlas")}`));
-		const section = `# Agent: Atlas\n\n${text.trimEnd()}`;
-		expect(section.startsWith(kept)).toBe(true);
-		expect(section.charAt(kept.length)).toBe("\n");
+		expect(launch.notices).toEqual([]);
 	});
 
-	it("still says the instructions were cut, to the model too, when none of them fits", () => {
-		// Longer than the note, so they don't fit in the room kept for it.
-		const given = instructions("Hello there.\n".repeat(20));
+	it("fills one argument exactly with a memory at its room; a byte more throws (its caller fits the memory first)", () => {
+		const given = instructions("Do the work.\n");
 		const memory = "m".repeat(grokMemoryRoom("Atlas", given));
-		const launch = grokLaunch(agent, memory, given);
-		expect(rules(launch.args)).toEqual([`${memory}\n\n${grokCutNote("Atlas")}`]);
-		expect(bytes(rules(launch.args)[0] as string)).toBe(GROK_ARG_MAX);
-		expect(launch.notices).toEqual([grokCutNotice("Atlas")]);
+		expect(bytes(rules(grokLaunch(agent, memory, given).args)[0] as string)).toBe(GROK_ARG_MAX);
+		expect(() => grokLaunch(agent, `${memory}m`, given)).toThrow(RangeError);
+		expect(() => grokLaunch(agent, "m".repeat(GROK_ARG_MAX + 1), undefined)).toThrow(/over the 131000 bytes one argument may hold/);
 	});
 
-	it("passes instructions that just fit whole beside the largest memory, saying nothing when the file was whole; a byte more is cut", () => {
-		const heading = "# Agent: Atlas\n\n";
-		const exact = instructions("x".repeat(bytes(grokCutNote("Atlas")) - bytes(heading)));
-		const memory = "m".repeat(grokMemoryRoom("Atlas", exact));
-		const whole = grokLaunch(agent, memory, exact);
-		expect(rules(whole.args)).toEqual([`${memory}\n\n${heading}${exact.text}`]);
-		expect(bytes(rules(whole.args)[0] as string)).toBe(GROK_ARG_MAX);
-		expect(whole.notices).toEqual([]);
-		const over = grokLaunch(agent, memory, instructions(`${exact.text}x`));
-		expect(rules(over.args)[0]?.endsWith(grokCutNote("Atlas"))).toBe(true);
-		expect(over.notices).toEqual([grokCutNotice("Atlas")]);
+	it("gives the memory all of GROK_ARG_MAX without instructions, less the whole instructions section and the join with them", () => {
+		expect(grokMemoryRoom("Atlas", undefined)).toBe(GROK_ARG_MAX);
+		expect(grokMemoryRoom("Atlas", instructions("Keep notes.\n"))).toBe(GROK_ARG_MAX - bytes("\n\n# Agent: Atlas\n\nKeep notes."));
+		expect(rules(grokLaunch(agent, "m".repeat(GROK_ARG_MAX), undefined).args)[0]).toHaveLength(GROK_ARG_MAX);
 	});
 
-	it("says the 32 KB notice when the file itself was cut", () => {
-		expect(grokLaunch(agent, "m", instructions("x", true)).notices).toEqual([cutNotice("Atlas")]);
+	it("leaves the memory most of the argument beside the largest instructions, under the longest agent name", () => {
+		// 32 characters, the longest name; 32 KB, the most a file gives.
+		const name = `A${"b".repeat(31)}`;
+		const room = grokMemoryRoom(name, instructions("x".repeat(INSTRUCTIONS_MAX_BYTES), true));
+		expect(room).toBe(GROK_ARG_MAX - bytes(`\n\n# Agent: ${name}\n\n`) - INSTRUCTIONS_MAX_BYTES);
+		expect(room).toBeGreaterThan(98_000);
+	});
+
+	it("says the 32 KB notice when the file itself was cut; the instructions still go in whole", () => {
+		const launch = grokLaunch(agent, "m", instructions("x", true));
+		expect(launch.notices).toEqual([cutNotice("Atlas")]);
+		expect(rules(launch.args)).toEqual(["m\n\n# Agent: Atlas\n\nx"]);
 	});
 
 	it("opens with the instructions only when there is no memory yet", () => {
@@ -78,33 +73,26 @@ describe("grokLaunch and grokArgs", () => {
 	});
 
 	it("opens with the memory only when there are no instructions, and with nothing to add when there is neither", () => {
-		expect(grokLaunch(agent, "# Memory", undefined)).toEqual({ args: ["--rules", "# Memory"], notices: [] });
+		expect(grokLaunch(agent, "# Memory", undefined)).toEqual({ args: ["--rules", "# Memory"], holds: ["memory"], notices: [] });
 		expect(grokArgs(grokLaunch(agent, "", undefined), ["-p", "hi"])).toEqual(["-p", "hi"]);
-	});
-
-	it("gives the memory all of GROK_ARG_MAX without instructions, less the room for the cut note with them", () => {
-		expect(grokMemoryRoom("Atlas", undefined)).toBe(GROK_ARG_MAX);
-		expect(grokMemoryRoom("Atlas", instructions("x"))).toBe(GROK_ARG_MAX - bytes(`\n\n${grokCutNote("Atlas")}`));
-		expect(rules(grokLaunch(agent, "m".repeat(GROK_ARG_MAX), undefined).args)[0]).toHaveLength(GROK_ARG_MAX);
-	});
-
-	it("throws for a memory section over its room (its caller fits the memory first)", () => {
-		expect(() => grokLaunch(agent, "m".repeat(GROK_ARG_MAX + 1), undefined)).toThrow(RangeError);
-		const given = instructions("x");
-		expect(() => grokLaunch(agent, "m".repeat(grokMemoryRoom("Atlas", given) + 1), given)).toThrow(/over the \d+ it may take on Grok's command line/);
 	});
 });
 
 describe("grokArgsRefusal", () => {
-	const withRules = grokLaunch(agent, "# Memory", undefined);
+	const withBoth = grokLaunch(agent, "# Memory", instructions("Keep notes.\n"));
 
 	it("refuses the person's own --rules beside Orrery's, in each spelling, before a --", () => {
 		for (const args of [["--rules", "x"], ["--rules=x"], ["-c", "--append-system-prompt", "x"], ["--append-system-prompt=x"]]) {
-			expect(grokArgsRefusal("Atlas", withRules, args), args.join(" ")).toBe("Orrery gives Grok Atlas's memory and instructions as its --rules, which Grok takes once: put your rules in Atlas's instructions.md, or open Atlas without them.");
+			expect(grokArgsRefusal("Atlas", withBoth, args), args.join(" ")).toBe("Orrery gives Grok Atlas's memory and instructions as its --rules, which Grok takes once: put your rules in Atlas's instructions.md, or open Atlas without them.");
 		}
 		// After a --, a prompt's words.
-		expect(grokArgsRefusal("Atlas", withRules, ["--", "--rules"])).toBeUndefined();
-		expect(grokArgsRefusal("Atlas", withRules, ["--resume", "abc", "--rulesx"])).toBeUndefined();
+		expect(grokArgsRefusal("Atlas", withBoth, ["--", "--rules"])).toBeUndefined();
+		expect(grokArgsRefusal("Atlas", withBoth, ["--resume", "abc", "--rulesx"])).toBeUndefined();
+	});
+
+	it("names what Orrery passes: the memory alone, or the instructions alone", () => {
+		expect(grokArgsRefusal("Atlas", grokLaunch(agent, "# Memory", undefined), ["--rules", "x"])).toBe("Orrery gives Grok Atlas's memory as its --rules, which Grok takes once: put your rules in Atlas's instructions.md, or open Atlas without them.");
+		expect(grokArgsRefusal("Atlas", grokLaunch(agent, "", instructions("Keep notes.\n")), ["--rules", "x"])).toBe("Orrery gives Grok Atlas's instructions as its --rules, which Grok takes once: put your rules in Atlas's instructions.md, or open Atlas without them.");
 	});
 
 	it("lets them through when Orrery passes no --rules (no memory, no instructions)", () => {

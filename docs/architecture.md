@@ -583,8 +583,10 @@ command it was told to run.
   host record names.
 - Grok: an agent's memory section and instructions travel on Grok's command line (`--rules`), so while the session runs
   other users of the computer can read them (`ps`, `/proc/<pid>/cmdline`), though the memory files themselves are
-  private (mode 0600). One argument holds at most 131,000 bytes: a memory view too large for it starts the session with
-  a smaller view (or, until more of the memory is summarized, none), and instructions that don't fit beside it are cut.
+  private (mode 0600). One argument holds at most 131,000 bytes. The instructions go in whole (at most 32 KB, as for
+  every tool) and the memory section gets the rest: a memory view too large for it starts the session with a smaller
+  view, or, while its newer lines aren't summarized yet, with that view's newest lines. The model is told that the
+  older lines are left out, and its zoom and search tools still reach them.
 - Shell-text gaps: `cd ~/.claude` and then relative paths; tools that walk a folder (`find ~/.claude -exec …`);
   `find … -exec orrery {}`, which takes its arguments from file names; a wildcard spelling of Orrery's home
   (`ls -d ~/.orr*`), and extglob and zsh alternation (`cat ~/.(orrery|x)/config.toml`); a recursive command rooted

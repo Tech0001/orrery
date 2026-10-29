@@ -2,8 +2,9 @@
  * What opening an agent in Grok Build adds to its command line: one `--rules` value, which Grok appends to the system
  * prompt for the whole session and keeps through /compact. It holds the agent's memory section, then its instructions.
  * Grok 1.0.70 accepts `--rules` once only ("cannot be used multiple times"), and Linux takes at most 128 KiB in one
- * argument. So the memory section, never cut, is made to fit (a view at a smaller ceiling when the agent's is too large:
- * fitMemory, src/agent/memory-read.ts), and the instructions get the room it leaves, cut with a note that says so.
+ * argument. The instructions go in whole (at most 32 KB, as for every tool: readInstructions), and the memory section
+ * takes the room they leave: a view at a smaller ceiling when the agent's own is too large, or that view's newest
+ * lines, the older left out, which the zoom and search tools still reach (fitMemory, src/agent/memory-read.ts).
  * The text is on Grok's command line, where other users of the computer can read it (docs/architecture.md, Limits).
  */
 
@@ -18,93 +19,65 @@ export const GROK_ARG_MAX = 131_000;
 export interface GrokLaunch {
 	/** `--rules` and its value (none when there is no memory and no instructions): what goes before the person's own arguments. */
 	readonly args: readonly string[];
-	/** What to say before Grok starts (the memory view was made smaller or left out, the instructions were cut). */
+	/** What the value holds, in order. */
+	readonly holds: readonly ("memory" | "instructions")[];
+	/** What to say before Grok starts (the memory view was made smaller or its older lines left out, the file was over 32 KB). */
 	readonly notices: readonly string[];
 }
 
-/** Said to the person when the instructions are cut to fit Grok's command line (the file itself may be under 32 KB). */
-export function grokCutNotice(name: string): string {
-	return `Orrery: ${name}'s instructions don't all fit on Grok's command line beside the memory, so the rest of them is left out of this session. Shorten instructions.md.`;
-}
-
-/** Ends the `--rules` value where the instructions are cut to fit, for the model: true also when none of them fit. */
-export function grokCutNote(name: string): string {
-	return `Orrery: ${name}'s instructions are cut here, to fit Grok's command line; the rest of them is not in this session.`;
-}
-
-/** Between the memory section and the instructions, and before the cut note. */
+/** Between the memory section and the instructions. */
 const JOIN = "\n\n";
 
-/**
- * The most bytes the memory section may take: GROK_ARG_MAX, less, when there are instructions, the room to say they were
- * cut (grokCutNote) should none of them fit beside it.
- */
+/** The most bytes the memory section may take: GROK_ARG_MAX, less the whole instructions section and the join before it. */
 export function grokMemoryRoom(name: string, instructions: Instructions | undefined): number {
-	return instructions === undefined ? GROK_ARG_MAX : GROK_ARG_MAX - Buffer.byteLength(JOIN + grokCutNote(name));
-}
-
-/** The longest start of `text` within `maxBytes` UTF-8 bytes, at a line boundary when it has one, else at a whole character. */
-function within(text: string, maxBytes: number): string {
-	let end = 0;
-	let bytes = 0;
-	for (const ch of text) {
-		bytes += Buffer.byteLength(ch);
-		if (bytes > maxBytes) break;
-		end += ch.length;
-	}
-	const head = text.slice(0, end);
-	if (end === text.length) return head;
-	const line = head.lastIndexOf("\n");
-	return line > 0 ? head.slice(0, line) : head;
+	return instructions === undefined ? GROK_ARG_MAX : GROK_ARG_MAX - Buffer.byteLength(JOIN + instructionsSection(name, instructions));
 }
 
 /**
- * Grok's arguments for `agent`: `memory` (its memory section, "" when it has none yet) and its instructions as one
- * `--rules` value of at most GROK_ARG_MAX bytes. Instructions that don't fit whole are cut at a line and end with
- * grokCutNote (the note alone when none of them fit), said in `notices`. `memory` over grokMemoryRoom throws.
+ * Grok's arguments for `agent`: `memory` (its memory section, "" when it has none yet), then its instructions section
+ * whole, as one `--rules` value of at most GROK_ARG_MAX bytes. A file cut at 32 KB is said in `notices` (cutNotice). A
+ * value over GROK_ARG_MAX throws: the caller fits the memory into grokMemoryRoom first.
  */
 export function grokLaunch(agent: { readonly name: string }, memory: string, instructions: Instructions | undefined): GrokLaunch {
-	const notices: string[] = [];
-	const memoryBytes = Buffer.byteLength(memory);
-	const room = grokMemoryRoom(agent.name, instructions);
-	if (memoryBytes > room) throw new RangeError(`${agent.name}'s memory section is ${memoryBytes} bytes, over the ${room} it may take on Grok's command line`);
-	let rules = memory;
-	if (instructions !== undefined) {
-		const section = instructionsSection(agent.name, instructions);
-		const join = memory === "" ? "" : JOIN;
-		if (memoryBytes + Buffer.byteLength(join + section) <= GROK_ARG_MAX) {
-			rules += join + section;
-			if (instructions.cut) notices.push(cutNotice(agent.name));
-		} else {
-			// As much of the instructions as leaves room for the note, then the note.
-			const note = grokCutNote(agent.name);
-			const kept = within(section, room - memoryBytes - Buffer.byteLength(join)).trimEnd();
-			rules += join + (kept === "" ? note : kept + JOIN + note);
-			notices.push(grokCutNotice(agent.name));
-		}
+	const holds: ("memory" | "instructions")[] = [];
+	const values: string[] = [];
+	if (memory !== "") {
+		holds.push("memory");
+		values.push(memory);
 	}
-	return { args: rules === "" ? [] : ["--rules", rules], notices };
+	if (instructions !== undefined) {
+		holds.push("instructions");
+		values.push(instructionsSection(agent.name, instructions));
+	}
+	const rules = values.join(JOIN);
+	const bytes = Buffer.byteLength(rules);
+	if (bytes > GROK_ARG_MAX) throw new RangeError(`${agent.name}'s --rules value is ${bytes} bytes, over the ${GROK_ARG_MAX} bytes one argument may hold`);
+	return { args: rules === "" ? [] : ["--rules", rules], holds, notices: instructions?.cut === true ? [cutNotice(agent.name)] : [] };
 }
 
 /**
  * Grok's launch for `agent`: its memory section (`readOnly`: another session has the agent, so the section says this one
- * records nothing), made to fit, and its instructions (grokLaunch). A memory too large at its view_bytes starts with a
- * smaller view; one that fits at no view, or can't be read, starts without it. Each is said in `notices`.
+ * records nothing), fitted into the room its whole instructions leave, then its instructions (grokLaunch). A memory too
+ * large at its view_bytes starts with a smaller view, or with that view's newest lines; one that can't be read starts
+ * without it. Each is said in `notices`.
  */
 export function grokRules(agent: AgentConfig, readOnly: boolean): GrokLaunch {
 	const instructions = readInstructions(agent.dir);
 	const notices: string[] = [];
 	let memory = "";
 	try {
-		const fitted = fitMemory(agent, "grok", grokMemoryRoom(agent.name, instructions), { readOnly });
-		if (fitted?.section !== undefined) memory = fitted.section;
-		if (fitted !== undefined && fitted.section === undefined) notices.push(`Orrery: ${agent.name}'s memory doesn't fit on Grok's command line until more of it is summarized, so this session starts without it.`);
-		else if (fitted?.smaller === true) notices.push(`Orrery: ${agent.name}'s memory view is too large for Grok's command line, so this session starts with a smaller view of it.`);
+		const fitted = fitMemory(agent, grokMemoryRoom(agent.name, instructions), { readOnly });
+		memory = fitted?.section ?? "";
+		if (fitted?.smaller === true) {
+			if (fitted.section === undefined) notices.push(`Orrery: ${agent.name}'s memory doesn't fit on Grok's command line, not even its newest line, so this session starts without it.`);
+			else if (fitted.from !== undefined) notices.push(`Orrery: ${agent.name}'s memory is too large for Grok's command line, so this session starts with its newest lines, from line ${fitted.from}; older lines are left out, and the zoom and search tools reach them.`);
+			else notices.push(`Orrery: ${agent.name}'s memory view is too large for Grok's command line, so this session starts with a smaller view of it.`);
+		}
 	} catch (error) {
 		notices.push(`Orrery: ${agent.name}'s memory could not be read: ${safeText(error instanceof Error ? error.message : String(error))}`);
 	}
 	const launch = grokLaunch(agent, memory, instructions);
-	return { args: launch.args, notices: [...notices, ...launch.notices] };
+	return { ...launch, notices: [...notices, ...launch.notices] };
 }
 
 /** Grok's spellings of `--rules`. */
@@ -115,11 +88,11 @@ const RULES_FLAGS = ["--rules", "--append-system-prompt"];
  * own, which Grok refuses as a second `--rules`.
  */
 export function grokArgsRefusal(name: string, launch: GrokLaunch, args: readonly string[]): string | undefined {
-	if (launch.args.length === 0) return undefined;
+	if (launch.holds.length === 0) return undefined;
 	for (const word of args) {
 		if (word === "--") break;
 		if (RULES_FLAGS.some((flag) => word === flag || word.startsWith(`${flag}=`))) {
-			return `Orrery gives Grok ${name}'s memory and instructions as its --rules, which Grok takes once: put your rules in ${name}'s instructions.md, or open ${name} without them.`;
+			return `Orrery gives Grok ${name}'s ${launch.holds.join(" and ")} as its --rules, which Grok takes once: put your rules in ${name}'s instructions.md, or open ${name} without them.`;
 		}
 	}
 	return undefined;

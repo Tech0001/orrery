@@ -7,11 +7,12 @@
  * Claude Code's system prompt, unfenced (a system-prompt section evaluates no import), and refreshes it at each
  * compaction. Codex gets it from Orrery's SessionStart hook as developer context, unfenced, at the session's start and
  * after each compaction (src/codex/hooks.ts). OpenCode gets it from Orrery's plugin as the last system part (src/opencode/plugin.ts).
+ * Grok gets it on its command line from Orrery's launch (src/grok/launch.ts), made to fit there (fitMemory).
  */
 
-import { type MemoryView, VIEW_DOC } from "../memory/index.ts";
+import { type MemoryView, type Part, VIEW_DOC } from "../memory/index.ts";
 
-/** The tool that reads a memory section: pi, OMP, Claude Code's view file, the Orrery mod, Codex, or OpenCode. */
+/** The tool that reads a memory section: pi, OMP, Claude Code's view file, the Orrery mod, Codex, Grok, or OpenCode. */
 export type Host = "pi" | "omp" | "claude-code" | "claude-mod" | "codex" | "grok" | "opencode";
 
 const PI_INTRO = `You keep no memory between turns. Each turn starts with the view below, followed by the user's new
@@ -56,6 +57,11 @@ search are the Orrery memory tools; look for the zoom, date and search tools.`;
 /** Grok, while another session has the agent (its memory is read, not recorded). */
 export const GROK_READ_ONLY = `This session is read-only, though: another session has the agent, so nothing said here goes to memory.`;
 
+/** Grok, when its section leaves out the view's older lines to fit its command line: the line before `<chat>`, naming the first line kept. */
+export function grokLeftOut(address: string): string {
+	return `The view below starts at line ${address}: older lines are left out to fit Grok's command line; reach their messages with the zoom and search tools.`;
+}
+
 /**
  * OpenCode: Orrery's plugin puts the section last in the system prompt, the same bytes for a whole session (its
  * subagents get its section), made at the session's start and again after each compaction; the memory tools are the
@@ -89,13 +95,17 @@ becomes the newest word in memory.`;
 /**
  * The memory section for `host`: how memory works, then the view (fenced for the Claude Code file, plain for the rest).
  * `readOnly`: the section of OpenCode or Grok for a session that is not recorded says so (OPENCODE_READ_ONLY, GROK_READ_ONLY); the others have no such form.
+ * `from`, one of the view's lines: Grok's section starts the view there, the older lines left out, and says so (grokLeftOut).
  */
-export function memorySection(view: MemoryView, host: Host = "pi", options: { readonly readOnly?: boolean } = {}): string {
+export function memorySection(view: MemoryView, host: Host = "pi", options: { readonly readOnly?: boolean; readonly from?: Part } = {}): string {
 	if (host === "pi") return `# Memory\n\n${PI_INTRO}\n\n${RULES}\n\n${view.render()}`;
 	if (host === "omp") return `# Memory\n\n${OMP_INTRO}\n\n${RULES}\n\n${view.render()}`;
 	if (host === "claude-mod") return `# Memory\n\n${CLAUDE_MOD_INTRO}\n\n${RULES}\n\n${view.render()}`;
 	if (host === "codex") return `# Memory\n\n${CODEX_INTRO}\n\n${RULES}\n\n${view.render()}`;
-	if (host === "grok") return `# Memory\n\n${GROK_INTRO}\n\n${options.readOnly === true ? `${GROK_READ_ONLY}\n\n` : ""}${RULES}\n\n${view.render()}`;
+	if (host === "grok") {
+		const chat = options.from === undefined ? view.render() : `${grokLeftOut(options.from.address)}\n${view.render({ start: options.from.start })}`;
+		return `# Memory\n\n${GROK_INTRO}\n\n${options.readOnly === true ? `${GROK_READ_ONLY}\n\n` : ""}${RULES}\n\n${chat}`;
+	}
 	if (host === "opencode") return `# Memory\n\n${OPENCODE_INTRO}\n\n${options.readOnly === true ? `${OPENCODE_READ_ONLY}\n\n` : ""}${RULES}\n\n${view.render()}`;
 	return `# Memory\n\n${CLAUDE_INTRO}\n\n${RULES}\n\n${fenced(view.render())}`;
 }
