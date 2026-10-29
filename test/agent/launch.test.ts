@@ -417,7 +417,9 @@ describe("opening an agent in Grok", () => {
 	it("refuses the person's own --leader (or Grok's `agent leader`): Orrery opens Grok with --no-leader", () => {
 		const { config, row, tools } = setup("grok");
 		const refusal = "Orrery opens Grok with --no-leader: in leader mode Grok runs every session's hooks and memory tools in one shared process, where one agent's session can't be told from another's. Open A without --leader.";
-		for (const args of [["--leader"], ["-c", "--leader"], ["agent", "leader"]]) expect(launchPlan(config, row, tools, { args }), args.join(" ")).toMatchObject({ steps: [], blocked: refusal });
+		for (const args of [["--leader"], ["-c", "--leader"]]) expect(launchPlan(config, row, tools, { args }), args.join(" ")).toMatchObject({ steps: [], blocked: refusal });
+		// Grok's own leader command is named as the command it is.
+		expect(launchPlan(config, row, tools, { args: ["agent", "leader"] })).toMatchObject({ steps: [], blocked: refusal.replace("--leader.", "Grok's agent leader command.") });
 		// The person's own --no-leader is given once (Grok refuses it twice).
 		expect(launchPlan(config, row, tools, { args: ["--no-leader", "-p", "hi"] }).args).toEqual(["--no-leader", "-p", "hi"]);
 	});

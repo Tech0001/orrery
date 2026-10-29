@@ -21,17 +21,19 @@
  *   gate, src/codex/guard.ts, which judges Codex's tools through this one);
  * - Claude Code's login files are credentials too;
  * - the PreToolUse hook adds Claude Code's own state to the roots an agent may write (claudeStateRoots, ruling C10).
- * In a session that is no agent's (orreryOnly, spec 2026-10-19-no-agent-sessions §3) only Orrery's own rules apply: not
- * Claude Code's login, nor OpenCode's config and skills in a tool Orrery doesn't know. The caps on what can be judged in
- * time (64 KB, the time budget, PATH_MAX) stay.
+ * A tool Orrery doesn't know, named neither for writing nor only for reading, may write what it names: every string
+ * in it that may be a path is refused where no tool writes, what Grok loads and runs from its folder in every session,
+ * OpenCode's config and skills in an agent's. In a session that is no agent's (orreryOnly, spec
+ * 2026-10-19-no-agent-sessions §3) only Orrery's own rules apply: not Claude Code's login, nor OpenCode's config and
+ * skills. The caps on what can be judged in time (64 KB, the time budget, PATH_MAX) stay.
  */
 
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
-import { agentViews, GuardCall, guardToolCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials, openCodeOf, type PathGuardOptions, realTarget } from "../agent/guard-paths.ts";
-import { NEW_TEXT, type NewText, OPENCODE_READ_ONLY, openCodeLoads, openCodeSkillPath, SKILL_UNSEEN } from "../agent/guard-rules.ts";
+import { agentViews, GuardCall, grokOf, guardToolCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials, openCodeOf, type PathGuardOptions, realTarget } from "../agent/guard-paths.ts";
+import { GROK_READ_ONLY, GROK_READ_ONLY_PLAIN, grokLoads, NEW_TEXT, type NewText, OPENCODE_READ_ONLY, openCodeLoads, openCodeSkillPath, SKILL_UNSEEN } from "../agent/guard-rules.ts";
 import { orreryHome } from "../agent/home.ts";
 import type { WriteRules } from "../agent/nested-rules.ts";
 import { ownFolder } from "../agent/private-file.ts";
@@ -338,16 +340,20 @@ export function claudeGuard(toolName: string, input: Readonly<Record<string, unk
 		if (reason !== undefined) return reason;
 	}
 	// A tool Orrery doesn't know, named neither for writing nor only for reading, may write what it names, under any key:
-	// OpenCode's config and code (guard-rules.ts openCodeLoads), which no tool may write, are refused by every string
-	// that may be a path.
+	// what no tool may write is refused by every string that may be a path. In every session, what Grok loads and runs
+	// from its folder (guard-rules.ts grokLoads: Orrery's Grok hooks are there); in an agent's, OpenCode's config and code
+	// (openCodeLoads) and a skill whose text the guard can't see.
 	const last = toolName.split("__").at(-1) ?? toolName;
-	if (agent && as === undefined && !verb && !READS_ONLY.test(last)) {
-		const openCode = openCodeOf(guard, home);
+	if (as === undefined && !verb && !READS_ONLY.test(last)) {
+		const openCode = agent ? openCodeOf(guard, home) : undefined;
+		const grok = grokOf(guard, home);
 		for (const text of new Set([...how.keys(), ...found.words])) {
 			if (performance.now() >= deadline) return "this call names more paths than the guard can check in time; nothing was run.";
 			const resolved = guard.resolvePath(text, guard.cwd, home);
 			if (resolved.length > PATH_MAX) continue;
 			const real = realTarget(resolved);
+			if (grokLoads(resolved, grok) || grokLoads(real, grok)) return agent ? GROK_READ_ONLY(text) : GROK_READ_ONLY_PLAIN(text);
+			if (openCode === undefined) continue;
 			if (openCodeLoads(resolved, openCode) || openCodeLoads(real, openCode)) return OPENCODE_READ_ONLY(text);
 			if (openCodeSkillPath(resolved) || openCodeSkillPath(real)) return SKILL_UNSEEN(text);
 		}

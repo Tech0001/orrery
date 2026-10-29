@@ -95,25 +95,31 @@ const VALUE_OPTIONS = new Set([
 ]);
 
 /**
- * Whether the person's arguments start Grok's shared leader before a `--`: `--leader`; `agent … leader`, Grok's own; or
- * Grok's commands that run a leader in the calling process, `leader worker start` and `worker start` (1.0.70's help:
- * "Run a leader in this terminal"), read as any `leader` or `worker` word that is no option's value.
+ * What in the person's arguments starts Grok's shared leader before a `--`, as a refusal names it, or undefined: the
+ * `--leader` flag; `agent … leader`, Grok's own; or Grok's commands that run a leader in the calling process, `leader
+ * worker start` and `worker start` (1.0.70's help: "Run a leader in this terminal"), read as any `leader` or `worker`
+ * word that is no option's value, named with the words after it up to the next option.
  */
-function startsLeader(args: readonly string[]): boolean {
+function startsLeader(args: readonly string[]): string | undefined {
 	const until = args.indexOf("--");
 	const own = until < 0 ? args : args.slice(0, until);
+	if (hasFlag(own, ["--leader"])) return "--leader";
 	const agent = own.indexOf("agent");
-	if (hasFlag(own, ["--leader"]) || (agent >= 0 && own.indexOf("leader", agent + 1) > agent)) return true;
-	return own.some((word, at) => (word === "leader" || word === "worker") && !VALUE_OPTIONS.has(own[at - 1] ?? ""));
+	if (agent >= 0 && own.indexOf("leader", agent + 1) > agent) return "Grok's agent leader command";
+	const at = own.findIndex((word, index) => (word === "leader" || word === "worker") && !VALUE_OPTIONS.has(own[index - 1] ?? ""));
+	if (at < 0) return undefined;
+	const next = own.findIndex((word, index) => index > at && word.startsWith("-"));
+	return `Grok's ${own.slice(at, next < 0 ? undefined : next).join(" ")} command`;
 }
 
 /**
  * Why the person's arguments can't open `name` in Grok beside Orrery's flags (`launch`, grokArgs), or undefined: Grok's
- * leader mode, which Orrery opens agents without (grokArgs), or rules of their own, which Grok refuses as a second
- * `--rules`.
+ * leader mode, which Orrery opens agents without (grokArgs), naming what in them starts it, or rules of their own, which
+ * Grok refuses as a second `--rules`.
  */
 export function grokArgsRefusal(name: string, launch: GrokLaunch, args: readonly string[]): string | undefined {
-	if (startsLeader(args)) return `Orrery opens Grok with --no-leader: in leader mode Grok runs every session's hooks and memory tools in one shared process, where one agent's session can't be told from another's. Open ${name} without --leader.`;
+	const leader = startsLeader(args);
+	if (leader !== undefined) return `Orrery opens Grok with --no-leader: in leader mode Grok runs every session's hooks and memory tools in one shared process, where one agent's session can't be told from another's. Open ${name} without ${leader}.`;
 	if (launch.holds.length === 0 || !hasFlag(args, RULES_FLAGS)) return undefined;
 	return `Orrery gives Grok ${name}'s ${launch.holds.join(" and ")} as its --rules, which Grok takes once: put your rules in ${name}'s instructions.md, or open ${name} without them.`;
 }

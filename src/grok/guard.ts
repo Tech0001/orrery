@@ -20,11 +20,14 @@
  *   from a shell, patch text in any string, but what Grok's own file tools write;
  * - a call whose arguments are in a file the guard doesn't see (use_tool's tool_input_file or file, not loaded), and an
  *   input that is no JSON object, are refused.
- * Grok cuts a tool input whose JSON passes 128 KiB, string by string, past a shared length of at least 4 KiB, and says
- * so with toolInputTruncated (its manual, 10-hooks.md "Input"). A cut string hides its end, so with toolInputTruncated
- * anything but false, a string past 4 KiB is taken as cut: one a rule reads (a command line, a patch, a path, a
- * prompt, any MCP argument) refuses the call; what Grok's own file tools write (content, old_string, new_string) is no
- * rule's, so it goes through, but the skills rule then sees no text (src/agent/guard-rules.ts openCodeSkillRefusal).
+ * Grok cuts a tool input whose JSON passes 128 KiB, string by string, to a shared length never under 4 KiB, each cut
+ * string ending in a short tag and " [truncated]", and says so with toolInputTruncated (its manual, 10-hooks.md
+ * "Input").
+ * A cut string hides its end, so with toolInputTruncated anything but false, a string of 4 KiB or more (at the floor a
+ * cut one is exactly that long), or one ending in " [truncated]", is taken as cut: one a rule reads (a command line, a
+ * patch, a path, a prompt, any MCP argument) refuses the call; what Grok's own file tools write (content, old_string,
+ * new_string) is no rule's, so it goes through, but the skills rule then sees no text (src/agent/guard-rules.ts
+ * openCodeSkillRefusal). The tag's layout is not relied on alone (it is unverified live).
  *
  * Whose rules (runGrokGuard): the agent ORRERY_AGENT names, with its token claimed by this Grok (src/codex/pick.ts
  * grokAgent), gets its own: where it may write (its folder, or the folder it was opened in, and its allowed roots) and
@@ -32,12 +35,22 @@
  * than the folder's own (src/agent/nested-rules.ts); one opened as an agent but refused, or started inside a session
  * nothing proves the agent of, may write only where it runs. A plain grok (no ORRERY_AGENT: Orrery's Grok hooks are
  * global), and one started from a coding tool's session that is no agent's where no agent would open, get Orrery's own
- * rules (spec 2026-10-19-no-agent-sessions §3): every agent's memory and Orrery's settings and data, Grok's folder and
- * the session records. So does every session of Grok's shared leader (leader mode: src/grok/host.ts), which runs every
- * session's hooks with its first client's environment, so no session there can be told to be an agent's or not.
+ * rules (spec 2026-10-19-no-agent-sessions §3): every agent's memory and Orrery's settings and data, what Grok loads and
+ * runs from its folder (its hooks, config and policy files, /hooks switch, trust list, plugins and agents; the rest of
+ * its folder, its memory, skills and workflows among it, is Grok's own) and the session records. So does every session
+ * of Grok's shared leader (leader mode: src/grok/host.ts), which runs every session's hooks with its first client's
+ * environment, so no session there can be told to be an agent's or not. A Grok whose command line can't be read is no
+ * proved host of an agent's session: ORRERY_AGENT set, it is judged as one opened as an agent but refused (only where it
+ * runs); unset, as a plain grok.
  * Limits, as Grok gives them: a hook that crashes or times out lets the call through (only an explicit deny or exit 2
  * blocks), so the guard answers within its own time and src/codex/guard-exit.ts refuses a crash or a stall; `!` bash
- * mode commands are the person's own and raise no hook; and the shell-text limits every gate has.
+ * mode commands are the person's own and raise no hook; and the shell-text limits every gate has. Grok also runs hooks
+ * and MCP servers from a project's .grok/hooks/*.json and .grok/config.toml, its .claude/settings*.json and
+ * .cursor/hooks.json, and the person's Claude Code settings file and Cursor hooks file, and language servers from a
+ * project's .grok/lsp.json and its own folder's lsp.json: the project's and the person's own, which the guard keeps
+ * none of. A hook or server an agent plants there runs outside the guard in a later session, and a hook may rewrite a
+ * call's input after Orrery judged it (Grok applies updatedInput after every handler), as a script an agent writes and
+ * later runs does (src/agent/guard-paths.ts, Known limits).
  */
 
 import { homedir } from "node:os";
@@ -48,11 +61,12 @@ import { NEW_TEXT } from "../agent/guard-rules.ts";
 import { nestedRules, type WriteRules } from "../agent/nested-rules.ts";
 import { AGENT_ENV, workArea } from "../agent/pick.ts";
 import { opensHere, type PlainDeps } from "../agent/plain-nested.ts";
+import { processArgv } from "../agent/process.ts";
 import { agentGuardOptions, type ClaudeGuardOptions, claudeGuard, plainGuardOptions } from "../claude/guard.ts";
 import { TOOL_INPUT_MAX } from "../claude/hooks.ts";
 import { codexGuard, codexRefusal, contentGuard } from "../codex/guard.ts";
 import { grokAgent, grokNested } from "../codex/pick.ts";
-import { grokHostRefusal } from "./host.ts";
+import { isGrokLeader } from "./host.ts";
 
 /**
  * Grok's tools as Claude Code's guard knows them (module doc), and the input keys it reads under another name: Grok
@@ -87,8 +101,17 @@ const WRITTEN = /^(content|old_string|new_string|new_source)$/;
 /** How long the guard may judge one call, in ms, at most (GrokGuardContext.deadline may leave it less). */
 const JUDGE_MS = 2000;
 
-/** The longest string Grok never cuts (its manual: "A string of 4 KiB or less is never cut"), in UTF-8 bytes. */
-const WHOLE_MAX = 4 * 1024;
+/**
+ * The length Grok never cuts a string to less than, in UTF-8 bytes (its manual: "never under 4 KiB"): a cut string at
+ * the floor is exactly this long, so in a cut input a string this long or longer may be cut.
+ */
+const CUT_FLOOR = 4 * 1024;
+
+/** The mark Grok ends a cut string with (its manual: a short tag of its whole value, then " [truncated]"). */
+const CUT_MARK = / \[truncated\]\s*$/;
+
+/** Whether a string of an input Grok cut may be cut (above). */
+const mayBeCut = (value: string) => Buffer.byteLength(value) >= CUT_FLOOR || CUT_MARK.test(value);
 
 /** The longest hook input the guard reads (1 MB, as Claude Code's and Codex's): a longer one is refused unread. */
 export const GROK_TOOL_INPUT_MAX = TOOL_INPUT_MAX;
@@ -124,7 +147,7 @@ function cutString(input: Readonly<Record<string, unknown>>, writer: boolean): {
 	for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
 		const { key, value } = next;
 		if (typeof value === "string") {
-			if (Buffer.byteLength(value) <= WHOLE_MAX) continue;
+			if (!mayBeCut(value)) continue;
 			if (writer && next.top && WRITTEN.test(key)) written = true;
 			else return { key, written };
 		} else if (typeof value === "object" && value !== null) {
@@ -190,7 +213,10 @@ export interface GrokGuardContext {
 	readonly deadline?: number;
 	/** How a coding tool's session that is no agent's is looked for (src/agent/plain-nested.ts); tests pass their own. */
 	readonly plain?: PlainDeps;
-	/** A process's command line (default processArgv): whether grokPid is Grok's shared leader (src/grok/host.ts). */
+	/**
+	 * A process's command line (default processArgv): whether grokPid is Grok's shared leader (src/grok/host.ts); undefined
+	 * when it can't be read.
+	 */
 	readonly argvOf?: (pid: number) => readonly string[] | undefined;
 }
 
@@ -236,9 +262,14 @@ type SessionRules = { readonly plain: true } | { readonly plain: false; readonly
 
 /** Whose rules a call of `session` in `cwd` is judged by (module doc). */
 function sessionRules(ctx: GrokGuardContext, cwd: string, session: string | undefined): SessionRules {
-	// Grok's shared leader: no session there can be told to be an agent's, or no agent's.
-	if (grokHostRefusal(ctx.grokPid, ctx.argvOf) !== undefined) return { plain: true };
 	const { config, env } = ctx;
+	// A plain grok: Orrery's own rules. One opened as an agent but refused: no agent's, only where it runs.
+	const noAgent = (): SessionRules => ((env[AGENT_ENV]?.trim() ?? "") === "" ? { plain: true } : { plain: false, rules: { workArea: workArea({}, cwd), allowedRoots: [] } });
+	const argv = (ctx.argvOf ?? processArgv)(ctx.grokPid);
+	// Grok's shared leader: no session there can be told to be an agent's, or no agent's.
+	if (argv !== undefined && isGrokLeader(argv)) return { plain: true };
+	// A command line that can't be read proves no agent's host, whatever token it holds: ORRERY_AGENT alone decides.
+	if (argv === undefined) return noAgent();
 	const pick = grokAgent(config, {
 		env,
 		pid: ctx.grokPid,
@@ -259,9 +290,7 @@ function sessionRules(ctx: GrokGuardContext, cwd: string, session: string | unde
 		if (nested.plain !== undefined && !opensHere(config, env, cwd)) return { plain: true };
 		return { plain: false, rules: { workArea: workArea({}, cwd), allowedRoots: [] } };
 	}
-	// A plain grok: Orrery's own rules. One opened as an agent but refused: no agent's, only where it runs.
-	if ((env[AGENT_ENV]?.trim() ?? "") === "") return { plain: true };
-	return { plain: false, rules: { workArea: workArea({}, cwd), allowedRoots: [] } };
+	return noAgent();
 }
 
 function judgeCall(stdin: string | undefined, ctx: GrokGuardContext): string | undefined {

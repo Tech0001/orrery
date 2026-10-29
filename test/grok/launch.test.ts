@@ -112,9 +112,12 @@ describe("grokArgsRefusal", () => {
 	it("refuses the person's own --leader before a --, with or without Orrery's --rules: Orrery opens Grok with --no-leader", () => {
 		const refusal = "Orrery opens Grok with --no-leader: in leader mode Grok runs every session's hooks and memory tools in one shared process, where one agent's session can't be told from another's. Open Atlas without --leader.";
 		for (const launch of [withBoth, grokLaunch(agent, "", undefined)]) {
-			// Grok's own leader is `grok agent leader`, which Grok parses after Orrery's flags too.
-			for (const args of [["--leader"], ["-c", "--leader"], ["--leader=true"], ["--leader", "--rules", "x"], ["agent", "leader"], ["agent", "--plugin-dir", "/p", "leader"]]) {
+			for (const args of [["--leader"], ["-c", "--leader"], ["--leader=true"], ["--leader", "--rules", "x"]]) {
 				expect(grokArgsRefusal("Atlas", launch, args), args.join(" ")).toBe(refusal);
+			}
+			// Grok's own leader is `grok agent leader`, which Grok parses after Orrery's flags too: named as the command it is.
+			for (const args of [["agent", "leader"], ["agent", "--plugin-dir", "/p", "leader"]]) {
+				expect(grokArgsRefusal("Atlas", launch, args), args.join(" ")).toBe(refusal.replace("--leader.", "Grok's agent leader command."));
 			}
 			for (const args of [["--", "--leader"], ["--", "agent", "leader"], ["--leaderx"], ["--no-leader"], ["--leader-socket", "/s"], ["agent", "stdio"]]) {
 				expect(grokArgsRefusal("Atlas", launch, args), args.join(" ")).toBeUndefined();
@@ -123,10 +126,20 @@ describe("grokArgsRefusal", () => {
 	});
 
 	it("refuses Grok's commands that run a leader in the calling process (`leader worker start`, `worker start`), and any leader or worker command, before a --", () => {
-		const refusal = "Orrery opens Grok with --no-leader: in leader mode Grok runs every session's hooks and memory tools in one shared process, where one agent's session can't be told from another's. Open Atlas without --leader.";
+		const refusal = (command: string) =>
+			`Orrery opens Grok with --no-leader: in leader mode Grok runs every session's hooks and memory tools in one shared process, where one agent's session can't be told from another's. Open Atlas without Grok's ${command} command.`;
 		// Grok 1.0.70's help: `grok leader worker start` and `grok worker start` "Run a leader in this terminal until Ctrl+C".
-		for (const args of [["leader", "worker", "start"], ["worker", "start"], ["--debug", "leader", "worker", "start"], ["-m", "grok-4", "worker", "start", "--name", "x"], ["leader", "list"], ["leader", "agent"], ["--resume", "leader"]]) {
-			expect(grokArgsRefusal("Atlas", withBoth, args), args.join(" ")).toBe(refusal);
+		// Each refusal names the command it refused: its words up to the next option.
+		for (const [args, command] of [
+			[["leader", "worker", "start"], "leader worker start"],
+			[["worker", "start"], "worker start"],
+			[["--debug", "leader", "worker", "start"], "leader worker start"],
+			[["-m", "grok-4", "worker", "start", "--name", "x"], "worker start"],
+			[["leader", "list"], "leader list"],
+			[["leader", "agent"], "leader agent"],
+			[["--resume", "leader"], "leader"],
+		] as const) {
+			expect(grokArgsRefusal("Atlas", withBoth, args), args.join(" ")).toBe(refusal(command));
 		}
 		// The value of an option that takes one is no command; after a -- nothing is Grok's.
 		for (const args of [["-p", "leader"], ["--agent", "worker"], ["--model", "leader"], ["--rules=leader"], ["--", "leader", "worker", "start"], ["fix the leader election"]]) {
