@@ -1,11 +1,11 @@
 /**
- * Handing an agent over (spec §4 "One writer"). The holder that records a Claude Code or Codex session keeps a heartbeat
- * in <agent.dir>/claude/holder.json.
- * - Once its session has ended, the holder only finishes summaries. Whoever opens the agent next (a new Claude Code or
- *   Codex session, or pi) may then ask it to yield by writing yield.json, and it saves what it has and releases the agent
- *   within a tick.
- * - A holder still recording yields only to its own host process (the same Claude Code or Codex), which starts a new
- *   session on /clear or /resume.
+ * Handing an agent over (spec §4 "One writer"). The holder that records a Claude Code, Codex or Grok session keeps a
+ * heartbeat in <agent.dir>/claude/holder.json.
+ * - Once its session has ended, the holder only finishes summaries. Whoever opens the agent next (a new Claude Code,
+ *   Codex or Grok session, or pi) may then ask it to yield by writing yield.json, and it saves what it has and releases
+ *   the agent within a tick.
+ * - A holder still recording yields only to its own host process (the same Claude Code, Codex or Grok), which starts a
+ *   new session on /clear or /resume.
  * Without a holder.json (an agent only pi uses), opening works exactly as before.
  */
 
@@ -19,19 +19,19 @@ import { processAlive } from "./process.ts";
 import { readStatus } from "./status-file.ts";
 
 /** The tool whose session a holder records. */
-export type HolderHost = "claude-code" | "codex";
+export type HolderHost = "claude-code" | "codex" | "grok";
 
 /** A host's name as said to a person. */
-export const HOST_LABELS: Record<HolderHost, string> = { "claude-code": "Claude Code", codex: "Codex" };
+export const HOST_LABELS: Record<HolderHost, string> = { "claude-code": "Claude Code", codex: "Codex", grok: "Grok" };
 
 /** holder.json: who records the agent, for which session and host process, and whether it only finishes. */
 export interface HolderState {
 	readonly pid: number;
 	readonly session: string;
-	/** The host's process: Claude Code's, or Codex's (the name is older than Codex, and kept for files already written). */
+	/** The host's process: Claude Code's, Codex's or Grok's (the name is older than Codex, and kept for files already written). */
 	readonly claudePid: number;
-	/** "codex" for a Codex session's holder; absent for Claude Code's, as in every holder.json before Codex. */
-	readonly host?: "codex";
+	/** "codex" or "grok" for a Codex or Grok session's holder; absent for Claude Code's, as in every holder.json before Codex. */
+	readonly host?: "codex" | "grok";
 	readonly state: "recording" | "finishing";
 	readonly startedAt: number;
 	readonly updatedAt: number;
@@ -44,7 +44,7 @@ export interface HolderState {
 /** yield.json: a newcomer asking the holder for the agent. */
 export interface YieldRequest {
 	readonly at: number;
-	/** The asking host process (Claude Code's or Codex's); pi leaves it out. */
+	/** The asking host process (Claude Code's, Codex's or Grok's); pi leaves it out. */
 	readonly claudePid?: number;
 }
 
@@ -74,6 +74,11 @@ export function readHolder(agentDir: string): HolderState | undefined {
 	return ok ? (value as unknown as HolderState) : undefined;
 }
 
+/** The tool whose session `holder` records: the one its holder.json names, else Claude Code. */
+export function holderHost(holder: Pick<HolderState, "host">): HolderHost {
+	return holder.host === "codex" || holder.host === "grok" ? holder.host : "claude-code";
+}
+
 /** Whether `holder` beat within FRESH_MS, so it still runs. */
 export function holderFresh(holder: HolderState | undefined, now = Date.now()): holder is HolderState {
 	return holder !== undefined && now - holder.updatedAt <= FRESH_MS;
@@ -85,18 +90,18 @@ export function holderFresh(holder: HolderState | undefined, now = Date.now()): 
  */
 export type HoldingTool = "pi" | "omp" | "opencode" | HolderHost;
 
-const HOLDING_LABELS: Record<HoldingTool, string> = { pi: "pi", omp: "OMP", opencode: "OpenCode", ...HOST_LABELS };
+export const HOLDING_LABELS: Record<HoldingTool, string> = { pi: "pi", omp: "OMP", opencode: "OpenCode", ...HOST_LABELS };
 
 /** A status.json this fresh is from a running session (pi and OMP write it every 5 s; as overview.ts's STATUS_FRESH_MS). */
 const STATUS_FRESH_MS = 30_000;
 
 /**
- * The tool that has the agent open now: a recorder's host while its heartbeat is fresh (Claude Code or Codex), else the
- * tool a fresh status.json of a live process names (pi, OMP or OpenCode); undefined when neither says.
+ * The tool that has the agent open now: a recorder's host while its heartbeat is fresh (Claude Code, Codex or Grok), else
+ * the tool a fresh status.json of a live process names (pi, OMP or OpenCode); undefined when neither says.
  */
 export function holdingTool(agentDir: string, now = Date.now(), alive: (pid: number) => boolean = processAlive): HoldingTool | undefined {
 	const holder = readHolder(agentDir);
-	if (holderFresh(holder, now)) return holder.host === "codex" ? "codex" : "claude-code";
+	if (holderFresh(holder, now)) return holderHost(holder);
 	const status = readStatus(agentDir);
 	if (status === undefined || status.open === false || !alive(status.pid) || !(now - Date.parse(status.updatedAt) < STATUS_FRESH_MS)) return undefined;
 	return Object.hasOwn(HOLDING_LABELS, status.model) ? (status.model as HoldingTool) : undefined;
@@ -104,7 +109,8 @@ export function holdingTool(agentDir: string, now = Date.now(), alive: (pid: num
 
 /**
  * Where the agent is open, said to a session of `self` that can't have it: "open in Codex", "open in another Claude Code
- * session", or, when nothing says which tool, the tools it could be (an open OpenCode always says, in its status.json).
+ * session", or, when nothing says which tool, the tools it could be (an open OpenCode always says, in its status.json; so
+ * does an open Grok's recorder, and the other tools' lists are as before it).
  */
 export function openElsewhere(agentDir: string, self: HoldingTool, now = Date.now()): string {
 	const tool = holdingTool(agentDir, now);

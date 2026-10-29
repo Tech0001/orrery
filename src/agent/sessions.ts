@@ -5,10 +5,11 @@
  *
  * Session records. A tool session that opens an agent's memory records its host process in the data folder that holds
  * that memory, and forgets it when the session closes: <data>/session-hosts/<pid>.json, holding
- * {"agent","tool","pid","start"}, for Codex "codexSession", on Linux "ns" and "boot", and "config", the config file the
- * host loaded (HarnessConfig.file), with "configReal", its real path then, when it loaded one; 0600 in a 0700 folder,
- * written whole (src/agent/private-file.ts), and read only as a small regular file of this user's, never through a
- * link. The CLI takes that config, and no other, for a command run inside the session (src/cli/gate.ts).
+ * {"agent","tool","pid","start"}, for Codex "codexSession", for Grok "grokSession", on Linux "ns" and "boot", and
+ * "config", the config file the host loaded (HarnessConfig.file), with "configReal", its real path then, when it loaded
+ * one; 0600 in a 0700 folder, written whole (src/agent/private-file.ts), and read only as a small regular file of this
+ * user's, never through a link. The CLI takes that config, and no other, for a command run inside the session
+ * (src/cli/gate.ts).
  * `start` is when the process started, so a reused pid is no session: Linux's /proc/<pid>/stat field 22 (clock ticks
  * since boot), macOS's `ps -o lstart=` (to the second, asked in UTC and the C locale so every process spells it alike).
  * On Linux a pid means a process only in the pid namespace it is numbered in: from another one (`unshare -p`, a
@@ -130,6 +131,8 @@ export interface SessionRecord {
 	readonly start: string;
 	/** A Codex session's id, which Codex hands its shell as CODEX_THREAD_ID (or CODEX_SESSION_ID). */
 	readonly codexSession?: string;
+	/** A Grok session's id: the session its SessionStart took as this Grok's own (src/grok/hooks.ts). */
+	readonly grokSession?: string;
 	/** Linux: the pid namespace `pid` is numbered in ("pid:[4026531836]"). */
 	readonly ns?: string;
 	/** Linux: the boot's id. */
@@ -293,16 +296,16 @@ function walkTo(from: number, parentOf: (pid: number) => number | undefined): { 
 
 /**
  * `value` as the record of `pid`, or undefined when it is none: its agent, tool, pid or start can't be read.
- * - `doubtful` when its codexSession, ns or boot is there but no non-empty string: the record is judged unsure (module
- *   doc: fail closed), never taken for none, and those fields are left out.
+ * - `doubtful` when its codexSession, grokSession, ns or boot is there but no non-empty string: the record is judged
+ *   unsure (module doc: fail closed), never taken for none, and those fields are left out.
  * - A config without its real path, or either not an absolute path, is left out: only the config is untrusted, and the
  *   CLI takes the data folder's own (src/cli/gate.ts).
  */
 function recordOf(value: unknown, pid: number): { readonly record: SessionRecord; readonly doubtful: boolean } | undefined {
-	const { agent, tool, pid: own, start, codexSession, ns, boot, config, configReal } = (value ?? {}) as Record<string, unknown>;
+	const { agent, tool, pid: own, start, codexSession, grokSession, ns, boot, config, configReal } = (value ?? {}) as Record<string, unknown>;
 	if (typeof agent !== "string" || agent === "" || typeof tool !== "string" || !SESSION_TOOLS.has(tool) || own !== pid || typeof start !== "string" || start === "") return undefined;
 	const text = (field: unknown): field is string => typeof field === "string" && field !== "";
-	const doubtful = [codexSession, ns, boot].some((field) => field !== undefined && !text(field));
+	const doubtful = [codexSession, grokSession, ns, boot].some((field) => field !== undefined && !text(field));
 	const configured = text(config) && text(configReal) && isAbsolute(config) && isAbsolute(configReal);
 	const record: SessionRecord = {
 		agent,
@@ -310,6 +313,7 @@ function recordOf(value: unknown, pid: number): { readonly record: SessionRecord
 		pid,
 		start,
 		...(text(codexSession) ? { codexSession } : {}),
+		...(text(grokSession) ? { grokSession } : {}),
 		...(text(ns) ? { ns } : {}),
 		...(text(boot) ? { boot } : {}),
 		...(configured ? { config, configReal } : {}),

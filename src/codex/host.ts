@@ -3,7 +3,7 @@
  * agent's token claim, and the process whose end ends the recorder). Codex starts its MCP servers itself, and runs a hook
  * as `<the account's shell> -c <command>`: bash and zsh exec a lone command, so the hook's parent is Codex, but a shell
  * that did not exec stands in between, and is passed over. Reads /proc on Linux and asks ps on macOS; elsewhere the
- * parent is taken as it is.
+ * parent is taken as it is. Grok's process is found the same way (src/grok/host.ts).
  */
 
 import { type ProcessInfo, processInfo } from "../agent/process.ts";
@@ -14,8 +14,8 @@ const SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "ksh",
 /** At most this many shells are passed over: a hook is never that deep. */
 const MAX_SHELLS = 4;
 
-/** Codex's pid from a process it started (default: this one's parent), passing over shells in between. */
-export function codexPid(start: number = process.ppid, info: (pid: number) => ProcessInfo | undefined = processInfo): number {
+/** The tool's pid from a process it started (`start`), passing over shells in between. */
+export function hostPid(start: number, info: (pid: number) => ProcessInfo | undefined = processInfo): number {
 	let pid = start;
 	for (let i = 0; i < MAX_SHELLS; i++) {
 		const seen = info(pid);
@@ -23,4 +23,9 @@ export function codexPid(start: number = process.ppid, info: (pid: number) => Pr
 		pid = seen.ppid;
 	}
 	return pid;
+}
+
+/** Codex's pid from a process it started (default: this one's parent), passing over shells in between. */
+export function codexPid(start: number = process.ppid, info: (pid: number) => ProcessInfo | undefined = processInfo): number {
+	return hostPid(start, info);
 }

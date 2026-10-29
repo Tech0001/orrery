@@ -509,10 +509,11 @@ function judgedFile(gated: Gated): ConfigFile {
 /** Runs the command: everything but help and the version. */
 async function dispatch(positionals: string[], values: ReturnType<typeof parseCommandLine>["values"], updateVersion: string | undefined, toolArgs: string[]): Promise<number> {
 	const [command, arg] = positionals;
-	// Claude Code's and Codex's hooks run several times a turn and never sign in or call a model; their own per-process
-	// decision governs them, so they skip the gate's look at the process tree.
+	// Claude Code's, Codex's and Grok's hooks run several times a turn and never sign in or call a model; their own
+	// per-process decision governs them, so they skip the gate's look at the process tree.
 	if (command === "claude-hook") return claudeHook(arg, values.config);
 	if (command === "codex-hook") return codexHook(arg, values.config);
+	if (command === "grok-hook") return grokHook(arg, values.config);
 	const { GateRefusal, gateCommand, noAgentText, readableBy } = await import("./gate.ts");
 	let gated: Gated;
 	try {
@@ -742,11 +743,12 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 			return fatal.signal.reason instanceof SignalStop ? 0 : code;
 		}
 		case "holder": {
-			// The host's process: --claude-pid, Claude Code's (as always); or --host-pid, with --tool codex for Codex's.
+			// The host's process: --claude-pid, Claude Code's (as always); or --host-pid, with --tool codex for Codex's, or
+			// --tool grok for Grok's.
 			if (values["claude-pid"] !== undefined && values["host-pid"] !== undefined) throw new UsageError("holder takes --claude-pid or --host-pid, not both.");
 			const host = values.tool ?? "claude-code";
-			if (host !== "claude-code" && host !== "codex") throw new UsageError(`holder: --tool takes claude-code or codex (not ${host}).`);
-			if (host === "codex" && values["host-pid"] === undefined) throw new UsageError("holder --tool codex needs --host-pid PID.");
+			if (host !== "claude-code" && host !== "codex" && host !== "grok") throw new UsageError(`holder: --tool takes claude-code, codex or grok (not ${host}).`);
+			if (host !== "claude-code" && values["host-pid"] === undefined) throw new UsageError(`holder --tool ${host} needs --host-pid PID.`);
 			const hostPid = Number(values["host-pid"] ?? values["claude-pid"]);
 			if (!Number.isInteger(hostPid) || hostPid < 1) throw new UsageError("holder needs --claude-pid PID (or --host-pid PID).");
 			const since = values.since === undefined ? undefined : Number(values.since);
@@ -757,7 +759,7 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 				claudePid: hostPid,
 				nonce: values.nonce ?? "",
 				...(since === undefined ? {} : { since }),
-				...(host === "codex" ? { host } : {}),
+				...(host === "claude-code" ? {} : { host }),
 			});
 		}
 		case "claude-setup": {
@@ -963,6 +965,36 @@ async function codexHook(event: string | undefined, configPath: string | undefin
 		process.stdout.write(await hooks.runCodexHook(event ?? "", stdin, { config, env: process.env, codexPid: pid, codexParent: process.ppid, startHolder, updateNotices: true }));
 	} catch (error) {
 		process.stderr.write(`Orrery: ${event ?? "codex-hook"}: ${errorText(error)}\n`);
+	}
+	return 0;
+}
+
+/**
+ * `orrery grok-hook <event>`: the hooks Orrery's install gives Grok Build (src/grok/hooks.ts), global, so they run in
+ * every Grok session. They never fail the session: exit 0 (a 2 would block the prompt, or keep a turn going), only their
+ * JSON answer on stdout, and an error in one stderr line, never with message contents. A config that cannot be read is
+ * said at SessionStart in a Grok opened as an agent; anywhere else (a plain grok, or no config at all) they say nothing.
+ * pre-tool-use is the guard: until it comes, every call goes through (exit 0, nothing on stdout).
+ */
+async function grokHook(event: string | undefined, configPath: string | undefined): Promise<number> {
+	try {
+		const stdin = (await readStdin(Number.POSITIVE_INFINITY)) ?? "";
+		if (event === "pre-tool-use") return 0;
+		const hooks = await import("../grok/hooks.ts");
+		let config: HarnessConfig;
+		try {
+			config = loadConfig(configPath);
+		} catch (error) {
+			const { AGENT_ENV } = await import("../agent/pick.ts");
+			if (event === "session-start" && (process.env[AGENT_ENV]?.trim() ?? "") !== "") process.stdout.write(hooks.configNotice(errorText(error)));
+			return 0;
+		}
+		const [{ grokPid }, { spawnHolder }] = await Promise.all([import("../grok/host.ts"), import("../claude/hooks.ts")]);
+		const pid = grokPid();
+		const startHolder = (agent: AgentConfig, session: string, nonce: string, since: number) => spawnHolder(agent, session, nonce, pid, since, configPath, "grok");
+		process.stdout.write(await hooks.runGrokHook(event ?? "", stdin, { config, env: process.env, grokPid: pid, grokParent: process.ppid, startHolder, updateNotices: true }));
+	} catch (error) {
+		process.stderr.write(`Orrery: ${event ?? "grok-hook"}: ${errorText(error)}\n`);
 	}
 	return 0;
 }

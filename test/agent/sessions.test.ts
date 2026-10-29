@@ -131,6 +131,14 @@ describe("session records", () => {
 		expect(liveSession(dir, 30, deps)).toEqual({ agent: "Birch", tool: "codex", pid: 30, start: "300", codexSession: "019a-thread", ns: NS, boot: BOOT });
 	});
 
+	it("keeps a Grok session's id; one that is no text makes the record unsure, never none", () => {
+		const dir = temp();
+		const deps = linux(chain());
+		expect(recordSession(dir, { agent: "Birch", tool: "grok", pid: 30, grokSession: "01a188c0-06ae-78a2-b15c-bec4228c7070" }, deps)).toBe(true);
+		expect(liveSession(dir, 30, deps)).toEqual({ agent: "Birch", tool: "grok", pid: 30, start: "300", grokSession: "01a188c0-06ae-78a2-b15c-bec4228c7070", ns: NS, boot: BOOT });
+		expect(recordSession(dir, { agent: "Birch", tool: "grok", pid: 30, grokSession: "" }, deps)).toBe(false);
+	});
+
 	it("a record whose pid now names a process started at another time (a reused pid) is no session, and goes", () => {
 		const dir = temp();
 		const table = chain();
@@ -785,6 +793,6 @@ describe("ALLOWED_INSIDE", () => {
 	it("names the commands that run inside an agent session, in a module of its own with no imports, which sessions.ts re-exports", () => {
 		expect(ALLOWED_INSIDE).toBe(ALLOWED_ALONE);
 		expect(readFileSync(new URL("../../src/agent/inside-commands.ts", import.meta.url), "utf8")).not.toMatch(/^import /m);
-		expect([...ALLOWED_INSIDE].sort()).toEqual(["browse", "claude-hook", "claude-mod", "codex-hook", "compactor", "help", "holder", "mcp", "status", "usage"]);
+		expect([...ALLOWED_INSIDE].sort()).toEqual(["browse", "claude-hook", "claude-mod", "codex-hook", "compactor", "grok-hook", "help", "holder", "mcp", "status", "usage"]);
 	});
 });

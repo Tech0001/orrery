@@ -14,7 +14,7 @@ import { backupFinder } from "./backup.ts";
 import { type BuildState, buildRunning, readBuild } from "./build.ts";
 import { COMPACTOR_MODEL_KEY, storedChoice } from "./choices.ts";
 import { type HarnessConfig, type AgentConfig, type AgentLauncher, type AgentTool, type ModelChoice, THINKING_LEVELS, type ThinkingLevel } from "./config.ts";
-import { holderFresh, readHolder } from "./handover.ts";
+import { holderFresh, holderHost, readHolder } from "./handover.ts";
 import { instructionsFacts, type InstructionsState } from "./instructions.ts";
 import { processAlive } from "./process.ts";
 import { safeText } from "./source-labels.ts";
@@ -229,8 +229,8 @@ function agentRow(agent: AgentConfig, now: number, cache: OverviewCache, alive: 
 	const holder = readHolder(agent.dir);
 	let state: AgentState = "closed";
 	let openIn: "pi" | "omp" | "claude-code" | "codex" | "opencode" | "grok" | undefined;
-	// A recorder's host: Codex when its holder.json says so (status.json's model names it too), else Claude Code.
-	const recorderHost = holder?.host === "codex" ? "codex" : "claude-code";
+	// A recorder's host: Codex or Grok when its holder.json says so (status.json's model names it too), else Claude Code.
+	const recorderHost = holder === undefined ? "claude-code" : holderHost(holder);
 	if (holderFresh(holder, now)) {
 		openIn = recorderHost;
 		state = holder.state === "finishing" ? "finishing" : status?.busy === true && status.model === recorderHost ? "working" : "open";

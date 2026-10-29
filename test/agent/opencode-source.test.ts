@@ -38,5 +38,7 @@ describe("the OpenCode model summary source's words and markers", () => {
 
 	it("names each tool's way to switch", () => {
 		expect([compactorCommandIn("pi", "A"), compactorCommandIn("omp", "A"), compactorCommandIn("claude-code", "A"), compactorCommandIn("codex", "A"), compactorCommandIn("opencode", "A")]).toEqual(["/compactor", "/compactor", "/orrery:compactor", "orrery compactor A", "/compactor"]);
+		// Grok has no command of Orrery's either.
+		expect(compactorCommandIn("grok", "A")).toBe("orrery compactor A");
 	});
 });

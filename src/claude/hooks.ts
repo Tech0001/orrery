@@ -728,17 +728,17 @@ export async function runHook(event: string, stdin: string | undefined, ctx: Hoo
 
 /**
  * `orrery holder`'s arguments for a session of `host`'s process `hostPid`: Claude Code's with --claude-pid, as always;
- * Codex's with --host-pid and --tool codex.
+ * Codex's or Grok's with --host-pid and --tool codex or grok.
  */
 export function holderArgs(agent: AgentConfig, session: string, nonce: string, hostPid: number, since: number, configPath?: string, host: HolderHost = "claude-code"): string[] {
-	const owner = host === "codex" ? ["--host-pid", String(hostPid), "--tool", "codex"] : ["--claude-pid", String(hostPid)];
+	const owner = host === "claude-code" ? ["--claude-pid", String(hostPid)] : ["--host-pid", String(hostPid), "--tool", host];
 	const args = ["holder", agent.name, "--session", session, ...owner, "--nonce", nonce, "--since", String(since)];
 	if (configPath !== undefined) args.push("--config", configPath);
 	return args;
 }
 
 /**
- * Starts `orrery holder` detached, so it outlives this hook and its host, Claude Code or Codex (Phase 0, finding 4).
+ * Starts `orrery holder` detached, so it outlives this hook and its host, Claude Code, Codex or Grok (Phase 0, finding 4).
  * `since` is when SessionStart ran: a run that turns read-only drops this session's events from then on.
  */
 export function spawnHolder(agent: AgentConfig, session: string, nonce: string, claudePid: number, since: number, configPath?: string, host: HolderHost = "claude-code"): void {

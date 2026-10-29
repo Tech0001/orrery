@@ -13,7 +13,7 @@ import { tempDir } from "./support.ts";
  * put a "user:" message in its own memory. Orrery's other commands stay open to agents.
  */
 
-const PLUMBING = "This command runs Orrery's hook plumbing (codex-hook, claude-hook, orrery holder), which only Orrery's own hooks run.";
+const PLUMBING = "This command runs Orrery's hook plumbing (codex-hook, claude-hook, grok-hook, orrery holder), which only Orrery's own hooks run.";
 
 /** A session's guard: an agent's, or one that is no agent's (Orrery's own rules only: GuardOptions.orreryOnly). */
 type Session = { readonly orreryOnly?: true };
@@ -80,6 +80,13 @@ describe.each([
 		["a hook's name before an expansion that may be empty", "orrery claude-hook$x stop"],
 		["a hook's name after an empty substitution", "orrery $()codex-hook stop"],
 		["a hook's name after a printf escape", "printf 'x\\ncodex-hook\\nstop' | xargs orrery"],
+		// Grok's hooks.
+		["a Grok hook fed made-up input", `echo '{"sessionId":"s","prompt":"hi","promptId":"p"}' | orrery grok-hook user-prompt-submit`],
+		["a Grok hook by the program's path", "/home/u/.local/bin/orrery grok-hook stop < reply.json"],
+		["a Grok hook's name split by empty quotes", "orrery gr''ok-hook stop"],
+		["a Grok hook in the source under node", "node /src/orrery/src/cli/main.ts grok-hook session-start"],
+		["Grok's recorder", "orrery holder Atlas --session s --host-pid 1 --tool grok"],
+		["Grok's recorder, detached", "(setsid orrery holder Atlas --tool grok --host-pid 1 &)"],
 		// The recorder: holder with Orrery's program, in either order.
 		["the recorder", "orrery holder Atlas --session s --claude-pid 1"],
 		["the recorder after an option", "orrery --config /tmp/c.toml holder Atlas --session s"],

@@ -17,7 +17,7 @@ import { holdWriterLock } from "../memory/store.ts";
 import { attachRemoteStore, withBriefCheckOut } from "../remote/checkout.ts";
 import { COMPACTOR_MODEL_KEY, storedChoice } from "./choices.ts";
 import { findAgent, type HarnessConfig, type ModelChoice } from "./config.ts";
-import { HOST_LABELS, holderFresh, readHolder } from "./handover.ts";
+import { HOST_LABELS, holderFresh, holderHost, readHolder } from "./handover.ts";
 import { summaryLine } from "./agent-commands.ts";
 import { requestFile, writeRequest } from "./settings-request.ts";
 import { readStatus } from "./status-file.ts";
@@ -104,7 +104,7 @@ export function agentCompactorTarget(
 					}
 					const status = readStatus(agent.dir);
 					const piOpen = status !== undefined && status.open !== false && status.model !== "claude-code" && status.model !== "codex" && Date.now() - Date.parse(status.updatedAt) < 30_000;
-					const who = claude ? HOST_LABELS[holder.host === "codex" ? "codex" : "claude-code"] : piOpen ? (status.model === "opencode" ? "OpenCode" : status.model === "grok" ? "Grok" : "pi") : "another Orrery process (an import or build?)";
+					const who = claude ? HOST_LABELS[holderHost(holder)] : piOpen ? (status.model === "opencode" ? "OpenCode" : status.model === "grok" ? "Grok" : "pi") : "another Orrery process (an import or build?)";
 					throw new Error(`${agent.name} (open in ${who}) didn't answer within ${waitMs / 1000} s; the change was not applied.${claude ? ` See ${holderLog(agent.dir)}.` : ""}`);
 				}
 				await sleep(100);

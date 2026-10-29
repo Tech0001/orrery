@@ -39,7 +39,8 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, type Dirent, existsSync, fstatSync, openSync, readdirSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, normalize, resolve } from "node:path";
+import { AppendedLines, realish, under } from "../agent/appended-lines.ts";
 
 /** A spooled prompt or reply of a Codex turn. */
 export interface CodexSaid {
@@ -173,22 +174,6 @@ export function confirmCodex(lines: readonly string[], said: CodexSaid): CodexVe
 export function codexHome(env: NodeJS.ProcessEnv, home: string): string {
 	return env.CODEX_HOME ? resolve(env.CODEX_HOME) : join(home, ".codex");
 }
-
-/** `path` with its longest existing part's links followed: where it is, or would be once made. */
-function realish(path: string): string {
-	const rest: string[] = [];
-	for (let at = path; ; at = dirname(at)) {
-		try {
-			return join(realpathSync(at), ...rest.reverse());
-		} catch {
-			if (dirname(at) === at) return path;
-			rest.push(basename(at));
-		}
-	}
-}
-
-/** Whether `path` lies under `folder` (both as they really are). */
-const under = (path: string, folder: string) => path.startsWith(folder.endsWith(sep) ? folder : `${folder}${sep}`);
 
 /** The real folders of `home` where rollouts are. */
 const rolloutFolders = (home: string) => FOLDERS.map((folder) => realish(join(home, folder)));
@@ -424,8 +409,6 @@ export function parseRolloutMark(text: string | undefined): RolloutMark | undefi
 	}
 }
 
-/** The most read in one go; a longer line is passed over. */
-const CHUNK = 8 * 1024 * 1024;
 /** How long a line that could confirm something is kept unused, and how many are kept. */
 const KEEP_MS = 10 * 60_000;
 const KEEP_LINES = 1000;
@@ -455,9 +438,8 @@ export interface CodexConfirmation {
 export class RolloutReader {
 	readonly path: string;
 	readonly home: string;
-	#offset: number;
-	/** Mid-way through a line longer than CHUNK: the rest of it is passed over. */
-	#skipping = false;
+	/** The rollout as read so far: its place, and the file Codex holds ("device:inode"; the first one read when SessionStart didn't say). */
+	readonly #lines: AppendedLines;
 	#kept: Kept[] = [];
 	/** Each turn's trigger, and where its start line is. */
 	#turns = new Map<string, { readonly trigger: unknown; readonly at: number }>();
@@ -467,15 +449,12 @@ export class RolloutReader {
 	/** Where the start line of a turn still running is (a reader restarted from the mark reads it again). */
 	#running: number | undefined;
 	readonly #recorded: string[];
-	/** The file Codex holds, "device:inode" (the first one read when SessionStart didn't say). */
-	#file: string | undefined;
 
 	constructor(mark: RolloutMark) {
 		this.path = mark.path;
 		this.home = mark.home;
-		this.#offset = mark.offset;
+		this.#lines = new AppendedLines(mark, (opened) => rolloutFolders(this.home).some((folder) => under(opened, folder)));
 		this.#recorded = [...(mark.recorded ?? [])];
-		this.#file = mark.file;
 	}
 
 	/**
@@ -483,49 +462,7 @@ export class RolloutReader {
 	 * an earlier event of the session waits, so no line read is let go for its age.
 	 */
 	read(now = Date.now(), keep = false): void {
-		let fd: number;
-		try {
-			// Never through a link at the rollout's own place, and never waiting on a FIFO put there.
-			fd = openSync(this.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-		} catch {
-			return;
-		}
-		try {
-			const stat = fstatSync(fd);
-			// On Linux, the file this opened, whatever was swapped in on the way; elsewhere (macOS), the path as it is now.
-			const opened = process.platform === "linux" ? readlinkSync(`/proc/self/fd/${fd}`) : realpathSync(this.path);
-			if (!stat.isFile() || !rolloutFolders(this.home).some((folder) => under(opened, folder))) return;
-			// Codex only appends to the file it holds (SessionStart saw which): another file at the path, or this one
-			// shorter, is not its rollout, and nothing in it is read.
-			const file = `${stat.dev}:${stat.ino}`;
-			this.#file ??= file;
-			if (this.#file !== file || stat.size < this.#offset) return;
-			while (this.#offset < stat.size) {
-				const want = Math.min(stat.size - this.#offset, CHUNK);
-				const buffer = Buffer.alloc(want);
-				const got = readSync(fd, buffer, 0, want, this.#offset);
-				if (got <= 0) break;
-				const end = buffer.lastIndexOf(10, got - 1);
-				if (end < 0) {
-					// No line ends here: wait for the rest, unless the line is longer than a read.
-					if (got < CHUNK) break;
-					this.#offset += got;
-					this.#skipping = true;
-					continue;
-				}
-				let start = 0;
-				for (let newline = buffer.indexOf(10, start); newline >= 0 && newline <= end; newline = buffer.indexOf(10, start)) {
-					if (this.#skipping) this.#skipping = false;
-					else this.#keep(buffer.toString("utf8", start, newline), this.#offset + start, now);
-					start = newline + 1;
-				}
-				this.#offset += end + 1;
-			}
-		} catch {
-			// read again next time
-		} finally {
-			closeSync(fd);
-		}
+		this.#lines.read((text, at) => this.#keep(text, at, now));
 		const fresh = keep ? this.#kept : this.#kept.filter((kept) => now - kept.readAt < KEEP_MS);
 		this.#kept = fresh.slice(-KEEP_LINES);
 	}
@@ -592,8 +529,9 @@ export class RolloutReader {
 	 */
 	mark(): RolloutMark {
 		const starts = this.#kept.map((kept) => Math.min(kept.at, this.#turns.get(kept.say.turnId)?.at ?? kept.at));
-		const offset = Math.min(this.#offset, this.#running ?? Number.POSITIVE_INFINITY, ...starts);
-		return { path: this.path, home: this.home, offset, recorded: [...this.#recorded], ...(this.#file === undefined ? {} : { file: this.#file }) };
+		const offset = Math.min(this.#lines.offset, this.#running ?? Number.POSITIVE_INFINITY, ...starts);
+		const file = this.#lines.file;
+		return { path: this.path, home: this.home, offset, recorded: [...this.#recorded], ...(file === undefined ? {} : { file }) };
 	}
 }
 

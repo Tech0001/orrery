@@ -163,13 +163,13 @@ const HOME_NAMED = new RegExp(`${DOT_START}(?:${HOME_SECRETS.filter((name) => !H
 const CREDENTIALS = [...SENSITIVE, HOME_NAMED];
 
 /**
- * Orrery's hook plumbing, which only Orrery's own hooks run: Claude Code and Codex run them, never an agent's shell. An
- * agent that ran a hook could give it made-up input and put words in the person's mouth (a "user:" message in its own
- * memory). In any reading of shell text (readings: quotes, backslashes and empty $() or `` gone, $'…' decoded, brace
- * groups read each way, any case):
- * - a hook command, codex-hook or claude-hook, named as a word anywhere, so it is refused however Orrery is reached
- *   (orrery, a path to it, env/command/exec, $(which orrery), xargs, the source's cli/main.ts under node or bun); an
- *   expansion glued to either end (${x}codex-hook, codex-hook$x), which may be empty, does not hide it;
+ * Orrery's hook plumbing, which only Orrery's own hooks run: Claude Code, Codex and Grok run them, never an agent's
+ * shell. An agent that ran a hook could give it made-up input and put words in the person's mouth (a "user:" message in
+ * its own memory). In any reading of shell text (readings: quotes, backslashes and empty $() or `` gone, $'…' decoded,
+ * brace groups read each way, any case):
+ * - a hook command, codex-hook, claude-hook or grok-hook, named as a word anywhere, so it is refused however Orrery is
+ *   reached (orrery, a path to it, env/command/exec, $(which orrery), xargs, the source's cli/main.ts under node or bun);
+ *   an expansion glued to either end (${x}codex-hook, codex-hook$x), which may be empty, does not hide it;
  * - the recorder, `orrery holder`: the word holder anywhere in text that also names Orrery's program as a word
  *   (orrery, a path ending in it, or the source's cli/main.ts), in either order, so neither an argument list fed in
  *   (`echo holder | xargs orrery`) nor a quoted separator between them (`orrery --config ';' holder`) splits them, nor
@@ -183,7 +183,7 @@ const CREDENTIALS = [...SENSITIVE, HOME_NAMED];
 const ESCAPE_BEFORE = "\\\\(?:[a-z]|x[0-9a-f]{1,2}|[0-7]{1,3})";
 const PLUMBING_START = `(?:^|[\\s"'=:/~<>;|&()\`{},*@]|(?:^|[\\s"'])-[a-z]+|${ESCAPE_BEFORE})`;
 const PLUMBING_END = "(?=$|[\\s\"'/:;|&()<>`,{}*?\\[$\\\\])";
-const HOOK_COMMAND = new RegExp(`${PLUMBING_START}(?:codex|claude)-hook${PLUMBING_END}`);
+const HOOK_COMMAND = new RegExp(`${PLUMBING_START}(?:codex|claude|grok)-hook${PLUMBING_END}`);
 const ORRERY_PROGRAM = new RegExp(`${PLUMBING_START}(?:orrery(?:\\.exe)?|cli/main\\.[cm]?[jt]s)(?=$|[\\s"';|&()<>\`{}$\\\\,])`);
 const HOLDER_WORD = new RegExp(`(?:^|[\\s"'<>;|&()\`{},]|${ESCAPE_BEFORE})holder${PLUMBING_END}`);
 
@@ -208,7 +208,7 @@ function runsPlumbing(form: string): boolean {
 }
 
 /** Why shell text that runs Orrery's hook plumbing is refused (runsPlumbing). */
-export const PLUMBING_REFUSED = "This command runs Orrery's hook plumbing (codex-hook, claude-hook, orrery holder), which only Orrery's own hooks run.";
+export const PLUMBING_REFUSED = "This command runs Orrery's hook plumbing (codex-hook, claude-hook, grok-hook, orrery holder), which only Orrery's own hooks run.";
 
 // ---- Orrery's own commands from an agent's shell (spec 2026-10-18-agent-permissions §4) ----
 //
@@ -241,7 +241,7 @@ export const PLUMBING_REFUSED = "This command runs Orrery's hook plumbing (codex
 export const ORRERY_COMMANDS: readonly string[] = [
 	...["help", "agent", "run", "status", "import", "compact", "browse", "backup", "restore", "login", "logins", "logout"],
 	...["compactor", "usage", "remote", "trust-host", "update", "tools", "claude-setup", "setup", "install", "uninstall"],
-	...["version", "holder", "claude-mod", "mcp", "claude-hook", "codex-hook"],
+	...["version", "holder", "claude-mod", "mcp", "claude-hook", "codex-hook", "grok-hook"],
 ];
 
 /**

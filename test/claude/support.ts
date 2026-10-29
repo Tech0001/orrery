@@ -96,13 +96,14 @@ export function messages(agent: AgentConfig): string[] {
 }
 
 type Spooled =
-	| { kind: "prompt"; text: string; promptId?: string; host?: "codex"; turnId?: string }
-	| { kind: "reply"; text: string; host?: "codex"; turnId?: string }
+	| { kind: "prompt"; text: string; promptId?: string; host?: "codex" | "grok"; turnId?: string }
+	| { kind: "reply"; text: string; host?: "codex" | "grok"; turnId?: string; promptId?: string }
 	| { kind: "command" }
 	| { kind: "end"; reason?: string }
 	| { kind: "compactor"; args: string }
 	| { kind: "transcript"; path: string; projects: string; offset: number }
-	| { kind: "rollout"; path: string; home: string; offset: number; file?: string };
+	| { kind: "rollout"; path: string; home: string; offset: number; file?: string }
+	| { kind: "grok-log"; path: string; home: string; offset: number; file?: string };
 let clock = 0;
 
 /**

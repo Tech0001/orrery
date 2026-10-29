@@ -10,8 +10,8 @@
  * guard-rules.ts, but the shared examples) are kept as credentials are, with two differences: a protect name entry or a
  * secret name is not judged against a search's root, and neither is judged in an OMP edit's text, only in its targets
  * (specs 2026-10-15-guard-protect, 2026-10-16-guard-presets). Shell text may not run Orrery's hook plumbing (codex-hook,
- * claude-hook, orrery holder; guard-rules.ts runsPlumbing), which only Orrery's own hooks run. OpenCode's config and code
- * (a .opencode folder and opencode.json(c) in any folder, OpenCode's own config, cache, state and database:
+ * claude-hook, grok-hook, orrery holder; guard-rules.ts runsPlumbing), which only Orrery's own hooks run. OpenCode's
+ * config and code (a .opencode folder and opencode.json(c) in any folder, OpenCode's own config, cache, state and database:
  * guard-rules.ts openCodeLoads), which OpenCode loads and runs, are read-only as Orrery's config is: no tool writes them
  * and shell text may not name them. The skills of .claude and .agents, which OpenCode loads too, may be written by the
  * file tools, but only where the guard can see the file will not start with front matter that may run as code
