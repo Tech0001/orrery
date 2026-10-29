@@ -203,7 +203,7 @@ describe("opening an agent in Grok", () => {
 		dirs.push(here);
 		writeInstructions(config.agents.get("A")!.dir, "Keep notes.\n");
 		const plan = launchPlan(config, row, checkTools({ root: orreryRoot(), env }), { cwd: here, args: ["--resume", "abc"] });
-		expect(plan).toMatchObject({ tool: "grok", command: join(env.PATH, "grok"), cwd: here, steps: [] });
+		expect(plan).toMatchObject({ tool: "grok", command: join(env.PATH, "grok"), cwd: here, steps: [{ text: resumedNotice, confirm: false }] });
 		expect(plan.blocked).toBeUndefined();
 		expect(plan.args.slice(0, 1)).toEqual(["--rules"]);
 		expect(plan.args[1]).toContain("# Agent: A");
@@ -218,6 +218,20 @@ describe("opening an agent in Grok", () => {
 		expect(rest.slice(0, 2)).toEqual(["# Agent: A", ""]);
 		expect(rest.slice(-3, -1)).toEqual(["--resume", "abc"]);
 		expect(readdirSync(join(plan.agentDir, "claims"))).toEqual([]);
+	});
+
+	/** What the person is told when Grok resumes a session, whose memory section is its first launch's. */
+	const resumedNotice = "Orrery: a resumed Grok session keeps A's memory as it was at that session's first launch; newer memory is reachable with the zoom and search tools. Start a new session for a fresh view.";
+
+	it("says a resumed session keeps its first launch's memory (Grok doesn't take --rules again on a resume), for each way of resuming", () => {
+		const { config, row, tools } = setup("grok");
+		writeInstructions(config.agents.get("A")!.dir, "Keep notes.\n");
+		for (const args of [["--resume", "abc"], ["--resume"], ["--resume=abc"], ["-r", "abc"], ["--continue"], ["-c"], ["-p", "hi", "-c"]]) {
+			const plan = launchPlan(config, row, tools, { args });
+			expect(plan.steps, args.join(" ")).toEqual([{ text: resumedNotice, confirm: false }]);
+			expect(plan.args.slice(-args.length)).toEqual(args);
+		}
+		for (const args of [[], ["-p", "hi"], ["--", "-c"], ["--resumex"], ["-cx"]]) expect(launchPlan(config, row, tools, { args }).steps, args.join(" ")).toEqual([]);
 	});
 
 	it("--tool grok overrides an agent's tool for this launch only", () => {

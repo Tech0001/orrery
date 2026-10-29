@@ -22,7 +22,7 @@ import { type OpenCodeGate, opencodePluginGate, type probePlugin } from "../open
 import { argsRefusal, inheritsOrreryPlugin, launchConfigContent, opencodeArgs, pluginFolder } from "../opencode/launch.ts";
 import { configContent } from "../opencode/options.ts";
 import { removeOnSignals, removeTokenFile, tokenFilePath, writeTokenFile } from "../opencode/token-file.ts";
-import { grokArgs, grokArgsRefusal, grokRules } from "../grok/launch.ts";
+import { grokArgs, grokArgsRefusal, grokResumeNotice, grokRules } from "../grok/launch.ts";
 import { buildRunning, readBuild } from "./build.ts";
 import { findAgent, type HarnessConfig, insideFolder, type AgentConfig, type AgentLauncher, type AgentTool } from "./config.ts";
 import { type AgentRow, TOOL_LABELS } from "./overview.ts";
@@ -198,6 +198,9 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 	const grokRefused = grok === undefined ? undefined : grokArgsRefusal(agent.name, grok, base.args);
 	if (grokRefused !== undefined) return { ...base, steps: [], blocked: grokRefused };
 	for (const notice of grok?.notices ?? []) steps.push({ text: notice, confirm: false });
+	// A resumed Grok session keeps the memory section of its first launch: Grok takes no --rules on a resume.
+	const resumed = grok === undefined ? undefined : grokResumeNotice(agent.name, base.args);
+	if (resumed !== undefined) steps.push({ text: resumed, confirm: false });
 	const toolArgs = codex !== undefined ? codexArgs(codex, base.args) : grok !== undefined ? grokArgs(grok, base.args) : tool === "opencode" ? opencodeArgs(cwd, base.args) : base.args;
 	const version = codexVersion(check.version);
 	const codexPlan = (prefix: readonly string[]) => (codex === undefined ? {} : { codex: { path: check.path as string, ...(version === undefined ? {} : { version }), config: codex.config, plainArgs: [...prefix, ...base.args], notices: codex.notices } });

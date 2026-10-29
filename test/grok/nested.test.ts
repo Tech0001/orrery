@@ -66,7 +66,6 @@ const hosts = (dataDir: string): string[] => (existsSync(join(dataDir, "session-
 const hookCtx = (w: ReturnType<typeof grokWorld>, extra: Partial<GrokHookContext> = {}): GrokHookContext => ({
 	config: w.config,
 	env: { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token, GROK_HOME: w.grok.home },
-	home: join(w.root, "home"),
 	grokPid: process.pid,
 	grokParent: process.pid,
 	cwdOf: () => w.grok.cwd,

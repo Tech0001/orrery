@@ -25,25 +25,27 @@
  * - Their stdout is only their JSON answer (nothing at all when there is none), and they never put message contents on
  *   stderr or in a log.
  *
- * Grok runs a hook through a pipe, so the agent's own shell can run this command with made-up input. So no event changes
- * what such a call could abuse:
- * - SessionStart takes a session only when it is Grok's own: its folder is under Grok's (found from the folder the grok
- *   process runs in, never where the input says), its summary.json names it as a person's own session (not a
- *   subagent's), and the grok process holds its events.jsonl open; all before it decides, claims or records anything.
- *   A Grok keeps every session it ran since it started open (/clear leaves the last one open), so a made-up SessionStart
- *   may name one of those: the recording moves there until the next real SessionStart (the limit of a check with no turn
- *   of its own to prove it, as Codex's has).
+ * Grok runs a hook through a pipe, so the agent's own shell can run this command with made-up input and its own
+ * environment (GROK_HOME, HOME). So no event changes what such a call could abuse:
+ * - SessionStart takes a session only when it is Grok's own, all before it decides, claims or records anything. Its
+ *   folder, Grok's folder and so the log read are all taken from the session's events.jsonl as the grok process has it
+ *   open (its path, under the folder that process runs in; never from the environment or the input), at its own place
+ *   with no link on the way or at it, the log beside it no link either; and its summary.json names it as a person's own
+ *   session (not a subagent's). A Grok keeps every session it ran since it started open (/clear leaves the last one
+ *   open), so a made-up SessionStart may name one of those: the recording moves there until the next real SessionStart
+ *   (the limit of a check with no turn of its own to prove it, as Codex's has), but only Grok's own log of it confirms
+ *   anything.
  * - UserPromptSubmit and Stop spool only for the session this Grok's host record names, and what they spool is held
  *   until Grok's log confirms it, then dropped and counted if it doesn't.
  */
 
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { lstatSync, realpathSync, type Stats } from "node:fs";
+import { join } from "node:path";
 import { type AgentConfig, agentForCwd, type HarnessConfig } from "../agent/config.ts";
 import { holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
 import { readMemory } from "../agent/memory-read.ts";
+import { type OpenFile, openFiles } from "../agent/open-files.ts";
 import { AGENT_ENV } from "../agent/pick.ts";
 import type { PlainDeps } from "../agent/plain-nested.ts";
 import { processCwd } from "../agent/process.ts";
@@ -54,8 +56,7 @@ import { summaryNotice, updateNotice } from "../claude/notices.ts";
 import { holderLog, validSession } from "../claude/paths.ts";
 import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
 import { grokAgent } from "../codex/pick.ts";
-import { holdsOpen, type OpenFile } from "../codex/rollout.ts";
-import { grokHome, grokLogStart, grokSessionKind, grokSessionLog } from "./log.ts";
+import { grokHeldSession, grokLogStart, grokSessionKind } from "./log.ts";
 
 /** The events `orrery grok-hook` answers (pre-tool-use is the guard). */
 export const GROK_HOOK_EVENTS = ["session-start", "user-prompt-submit", "pre-tool-use", "stop", "stop-cancelled", "session-end"] as const;
@@ -76,9 +77,7 @@ export interface GrokHookInput {
 export interface GrokHookContext {
 	readonly config: HarnessConfig;
 	readonly env: NodeJS.ProcessEnv;
-	/** The home folder ~/.grok is in when GROK_HOME is not set (default os.homedir()). */
-	readonly home?: string;
-	/** The files a process has open (default src/codex/rollout.ts openFiles); tests give their own. */
+	/** The files a process has open (default src/agent/open-files.ts openFiles): Grok's session folders are found by them. */
 	readonly openFiles?: (pid: number) => readonly OpenFile[] | undefined;
 	/** Grok's process (src/grok/host.ts): the token's owner and the holder's host. */
 	readonly grokPid: number;
@@ -87,7 +86,7 @@ export interface GrokHookContext {
 	 * named like shells, and must prove itself (src/codex/pick.ts). Undefined: no check (tests).
 	 */
 	readonly grokParent?: number;
-	/** The folder a process runs in, as it really is (default processCwd): where Grok keeps its sessions' folders by. */
+	/** The folder a process runs in, as it really is (default processCwd): Grok names its sessions' folder by it. */
 	readonly cwdOf?: (pid: number) => string | undefined;
 	/** Starts the session's holder (spawnHolder for Grok); tests start one in-process or answer for it. */
 	readonly startHolder: (agent: AgentConfig, session: string, nonce: string, since: number) => void;
@@ -195,29 +194,54 @@ interface OwnLog {
 	readonly file?: string;
 }
 
+/** What is at `path` itself, a link there not followed: undefined when nothing is, "unreadable" when that can't be told. */
+function placeOf(path: string): Stats | undefined | "unreadable" {
+	try {
+		return lstatSync(path);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : "unreadable";
+	}
+}
+
+/** `path` as it really is, or undefined when it can't be read. */
+function realOf(path: string): string | undefined {
+	try {
+		return realpathSync(path);
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * Session `session` as this Grok's own (module doc): its log and where to read it from, or why it can't be confirmed.
- * The folder is the one the grok process runs in, as it really is (Grok resolves links in it, live).
+ * Both folders come from the events.jsonl the grok process has open for the session (src/grok/log.ts grokHeldSession),
+ * under the folder that process runs in, as it really is (Grok resolves links in it, live); never from GROK_HOME, HOME
+ * or the hook's input. That file must be at its own place with no link on the way or at it (on Linux, the very file
+ * Grok has open), and the log beside it a regular file, or none yet (a new session's).
  */
 function ownSession(session: string, ctx: GrokHookContext): OwnLog | string {
-	const home = grokHome(ctx.env, ctx.home ?? homedir());
 	const cwd = (ctx.cwdOf ?? processCwd)(ctx.grokPid);
 	if (cwd === undefined) return "the folder Grok runs in can't be read";
-	const log = grokSessionLog(home, cwd, session);
-	const dir = dirname(log);
+	const open = (ctx.openFiles ?? openFiles)(ctx.grokPid);
+	if (open === undefined) return "this system can't tell which files Grok has open";
+	const held = grokHeldSession(open, cwd, session);
+	if (held === undefined) return "Grok doesn't have it open";
+	const { dir, home } = held;
+	const events = join(dir, "events.jsonl");
+	const real = realOf(dir);
+	const at = placeOf(events);
+	if (real === undefined || join(real, "events.jsonl") !== events || at === undefined || at === "unreadable" || !at.isFile() || (held.file !== undefined && held.file !== `${at.dev}:${at.ino}`)) {
+		return "the file Grok has open is not at its place";
+	}
+	const log = join(dir, "updates.jsonl");
+	const logAt = placeOf(log);
+	if (logAt === "unreadable" || (logAt !== undefined && !logAt.isFile())) return "its log is a link or no regular file";
 	const kind = grokSessionKind(dir, session);
 	if (kind === undefined) return `no session of it under ${home}`;
 	if (kind !== "main") return "it is no session of the person's own, but a subagent's or another kind";
-	const held = holdsOpen(ctx.grokPid, join(dir, "events.jsonl"), ctx.openFiles);
-	if (held === "unknown") return "this system can't tell which files Grok has open";
-	if (held === false) return "Grok doesn't have it open";
 	const start = grokLogStart(log);
 	if (start === undefined) return "its log can't be read";
-	try {
-		return { path: join(realpathSync(dir), "updates.jsonl"), home: realpathSync(home), offset: start.offset, ...(start.file === undefined ? {} : { file: start.file }) };
-	} catch {
-		return "its log can't be read";
-	}
+	return { path: log, home, offset: start.offset, ...(start.file === undefined ? {} : { file: start.file }) };
 }
 
 /** A plain grok's SessionStart (module doc): in an agent's folder, how to open that agent; elsewhere nothing. */

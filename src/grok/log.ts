@@ -19,16 +19,19 @@
  * writes the turn's end just after Stop.
  *
  * Which log: the session's own, `updates.jsonl` in <Grok's folder>/sessions/<the folder Grok runs in, percent-encoded>/
- * <session id>/ (Grok's folder is $GROK_HOME, else ~/.grok), found by Orrery from the Grok process (src/grok/hooks.ts),
- * never where the hook's input says. Grok writes it by appending, and opens it only to write (it holds the session's
- * events.jsonl open instead, from its start to its end, which SessionStart checks). It is read from SessionStart's place
- * on (the end of what is there: a resumed session's old turns are not read again) through src/agent/appended-lines.ts.
+ * <session id>/ (Grok's folder is its $GROK_HOME, else ~/.grok). Grok writes it by appending, and opens it only to write;
+ * it holds the session's events.jsonl open instead, from its start to its end. So SessionStart (src/grok/hooks.ts) takes
+ * both folders from the path of the events.jsonl the grok process has open (grokHeldSession), never from the
+ * environment (GROK_HOME, HOME) or the hook's input, which the agent's own shell can set. The log is read from
+ * SessionStart's place on (the end of what is there: a resumed session's old turns are not read again) through
+ * src/agent/appended-lines.ts.
  */
 
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { AppendedLines, realish, under } from "../agent/appended-lines.ts";
+import type { OpenFile } from "../agent/open-files.ts";
 import { validSession } from "../claude/paths.ts";
 
 /** A spooled prompt or reply of a Grok turn. */
@@ -65,6 +68,35 @@ export function grokFolder(cwd: string): string {
 /** Session `sessionId`'s log, for a Grok whose folder is `grokHome`, started in folder `cwd` (as it really is). */
 export function grokSessionLog(grokHome: string, cwd: string, sessionId: string): string {
 	return join(grokHome, "sessions", grokFolder(cwd), sessionId, "updates.jsonl");
+}
+
+/** A session's folder and Grok's folder, as the file Grok has open for the session names them. */
+export interface GrokHeld {
+	/** <Grok's folder>/sessions/<folder>/<session>. */
+	readonly dir: string;
+	/** Grok's folder. */
+	readonly home: string;
+	/** On Linux, the very file Grok has open ("device:inode"). */
+	readonly file?: string;
+}
+
+/**
+ * Session `session`'s folder as the grok process has it open (`open`: its open files, src/agent/open-files.ts): Grok
+ * holds each live session's events.jsonl open from its start to its end, so the one whose own path is <Grok's folder>/
+ * sessions/<grokFolder(cwd)>/<session>/events.jsonl names both folders. `cwd` is the folder the grok process runs in.
+ * Undefined when Grok has none open.
+ */
+export function grokHeldSession(open: readonly OpenFile[], cwd: string, session: string): GrokHeld | undefined {
+	if (!validSession(session)) return undefined;
+	for (const held of open) {
+		const path = held.path;
+		if (!isAbsolute(path) || normalize(path) !== path || basename(path) !== "events.jsonl") continue;
+		const dir = dirname(path);
+		const sessions = dirname(dirname(dir));
+		if (basename(dir) !== session || basename(dirname(dir)) !== grokFolder(cwd) || basename(sessions) !== "sessions") continue;
+		return { dir, home: dirname(sessions), ...(held.file === undefined ? {} : { file: held.file }) };
+	}
+	return undefined;
 }
 
 /** Grok's sessions folder, as it really is. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { cutNotice, INSTRUCTIONS_MAX_BYTES, type Instructions } from "../../src/agent/instructions.ts";
-import { GROK_ARG_MAX, grokArgs, grokArgsRefusal, grokLaunch, grokMemoryRoom } from "../../src/grok/launch.ts";
+import { GROK_ARG_MAX, grokArgs, grokArgsRefusal, grokLaunch, grokMemoryRoom, grokResumeNotice } from "../../src/grok/launch.ts";
 import { isGrokProcess } from "../../src/grok/names.ts";
 
 const agent = { name: "Atlas", dir: "/unused" };
@@ -97,6 +97,14 @@ describe("grokArgsRefusal", () => {
 
 	it("lets them through when Orrery passes no --rules (no memory, no instructions)", () => {
 		expect(grokArgsRefusal("Atlas", grokLaunch(agent, "", undefined), ["--rules", "x"])).toBeUndefined();
+	});
+});
+
+describe("grokResumeNotice", () => {
+	it("says a resumed session keeps the memory of its first launch, for --resume, -r, --continue and -c before a --", () => {
+		const notice = "Orrery: a resumed Grok session keeps Atlas's memory as it was at that session's first launch; newer memory is reachable with the zoom and search tools. Start a new session for a fresh view.";
+		for (const args of [["--resume", "abc"], ["--resume"], ["--resume=abc"], ["-r", "abc"], ["--continue"], ["-c"], ["--model", "m", "--continue"]]) expect(grokResumeNotice("Atlas", args), args.join(" ")).toBe(notice);
+		for (const args of [[], ["-p", "hi"], ["--", "--resume"], ["--resumex"], ["-cr"], ["--rules", "x"]]) expect(grokResumeNotice("Atlas", args), args.join(" ")).toBeUndefined();
 	});
 });
 

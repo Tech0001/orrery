@@ -88,14 +88,29 @@ const RULES_FLAGS = ["--rules", "--append-system-prompt"];
  * own, which Grok refuses as a second `--rules`.
  */
 export function grokArgsRefusal(name: string, launch: GrokLaunch, args: readonly string[]): string | undefined {
-	if (launch.holds.length === 0) return undefined;
+	if (launch.holds.length === 0 || !hasFlag(args, RULES_FLAGS)) return undefined;
+	return `Orrery gives Grok ${name}'s ${launch.holds.join(" and ")} as its --rules, which Grok takes once: put your rules in ${name}'s instructions.md, or open ${name} without them.`;
+}
+
+/** Whether the person's arguments give one of `flags` (alone, or with `=` and a value) before a `--`. */
+function hasFlag(args: readonly string[], flags: readonly string[]): boolean {
 	for (const word of args) {
-		if (word === "--") break;
-		if (RULES_FLAGS.some((flag) => word === flag || word.startsWith(`${flag}=`))) {
-			return `Orrery gives Grok ${name}'s ${launch.holds.join(" and ")} as its --rules, which Grok takes once: put your rules in ${name}'s instructions.md, or open ${name} without them.`;
-		}
+		if (word === "--") return false;
+		if (flags.some((flag) => word === flag || word.startsWith(`${flag}=`))) return true;
 	}
-	return undefined;
+	return false;
+}
+
+/** Grok's flags that resume a session, which takes no --rules again (Grok 1.0.70 keeps its system prompt as it was). */
+const RESUME_FLAGS = ["--resume", "-r", "--continue", "-c"];
+
+/**
+ * What to say when the person's arguments resume a Grok session: it keeps the memory section of its first launch, since
+ * Grok doesn't apply --rules on a resume. Undefined when they don't resume one.
+ */
+export function grokResumeNotice(name: string, args: readonly string[]): string | undefined {
+	if (!hasFlag(args, RESUME_FLAGS)) return undefined;
+	return `Orrery: a resumed Grok session keeps ${name}'s memory as it was at that session's first launch; newer memory is reachable with the zoom and search tools. Start a new session for a fresh view.`;
 }
 
 /** Grok's command line for `launch` and the person's arguments: Orrery's `--rules` first. */
