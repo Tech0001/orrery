@@ -2,7 +2,7 @@
 
 import { execFileSync, type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll } from "vitest";
 import { gitEnv } from "../../src/claude/git.ts";
@@ -163,8 +163,26 @@ function scratchHome(): string {
 	return childHome;
 }
 
+let grokFolder: string | undefined;
+
+/**
+ * `cmd args` as a child of a stand-in for Grok Build: a copy of /bin/sh named grok (one per test file), so the system
+ * names that parent grok, as it names Grok's own program, and the child's host is a Grok. The copy runs the command and
+ * waits for it, so it stays the parent. Returns what to spawn.
+ */
+export function grokLaunch(cmd: string, args: readonly string[]): [string, string[]] {
+	if (grokFolder === undefined || !existsSync(grokFolder)) {
+		grokFolder = tempDir("orrery-grok-program-");
+		copyFileSync("/bin/sh", join(grokFolder, "grok"));
+		chmodSync(join(grokFolder, "grok"), 0o755);
+	}
+	return [join(grokFolder, "grok"), ["-c", '"$@"; exit $?', "grok", cmd, ...args]];
+}
+
 // Imported at the top of a test file, this hook is that file's.
 afterAll(() => {
+	if (grokFolder !== undefined) rmSync(grokFolder, { recursive: true, force: true });
+	grokFolder = undefined;
 	if (childHome !== undefined) rmSync(childHome, { recursive: true, force: true });
 	childHome = undefined;
 	if (transcriptsRoot !== undefined) rmSync(transcriptsRoot, { recursive: true, force: true });

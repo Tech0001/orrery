@@ -557,6 +557,33 @@ describe("orrery install", () => {
 		expect(readFileSync(piFile, "utf8")).toBe(`export { default } from ${JSON.stringify(join(current, "src", "pi", "index.ts"))};\n`);
 	});
 
+	it("rolling back to a version below 0.10.0 removes Grok's wiring and says so", () => {
+		const env = scratchEnv();
+		const grok = join(env.HOME as string, ".grok");
+		const hooks = join(grok, "hooks", "orrery.json");
+		const config = join(grok, "config.toml");
+		mkdirSync(grok);
+		const mine = '[ui]\npermission_mode = "auto"\n';
+		writeFileSync(config, mine);
+		// 0.9.4 knows no grok-hook: Grok is not wired to it.
+		const old = cli(env, "install", "--from", fixtureRelease("0.9.4"));
+		expect(old.status, old.stdout + old.stderr).toBe(0);
+		expect(existsSync(hooks)).toBe(false);
+		expect(old.stdout).toMatch(/^Grok: 0\.9\.4 has no Grok support; not wired$/m);
+		const up = runCli(env, ["install", "--from", fixtureRelease("0.10.0"), "--yes"]);
+		expect(up.status, up.stdout + up.stderr).toBe(0);
+		expect(existsSync(hooks)).toBe(true);
+		expect(readFileSync(config, "utf8")).toContain("[mcp_servers.orrery]");
+		const back = runCli(env, ["install", "--rollback"]);
+		expect(back.status, back.stdout + back.stderr).toBe(0);
+		expect(currentOf(env)).toBe("0.9.4");
+		expect(existsSync(hooks)).toBe(false);
+		expect(readFileSync(config, "utf8")).toBe(mine);
+		expect(back.stdout).toMatch(/^Grok: 0\.9\.4 has no Grok support, so Orrery's Grok wiring goes:/m);
+		expect(back.stdout).toContain(`Grok: removed ${hooks}`);
+		expect(back.stdout).toMatch(/^Grok: removed \[ui\.status_line\] and \[mcp_servers\.orrery\] from /m);
+	});
+
 	it("setup refuses before anything is installed", () => {
 		const out = cli(scratchEnv(), "setup");
 		expect(out.status).toBe(1);

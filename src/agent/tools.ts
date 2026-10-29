@@ -1,23 +1,26 @@
 /**
  * pi, Claude Code, Codex, OMP, OpenCode and Grok as orrery sees them (spec 2026-10-08-orrery-tui-design §3.4, §4.6): found on
  * PATH, their version, whether orrery's side is installed (Codex's and OpenCode's come with each launch: the last hook
- * or plugin check is said), and the steps that install it. Node only.
+ * or plugin check is said; Grok's memory comes with each launch, its hooks and config entries are installed:
+ * src/grok/install.ts), and the steps that install it. Node only.
  */
 
 import { execFile, spawnSync } from "node:child_process";
-import { accessSync, constants, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { accessSync, chmodSync, constants, copyFileSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { ENTRY_TAILS, endsWithSegments, entries, oneLineTarget, type Style } from "../install/layout.ts";
 import type { AgentTool } from "./config.ts";
 import { codexCheckDetail } from "../codex/check.ts";
+import { grokFolderThere, grokInstallSteps, grokWiring } from "../grok/install.ts";
 import { opencodeCheckDetail } from "../opencode/check.ts";
 import { makeScratch } from "../opencode/scratch.ts";
 import { realTarget } from "./guard-paths.ts";
 import { runningRoot, versionNumber, wiringRoot } from "./running.ts";
 import { safeText } from "./source-labels.ts";
 
-/** "memory": Orrery's side comes with each launch, nothing is installed (Codex: src/codex/launch.ts; OpenCode: src/opencode/launch.ts; Grok: src/grok/launch.ts). */
+/** "memory": Orrery's side comes with each launch, nothing is installed (Codex: src/codex/launch.ts; OpenCode: src/opencode/launch.ts). */
 export type Wiring = "installed" | "missing" | "other" | "update available" | "unknown" | "memory" | "none";
 
 export interface ToolCheck {
@@ -352,10 +355,16 @@ export function opencodeVersionOutput(path: string, env: NodeJS.ProcessEnv): Run
 /** The Grok Build Orrery was tested with. */
 export const GROK_TESTED = "1.0.70";
 
-/** Grok's row detail: Orrery's side comes with each launch (the memory goes in `--rules`); other versions are untested. */
-function grokDetail(path: string | undefined, version: string | undefined): string {
-	if (path === undefined) return "Grok Build is not on PATH";
-	return version === undefined || version === GROK_TESTED ? `memory and instructions come with each launch; tested with Grok ${GROK_TESTED}` : `memory and instructions come with each launch; tested with Grok ${GROK_TESTED}, this is ${version}`;
+/**
+ * Grok's row: Orrery's hook file and config entries in Grok's folder (src/grok/install.ts grokWiring; the memory itself
+ * comes with each launch, in `--rules`), and the version tested. A Grok whose folder is there counts as found, though
+ * `grok` is not on PATH.
+ */
+function grokRow(root: string, env: NodeJS.ProcessEnv, path: string | undefined, version: string | undefined): Pick<ToolCheck, "wiring" | "detail" | "now"> {
+	if (path === undefined && !grokFolderThere(env)) return { wiring: "missing", detail: "Grok Build is not on PATH" };
+	const wiring = grokWiring(root, env);
+	const tested = version === undefined || version === GROK_TESTED ? `tested with Grok ${GROK_TESTED}` : `tested with Grok ${GROK_TESTED}, this is ${version}`;
+	return { ...wiring, detail: `${wiring.detail}; ${tested}` };
 }
 
 /** pi, Claude Code, Codex, OMP, OpenCode and Grok, in that order. */
@@ -373,7 +382,7 @@ export function checkTools(options: { root?: string; env?: NodeJS.ProcessEnv; ru
 		const found = { id, label: LABELS[id], ...(path === undefined ? {} : { path }), ...(version === undefined ? {} : { version }) };
 		if (id === "codex") return { ...found, wiring: "memory" as const, detail: codexCheckDetail(env, codexVersion(version), orreryVersion()) };
 		if (id === "opencode") return { ...found, wiring: "memory" as const, detail: opencodeCheckDetail(env, codexVersion(version), orreryVersion()) };
-		if (id === "grok") return { ...found, wiring: "memory" as const, detail: grokDetail(path, codexVersion(version)) };
+		if (id === "grok") return { ...found, ...grokRow(root, env, path, codexVersion(version)) };
 		if (id === "pi") return { ...found, ...piWiring(root, env) };
 		if (id === "omp") return { ...found, ...ompWiring(root, env) };
 		if (path === undefined) return { ...found, wiring: "missing" as const, detail: "Claude Code is not on PATH" };
@@ -416,8 +425,18 @@ export async function probeOri(options: { env?: NodeJS.ProcessEnv; timeout?: num
 }
 
 export type InstallStep =
-	| { readonly kind: "write"; readonly path: string; readonly text: string; readonly describe: string }
-	| { readonly kind: "run"; readonly cmd: string; readonly args: readonly string[]; readonly describe: string };
+	/**
+	 * `text` written to `path` in one rename. A file already there that is not Orrery's is set aside first: by `ours`, a
+	 * test of its text (default: pi's and OMP's one-line extension, foreignExtension). `folderMode`: the mode of folders
+	 * made for it (default: the umask's).
+	 */
+	| { readonly kind: "write"; readonly path: string; readonly text: string; readonly describe: string; readonly ours?: (text: string) => boolean; readonly folderMode?: number }
+	| { readonly kind: "run"; readonly cmd: string; readonly args: readonly string[]; readonly describe: string }
+	/**
+	 * Another tool's config at `path` (its text, "" when there is none), changed by `edit` when it is run, after a copy of
+	 * it (rewriteKeepingCopy); `said` is shown. `what` is what the edit adds, for the question that asks first.
+	 */
+	| { readonly kind: "edit"; readonly path: string; readonly what: string; readonly edit: (text: string) => { readonly next: string; readonly said: readonly string[] }; readonly describe: string };
 
 /**
  * What installing or repairing orrery's side of a tool does; empty when there is nothing to do (already installed) or
@@ -447,6 +466,11 @@ export function installSteps(check: ToolCheck, root: string, env: NodeJS.Process
 		if (check.wiring === "other") return [{ ...run("plugin", "marketplace", "add", root), describe: `claude plugin marketplace add ${root} (moves the Orrery plugin from the other Orrery to ${root})` }];
 		if (check.wiring === "update available") return [run("plugin", "marketplace", "update", "orrery"), run("plugin", "update", "orrery@orrery")];
 	}
+	// Grok: the hook file (a file that is not Orrery's set aside), then the config tables it lacks.
+	if (check.id === "grok") {
+		if (check.wiring !== "missing" && check.wiring !== "other" && check.wiring !== "update available") return [];
+		return grokInstallSteps(root, env, check.now);
+	}
 	return [];
 }
 
@@ -468,16 +492,56 @@ const taken = (path: string) => {
 /**
  * Renames something that is not Orrery's out of the way before it is replaced: <path>.before-orrery-<date>, or
  * -2, -3… after it when that name is taken. pi and OMP load only files ending in .ts or .js, so a set-aside extension
- * file is not loaded. Returns the new name.
+ * file is not loaded. Returns the new name. `how: "copy"` copies the file's bytes there instead, never over a file
+ * already there, and leaves `path` as it is (a config Orrery is about to change: rewriteKeepingCopy).
  */
-export function setAside(path: string): string {
+export function setAside(path: string, how: "rename" | "copy" = "rename"): string {
 	const base = `${path}.before-orrery-${today()}`;
 	for (let n = 1; ; n++) {
 		const aside = n === 1 ? base : `${base}-${n}`;
 		if (taken(aside)) continue;
-		renameSync(path, aside);
+		if (how === "rename") renameSync(path, aside);
+		else {
+			try {
+				copyFileSync(path, aside, constants.COPYFILE_EXCL);
+			} catch (error) {
+				if ((error as { code?: unknown }).code === "EEXIST") continue; // taken since: the next name
+				throw error;
+			}
+		}
 		return aside;
 	}
+}
+
+/**
+ * Puts `next` in place of the file at `path` (where a link there leads: the person's own file), after a copy of it
+ * beside `path` (setAside's name; undefined when there was no file). The new text goes to a fresh file beside it first,
+ * with the old file's mode (0600 for a new one, in a 0700 folder made for it), then one rename puts it in place, so the
+ * file is never half written.
+ */
+export function rewriteKeepingCopy(path: string, next: string): string | undefined {
+	let target = path;
+	let mode = 0o600;
+	let there = true;
+	try {
+		target = realpathSync(path);
+		mode = statSync(target).mode & 0o7777;
+	} catch (error) {
+		if ((error as { code?: unknown }).code !== "ENOENT") throw error;
+		there = false;
+		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	}
+	const aside = there ? setAside(path, "copy") : undefined;
+	const temp = `${target}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+	try {
+		writeFileSync(temp, next, { mode, flag: "wx" });
+		chmodSync(temp, mode);
+		renameSync(temp, target);
+	} catch (error) {
+		rmSync(temp, { force: true });
+		throw error;
+	}
+	return aside;
 }
 
 /**
@@ -496,13 +560,23 @@ function foreignExtension(file: string): boolean {
 
 const reason = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/** Whether the file at `path` is someone else's by `ours`: a link, or text `ours` refuses. Gone or unreadable: no. */
+function foreignFile(path: string, ours: (text: string) => boolean): boolean {
+	try {
+		return !lstatSync(path).isFile() || !ours(readFileSync(path, "utf8"));
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Writes `text` to a temporary file beside `path`, then renames it over `path`: a link there is replaced, never written
- * through. A file that is not Orrery's one line is renamed aside first (setAside); the new name is returned. If the
- * final rename fails after that, the original is put back; when that fails too, the error names where it is.
+ * through. A file that is not Orrery's (by `ours`, else Orrery's one-line extension) is renamed aside first (setAside);
+ * the new name is returned. If the final rename fails after that, the original is put back; when that fails too, the
+ * error names where it is.
  */
-function replaceFile(path: string, text: string): string | undefined {
-	mkdirSync(dirname(path), { recursive: true });
+function replaceFile(path: string, text: string, ours?: (text: string) => boolean, folderMode?: number): string | undefined {
+	mkdirSync(dirname(path), { recursive: true, ...(folderMode === undefined ? {} : { mode: folderMode }) });
 	const temp = `${path}.tmp-${process.pid}`;
 	try {
 		writeFileSync(temp, text);
@@ -512,7 +586,7 @@ function replaceFile(path: string, text: string): string | undefined {
 	}
 	let aside: string | undefined;
 	try {
-		aside = foreignExtension(path) ? setAside(path) : undefined;
+		aside = (ours === undefined ? foreignExtension(path) : foreignFile(path, ours)) ? setAside(path) : undefined;
 	} catch (error) {
 		rmSync(temp, { force: true });
 		throw new Error(`could not set ${path} aside: ${reason(error)}`);
@@ -532,18 +606,49 @@ function replaceFile(path: string, text: string): string | undefined {
 	return aside;
 }
 
+/**
+ * An edit step, run: the file's text as it is now ("" when there is none) through its edit; a change is written with
+ * rewriteKeepingCopy, and nothing is written when there is none. What it did, as lines.
+ */
+function editFile(step: Extract<InstallStep, { kind: "edit" }>): string {
+	let text: string | undefined;
+	try {
+		text = readFileSync(step.path, "utf8");
+	} catch (error) {
+		if ((error as { code?: unknown }).code !== "ENOENT") throw error;
+	}
+	const { next, said } = step.edit(text ?? "");
+	let output = "";
+	if (next !== (text ?? "")) {
+		const copy = rewriteKeepingCopy(step.path, next);
+		if (copy !== undefined) output += `kept a copy of ${step.path} as ${copy}\n`;
+	}
+	for (const line of said) output += `${line}\n`;
+	return output;
+}
+
 /** Runs the steps in order and stops at the first that fails; `output` is what each did, for showing. */
 export function runInstall(steps: readonly InstallStep[], run: Runner = realRunner): { ok: boolean; output: string; problem?: string } {
 	let output = "";
 	for (const step of steps) {
 		if (step.kind === "write") {
 			try {
-				const aside = replaceFile(step.path, step.text);
+				const aside = replaceFile(step.path, step.text, step.ours, step.folderMode);
 				if (aside !== undefined) output += `set ${step.path} aside as ${aside}\n`;
 			} catch (error) {
 				return { ok: false, output: `${output}${reason(error)}\n`, problem: reason(error) };
 			}
 			output += `wrote ${step.path}\n`;
+			continue;
+		}
+		if (step.kind === "edit") {
+			try {
+				const edited = editFile(step);
+				output += edited;
+			} catch (error) {
+				const problem = `could not change ${step.path}: ${reason(error)}`;
+				return { ok: false, output: `${output}${problem}\n`, problem };
+			}
 			continue;
 		}
 		const result = run(step.cmd, step.args);

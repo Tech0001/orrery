@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { handleMessage, agentTools, MAX_LINE_CHARS, runMcp } from "../../src/claude/mcp.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import type { ReaderTool } from "../../src/agent/memory-tools.ts";
-import { claimToken, newToken } from "../../src/agent/pick.ts";
+import { claimedBy, claimToken, newToken } from "../../src/agent/pick.ts";
 import { forgetSession, liveSession, recordSession } from "../../src/agent/sessions.ts";
 import { processStartedAt } from "../../src/agent/process.ts";
 import { runHook } from "../../src/claude/hooks.ts";
@@ -16,7 +16,7 @@ import { writeMode } from "../../src/claude/spool.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { seedAtlas } from "../agent/support.ts";
 import { cleanup, isolatedHome, pi, world } from "../pi/world.ts";
-import { cleanEnv, cliCommand } from "./support.ts";
+import { cleanEnv, cliCommand, grokLaunch } from "./support.ts";
 
 afterEach(cleanup);
 // One test starts a real pi; the MCP processes below get a scratch HOME of their own (the world's root).
@@ -343,5 +343,78 @@ describe("Orrery's MCP server", () => {
 		await second.gone();
 		expect(await served(second.env)).toEqual([]);
 		rmSync(join(config.dataDir, "claude-processes", `${process.pid}.json`), { force: true });
+	});
+});
+
+describe("the memory tools in Grok Build (spec 2026-10-29-grok-build)", () => {
+	/** `orrery mcp [args]`, run by `launch` (default: this test), in `root`: its exit, the tool names it lists, a search's text, and stderr. */
+	const serve = async (root: string, args: string[], env: Record<string, string>, launch: (cmd: string, args: string[]) => [string, string[]] = (cmd, rest) => [cmd, rest]) => {
+		const c = cliCommand(["mcp", ...args]);
+		const [cmd, rest] = launch(c.cmd, c.args);
+		const child = spawn(cmd, rest, { env: cleanEnv({ HOME: root, ...env }), cwd: root });
+		let out = "";
+		let err = "";
+		child.stdout.setEncoding("utf8").on("data", (chunk: string) => (out += chunk));
+		child.stderr.setEncoding("utf8").on("data", (chunk: string) => (err += chunk));
+		const exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
+		child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } })}\n`);
+		child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" })}\n`);
+		child.stdin.end(`${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "search", arguments: { query: "garden-plants" } } })}\n`);
+		const code = await exited;
+		const replies = new Map(out.trim().split("\n").filter((line) => line !== "").map((line) => JSON.parse(line)).map((reply) => [reply.id, reply]));
+		return { code, tools: (replies.get(2)?.result?.tools as { name: string }[] | undefined)?.map((tool) => tool.name), found: replies.get(3)?.result?.content?.[0]?.text as string | undefined, err };
+	};
+
+	it("`mcp --tool claude-code` under Grok lists no tools: Grok loads the plugin's server too, and Orrery's own serves Grok", { timeout: 60_000 }, async () => {
+		const { root, config, configPath } = world();
+		seedAtlas(root);
+		const token = newToken();
+		// What would serve Atlas anywhere else: its token, its folder.
+		const env = { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token, CLAUDE_PROJECT_DIR: join(root, "agent-Atlas") };
+		for (const args of [[], ["--tool", "claude-code"]]) {
+			const served = await serve(root, args, env, grokLaunch);
+			expect(served.code, served.err).toBe(0);
+			expect([served.tools, served.err]).toEqual([[], ""]);
+		}
+		// Nothing decided or claimed for the Grok, so its own server takes the token.
+		expect(existsSync(join(config.dataDir, "claude-processes"))).toBe(false);
+		expect(existsSync(join(root, "data", "agents", "Atlas", "claims", token))).toBe(false);
+	});
+
+	it("`mcp --tool grok` serves the agent named by ORRERY_AGENT and a valid token, and the plain window's none without one", { timeout: 60_000 }, async () => {
+		const { root, config, configPath } = world();
+		seedAtlas(root);
+		// This test stands for the Grok that starts the server; each case is a new Grok process, so its decision goes first.
+		const ended = () => rmSync(join(config.dataDir, "grok-processes"), { recursive: true, force: true });
+		const token = newToken();
+		const agent = await serve(root, ["--tool", "grok"], { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token });
+		expect([agent.code, agent.tools]).toEqual([0, ["zoom", "date", "search"]]);
+		expect(agent.found).toContain("#0 2026-02-10 user");
+		// The token is this Grok's now.
+		expect(claimedBy(join(root, "data", "agents", "Atlas"), token)).toBe(process.pid);
+		ended();
+		// A plain window: no ORRERY_AGENT (Grok expands the config's ${ORRERY_AGENT:-} to nothing), in Atlas's folder too.
+		for (const env of [{ ORRERY_AGENT: "", ORRERY_AGENT_TOKEN: "" }, {}] as Record<string, string>[]) {
+			const plain = await serve(join(root, "agent-Atlas"), ["--tool", "grok"], { ORRERY_CONFIG: configPath, CLAUDE_PROJECT_DIR: join(root, "agent-Atlas"), ...env });
+			expect([plain.code, plain.tools]).toEqual([0, []]);
+			// A plain grok decides nothing for its process, as its hooks don't (src/grok/hooks.ts).
+			expect(existsSync(join(config.dataDir, "grok-processes", `${process.pid}.json`))).toBe(false);
+			ended();
+		}
+		// ORRERY_AGENT without a token, or with one another live process claimed: no memory.
+		const other = newToken();
+		const sleeper = spawn("sleep", ["60"], { stdio: "ignore" });
+		try {
+			expect(claimToken(join(root, "data", "agents", "Atlas"), other, sleeper.pid as number)).toBe(true);
+			for (const env of [{ ORRERY_AGENT: "Atlas" }, { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: "not-a-token" }, { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: other }] as Record<string, string>[]) {
+				const refused = await serve(root, ["--tool", "grok"], { ORRERY_CONFIG: configPath, ...env });
+				expect([JSON.stringify(env), refused.code, refused.tools]).toEqual([JSON.stringify(env), 0, []]);
+				ended();
+			}
+		} finally {
+			sleeper.kill();
+		}
+		// No config at all: quiet, no tools.
+		if (!existsSync("/etc/orrery/config.toml")) expect(await serve(root, ["--tool", "grok"], { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: newToken() })).toMatchObject({ code: 0, tools: [] });
 	});
 });

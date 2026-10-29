@@ -13,6 +13,8 @@ import { newToken } from "../../src/agent/pick.ts";
 import { listSessions, pendingEvents, readEvent, readMode, writeMode } from "../../src/claude/spool.ts";
 import { VIEW_IMPORT, writeSetupMarker } from "../../src/claude/view-file.ts";
 import { forgetSession, liveSession, processStart } from "../../src/agent/sessions.ts";
+import type { ProcessInfo } from "../../src/agent/process.ts";
+import { hostIsGrok } from "../../src/grok/host.ts";
 import { type AgentConfig, parseConfig } from "../../src/agent/config.ts";
 import { holderFile, writeHolder } from "../../src/agent/handover.ts";
 import { agentModelSource } from "../../src/agent/model-source.ts";
@@ -743,5 +745,40 @@ describe("update notices in hooks", () => {
 	it("shows none unless the CLI turns them on", async () => {
 		const t = testAgent({ setup: true });
 		expect(await runHook("user-prompt-submit", input(t, { prompt: "hello" }), ctx(t, { env: updatesHome(t) }))).toBe("");
+	});
+});
+
+describe("under Grok, Orrery's Claude Code plugin stands down (spec 2026-10-29-grok-build)", () => {
+	// As seen live: npm's launcher (node) runs the grok program; Grok starts the plugin's hooks directly or through a shell.
+	const tree: Record<number, ProcessInfo> = {
+		10: { ppid: 1, name: "bash" },
+		20: { ppid: 10, name: "node" },
+		30: { ppid: 20, name: "grok" },
+		31: { ppid: 30, name: "sh" },
+		32: { ppid: 31, name: "bash" },
+		40: { ppid: 10, name: "grok-linux-x86_" },
+		// A Claude Code started from a shell of Grok's (Linux may name a runtime by its main thread).
+		50: { ppid: 30, name: "bash" },
+		60: { ppid: 50, name: "claude" },
+		61: { ppid: 60, name: "sh" },
+		70: { ppid: 50, name: "node-MainThread" },
+	};
+	const info = (pid: number) => tree[pid];
+
+	it("under Grok, every claude-hook event reads stdin, prints nothing, records nothing: the hook's own host is Grok", () => {
+		expect(hostIsGrok(30, info)).toBe(true);
+		expect(hostIsGrok(31, info)).toBe(true);
+		expect(hostIsGrok(32, info)).toBe(true);
+		expect(hostIsGrok(40, info)).toBe(true);
+		// A process that can't be read is no Grok.
+		expect(hostIsGrok(99, info)).toBe(false);
+	});
+
+	it("Claude Code started from a Grok shell still records: the hook's host is claude, not grok", () => {
+		expect(hostIsGrok(60, info)).toBe(false);
+		expect(hostIsGrok(61, info)).toBe(false);
+		expect(hostIsGrok(70, info)).toBe(false);
+		// npm's launcher above Grok is not Grok's program.
+		expect(hostIsGrok(20, info)).toBe(false);
 	});
 });

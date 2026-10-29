@@ -208,6 +208,15 @@ async function updateCommand(values: { check?: boolean; version?: string; yes?: 
 		return status;
 	}
 	process.stdout.write(`Updated ${running} → ${target}. Release notes: ${releasesBase(process.env)}/tag/v${target}\n`);
+	// An older release's installer knows nothing of Grok, and that release answers Grok's hooks with an error, which blocks
+	// every prompt: its Grok wiring goes (as a rollback's setup removes it, src/install/wire.ts).
+	const { grokSupported } = await import("../grok/install.ts");
+	if (!grokSupported(installedVersion(process.env))) {
+		const [{ unwireGrok }, { orreryHome }] = await Promise.all([import("../install/uninstall.ts"), import("../agent/home.ts")]);
+		const unwired = unwireGrok(process.env, join(orreryHome(process.env), "app"));
+		if (unwired.changed || !unwired.ok) for (const line of unwired.lines) process.stdout.write(`${line}\n`);
+		if (!unwired.ok) status = status === 0 ? 1 : status;
+	}
 	const live = [...agentVersions(process.env).versions].filter(([v]) => v !== target);
 	if (live.length > 0) process.stdout.write(`These agents keep their version until they restart: ${live.map(([v, agents]) => `${agents.join(", ")} (${v})`).join("; ")}\n`);
 	if (!compiled) process.stdout.write("This Orrery runs from a checkout; the installed copy was updated, the checkout was not.\n");
@@ -514,6 +523,13 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 	if (command === "claude-hook") return claudeHook(arg, values.config);
 	if (command === "codex-hook") return codexHook(arg, values.config);
 	if (command === "grok-hook") return grokHook(arg, values.config);
+	// The Claude Code plugin's memory server, started by Grok (its Claude Code compatibility): it serves nothing, and
+	// decides nothing for Grok's process, so Orrery's own server for Grok (--tool grok) is the only one there.
+	if (command === "mcp" && (values.tool === undefined || values.tool === "claude-code") && (await import("../grok/host.ts")).hostIsGrok()) {
+		const { runMcp } = await import("../claude/mcp.ts");
+		await runMcp(process.stdin, process.stdout, []);
+		return 0;
+	}
 	const { GateRefusal, gateCommand, noAgentText, readableBy } = await import("./gate.ts");
 	let gated: Gated;
 	try {
@@ -815,7 +831,10 @@ const denyToolCall = (reason: string) =>
  * server reads the one recorded. The process is its parent, the Claude Code that started it (orrery-run execs), never
  * CLAUDE_PID, which a claude started from an agent's Bash inherits from the agent.
  * With --tool codex it is Codex's (src/codex/launch.ts): the agent ORRERY_AGENT names, with its token, and nothing else
- * (src/codex/pick.ts), claimed for the Codex that started it, at its start, before any SessionStart.
+ * (src/codex/pick.ts), claimed for the Codex that started it, at its start, before any SessionStart. With --tool grok it
+ * is Grok's, the same way (grokAgent): Grok's config names it for every session (src/grok/install.ts), and gives it the
+ * launch's ORRERY_AGENT and token, so a plain grok's gets none and serves no tools. Under Grok the Claude Code plugin's
+ * own server serves nothing (dispatch), so the model sees one set of tools.
  * Inside an agent's session (`inside`, src/cli/gate.ts) it serves that agent or nothing, with the config that holds the
  * session's memory (`trusted`); and when its parent is that session's recorded host (a restarted server, or the agent's
  * shell exec'ing `orrery mcp`), it only reads the decision the host made, so no folder or variable given to it can
@@ -826,7 +845,7 @@ const denyToolCall = (reason: string) =>
  * with none it picks nothing, so it decides nothing for its parent either.
  */
 async function mcpServer(configPath: string | undefined, tool: string | undefined, gated: Gated): Promise<number> {
-	if (tool !== undefined && tool !== "claude-code" && tool !== "codex") throw new UsageError(`mcp: --tool takes claude-code or codex (not ${tool}).`);
+	if (tool !== undefined && tool !== "claude-code" && tool !== "codex" && tool !== "grok") throw new UsageError(`mcp: --tool takes claude-code, codex or grok (not ${tool}).`);
 	const { agentTools, runMcp } = await import("../claude/mcp.ts");
 	let tools: ReaderTool[] = [];
 	const { inside, hostAgent } = gated;
@@ -834,11 +853,19 @@ async function mcpServer(configPath: string | undefined, tool: string | undefine
 	if (gated.notice !== undefined) process.stderr.write(`${gated.notice}\n`);
 	const config = hostAgent === null ? undefined : gatedConfig(gated, configPath, "orrery mcp");
 	const ours = (agent: AgentConfig) => (inside === undefined || agent.name === inside.agent) && (hostAgent === undefined || agent.name === hostAgent);
-	if (config !== undefined && tool === "codex") {
-		const [{ codexAgent }, { codexPid }] = await Promise.all([import("../codex/pick.ts"), import("../codex/host.ts")]);
-		// Codex starts its servers itself: codexPid() is this server's parent, unless it passed over one by its name.
-		const pick = codexAgent(config, { env: process.env, pid: codexPid(), parent: process.ppid, takeover: true });
-		if (pick.kind === "agent" && ours(pick.agent)) tools = agentTools(config, pick.agent);
+	// A plain grok (no ORRERY_AGENT: Grok's config gives every session's server the launch's, maybe none) decides nothing
+	// for its process, as its hooks don't (src/grok/hooks.ts), and serves no tools.
+	const { AGENT_ENV } = await import("../agent/pick.ts");
+	const plainGrok = tool === "grok" && (process.env[AGENT_ENV]?.trim() ?? "") === "";
+	if (config !== undefined && (tool === "codex" || tool === "grok")) {
+		if (!plainGrok) {
+			const [{ codexAgent, grokAgent }, { codexPid }, { grokPid }] = await Promise.all([import("../codex/pick.ts"), import("../codex/host.ts"), import("../grok/host.ts")]);
+			// Codex and Grok start their servers themselves (seen live for Grok: each session's own grok process, with its
+			// launch's environment): the host is this server's parent, unless it passed over one by its name.
+			const asking = { env: process.env, parent: process.ppid, takeover: true };
+			const pick = tool === "codex" ? codexAgent(config, { ...asking, pid: codexPid() }) : grokAgent(config, { ...asking, pid: grokPid() });
+			if (pick.kind === "agent" && ours(pick.agent)) tools = agentTools(config, pick.agent);
+		}
 	} else if (config !== undefined) {
 		const [{ claudeSession, markedUnconfirmed }, { liveSession }] = await Promise.all([import("../claude/pick.ts"), import("../agent/sessions.ts")]);
 		const decided = inside !== undefined && liveSession(config.dataDir, process.ppid) !== undefined;
@@ -869,10 +896,17 @@ async function readStdin(max: number): Promise<string | undefined> {
  * and note any error in one stderr line, never with message contents. PreToolUse never lets a call through on a failure
  * of its own (Claude Code allows a call the hook says nothing about): a config that is there, or named, but cannot be
  * read denies every call until it is fixed, and so does an error. Without any config Claude Code runs plain.
+ * Grok runs these hooks too (its Claude Code compatibility): when the hook's own host is a Grok (src/grok/host.ts
+ * hostIsGrok), each one reads its input, prints nothing and records nothing, so Orrery's Grok hooks are the only ones
+ * there. A Claude Code started from a Grok shell is its hooks' host, and keeps them.
  */
 async function claudeHook(event: string | undefined, configPath: string | undefined): Promise<number> {
 	const guarding = event === "pre-tool-use";
 	try {
+		if ((await import("../grok/host.ts")).hostIsGrok()) {
+			await readStdin(0); // read to its end all the same, so Grok's write completes
+			return 0;
+		}
 		const { config, broken } = foundConfig(configPath, "Orrery");
 		if (config === undefined) {
 			await readStdin(0); // read to its end all the same, so Claude Code's write completes

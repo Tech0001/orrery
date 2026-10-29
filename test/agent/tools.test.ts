@@ -40,13 +40,23 @@ describe("checkTools", () => {
 		expect(installSteps(codex, root, env)).toEqual([]);
 	});
 
-	it("finds Grok, whose memory comes with each launch, and says the version Orrery was tested with", () => {
+	it("finds Grok and whether Orrery's hook file and config entries are in its folder, and says the version Orrery was tested with", () => {
 		const found = fakeBin({ grok: 'echo "grok 1.0.70 (f50904eaee6c) [stable]"' });
-		expect(checkTools({ root, env: found.env }).find((t) => t.id === "grok")).toMatchObject({ id: "grok", label: "Grok", version: "grok 1.0.70 (f50904eaee6c) [stable]", wiring: "memory", detail: "memory and instructions come with each launch; tested with Grok 1.0.70" });
+		const grok = () => checkTools({ root, env: found.env }).find((t) => t.id === "grok") as ToolCheck;
+		const hooks = join(found.home, ".grok", "hooks", "orrery.json");
+		expect(grok()).toMatchObject({ id: "grok", label: "Grok", version: "grok 1.0.70 (f50904eaee6c) [stable]", wiring: "missing", detail: `no ${hooks}; tested with Grok 1.0.70` });
+		const install = runInstall(installSteps(grok(), root, found.env));
+		expect(install.ok, install.output).toBe(true);
+		expect(grok()).toMatchObject({ wiring: "installed", detail: `${hooks}; tested with Grok 1.0.70` });
+		expect(installSteps(grok(), root, found.env)).toEqual([]);
+		// A config entry gone: Orrery's own wiring to finish, without asking.
+		const config = join(found.home, ".grok", "config.toml");
+		writeFileSync(config, readFileSync(config, "utf8").replace(/\[ui\.status_line\][^[]*/, ""));
+		expect(grok()).toMatchObject({ wiring: "update available", detail: `${config} has no [ui.status_line]; tested with Grok 1.0.70` });
 		const newer = fakeBin({ grok: 'echo "grok 1.1.0 (abc) [stable]"' });
 		expect(checkTools({ root, env: newer.env }).find((t) => t.id === "grok")?.detail).toContain("tested with Grok 1.0.70, this is 1.1.0");
 		const none = fakeBin({});
-		expect(checkTools({ root, env: none.env }).find((t) => t.id === "grok")).toMatchObject({ wiring: "memory", detail: "Grok Build is not on PATH" });
+		expect(checkTools({ root, env: none.env }).find((t) => t.id === "grok")).toMatchObject({ wiring: "missing", detail: "Grok Build is not on PATH" });
 	});
 
 	it("finds OpenCode, asking its version in a scratch home; Orrery's plugin comes with each launch, and the last check is said", () => {

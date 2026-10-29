@@ -167,6 +167,7 @@ const GROUPS: readonly Group[] = [
 			],
 			["mcp", "the Claude Code plugin's MCP server: memory tools for the session's agent (ORRERY_AGENT's, else the project folder's)"],
 			["mcp --tool codex", "the MCP server orrery agent gives Codex: memory tools for ORRERY_AGENT's agent, with its token"],
+			["mcp --tool grok", "the MCP server orrery install gives Grok Build: memory tools for ORRERY_AGENT's agent, with its token"],
 			["claude-hook <event>", "a Claude Code plugin hook (session-start, user-prompt-submit, stop, session-end, pre-tool-use)"],
 			["codex-hook <event>", "a hook orrery agent gives Codex (session-start, user-prompt-submit, stop, session-end, pre-tool-use)"],
 			["grok-hook <event>", "a hook Orrery gives Grok Build (session-start, user-prompt-submit, pre-tool-use, stop, stop-cancelled, session-end)"],

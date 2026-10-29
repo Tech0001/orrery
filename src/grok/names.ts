@@ -1,4 +1,10 @@
-/** What Grok Build's process is called. Node built-ins only: src/agent/sessions.ts uses it. */
+/**
+ * What Grok Build's process is called, and the hook events Orrery answers for it. Node built-ins only:
+ * src/agent/sessions.ts uses it, and so does the install (src/grok/install.ts), which must not load the hooks.
+ */
+
+/** The events Orrery's Grok hooks answer, as their command line names them (pre-tool-use is the guard). */
+export const GROK_HOOK_EVENTS = ["session-start", "user-prompt-submit", "pre-tool-use", "stop", "stop-cancelled", "session-end"] as const;
 
 /**
  * Is `name` (a program's file name, without `.exe`) Grok Build's? Its npm launcher, node running the package's script

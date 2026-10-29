@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cachedUpdate, downloadRelease, latestVersion, needsRestart, newer, platformAsset, refreshUpdateCache, updateCheck } from "../../src/install/update.ts";
 import { installFrom } from "../../src/install/install.ts";
+import { addGrokConfig, grokHookFile } from "../../src/grok/install.ts";
 import { cliCommand } from "../claude/support.ts";
 import { cleanupScratch, fixtureRelease, scratchPath, tempDir } from "./support.ts";
 import { cleanupFakes, PLATFORM, release, releasesServer, scratch, servers } from "../release/fake-releases.ts";
@@ -382,6 +383,26 @@ describe("orrery update", () => {
 		expect(r.stdout).toMatch(new RegExp(`^Updated \\S+ → ${NEXT_RE}\\. Release notes: `, "m"));
 		expect(r.stdout).toContain("Setup left something unfinished; run `orrery setup` to finish it.");
 		expect(r.stderr).not.toContain("stays on");
+	});
+
+	it("to a release before Grok's hooks, removes Orrery's Grok wiring, which that release's installer doesn't know", async () => {
+		// The older release's installer switches app/current to it, and knows nothing of Grok.
+		const SWITCH = `#!/bin/sh\napp="$ORRERY_HOME/app"\nmkdir -p "$app/0.9.4/bin"\necho 0.9.4 > "$app/0.9.4/VERSION"\nrm -f "$app/current"\nln -s 0.9.4 "$app/current"\nexit 0\n`;
+		const { base } = await releasesServer("0.9.4", release("0.9.4", SWITCH));
+		const home = scratch();
+		const orrery = join(home, "orrery-home", "app", "current", "bin", "orrery");
+		const hooks = join(home, ".grok", "hooks", "orrery.json");
+		const config = join(home, ".grok", "config.toml");
+		mkdirSync(join(home, ".grok", "hooks"), { recursive: true });
+		writeFileSync(hooks, grokHookFile(orrery));
+		const mine = '[ui]\npermission_mode = "auto"\n';
+		writeFileSync(config, addGrokConfig(mine, orrery).next);
+		const r = await run(["--version", "0.9.4", "--yes"], base, home, scratch("orrery-tmp-"));
+		expect(r.status, r.stderr).toBe(0);
+		expect(existsSync(hooks)).toBe(false);
+		expect(readFileSync(config, "utf8")).toBe(mine);
+		expect(r.stdout).toContain(`Grok: removed ${hooks}`);
+		expect(r.stdout).toMatch(/^Grok: removed \[ui\.status_line\] and \[mcp_servers\.orrery\] from /m);
 	});
 
 	it("a downloaded binary that cannot be run says TMPDIR may be mounted noexec", async () => {

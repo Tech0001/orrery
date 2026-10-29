@@ -67,9 +67,10 @@ import { holderLog, validSession } from "../claude/paths.ts";
 import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
 import { grokAgent } from "../codex/pick.ts";
 import { type GrokHeld, grokHeldSessions, grokLogStart, grokSessionKind, grokStartHome } from "./log.ts";
+import { GROK_HOOK_EVENTS } from "./names.ts";
 
-/** The events `orrery grok-hook` answers (pre-tool-use is the guard). */
-export const GROK_HOOK_EVENTS = ["session-start", "user-prompt-submit", "pre-tool-use", "stop", "stop-cancelled", "session-end"] as const;
+/** The events `orrery grok-hook` answers (pre-tool-use is the guard), kept in src/grok/names.ts, where the install reads them. */
+export { GROK_HOOK_EVENTS };
 
 /** The fields read from Grok's input; every one is checked before use. */
 export interface GrokHookInput {

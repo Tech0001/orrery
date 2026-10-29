@@ -11,7 +11,7 @@ import { readHolder } from "../../src/agent/handover.ts";
 import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { cleanupFakes, releasesServer, scratch } from "../release/fake-releases.ts";
-import { cleanEnv, cleanupDirs, cliCommand, fakeClaude, hookCli, messages, type TestAgent, testAgent, waitUntil } from "./support.ts";
+import { cleanEnv, cleanupDirs, cliCommand, fakeClaude, grokLaunch, hookCli, messages, type TestAgent, testAgent, waitUntil } from "./support.ts";
 import { line, transcriptIn } from "./transcript-lines.ts";
 
 afterEach(cleanupDirs);
@@ -490,5 +490,59 @@ describe.skipIf(!claudeReady || !binary)("the hooks in the installed Claude Code
 		} finally {
 			forgetSession(t.config.dataDir, process.pid);
 		}
+	}, 60_000);
+});
+
+describe("Orrery's Claude Code plugin under Grok, which runs it through its Claude Code compatibility (spec 2026-10-29-grok-build)", () => {
+	it("under Grok, every claude-hook event reads stdin, prints nothing, records nothing", () => {
+		const t = testAgent({ setup: true });
+		const token = newToken();
+		const env = cleanEnv({ ORRERY_CONFIG: t.configPath, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CLAUDE_PROJECT_DIR: t.folder });
+		const at = { session_id: "s1", cwd: t.folder };
+		const inputs: Record<string, object> = {
+			"session-start": { ...at, source: "startup" },
+			"user-prompt-submit": { ...at, prompt: "Codename Saffron." },
+			"pre-tool-use": { ...at, tool_name: "Read", tool_input: { file_path: join(t.folder, ".env") } },
+			stop: { ...at, last_assistant_message: "Noted: Saffron." },
+			"session-end": { ...at, reason: "other" },
+		};
+		const broken = join(t.dir, "broken.toml");
+		writeFileSync(broken, "[");
+		for (const config of [t.configPath, broken]) {
+			for (const [event, input] of Object.entries(inputs)) {
+				const c = cliCommand(["claude-hook", event]);
+				const [cmd, args] = grokLaunch(c.cmd, c.args);
+				// Input over a pipe's buffer: read to its end all the same, so Grok's write completes.
+				const run = spawnSync(cmd, args, { env: { ...env, ORRERY_CONFIG: config }, input: JSON.stringify({ ...input, padding: "x".repeat(1 << 18) }), encoding: "utf8", timeout: 30_000 });
+				expect([config, event, run.status, run.stdout, run.stderr]).toEqual([config, event, 0, "", ""]);
+			}
+		}
+		// Nothing decided, claimed, recorded or spooled: Orrery's Grok hooks are the only ones in a Grok session.
+		expect(existsSync(join(t.config.dataDir, "claude-processes"))).toBe(false);
+		expect(existsSync(join(t.config.dataDir, "session-hosts"))).toBe(false);
+		expect(existsSync(join(t.agent.dir, "claims"))).toBe(false);
+		expect(listSessions(t.agent.dir)).toEqual([]);
+		expect(readHolder(t.agent.dir)).toBeUndefined();
+	}, 60_000);
+
+	it("Claude Code started from a Grok shell still records: its hooks' host is that Claude Code, not Grok", () => {
+		const t = testAgent({ setup: true });
+		const transcript = transcriptIn(t.dir);
+		const env = cleanEnv({ ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: t.folder, CLAUDE_CONFIG_DIR: transcript.configDir });
+		const at = { session_id: "s1", cwd: t.folder, transcript_path: transcript.path("s1"), source: "startup" };
+		// The Claude Code (this runtime) Grok's shell started: it runs its SessionStart hook as its child, CLAUDE_PID its pid.
+		const claude = `const { spawnSync } = require("node:child_process");
+const [cmd, ...args] = JSON.parse(process.argv[1]);
+const r = spawnSync(cmd, args, { env: { ...process.env, CLAUDE_PID: String(process.pid) }, input: process.argv[2], encoding: "utf8" });
+process.stdout.write(JSON.stringify({ pid: process.pid, status: r.status, stdout: r.stdout, stderr: r.stderr }));`;
+		const c = cliCommand(["claude-hook", "session-start"]);
+		const [cmd, args] = grokLaunch(process.execPath, ["-e", claude, JSON.stringify([c.cmd, ...c.args]), JSON.stringify(at)]);
+		const out = spawnSync(cmd, args, { env, encoding: "utf8", timeout: 30_000 });
+		const answer = JSON.parse(out.stdout) as { pid: number; status: number; stdout: string; stderr: string };
+		expect([answer.status, answer.stderr]).toEqual([0, ""]);
+		// It answered as Claude Code's hook: in the built binary it records; under Node it can't ask who called it.
+		if (binary) expect(JSON.parse(answer.stdout).hookSpecificOutput.additionalContext).toMatch(/· recording/);
+		else expect(JSON.parse(answer.stdout)).toEqual({ systemMessage: "Orrery can't check who calls its hooks here (it runs under Node, not its own binary), so this session isn't recorded." });
+		expect(existsSync(join(t.config.dataDir, "claude-processes", `${answer.pid}.json`))).toBe(binary);
 	}, 60_000);
 });

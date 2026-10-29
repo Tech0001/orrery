@@ -93,6 +93,7 @@ import {
 } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { codexPid } from "../codex/host.ts";
+import { grokPid } from "../grok/host.ts";
 
 /** The user's real Orrery data, and whether a path is in a folder as the file system names them (src/agent/real-data.ts). */
 export { realOrreryData, within } from "../agent/real-data.ts";
@@ -116,6 +117,8 @@ export interface GateDeps {
 	readonly parent?: number;
 	/** Codex's process, for its MCP server (default codexPid from the parent). */
 	readonly codexPid?: () => number;
+	/** Grok's process, for its MCP server (`mcp --tool grok`; default grokPid from the parent). */
+	readonly grokPid?: () => number;
 	/** How processes are read (src/agent/sessions.ts). */
 	readonly sessions?: SessionDeps;
 	/** The folder the command runs in (default process.cwd()): browse without --out and import --dry-run write there. */
@@ -547,7 +550,11 @@ function touchedPaths(command: string | undefined, config: HarnessConfig | undef
 /** The tool that started one of the plugins' commands for its own session (module doc), or undefined for any other. */
 function hostOf(command: string | undefined, values: GateValues, deps: GateDeps): number | undefined {
 	const parent = deps.parent ?? process.ppid;
-	if (command === "mcp") return values.tool === "codex" ? (deps.codexPid ?? (() => codexPid(parent)))() : parent;
+	if (command === "mcp") {
+		if (values.tool === "codex") return (deps.codexPid ?? (() => codexPid(parent)))();
+		if (values.tool === "grok") return (deps.grokPid ?? (() => grokPid(parent)))();
+		return parent;
+	}
 	if (command === "claude-mod") return parent;
 	if (command === "holder") {
 		const pid = Number(values["host-pid"] ?? values["claude-pid"]);
