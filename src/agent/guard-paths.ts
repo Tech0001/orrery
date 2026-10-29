@@ -21,17 +21,18 @@
  * ~/.grok/sessions; guard-rules.ts transcriptRule), which no tool writes, but a project's memory folder there (Claude
  * Code's auto memory); file tools may read Claude Code's and Codex's. Grok Build's folder (~/.grok, $GROK_HOME), where
  * it keeps what it loads and runs (its hooks, Orrery's hook file among them, its config and policy files, the /hooks
- * switch, the trust list, plugins, agent definitions and language servers; guard-rules.ts grokRule) and its session
- * records, is written by no tool and named in no shell text, nor is the folder itself, in every session, but its
- * memory, skills and workflows, which are Grok's own. Its login and session records are read by no agent's session
- * (HOME_SECRETS, grokCredentials). A session that is no agent's (GuardOptions.orreryOnly, spec
- * 2026-10-19-no-agent-sessions §3) gets Orrery's own rules alone (orreryJudge): Orrery's home, its credentials file,
- * config and installed program, where agents' sessions load code from outside its home (orreryEntries: read, never
- * written, not named in shell text), Grok's folder but its memory, skills and workflows, every agent's memory view (each
- * is another's: it reads no agent's memory), the session records, and Orrery's commands and plumbing in shell text. What
- * the guard can't judge (a call too long, an OMP path it can't read) is still refused, but an OMP glob's ordinary groups
- * pass (plainEscapingGlob), and so do an OMP language server's edits, which name no file, unless the session's folder
- * holds or is inside Orrery's files or Grok's folder but its memory, skills and workflows.
+ * switch, the trust list, plugins, agent definitions, the bundle's agents and language servers; guard-rules.ts
+ * grokRule) and its session records, is written by no tool and named in no shell text, nor is the folder itself, in
+ * every session, but its open parts (GROK_OPEN: its memory, skills and workflows, and what its bundled skills, docs and
+ * logs write), which are Grok's own. Its login and session records are read by no agent's session (HOME_SECRETS,
+ * grokCredentials). A session that is no agent's (GuardOptions.orreryOnly, spec 2026-10-19-no-agent-sessions §3) gets
+ * Orrery's own rules alone (orreryJudge): Orrery's home, its credentials file, config and installed program, where
+ * agents' sessions load code from outside its home (orreryEntries: read, never written, not named in shell text),
+ * Grok's folder but its open parts, every agent's memory view (each is another's: it reads no agent's memory), the
+ * session records, and Orrery's commands and plumbing in shell text. What the guard can't judge (a call too long, an
+ * OMP path it can't read) is still refused, but an OMP glob's ordinary groups pass (plainEscapingGlob), and so do an
+ * OMP language server's edits, which name no file, unless the session's folder holds or is inside Orrery's files or
+ * Grok's folder but its open parts.
  * Known limits:
  * - A hard link is another name for the same file, and the guard does not count links: one to another agent's view (the
  *   copy goes stale once Orrery replaces the view on its next write), to the config file in use, or to a file of the
@@ -66,7 +67,11 @@
  *   language servers from a project's .grok/lsp.json. These are the project's and the person's, as Claude Code's
  *   project settings are, and the guard keeps none of them: a hook or server an agent plants there runs outside the
  *   guard in a later session, and a hook may rewrite a call's input after Orrery judged it, as a script an agent writes
- *   and later runs does, and as shell profiles and the rest of the person's files that later run in sessions do.
+ *   and later runs does, and as shell profiles and the rest of the person's files that later run in sessions do. The
+ *   same holds for the files Grok's config or its hooks-paths list names outside Grok's folder (a hook or status-line
+ *   script kept elsewhere, a hook file listed in hooks-paths): the guard keeps Grok's folder, not what it points at.
+ * - A Grok plugin's hooks may name its data folder (plugin-data/, Grok's own skills' state among it, which agents may
+ *   write), so a plugin that reads commands from there could be steered by a write there.
  */
 
 import { type Dirent, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
@@ -855,7 +860,7 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
  * really is) is worked out once, and each call is judged by the same rules.
  */
 export function pathJudge(options: PathGuardOptions): (toolName: string, input: Readonly<Record<string, unknown>>) => string | undefined {
-	const rules = options.call?.rules(options, () => pathRules(options)) ?? pathRules(options);
+	const rules = rulesFor(options);
 	if (options.orreryOnly === true) return orreryJudge(options, rules);
 	const { home, views, protect, config, openCode, grok, transcripts, credentials, foreign, realData, data, setUp, roots } = rules;
 	const fold = (path: string) => path.toLowerCase();
@@ -885,8 +890,8 @@ export function pathJudge(options: PathGuardOptions): (toolName: string, input: 
 		if (writes && (orreryAppNamed(resolved) || orreryAppNamed(target))) return APP_READ_ONLY(raw);
 		// And OpenCode's config and code, which OpenCode loads and runs (guard-rules.ts openCodeLoads).
 		if (writes && (openCodeLoads(resolved, openCode) || openCodeLoads(target, openCode))) return OPENCODE_READ_ONLY(raw);
-		// And Grok's folder but its memory, skills and workflows: its hooks, settings, plugins, agents and records among it
-		// (guard-rules.ts grokRule).
+		// And Grok's folder but its open parts: its hooks, settings, plugins, agents and records among it (guard-rules.ts
+		// grokRule).
 		if (writes && (grokLoads(resolved, grok) || grokLoads(target, grok))) return GROK_READ_ONLY(raw);
 		// A skill OpenCode loads may be written, but not given front matter it runs as code (guard-rules.ts).
 		const skills = writes && (openCodeSkillPath(resolved) || openCodeSkillPath(target));
@@ -930,8 +935,8 @@ export function pathJudge(options: PathGuardOptions): (toolName: string, input: 
  * home by its .orrery name (in a path, a search's names) and by where it really is, Orrery's credentials file (the
  * caller's `credentials`), a search whose root holds either, every agent's memory view (`foreignViews`: the session is
  * no agent's, so each is another's) and a content search whose root holds one, the config, installed program and where
- * agents' sessions load code from (orreryEntries, and Grok's folder but its memory, skills and workflows, Orrery's Grok
- * hooks and config entries among it) written by no tool, and the session records written by no tool; then
+ * agents' sessions load code from (orreryEntries, and Grok's folder but its open parts, Orrery's Grok hooks and config
+ * entries among it) written by no tool, and the session records written by no tool; then
  * checkToolCall's own rules for the command a call may carry. No folder confinement, home secrets, .env or other
  * built-in names, [guard] protect, OpenCode or skills.
  */
@@ -985,6 +990,19 @@ function orreryJudge(options: PathGuardOptions, rules: PathRules): (toolName: st
 /** An OpenCode rule that names nothing: a session that is no agent's has no OpenCode rules (GuardOptions.orreryOnly). */
 const NO_OPENCODE: OpenCodeRule = { own: [], plans: [], data: [] };
 
+/** pathJudge's rules for `options`: the guard call's (GuardCall), once per call, else worked out now. */
+function rulesFor(options: PathGuardOptions): PathRules {
+	return options.call?.rules(options, () => pathRules(options)) ?? pathRules(options);
+}
+
+/**
+ * OpenCode's and Grok's rules for `options`, as pathJudge has them (rulesFor): for a gate's checks beside pathJudge's
+ * (src/claude/guard.ts, a tool Orrery doesn't know). In a session that is no agent's OpenCode's names nothing.
+ */
+export function folderRules(options: PathGuardOptions): { readonly openCode: OpenCodeRule; readonly grok: GrokRule } {
+	return rulesFor(options);
+}
+
 /**
  * pathJudge's rules for `options` (PathRules), worked out now. In a session that is no agent's (GuardOptions.orreryOnly)
  * only what Orrery's own rules need: no home credentials, [guard] protect or OpenCode folders, and no own view.
@@ -1006,7 +1024,7 @@ function pathRules(options: PathGuardOptions): PathRules {
 	const spelt = (file: string) => configSpellings({ configFile: file, home }, realTarget(file));
 	const shellNamed = agent ? config : [...config, ...(options.credentials ?? []).flatMap(spelt), ...entryPaths.flatMap(spelt), ...PLUGIN_RECORDS];
 	const openCode = agent ? openCodeOf(options, home) : NO_OPENCODE;
-	// Grok's folder but its memory, skills and workflows, in every session: where it is and where it really is.
+	// Grok's folder but its open parts, in every session: where it is and where it really is.
 	const grok = grokOf(options, home);
 	// Claude Code's, Codex's and Grok's session records, where they are and where they really are.
 	const transcripts = options.transcripts ?? transcriptRule(process.env, home, realTarget);
@@ -1093,7 +1111,7 @@ function isFolder(path: string): boolean {
 const LSP_READS = new Set(["diagnostics", "definition", "references", "hover", "symbols", "type_definition", "implementation", "status", "reload", "capabilities"]);
 const LSP_EDITS = (action: string) => `lsp ${action} has the language server edit files no argument names, which Orrery's guard can't judge; nothing was run. Make the edit with edit or write.`;
 const LSP_NEAR_ORRERY = (action: string) =>
-	`lsp ${action} has the language server edit files no argument names, and this session's folder holds or is inside Orrery's files (its home, data, credentials or installed program) or Grok's hooks, settings and the rest of its folder but its memory, skills and workflows; nothing was run. Make the edit with edit or write.`;
+	`lsp ${action} has the language server edit files no argument names, and this session's folder holds or is inside Orrery's files (its home, data, credentials or installed program) or Grok's hooks, settings and the rest of its folder but the parts its own features write; nothing was run. Make the edit with edit or write.`;
 
 /** A file's text, for judging an edit on what it would leave (at most 1 MB); undefined when it can't be read. */
 function readSmall(file: string): string | undefined {
@@ -1247,11 +1265,11 @@ export function guardOmpToolCall(toolName: string, input: Readonly<Record<string
 		// session gets no new refusal on its own files.
 		// The file the action names is judged as an edit, as a path tool's target is; and neither the session's folder (its
 		// cwd, which follows OMP's moves) nor where that file really is may hold, or be inside, a place of Orrery's or Grok's
-		// folder but its memory, skills and workflows: then the project may be Orrery's own files.
+		// folder but its open parts: then the project may be Orrery's own files.
 		const file = typeof input.file === "string" && input.file !== "" ? input.file : undefined;
 		const edited = file === undefined ? undefined : target("edit", file, { [NEW_TEXT]: undefined });
 		if (edited !== undefined) return edited;
-		const { places, grok } = omp.call?.rules(omp, () => pathRules(omp)) ?? pathRules(omp);
+		const { places, grok } = rulesFor(omp);
 		const near = (path: string) => {
 			const at = realTarget(resolve(path)).toLowerCase();
 			return /(^|\/)\.orrery(\/|$)/.test(at) || places.some((place) => within(at, place) || within(place, at)) || grokNear(at, grok);

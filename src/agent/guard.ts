@@ -22,7 +22,8 @@
  * - A dangling link is not followed (realPath below stops where nothing resolves, so the link's own path stands for
  *   it): a write through one in the work area, pointing into Orrery's installed program (app/) or outside the roots,
  *   is judged by the link's path and goes through, making the target. pi's, OMP's and Claude Code's guards read where
- *   such a link points (src/agent/guard-paths.ts realTarget).
+ *   such a link points (src/agent/guard-paths.ts realTarget), and so does this one for Grok's folder's entries, as
+ *   this machine's links lead them (grokOf).
  */
 
 import { homedir } from "node:os";
@@ -31,6 +32,7 @@ import type { Context } from "@earendil-works/chord";
 import { defineExtension, hook, type ToolRegistration, ToolTask, wrapTool } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
+import { grokOf } from "./guard-paths.ts";
 import {
 	APP_READ_ONLY,
 	CONFIG_READ_ONLY,
@@ -172,18 +174,22 @@ export async function checkResolvedPath(
 		// OpenCode's config and code (guard-rules.ts openCodeLoads), where the tool writes and where that really is.
 		const openCode = options.openCode ?? openCodeRule(process.env, options.home ?? homedir());
 		if (openCodeLoads(target, openCode) || openCodeLoads(real, openCode)) return OPENCODE_READ_ONLY(real);
-		// Grok's folder but its memory, skills and workflows (guard-rules.ts grokRule), where the tool writes and where that
-		// really is; its folders, and each of their entries but those three, as given and where they really are (a
-		// config.toml linked from elsewhere).
-		const grok = options.grok ?? grokRule(process.env, options.home ?? homedir());
-		const folders = grokFolders(process.env, options.home ?? homedir());
-		const reached = async (paths: readonly string[]) => (await Promise.all(paths.map((path) => realPath(env, path, context)))).map((path) => path.toLowerCase());
-		const kept = async (folder: string) => {
-			const listed = await env.listDir(folder, context);
-			return listed.ok ? listed.value.filter((entry) => !GROK_OPEN.includes(entry.name.toLowerCase())).map((entry) => posix.join(folder, entry.name)) : [];
-		};
-		const realGrok = { own: await reached(folders), spelled: [], linked: await reached((await Promise.all(folders.map(kept))).flat()) };
-		if ([grok, realGrok].some((rule) => grokLoads(target, rule) || grokLoads(real, rule))) return GROK_READ_ONLY(real);
+		// Grok's folder but its open parts (guard-rules.ts grokRule), where the tool writes and where that really is: its
+		// folders and entries as this machine's links lead them (guard-paths.ts grokOf, a dangling link followed as
+		// realTarget follows it), and as the tools' file system's do (every entry listed, so an env that reports kinds
+		// differently still has its links followed; an open part linked out of the open parts kept).
+		const home = options.home ?? homedir();
+		const folders = grokFolders(process.env, home);
+		const listed = await Promise.all(
+			folders.map(async (folder) => {
+				const found = await env.listDir(folder, context);
+				return found.ok ? found.value.map((entry) => entry.name) : [];
+			}),
+		);
+		const spots = [home, ...folders, ...folders.flatMap((folder, at) => [...(listed[at] ?? []), ...GROK_OPEN].map((name) => posix.join(folder, name)))];
+		const reached = new Map(await Promise.all(spots.map(async (spot) => [spot, await realPath(env, spot, context)] as const)));
+		const realGrok = grokRule(process.env, home, (path) => reached.get(path) ?? path, (folder) => listed[folders.indexOf(folder)] ?? []);
+		if ([grokOf(options, home), realGrok].some((rule) => grokLoads(target, rule) || grokLoads(real, rule))) return GROK_READ_ONLY(real);
 		// A skill OpenCode loads: not with front matter it may run as code (guard-rules.ts), an edit judged on the file it
 		// would leave, read where the tool runs.
 		if (openCodeSkillPath(target) || openCodeSkillPath(real)) {

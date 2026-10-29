@@ -34,13 +34,28 @@ const GROK_GUARDED = [
 ];
 
 /**
- * What else is in Grok's folder, named above or not: its language servers (lsp.json starts their commands), its docs,
- * bundled skills and pager settings, and a file a later Grok may add. No tool writes them either.
+ * What else is in Grok's folder, named above or not: its language servers (lsp.json starts their commands), its pager
+ * settings, the bundle's agents (they carry hooks) and manifest, and a file a later Grok may add. No tool writes them
+ * either.
  */
-const GROK_UNNAMED = ["lsp.json", "newthing.toml", "docs/user-guide/10-hooks.md", "bundled/skills/learn/SKILL.md", "pager.toml"];
+const GROK_UNNAMED = ["lsp.json", "newthing.toml", "pager.toml", "bundled/agents/explore.md", "bundled/manifest.json"];
 
-/** What in Grok's folder is Grok's and the person's own: its memory, skills and workflows. */
-const GROK_OPEN = ["memory-v2/global/MEMORY.md", "skills/x/SKILL.md", "workflows/review.rhai"];
+/**
+ * What in Grok's folder its own features write to or run from, only through calls the guard sees: its memory, skills
+ * and workflows, /learn's runs, the background-task skill's logs and watchers, plugins' data, the bundled skills (their
+ * scripts), its docs and its logs.
+ */
+const GROK_OPEN = [
+	"memory-v2/global/MEMORY.md",
+	"skills/x/SKILL.md",
+	"workflows/review.rhai",
+	"learn/runs/20261029T000000Z/report.md",
+	"long-running-background-tasks/dev_server_1.log",
+	"plugin-data/pr-babysit/watched-prs-1.json",
+	"bundled/skills/pptx/scripts/x.py",
+	"docs/user-guide/10-hooks.md",
+	"logs/unified.jsonl",
+];
 
 /** Grok's folder under a home: the above, its login and a session's system prompt. */
 const GROK_FILES = [...GROK_GUARDED, ...GROK_UNNAMED, ...GROK_OPEN, "auth.json", "sessions/%2Fws/01a1/system_prompt.txt"];
@@ -289,7 +304,7 @@ describe("an input Grok cut (toolInputTruncated)", () => {
 	});
 });
 
-describe("Grok's folder: all but its memory, skills and workflows (what can switch Orrery's Grok hooks off or forge its records among it) is written by no tool and named in no shell text; those three are Grok's own", () => {
+describe("Grok's folder: all but what its own features write (what can switch Orrery's Grok hooks off or forge its records among it) is written by no tool and named in no shell text; its memory, skills, workflows and the rest it writes are Grok's own", () => {
 	it("refuses writes to each guarded entry from file tools, in an agent's session and one that is no agent's, by any spelling or link", () => {
 		const { grok, options, atHome, plain } = setup();
 		for (const file of GROK_GUARDED) {
@@ -313,10 +328,22 @@ describe("Grok's folder: all but its memory, skills and workflows (what can swit
 		expect(grokGuard("write", { file_path: "../hooks-link/new.json", content: "{}" }, options, false)).toMatch(GROK_FOLDER);
 	});
 
-	it("refuses writes to lsp.json and to any file in Grok's folder outside its memory, skills and workflows, from file tools, shell text, an unknown tool and a no-verb MCP tool, in both sessions", () => {
+	it("refuses writes to lsp.json and to any file in Grok's folder outside what its own features write, from file tools, shell text, an unknown tool and a no-verb MCP tool, in both sessions", () => {
 		const { grok, atHome, plain } = setup();
-		// What it doesn't name, and a name beside its memory, skills or workflows, is no part of them.
-		const files = [...GROK_UNNAMED, "skills-old/x/SKILL.md", "memory-v2.bak", "workflowsx/review.rhai", "hooks-backup/x.json", "config.toml.bak", "agentsx/a.md"];
+		// What it doesn't name, and a name beside an open part, is no part of them.
+		const files = [
+			...GROK_UNNAMED,
+			"skills-old/x/SKILL.md",
+			"memory-v2.bak",
+			"workflowsx/review.rhai",
+			"hooks-backup/x.json",
+			"config.toml.bak",
+			"agentsx/a.md",
+			"logs-old/x",
+			"learnx/y",
+			"bundled/skillsx/y",
+			"bundled/workflows/deep-research.rhai",
+		];
 		for (const opts of [atHome, plain]) {
 			for (const file of files) {
 				for (const path of [join(grok, file), `~/.grok/${file}`]) {
@@ -337,7 +364,7 @@ describe("Grok's folder: all but its memory, skills and workflows (what can swit
 		}
 	});
 
-	it("leaves its memory, skills and workflows writable, in both sessions", () => {
+	it("leaves what its own features write writable (its memory, skills, workflows, /learn's runs, background-task logs, plugins' data, bundled skills, docs and logs), in both sessions", () => {
 		const { grok, atHome, plain } = setup();
 		for (const file of GROK_OPEN) {
 			for (const opts of [atHome, plain]) {
@@ -381,26 +408,34 @@ describe("Grok's folder: all but its memory, skills and workflows (what can swit
 			"rm ~/.grok/docs/.*/hooks/orrery.json",
 			"rm ~/.grok/$name",
 			"rm ~/.grok/docs/`echo ..`/hooks/x",
-			// Everything outside its memory, skills and workflows, named or not (reads go through the file tools).
+			// Everything outside what its own features write, named or not (reads go through the file tools): the bundle but
+			// its skills among it (its agents carry hooks).
 			"echo '{}' > ~/.grok/lsp.json",
-			"cat ~/.grok/docs/user-guide/10-hooks.md",
 			"ls ~/.grok/hooks-backup",
 			"cp x ~/.grok/skills-old/x",
 			"cp -r x ~/.grok/s*/",
 			"cat ~/.grok/skills/../lsp.json",
+			"ls ~/.grok/bundled",
+			"cp a.md ~/.grok/bundled/agents/",
+			"cp x ~/.grok/bundled/s*/x",
+			"cat ~/.grok/bundled/skills/../manifest.json",
+			"echo x > ~/.grok/logs/../hooks/x.json",
 		]) {
 			expect([command, grokGuard("run_terminal_command", { command, description: "x" }, options, false)]).toEqual([command, expect.stringMatching(/Grok's folder|sensitive|session records/)]);
 			expect([command, grokGuard("monitor", { command }, options, false)]).toEqual([command, expect.stringMatching(/Grok's folder|sensitive|session records/)]);
 			expect([command, grokGuard("run_terminal_command", { command }, plain, false)]).toEqual([command, expect.stringMatching(/Grok's folder|session records/)]);
 		}
-		// Its memory, skills and workflows, a name beside Grok's folder, and a project's own .grok folder: a project's
-		// hooks and config are the project's (a known limit, src/grok/guard.ts), as Claude Code's project settings are.
+		// What its own features write, a name beside Grok's folder, and a project's own .grok folder: a project's hooks and
+		// config are the project's (a known limit, src/grok/guard.ts), as Claude Code's project settings are.
 		for (const command of [
 			"cat ~/.grok/memory-v2/global/MEMORY.md",
 			"echo '- likes tabs' >> ~/.grok/memory-v2/global/MEMORY.md",
 			"ls ~/.grok/skills && cat ~/.grok/skills/*/SKILL.md",
 			"cp review.rhai $GROK_HOME/workflows/",
 			"cat ~/.grok/./skills/x/SKILL.md ~/.grok/workflows/../skills/x/SKILL.md",
+			"cat ~/.grok/docs/user-guide/10-hooks.md",
+			"tail -n 50 ~/.grok/logs/unified.jsonl",
+			"ls ~/.grok/bundled/skills",
 			"cat ~/.grokrc",
 			"ls .grok/hooks",
 			"cat .grok/config.toml",
@@ -408,6 +443,100 @@ describe("Grok's folder: all but its memory, skills and workflows (what can swit
 		]) {
 			expect([command, grokGuard("run_terminal_command", { command }, options, false)]).toEqual([command, undefined]);
 			expect([command, grokGuard("run_terminal_command", { command }, plain, false)]).toEqual([command, undefined]);
+		}
+	});
+
+	it("lets Grok's bundled skills run their scripts and write where they do, in both sessions; what Grok loads stays kept", () => {
+		const { grok, options, atHome, plain } = setup();
+		// The shapes Grok 1.0.70's bundled skills use (bundled/skills/*/SKILL.md): long-running-background-tasks' dev server
+		// log, keyed on the shell's own process number ($$) after the path, and its watchers; pptx's and learn's scripts;
+		// pr-babysit's state folder; a /learn run's report; the manual; the logs.
+		const commands = [
+			"echo $$; npm start >~/.grok/long-running-background-tasks/dev_server_$$.log 2>&1",
+			"bash ~/.grok/long-running-background-tasks/watch_dev_server.sh 123456789",
+			'python3 ~/.grok/long-running-background-tasks/watch_pr.py "https://github.com/o/r/pull/1"',
+			`python3 ${grok}/bundled/skills/pptx/scripts/x.py deck.pptx`,
+			"python3 ~/.grok/bundled/skills/learn/state.py get",
+			"python3 $GROK_HOME/bundled/skills/learn/collect_sessions.py --estimate",
+			"mkdir -p ~/.grok/plugin-data/pr-babysit",
+			"cat ~/.grok/learn/runs/20261029T000000Z/actions.json",
+			"cat ~/.grok/docs/user-guide/10-hooks.md",
+			"tail -n 50 ~/.grok/logs/unified.jsonl",
+		];
+		for (const opts of [options, atHome, plain]) {
+			for (const command of commands) {
+				expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, undefined]);
+				expect([command, grokGuard("monitor", { command }, opts, false)]).toEqual([command, undefined]);
+			}
+		}
+		// File tools, in an agent's session whose folder holds Grok's, and in one that is no agent's.
+		const files = ["plugin-data/pr-babysit/watched-prs-1.json", "learn/trash/run/originals/x.md", "learn/state.json", "long-running-background-tasks/watch_dev_server.sh"];
+		for (const opts of [atHome, plain]) {
+			for (const file of files) {
+				expect([file, grokGuard("write", { file_path: join(grok, file), content: "{}" }, opts, false)]).toEqual([file, undefined]);
+				expect([file, grokGuard("write", { file_path: `~/.grok/${file}`, content: "{}" }, opts, false)]).toEqual([file, undefined]);
+			}
+		}
+		// Still kept: what Grok loads and runs, the bundle's agents among it (Grok runs their hooks).
+		for (const opts of [options, atHome, plain]) {
+			for (const command of ["echo '{}' > ~/.grok/hooks/x.json", "sed -i s/a/b/ ~/.grok/config.toml", "echo '{}' > ~/.grok/lsp.json", "cp a.md ~/.grok/bundled/agents/a.md"]) {
+				expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, expect.stringMatching(GROK_FOLDER)]);
+			}
+		}
+		for (const opts of [atHome, plain]) {
+			for (const file of ["hooks/x.json", "config.toml", "lsp.json", "bundled/agents/a.md"]) {
+				expect([file, grokGuard("write", { file_path: join(grok, file), content: "{}" }, opts, false)]).toEqual([file, expect.stringMatching(GROK_FOLDER)]);
+			}
+		}
+	});
+
+	it("takes the shell's own process number ($$) after Grok's folder as the digits it is, and any other variable or substitution as anything", () => {
+		const { options, plain } = setup();
+		for (const opts of [options, plain]) {
+			for (const command of ["npm start > ~/.grok/logs/dev_$$.log", "echo x > ~/.grok/logs/a$$$$b", 'echo x > "$HOME/.grok/logs/dev_$$.log"', "echo x > ~/.grok/logs/a$${x}"]) {
+				expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, undefined]);
+			}
+			for (const command of [
+				"echo x > ~/.grok/logs/x$y",
+				"echo x > ~/.grok/logs/x$$$y",
+				"echo x > ~/.grok/logs/x\\$$y",
+				"echo x > ~/.grok/logs/x${$}",
+				"echo x > ~/.grok/$$",
+				"echo x > ~/.grok/skills$$/x",
+				"echo x > ~/.grok/logs/x$$/../../hooks/a.json",
+				"echo x > ~/.grok/logs/x`id`",
+			]) {
+				expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, expect.stringMatching(GROK_FOLDER)]);
+			}
+		}
+	});
+
+	it("keeps an open part that is a link into what Grok loads, or out of its open parts, from file tools and shell text, in both sessions", () => {
+		const { home, grok, options, atHome, plain } = setup();
+		// skills/ linked to hooks/: a file written there is a hook file Grok loads.
+		rmSync(join(grok, "skills"), { recursive: true });
+		symlinkSync(join(grok, "hooks"), join(grok, "skills"));
+		// logs/ linked out of Grok's folder: where it really is may be anything.
+		mkdirSync(join(home, "grok-logs"));
+		rmSync(join(grok, "logs"), { recursive: true });
+		symlinkSync(join(home, "grok-logs"), join(grok, "logs"));
+		// workflows/ linked to another open part stays open.
+		rmSync(join(grok, "workflows"), { recursive: true });
+		symlinkSync(join(grok, "docs"), join(grok, "workflows"));
+		for (const opts of [options, atHome, plain]) {
+			for (const command of ["echo '{}' > ~/.grok/skills/evil.json", `cp x ${grok}/skills/evil.json`, "echo x > $GROK_HOME/skills/evil.json", "cp x ~/.grok/./skills/evil.json", "echo x >> ~/.grok/logs/x.log"]) {
+				expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, expect.stringMatching(GROK_FOLDER)]);
+			}
+			expect(grokGuard("run_terminal_command", { command: "cp x ~/.grok/workflows/w.rhai ~/grok-logs/x.log" }, opts, false)).toBeUndefined();
+		}
+		for (const opts of [atHome, plain]) {
+			for (const path of [join(grok, "skills", "evil.json"), "~/.grok/skills/evil.json", join(grok, "logs", "x.log"), "~/.grok/logs/x.log"]) {
+				expect([path, grokGuard("write", { file_path: path, content: "x" }, opts, false)]).toEqual([path, expect.stringMatching(GROK_FOLDER)]);
+			}
+			// Where the linked-out part really is is judged as itself; another open part's link stays open.
+			for (const path of [join(home, "grok-logs", "x.log"), join(grok, "workflows", "w.rhai")]) {
+				expect([path, grokGuard("write", { file_path: path, content: "x" }, opts, false)]).toEqual([path, undefined]);
+			}
 		}
 	});
 
@@ -466,7 +595,7 @@ describe("Grok's folder: all but its memory, skills and workflows (what can swit
 					expect([file, grokGuard("box__apply", { tool_name: "box__apply", tool_input: { target_file: join(moved, file) } }, opts, false)]).toEqual([file, expect.stringMatching(GROK_FOLDER)]);
 				}
 			}
-			for (const file of ["memory-v2/global/MEMORY.md", "skills/x/SKILL.md", "workflows/w.rhai"]) {
+			for (const file of ["memory-v2/global/MEMORY.md", "skills/x/SKILL.md", "workflows/w.rhai", "logs/x.log", "bundled/skills/x/y.py", "learn/state.json", "plugin-data/p/s.json"]) {
 				for (const opts of [atMoved, plainHere]) {
 					expect([file, grokGuard("write", { file_path: join(moved, file), content: "x" }, opts, false)]).toEqual([file, undefined]);
 					expect([file, grokGuard("run_terminal_command", { command: `cat ${join(moved, file)} $GROK_HOME/${file}` }, opts, false)]).toEqual([file, undefined]);
@@ -491,7 +620,7 @@ describe("Grok's folder: all but its memory, skills and workflows (what can swit
 		symlinkSync(join(dotfiles, "grok.toml"), join(grok, "config.toml"));
 		rmSync(join(grok, "hooks"), { recursive: true });
 		symlinkSync(join(dotfiles, "grok-hooks"), join(grok, "hooks"));
-		// An entry Orrery doesn't name (a later Grok's), and Grok's skills, kept there too.
+		// An entry Orrery doesn't name (a later Grok's), kept there too; and Grok's skills.
 		writeFileSync(join(dotfiles, "grok-lsp.json"), "{}");
 		rmSync(join(grok, "lsp.json"));
 		symlinkSync(join(dotfiles, "grok-lsp.json"), join(grok, "lsp.json"));
@@ -505,13 +634,14 @@ describe("Grok's folder: all but its memory, skills and workflows (what can swit
 			for (const command of [`echo x >> ${join(dotfiles, "grok.toml")}`, "rm ~/dotfiles/grok-hooks/orrery.json", "echo '{}' > ~/dotfiles/grok-lsp.json"]) {
 				expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, expect.stringMatching(GROK_FOLDER)]);
 			}
-			// The rest of the dotfiles folder is the person's, and Grok's skills stay writable where they really are.
+			// The rest of the dotfiles folder is the person's, and Grok's skills stay writable where they really are; through
+			// the link out of Grok's open parts they are kept, as any open part a link takes elsewhere is.
 			expect(grokGuard("write", { file_path: join(dotfiles, "grok.toml.bak"), content: "x" }, opts, false)).toBeUndefined();
 			expect(grokGuard("run_terminal_command", { command: "cat ~/dotfiles/notes.md" }, opts, false)).toBeUndefined();
-			for (const path of [join(dotfiles, "grok-skills", "x", "SKILL.md"), join(grok, "skills", "x", "SKILL.md")]) {
-				expect([path, grokGuard("write", { file_path: path, content: "x" }, opts, false)]).toEqual([path, undefined]);
-			}
+			expect(grokGuard("write", { file_path: join(dotfiles, "grok-skills", "x", "SKILL.md"), content: "x" }, opts, false)).toBeUndefined();
 			expect(grokGuard("run_terminal_command", { command: "cp x ~/dotfiles/grok-skills/x/SKILL.md" }, opts, false)).toBeUndefined();
+			expect(grokGuard("write", { file_path: join(grok, "skills", "x", "SKILL.md"), content: "x" }, opts, false)).toMatch(GROK_FOLDER);
+			expect(grokGuard("run_terminal_command", { command: "cp x ~/.grok/skills/x/SKILL.md" }, opts, false)).toMatch(GROK_FOLDER);
 		}
 	});
 });
