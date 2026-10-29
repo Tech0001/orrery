@@ -48,9 +48,9 @@ function hostRecord(dataDir: string, agent: string, tool: SessionTool, pid: numb
 	recorded.push({ dataDir, pid });
 }
 
-/** A live process that is no ancestor of this one; with `holds`, it has that file open (a Grok's session's events.jsonl). */
+/** A live process that is no ancestor of this one; with `holds`, it has that file open for writing, as Grok holds a session's events.jsonl. */
 function bystander(holds?: string): number {
-	const fd = holds === undefined ? "ignore" : openSync(holds, "r");
+	const fd = holds === undefined ? "ignore" : openSync(holds, "a");
 	try {
 		const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: [fd, "ignore", "ignore"] });
 		children.push(child);
@@ -68,6 +68,8 @@ const hookCtx = (w: ReturnType<typeof grokWorld>, extra: Partial<GrokHookContext
 	env: { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token, GROK_HOME: w.grok.home },
 	grokPid: process.pid,
 	grokParent: process.pid,
+	// The environment the grok process was started with: its sessions are under its GROK_HOME.
+	envOf: () => ({ GROK_HOME: w.grok.home }),
 	cwdOf: () => w.grok.cwd,
 	startHolder: () => {
 		throw new Error("no holder may start");

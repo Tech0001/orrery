@@ -20,10 +20,11 @@
  *
  * Which log: the session's own, `updates.jsonl` in <Grok's folder>/sessions/<the folder Grok runs in, percent-encoded>/
  * <session id>/ (Grok's folder is its $GROK_HOME, else ~/.grok). Grok writes it by appending, and opens it only to write;
- * it holds the session's events.jsonl open instead, from its start to its end. So SessionStart (src/grok/hooks.ts) takes
- * both folders from the path of the events.jsonl the grok process has open (grokHeldSession), never from the
- * environment (GROK_HOME, HOME) or the hook's input, which the agent's own shell can set. The log is read from
- * SessionStart's place on (the end of what is there: a resumed session's old turns are not read again) through
+ * it holds the session's events.jsonl open for writing instead, from its start to its end. So SessionStart
+ * (src/grok/hooks.ts) takes Grok's folder from the environment the grok process was started with (grokStartHome), and
+ * the session's folder from the one events.jsonl the grok process has open for writing under it (grokHeldSessions);
+ * never from the hook's own environment (GROK_HOME, HOME) or its input, which the agent's own shell can set. The log is
+ * read from SessionStart's place on (the end of what is there: a resumed session's old turns are not read again) through
  * src/agent/appended-lines.ts.
  */
 
@@ -70,33 +71,47 @@ export function grokSessionLog(grokHome: string, cwd: string, sessionId: string)
 	return join(grokHome, "sessions", grokFolder(cwd), sessionId, "updates.jsonl");
 }
 
-/** A session's folder and Grok's folder, as the file Grok has open for the session names them. */
+/**
+ * Grok's folder as the grok process was started with it (`env`: its start environment's GROK_HOME and HOME, never the
+ * hook's; `cwd`: the folder it runs in): its GROK_HOME (a relative one taken from `cwd`), else its HOME's .grok.
+ * Undefined when it has neither (a HOME that is no absolute path counts as none).
+ */
+export function grokStartHome(env: Readonly<Record<string, string | undefined>>, cwd: string): string | undefined {
+	if (env.GROK_HOME) return resolve(cwd, env.GROK_HOME);
+	return env.HOME && isAbsolute(env.HOME) ? join(env.HOME, ".grok") : undefined;
+}
+
+/** A session's folder and Grok's folder, as a file the grok process has open for the session names them. */
 export interface GrokHeld {
 	/** <Grok's folder>/sessions/<folder>/<session>. */
 	readonly dir: string;
-	/** Grok's folder. */
+	/** Grok's folder, as the path names it. */
 	readonly home: string;
 	/** On Linux, the very file Grok has open ("device:inode"). */
 	readonly file?: string;
+	/** Whether it is open for writing, as Grok holds its record (undefined: this system doesn't say). */
+	readonly writes?: boolean;
 }
 
 /**
- * Session `session`'s folder as the grok process has it open (`open`: its open files, src/agent/open-files.ts): Grok
- * holds each live session's events.jsonl open from its start to its end, so the one whose own path is <Grok's folder>/
- * sessions/<grokFolder(cwd)>/<session>/events.jsonl names both folders. `cwd` is the folder the grok process runs in.
- * Undefined when Grok has none open.
+ * Session `session`'s folders as the grok process has them open (`open`: its open files, src/agent/open-files.ts): every
+ * open file whose own path is <a Grok folder>/sessions/<grokFolder(cwd)>/<session>/events.jsonl, each naming both
+ * folders. Grok holds each live session's events.jsonl open for writing from its start to its end; a tool of Grok's
+ * reading a file at such a path holds it too, so which one, if any, is Grok's own record is the caller's to judge (its
+ * folder, how and how often it is open). `cwd` is the folder the grok process runs in.
  */
-export function grokHeldSession(open: readonly OpenFile[], cwd: string, session: string): GrokHeld | undefined {
-	if (!validSession(session)) return undefined;
+export function grokHeldSessions(open: readonly OpenFile[], cwd: string, session: string): GrokHeld[] {
+	if (!validSession(session)) return [];
+	const found: GrokHeld[] = [];
 	for (const held of open) {
 		const path = held.path;
 		if (!isAbsolute(path) || normalize(path) !== path || basename(path) !== "events.jsonl") continue;
 		const dir = dirname(path);
 		const sessions = dirname(dirname(dir));
 		if (basename(dir) !== session || basename(dirname(dir)) !== grokFolder(cwd) || basename(sessions) !== "sessions") continue;
-		return { dir, home: dirname(sessions), ...(held.file === undefined ? {} : { file: held.file }) };
+		found.push({ dir, home: dirname(sessions), ...(held.file === undefined ? {} : { file: held.file }), ...(held.writes === undefined ? {} : { writes: held.writes }) });
 	}
-	return undefined;
+	return found;
 }
 
 /** Grok's sessions folder, as it really is. */

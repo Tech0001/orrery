@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { confirmGrok, GrokLogReader, grokFolder, grokHeldSession, grokHome, grokLogIn, grokLogStart, grokSessionKind, grokSessionLog, parseGrokLogMark } from "../../src/grok/log.ts";
+import { confirmGrok, GrokLogReader, grokFolder, grokHeldSessions, grokHome, grokLogIn, grokLogStart, grokSessionKind, grokSessionLog, grokStartHome, parseGrokLogMark } from "../../src/grok/log.ts";
 import { tempDir } from "../agent/support.ts";
 import { grokLog, grokSession } from "./log-lines.ts";
 
@@ -37,16 +37,35 @@ describe("where Grok keeps a session's log", () => {
 		const events = (home: string, folder: string, session = S) => `${home}/sessions/${folder}/${session}/events.jsonl`;
 		const held = events("/h/.grok", "%2Fw%2Fapp");
 		const other = { path: events("/h/.grok", "%2Fw%2Fapp", grokSession()), file: "1:2" };
-		expect(grokHeldSession([{ path: "/dev/pts/3" }, other, { path: held, file: "1:3" }], "/w/app", S)).toEqual({ dir: `/h/.grok/sessions/%2Fw%2Fapp/${S}`, home: "/h/.grok", file: "1:3" });
-		// lsof (macOS) gives paths alone.
-		expect(grokHeldSession([{ path: held }], "/w/app", S)).toEqual({ dir: `/h/.grok/sessions/%2Fw%2Fapp/${S}`, home: "/h/.grok" });
+		expect(grokHeldSessions([{ path: "/dev/pts/3" }, other, { path: held, file: "1:3", writes: true }], "/w/app", S)).toEqual([{ dir: `/h/.grok/sessions/%2Fw%2Fapp/${S}`, home: "/h/.grok", file: "1:3", writes: true }]);
+		// lsof (macOS) gives paths alone, and how each is open; a mode not known stays unknown.
+		expect(grokHeldSessions([{ path: held, writes: false }], "/w/app", S)).toEqual([{ dir: `/h/.grok/sessions/%2Fw%2Fapp/${S}`, home: "/h/.grok", writes: false }]);
+		expect(grokHeldSessions([{ path: held }], "/w/app", S)).toEqual([{ dir: `/h/.grok/sessions/%2Fw%2Fapp/${S}`, home: "/h/.grok" }]);
+		// Every one that matches, wherever its Grok folder is: which is Grok's own is the caller's to judge.
+		const elsewhere = events("/tmp/made-up", "%2Fw%2Fapp");
+		expect(grokHeldSessions([{ path: held, writes: true }, { path: elsewhere, writes: false }, { path: held, writes: false }], "/w/app", S).map((one) => [one.home, one.writes])).toEqual([
+			["/h/.grok", true],
+			["/tmp/made-up", false],
+			["/h/.grok", false],
+		]);
 		// None for another session, another folder than Grok's own, another file, a path not plainly written, or a deleted file.
-		expect(grokHeldSession([other], "/w/app", S)).toBeUndefined();
-		expect(grokHeldSession([{ path: held }], "/w/other", S)).toBeUndefined();
+		expect(grokHeldSessions([other], "/w/app", S)).toEqual([]);
+		expect(grokHeldSessions([{ path: held }], "/w/other", S)).toEqual([]);
 		for (const path of [`/h/.grok/sessions/%2Fw%2Fapp/${S}/updates.jsonl`, `/h/.grok/elsewhere/%2Fw%2Fapp/${S}/events.jsonl`, `/h/.grok/sessions/x/../%2Fw%2Fapp/${S}/events.jsonl`, `sessions/%2Fw%2Fapp/${S}/events.jsonl`, `${held} (deleted)`]) {
-			expect(grokHeldSession([{ path }], "/w/app", S), path).toBeUndefined();
+			expect(grokHeldSessions([{ path }], "/w/app", S), path).toEqual([]);
 		}
-		expect(grokHeldSession([{ path: events("/h/.grok", "%2Fw%2Fapp", "..") }], "/w/app", "..")).toBeUndefined();
+		expect(grokHeldSessions([{ path: events("/h/.grok", "%2Fw%2Fapp", "..") }], "/w/app", "..")).toEqual([]);
+	});
+
+	it("is Grok's folder as the grok process was started with it: its GROK_HOME (a relative one from the folder it runs in), else its HOME's .grok", () => {
+		expect(grokStartHome({ GROK_HOME: "/g", HOME: "/home/u" }, "/w")).toBe("/g");
+		expect(grokStartHome({ GROK_HOME: "g/home" }, "/w")).toBe("/w/g/home");
+		expect(grokStartHome({ HOME: "/home/u" }, "/w")).toBe("/home/u/.grok");
+		expect(grokStartHome({ GROK_HOME: "", HOME: "/home/u" }, "/w")).toBe("/home/u/.grok");
+		// Neither, or a HOME that is no absolute path: no folder.
+		expect(grokStartHome({}, "/w")).toBeUndefined();
+		expect(grokStartHome({ HOME: "" }, "/w")).toBeUndefined();
+		expect(grokStartHome({ HOME: "home/u" }, "/w")).toBeUndefined();
 	});
 
 	it("takes only a session's own log under Grok's sessions folder, never one a link or a made-up path leads to", () => {

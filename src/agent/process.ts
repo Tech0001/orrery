@@ -61,6 +61,12 @@ export interface ProcessEnvDeps {
 	readonly ps?: (args: readonly string[]) => string | undefined;
 	/** Linux: a file's text; throws when it can't be read (default readFileSync). */
 	readonly read?: (file: string) => string;
+	/**
+	 * macOS: read only the words after the process's own arguments (ps without -E), so no word among them is taken for a
+	 * variable its environment lacks: for a process whose arguments hold text others wrote (Grok's --rules hold the
+	 * agent's memory). Linux's environ holds the environment alone, so it changes nothing there.
+	 */
+	readonly withoutArgs?: boolean;
 }
 
 /** macOS's ps output for `args` in the C locale and no other environment, or undefined when it fails. */
@@ -72,9 +78,10 @@ function psQuiet(args: readonly string[]): string | undefined {
 /**
  * The values of the variables `names` in the environment process `pid` was started with: Linux's /proc/<pid>/environ;
  * macOS's `ps -E`, by its path, whose words they are (the environment follows the arguments, so the last word naming one
- * is taken; a value holding a space is no value of these). Undefined elsewhere, or when it can't be read; on macOS also
- * when ps shows no environment at all (neither PATH nor HOME): it may withhold another process's, and "started without
- * it" must never be read from that.
+ * is taken; a value holding a space is no value of these; with `withoutArgs`, only the words after the arguments ps
+ * shows without -E, and undefined when its two answers don't line up). Undefined elsewhere, or when it can't be read; on
+ * macOS also when ps shows no environment at all (neither PATH nor HOME): it may withhold another process's, and
+ * "started without it" must never be read from that.
  */
 export function processEnv(pid: number, names: readonly string[], deps: ProcessEnvDeps = {}): Readonly<Record<string, string>> | undefined {
 	if (!Number.isInteger(pid) || pid < 1) return undefined;
@@ -87,9 +94,16 @@ export function processEnv(pid: number, names: readonly string[], deps: ProcessE
 			return undefined;
 		}
 	} else if (platform === "darwin") {
-		const out = (deps.ps ?? psQuiet)(["-wwE", "-o", "command=", "-p", String(pid)]);
+		const ps = deps.ps ?? psQuiet;
+		const out = ps(["-wwE", "-o", "command=", "-p", String(pid)]);
 		if (out === undefined) return undefined;
-		words = out.trim().split(/\s+/);
+		let shown = out.trim();
+		if (deps.withoutArgs === true) {
+			const args = ps(["-ww", "-o", "command=", "-p", String(pid)])?.trim();
+			if (args === undefined || args === "" || !shown.startsWith(args) || /\S/.test(shown.charAt(args.length))) return undefined;
+			shown = shown.slice(args.length).trim();
+		}
+		words = shown.split(/\s+/);
 		if (!words.some((word) => word.startsWith("PATH=") || word.startsWith("HOME="))) return undefined;
 	} else return undefined;
 	const found: Record<string, string> = {};
