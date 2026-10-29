@@ -37,21 +37,19 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
+import { readMemory } from "../agent/memory-read.ts";
 import type { PlainDeps } from "../agent/plain-nested.ts";
 import { liveSession, nestedNotice, plainFields, recordSession, type SessionRecord } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
-import { memorySection } from "../agent/view-text.ts";
 import { noticeShownBefore, waitForMode } from "../claude/hooks.ts";
 import { settleView } from "../claude/mod-view.ts";
 import { summaryNotice, updateNotice } from "../claude/notices.ts";
 import { holderLog, validSession } from "../claude/paths.ts";
 import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
-import { MemoryStore, MemoryView } from "../memory/index.ts";
 import { codexAgent } from "./pick.ts";
 import { codexSessionOf, recordCodexSession } from "./resume.ts";
 import { readCodexCheck } from "./check.ts";
@@ -190,18 +188,6 @@ export function stop(input: CodexHookInput, ctx: CodexHookContext): object | und
  * decision stay until Codex is gone (they are stale then), and the holder ends when Codex does.
  */
 export function sessionEnd(_input: CodexHookInput, _ctx: CodexHookContext): void {}
-
-/** The agent's message count and, when `withSection`, its memory section, read from a read-only snapshot; none yet: {}. */
-function readMemory(agent: AgentConfig, withSection: boolean): { readonly messages?: number; readonly section?: string } {
-	const file = join(agent.dir, "memory.sqlite");
-	if (!existsSync(file)) return {};
-	const store = MemoryStore.openReadOnly(file);
-	try {
-		return { messages: store.root.length, ...(withSection ? { section: memorySection(new MemoryView(store, agent.memory.viewBytes), "codex") } : {}) };
-	} finally {
-		store.close();
-	}
-}
 
 /** A Codex session's rollout, as this Codex holds it: the file and Codex's folder as they really are, the file Codex holds, where to read it from, and whether a turn of it runs. */
 interface OwnRollout {

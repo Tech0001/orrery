@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { HELP_COMMANDS, PLUGIN_COMMANDS, SHORT_WIDTH, shortHelp, WIDTH } from "../../src/cli/help.ts";
+import { allHelp, HELP_COMMANDS, PLUGIN_COMMANDS, SHORT_WIDTH, shortHelp, WIDTH } from "../../src/cli/help.ts";
 import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { systemCommand } from "../install/support.ts";
 import { agentConfigToml, tempDir } from "../agent/support.ts";
@@ -50,6 +50,13 @@ describe("orrery help", () => {
 	it("finds the dispatcher's commands, and has help for each of them and no other", () => {
 		expect(DISPATCHED.length).toBeGreaterThan(20);
 		expect([...HELP_COMMANDS].sort()).toEqual(DISPATCHED);
+	});
+
+	it("lists grok wherever it lists codex as a tool to pick", () => {
+		const text = `${shortHelp(undefined)}\n${allHelp(undefined)}`;
+		const lists = text.match(/pi\|omp\|claude-code\|codex\|opencode(\|grok)?/g) ?? [];
+		expect(lists.length).toBeGreaterThan(2);
+		expect(lists.filter((list) => !list.endsWith("|grok"))).toEqual([]);
 	});
 
 	it("prints the short page for --help, -h, help and a plain orrery off a terminal: within 80 columns, every command people use, none the plugins run", () => {

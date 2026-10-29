@@ -157,7 +157,7 @@ describe("orrery agent", () => {
 
 	it("names the tools --tool takes, and the configured agents for an unknown name", () => {
 		const s = scene();
-		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "claude").stderr).toContain("--tool takes pi, omp, claude-code, codex or opencode (not claude).");
+		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "claude").stderr).toContain("--tool takes pi, omp, claude-code, codex, opencode or grok (not claude).");
 		expect(orrery(s.env, s.elsewhere, "agent", "Nobody").stderr).toContain("No agent named Nobody. Configured agents: Atlas");
 	});
 

@@ -123,9 +123,9 @@ export function demoDeps(demo: Demo, controls: Pick<AppDeps, "rows" | "quit" | "
 		// Keep this staged snapshot fresh without a background writer pretending to be a live agent.
 		overview: (config) => agentOverview(config, { now: demo.now }),
 		usage: (config, days, only) => agentUsage(config, days, only, demo.now),
-		tools: () => (["pi", "claude-code", "omp", "codex", "opencode"] as const).map((id) => ({
+		tools: () => (["pi", "claude-code", "omp", "codex", "opencode", "grok"] as const).map((id) => ({
 			id, label: TOOL_LABELS[id], path: join(demo.home, "bin", id), version: "1.0.0",
-			wiring: id === "codex" || id === "opencode" ? "memory" : "installed", detail: "Fictional demo tool; launches disabled.", blocked: DISABLED,
+			wiring: id === "codex" || id === "opencode" || id === "grok" ? "memory" : "installed", detail: "Fictional demo tool; launches disabled.", blocked: DISABLED,
 		})),
 		sources, target: disabled, loginRows: (source, rows) => loginRows(source, rows, {}),
 		saveKey: async () => disabled(), signIn: async () => disabled(), removeLogin: async () => disabled(),

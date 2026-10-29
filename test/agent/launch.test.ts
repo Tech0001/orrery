@@ -6,8 +6,10 @@ import { parseConfig } from "../../src/agent/config.ts";
 import { applyFix, checkCodexHooks, checkOpenCodePlugin, exitText, launchLabel, launchPlan, runAgent, runTool, withoutOrrery } from "../../src/agent/launch.ts";
 import { cutNotice, writeInstructions } from "../../src/agent/instructions.ts";
 import { codexLaunch } from "../../src/codex/launch.ts";
+import { GROK_ARG_MAX } from "../../src/grok/launch.ts";
 import { claimToken } from "../../src/agent/pick.ts";
 import { agentOverview } from "../../src/agent/overview.ts";
+import { MemoryStore, MemoryView, Part } from "../../src/memory/index.ts";
 import { checkTools, ompExtensionFile, orreryRoot, piExtensionFile } from "../../src/agent/tools.ts";
 import { tempDir } from "./support.ts";
 import { fakeOpenCode } from "../opencode/fake-opencode.ts";
@@ -25,7 +27,7 @@ function setup(tool: string, folder?: string, extra = "") {
 	const bin = join(dir, "bin");
 	mkdirSync(bin);
 	const out = join(dir, "out.txt");
-	for (const name of ["pi", "claude", "codex", "omp", "ori", "opencode"]) {
+	for (const name of ["pi", "claude", "codex", "omp", "ori", "opencode", "grok"]) {
 		writeFileSync(join(bin, name), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.0; exit 0; fi\nif [ "$1" = "plugin" ]; then echo '[]'; exit 0; fi\npwd > ${JSON.stringify(out)}\nexit 3\n`);
 		chmodSync(join(bin, name), 0o755);
 	}
@@ -184,6 +186,94 @@ describe("launchPlan and runTool", () => {
 		const codex = setup("codex");
 		const open = { ...codex.row, state: "open" as const, openIn: "omp" as const };
 		expect(launchPlan(codex.config, open, codex.tools).steps[0]).toEqual({ text: "A is already open in OMP. A second session won't record. Launch anyway?", confirm: true, asAgent: true });
+	});
+});
+
+describe("opening an agent in Grok", () => {
+	/** A fake grok that writes down what it was started with: the agent, the token, the folder and each argument on its own line. */
+	function fakeGrok(out: string, bin: string) {
+		writeFileSync(join(bin, "grok"), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "grok 1.0.70 (abc) [stable]"; exit 0; fi\n{ printf '%s\\n' "$ORRERY_AGENT" "$ORRERY_AGENT_TOKEN" "$(pwd)"; for a in "$@"; do printf '%s\\n' "$a"; done; } > ${JSON.stringify(out)}\n`, { mode: 0o755 });
+	}
+
+	it("tool grok opens grok with ORRERY_AGENT and a fresh token, in the current folder", async () => {
+		const { config, row, tools, env, out } = setup("grok");
+		fakeGrok(out, join(dirname(out), "bin"));
+		const here = tempDir("orrery-launch-grok-here-");
+		dirs.push(here);
+		writeInstructions(config.agents.get("A")!.dir, "Keep notes.\n");
+		const plan = launchPlan(config, row, checkTools({ root: orreryRoot(), env }), { cwd: here, args: ["--resume", "abc"] });
+		expect(plan).toMatchObject({ tool: "grok", command: join(env.PATH, "grok"), cwd: here, steps: [] });
+		expect(plan.blocked).toBeUndefined();
+		expect(plan.args.slice(0, 1)).toEqual(["--rules"]);
+		expect(plan.args[1]).toContain("# Agent: A");
+		expect(plan.args.slice(2)).toEqual(["--resume", "abc"]);
+		const token = plan.env.ORRERY_AGENT_TOKEN as string;
+		expect(token).toMatch(/^[0-9a-f]{32}$/);
+		// What Grok's hooks do at its start: claim the token.
+		expect(claimToken(plan.agentDir, token, 999_999)).toBe(true);
+		expect(await runAgent(plan, (p) => runTool(p, { env }))).toEqual({ code: 0, signal: null, claimedBy: 999_999 });
+		const [agent, seen, cwd, flag, ...rest] = readFileSync(out, "utf8").split("\n");
+		expect([agent, seen, realpathSync(cwd as string), flag]).toEqual(["A", token, realpathSync(here), "--rules"]);
+		expect(rest.slice(0, 2)).toEqual(["# Agent: A", ""]);
+		expect(rest.slice(-3, -1)).toEqual(["--resume", "abc"]);
+		expect(readdirSync(join(plan.agentDir, "claims"))).toEqual([]);
+	});
+
+	it("--tool grok overrides an agent's tool for this launch only", () => {
+		const { config, row, tools, env } = setup("codex");
+		const plan = launchPlan(config, row, tools, { tool: "grok", args: ["-x"] });
+		expect(plan).toMatchObject({ tool: "grok", command: join(env.PATH, "grok") });
+		expect(plan.codex).toBeUndefined();
+		expect(plan.args).toEqual(["-x"]);
+		// The agent's own tool is untouched.
+		expect(launchPlan(config, row, tools)).toMatchObject({ tool: "codex" });
+	});
+
+	it("gives the memory section of the agent's store, in Grok's words, with the instructions after it", () => {
+		const { config, row, tools } = setup("grok");
+		const agentDir = config.agents.get("A")!.dir;
+		mkdirSync(agentDir, { recursive: true });
+		const store = MemoryStore.open(join(agentDir, "memory.sqlite"));
+		new MemoryView(store).append("user", "remember the Cedar plan");
+		store.saveNode(new Part(0, 0), "user: remember the Cedar plan");
+		store.close();
+		writeInstructions(agentDir, "Keep notes.\n");
+		const plan = launchPlan(config, row, tools);
+		const rules = plan.args[1] as string;
+		expect(plan.args[0]).toBe("--rules");
+		expect(rules.startsWith("# Memory")).toBe(true);
+		expect(rules).toContain("look for the zoom, date and search tools");
+		expect(rules).toContain("remember the Cedar plan");
+		expect(rules).not.toContain("read-only");
+		expect(rules.indexOf("# Agent: A")).toBeGreaterThan(rules.indexOf("remember the Cedar plan"));
+		// Open in another session: asked first, and the section says this one records nothing.
+		const open = { ...row, state: "open" as const, openIn: "omp" as const };
+		const second = launchPlan(config, open, tools);
+		expect(second.steps).toEqual([{ text: "A is already open in OMP. A second session won't record. Launch anyway?", confirm: true, asAgent: true }]);
+		expect(second.args[1]).toContain("This session is read-only, though: another session has the agent");
+	});
+
+	it("opens with no memory yet and no instructions: nothing added, only the person's arguments", () => {
+		const { config, row, tools } = setup("grok");
+		expect(launchPlan(config, row, tools, { args: ["-p", "hi"] }).args).toEqual(["-p", "hi"]);
+	});
+
+	it("keeps every argument within Grok's limit for a large memory of multi-byte text, saying the instructions were cut", () => {
+		const { config, row, tools } = setup("grok", undefined, "[agents.A.memory]\nview_bytes = 125000\n");
+		const agentDir = config.agents.get("A")!.dir;
+		mkdirSync(agentDir, { recursive: true });
+		const store = MemoryStore.open(join(agentDir, "memory.sqlite"));
+		const view = new MemoryView(store, 125_000);
+		for (let i = 0; i < 30; i++) {
+			view.append("user", `${i} ${"\u20ac".repeat(1400)}`);
+			store.saveNode(new Part(0, i), `user: ${i} ${"\u20ac".repeat(1400)}`);
+		}
+		store.close();
+		writeInstructions(agentDir, "Instruction line with \u00e9 and more words.\n".repeat(850));
+		const plan = launchPlan(config, row, tools);
+		for (const arg of plan.args) expect(Buffer.byteLength(arg)).toBeLessThanOrEqual(GROK_ARG_MAX);
+		expect(plan.args[1]).toContain("\u20ac\u20ac\u20ac");
+		expect(plan.steps.map((step) => step.text)).toEqual([expect.stringContaining("instructions are too long for Grok's command line")]);
 	});
 });
 

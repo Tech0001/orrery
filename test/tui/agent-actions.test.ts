@@ -24,7 +24,7 @@ afterEach(() => {
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-const tool = (id: ToolCheck["id"], fields: Partial<ToolCheck> = {}): ToolCheck => ({ id, label: { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", opencode: "OpenCode", ori: "Ori", wrangler: "wrangler" }[id], path: `/bin/${id}`, version: id === "codex" ? "codex-cli 0.162.1" : id === "opencode" ? "opencode v2.0.30" : "1", wiring: id === "codex" || id === "opencode" ? "memory" : "installed", detail: "", ...fields });
+const tool = (id: ToolCheck["id"], fields: Partial<ToolCheck> = {}): ToolCheck => ({ id, label: { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", opencode: "OpenCode", grok: "Grok", ori: "Ori", wrangler: "wrangler" }[id], path: `/bin/${id}`, version: id === "codex" ? "codex-cli 0.162.1" : id === "opencode" ? "opencode v2.0.30" : "1", wiring: id === "codex" || id === "opencode" || id === "grok" ? "memory" : "installed", detail: "", ...fields });
 
 /** Summary sources with an Anthropic key saved, in a temp folder (offline: listing models makes no call). */
 async function anthropicSources() {

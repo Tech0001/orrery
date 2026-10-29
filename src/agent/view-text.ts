@@ -12,7 +12,7 @@
 import { type MemoryView, VIEW_DOC } from "../memory/index.ts";
 
 /** The tool that reads a memory section: pi, OMP, Claude Code's view file, the Orrery mod, Codex, or OpenCode. */
-export type Host = "pi" | "omp" | "claude-code" | "claude-mod" | "codex" | "opencode";
+export type Host = "pi" | "omp" | "claude-code" | "claude-mod" | "codex" | "grok" | "opencode";
 
 const PI_INTRO = `You keep no memory between turns. Each turn starts with the view below, followed by the user's new
 message. Tool calls and their results are not kept in memory, only your replies, so say in your reply what you did and
@@ -42,6 +42,19 @@ time the conversation is compacted; what was said since then you see directly. M
 and your final reply of each turn, not tool calls, their results or your other text, so say in your final reply what
 you did and learned that will matter later. zoom, date and search are the Orrery memory tools, from the orrery MCP
 server (\`mcp__orrery__zoom\`, \`…__date\`, \`…__search\`); if you don't see them, look for the zoom, date and search tools.`;
+
+/**
+ * Grok: Orrery's launch gives the section to `grok --rules`, which appends it to the system prompt for the whole session
+ * and keeps it through /compact, so it is the view as it was when the session started. The memory tools come from an MCP
+ * server whose tool names Grok prefixes, so the section names no one way to look.
+ */
+const GROK_INTRO = `Earlier conversation reaches you only through the view below, as it was when this session started; what was said
+since then you see directly. Memory keeps the user's messages and your final reply of each turn, not tool calls, their
+results or your other text, so say in your final reply what you did and learned that will matter later. zoom, date and
+search are the Orrery memory tools; look for the zoom, date and search tools.`;
+
+/** Grok, while another session has the agent (its memory is read, not recorded). */
+export const GROK_READ_ONLY = `This session is read-only, though: another session has the agent, so nothing said here goes to memory.`;
 
 /**
  * OpenCode: Orrery's plugin puts the section last in the system prompt, the same bytes for a whole session (its
@@ -75,13 +88,14 @@ becomes the newest word in memory.`;
 
 /**
  * The memory section for `host`: how memory works, then the view (fenced for the Claude Code file, plain for the rest).
- * `readOnly`: OpenCode's section for a session that is not recorded says so (OPENCODE_READ_ONLY); the others have no such form.
+ * `readOnly`: the section of OpenCode or Grok for a session that is not recorded says so (OPENCODE_READ_ONLY, GROK_READ_ONLY); the others have no such form.
  */
 export function memorySection(view: MemoryView, host: Host = "pi", options: { readonly readOnly?: boolean } = {}): string {
 	if (host === "pi") return `# Memory\n\n${PI_INTRO}\n\n${RULES}\n\n${view.render()}`;
 	if (host === "omp") return `# Memory\n\n${OMP_INTRO}\n\n${RULES}\n\n${view.render()}`;
 	if (host === "claude-mod") return `# Memory\n\n${CLAUDE_MOD_INTRO}\n\n${RULES}\n\n${view.render()}`;
 	if (host === "codex") return `# Memory\n\n${CODEX_INTRO}\n\n${RULES}\n\n${view.render()}`;
+	if (host === "grok") return `# Memory\n\n${GROK_INTRO}\n\n${options.readOnly === true ? `${GROK_READ_ONLY}\n\n` : ""}${RULES}\n\n${view.render()}`;
 	if (host === "opencode") return `# Memory\n\n${OPENCODE_INTRO}\n\n${options.readOnly === true ? `${OPENCODE_READ_ONLY}\n\n` : ""}${RULES}\n\n${view.render()}`;
 	return `# Memory\n\n${CLAUDE_INTRO}\n\n${RULES}\n\n${fenced(view.render())}`;
 }

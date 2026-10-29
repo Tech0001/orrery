@@ -285,7 +285,7 @@ async function agentCommand(args: string[], values: Record<string, string | bool
 		const agent = required(name, "agent name");
 		const summary = required(values.summary as string | undefined, "--summary provider/id");
 		const thinking = (values.thinking as string | undefined) ?? "low";
-		const tool = required(values.tool as string | undefined, "--tool pi|omp|claude-code|codex|opencode");
+		const tool = required(values.tool as string | undefined, "--tool pi|omp|claude-code|codex|opencode|grok");
 		const folder = fullPath(required(values.folder as string | undefined, "--folder DIR"));
 		const reads = values.reads === undefined ? undefined : parseReads(values.reads as string, known(), agent);
 		editConfigOnce(file, (text, dir) => addAgent(text, dir, { name: agent, folder, tool: tool as never, compactorModel: summary, compactorThinking: thinking as never, ...(reads === undefined ? {} : { reads }) }));

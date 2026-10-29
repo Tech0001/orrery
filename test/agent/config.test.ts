@@ -275,6 +275,12 @@ model = "openai/gpt-6.1-sol"
 		expect(parseConfig(`[agents.A]\nfolder = "/w/a"\nmodel = "a/b"\n`, "/x").agents.get("A")?.tool).toBeUndefined();
 	});
 
+	it("takes grok as an agent's tool, and lists it in the refusal of an unknown one", () => {
+		const config = parseConfig(`[agents.A]\nfolder = "/w/a"\ntool = "grok"\ncompactor_model = "openai/gpt-6.1-sol"\n`, "/x");
+		expect(config.agents.get("A")?.tool).toBe("grok");
+		expect(() => parseConfig(`[agents.A]\nfolder = "/w"\nmodel = "a/b"\ntool = "vim"\n`, "/x")).toThrow("pi, claude-code, codex, omp, opencode, grok");
+	});
+
 	it("refuses an unknown tool, and an agent with neither model nor compactor_model", () => {
 		expect(() => parseConfig(`[agents.A]\nfolder = "/w"\nmodel = "a/b"\ntool = "vim"\n`, "/x")).toThrow("agents.A.tool must be one of pi, claude-code, codex");
 		expect(() => parseConfig(`[agents.A]\nfolder = "/w"\n`, "/x")).toThrow("agents.A.compactor_model must be a non-empty string");

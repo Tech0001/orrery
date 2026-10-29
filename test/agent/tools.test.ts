@@ -40,6 +40,15 @@ describe("checkTools", () => {
 		expect(installSteps(codex, root, env)).toEqual([]);
 	});
 
+	it("finds Grok, whose memory comes with each launch, and says the version Orrery was tested with", () => {
+		const found = fakeBin({ grok: 'echo "grok 1.0.70 (f50904eaee6c) [stable]"' });
+		expect(checkTools({ root, env: found.env }).find((t) => t.id === "grok")).toMatchObject({ id: "grok", label: "Grok", version: "grok 1.0.70 (f50904eaee6c) [stable]", wiring: "memory", detail: "memory and instructions come with each launch; tested with Grok 1.0.70" });
+		const newer = fakeBin({ grok: 'echo "grok 1.1.0 (abc) [stable]"' });
+		expect(checkTools({ root, env: newer.env }).find((t) => t.id === "grok")?.detail).toContain("tested with Grok 1.0.70, this is 1.1.0");
+		const none = fakeBin({});
+		expect(checkTools({ root, env: none.env }).find((t) => t.id === "grok")).toMatchObject({ wiring: "memory", detail: "Grok Build is not on PATH" });
+	});
+
 	it("finds OpenCode, asking its version in a scratch home; Orrery's plugin comes with each launch, and the last check is said", () => {
 		const seen = tempDir("orrery-opencode-seen-");
 		dirs.push(seen);

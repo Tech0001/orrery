@@ -1,6 +1,6 @@
 /**
- * Page 4, Tools (spec §3.4): pi, Claude Code, Codex, OMP and OpenCode (found, version, orrery's side), Wrangler, and
- * Orrery itself. I installs or repairs Orrery extensions. Codex's and OpenCode's sides come with each launch ("memory"),
+ * Page 4, Tools (spec §3.4): pi, Claude Code, Codex, OMP, OpenCode and Grok (found, version, orrery's side), Wrangler, and
+ * Orrery itself. I installs or repairs Orrery extensions. Codex's, OpenCode's and Grok's sides come with each launch ("memory"),
  * with the last hook or plugin check.
  */
 
@@ -19,8 +19,8 @@ const COLUMNS: readonly Column[] = [
 	{ title: "Detail", width: 30, drop: 1, truncate: "middle" },
 ];
 
-/** What comes with each launch of a tool whose Orrery side is not installed (Codex, OpenCode). */
-const atLaunch = (tool: ToolCheck) => (tool.id === "opencode" ? "Orrery's plugin comes with each launch" : "Orrery's hooks and memory tools come with each launch");
+/** What comes with each launch of a tool whose Orrery side is not installed (Codex, OpenCode, Grok). */
+const atLaunch = (tool: ToolCheck) => (tool.id === "opencode" ? "Orrery's plugin comes with each launch" : tool.id === "grok" ? "Orrery's memory and instructions come with each launch" : "Orrery's hooks and memory tools come with each launch");
 
 /** Checks run processes (`pi --version` …): keep them for 30 s rather than every refresh. */
 const FRESH_MS = 30_000;

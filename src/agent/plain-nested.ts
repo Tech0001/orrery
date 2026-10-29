@@ -42,7 +42,7 @@ export interface PlainDeps {
 }
 
 /** Each session tool as toolSession names a coding tool: `orrery run` is none. */
-const OWN: Readonly<Record<SessionTool, string | undefined>> = { "claude-code": "claude", codex: "codex", opencode: "opencode", pi: "pi", omp: "omp", run: undefined };
+const OWN: Readonly<Record<SessionTool, string | undefined>> = { "claude-code": "claude", codex: "codex", opencode: "opencode", grok: "grok", pi: "pi", omp: "omp", run: undefined };
 
 /** The markers that hold a Codex session's id (src/agent/sessions.ts TOOL_MARKERS). */
 const CODEX_IDS = ["CODEX_THREAD_ID", "CODEX_SESSION_ID"] as const;

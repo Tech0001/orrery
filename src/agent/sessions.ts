@@ -91,6 +91,7 @@
 
 import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { isGrokProcess } from "../grok/names.ts";
 import { namesOrreryPlugin } from "../install/layout.ts";
 import { readPluginOptions } from "../opencode/options.ts";
 import { launchTokenFile, readTokenFile } from "../opencode/token-file.ts";
@@ -113,10 +114,10 @@ export { processStart };
 export const HOST_ENV = "ORRERY_HOST";
 
 /** The tool a session runs in: `run` is `orrery run`. */
-export type SessionTool = "pi" | "omp" | "claude-code" | "codex" | "opencode" | "run";
+export type SessionTool = "pi" | "omp" | "claude-code" | "codex" | "opencode" | "grok" | "run";
 
 /** Each tool as a notice (and the CLI's refusal, src/cli/gate.ts) names it. */
-export const TOOL_NAMES: Readonly<Record<SessionTool, string>> = { pi: "pi", omp: "OMP", "claude-code": "Claude Code", codex: "Codex", opencode: "OpenCode", run: "orrery run" };
+export const TOOL_NAMES: Readonly<Record<SessionTool, string>> = { pi: "pi", omp: "OMP", "claude-code": "Claude Code", codex: "Codex", opencode: "OpenCode", grok: "Grok", run: "orrery run" };
 /** Every SessionTool, for reading one from a record (here, and the Claude Code and Codex decisions). */
 export const SESSION_TOOLS: ReadonlySet<string> = new Set(Object.keys(TOOL_NAMES));
 
@@ -730,7 +731,7 @@ function launchToken(file: string, env: NodeJS.ProcessEnv): string | undefined {
 }
 
 /** The coding tools, by the exact names of their programs (module doc, Tool sessions). */
-export const CODING_TOOLS: ReadonlySet<string> = new Set(["claude", "codex", "opencode", "pi", "omp", "gemini", "qwen", "cursor-agent", "aider", "goose", "amp", "crush", "droid", "copilot"]);
+export const CODING_TOOLS: ReadonlySet<string> = new Set(["claude", "codex", "opencode", "grok", "pi", "omp", "gemini", "qwen", "cursor-agent", "aider", "goose", "amp", "crush", "droid", "copilot"]);
 
 /**
  * Each tool id (a CODING_TOOLS name, or a TOOL_MARKERS tool) as a refusal names it: "this is a Claude Code session …".
@@ -740,6 +741,7 @@ export const TOOL_SESSION_NAMES: Readonly<Partial<Record<string, string>>> = {
 	claude: "Claude Code",
 	codex: "Codex",
 	opencode: "OpenCode",
+	grok: "Grok",
 	pi: "pi",
 	omp: "OMP",
 	gemini: "Gemini",
@@ -928,6 +930,9 @@ const SCRIPT_SUFFIX = /\.(?:exe|js|mjs|cjs|py)$/;
 /** `path`'s file name without `suffix`. */
 const programOf = (path: string, suffix: RegExp = PROGRAM_SUFFIX): string => basename(path).replace(suffix, "");
 
+/** The coding tool a program name is (CODING_TOOLS; Grok's real program is `grok-<os>-<arch>`), or undefined. */
+const codingTool = (program: string): string | undefined => (isGrokProcess(program) ? "grok" : CODING_TOOLS.has(program) ? program : undefined);
+
 /** A coding tool's session that a process was started from (toolSession). */
 export interface ToolSession {
 	/** The tool's id: a CODING_TOOLS name, or a TOOL_MARKERS tool (TOOL_SESSION_NAMES names each). */
@@ -954,13 +959,15 @@ interface ToolProcess {
 function toolOfArgv(argv: readonly string[], spaced: boolean): ToolProcess | undefined {
 	const first = argv[0] ?? "";
 	const program = programOf(first);
-	if (CODING_TOOLS.has(program) && (spaced || !/\s/.test(first))) return { tool: program, script: false };
+	const own = codingTool(program);
+	if (own !== undefined && (spaced || !/\s/.test(first))) return { tool: own, script: false };
 	const kind = interpreterOf(program);
 	const args = argv.slice(1);
 	const found = kind === undefined ? undefined : scriptOf(kind, args);
 	if (found === undefined) return undefined;
 	const name = "module" in found ? found.module : programOf(spaced ? spacedScript(args, found.at) : (args[found.at] as string), SCRIPT_SUFFIX);
-	return CODING_TOOLS.has(name) ? { tool: name, script: true } : undefined;
+	const script = codingTool(name);
+	return script === undefined ? undefined : { tool: script, script: true };
 }
 
 /**
@@ -972,7 +979,8 @@ function toolOf(pid: number, seen: Processes, cmdline: (pid: number) => readonly
 	const name = seen.nameOf(pid);
 	if (name !== undefined) {
 		const program = programOf(name);
-		if (CODING_TOOLS.has(program)) return { tool: program, script: false };
+		const own = codingTool(program);
+		if (own !== undefined) return { tool: own, script: false };
 		if (!linux && interpreterOf(program) === undefined) return undefined;
 	}
 	const argv = cmdline(pid);

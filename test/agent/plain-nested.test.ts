@@ -32,7 +32,7 @@ const host = (tool: SessionTool) => ({ pid: process.pid, tool });
 describe("plainNested: a tool session started from a coding tool's session that is no agent's (spec 2026-10-19-no-agent-sessions §4c)", () => {
 	it("under a plain Claude Code's shell (claude → bash → this tool): no agent's, naming the tool, by its process", () => {
 		const { config } = scene();
-		for (const tool of ["pi", "omp", "claude-code", "codex", "opencode", "run"] as const) {
+		for (const tool of ["pi", "omp", "claude-code", "codex", "opencode", "grok", "run"] as const) {
 			expect(plainNested(config, {}, host(tool), plainDeps(process.pid, STARTS.claude, config.dataDir)), tool).toEqual({ agent: undefined, tool: undefined, via: "ancestry", dataDir: config.dataDir, plain: "claude" });
 		}
 		// Codex and pi shells too, the same tool's included: a Codex its shell exec'd has the outer Codex for its parent.

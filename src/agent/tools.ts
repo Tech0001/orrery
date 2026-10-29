@@ -1,5 +1,5 @@
 /**
- * pi, Claude Code, Codex, OMP and OpenCode as orrery sees them (spec 2026-10-08-orrery-tui-design §3.4, §4.6): found on
+ * pi, Claude Code, Codex, OMP, OpenCode and Grok as orrery sees them (spec 2026-10-08-orrery-tui-design §3.4, §4.6): found on
  * PATH, their version, whether orrery's side is installed (Codex's and OpenCode's come with each launch: the last hook
  * or plugin check is said), and the steps that install it. Node only.
  */
@@ -17,7 +17,7 @@ import { realTarget } from "./guard-paths.ts";
 import { runningRoot, versionNumber, wiringRoot } from "./running.ts";
 import { safeText } from "./source-labels.ts";
 
-/** "memory": Orrery's side comes with each launch, nothing is installed (Codex: src/codex/launch.ts; OpenCode: src/opencode/launch.ts). */
+/** "memory": Orrery's side comes with each launch, nothing is installed (Codex: src/codex/launch.ts; OpenCode: src/opencode/launch.ts; Grok: src/grok/launch.ts). */
 export type Wiring = "installed" | "missing" | "other" | "update available" | "unknown" | "memory" | "none";
 
 export interface ToolCheck {
@@ -63,8 +63,8 @@ export const realRunner: Runner = (cmd, args) => {
 	return { status: r.status, stdout: r.stdout ?? "", stderr: `${r.stderr ?? ""}${why === "" ? "" : `${r.stderr ? "\n" : ""}${why}`}` };
 };
 
-const LABELS: Record<AgentTool, string> = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", opencode: "OpenCode" };
-export const BINARIES: Record<AgentTool, string> = { pi: "pi", "claude-code": "claude", codex: "codex", omp: "omp", opencode: "opencode" };
+const LABELS: Record<AgentTool, string> = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", opencode: "OpenCode", grok: "Grok" };
+export const BINARIES: Record<AgentTool, string> = { pi: "pi", "claude-code": "claude", codex: "codex", omp: "omp", opencode: "opencode", grok: "grok" };
 
 export { runningRoot, runningVersion, wiringRoot } from "./running.ts";
 /** @deprecated alias for runningRoot */
@@ -349,7 +349,16 @@ export function opencodeVersionOutput(path: string, env: NodeJS.ProcessEnv): Run
 	}
 }
 
-/** pi, Claude Code, Codex, OMP and OpenCode, in that order. */
+/** The Grok Build Orrery was tested with. */
+export const GROK_TESTED = "1.0.70";
+
+/** Grok's row detail: Orrery's side comes with each launch (the memory goes in `--rules`); other versions are untested. */
+function grokDetail(path: string | undefined, version: string | undefined): string {
+	if (path === undefined) return "Grok Build is not on PATH";
+	return version === undefined || version === GROK_TESTED ? `memory and instructions come with each launch; tested with Grok ${GROK_TESTED}` : `memory and instructions come with each launch; tested with Grok ${GROK_TESTED}, this is ${version}`;
+}
+
+/** pi, Claude Code, Codex, OMP, OpenCode and Grok, in that order. */
 export function checkTools(options: { root?: string; env?: NodeJS.ProcessEnv; run?: Runner; probeWrangler?: boolean } = {}): ToolCheck[] {
 	const env = options.env ?? process.env;
 	const root = options.root ?? wiringRoot(env).root;
@@ -357,13 +366,14 @@ export function checkTools(options: { root?: string; env?: NodeJS.ProcessEnv; ru
 		const r = spawnSync(cmd, [...args], { encoding: "utf8", timeout: 15_000, env });
 		return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 	});
-	const checks: ToolCheck[] = (["pi", "claude-code", "codex", "omp", "opencode"] as const).map((id) => {
+	const checks: ToolCheck[] = (["pi", "claude-code", "codex", "omp", "opencode", "grok"] as const).map((id) => {
 		const path = findOnPath(BINARIES[id], env);
 		const asked = path === undefined ? undefined : id === "opencode" && options.run === undefined ? opencodeVersionOutput(path, env) : run(path, ["--version"]);
 		const version = asked === undefined ? undefined : versionLine(asked.stdout);
 		const found = { id, label: LABELS[id], ...(path === undefined ? {} : { path }), ...(version === undefined ? {} : { version }) };
 		if (id === "codex") return { ...found, wiring: "memory" as const, detail: codexCheckDetail(env, codexVersion(version), orreryVersion()) };
 		if (id === "opencode") return { ...found, wiring: "memory" as const, detail: opencodeCheckDetail(env, codexVersion(version), orreryVersion()) };
+		if (id === "grok") return { ...found, wiring: "memory" as const, detail: grokDetail(path, codexVersion(version)) };
 		if (id === "pi") return { ...found, ...piWiring(root, env) };
 		if (id === "omp") return { ...found, ...ompWiring(root, env) };
 		if (path === undefined) return { ...found, wiring: "missing" as const, detail: "Claude Code is not on PATH" };

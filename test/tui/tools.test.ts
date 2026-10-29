@@ -75,6 +75,15 @@ describe("the Tools page", () => {
 		expect(screen(app)).toContain("Nothing to install: Orrery's plugin comes with each launch.");
 	});
 
+	it("Grok needs nothing installed: I says Orrery's memory and instructions come with each launch", async () => {
+		const grok: ToolCheck = { id: "grok", label: "Grok", path: "/bin/grok", version: "grok 1.0.70 (f50904eaee6c) [stable]", wiring: "memory", detail: "tested with Grok 1.0.70" };
+		const app = makeApp(fakeDeps({ tools: () => [grok], installSteps: () => [], install: () => { throw new Error("must not install"); } }), [toolsPage]);
+		expect(screen(app)).toMatch(/Grok\s+\/bin\/grok\s+1\.0\.70\s+memory/);
+		keys(app, "I");
+		await app.idle();
+		expect(screen(app, 200)).toContain("Nothing to install for Grok: Orrery's memory and instructions come with each launch (tested with Grok 1.0.70).");
+	});
+
 	it("I on the Orrery row says how Orrery updates: orrery update for a release, commit then npm run install-local from a checkout", async () => {
 		for (const [running, said] of [
 			["0.6.1", "Orrery updates with orrery update."],

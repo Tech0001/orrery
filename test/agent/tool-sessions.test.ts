@@ -633,9 +633,25 @@ describe("no tool", () => {
 	});
 });
 
+describe("Grok Build", () => {
+	it("is a coding tool by its program's names: grok, and the grok-<os>-<arch> file its npm shim starts", () => {
+		for (const comm of ["grok", "grok-linux-x86_64", "grok-darwin-arm64"]) {
+			expect(toolSession({}, linux(toolAt({ comm, argv: [`/home/u/.grok/downloads/${comm}`, "--rules", "x"] }), 60)), comm).toEqual({ tool: "grok", via: "ancestry", pid: 40 });
+		}
+		// Found by its argv too, where the kernel's name for the process is something else.
+		expect(toolSession({}, linux(toolAt({ comm: "renamed", argv: ["/home/u/.grok/downloads/grok-linux-x86_64"] }), 60))).toEqual({ tool: "grok", via: "ancestry", pid: 40 });
+		expect(TOOL_SESSION_NAMES.grok).toBe("Grok");
+	});
+
+	it("is not found at the npm shim above it (node running its script is no tool by that name), nor at names that only start with grok", () => {
+		expect(toolSession({}, linux(toolAt({ comm: "node", argv: ["node", "/usr/lib/node_modules/@xai/shim/bin/run.js"] }), 60))).toBeUndefined();
+		for (const comm of ["grok-helper", "groker"]) expect(toolSession({}, linux(toolAt({ comm, argv: [comm] }), 60)), comm).toBeUndefined();
+	});
+});
+
 describe("the tool lists", () => {
 	it("are the planned program names, each with a name to show", () => {
-		expect([...CODING_TOOLS].sort()).toEqual(["aider", "amp", "claude", "codex", "copilot", "crush", "cursor-agent", "droid", "gemini", "goose", "omp", "opencode", "pi", "qwen"]);
+		expect([...CODING_TOOLS].sort()).toEqual(["aider", "amp", "claude", "codex", "copilot", "crush", "cursor-agent", "droid", "gemini", "goose", "grok", "omp", "opencode", "pi", "qwen"]);
 		for (const tool of [...CODING_TOOLS, ...TOOL_MARKERS.map((marker) => marker.tool)]) expect(TOOL_SESSION_NAMES[tool], tool).toMatch(/\S/);
 		expect(TOOL_SESSION_NAMES).toMatchObject({ claude: "Claude Code", codex: "Codex", opencode: "OpenCode", pi: "pi", omp: "OMP", gemini: "Gemini", "cursor-agent": "Cursor Agent", copilot: "Copilot" });
 	});

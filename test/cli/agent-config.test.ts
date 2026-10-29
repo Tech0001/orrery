@@ -190,7 +190,7 @@ describe("orrery tools", () => {
 		expect(out.status).toBe(0);
 		// Wrangler's row appears only where worker/ has its own dependencies installed, which a fresh clone does not.
 		const wrangler = existsSync(fileURLToPath(new URL("../../worker/node_modules/.bin/wrangler", import.meta.url))) ? ["wrangler"] : [];
-		expect(JSON.parse(out.stdout).tools.map((t: { id: string }) => t.id)).toEqual(["pi", "claude-code", "codex", "omp", "opencode", "ori", ...wrangler]);
+		expect(JSON.parse(out.stdout).tools.map((t: { id: string }) => t.id)).toEqual(["pi", "claude-code", "codex", "omp", "opencode", "grok", "ori", ...wrangler]);
 	});
 
 	it("keeps full paths, details and version strings in CLI text and JSON", () => {
