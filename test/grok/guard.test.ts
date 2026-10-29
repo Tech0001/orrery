@@ -33,11 +33,17 @@ const GROK_GUARDED = [
 	"sessions/%2Fws/01a1/updates.jsonl",
 ];
 
-/** The rest of Grok's folder, Grok's and the person's own: its memory, skills, workflows, docs and pager settings. */
-const GROK_OPEN = ["memory-v2/global/MEMORY.md", "skills/x/SKILL.md", "workflows/review.rhai", "docs/user-guide/10-hooks.md", "bundled/skills/learn/SKILL.md", "pager.toml"];
+/**
+ * What else is in Grok's folder, named above or not: its language servers (lsp.json starts their commands), its docs,
+ * bundled skills and pager settings, and a file a later Grok may add. No tool writes them either.
+ */
+const GROK_UNNAMED = ["lsp.json", "newthing.toml", "docs/user-guide/10-hooks.md", "bundled/skills/learn/SKILL.md", "pager.toml"];
+
+/** What in Grok's folder is Grok's and the person's own: its memory, skills and workflows. */
+const GROK_OPEN = ["memory-v2/global/MEMORY.md", "skills/x/SKILL.md", "workflows/review.rhai"];
 
 /** Grok's folder under a home: the above, its login and a session's system prompt. */
-const GROK_FILES = [...GROK_GUARDED, ...GROK_OPEN, "auth.json", "sessions/%2Fws/01a1/system_prompt.txt"];
+const GROK_FILES = [...GROK_GUARDED, ...GROK_UNNAMED, ...GROK_OPEN, "auth.json", "sessions/%2Fws/01a1/system_prompt.txt"];
 
 /**
  * An agent's folder with a subfolder (the cwd), a fake home with credentials and Grok's folder, a protected name, a
@@ -283,7 +289,7 @@ describe("an input Grok cut (toolInputTruncated)", () => {
 	});
 });
 
-describe("Grok's folder: what can switch Orrery's Grok hooks off or forge its records is written by no tool and named in no shell text; the rest is Grok's own", () => {
+describe("Grok's folder: all but its memory, skills and workflows (what can switch Orrery's Grok hooks off or forge its records among it) is written by no tool and named in no shell text; those three are Grok's own", () => {
 	it("refuses writes to each guarded entry from file tools, in an agent's session and one that is no agent's, by any spelling or link", () => {
 		const { grok, options, atHome, plain } = setup();
 		for (const file of GROK_GUARDED) {
@@ -307,7 +313,31 @@ describe("Grok's folder: what can switch Orrery's Grok hooks off or forge its re
 		expect(grokGuard("write", { file_path: "../hooks-link/new.json", content: "{}" }, options, false)).toMatch(GROK_FOLDER);
 	});
 
-	it("leaves the rest of Grok's folder writable, in both sessions: its memory, skills, workflows, docs", () => {
+	it("refuses writes to lsp.json and to any file in Grok's folder outside its memory, skills and workflows, from file tools, shell text, an unknown tool and a no-verb MCP tool, in both sessions", () => {
+		const { grok, atHome, plain } = setup();
+		// What it doesn't name, and a name beside its memory, skills or workflows, is no part of them.
+		const files = [...GROK_UNNAMED, "skills-old/x/SKILL.md", "memory-v2.bak", "workflowsx/review.rhai", "hooks-backup/x.json", "config.toml.bak", "agentsx/a.md"];
+		for (const opts of [atHome, plain]) {
+			for (const file of files) {
+				for (const path of [join(grok, file), `~/.grok/${file}`]) {
+					expect([path, grokGuard("write", { file_path: path, content: "x" }, opts, false)]).toEqual([path, expect.stringMatching(GROK_FOLDER)]);
+					expect([path, grokGuard("search_replace", { file_path: path, old_string: "x", new_string: "y" }, opts, false)]).toEqual([path, expect.stringMatching(GROK_FOLDER)]);
+					expect([path, grokGuard("hashline_edit", { file_path: path, edits: [] }, opts, false)]).toEqual([path, expect.stringMatching(GROK_FOLDER)]);
+					expect([path, grokGuard("lsp", { operation: "rename", file_path: path, line: 1, character: 1, new_name: "y" }, opts, false)]).toEqual([path, expect.stringMatching(GROK_FOLDER)]);
+					expect([path, grokGuard("box__apply", { tool_name: "box__apply", tool_input: { target_file: path, text: "{}" } }, opts, false)]).toEqual([path, expect.stringMatching(GROK_FOLDER)]);
+				}
+				for (const command of [`echo x > ~/.grok/${file}`, `cp x ${grok}/${file}`, `echo x >> $GROK_HOME/${file}`]) {
+					expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, expect.stringMatching(GROK_FOLDER)]);
+				}
+			}
+			// Reads stay open to file tools.
+			for (const path of ["~/.grok/lsp.json", "~/.grok/docs/user-guide/10-hooks.md", "~/.grok/pager.toml"]) {
+				expect([path, grokGuard("read_file", { target_file: path }, opts, false)]).toEqual([path, undefined]);
+			}
+		}
+	});
+
+	it("leaves its memory, skills and workflows writable, in both sessions", () => {
 		const { grok, atHome, plain } = setup();
 		for (const file of GROK_OPEN) {
 			for (const opts of [atHome, plain]) {
@@ -315,11 +345,9 @@ describe("Grok's folder: what can switch Orrery's Grok hooks off or forge its re
 					expect([path, grokGuard("write", { file_path: path, content: "---\nname: x\n---\nBody" }, opts, false)]).toEqual([path, undefined]);
 					expect([path, grokGuard("search_replace", { file_path: path, old_string: "x", new_string: "y" }, opts, false)]).toEqual([path, undefined]);
 				}
+				const command = `echo x >> ~/.grok/${file} && cp ${join(grok, file)} $GROK_HOME/${file}.new`;
+				expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, undefined]);
 			}
-		}
-		// A name beside a guarded one is no guarded one.
-		for (const name of ["hooks-backup/x.json", "config.toml.bak", "agentsx/a.md"]) {
-			expect([name, grokGuard("write", { file_path: join(grok, name), content: "x" }, plain, false)]).toEqual([name, undefined]);
 		}
 	});
 
@@ -353,21 +381,26 @@ describe("Grok's folder: what can switch Orrery's Grok hooks off or forge its re
 			"rm ~/.grok/docs/.*/hooks/orrery.json",
 			"rm ~/.grok/$name",
 			"rm ~/.grok/docs/`echo ..`/hooks/x",
+			// Everything outside its memory, skills and workflows, named or not (reads go through the file tools).
+			"echo '{}' > ~/.grok/lsp.json",
+			"cat ~/.grok/docs/user-guide/10-hooks.md",
+			"ls ~/.grok/hooks-backup",
+			"cp x ~/.grok/skills-old/x",
+			"cp -r x ~/.grok/s*/",
+			"cat ~/.grok/skills/../lsp.json",
 		]) {
 			expect([command, grokGuard("run_terminal_command", { command, description: "x" }, options, false)]).toEqual([command, expect.stringMatching(/Grok's folder|sensitive|session records/)]);
 			expect([command, grokGuard("monitor", { command }, options, false)]).toEqual([command, expect.stringMatching(/Grok's folder|sensitive|session records/)]);
 			expect([command, grokGuard("run_terminal_command", { command }, plain, false)]).toEqual([command, expect.stringMatching(/Grok's folder|session records/)]);
 		}
-		// The rest of Grok's folder, a name beside it or beside a guarded entry, and a project's own .grok folder: a
-		// project's hooks and config are the project's (a known limit, src/grok/guard.ts), as Claude Code's project
-		// settings are.
+		// Its memory, skills and workflows, a name beside Grok's folder, and a project's own .grok folder: a project's
+		// hooks and config are the project's (a known limit, src/grok/guard.ts), as Claude Code's project settings are.
 		for (const command of [
 			"cat ~/.grok/memory-v2/global/MEMORY.md",
 			"echo '- likes tabs' >> ~/.grok/memory-v2/global/MEMORY.md",
-			"cat ~/.grok/docs/user-guide/10-hooks.md",
 			"ls ~/.grok/skills && cat ~/.grok/skills/*/SKILL.md",
 			"cp review.rhai $GROK_HOME/workflows/",
-			"ls ~/.grok/hooks-backup",
+			"cat ~/.grok/./skills/x/SKILL.md ~/.grok/workflows/../skills/x/SKILL.md",
 			"cat ~/.grokrc",
 			"ls .grok/hooks",
 			"cat .grok/config.toml",
@@ -409,7 +442,7 @@ describe("Grok's folder: what can switch Orrery's Grok hooks off or forge its re
 	it("keeps a folder GROK_HOME moves Grok's to the same way, in both sessions", () => {
 		const { root, options, plain } = setup();
 		const moved = join(root, "grok-home");
-		for (const file of [...GROK_GUARDED, "auth.json", "docs/x.md", "memory-v2/global/MEMORY.md", "skills/x/SKILL.md", "workflows/w.rhai"]) {
+		for (const file of [...GROK_GUARDED, ...GROK_UNNAMED, "auth.json", "docs/x.md", "memory-v2/global/MEMORY.md", "skills/x/SKILL.md", "workflows/w.rhai"]) {
 			mkdirSync(dirname(join(moved, file)), { recursive: true });
 			writeFileSync(join(moved, file), "x");
 		}
@@ -418,11 +451,20 @@ describe("Grok's folder: what can switch Orrery's Grok hooks off or forge its re
 		try {
 			const atMoved = { ...options, folder: root, cwd: root };
 			const plainHere = { ...plain, folder: root, cwd: root };
-			for (const file of GROK_GUARDED) {
+			for (const file of [...GROK_GUARDED, ...GROK_UNNAMED]) {
 				expect([file, grokGuard("write", { file_path: join(moved, file), content: "{}" }, atMoved, false)]).toEqual([file, expect.stringMatching(/Grok's folder|sensitive/)]);
 				expect([file, grokGuard("write", { file_path: join(moved, file), content: "{}" }, plainHere, false)]).toEqual([file, expect.stringMatching(/Grok's folder|session records/)]);
 				expect([file, grokGuard("run_terminal_command", { command: `echo x > ${join(moved, file)}` }, plainHere, false)]).toEqual([file, expect.stringMatching(/Grok's folder|session records/)]);
 				expect([file, grokGuard("run_terminal_command", { command: `echo x > $GROK_HOME/${file}` }, atMoved, false)]).toEqual([file, expect.stringMatching(/Grok's folder|sensitive|session records/)]);
+			}
+			// lsp.json and a file Orrery doesn't name, from an unknown tool and a no-verb MCP tool too.
+			for (const file of ["lsp.json", "newthing.toml"]) {
+				for (const opts of [atMoved, plainHere]) {
+					expect([file, grokGuard("search_replace", { file_path: join(moved, file), old_string: "x", new_string: "y" }, opts, false)]).toEqual([file, expect.stringMatching(GROK_FOLDER)]);
+					expect([file, grokGuard("run_terminal_command", { command: `echo x > ${join(moved, file)}` }, opts, false)]).toEqual([file, expect.stringMatching(GROK_FOLDER)]);
+					expect([file, grokGuard("lsp", { operation: "rename", file_path: join(moved, file), new_name: "y" }, opts, false)]).toEqual([file, expect.stringMatching(GROK_FOLDER)]);
+					expect([file, grokGuard("box__apply", { tool_name: "box__apply", tool_input: { target_file: join(moved, file) } }, opts, false)]).toEqual([file, expect.stringMatching(GROK_FOLDER)]);
+				}
 			}
 			for (const file of ["memory-v2/global/MEMORY.md", "skills/x/SKILL.md", "workflows/w.rhai"]) {
 				for (const opts of [atMoved, plainHere]) {
@@ -449,16 +491,27 @@ describe("Grok's folder: what can switch Orrery's Grok hooks off or forge its re
 		symlinkSync(join(dotfiles, "grok.toml"), join(grok, "config.toml"));
 		rmSync(join(grok, "hooks"), { recursive: true });
 		symlinkSync(join(dotfiles, "grok-hooks"), join(grok, "hooks"));
+		// An entry Orrery doesn't name (a later Grok's), and Grok's skills, kept there too.
+		writeFileSync(join(dotfiles, "grok-lsp.json"), "{}");
+		rmSync(join(grok, "lsp.json"));
+		symlinkSync(join(dotfiles, "grok-lsp.json"), join(grok, "lsp.json"));
+		mkdirSync(join(dotfiles, "grok-skills"));
+		rmSync(join(grok, "skills"), { recursive: true });
+		symlinkSync(join(dotfiles, "grok-skills"), join(grok, "skills"));
 		for (const opts of [atHome, plain]) {
-			for (const path of [join(dotfiles, "grok.toml"), join(dotfiles, "grok-hooks", "x.json"), "~/dotfiles/grok.toml"]) {
+			for (const path of [join(dotfiles, "grok.toml"), join(dotfiles, "grok-hooks", "x.json"), "~/dotfiles/grok.toml", join(dotfiles, "grok-lsp.json"), "~/dotfiles/grok-lsp.json"]) {
 				expect([path, grokGuard("write", { file_path: path, content: "x" }, opts, false)]).toEqual([path, expect.stringMatching(GROK_FOLDER)]);
 			}
-			for (const command of [`echo x >> ${join(dotfiles, "grok.toml")}`, "rm ~/dotfiles/grok-hooks/orrery.json"]) {
+			for (const command of [`echo x >> ${join(dotfiles, "grok.toml")}`, "rm ~/dotfiles/grok-hooks/orrery.json", "echo '{}' > ~/dotfiles/grok-lsp.json"]) {
 				expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, expect.stringMatching(GROK_FOLDER)]);
 			}
-			// The rest of the dotfiles folder is the person's.
+			// The rest of the dotfiles folder is the person's, and Grok's skills stay writable where they really are.
 			expect(grokGuard("write", { file_path: join(dotfiles, "grok.toml.bak"), content: "x" }, opts, false)).toBeUndefined();
 			expect(grokGuard("run_terminal_command", { command: "cat ~/dotfiles/notes.md" }, opts, false)).toBeUndefined();
+			for (const path of [join(dotfiles, "grok-skills", "x", "SKILL.md"), join(grok, "skills", "x", "SKILL.md")]) {
+				expect([path, grokGuard("write", { file_path: path, content: "x" }, opts, false)]).toEqual([path, undefined]);
+			}
+			expect(grokGuard("run_terminal_command", { command: "cp x ~/dotfiles/grok-skills/x/SKILL.md" }, opts, false)).toBeUndefined();
 		}
 	});
 });

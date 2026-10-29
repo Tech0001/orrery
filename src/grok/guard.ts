@@ -35,22 +35,22 @@
  * than the folder's own (src/agent/nested-rules.ts); one opened as an agent but refused, or started inside a session
  * nothing proves the agent of, may write only where it runs. A plain grok (no ORRERY_AGENT: Orrery's Grok hooks are
  * global), and one started from a coding tool's session that is no agent's where no agent would open, get Orrery's own
- * rules (spec 2026-10-19-no-agent-sessions §3): every agent's memory and Orrery's settings and data, what Grok loads and
- * runs from its folder (its hooks, config and policy files, /hooks switch, trust list, plugins and agents; the rest of
- * its folder, its memory, skills and workflows among it, is Grok's own) and the session records. So does every session
- * of Grok's shared leader (leader mode: src/grok/host.ts), which runs every session's hooks with its first client's
- * environment, so no session there can be told to be an agent's or not. A Grok whose command line can't be read is no
- * proved host of an agent's session: ORRERY_AGENT set, it is judged as one opened as an agent but refused (only where it
- * runs); unset, as a plain grok.
+ * rules (spec 2026-10-19-no-agent-sessions §3): every agent's memory and Orrery's settings and data, Grok's folder but
+ * its memory, skills and workflows, which are Grok's own (what Grok loads and runs is kept there: its hooks, config and
+ * policy files, /hooks switch, trust list, plugins, agents and language servers), and the session records. So does
+ * every session of Grok's shared leader (leader mode: src/grok/host.ts), which runs every session's hooks with its
+ * first client's environment, so no session there can be told to be an agent's or not. A Grok whose command line can't
+ * be read is no proved host of an agent's session: ORRERY_AGENT set, it is judged as one opened as an agent but refused
+ * (only where it runs); unset, as a plain grok.
  * Limits, as Grok gives them: a hook that crashes or times out lets the call through (only an explicit deny or exit 2
  * blocks), so the guard answers within its own time and src/codex/guard-exit.ts refuses a crash or a stall; `!` bash
  * mode commands are the person's own and raise no hook; and the shell-text limits every gate has. Grok also runs hooks
  * and MCP servers from a project's .grok/hooks/*.json and .grok/config.toml, its .claude/settings*.json and
  * .cursor/hooks.json, and the person's Claude Code settings file and Cursor hooks file, and language servers from a
- * project's .grok/lsp.json and its own folder's lsp.json: the project's and the person's own, which the guard keeps
- * none of. A hook or server an agent plants there runs outside the guard in a later session, and a hook may rewrite a
- * call's input after Orrery judged it (Grok applies updatedInput after every handler), as a script an agent writes and
- * later runs does (src/agent/guard-paths.ts, Known limits).
+ * project's .grok/lsp.json: the project's and the person's own, which the guard keeps none of. A hook or server an
+ * agent plants there runs outside the guard in a later session, and a hook may rewrite a call's input after Orrery
+ * judged it (Grok applies updatedInput after every handler), as a script an agent writes and later runs does
+ * (src/agent/guard-paths.ts, Known limits).
  */
 
 import { homedir } from "node:os";

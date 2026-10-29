@@ -22,8 +22,8 @@
  * - Claude Code's login files are credentials too;
  * - the PreToolUse hook adds Claude Code's own state to the roots an agent may write (claudeStateRoots, ruling C10).
  * A tool Orrery doesn't know, named neither for writing nor only for reading, may write what it names: every string
- * in it that may be a path is refused where no tool writes, what Grok loads and runs from its folder in every session,
- * OpenCode's config and skills in an agent's. In a session that is no agent's (orreryOnly, spec
+ * in it that may be a path is refused where no tool writes, Grok's folder but its memory, skills and workflows in
+ * every session, OpenCode's config and skills in an agent's. In a session that is no agent's (orreryOnly, spec
  * 2026-10-19-no-agent-sessions §3) only Orrery's own rules apply: not Claude Code's login, nor OpenCode's config and
  * skills. The caps on what can be judged in time (64 KB, the time budget, PATH_MAX) stay.
  */
@@ -340,8 +340,8 @@ export function claudeGuard(toolName: string, input: Readonly<Record<string, unk
 		if (reason !== undefined) return reason;
 	}
 	// A tool Orrery doesn't know, named neither for writing nor only for reading, may write what it names, under any key:
-	// what no tool may write is refused by every string that may be a path. In every session, what Grok loads and runs
-	// from its folder (guard-rules.ts grokLoads: Orrery's Grok hooks are there); in an agent's, OpenCode's config and code
+	// what no tool may write is refused by every string that may be a path. In every session, Grok's folder but its
+	// memory, skills and workflows (guard-rules.ts grokLoads: Orrery's Grok hooks are there); in an agent's, OpenCode's config and code
 	// (openCodeLoads) and a skill whose text the guard can't see.
 	const last = toolName.split("__").at(-1) ?? toolName;
 	if (as === undefined && !verb && !READS_ONLY.test(last)) {

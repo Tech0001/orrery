@@ -261,11 +261,14 @@ describe("Orrery's config: file tools may read it, nothing may change it, and sh
 	});
 });
 
-describe("Grok Build's folder: what can switch Orrery's Grok hooks off or forge its records (its hooks, config, policy files, /hooks switch, trust list, plugins, agents, sessions) may be read, not changed or named in shell text, in an agent's session and one that is no agent's; the rest is Grok's own", () => {
-	/** Grok's entries that switch its hooks or load code and settings, and its session records. */
-	const GUARDED = ["hooks/orrery.json", "config.toml", "requirements.toml", "managed_config.toml", "disabled-hooks", "trusted_folders.toml", "installed-plugins/p/hooks.json", "plugins/p/hooks/hooks.json", "agents/a.md", "sessions/x/y/updates.jsonl"];
-	/** The rest: Grok's memory (its "forget" edits it), the skills and workflows it and the person write, its docs. */
-	const OPEN = ["memory-v2/global/MEMORY.md", "skills/x/SKILL.md", "workflows/w.rhai", "docs/x.md"];
+describe("Grok Build's folder: all but its memory, skills and workflows (its hooks, config, policy files, /hooks switch, trust list, plugins, agents, sessions, language servers and what Orrery doesn't name) may be read, not changed or named in shell text, in an agent's session and one that is no agent's; those three are Grok's own", () => {
+	/**
+	 * Grok's entries that switch its hooks or load code and settings, its session records, and the rest Orrery names or
+	 * not: its language servers (lsp.json), its docs and a file a later Grok may add.
+	 */
+	const GUARDED = ["hooks/orrery.json", "config.toml", "requirements.toml", "managed_config.toml", "disabled-hooks", "trusted_folders.toml", "installed-plugins/p/hooks.json", "plugins/p/hooks/hooks.json", "agents/a.md", "sessions/x/y/updates.jsonl", "lsp.json", "newthing.toml", "docs/x.md"];
+	/** Grok's and the person's own: Grok's memory (its "forget" edits it), the skills and workflows it and the person write. */
+	const OPEN = ["memory-v2/global/MEMORY.md", "skills/x/SKILL.md", "workflows/w.rhai"];
 
 	/** An agent opened in its home, so the work area holds Grok's folder; and a session that is no agent's there. */
 	function inHome() {
@@ -302,7 +305,7 @@ describe("Grok Build's folder: what can switch Orrery's Grok hooks off or forge 
 		expect(guardToolCall("write", { path: join(home, ".grokrc"), content: "x" }, options)).toBeUndefined();
 	});
 
-	it("leaves the rest of it writable to file tools and shell text, in both sessions", () => {
+	it("leaves its memory, skills and workflows writable to file tools and shell text, in both sessions", () => {
 		const { grok, options, plain } = inHome();
 		for (const file of OPEN) {
 			for (const opts of [options, plain]) {
@@ -316,7 +319,7 @@ describe("Grok Build's folder: what can switch Orrery's Grok hooks off or forge 
 		}
 	});
 
-	it("refuses shell text that names a guarded entry or the folder itself, in both sessions", () => {
+	it("refuses shell text that names any of it but its memory, skills and workflows, or the folder itself, in both sessions", () => {
 		const { grok, options, plain } = inHome();
 		for (const command of [
 			"rm ~/.grok/hooks/orrery.json",
@@ -332,22 +335,37 @@ describe("Grok Build's folder: what can switch Orrery's Grok hooks off or forge 
 			"cat ~/.grok/docs/../config.toml",
 			"rm ~/.grok/{docs,hooks}/x",
 			"rm ~/.grok/plug*/x",
+			"echo '{}' > ~/.grok/lsp.json",
+			"cat ~/.grok/docs/x.md",
+			"ls ~/.grok/hooks-old",
+			"cp x ~/.grok/newthing.toml",
 		]) {
 			expect([command, bash(command, options)]).toEqual([command, expect.stringMatching(/^This command names Grok's folder or what Grok loads and runs in it .*: agents may read those with file tools, not with commands\.$/)]);
 			expect([command, bash(command, plain)]).toEqual([command, expect.stringMatching(/^This command names Grok's folder or what Grok loads and runs in it .*: they may be read with file tools, not with commands\.$/)]);
 		}
 		// Its session records, by their tail anywhere, in a session that is no agent's too.
 		expect(bash("ls /elsewhere/.grok/sessions", plain)).toMatch(/session records/);
-		// A name beside Grok's folder, and a project's own .grok folder (the project's hooks: a known limit), are no
-		// guarded entry of the person's Grok.
-		for (const command of ["cat ~/.grokrc", "ls .grok/hooks", "grok --help", "ls ~/.grok/hooks-old"]) expect([command, bash(command, plain)]).toEqual([command, undefined]);
+		// A name beside Grok's folder, and a project's own .grok folder (the project's hooks: a known limit), are not the
+		// person's Grok's.
+		for (const command of ["cat ~/.grokrc", "ls .grok/hooks", "grok --help"]) expect([command, bash(command, plain)]).toEqual([command, undefined]);
 	});
 
-	it("refuses its guarded entries' writes in the durable harness too, and lets the rest through", async () => {
-		const { grok, options } = inHome();
+	it("refuses its writes in the durable harness too, where a link takes an entry too, and lets its memory, skills and workflows through", async () => {
+		const { root, grok, options } = inHome();
 		const env = new NodeExecutionEnv({ cwd: options.folder });
 		expect(await checkResolvedPath(env, join(grok, "hooks", "orrery.json"), "write", options, ctx)).toMatch(/Grok's folder/);
 		expect(await checkResolvedPath(env, join(grok, "agents", "a.md"), "write", options, ctx)).toMatch(/Grok's folder/);
+		for (const file of ["lsp.json", "newthing.toml", "docs/x.md", "skills-old/x"]) {
+			expect([file, await checkResolvedPath(env, join(grok, file), "write", options, ctx)]).toEqual([file, expect.stringMatching(/Grok's folder/)]);
+		}
+		// An entry Orrery doesn't name, kept in a dotfiles folder: where it really is.
+		mkdirSync(join(root, "dotfiles"));
+		writeFileSync(join(root, "dotfiles", "grok-lsp.json"), "{}");
+		rmSync(join(grok, "lsp.json"));
+		symlinkSync(join(root, "dotfiles", "grok-lsp.json"), join(grok, "lsp.json"));
+		expect(await checkResolvedPath(env, join(root, "dotfiles", "grok-lsp.json"), "write", { ...options, folder: root }, ctx)).toMatch(/Grok's folder/);
+		expect(await checkResolvedPath(env, join(root, "dotfiles", "notes.md"), "write", { ...options, folder: root }, ctx)).toBeUndefined();
+		expect(await checkResolvedPath(env, join(grok, "workflows", "w.rhai"), "write", options, ctx)).toBeUndefined();
 		expect(await checkResolvedPath(env, join(options.home, "hooks-link", "new.json"), "write", options, ctx)).toMatch(/Grok's folder/);
 		expect(await checkResolvedPath(env, join(grok, "sessions", "x", "y", "updates.jsonl"), "write", options, ctx)).toBeDefined();
 		expect(await checkResolvedPath(env, join(grok, "hooks", "orrery.json"), "read", options, ctx)).toBeUndefined();
@@ -355,15 +373,16 @@ describe("Grok Build's folder: what can switch Orrery's Grok hooks off or forge 
 		expect(await checkResolvedPath(env, join(grok, "skills", "x", "SKILL.md"), "write", options, ctx)).toBeUndefined();
 	});
 
-	it("refuses a plain OMP session's language server edits where its folder holds or is inside a guarded entry", () => {
+	it("refuses a plain OMP session's language server edits where its folder holds Grok's folder or is inside it, but in its memory, skills or workflows", () => {
 		const { home, grok, plain } = inHome();
 		const rename = { action: "rename", file: join(home, "notes.md"), line: 1, symbol: "a", new_name: "b" };
-		for (const cwd of [grok, join(grok, "hooks"), join(grok, "agents")]) {
+		for (const cwd of [grok, join(grok, "hooks"), join(grok, "agents"), join(grok, "docs")]) {
 			expect([cwd, guardOmpToolCall("lsp", rename, { ...plain, folder: cwd, cwd })]).toEqual([cwd, expect.stringMatching(/language server.*Grok's hooks/)]);
 		}
-		// A folder beside them, in Grok's folder, is Grok's own.
-		const skills = join(grok, "skills", "x");
-		expect(guardOmpToolCall("lsp", rename, { ...plain, folder: skills, cwd: skills })).toBeUndefined();
+		// Its skills and workflows are Grok's own.
+		for (const cwd of [join(grok, "skills", "x"), join(grok, "workflows")]) {
+			expect([cwd, guardOmpToolCall("lsp", rename, { ...plain, folder: cwd, cwd })]).toEqual([cwd, undefined]);
+		}
 	});
 });
 

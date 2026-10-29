@@ -36,7 +36,7 @@ import {
 	CONFIG_READ_ONLY,
 	checkToolCall,
 	foldName,
-	GROK_GUARDED,
+	GROK_OPEN,
 	GROK_READ_ONLY,
 	grokFolders,
 	grokLoads,
@@ -172,12 +172,17 @@ export async function checkResolvedPath(
 		// OpenCode's config and code (guard-rules.ts openCodeLoads), where the tool writes and where that really is.
 		const openCode = options.openCode ?? openCodeRule(process.env, options.home ?? homedir());
 		if (openCodeLoads(target, openCode) || openCodeLoads(real, openCode)) return OPENCODE_READ_ONLY(real);
-		// What Grok loads and runs from its folder (guard-rules.ts grokRule), where the tool writes and where that really
-		// is; its folders and guarded entries as given and where they really are (a config.toml linked from elsewhere).
+		// Grok's folder but its memory, skills and workflows (guard-rules.ts grokRule), where the tool writes and where that
+		// really is; its folders, and each of their entries but those three, as given and where they really are (a
+		// config.toml linked from elsewhere).
 		const grok = options.grok ?? grokRule(process.env, options.home ?? homedir());
 		const folders = grokFolders(process.env, options.home ?? homedir());
 		const reached = async (paths: readonly string[]) => (await Promise.all(paths.map((path) => realPath(env, path, context)))).map((path) => path.toLowerCase());
-		const realGrok = { own: await reached(folders), spelled: [], linked: await reached(folders.flatMap((folder) => GROK_GUARDED.map((name) => posix.join(folder, name)))) };
+		const kept = async (folder: string) => {
+			const listed = await env.listDir(folder, context);
+			return listed.ok ? listed.value.filter((entry) => !GROK_OPEN.includes(entry.name.toLowerCase())).map((entry) => posix.join(folder, entry.name)) : [];
+		};
+		const realGrok = { own: await reached(folders), spelled: [], linked: await reached((await Promise.all(folders.map(kept))).flat()) };
 		if ([grok, realGrok].some((rule) => grokLoads(target, rule) || grokLoads(real, rule))) return GROK_READ_ONLY(real);
 		// A skill OpenCode loads: not with front matter it may run as code (guard-rules.ts), an edit judged on the file it
 		// would leave, read where the tool runs.

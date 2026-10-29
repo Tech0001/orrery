@@ -38,8 +38,9 @@ export interface GuardOptions {
 	 */
 	readonly openCode?: OpenCodeRule;
 	/**
-	 * Grok Build's hooks, settings, plugins, agents and session records in its folder (grokRule), which no tool writes and
-	 * no shell text names, in every session; default: from this process's environment and the guard's home.
+	 * Grok Build's folder but its memory, skills and workflows (grokRule: its hooks, settings, plugins, agents and session
+	 * records among it), which no tool writes and no shell text names, in every session; default: from this process's
+	 * environment and the guard's home.
 	 */
 	readonly grok?: GrokRule;
 	/**
@@ -57,9 +58,9 @@ export interface GuardOptions {
 	 * A session that is no agent's (spec 2026-10-19-no-agent-sessions §3): Orrery's own rules and nothing more. Orrery's
 	 * home (by its path, src/agent/guard-paths.ts orreryData, and by its .orrery name), its credentials file (the caller's
 	 * credentials), the config and the installed program (read, never written), every agent's memory view (foreignViews:
-	 * the session is no agent's, so each is another's), Claude Code's, Codex's and Grok's session records, Grok's hooks,
-	 * settings, plugins and agents (where Orrery's Grok hooks and config entries are: grokRule), Orrery's commands and hook
-	 * plumbing in shell text, and what the guard can't judge in time. No folder confinement or allowed roots, no [guard]
+	 * the session is no agent's, so each is another's), Claude Code's, Codex's and Grok's session records, Grok's folder
+	 * but its memory, skills and workflows (where Orrery's Grok hooks and config entries are: grokRule), Orrery's commands
+	 * and hook plumbing in shell text, and what the guard can't judge in time. No folder confinement or allowed roots, no [guard]
 	 * protect, no .env, built-in secret or home-secret rules, and no OpenCode or skills rules: those are an agent's.
 	 */
 	readonly orreryOnly?: boolean;
@@ -1334,31 +1335,32 @@ export function openCodeNamed(text: string, rule?: OpenCodeRule): boolean {
 	return inAnyReading(text, named);
 }
 
-// ---- Grok Build's hooks, settings and records (spec 2026-10-29-grok-build-design, "Guard"), in every gate ----
+// ---- Grok Build's folder (spec 2026-10-29-grok-build-design, "Guard"), in every gate ----
 //
-// Grok 1.0.70 loads and runs some of what is in its folder ($GROK_HOME, else ~/.grok; its manual, 10-hooks.md,
-// 16-subagents.md, 07-mcp-servers.md and 26-config-reference.md): every hooks/*.json is a hook file (Orrery's
+// Grok 1.0.70 loads and runs much of what is in its folder ($GROK_HOME, else ~/.grok; its manual, 10-hooks.md,
+// 16-subagents.md, 07-mcp-servers.md and 26-config-reference.md), so the folder is kept by default: no tool writes in
+// it and no shell text names it, in an agent's session and in one that is no agent's, but its memory (memory-v2/, which
+// Grok's "forget" edits), its skills (prompts: Grok runs no command written in one) and its workflows (whose agents'
+// calls come to the guard), which are Grok's and the person's own (GROK_OPEN). What it loads is why, and a file a later
+// Grok adds that runs code is kept the same way. For example: every hooks/*.json is a hook file (Orrery's
 // hooks/orrery.json among them); config.toml holds hooks, MCP servers and the status row (Orrery's entries among them);
 // requirements.toml and managed_config.toml hold hooks and a pin that switches every other hook off; disabled-hooks is
 // the /hooks tab's switch; trusted_folders.toml is the trust without which a folder holds back the person's own hooks,
 // Orrery's among them; installed-plugins/ and plugins/ carry hooks and MCP servers; an agent definition in agents/
-// carries hooks and MCP servers in its front matter, which win over config.toml's by name. Its session records
-// (sessions/) are what Orrery checks typed prompts against. A file a tool wrote in any of these (GROK_GUARDED) could
-// switch Orrery's guard or recording off, or put words in a session's record, so every gate refuses writes there, and
-// shell text that names one of them or the folder itself (a copy, an archive or a cd into it reaches all of them), in an
-// agent's session and in one that is no agent's; where a link takes one out of the folder (a config.toml kept in a
-// dotfiles folder), where it really is too. File tools may read them, but an agent's session reads neither the session
-// records nor Grok's login (HOME_SECRETS; a moved folder's by src/agent/guard-paths.ts). The rest of the folder is
-// Grok's and the person's own, written by tools as any file is: its memory (memory-v2/, which Grok's "forget" edits),
-// skills and commands (prompts: Grok runs no command written in one), workflows (whose agents' calls come to the guard),
-// docs, logs, pager settings and lsp.json. Limits, as for every shell-text rule: a spelling through another variable or
-// a link the guard doesn't know (a link planted in the open part of the folder that leads to a guarded entry, used from
-// the shell), and a relative one after a cd into it. A project's own .grok folder is the project's, its hooks,
-// config.toml and lsp.json among them, and so are Grok's other hook sources outside its folder (a project's
-// .claude/settings*.json and .cursor/hooks.json, the person's Claude Code settings file and Cursor hooks file) and the
-// language servers its own lsp.json names: a hook or server planted there runs outside the guard in a later session,
-// and a hook may rewrite a call after Orrery judged it, as a script an agent writes and later runs does
-// (src/agent/guard-paths.ts, Known limits).
+// carries hooks and MCP servers in its front matter, which win over config.toml's by name; lsp.json names the language
+// servers Grok starts, outside the guard, in every later session, every agent's among them; and its session records
+// (sessions/) are what Orrery checks typed prompts against. A file a tool wrote in any of these could switch Orrery's
+// guard or recording off, run code outside the guard, or put words in a session's record. Nor may shell text name the
+// folder itself (a copy, an archive or a cd into it reaches all of it). Where a link takes an entry out of the folder (a
+// config.toml kept in a dotfiles folder), it is kept where it really is too. File tools may read all of it, but an
+// agent's session reads neither the session records nor Grok's login (HOME_SECRETS; a moved folder's by
+// src/agent/guard-paths.ts). Limits, as for every shell-text rule: a spelling through another variable or a link the
+// guard doesn't know (a link planted in its memory, skills or workflows that leads to the rest of it, used from the
+// shell), and a relative one after a cd into it. A project's own .grok folder is the project's, its hooks, config.toml
+// and lsp.json among them, and so are Grok's other hook sources outside its folder (a project's .claude/settings*.json
+// and .cursor/hooks.json, the person's Claude Code settings file and Cursor hooks file): a hook or server planted there
+// runs outside the guard in a later session, and a hook may rewrite a call after Orrery judged it, as a script an agent
+// writes and later runs does (src/agent/guard-paths.ts, Known limits).
 
 /** Grok's folders for `home` and `env`: ~/.grok, and the one GROK_HOME names (absolute, as given; realTarget is the caller's). */
 export function grokFolders(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] {
@@ -1367,72 +1369,78 @@ export function grokFolders(env: NodeJS.ProcessEnv = process.env, home: string =
 	return [...folders].map((folder) => posix.normalize(folder));
 }
 
-/** What in Grok's folder switches its hooks or loads code and settings, and its records (above): no tool writes them. */
-export const GROK_GUARDED: readonly string[] = [
-	"hooks",
-	"config.toml",
-	"requirements.toml",
-	"managed_config.toml",
-	"disabled-hooks",
-	"trusted_folders.toml",
-	"installed-plugins",
-	"plugins",
-	"agents",
-	"sessions",
-];
+/** What in Grok's folder is Grok's and the person's own (above), folded: tools write there as anywhere. */
+export const GROK_OPEN: readonly string[] = ["memory-v2", "skills", "workflows"];
 
-/** What the Grok rule judges against: Grok's folders, and its guarded entries a link takes elsewhere, folded. */
+/** What the Grok rule judges against: Grok's folders, and its entries a link takes elsewhere, folded. */
 export interface GrokRule {
 	/** Grok's folders, as given and where they really are. */
 	readonly own: readonly string[];
 	/** Each of `own` under home as shell text may spell it from there ("~", "$HOME", "${HOME}"). */
 	readonly spelled: readonly string[];
 	/**
-	 * Where a guarded entry really is when a link takes it out of Grok's folders (a config.toml in a dotfiles folder), and
-	 * each as shell text may spell it from home; none when none is.
+	 * Where an entry of Grok's folders but its memory, skills and workflows really is when a link takes it out of the rest
+	 * (a config.toml in a dotfiles folder), and each as shell text may spell it from home; none when none is.
 	 */
 	readonly linked?: readonly string[];
 }
 
-/** The rule for `home` and `env`; `real` follows links (realTarget), so a folder or entry reached through one counts. */
-export function grokRule(env: NodeJS.ProcessEnv = process.env, home: string = homedir(), real: (path: string) => string = (path) => path): GrokRule {
+/**
+ * The rule for `home` and `env`. `real` follows links (realTarget), so a folder reached through one counts; `links`
+ * names the entries of a folder that are links (the caller's: these rules read no files), so an entry a link takes out of
+ * the folder counts where it really is too. Without them no link is followed.
+ */
+export function grokRule(env: NodeJS.ProcessEnv = process.env, home: string = homedir(), real: (path: string) => string = (path) => path, links: (folder: string) => readonly string[] = () => []): GrokRule {
 	const fold = (path: string) => posix.normalize(path).toLowerCase().replace(/(.)\/+$/, "$1");
 	const folders = grokFolders(env, home);
 	const own = [...new Set(folders.flatMap((path) => [path, real(path)]).map(fold))];
 	const homes = [home, real(home)];
-	const entries = new Set(folders.flatMap((folder) => GROK_GUARDED.map((name) => fold(real(posix.join(folder, name))))));
-	const linked = [...entries].filter((entry) => !own.some((root) => within(entry, root)));
+	const open = (name: string) => GROK_OPEN.includes(name.toLowerCase());
+	const entries = new Set(folders.flatMap((folder) => links(folder).filter((name) => !open(name)).map((name) => fold(real(posix.join(folder, name))))));
+	const linked = [...entries].filter((entry) => !grokKept(entry, own));
 	return { own, spelled: spelledFromHome(own, homes), ...(linked.length === 0 ? {} : { linked: [...linked, ...spelledFromHome(linked, homes)] }) };
 }
 
-/** Whether an absolute path is Grok's folder or in a guarded entry of it (above): one spelling, folded here. */
-export function grokLoads(path: string, rule: GrokRule): boolean {
-	const folded = posix.normalize(path).toLowerCase();
-	if ((rule.linked ?? []).some((entry) => posix.isAbsolute(entry) && within(folded, entry))) return true;
-	return rule.own.some((root) => {
+/** Whether a folded path is one of `own` (Grok's folders) or in one but its memory, skills and workflows. */
+function grokKept(folded: string, own: readonly string[]): boolean {
+	return own.some((root) => {
 		if (!within(folded, root)) return false;
 		const first = folded.slice(posix.normalize(root).replace(/\/+$/, "").length + 1).split("/")[0] ?? "";
-		return first === "" || GROK_GUARDED.includes(first);
+		return !GROK_OPEN.includes(first);
 	});
 }
 
-/** Grok's guarded entries as paths, folded: what a folder may not hold or be inside for edits no argument names. */
-export function grokGuardedPaths(rule: GrokRule): string[] {
-	return [...rule.own.flatMap((root) => GROK_GUARDED.map((name) => posix.join(root, name))), ...(rule.linked ?? []).filter((entry) => posix.isAbsolute(entry))];
+/**
+ * Whether an absolute path is Grok's folder or in it but its memory, skills and workflows, or in an entry a link takes
+ * elsewhere (above): one spelling, folded here.
+ */
+export function grokLoads(path: string, rule: GrokRule): boolean {
+	const folded = posix.normalize(path).toLowerCase();
+	return (rule.linked ?? []).some((entry) => posix.isAbsolute(entry) && within(folded, entry)) || grokKept(folded, rule.own);
+}
+
+/**
+ * Whether a folder (absolute) is in what grokLoads keeps, or holds Grok's folder or an entry a link takes elsewhere: for
+ * edits no argument names (an OMP language server's).
+ */
+export function grokNear(path: string, rule: GrokRule): boolean {
+	const folded = posix.normalize(path).toLowerCase();
+	return grokLoads(folded, rule) || [...rule.own, ...(rule.linked ?? [])].some((place) => posix.isAbsolute(place) && within(place, folded));
 }
 
 /** Why a write there is refused. */
 export const GROK_READ_ONLY = (path: string) =>
-	`${path} is in Grok's folder, among what Grok loads and runs (its hooks, settings, plugins and agents): agents may read it, not change it.`;
+	`${path} is in Grok's folder, outside its memory, skills and workflows, where Grok keeps what it loads and runs (its hooks, settings, plugins and agents): agents may read it, not change it.`;
 
-/** Why shell text naming one, or Grok's folder itself, is refused. */
+/** Why shell text naming any of it, or Grok's folder itself, is refused. */
 export const GROK_COMMAND =
-	"This command names Grok's folder or what Grok loads and runs in it (~/.grok: its hooks, settings, plugins and agents): agents may read those with file tools, not with commands.";
+	"This command names Grok's folder or what Grok loads and runs in it (~/.grok, all but its memory, skills and workflows: its hooks, settings, plugins and agents among it): agents may read those with file tools, not with commands.";
 
 /** GROK_READ_ONLY and GROK_COMMAND worded for any session (GuardOptions.orreryOnly). */
-export const GROK_READ_ONLY_PLAIN = (path: string) => `${path} is in Grok's folder, among what Grok loads and runs (its hooks, settings, plugins and agents): it may be read, not changed.`;
+export const GROK_READ_ONLY_PLAIN = (path: string) =>
+	`${path} is in Grok's folder, outside its memory, skills and workflows, where Grok keeps what it loads and runs (its hooks, settings, plugins and agents): it may be read, not changed.`;
 export const GROK_COMMAND_PLAIN =
-	"This command names Grok's folder or what Grok loads and runs in it (~/.grok: its hooks, settings, plugins and agents): they may be read with file tools, not with commands.";
+	"This command names Grok's folder or what Grok loads and runs in it (~/.grok, all but its memory, skills and workflows: its hooks, settings, plugins and agents among it): they may be read with file tools, not with commands.";
 
 /** $GROK_HOME in shell text (readings are lower case), as a word: whatever the session's environment holds, it is Grok's folder. */
 const GROK_HOME_VARIABLE = /\$(?:grok_home(?![a-z0-9_])|\{grok_home[^}\s$]*\})/g;
@@ -1441,10 +1449,11 @@ const GROK_HOME_VARIABLE = /\$(?:grok_home(?![a-z0-9_])|\{grok_home[^}\s$]*\})/g
 const GROK_REST = /[^\s;|&()<>,}:]*/y;
 
 /**
- * Whether the path after one of Grok's folders in a reading (from `at`) names one of its guarded entries, or the folder
- * itself: nothing after it but "/" (a copy, an archive or a cd reaches every entry), or a first part that is one, or a
- * glob that could match one, once "." and ".." are walked. A variable or substitution in it, a ".." that climbs out of
- * the folder, and a glob that could match ".." (only one that starts with "." can) could come back to one: they count.
+ * Whether the path after one of Grok's folders in a reading (from `at`) names any of it but its memory, skills and
+ * workflows (GROK_OPEN): nothing after it but "/" (the folder itself: a copy, an archive or a cd reaches all of it), or a
+ * first part, once "." and ".." are walked, that is none of those three (a glob is none: it could match another). A
+ * variable or substitution in it, a ".." that climbs out of the folder, and a glob that could match ".." (only one that
+ * starts with "." can) could come back to the rest: they count.
  */
 function grokEntryAfter(form: string, at: number): boolean {
 	GROK_REST.lastIndex = at;
@@ -1459,12 +1468,13 @@ function grokEntryAfter(form: string, at: number): boolean {
 		else parts.push(part);
 	}
 	const first = parts[0];
-	return first === undefined || GROK_GUARDED.includes(first) || globCouldName(first, GROK_GUARDED) !== undefined;
+	return first === undefined || !GROK_OPEN.includes(first);
 }
 
 /**
- * Whether a reading of shell text names Grok's folder itself or one of its guarded entries: after $GROK_HOME or one of
- * `rule`'s folders by its path (not a longer name beside it), or a guarded entry a link takes elsewhere by its path.
+ * Whether a reading of shell text names Grok's folder itself or any of it but its memory, skills and workflows: after
+ * $GROK_HOME or one of `rule`'s folders by its path (not a longer name beside it), or an entry a link takes elsewhere
+ * by its path.
  */
 function grokNamed(form: string, rule: GrokRule): boolean {
 	if (rule.linked !== undefined && namesFolder(form, rule.linked)) return true;
@@ -1628,16 +1638,16 @@ export function skillsNamed(text: string): boolean {
 // Orrery keeps a prompt as the person's words only once the tool's own record of the session has it: Claude Code's
 // transcripts in its projects folder (~/.claude/projects, or $CLAUDE_CONFIG_DIR/projects), Codex's rollouts in its
 // sessions folders (~/.codex/sessions and archived_sessions, or under $CODEX_HOME) and Grok's session logs in its
-// sessions folder (~/.grok/sessions, or under $GROK_HOME; Grok's hooks and settings beside it are kept so too, and an
-// agent's session may not even read Grok's records, which hold each session's system prompt: grokRule, HOME_SECRETS).
-// An agent that wrote a line there could fake one, so no file tool writes there, in any gate, and no shell text names
-// them; file tools may read Claude Code's and Codex's. A project's memory folder there (Claude Code's auto memory,
-// ruling C10) stays writable: it is no record of a session. In shell text they are named by their tails anywhere
-// (.claude/projects, .codex/sessions, .codex/archived_sessions, .grok/sessions, and the same after $CLAUDE_CONFIG_DIR,
-// $CODEX_HOME or $GROK_HOME), with the readings every name gets, by a glob that could name one beside its parent's name
-// (~/.claude/pro*, ~/.c*/projects, ~/.config/claude/pro* where CLAUDE_CONFIG_DIR is ~/.config/claude; not
-// ~/.claude/*.json), and by their paths where they are elsewhere (moved, or reached through a link, spelt from home
-// too); a file tool's write by its path and by those names. Limits, as for every shell-text rule:
+// sessions folder (~/.grok/sessions, or under $GROK_HOME; kept with all of Grok's folder but its memory, skills and
+// workflows, and an agent's session may not even read Grok's records, which hold each session's system
+// prompt: grokRule, HOME_SECRETS). An agent that wrote a line there could fake one, so no file tool writes there, in
+// any gate, and no shell text names them; file tools may read Claude Code's and Codex's. A project's memory folder
+// there (Claude Code's auto memory, ruling C10) stays writable: it is no record of a session. In shell text they are
+// named by their tails anywhere (.claude/projects, .codex/sessions, .codex/archived_sessions, .grok/sessions, and the
+// same after $CLAUDE_CONFIG_DIR, $CODEX_HOME or $GROK_HOME), with the readings every name gets, by a glob that could
+// name one beside its parent's name (~/.claude/pro*, ~/.c*/projects, ~/.config/claude/pro* where CLAUDE_CONFIG_DIR is
+// ~/.config/claude; not ~/.claude/*.json), and by their paths where they are elsewhere (moved, or reached through a
+// link, spelt from home too); a file tool's write by its path and by those names. Limits, as for every shell-text rule:
 // a spelling through another variable, a relative one after a cd into them (cd ~/.claude && … projects/…), a tool that
 // walks a parent folder (find ~/.claude -exec …), a glob in a moved folder's own path, an extglob or zsh group
 // (~/.claude/@(projects|x)), or a link the guard doesn't know.
@@ -2002,7 +2012,7 @@ export function checkToolCall(
 		}
 		// Last, so a command refused before keeps its reason: Orrery's commands that change memory or settings (in a
 		// session that is no agent's, every one the CLI refuses it: PLAIN_REFUSED_COMMANDS), the tools' session records,
-		// and what Grok loads and runs from its folder, or the folder itself, in every session.
+		// and Grok's folder but its memory, skills and workflows, or the folder itself, in every session.
 		const orrery = orreryCommandIn(reading, agent ? AGENT_REFUSED : PLAIN_REFUSED);
 		if (orrery !== undefined) return agent ? ORRERY_COMMAND_REFUSED(orrery) : ORRERY_COMMAND_REFUSED_PLAIN(orrery);
 		if (transcriptsNamed(command, reading, protect.reach, transcripts())) return agent ? TRANSCRIPT_COMMAND : TRANSCRIPT_COMMAND_PLAIN;
