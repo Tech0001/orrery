@@ -80,8 +80,8 @@
  *   somewhere above, not the nearest. A Codex id that a record names is an agent's Codex session, no marker.
  * A tool session is no agent's: the caller asks only when insideSession finds none. A tool's integration asks about its
  * own host process (`own`, src/agent/plain-nested.ts): its own launcher right above it, by the shape the tool starts it in
- * (npm's Codex launcher, OpenCode's TUI, the Claude Code desktop app), is passed over, and its own tool's markers count
- * only as far as what it was started with shows (toolSession).
+ * (npm's Codex and Grok launchers, OpenCode's TUI, the Claude Code desktop app), is passed over, and its own tool's
+ * markers count only as far as what it was started with shows (toolSession).
  *
  * Nothing here throws: a record that can't be written makes recordSession false, for its caller to say so, and a
  * folder or file that can't be read holds no session.
@@ -930,7 +930,7 @@ const SCRIPT_SUFFIX = /\.(?:exe|js|mjs|cjs|py)$/;
 /** `path`'s file name without `suffix`. */
 const programOf = (path: string, suffix: RegExp = PROGRAM_SUFFIX): string => basename(path).replace(suffix, "");
 
-/** The coding tool a program name is (CODING_TOOLS; Grok's real program is `grok-<os>-<arch>`), or undefined. */
+/** The coding tool a program name is (CODING_TOOLS, and Grok's names: isGrokProcess), or undefined. */
 const codingTool = (program: string): string | undefined => (isGrokProcess(program) ? "grok" : CODING_TOOLS.has(program) ? program : undefined);
 
 /** A coding tool's session that a process was started from (toolSession). */
@@ -1028,6 +1028,16 @@ const INIT_PID_NAMESPACE = "pid:[4026531836]";
  */
 const NPM_CODEX_BINARY = /[\\/]vendor[\\/][^\\/]+[\\/](?:bin|codex)[\\/]codex(?:\.exe)?$/;
 
+/**
+ * The tools an npm launcher starts, each with the test of its binary's path (argv[0]): Codex's (NPM_CODEX_BINARY), and
+ * Grok Build's, which its launcher (`bin/grok`, run by node, read in @xai-official/grok 1.0.70) starts from Grok's home
+ * (`~/.grok/bin/grok`) or its platform package, named as Grok's program is (isGrokProcess).
+ */
+const NPM_BINARIES: Readonly<Record<"codex" | "grok", (path: string) => boolean>> = {
+	codex: (path) => NPM_CODEX_BINARY.test(path),
+	grok: (path) => isGrokProcess(programOf(path)),
+};
+
 /** The Claude Code desktop app's processes right above its session's `claude`: claude ← disclaimer ← claude-desktop. */
 const CLAUDE_DESKTOP: ReadonlySet<string> = new Set(["disclaimer", "claude-desktop"]);
 
@@ -1038,8 +1048,9 @@ const endsWith = (argv: readonly string[], tail: readonly string[]): boolean => 
  * Whether `parent`, right above `host` (a process of the tool `own`), is that tool's own launcher, by the shape the tool
  * starts it in (each shape the tool's own, never its name alone), and whether it also vouches for the host's own tool's
  * variables in a walk cut short (`markers`):
- * - Codex: npm's launcher, an interpreter running Codex's script (`node …/codex.js`), above the package's binary
- *   (NPM_CODEX_BINARY), which it runs with its own arguments. No outer session; its variables vouch for nothing.
+ * - Codex and Grok: npm's launcher, an interpreter running the tool's script (`node …/codex.js`, `node …/grok/bin/grok`),
+ *   above the tool's binary (NPM_BINARIES), which it runs with its own arguments. No outer session; its variables vouch
+ *   for nothing.
  * - OpenCode: its TUI (or `run`) with --standalone, above the private server it starts as `opencode serve --stdio`. No
  *   outer session; its variables vouch for nothing.
  * - Claude Code: the desktop app's `disclaimer` wrapper, or the app itself (CLAUDE_DESKTOP). No Claude Code, so never an
@@ -1048,11 +1059,12 @@ const endsWith = (argv: readonly string[], tail: readonly string[]): boolean => 
  */
 function ownLauncher(own: string, host: number, parent: number, found: ToolProcess | undefined, seen: Processes, cmdline: (pid: number) => readonly string[] | undefined): { readonly markers: boolean } | undefined {
 	switch (own) {
-		case "codex": {
-			if (found?.tool !== "codex" || !found.script) return undefined;
+		case "codex":
+		case "grok": {
+			if (found?.tool !== own || !found.script) return undefined;
 			const binary = cmdline(host);
 			const launcher = cmdline(parent);
-			return binary !== undefined && launcher !== undefined && NPM_CODEX_BINARY.test(binary[0] ?? "") && endsWith(launcher, binary.slice(1)) ? { markers: false } : undefined;
+			return binary !== undefined && launcher !== undefined && NPM_BINARIES[own](binary[0] ?? "") && endsWith(launcher, binary.slice(1)) ? { markers: false } : undefined;
 		}
 		case "opencode": {
 			if (found?.tool !== "opencode" || found.script) return undefined;
@@ -1076,8 +1088,8 @@ function ownLauncher(own: string, host: number, parent: number, found: ToolProce
  * - Its own launcher right above it (ownLauncher) is passed over. Any other process of its tool above it is an outer
  *   session: right above it (a shell that exec'd it, or a script of the tool above a script of it), or further up.
  * - Its own tool's markers are no evidence under the Claude Code desktop app's wrapper right above it (ownLauncher's
- *   `markers`, a known launcher that gives its `claude` Claude Code's variables; npm's Codex launcher and OpenCode's TUI
- *   are passed over in the walk only). Else they count only when the host was started with them (its start
+ *   `markers`, a known launcher that gives its `claude` Claude Code's variables; npm's Codex and Grok launchers and
+ *   OpenCode's TUI are passed over in the walk only). Else they count only when the host was started with them (its start
  *   environment, deps.startEnv): set by the host itself (pi sets PI_CODING_AGENT, Claude Code CLAUDECODE for its hooks),
  *   they say nothing of a session above.
  *   - A walk cut short (a sandbox's own pid namespace, a parent that can't be read): each one set counts unless the host

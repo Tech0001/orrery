@@ -106,6 +106,15 @@ function terminal(at: Table = {}): Table {
 /** The tool at 40, under the terminal, as `row` shows it. */
 const toolAt = (row: Omit<Row, "ppid">): Table => terminal({ 40: { ppid: 20, ...row } });
 
+/**
+ * npm's Grok Build as seen with @xai-official/grok 1.0.70 installed by mise and Node 26 (which names its main thread):
+ * the package's `.bin/grok` shell script execs node on its script `bin/grok`, which starts Grok's program from Grok's home
+ * (`~/.grok/bin/grok`, a link to its download `grok-linux-x86_64`) with its own arguments.
+ */
+const GROK_SCRIPT = "/home/u/.local/share/mise/installs/npm-xai-official-grok/latest/node_modules/.bin/../.mise/@xai-official+grok@1.0.70/node_modules/@xai-official/grok/bin/grok";
+const NPM_GROK = { comm: "node-MainThread", argv: ["node", GROK_SCRIPT, "--rules", "x", "--resume", "abc"] };
+const GROK_PROGRAM = { comm: "grok", argv: ["/home/u/.grok/bin/grok", "--rules", "x", "--resume", "abc"] };
+
 describe("toolSession by ancestry", () => {
 	it("finds a claude ancestor, with its pid", () => {
 		expect(toolSession({}, linux(toolAt({ comm: "claude", argv: ["claude", "--resume"] }), 60))).toEqual({ tool: "claude", via: "ancestry", pid: 40 });
@@ -547,6 +556,27 @@ describe("toolSession asked by a tool about its own host (own, spec 2026-10-19-n
 			expect(nested(codexBinary, [npmCodex, { comm: "codex" }])).toEqual({ tool: "codex", via: "ancestry", pid: 58 });
 		});
 
+		it("npm's Grok: node running the package's bin/grok right above Grok's program, which it runs with its own arguments, is passed over: one Grok session", () => {
+			// Grok's nested check, about its program: no outer session.
+			expect(toolSession({}, { ...linux(hostUnder(GROK_PROGRAM, [NPM_GROK]), 60), own: "grok" })).toBeUndefined();
+			// Run by its own path, with Node's plain name.
+			expect(toolSession({}, { ...linux(hostUnder(GROK_PROGRAM, [{ comm: "node", argv: ["/usr/bin/node", GROK_SCRIPT, "--rules", "x", "--resume", "abc"] }]), 60), own: "grok" })).toBeUndefined();
+			// A shell Grok started: the program is the Grok session, the nearest.
+			expect(toolSession({}, linux(hostUnder({ comm: "bash" }, [GROK_PROGRAM, NPM_GROK]), 60))).toEqual({ tool: "grok", via: "ancestry", pid: 59 });
+			// Without `own` the launcher is a Grok like any other.
+			expect(toolSession({}, linux(hostUnder(GROK_PROGRAM, [NPM_GROK]), 60))).toEqual({ tool: "grok", via: "ancestry", pid: 59 });
+		});
+
+		it("npm's Grok: any other shape is nesting", () => {
+			const nested = (host: Omit<Row, "ppid">, between: Omit<Row, "ppid">[]) => toolSession({}, { ...linux(hostUnder(host, between), 60), own: "grok" });
+			// Arguments that aren't the launcher's.
+			expect(nested({ comm: "grok", argv: ["/home/u/.grok/bin/grok", "-p", "hi"] }, [NPM_GROK])).toEqual({ tool: "grok", via: "ancestry", pid: 59 });
+			// A host that is no program of Grok's (itself a launcher).
+			expect(nested(NPM_GROK, [NPM_GROK])).toEqual({ tool: "grok", via: "ancestry", pid: 59 });
+			// Past its own launcher, an outer Grok whose shell exec'd it.
+			expect(nested(GROK_PROGRAM, [NPM_GROK, { comm: "grok", argv: ["/home/u/.grok/bin/grok"] }])).toEqual({ tool: "grok", via: "ancestry", pid: 58 });
+		});
+
 		it("OpenCode: its --standalone TUI right above the `serve --stdio` server it starts is passed over", () => {
 			expect(toolSession({}, { ...linux(hostUnder(server, [tui]), 60), own: "opencode" })).toBeUndefined();
 			expect(toolSession({}, { ...linux(hostUnder(server, [{ comm: "opencode.exe", argv: ["/x/bin/opencode.exe", "--standalone", "/x/ws"] }]), 60), own: "opencode" })).toBeUndefined();
@@ -587,6 +617,14 @@ describe("toolSession asked by a tool about its own host (own, spec 2026-10-19-n
 			const table = hostUnder({ comm: binary, argv: [binary, "--no-daemon"] }, [{ comm: "/opt/homebrew/bin/node", argv: ["/opt/homebrew/bin/node", "/opt/homebrew/bin/codex", "--no-daemon"] }]);
 			expect(toolSession({}, { ...darwin(table, 60), own: "codex" })).toBeUndefined();
 			expect(toolSession({}, darwin(table, 60))).toEqual({ tool: "codex", via: "ancestry", pid: 59 });
+		});
+
+		it("macOS: npm's Grok launcher is passed over the same way, by its args", () => {
+			const script = "/opt/homebrew/lib/node_modules/@xai-official/grok/bin/grok";
+			const program = "/Users/u/.grok/bin/grok";
+			const table = hostUnder({ comm: program, argv: [program, "--rules", "x"] }, [{ comm: "/opt/homebrew/bin/node", argv: ["/opt/homebrew/bin/node", script, "--rules", "x"] }]);
+			expect(toolSession({}, { ...darwin(table, 60), own: "grok" })).toBeUndefined();
+			expect(toolSession({}, darwin(table, 60))).toEqual({ tool: "grok", via: "ancestry", pid: 59 });
 		});
 	});
 });
@@ -643,8 +681,8 @@ describe("Grok Build", () => {
 		expect(TOOL_SESSION_NAMES.grok).toBe("Grok");
 	});
 
-	it("is not found at the npm shim above it (node running its script is no tool by that name), nor at names that only start with grok", () => {
-		expect(toolSession({}, linux(toolAt({ comm: "node", argv: ["node", "/usr/lib/node_modules/@xai/shim/bin/run.js"] }), 60))).toBeUndefined();
+	it("is found at its npm launcher too, node running the package's script bin/grok (a script of Grok's), not at names that only start with grok", () => {
+		expect(toolSession({}, linux(toolAt(NPM_GROK), 60))).toEqual({ tool: "grok", via: "ancestry", pid: 40 });
 		for (const comm of ["grok-helper", "groker"]) expect(toolSession({}, linux(toolAt({ comm, argv: [comm] }), 60)), comm).toBeUndefined();
 	});
 });

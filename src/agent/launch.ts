@@ -22,15 +22,12 @@ import { type OpenCodeGate, opencodePluginGate, type probePlugin } from "../open
 import { argsRefusal, inheritsOrreryPlugin, launchConfigContent, opencodeArgs, pluginFolder } from "../opencode/launch.ts";
 import { configContent } from "../opencode/options.ts";
 import { removeOnSignals, removeTokenFile, tokenFilePath, writeTokenFile } from "../opencode/token-file.ts";
-import { type GrokLaunch, grokArgs, grokLaunch } from "../grok/launch.ts";
+import { grokArgs, grokArgsRefusal, grokRules } from "../grok/launch.ts";
 import { buildRunning, readBuild } from "./build.ts";
 import { findAgent, type HarnessConfig, insideFolder, type AgentConfig, type AgentLauncher, type AgentTool } from "./config.ts";
-import { readInstructions } from "./instructions.ts";
-import { readMemory } from "./memory-read.ts";
 import { type AgentRow, TOOL_LABELS } from "./overview.ts";
 import { AGENT_ENV, claimedBy, newToken, releaseClaim, TOKEN_ENV, workArea } from "./pick.ts";
 import { TOOL_MARKERS } from "./sessions.ts";
-import { safeText } from "./source-labels.ts";
 import { BINARIES, codexVersion, findOnPath, installSteps, orreryVersion, wiringRoot, type Runner, realRunner, runInstall, type ToolCheck } from "./tools.ts";
 
 const HINTS: Record<AgentTool, string> = { pi: "Get it at https://pi.dev", "claude-code": "Get it at https://claude.com/claude-code", codex: "Get it at https://github.com/openai/codex", omp: "Get it at https://omp.sh", opencode: "Get it at https://opencode.ai", grok: "Get Grok Build from xAI" };
@@ -136,27 +133,6 @@ function claudeCodeRefusal(config: HarnessConfig, agent: AgentConfig, cwd: strin
 }
 
 /**
- * Grok's `--rules` for `agent`: its memory section (`readOnly`: another session has the agent, so the section says this
- * one records nothing) and instructions. A memory that can't be read is said in a notice and the session opens with the
- * instructions alone; a memory section too large for one argument blocks the launch.
- */
-function grokRules(agent: AgentConfig, readOnly: boolean): { readonly launch: GrokLaunch; readonly blocked?: undefined } | { readonly blocked: string; readonly launch?: undefined } {
-	const notices: string[] = [];
-	let memory = "";
-	try {
-		memory = readMemory(agent, true, "grok", { readOnly }).section ?? "";
-	} catch (error) {
-		notices.push(`Orrery: ${agent.name}'s memory could not be read: ${safeText(error instanceof Error ? error.message : String(error))}`);
-	}
-	try {
-		const launch = grokLaunch(agent, memory, readInstructions(agent.dir));
-		return { launch: { args: launch.args, notices: [...notices, ...launch.notices] } };
-	} catch (error) {
-		return { blocked: safeText(error instanceof Error ? error.message : String(error)) };
-	}
-}
-
-/**
  * What opening `row` runs, where, and what to say or ask first. The tool starts in `options.cwd` (default: the agent's
  * folder, else this process's folder) as the agent: ORRERY_AGENT and a fresh token in its environment.
  */
@@ -219,9 +195,10 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 	// OpenCode, --standalone and the folder (opencodeArgs).
 	// Grok: the memory section (worded read-only when the agent is open elsewhere) and the instructions, as --rules.
 	const grok = tool === "grok" ? grokRules(agent, (row.state === "open" || row.state === "working") && row.openIn !== undefined) : undefined;
-	if (grok?.blocked !== undefined) return { ...base, steps: [], blocked: grok.blocked };
-	for (const notice of grok?.launch.notices ?? []) steps.push({ text: notice, confirm: false });
-	const toolArgs = codex !== undefined ? codexArgs(codex, base.args) : grok !== undefined ? grokArgs(grok.launch, base.args) : tool === "opencode" ? opencodeArgs(cwd, base.args) : base.args;
+	const grokRefused = grok === undefined ? undefined : grokArgsRefusal(agent.name, grok, base.args);
+	if (grokRefused !== undefined) return { ...base, steps: [], blocked: grokRefused };
+	for (const notice of grok?.notices ?? []) steps.push({ text: notice, confirm: false });
+	const toolArgs = codex !== undefined ? codexArgs(codex, base.args) : grok !== undefined ? grokArgs(grok, base.args) : tool === "opencode" ? opencodeArgs(cwd, base.args) : base.args;
 	const version = codexVersion(check.version);
 	const codexPlan = (prefix: readonly string[]) => (codex === undefined ? {} : { codex: { path: check.path as string, ...(version === undefined ? {} : { version }), config: codex.config, plainArgs: [...prefix, ...base.args], notices: codex.notices } });
 	if (tool === "opencode") {
