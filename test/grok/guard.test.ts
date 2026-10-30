@@ -1681,7 +1681,7 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 		]);
 	});
 
-	it("reads grok only where it runs as a command: text that names it as another command's argument passes, but after a substitution, a comment, a here-document, a parenthesis or a brace (accepted over-refusal)", () => {
+	it("text that names grok as the argument of a program that never runs its arguments passes, but after a substitution, a comment, a here-document, a parenthesis or a brace (accepted over-refusal)", () => {
 		opensEach([
 			'git commit -m "Add grok support and update docs"',
 			'gh pr create --head grok --title "Add Grok support" --body "It refuses grok update and grok mcp disable"',
@@ -1718,13 +1718,66 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 		]);
 	});
 
-	it("the second-program class is a known limit: a program handed text it runs (eval, sh -c, a pipe into sh) names grok only", () => {
+	it("refuses text a program is handed to run, which names grok in the text itself: eval, sh -c, bash -c and a pipe into sh", () => {
+		refusesEach([
+			['eval grok "mcp disable orrery"', "grok mcp disable"],
+			['echo grok "mcp disable orrery" | sh', "grok mcp disable"],
+			['sh -c "grok mcp disable orrery"', "grok mcp disable"],
+			["bash -c \"grok 'update the docs'\"", "grok update"],
+			['echo "x\ngrok "mcp disable orrery" y" | sh', "grok mcp disable"],
+		]);
+	});
+
+	it("reads grok as run unless its command's program never runs its arguments: echo, printf, cat, ls, head, tail, wc, grep, rg, jq, and git's and gh's commands that run none (each one its output is piped into too); a case arm, eval, sh -c, npx, repeat, watch and every other program run it", () => {
+		refusesEach([
+			// A case arm, glued, spaced or in parentheses: its pattern is no program, even one named like a program on the list.
+			["case $x in a) grok update;; esac", "grok update"],
+			["case $x in a) true;; b ) grok update;; esac", "grok update"],
+			["case $x in (b) grok update;; esac", "grok update"],
+			["case $x in a) true;; echo ) grok mcp disable orrery;; esac", "grok mcp disable"],
+			// Programs that run their words, or a text they are handed.
+			["eval grok update", "grok update"],
+			['sh -c "grok update"', "grok update"],
+			["npx grok update", "grok update"],
+			["npm exec grok update", "grok update"],
+			["repeat 3 grok update", "grok update"],
+			['watch grok "mcp disable orrery"', "grok mcp disable"],
+			["gtimeout 5 grok update", "grok update"],
+			// A program off the list that would only print it (accepted over-refusal).
+			[`python3 -c "print('grok update')"`, "grok update"],
+			// A program on the list whose output goes to one off it, or a file of that name run in its place.
+			["echo grok update | sh", "grok update"],
+			["echo grok update | tee notes.md", "grok update"],
+			["echo grok update > >(sh)", "grok update"],
+			["./echo grok update", "grok update"],
+			// git and gh only with their commands that run none of their words (git -C reads as -c: the readings are lower
+			// case); rg only without --pre or --hostname-bin, which run a program.
+			['git -c core.pager="grok update" log', "grok update"],
+			['git rebase -x "grok update" main', "grok update"],
+			['git -C repo commit -m "grok update"', "grok update"],
+			['git --no-pager log --grep "grok update"', "grok update"],
+			["gh x grok update", "grok update"],
+			["rg --pre grok x update", "grok update"],
+			["rg --hostname-bin=grok update x", "grok update"],
+			// sed's e command runs its text, so sed is off the list (accepted over-refusal for a sed that only prints).
+			["sed '1e grok update' notes.md", "grok update"],
+			// Words before the program are none of its arguments.
+			['GIT_EDITOR="grok update" git commit', "grok update"],
+		]);
 		opensEach([
-			'eval grok "mcp disable orrery"',
-			'echo grok "mcp disable orrery" | sh',
-			'sh -c "grok mcp disable orrery"',
-			"bash -c \"grok 'update the docs'\"",
-			'echo "x\ngrok "mcp disable orrery" y" | sh',
+			'echo "grok update"',
+			"printf '%s\\n' 'grok mcp disable orrery'",
+			'grep -rn "grok update" docs',
+			"rg -n 'grok update' src | head -5",
+			'git log --oneline | grep "grok update" | wc -l',
+			'gh pr create --title "grok update" --body-file pr.md',
+			'gh issue comment 3 --body "grok mcp disable orrery"',
+			'git tag -a v1 -m "grok update"',
+			'A=1 git commit -m "grok update"',
+			'2>/dev/null git log --grep "grok update"',
+			"cat notes.md; ls grok update",
+			"jq -r '.x' grok update",
+			"head -5 grok update && tail -5 grok update",
 		]);
 	});
 

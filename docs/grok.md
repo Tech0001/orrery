@@ -346,13 +346,18 @@ refused (`grok -p update`), and so is a quoted one that starts with `-` (`grok "
 (`grok -p "update $(date)"`). Each `grok` in the text is read on its own, one inside another's prompt or substitution
 too (`grok "x $(grok mcp disable orrery)"`).
 
-The rule reads `grok` only where it runs as a command: at a command's start, after `;`, `&&`, `|`, `(`, a keyword or an
-assignment, in a substitution, or after a program that runs its words (`env`, `sudo`, `nohup`, `timeout`, `xargs`,
-`find -exec` and the like). Text that names it as another command's argument passes (`git commit -m "Add grok support
-and update docs"`, `gh pr create --head grok …`), unless a substitution, a comment, a here-document, a parenthesis or
-a brace comes before it in the text, where a shell may read the rest otherwise (quotes nest in a substitution, and a
-function may run its words): give git such a message from a file (`git commit -F <file>`). Grok's `--help` lists no
-option that starts it without its hooks. Run these yourself in your own terminal.
+The rule reads every `grok` in the text as run, in every command: a pipeline's stage, a list's, a `case` arm, a
+substitution. The one exception is text that names it as the argument of a program that never runs its arguments:
+`echo`, `printf`, `cat`, `ls`, `head`, `tail`, `wc`, `grep`, `rg` (without `--pre` or `--hostname-bin`), `jq`, `git
+commit`, `log`, `show`, `diff`, `status`, `add` and `tag`, and `gh pr`, `issue`, `release`, `search` and `api`. So `git
+commit -m "Add grok support and update docs"` and `gh pr create --title …` pass, and `eval grok update`, `sh -c "grok
+update"`, `npx grok update` and `echo grok update | sh` are refused, as is the same text after any other program, even
+one that would only print it (`sed`, whose `e` command runs its text; `python3 -c "print('grok update')"`; `git -C`,
+which Orrery reads in lower case as `git -c`). The exception doesn't hold where that program's output is piped into
+another program, or where a substitution, a comment, a here-document, a parenthesis or a brace comes before the end of
+its command, where a shell may read the rest otherwise (quotes nest in a substitution, a function may run its words,
+and a `case` arm's command starts past its pattern): give git such a message from a file (`git commit -F <file>`).
+Grok's `--help` lists no option that starts it without its hooks. Run these yourself in your own terminal.
 
 ### Its limits in Grok
 
@@ -384,9 +389,11 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
   call's relative path (`echo x > ../../../hooks/e.json`), or its `popd` or `cd -` back, is read from there and gets
   through.
 - **A name built from a variable**, read from a file, or printed by another program gets through the shell-text rules,
-  as in every tool, and so does a `grok` command reached that way, through an alias or a link of another name, or from
-  a script. So does one another program runs from text it is handed (`eval grok …`, `sh -c "grok …"`, `echo grok … |
-  sh`, `ssh`, a program that runs its words that Orrery doesn't know): there `grok` is only named.
+  as in every tool, and so does a `grok` command reached that way (`P=grok; $P update`), through an alias, a function
+  or a link of another name, or from a script or a file another program reads (a pager or `--pre` in git's or rg's
+  config). So does one an alias or a function runs under the name of a program that may name `grok` (`echo`, `grep`,
+  `git commit` and the rest above), one an earlier call left in Grok's persistent shell too: Orrery reads the text, not
+  what a name stands for in the shell.
 - **Grok's commands are 1.0.70's.** A command a later Grok adds, or an option it adds to a read-only command that
   writes, passes until Orrery refuses it, unless its name is one Orrery refuses already.
 - **A coding tool an agent starts with its own settings** is a second program, as a script is: a Grok started with

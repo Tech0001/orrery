@@ -96,14 +96,16 @@
  * - A coding tool an agent starts with settings of its own is a second program, as a script is: a Grok started with
  *   another GROK_HOME (or HOME) loads none of Orrery's hooks, so it has no guard and marks no session it opens
  *   (src/grok/hooks.ts markShared); a Claude Code started with its own config folder loads no Orrery plugin. A grok
- *   command run through an alias, a link of another name, a brace sequence in its name (`{g..g}rok`) or a script gets
- *   past the grok command rule too (guard-rules.ts grokCommandIn), and so does one another program runs from text it is
- *   handed (`eval grok …`, `sh -c "grok …"`, `echo grok … | sh`, ssh, a program that runs its words the rule doesn't
- *   know): the rule reads grok only where it runs as a command, and passes text that names it as another command's
- *   argument. A subcommand assembled another way (a script, an alias) is the script's case; a word of Grok's built whole
- *   at run time (`grok $C`, `grok mcp $SUB orrery`) is refused, as it may be any. Grok's commands are Grok 1.0.70's: a
- *   later Grok's new command, or a read-only one's new option that writes, passes until Orrery refuses it, unless its
- *   name is one refused already.
+ *   command the text doesn't hold gets past the grok command rule too (guard-rules.ts grokCommandIn): one run through
+ *   an alias, a function or a link of another name, a program name built at run time (`P=grok; $P update`), a brace
+ *   sequence in the name (`{g..g}rok`), or a script or file another program reads (`sh x.sh`, a pager or a --pre in
+ *   git's or rg's config). So does one an alias or a function runs under the name of a program the rule lets name grok
+ *   (echo, grep, git commit and the rest), one an earlier call left in Grok's persistent shell too: the rule reads the
+ *   text, not what a name stands for in the shell. Grok text a program is handed in the text itself (`eval grok …`,
+ *   `sh -c "grok …"`, `echo grok … | sh`, ssh, npx) is refused: only a program that never runs its arguments may name
+ *   grok. A word of Grok's built whole at run time (`grok $C`, `grok mcp $SUB orrery`) is refused, as it may be any.
+ *   Grok's commands are Grok 1.0.70's: a later Grok's new command, or a read-only one's new option that writes, passes
+ *   until Orrery refuses it, unless its name is one refused already.
  * - A path to Grok's folder assembled from variables, parameter expansions or substitutions gets through, from a
  *   session started inside Grok's folder too (`$X/../hooks` or `$(pwd)/../config.toml` from a call run in an open part,
  *   a ".." held in a variable, `P=<home>/skills; … ${P%/skills}/hooks/x`), as a path split into pieces or a script the
