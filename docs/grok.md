@@ -400,8 +400,8 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
   text in lower case). Orrery reads the text, not what a name stands for in the shell.
 - **A `grok` command spelt through the shell's expansion tricks** gets through too, as a name built in a variable does:
   brace groups nested (`{grok,{update,x}}`), holding a quoted blank (`{grok,' update'}`) or an ANSI-C string
-  (`{grok,$'\x75pdate'}`), glob brackets around a name's letters (`gr[o]k update`), or a backslash-newline that joins a
-  quoted string to the next line (`echo 'grok update\' | sh`).
+  (`{grok,$'\x75pdate'}`), glob brackets around a name's letters (`gr[o]k update`), a backslash before a letter
+  (`grok \update`), or a backslash-newline that joins a quoted string to the next line (`echo 'grok update\' | sh`).
 - **Grok's commands are 1.0.70's.** A command a later Grok adds, or an option it adds to a read-only command that
   writes, passes until Orrery refuses it, unless its name is one Orrery refuses already.
 - **A coding tool an agent starts with its own settings** is a second program, as a script is: a Grok started with
