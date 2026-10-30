@@ -433,8 +433,7 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 			expect([command, grokGuard("monitor", { command }, options, false)]).toEqual([command, expect.stringMatching(/Grok's folder|sensitive|session records/)]);
 			expect([command, grokGuard("run_terminal_command", { command }, plain, false)]).toEqual([command, expect.stringMatching(/Grok's folder|session records/)]);
 		}
-		// What its own features write, a name beside Grok's folder, and a project's own .grok folder: a project's hooks and
-		// config are the project's (a known limit, src/grok/guard.ts), as Claude Code's project settings are.
+		// What its own features write, and a name beside Grok's folder.
 		for (const command of [
 			"cat ~/.grok/memory-v2/global/MEMORY.md",
 			"echo '- likes tabs' >> ~/.grok/memory-v2/global/MEMORY.md",
@@ -445,12 +444,16 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 			"tail -n 50 ~/.grok/logs/unified.jsonl",
 			"ls ~/.grok/bundled/skills",
 			"cat ~/.grokrc",
-			"ls .grok/hooks",
-			"cat .grok/config.toml",
 			"grok --version",
 		]) {
 			expect([command, grokGuard("run_terminal_command", { command }, options, false)]).toEqual([command, undefined]);
 			expect([command, grokGuard("run_terminal_command", { command }, plain, false)]).toEqual([command, undefined]);
+		}
+		// A project's own .grok folder: a project's hooks and config are the project's (a known limit, src/grok/guard.ts),
+		// as Claude Code's project settings are. From home (the plain session's cwd), .grok is Grok's folder.
+		for (const command of ["ls .grok/hooks", "cat .grok/config.toml"]) {
+			expect([command, grokGuard("run_terminal_command", { command }, options, false)]).toEqual([command, undefined]);
+			expect([command, grokGuard("run_terminal_command", { command }, plain, false)]).toEqual([command, expect.stringMatching(GROK_NAMED)]);
 		}
 	});
 
@@ -639,6 +642,8 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 			"cp -l x ~/.grok/skills/h",
 			"cp --link x ~/.grok/skills/h",
 			"xargs cp -s < list -t ~/.grok/skills/",
+			// A popd: back to a folder an earlier cd or pushd left on the stack.
+			"cp a ~/.grok/skills/x; popd",
 		];
 		for (const opts of [options, atHome, plain]) {
 			for (const command of commands) {
@@ -647,8 +652,9 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 			}
 			// A path that walks into the rest names it, as before.
 			expect(grokGuard("run_terminal_command", { command: "echo x > ~/.grok/skills/../hooks/e.json" }, opts, false)).toMatch(GROK_FOLDER);
-			// A ".." in an open part's own path that stays in it, and text that names no part of Grok's folder.
-			for (const command of ["cat ~/.grok/skills/x/../y/SKILL.md", "cp -r x ~/.grok/skills/x", "cd /src && ls ..", "ln -s ../x y", "git -C ../repo status", "echo 'wait...' >> ~/.grok/memory-v2/global/MEMORY.md"]) {
+			// A ".." in an open part's own path that stays in it, text that names no part of Grok's folder, and git's -c
+			// setting (lower case, as its -C reads).
+			for (const command of ["cat ~/.grok/skills/x/../y/SKILL.md", "cp -r x ~/.grok/skills/x", "cd /src && ls ..", "ln -s ../x y", "git -C ../repo status", "echo 'wait...' >> ~/.grok/memory-v2/global/MEMORY.md", "git -c core.pager=cat log ~/.grok/skills"]) {
 				expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, undefined]);
 			}
 		}
@@ -911,13 +917,17 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 			"cat .*/.*/.*/.*/hooks/orrery.json",
 			"cp x --target-directory=../../../../hooks",
 			"cp x -t../../../../hooks",
+			// A short option's value glued after any of its letters, a glob among it.
+			"cp x -vt../../../../hooks",
+			"cp x -t.*/.*/.*/.*/hooks",
+			"cp x -vt~+/../../../../hooks",
 			"echo x > $PWD/../../../../hooks/e.json",
 			"echo x > ${PWD}/../../../../hooks/e.json",
 			"echo x > ~+/../../../../hooks/e.json",
 			// A variable or substitution in it may be anything, as in a path the text names.
 			"echo x > ../$name",
 		];
-		const inWorktree = ["cat ../README.md", "cd .. && npm test", "ls ../..", "cat ../../../other-repo/README.md", "git diff ../../other-wt", "npm test -- --reporter=../r.js", "git log main..feature", "git diff HEAD~1..", "ls -d .*", "cat ../src/../README.md", "echo x > out/e.json"];
+		const inWorktree = ["cat ../README.md", "cd .. && npm test", "ls ../..", "cat ../../../other-repo/README.md", "git diff ../../other-wt", "npm test -- --reporter=../r.js", "git log main..feature", "git diff HEAD~1..", "ls -d .*", "cat ../src/../README.md", "echo x > out/e.json", "cp x -vt../out", "echo $(date) > ../out.txt"];
 		judge(worktree(grok), outOfWorktree, inWorktree);
 		// A session in a skill's folder.
 		const skill = join(grok, "skills", "x");
@@ -979,8 +989,22 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 			"echo x > newname",
 			"echo x >> 'newname'",
 			"echo x &> newname",
+			"echo x >&disabled-hooks",
+			"echo x >& newname",
 			// The folder itself.
 			"tar cf /tmp/grok.tar .",
+			// A short option's value glued after any of its letters (sort -o writes it), an entry's name among them.
+			"sort -rohooks/e.json x",
+			"cp -vthooks x",
+			"cp -vt$PWD/hooks x",
+			`cp -${"v".repeat(300)}thooks x`,
+			// A command substitution or a ${: its path may be any.
+			"echo x > $(echo hooks)/e.json",
+			"echo x > `echo hooks`/e.json",
+			"echo x > ${ echo hooks; }/e.json",
+			"echo x > ${H}/e.json",
+			"echo x > ${PWD}/skills/s/SKILL.md",
+			"echo $(date)",
 		];
 		const atGrokAllowed = [
 			"echo x > skills/s/SKILL.md",
@@ -990,6 +1014,11 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 			"python3 bundled/skills/pptx/scripts/x.py",
 			"cat <<EOF > skills/s/SKILL.md",
 			"echo x >&2",
+			"echo x >&-",
+			"echo x 2>&1",
+			"exec 3>&2-",
+			"cp -tskills x",
+			`ls -${"a".repeat(300)}`,
 			"ls",
 			"ls -la",
 			"echo hello",
@@ -997,11 +1026,11 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 		];
 		judge(grok, atGrok, atGrokAllowed);
 		// In what Grok loads, every path from there is in it.
-		judge(join(grok, "hooks"), ["echo x > e.json", "cat orrery.json", "rm orrery.json", "cp /tmp/e.json ."], ["ls", "ls -la"]);
+		judge(join(grok, "hooks"), ["echo x > e.json", "cat orrery.json", "rm orrery.json", "cp /tmp/e.json .", "cat `ls`", "echo x >&new"], ["ls", "ls -la"]);
 		judge(join(grok, "bundled"), ["echo x > agents/a.md", "cp x manifest.json"], ["cat skills/pptx/scripts/x.py"]);
 		// From an open part, or anywhere else, a path with no ".." is the project's, as before.
 		for (const here of [join(grok, "skills", "x"), join(grok, "worktrees", "repo-x"), root]) {
-			judge(here, [], ["echo x > hooks/e.json", "cp a config.toml", "cp /tmp/e.json hooks"]);
+			judge(here, [], ["echo x > hooks/e.json", "cp a config.toml", "cp /tmp/e.json hooks", "cp -vthooks x", "echo $(date) >&newname"]);
 		}
 		// A folder GROK_HOME moves Grok's to, and ~/.grok beside it.
 		const moved = join(root, "grok-home");
@@ -1013,6 +1042,81 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 			judge(moved, ["echo x > hooks/e.json", "cp a config.toml", "cp /tmp/e.json hooks"], ["echo x > skills/s/SKILL.md", "ls"]);
 			judge(join(moved, "hooks"), ["echo x > e.json"], []);
 			judge(grok, ["echo x > hooks/e.json", "cp /tmp/e.json hooks"], ["echo x > skills/s/SKILL.md"]);
+		} finally {
+			if (before === undefined) delete process.env.GROK_HOME;
+			else process.env.GROK_HOME = before;
+		}
+	});
+
+	it("reads a relative spelling of Grok's folder from where the call runs when that holds it (home) or is beside it, as if the text named it: its open parts stay open, a project's own .grok is the project's, in both sessions and under $GROK_HOME", () => {
+		const { root, home, folder, options, plain } = setup();
+		const judge = (here: string, named: readonly string[], reach: readonly string[], allowed: readonly string[]) => {
+			for (const opts of [
+				{ ...options, folder: here, cwd: here },
+				{ ...plain, folder: here, cwd: here },
+			]) {
+				for (const [commands, message] of [
+					[named, GROK_NAMED],
+					[reach, GROK_REACH],
+				] as const) {
+					for (const command of commands) {
+						expect([here, command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([here, command, expect.stringMatching(message)]);
+						expect([here, command, grokGuard("monitor", { command }, opts, false)]).toEqual([here, command, expect.stringMatching(message)]);
+					}
+				}
+				for (const command of allowed) {
+					expect([here, command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([here, command, undefined]);
+				}
+			}
+		};
+		// A session at home (a plain grok started there, an agent opened there).
+		const atHome = [
+			"echo x > .grok/hooks/e.json",
+			"echo '{}' > .grok/hooks/evil.json",
+			"cp x ./.grok/config.toml",
+			"cp x .grok/config.toml",
+			// However it is spelt: quoted, from $PWD or ~+, after a name and .., as an option's value, glued or not.
+			'echo x > "./.grok/hooks/e.json"',
+			"echo x > $PWD/.grok/hooks/e.json",
+			"echo x > ~+/.grok/hooks/e.json",
+			"echo x > a/../.grok/hooks/e.json",
+			"cp x --target-directory=.grok/hooks",
+			"cp -vt.grok/hooks x",
+			// The folder itself, and what walks out of an open part into the rest.
+			"tar cf /tmp/grok.tar .grok",
+			"cat .grok/skills/../config.toml",
+			// In a substitution, as by its path.
+			"echo x > $(dirname .grok/skills)/hooks/e.json",
+		];
+		// An open part beside a folder change, a ".." or a link, as by its path.
+		const reachFromHome = ["cd .grok/skills && echo x > ../hooks/e.json", "ln -s /tmp/x .grok/skills/h", "cat .grok/workflows/../skills/x/SKILL.md", "cd .grok/worktrees/repo-x && cd - && ls"];
+		const allowedFromHome = [
+			"echo x > .grok/skills/s/SKILL.md",
+			"cat .grok/docs/user-guide/10-hooks.md",
+			"cp x ./.grok/memory-v2/global/MEMORY.md",
+			"cd .grok/worktrees/repo-x && npm test",
+			// Names beside it, and a project's own .grok below home.
+			"cat .grokrc",
+			"ls .grok-old",
+			"echo x > ws/.grok/hooks/e.json",
+			"ls",
+		];
+		judge(home, atHome, reachFromHome, allowedFromHome);
+		// A folder beside it in home: ../.grok.
+		const beside = join(home, "proj");
+		mkdirSync(beside);
+		judge(beside, ["echo x > ../.grok/hooks/e.json", "cp x ./../.grok/config.toml"], ["cd ../.grok/skills && ls"], ["echo x > ../.grok/skills/s/SKILL.md", "echo x > .grok/hooks/e.json"]);
+		// A project with its own .grok/hooks: the project's, as before.
+		mkdirSync(join(folder, ".grok", "hooks"), { recursive: true });
+		judge(folder, [], [], ["echo x > .grok/hooks/e.json", "cp x ./.grok/config.toml", "echo x > .grok/skills/s/SKILL.md"]);
+		// A folder GROK_HOME moves Grok's to, further down, and ~/.grok from above home.
+		const moved = join(root, "a", "grok-home");
+		mkdirSync(join(moved, "skills"), { recursive: true });
+		const before = process.env.GROK_HOME;
+		process.env.GROK_HOME = moved;
+		try {
+			judge(root, ["echo x > a/grok-home/hooks/e.json", "cp x ./a/grok-home/config.toml", "echo x > home/.grok/hooks/e.json"], [], ["echo x > a/grok-home/skills/s/SKILL.md", "echo x > .grok/hooks/e.json"]);
+			judge(home, ["echo x > .grok/hooks/e.json", "echo x > ../a/grok-home/hooks/e.json"], [], ["echo x > .grok/skills/s/SKILL.md"]);
 		} finally {
 			if (before === undefined) delete process.env.GROK_HOME;
 			else process.env.GROK_HOME = before;
@@ -1333,6 +1437,16 @@ describe("the PreToolUse hook (runGrokGuard)", () => {
 			for (const command of ["echo x > skills/s/SKILL.md", "ls -la", "git status"]) {
 				expect([command, runGrokGuard(call("run_terminal_command", { command }, grok), context)]).toEqual([command, undefined]);
 			}
+		}
+	});
+
+	it("reads a session's relative spelling of Grok's folder from home, as the hook gives its cwd: what Grok loads refused, its open parts not", () => {
+		const { ctx, home } = agentWorld();
+		for (const context of [ctx(), ctx({ env: {} })]) {
+			for (const command of ["echo x > .grok/hooks/e.json", "cp x ./.grok/config.toml"]) {
+				expect([command, runGrokGuard(call("run_terminal_command", { command }, home), context)]).toEqual([command, expect.stringMatching(/^Orrery guard: This command names Grok's folder/)]);
+			}
+			expect(runGrokGuard(call("run_terminal_command", { command: "echo x > .grok/skills/s/SKILL.md" }, home), context)).toBeUndefined();
 		}
 	});
 

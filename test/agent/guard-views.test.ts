@@ -325,7 +325,7 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 	});
 
 	it("refuses shell text that names any of it but what its own features write, or the folder itself, in both sessions", () => {
-		const { grok, options, plain } = inHome();
+		const { atlas, grok, options, plain } = inHome();
 		for (const command of [
 			"rm ~/.grok/hooks/orrery.json",
 			"echo 'global/orrery:pre_tool_use[0].hooks[0]' >> ~/.grok/disabled-hooks",
@@ -352,7 +352,7 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 		expect(bash("ls /elsewhere/.grok/sessions", plain)).toMatch(/session records/);
 		// A name beside Grok's folder, and a project's own .grok folder (the project's hooks: a known limit), are not the
 		// person's Grok's.
-		for (const command of ["cat ~/.grokrc", "ls .grok/hooks", "grok --help"]) expect([command, bash(command, plain)]).toEqual([command, undefined]);
+		for (const command of ["cat ~/.grokrc", "ls .grok/hooks", "grok --help"]) expect([command, bash(command, { ...plain, cwd: atlas })]).toEqual([command, undefined]);
 		// Its docs and logs, read from a shell, and a bundled skill's script run there.
 		for (const command of ["cat ~/.grok/docs/x.md", "tail ~/.grok/logs/unified.jsonl", "python3 ~/.grok/bundled/skills/x/s.py"]) {
 			expect([command, bash(command, options)]).toEqual([command, undefined]);
@@ -392,8 +392,8 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 		}
 	});
 
-	it("reads shell text as the shell would where the guard knows more: a path in a command substitution, a .. from a call run in Grok's folder, an open part a link takes out of it, in both sessions", () => {
-		const { home, grok, options, plain } = inHome();
+	it("reads shell text as the shell would where the guard knows more: a path in a command substitution, a .. from a call run in Grok's folder, Grok's folder spelt from home, an open part a link takes out of it, in both sessions", () => {
+		const { atlas, home, grok, options, plain } = inHome();
 		const named = /^This command names Grok's folder or what Grok loads and runs in it .*: agents may read those with file tools, not with commands\.$/;
 		const namedPlain = /^This command names Grok's folder or what Grok loads and runs in it .*: they may be read with file tools, not with commands\.$/;
 		const climb = /^This command runs in Grok's folder .* has a relative path whose \.\. leads out of the part it runs in, which could reach the rest of Grok's folder .*\.$/;
@@ -425,8 +425,18 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 			[{ ...options, cwd: grok }, named],
 			[{ ...plain, cwd: grok }, namedPlain],
 		] as const) {
-			for (const command of ["echo x > hooks/e.json", "cp a config.toml", "cp /tmp/e.json hooks"]) expect([command, bash(command, opts)]).toEqual([command, expect.stringMatching(message)]);
+			for (const command of ["echo x > hooks/e.json", "cp a config.toml", "cp /tmp/e.json hooks", "cp -vthooks x", "echo x >&newname", "echo $(date)"]) expect([command, bash(command, opts)]).toEqual([command, expect.stringMatching(message)]);
 			for (const command of ["echo x > skills/x/SKILL.md", "ls -la"]) expect([command, bash(command, opts)]).toEqual([command, undefined]);
+		}
+		// A call run at home: Grok's folder spelt from there, as by its path; a project's own .grok is the project's.
+		for (const [opts, message] of [
+			[options, named],
+			[plain, namedPlain],
+		] as const) {
+			for (const command of ["echo x > .grok/hooks/e.json", "cp x ./.grok/config.toml"]) expect([command, bash(command, opts)]).toEqual([command, expect.stringMatching(message)]);
+			expect(bash("echo x > .grok/skills/x/SKILL.md", opts)).toBeUndefined();
+			expect(bash("echo x > .grok/hooks/e.json", { ...opts, cwd: join(home, "proj") })).toBeUndefined();
+			expect(bash("echo x > .grok/hooks/e.json", { ...opts, cwd: atlas })).toBeUndefined();
 		}
 		// skills/ linked to a dotfiles folder: open through the link to file tools, which follow it; kept from shell text.
 		mkdirSync(join(home, "dotfiles", "grok-skills"), { recursive: true });

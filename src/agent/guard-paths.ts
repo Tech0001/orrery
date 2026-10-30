@@ -26,14 +26,13 @@
  * every session, but its open parts (GROK_OPEN: its memory, skills and workflows, what its bundled skills, docs and
  * logs write, and its session worktrees), which are Grok's own. Its login and session records are read by no agent's
  * session (HOME_SECRETS, grokCredentials). A session that is no agent's (GuardOptions.orreryOnly, spec
- * 2026-10-19-no-agent-sessions §3) gets
- * Orrery's own rules alone (orreryJudge): Orrery's home, its credentials file, config and installed program, where
- * agents' sessions load code from outside its home (orreryEntries: read, never written, not named in shell text),
- * Grok's folder but its open parts, every agent's memory view (each is another's: it reads no agent's memory), the
- * session records, and Orrery's commands and plumbing in shell text. What the guard can't judge (a call too long, an
- * OMP path it can't read) is still refused, but an OMP glob's ordinary groups pass (plainEscapingGlob), and so do an
- * OMP language server's edits, which name no file, unless the session's folder holds or is inside Orrery's files or
- * Grok's folder but its open parts.
+ * 2026-10-19-no-agent-sessions §3) gets Orrery's own rules alone (orreryJudge): Orrery's home, its credentials file,
+ * config and installed program, where agents' sessions load code from outside its home (orreryEntries: read, never
+ * written, not named in shell text), Grok's folder but its open parts, every agent's memory view (each is another's: it
+ * reads no agent's memory), the session records, and Orrery's commands and plumbing in shell text. What the guard can't
+ * judge (a call too long, an OMP path it can't read) is still refused, but an OMP glob's ordinary groups pass
+ * (plainEscapingGlob), and so do an OMP language server's edits, which name no file, unless the session's folder holds
+ * or is inside Orrery's files or Grok's folder but its open parts.
  * Known limits:
  * - A hard link is another name for the same file, and the guard does not count links: one to another agent's view (the
  *   copy goes stale once Orrery replaces the view on its next write), to the config file in use, or to a file of the
@@ -77,13 +76,16 @@
  *   write), so a plugin that reads commands from there could be steered by a write there.
  * - Shell text that names an open part of Grok's folder and changes folder (where it names its session worktrees alone,
  *   but into one of them), holds a ".." or makes a link (ln, cp -s, cp -l) is refused (guard-rules.ts grokReaches), and
- *   so is a ".." that leaves the open part a call runs in (a grok -w session in its worktree; grokClimbsFrom), and a
- *   relative path from Grok's folder itself or what it loads but into an open part (grokNamedFrom). But a link brought
- *   into an open part whole (cp -a, mv, tar, rsync -a, git clone, a checkout in a session worktree) or made by a
- *   script, a relative path the guard doesn't read from where it leads (after a cd in the same text), and a bare word
- *   run in Grok's folder itself naming an entry Grok would load that isn't there yet (touch disabled-hooks, cp -r x
- *   agents; not one a redirection writes) reach the rest of the folder from the shell (file tools follow links and are
- *   refused).
+ *   so is a ".." that leaves the open part a call runs in (a grok -w session in its worktree; grokClimbsFrom), a
+ *   relative path from Grok's folder itself or what it loads but into an open part, or a substitution or ${ there
+ *   (grokNamedFrom), and Grok's folder spelt from the folder a call runs in, above or beside it (.grok from home,
+ *   ../.grok beside it; grokSpeltFrom). But a link brought into an open part whole (cp -a, mv, tar, rsync -a, git
+ *   clone, a checkout in a session worktree) or made by a script, a relative path the guard doesn't read from where the
+ *   shell does (after a cd in the same text, or in an earlier call in Grok's persistent shell, below) or spelt
+ *   otherwise from the call's folder (../u/.grok from home, through a link), and a bare word run in Grok's folder
+ *   itself naming an entry Grok would load that isn't there yet (touch disabled-hooks, cp -r x agents; not one an
+ *   output redirection writes: >, >>, >|, &>, >&) reach the rest of the folder from the shell (file tools follow links
+ *   and are refused).
  * - Shell text that reaches the protected parts of Grok's folder through another program's folder change (find
  *   -execdir, env -C, tar -C, xargs, sh -c) or link-making (link, busybox ln, rsync or cp keeping links) gets through,
  *   as a script the agent writes and runs does.

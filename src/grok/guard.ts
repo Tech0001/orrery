@@ -37,37 +37,38 @@
  * global), and one started from a coding tool's session that is no agent's where no agent would open, get Orrery's own
  * rules (spec 2026-10-19-no-agent-sessions §3): every agent's memory and Orrery's settings and data, Grok's folder but
  * its open parts (its memory, skills, workflows and what its bundled skills, docs and logs write, and its session
- * worktrees, the person's checkouts), which are Grok's own
- * (what Grok loads and runs is kept there: its hooks, config and policy files, /hooks switch, trust list, plugins,
- * agents, the bundle's agents and language servers), and the session records. So does
- * every session of Grok's shared leader (leader mode: src/grok/host.ts), which runs every session's hooks with its
- * first client's environment, so no session there can be told to be an agent's or not. A Grok whose command line can't
- * be read is no proved host of an agent's session: ORRERY_AGENT set, it is judged as one opened as an agent but refused
- * (only where it runs); unset, as a plain grok.
+ * worktrees, the person's checkouts), which are Grok's own (what Grok loads and runs is kept there: its hooks, config
+ * and policy files, /hooks switch, trust list, plugins, agents, the bundle's agents and language servers), and the
+ * session records. So does every session of Grok's shared leader (leader mode: src/grok/host.ts), which runs every
+ * session's hooks with its first client's environment, so no session there can be told to be an agent's or not. A Grok
+ * whose command line can't be read is no proved host of an agent's session: ORRERY_AGENT set, it is judged as one
+ * opened as an agent but refused (only where it runs); unset, as a plain grok.
  * Limits, as Grok gives them: a hook that crashes or times out lets the call through (only an explicit deny or exit 2
  * blocks), so the guard answers within its own time and src/codex/guard-exit.ts refuses a crash or a stall; `!` bash
  * mode commands are the person's own and raise no hook; and the shell-text limits every gate has. Grok also runs hooks
  * and MCP servers from a project's .grok/hooks/*.json and .grok/config.toml, its .claude/settings*.json and
  * .cursor/hooks.json, and the person's Claude Code settings file and Cursor hooks file, and language servers from a
  * project's .grok/lsp.json: the project's and the person's own, which the guard keeps none of; so are the files Grok's
- * config or its hooks-paths list names outside its folder (a hook or status-line script, a hook file kept elsewhere).
- * A hook or server an agent plants there runs outside the guard in a later session, and a hook may rewrite a call's
- * input after Orrery judged it (Grok applies updatedInput after every handler), as a script an agent writes and later
- * runs does. So is a session worktree's own git config and hooks: if Grok runs git there on its own (its cleanup pass;
+ * config or its hooks-paths list names outside its folder (a hook or status-line script, a hook file kept elsewhere). A
+ * hook or server an agent plants there runs outside the guard in a later session, and a hook may rewrite a call's input
+ * after Orrery judged it (Grok applies updatedInput after every handler), as a script an agent writes and later runs
+ * does. So is a session worktree's own git config and hooks: if Grok runs git there on its own (its cleanup pass;
  * unverified), a core.fsmonitor or hook planted there runs outside the guard. A plugin's hooks may name its data folder
  * (plugin-data/, open to writes), so a plugin that reads commands from there could be steered by a write there. Shell
  * text naming an open part may not change folder (where it names its session worktrees alone, but into one of them),
  * hold a ".." or make a link, nor name it in a command substitution (read failing closed: after any substitution's
  * opening, or in text whose parentheses don't pair up), or through a link out of Grok's folder; a call run in an open
- * part (a grok -w session in its worktree, its cwd as Grok gives it) may not have a ".." that leaves it, and one run in
- * Grok's folder itself or what it loads no relative path but into an open part (a bare word by the entries there). But
- * a link brought there whole (cp -a, mv, tar, git clone, a checkout) or by a script, a relative path after a cd in the
- * same text, or in an earlier call in Grok's persistent shell (which keeps a cd and the pushd stack from one call to
- * the next, while the hook's cwd stays the folder the session started in), a path assembled from variables, parameter
- * expansions or substitutions (from a session started in Grok's folder too), a bare word naming an entry Grok would
- * load that isn't there yet, and a folder change or link made by another program (find -execdir, env -C, tar -C, xargs,
- * sh -c; link, busybox ln, rsync or cp keeping links) reach the rest from the shell, as a script the agent writes and
- * runs does (src/agent/guard-paths.ts, Known limits).
+ * part (a grok -w session in its worktree, its cwd as Grok gives it) may not have a ".." that leaves it, one run in
+ * Grok's folder itself or what it loads no relative path but into an open part (a bare word by the entries there) and
+ * no substitution or ${, and in one run above or beside Grok's folder its spelling from there (.grok from home,
+ * ../.grok beside it) is read as its path. But a link brought there whole (cp -a, mv, tar, git clone, a checkout) or by
+ * a script, a relative path after a cd in the same text, or in an earlier call in Grok's persistent shell (which keeps
+ * a cd and the pushd stack from one call to the next, while the hook's cwd stays the folder the session started in), or
+ * spelt otherwise from the call's folder (../u/.grok from home, through a link), a path assembled from variables,
+ * parameter expansions or substitutions (from a session started in Grok's folder too), a bare word naming an entry Grok
+ * would load that isn't there yet, and a folder change or link made by another program (find -execdir, env -C, tar -C,
+ * xargs, sh -c; link, busybox ln, rsync or cp keeping links) reach the rest from the shell, as a script the agent
+ * writes and runs does (src/agent/guard-paths.ts, Known limits).
  */
 
 import { homedir } from "node:os";
