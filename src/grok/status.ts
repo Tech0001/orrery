@@ -7,10 +7,11 @@
  * - It speaks only for the agent ORRERY_AGENT names, and only when its token is claimed by this Grok, as a hook event
  *   finds it (src/codex/pick.ts grokAgent, never claiming or deciding): the memory server's start or SessionStart made
  *   that claim. Both are taken as the grok process was started with them (src/codex/pick.ts launchedEnv), never from the
- *   row's own environment: one that names another agent or token, or a Grok whose start environment can't be read, gets
- *   nothing. The stdin session_id only chooses which of that agent's sessions the row describes, never the agent. No
- *   ORRERY_AGENT (a plain grok), a token that isn't this Grok's (made up, another process's, a Grok started inside
- *   another session), or input that isn't Grok's status JSON: nothing.
+ *   row's own environment: one that names another agent or token gets nothing. A Grok whose start environment can't be
+ *   read as its hooks read it (src/grok/host.ts GROK_START_VARIABLES; on macOS, one of them holding a space), whose hooks
+ *   so record nothing, says that, naming no agent. The stdin session_id only chooses which of that agent's sessions the
+ *   row describes, never the agent. No ORRERY_AGENT (a plain grok), a token that isn't this Grok's (made up, another
+ *   process's, a Grok started inside another session), or input that isn't Grok's status JSON: nothing.
  * - Its state is what SessionStart (src/grok/hooks.ts) left for the session: this Grok's host record naming it, the mode
  *   its holder chose (written for this Grok), and the holder's heartbeat. `recording`; `not recording yet` (the holder
  *   hasn't chosen, or SessionStart may still be running: below); `read-only:` where the agent is open, or the holder's
@@ -44,8 +45,8 @@ import { safeText } from "../agent/source-labels.ts";
 import { type StatusState, statusText } from "../agent/status-text.ts";
 import { validSession } from "../claude/paths.ts";
 import { readMode } from "../claude/spool.ts";
-import { grokAgent, LAUNCH_VARIABLES, launchedEnv, startEnvOf } from "../codex/pick.ts";
-import { GROK_LEADER_REFUSAL, grokHostRefusal, grokPid } from "./host.ts";
+import { grokAgent, launchedEnv, startEnvOf } from "../codex/pick.ts";
+import { GROK_LEADER_REFUSAL, GROK_START_VARIABLES, grokHostRefusal, grokPid } from "./host.ts";
 import { GROK_SESSION_START_TIMEOUT, grokRecordingSwitchedOff } from "./install.ts";
 
 /** What the row reads besides the config and the environment; tests pass their own. */
@@ -100,9 +101,11 @@ function rowOf(stdin: string, ctx: GrokStatusContext): string | undefined {
 	if (refused !== undefined) return refused === GROK_LEADER_REFUSAL ? `Orrery · not recording: ${LEADER}` : undefined;
 	const session = sessionOf(stdin);
 	if (session === undefined) return undefined;
-	// Whose Grok this is, as it was started: never the row's own environment's say (module doc).
-	const launched = launchedEnv("grok", ctx.env, (ctx.envOf ?? startEnvOf)(pid, LAUNCH_VARIABLES));
-	if ("refused" in launched) return undefined;
+	// Whose Grok this is, as it was started: never the row's own environment's say (module doc). Read as the hooks read it,
+	// so a start they can't read the row can't either, and says so as they do.
+	const started = (ctx.envOf ?? startEnvOf)(pid, GROK_START_VARIABLES);
+	const launched = launchedEnv("grok", ctx.env, started);
+	if ("refused" in launched) return started === undefined ? `Orrery · not recording: ${launched.refused}` : undefined;
 	const env = launched.env;
 	const pick = grokAgent(ctx.config, {
 		env,

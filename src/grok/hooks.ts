@@ -91,8 +91,8 @@ import { noticeShownBefore, waitForMode } from "../claude/hooks.ts";
 import { summaryNotice, updateNotice } from "../claude/notices.ts";
 import { holderLog, validSession } from "../claude/paths.ts";
 import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
-import { grokAgent, LAUNCH_VARIABLES, launchedEnv, startEnvOf } from "../codex/pick.ts";
-import { grokHostNotice, grokHostRefusal } from "./host.ts";
+import { grokAgent, launchedEnv, startEnvOf } from "../codex/pick.ts";
+import { GROK_FOLDER_VARIABLES, GROK_START_VARIABLES, grokHostNotice, grokHostRefusal } from "./host.ts";
 import { GROK_SHARED, type GrokHeld, grokHeldSessions, grokLogStart, grokSessionKind, grokStartHome } from "./log.ts";
 import { GROK_HOOK_EVENTS } from "./names.ts";
 
@@ -256,15 +256,6 @@ function realOf(path: string): string | undefined {
 		return undefined;
 	}
 }
-
-/** The variables of the grok process's start environment that name Grok's folder. */
-const GROK_FOLDER_VARIABLES = ["GROK_HOME", "HOME"];
-
-/**
- * The variables of the grok process's start environment a hook reads (module doc), at once: whose session it is, the
- * Orrery config it runs with, and Grok's folder.
- */
-export const GROK_START_VARIABLES: readonly string[] = [...LAUNCH_VARIABLES, "ORRERY_CONFIG", "ORRERY_HOME", ...GROK_FOLDER_VARIABLES];
 
 /** `path` as it really is, or as given (absolute) when it can't be resolved: two paths name one file when these match. */
 const fileOf = (path: string) => realOf(path) ?? resolve(path);

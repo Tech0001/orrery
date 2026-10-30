@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { type AgentConfig, type HarnessConfig, parseConfig } from "../../src/agent/config.ts";
 import { writeHolder } from "../../src/agent/handover.ts";
 import { claimToken, newToken } from "../../src/agent/pick.ts";
+import { processEnv } from "../../src/agent/process.ts";
 import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
 import { statusText } from "../../src/agent/status-text.ts";
 import { writeMode } from "../../src/claude/spool.ts";
@@ -146,7 +147,7 @@ describe("orrery grok-status", () => {
 		expect(grokStatus(payload(session), ctx(w.config, as("scratch", token)))).toBe("Orrery · Scratch · 42 msgs · recording");
 	});
 
-	it("speaks for the agent and token its Grok was started with, never the row's own: another agent or token, or a start that can't be read, prints nothing", () => {
+	it("speaks for the agent and token its Grok was started with, never the row's own: another agent or token prints nothing, and a start that can't be read says so, naming no agent", () => {
 		const w = world();
 		remember(w.scratch, 3);
 		remember(w.other, 5);
@@ -161,8 +162,38 @@ describe("orrery grok-status", () => {
 		for (const own of [as("Other", other), as("Scratch", newToken()), { ORRERY_AGENT: "Scratch" }]) {
 			expect(grokStatus(payload(session), ctx(w.config, own, { envOf: startedWith(grok) })), JSON.stringify(own)).toBe("");
 		}
-		// Its Grok's start environment can't be read: nothing.
-		expect(grokStatus(payload(session), ctx(w.config, grok, { envOf: () => undefined }))).toBe("");
+		// Its Grok's start environment can't be read: the hooks record nothing, and the row says why, as they do.
+		expect(grokStatus(payload(session), ctx(w.config, grok, { envOf: () => undefined }))).toBe("Orrery · not recording: the environment this Grok was started with can't be read");
+		// Not for a row whose own environment names no agent (a plain grok), nor for input that isn't Grok's status JSON.
+		expect(grokStatus(payload(session), ctx(w.config, {}, { envOf: () => undefined }))).toBe("");
+		expect(grokStatus("not json", ctx(w.config, grok, { envOf: () => undefined }))).toBe("");
+	});
+
+	it("on macOS, a HOME, GROK_HOME, ORRERY_HOME or ORRERY_CONFIG that ps cuts at a space, or that stands twice, can't be read, as the hooks find: the row says so, never that SessionStart hasn't run", () => {
+		const w = world();
+		remember(w.scratch, 3);
+		const session = randomUUID();
+		// No record of the session, as when the hooks refused: read so, the row would say SessionStart hasn't run.
+		const token = started(w.config, w.scratch, session, { record: false, mode: "none", beat: "none" });
+		const args = "/Users/u/.grok/bin/grok --no-leader";
+		const mac = (env: string) => (pid: number, names: readonly string[]) =>
+			processEnv(pid, names, { platform: "darwin", withoutArgs: true, unambiguous: true, ps: (asked) => (asked.includes("-wwE") ? `${args} ${env}\n` : `${args}\n`) });
+		const launch = `ORRERY_AGENT=Scratch ORRERY_AGENT_TOKEN=${token}`;
+		const home = grokHomeOf(w.config);
+		// Past SessionStart's timeout, when the row would say it hasn't run.
+		const later = { now: Date.now() + 60_000 };
+		for (const env of [
+			`PATH=/usr/bin HOME=/Users/my home ${launch} GROK_HOME=${home}`,
+			`PATH=/usr/bin HOME=/Users/u ${launch} GROK_HOME=/Users/u/grok home`,
+			`PATH=/usr/bin HOME=/Users/u ORRERY_HOME=/Users/u/my orrery ${launch} GROK_HOME=${home}`,
+			`PATH=/usr/bin HOME=/Users/u ORRERY_CONFIG=/Users/u/my config.toml ${launch} GROK_HOME=${home}`,
+			`PATH=/usr/bin HOME=/Users/u HOME=/tmp/x ${launch} GROK_HOME=${home}`,
+		]) {
+			expect([env, grokStatus(payload(session), ctx(w.config, as("Scratch", token), { envOf: mac(env), ...later }))]).toEqual([env, "Orrery · not recording: the environment this Grok was started with can't be read"]);
+		}
+		// The same values without a space: read, and the row says what SessionStart left (here nothing).
+		const whole = `PATH=/usr/bin HOME=/Users/u ${launch} GROK_HOME=${home}`;
+		expect(grokStatus(payload(session), ctx(w.config, as("Scratch", token), { envOf: mac(whole), ...later }))).toBe("Orrery · Scratch · 3 msgs · not recording: Orrery's SessionStart hasn't run for this session; resume it or start a new one");
 	});
 
 	it("an agent with no memory yet says so", () => {

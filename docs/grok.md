@@ -193,7 +193,9 @@ Under the prompt, Grok shows Orrery's row for an agent's session:
   [Troubleshooting](#troubleshooting));
 - `Orrery · not recording: leader mode; Orrery opens agents with --no-leader`, with no agent's name: the row runs under
   Grok's shared leader (leader mode; see [What happens at launch](#what-happens-at-launch)). A session's own Grok in
-  leader mode shows no row.
+  leader mode shows no row;
+- `Orrery · not recording: the environment this Grok was started with can't be read`, with no agent's name: Orrery
+  can't tell whose Grok this is (on macOS, a folder variable holding a space; see Limits), so it records nothing.
 
 A plain grok shows no row. Grok runs the row command at every change and while a turn runs; it reads only the agent's
 message count, never a word of memory, and takes no lock. Grok hides the row on its welcome screen, and after a launch
@@ -435,6 +437,9 @@ and keeps that agent's rules in its guard (both agents' rules, in another agent'
 - `not recording: Orrery's SessionStart hasn't run for this session; resume it or start a new one`: its hook was
   switched off when the session started and on since, or it crashed, timed out or couldn't confirm the session (its
   message says why after `/new` or a resume). Do as it says.
+- `Orrery · not recording: the environment this Grok was started with can't be read`: Orrery can't tell whose Grok
+  this is, so its hooks record nothing. On macOS that is `HOME`, `GROK_HOME`, `ORRERY_HOME` or `ORRERY_CONFIG` holding a
+  space (see Limits).
 - `not recording: this Grok records another of its sessions now`: you switched back to an earlier session of this Grok
   (`/dashboard`), and Orrery records the one its latest session start took. Start a new session, or resume this one.
 - `not recording: Orrery's recorder stopped; a new session or a resume starts it again`: do that; `holder.log` says why
@@ -533,7 +538,8 @@ Grok keeps its usual files in its folder: its sessions (Orrery reads a session's
 - **macOS is not yet verified.** There Orrery asks `lsof` which files Grok holds open, and `ps` for its environment; if
   either can't say, the session start says so and records nothing. `ps` joins the environment with spaces, so a value
   holding one can't be read for sure: when `HOME`, `GROK_HOME`, `ORRERY_HOME` or `ORRERY_CONFIG` holds a space (or one
-  of them stands twice), Grok's sessions there aren't recorded, and the session start says it can't tell (fail closed).
+  of them stands twice), Grok's sessions there aren't recorded, and the session start and the status row say it can't
+  tell (fail closed).
   Each hook, status row run and guard call asks `ps` twice there.
 
 For the architecture of hooks and confirmation across tools, see [the architecture guide](architecture.md).

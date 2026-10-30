@@ -9,6 +9,7 @@
 import { basename } from "node:path";
 import { type ProcessInfo, processArgv, processExecutable, processInfo } from "../agent/process.ts";
 import { hostPid } from "../codex/host.ts";
+import { LAUNCH_VARIABLES } from "../codex/pick.ts";
 import { GROK_COMMANDS, GROK_VALUE_OPTIONS, isGrokProcess } from "./names.ts";
 
 /** Grok's pid from a process it started (default: this one's parent), passing over shells in between. */
@@ -119,3 +120,13 @@ export function grokHostRefusal(pid: number, argvOf: (pid: number) => readonly s
 export function grokHostNotice(why: string): string {
 	return `Orrery: ${why}. This session records nothing and gets no memory tools.`;
 }
+
+/** The variables of the grok process's start environment that name Grok's folder. */
+export const GROK_FOLDER_VARIABLES: readonly string[] = ["GROK_HOME", "HOME"];
+
+/**
+ * The variables of the grok process's start environment the hooks read (src/grok/hooks.ts), at once: whose session it
+ * is, the Orrery config it runs with, and Grok's folder. The status row reads the same (src/grok/status.ts), so a start
+ * environment the hooks can't read (on macOS, one of them holding a space) the row can't either, and says so.
+ */
+export const GROK_START_VARIABLES: readonly string[] = [...LAUNCH_VARIABLES, "ORRERY_CONFIG", "ORRERY_HOME", ...GROK_FOLDER_VARIABLES];
