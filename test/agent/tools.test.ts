@@ -51,7 +51,8 @@ describe("checkTools", () => {
 		expect(installSteps(grok(), root, found.env)).toEqual([]);
 		// A config entry gone (the person may have removed it): missing, so adding it again is asked, as connecting is.
 		const config = join(found.home, ".grok", "config.toml");
-		writeFileSync(config, readFileSync(config, "utf8").replace(/\[ui\.status_line\][^[]*/, ""));
+		// Its header and its lines, up to the next table's header (the status command itself holds a "[").
+		writeFileSync(config, readFileSync(config, "utf8").replace(/\[ui\.status_line\]\n(?:[^[\n].*\n)*/, ""));
 		expect(grok()).toMatchObject({ wiring: "missing", detail: `${config} has no [ui.status_line]; tested with Grok 1.0.70` });
 		expect(installSteps(grok(), root, found.env).map((step) => step.kind)).toEqual(["edit"]);
 		const newer = fakeBin({ grok: 'echo "grok 1.1.0 (abc) [stable]"' });
