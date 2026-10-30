@@ -929,11 +929,25 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 		];
 		const inWorktree = ["cat ../README.md", "cd .. && npm test", "ls ../..", "cat ../../../other-repo/README.md", "git diff ../../other-wt", "npm test -- --reporter=../r.js", "git log main..feature", "git diff HEAD~1..", "ls -d .*", "cat ../src/../README.md", "echo x > out/e.json", "cp x -vt../out", "echo $(date) > ../out.txt"];
 		judge(worktree(grok), outOfWorktree, inWorktree);
+		// A path that starts with "-" or "--" (after --, or written by a redirection) is a path as written, and so is one
+		// after "./" or a name.
+		judge(
+			join(grok, "worktrees", "repo", "wt"),
+			[
+				"echo x > --t/.*/.*/.*/.*/hooks/e.json",
+				"cp x -- --t/.*/.*/.*/.*/hooks/",
+				"cat -- -/.*/.*/.*/.*/config.toml",
+				"cat -- -~/.*/.*/.*/.*/config.toml",
+				"echo x > ./--t/.*/.*/.*/.*/hooks/e.json",
+				"echo x > x/.*/.*/.*/.*/hooks/e.json",
+			],
+			["cat -- --t/../a.ts"],
+		);
 		// A session in a skill's folder.
 		const skill = join(grok, "skills", "x");
-		judge(skill, ["cat ../../config.toml", "echo x > ../../hooks/e.json", "cp x ../../docs/y.md", "ls ../..", "cat ../../skills/x/SKILL.md"], ["cat ../y/SKILL.md", "cp ../y/SKILL.md z.md", "ls .."]);
+		judge(skill, ["cat ../../config.toml", "echo x > ../../hooks/e.json", "cp x ../../docs/y.md", "ls ../..", "cat ../../skills/x/SKILL.md", "cat -- --t/.*/.*/.*/config.toml"], ["cat ../y/SKILL.md", "cp ../y/SKILL.md z.md", "ls .."]);
 		// In Grok's folder itself, or what it loads, a ".." leads out of no open part.
-		judge(grok, ["ls ..", "cat ../.grok/skills/x/SKILL.md"], []);
+		judge(grok, ["ls ..", "cat ../.grok/skills/x/SKILL.md", "echo x > --t/.*/hooks/e.json"], []);
 		judge(join(grok, "hooks"), ["cat ../skills/x/SKILL.md"], []);
 		// Elsewhere (the agent's folder, home), as before.
 		for (const opts of [options, plain]) expect(grokGuard("run_terminal_command", { command: "cat ../../../../x" }, opts, false)).toBeUndefined();
@@ -998,6 +1012,9 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 			"cp -vthooks x",
 			"cp -vt$PWD/hooks x",
 			`cp -${"v".repeat(300)}thooks x`,
+			// A path that starts with "-" or "--", as written.
+			"cat -- -/x",
+			"echo x > --t/e.json",
 			// A command substitution or a ${: its path may be any.
 			"echo x > $(echo hooks)/e.json",
 			"echo x > `echo hooks`/e.json",
@@ -1082,6 +1099,10 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 			"echo x > a/../.grok/hooks/e.json",
 			"cp x --target-directory=.grok/hooks",
 			"cp -vt.grok/hooks x",
+			// A glob right after its name, which the shell may expand to it.
+			"cp x .grok*/hooks/",
+			"cat ./.grok?/config.toml",
+			"cp x .grok[k]/hooks/",
 			// The folder itself, and what walks out of an open part into the rest.
 			"tar cf /tmp/grok.tar .grok",
 			"cat .grok/skills/../config.toml",

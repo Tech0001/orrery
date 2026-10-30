@@ -1793,9 +1793,11 @@ const NAME_MOST = 255;
  * Whether `judge` refuses a relative path a reading of shell text gives, read as the shell reads it from the call's
  * folder: each word (and each part of one after "=", ":" or ","), $PWD, ${PWD} or ~+ at its start read as "."; one
  * that starts with a single "-" as each value its option letters may glue to it (-vohooks/x: vohooks/x, ohooks/x,
- * hooks/x …), leaving out those between the first and the last whose first part is longer than NAME_MOST (such a part
- * names no file, and the first value's, longer still, stands for them); absolute ones, "~", "$" and long options left
- * out. `written`: an output redirection writes it (>, >>, >|, &>, or >& but to a descriptor's number or -).
+ * hooks/x …), leaving out those between the first and the last whose first part is longer than NAME_MOST (the judges
+ * give such a part, a glob one too, the same verdict as the longer suffix that holds it, slice(1)'s); and one with a
+ * "/" as written too, one that starts with "-" or "--" among them (cat -- -/x, echo x > --t/x); absolute ones, "~",
+ * "$" and a long option with no "/" left out. `written`: an output redirection writes it (>, >>, >|, &>, or >& but to
+ * a descriptor's number or -).
  */
 function grokWordsFrom(form: string, judge: (path: string, written: boolean) => boolean): boolean {
 	let last = 0;
@@ -1807,9 +1809,11 @@ function grokWordsFrom(form: string, judge: (path: string, written: boolean) => 
 			// A short option's "-" and letters, and where a value glued after them ends its first part.
 			const letters = /^-(?!-)[a-z0-9]*/.exec(piece)?.[0].length ?? 0;
 			const first = `${piece}/`.indexOf("/");
-			for (let at = Math.min(letters, 1); at <= letters; at++) {
+			// A piece with a "/" is a path as written as well, whatever it starts with.
+			const whole = first < piece.length;
+			for (let at = whole ? 0 : Math.min(letters, 1); at <= letters; at++) {
 				const path = at > 1 && at < letters && first - at > NAME_MOST ? "" : piece.slice(at).replace(RUNS_HERE, ".");
-				if (path !== "" && !/^(?:[/~$]|--)/.test(path) && judge(path, written)) return true;
+				if (path !== "" && !/^[/~$]/.test(path) && (!path.startsWith("--") || (at === 0 && whole)) && judge(path, written)) return true;
 			}
 		}
 	}
@@ -1877,9 +1881,9 @@ function grokNamedFrom(form: string, rule: GrokRule, cwd: string): boolean {
  * Each of `forms` (readings of shell text run from `cwd`) that spells one of Grok's folders from there (.grok or
  * ./.grok from home, ../.grok beside it, a moved one's path below `cwd`), with that spelling put as the folder's path,
  * so grokNamed and grokReaches judge it as named: as a word, a part of one after "=", ":" or ",", from $PWD or ~+, or a
- * short option's glued value (-t.grok/hooks). Not from a folder in Grok's (grokClimbsFrom and grokNamedFrom read
- * those), nor by another spelling (../u/.grok from home; the readings collapse a/../.grok). A project's own .grok is
- * the project's.
+ * short option's glued value (-t.grok/hooks), a glob right after it too (.grok*, which the shell may expand to it).
+ * Not from a folder in Grok's (grokClimbsFrom and grokNamedFrom read those), nor by another spelling (../u/.grok from
+ * home; the readings collapse a/../.grok). A project's own .grok is the project's.
  */
 function grokSpeltFrom(forms: readonly string[], rule: GrokRule, cwd: string): string[] {
 	const here = grokFold(cwd);
@@ -1887,7 +1891,7 @@ function grokSpeltFrom(forms: readonly string[], rule: GrokRule, cwd: string): s
 		.filter((folder) => !within(here, folder))
 		.map((folder) => {
 			const from = posix.relative(here, folder).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-			return [folder, new RegExp(`(^|[\\s"';|&()<>\`=:,])(-[a-z0-9]*)?(?:(?:\\.|\\$pwd|\\$\\{pwd\\}|~\\+)/+)*${from}(?=[/\\s"';|&()<>\`=:,}]|$)`, "g")] as const;
+			return [folder, new RegExp(`(^|[\\s"';|&()<>\`=:,])(-[a-z0-9]*)?(?:(?:\\.|\\$pwd|\\$\\{pwd\\}|~\\+)/+)*${from}(?=[/\\s"';|&()<>\`=:,}*?\\[]|$)`, "g")] as const;
 		});
 	return forms.flatMap((form) => {
 		const spelt = spellings.reduce((text, [folder, spelling]) => text.replace(spelling, (_, edge: string, option = "") => `${edge}${option}${folder}`), form);
