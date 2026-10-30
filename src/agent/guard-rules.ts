@@ -1362,24 +1362,31 @@ export function openCodeNamed(text: string, rule?: OpenCodeRule): boolean {
 // like; but where the text names the session worktrees alone, which the model works in), hold a ".." path part (but
 // one in the open part's own path that stays in it, as a bundled skill names the helper beside it: bundled/skills/
 // <name>/../shared/) or make a link (ln, cp -s, cp -l): a relative path read from the open part, or a link made there,
-// could reach the rest. Where a link takes an entry out of the folder (a config.toml kept in a dotfiles folder), it is
-// kept where it really is too; an open part a link takes to the folder itself, to a
+// could reach the rest. An open part's path in a command substitution ($(…) or `…`), or followed by its close, counts
+// as the rest (the shell may make another path of it: $(dirname <home>/skills)/hooks). Where the call runs in the
+// folder (a grok -w session in its worktree), a relative path with a ".." is read from there: refused unless it stays
+// in the open part it runs in. Where a link takes an entry out of the folder (a config.toml kept in a dotfiles folder),
+// it is kept where it really is too; an open part a link takes to the folder itself, to a
 // folder that holds it, or into the rest of it (skills/ linked to hooks/), or a link that leads nowhere, is kept as the
-// rest is. One a link takes out of the folder (skills/ kept in a dotfiles folder, as people do) stays open through the
-// link, and where it really is is judged by the other rules, as any path is. File tools may read all of it, but an
+// rest is. One a link takes out of the folder (skills/ kept in a dotfiles folder, as people do) stays open to file
+// tools through the link, and where it really is is judged by the other rules, as any path is; shell text, which can't
+// follow the link, may name it there only where it really is. File tools may read all of it, but an
 // agent's session reads neither the session records nor Grok's login (HOME_SECRETS; a moved folder's by
 // src/agent/guard-paths.ts). Limits, as for every shell-text rule: a spelling through another variable, a link the
 // guard doesn't know (a link planted inside an open part that leads to the rest of it, by a script, or copied or moved
-// there whole from elsewhere: cp -a, mv, tar, rsync -a, a checkout's own), used from the shell, and a relative path
-// from a folder the text doesn't name (a session or subagent started in an open part, as every grok -w session starts
-// in its worktree). A project's own .grok folder (a session worktree's too) is the project's, its hooks, config.toml
+// there whole from elsewhere: cp -a, mv, tar, rsync -a, a checkout's own), used from the shell, a relative path from a
+// folder the text doesn't name and the call doesn't run in (after a cd in the same text), or with no ".." from Grok's
+// folder itself, and a folder change or link made by another program (find -execdir, env -C, tar -C, xargs, sh -c;
+// link, busybox ln, rsync or cp keeping links), as a script the agent writes and runs. A project's own .grok folder (a
+// session worktree's too) is the project's, its hooks, config.toml
 // and lsp.json among them, and so are Grok's other hook sources outside its folder (a project's .claude/settings*.json
 // and .cursor/hooks.json, the person's Claude Code settings file and Cursor hooks file), and the
 // files Grok's config or its hooks-paths list names outside its folder (a hook or status-line script, a hook file kept
 // elsewhere): a hook or server planted there runs outside the guard in a later session, and a hook may rewrite a call
-// after Orrery judged it, as a script an agent writes and later runs does. A plugin that reads commands from its own
-// data folder (plugin-data/, which its hooks may name) could be steered by a write there (src/agent/guard-paths.ts,
-// Known limits).
+// after Orrery judged it, as a script an agent writes and later runs does. So is a session worktree's own git config and
+// hooks: if Grok runs git there on its own (its cleanup pass; unverified), a core.fsmonitor or hook planted there runs
+// outside the guard. A plugin that reads commands from its own data folder (plugin-data/, which its hooks may name)
+// could be steered by a write there (src/agent/guard-paths.ts, Known limits).
 
 /** Grok's folders for `home` and `env`: ~/.grok, and the one GROK_HOME names (absolute, as given; realTarget is the caller's). */
 export function grokFolders(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] {
@@ -1424,30 +1431,41 @@ export interface GrokRule {
 	/**
 	 * The open parts (of GROK_OPEN) kept as the rest is in each of Grok's folders: those a link takes to one of Grok's
 	 * folders, a folder that holds one, or the rest of one (skills/ linked to hooks/ or to home), and a link that leads
-	 * nowhere (one that comes back to itself); none when none is. One a link takes out of Grok's folders stays open.
+	 * nowhere (one that comes back to itself); none when none is. One a link takes out of Grok's folders stays open to
+	 * file tools (away).
 	 */
 	readonly shut?: readonly string[];
+	/**
+	 * The open parts (of GROK_OPEN) a link takes out of Grok's folders (skills/ kept in a dotfiles folder): open to file
+	 * tools, which follow the link and judge where it leads, but kept from shell text, which can't follow it, as the rest
+	 * is (grokPaths); none when none is.
+	 */
+	readonly away?: readonly string[];
 }
 
 /**
  * The rule for `home` and `env`. `real` follows links (realTarget), so a folder reached through one counts, and an open
- * part that is a link is kept when it leads to Grok's folder, to a folder holding it, into the rest of it, or nowhere;
- * `links` names the entries of a folder that are links (the caller's: these rules read no files), so an entry a link
- * takes out of the folder counts where it really is too, and an open part that is a link but is still where it stands
- * once followed leads nowhere. Without them no link is followed.
+ * part that is a link is kept when it leads to Grok's folder, to a folder holding it, into the rest of it, or nowhere,
+ * and from shell text when it leads out of Grok's folders; `links` names the entries of a folder that are links (the
+ * caller's: these rules read no files), so an entry a link takes out of the folder counts where it really is too, and an
+ * open part that is a link but is still where it stands once followed leads nowhere. Without them no link is followed.
  */
 export function grokRule(env: NodeJS.ProcessEnv = process.env, home: string = homedir(), real: (path: string) => string = (path) => path, links: (folder: string) => readonly string[] = () => []): GrokRule {
 	const fold = (path: string) => posix.normalize(path).toLowerCase().replace(/(.)\/+$/, "$1");
 	const folders = grokFolders(env, home);
 	const own = [...new Set(folders.flatMap((path) => [path, real(path)]).map(fold))];
 	const homes = [home, real(home)];
-	const shut = GROK_OPEN.filter((entry) =>
-		folders.some((folder) => {
-			const at = fold(real(posix.join(folder, entry)));
-			const nowhere = links(folder).some((name) => name.toLowerCase() === entry) && within(at, fold(posix.join(real(folder), entry)));
-			return nowhere || own.some((root) => within(root, at)) || grokKept(at, own);
-		}),
-	);
+	// Where each open part of each folder really is.
+	const reached = GROK_OPEN.map((entry) => ({ entry, places: folders.map((folder) => ({ folder, at: fold(real(posix.join(folder, entry))) })) }));
+	const shut = reached
+		.filter(({ entry, places }) =>
+			places.some(({ folder, at }) => {
+				const nowhere = links(folder).some((name) => name.toLowerCase() === entry) && within(at, fold(posix.join(real(folder), entry)));
+				return nowhere || own.some((root) => within(root, at)) || grokKept(at, own);
+			}),
+		)
+		.map(({ entry }) => entry);
+	const away = reached.filter(({ entry, places }) => !shut.includes(entry) && places.some(({ at }) => !own.some((root) => within(at, root)))).map(({ entry }) => entry);
 	const entries = new Set(folders.flatMap((folder) => links(folder).filter((name) => !GROK_OPEN.includes(name.toLowerCase())).map((name) => fold(real(posix.join(folder, name))))));
 	const linked = [...entries].filter((entry) => !grokKept(entry, own, shut));
 	return {
@@ -1455,8 +1473,12 @@ export function grokRule(env: NodeJS.ProcessEnv = process.env, home: string = ho
 		spelled: spelledFromHome(own, homes),
 		...(linked.length === 0 ? {} : { linked: [...linked, ...spelledFromHome(linked, homes)] }),
 		...(shut.length === 0 ? {} : { shut }),
+		...(away.length === 0 ? {} : { away }),
 	};
 }
+
+/** The open parts shell text may not name as open: those kept (GrokRule.shut) and those a link takes away (away). */
+const shellShut = (rule: GrokRule): readonly string[] => [...(rule.shut ?? []), ...(rule.away ?? [])];
 
 /** Whether a folded path is one of `own` (Grok's folders) or in one but its open parts (those `shut` names kept). */
 function grokKept(folded: string, own: readonly string[], shut?: readonly string[]): boolean {
@@ -1499,6 +1521,10 @@ export const GROK_COMMAND_PLAIN =
 export const GROK_REACH =
 	"This command names a part of Grok's folder its own features write (~/.grok's memory, skills, workflows and the like) and also changes folder (cd, pushd, git -C and the like), has a .. path part, or makes a link (ln, cp -s, cp -l), any of which could reach the rest of Grok's folder (its hooks, settings, plugins and agents): name each path there in full from Grok's folder, without .., and make no link there.";
 
+/** Why shell text run in Grok's folder with a relative path whose ".." leaves the part it runs in is refused (any session). */
+export const GROK_CLIMB =
+	"This command runs in Grok's folder (~/.grok: a skill's folder, a session worktree or the like) and has a relative path whose .. leads out of the part it runs in, which could reach the rest of Grok's folder (its hooks, settings, plugins and agents): name that path in full, with no .. in it.";
+
 /** $GROK_HOME in shell text (readings are lower case), as a word: whatever the session's environment holds, it is Grok's folder. */
 const GROK_HOME_VARIABLE = /\$(?:grok_home(?![a-z0-9_])|\{grok_home[^}\s$]*\})/g;
 
@@ -1530,42 +1556,85 @@ const climbing = (part: string) => part === ".." || (part.startsWith(".") && glo
 /**
  * The path after one of Grok's folders in a reading, its spelling from `start` to `at`: kept when it names any of the
  * folder but its open parts (GROK_OPEN, but those `shut` names): nothing after it but "/" (the folder itself: a copy,
- * an archive or a cd reaches all of it), or parts, once "." and ".." are walked, in none of them (a glob is in none:
- * it could match another). A variable or substitution in it but $$ (SHELL_PID), a ".." that climbs out of the folder,
- * and a glob that could match ".." could come back to the rest: they count.
+ * an archive or a cd reaches all of it), or parts, once "." and ".." are walked, in none of them (grokWalk). One in a
+ * command substitution (`nested`: $(…) or `…`), or followed by its close, is a command's word whose output the shell
+ * may make another path of ($(dirname <home>/skills)/hooks): it counts, as a variable after it does.
  */
-function grokPathAfter(form: string, start: number, at: number, shut?: readonly string[]): GrokPath {
+function grokPathAfter(form: string, start: number, at: number, shut: readonly string[], nested: boolean): GrokPath {
 	GROK_REST.lastIndex = at;
 	const end = at + (GROK_REST.exec(form)?.[0].length ?? 0);
-	const path = (kept: boolean, climbs = false, part?: string): GrokPath => ({ start, end, kept, climbs, ...(part === undefined ? {} : { part }) });
-	const rest = form.slice(at, end).replace(SHELL_PID, "0").replace(/["'\\]/g, "");
-	if (/[$`]/.test(rest)) return path(true);
+	if (nested || /[)`]/.test(form.charAt(end))) return { start, end, kept: true, climbs: false };
+	return { start, end, ...grokWalk(form.slice(at, end), shut) };
+}
+
+/**
+ * A path below one of Grok's folders (`rest`, its parts after the folder) walked as the shell walks it: kept when it is
+ * the folder itself or in none of its open parts (but those `shut` names; a glob is in none: it could match another). A
+ * variable or substitution in it but $$ (SHELL_PID), a ".." that climbs out of the folder, and a glob that could match
+ * ".." could come back to the rest: they count.
+ */
+function grokWalk(rest: string, shut: readonly string[]): Omit<GrokPath, "start" | "end"> {
+	const text = rest.replace(SHELL_PID, "0").replace(/["'\\]/g, "");
+	const kept = { kept: true, climbs: false };
+	if (/[$`]/.test(text)) return kept;
 	const parts: string[] = [];
 	let low = Number.POSITIVE_INFINITY;
-	for (const part of rest.split("/")) {
+	for (const part of text.split("/")) {
 		if (part === "" || part === ".") continue;
 		if (part === "..") {
-			if (parts.pop() === undefined) return path(true);
+			if (parts.pop() === undefined) return kept;
 			low = Math.min(low, parts.length);
-		} else if (climbing(part)) return path(true);
+		} else if (climbing(part)) return kept;
 		else parts.push(part);
 	}
 	const open = grokOpenIn(parts, shut);
-	return open === undefined ? path(true) : path(false, low < open.split("/").length, open);
+	return open === undefined ? kept : { kept: false, climbs: low < open.split("/").length, part: open };
+}
+
+/**
+ * For each of `starts` (places in a reading), whether it sits in a command substitution, $(…) or `…`, read bluntly in
+ * one pass: a "(" opens a group the next ")" closes, a backquote opens or closes one, and a backslash escapes what
+ * follows it.
+ */
+function inSubstitution(form: string, starts: readonly number[]): boolean[] {
+	const groups: boolean[] = [];
+	let open = 0;
+	let ticked = false;
+	let i = 0;
+	const inside = new Map<number, boolean>();
+	for (const start of [...new Set(starts)].sort((a, b) => a - b)) {
+		for (; i < start; i++) {
+			const c = form.charAt(i);
+			if (c === "\\") i++;
+			else if (c === "`") ticked = !ticked;
+			else if (c === "$" && form.charAt(i + 1) === "(") {
+				groups.push(true);
+				open++;
+				i++;
+			} else if (c === "(") groups.push(false);
+			else if (c === ")" && groups.pop() === true) open--;
+		}
+		inside.set(start, ticked || open > 0);
+	}
+	return starts.map((start) => inside.get(start) === true);
 }
 
 /**
  * Each path a reading names in Grok's folder: after $GROK_HOME, or one of `rule`'s folders by its path (not a longer
- * name beside it).
+ * name beside it). Shell text can't follow a link, so an open part a link takes out of Grok's folders is kept from it
+ * as the rest is (GrokRule.away): a link to a guarded place would reach it.
  */
 function grokPaths(form: string, rule: GrokRule): GrokPath[] {
-	const found = [...form.matchAll(GROK_HOME_VARIABLE)].map((variable) => grokPathAfter(form, variable.index, variable.index + variable[0].length, rule.shut));
+	const spots: (readonly [number, number])[] = [...form.matchAll(GROK_HOME_VARIABLE)].map((variable) => [variable.index, variable.index + variable[0].length] as const);
 	for (const root of [...rule.own, ...rule.spelled]) {
 		for (let at = form.indexOf(root); at !== -1; at = form.indexOf(root, at + 1)) {
-			if (!NAME_GOES_ON.test(form.charAt(at + root.length))) found.push(grokPathAfter(form, at, at + root.length, rule.shut));
+			if (!NAME_GOES_ON.test(form.charAt(at + root.length))) spots.push([at, at + root.length]);
 		}
 	}
-	return found;
+	if (spots.length === 0) return [];
+	const shut = shellShut(rule);
+	const nested = inSubstitution(form, spots.map(([start]) => start));
+	return spots.map(([start, at], index) => grokPathAfter(form, start, at, shut, nested[index] === true));
 }
 
 /**
@@ -1625,6 +1694,41 @@ function grokReaches(form: string, rule: GrokRule): boolean {
 		if ((moves && MOVES.test(word)) || name === "ln" || word.split(/[/=:,{}]/).some(climbing)) return true;
 		if (name === "cp" || FOLDER_OPTIONS.has(name)) tools.add(name);
 		else if ([...tools].some((tool) => (tool === "cp" ? copiesAsLink(word) : moves && folderOption(tool, word)))) return true;
+	}
+	return false;
+}
+
+/** $PWD, ${PWD} or ~+ starting a word (readings are lower case): the folder the call runs in, as the shell has it. */
+const RUNS_HERE = /^(?:\$pwd(?![a-z0-9_])|\$\{pwd\}|~\+)(?=\/|$)/;
+
+/**
+ * Whether a reading of shell text run from `cwd` (the call's own folder, as its hook gives it), when that is in Grok's
+ * folder, has a relative path with a ".." that leaves the open part `cwd` is in. Each word (and each part of one after
+ * "=", ":" or ","), relative or from $PWD, that holds a ".." part (or a glob that could match one, read as ".."; an
+ * option glued to "." or "..", as -t../x, read as it) is read from `cwd` as grokWalk reads a path the text names: it is
+ * refused when it lands in what Grok loads, in the folder itself, in another open part or out of the folder, climbs
+ * above its open part on the way, or holds a variable or substitution (it may be anything). One that stays in the open
+ * part goes through (cat ../README.md in a session worktree). A cd earlier in the text isn't followed: each word is read
+ * from `cwd` (the general limit on a relative path).
+ */
+function grokClimbsFrom(form: string, rule: GrokRule, cwd: string): boolean {
+	const here = posix.normalize(cwd).toLowerCase().replace(/(.)\/+$/, "$1");
+	const root = rule.own.find((folder) => within(here, folder));
+	if (root === undefined) return false;
+	const shut = shellShut(rule);
+	const below = here.slice(posix.normalize(root).replace(/\/+$/, "").length);
+	const { part } = grokWalk(below, shut);
+	for (const word of form.match(GLOB_WORDS) ?? []) {
+		for (const piece of word.split(/[=:,]/)) {
+			const relative = piece.replace(RUNS_HERE, ".");
+			if (/^[/~$]/.test(relative)) continue;
+			const parts = relative.split("/");
+			const first = parts[0] ?? "";
+			if (first.startsWith("-")) parts[0] = first.endsWith("..") ? ".." : first.endsWith(".") ? "." : first;
+			if (!parts.some(climbing)) continue;
+			const walked = grokWalk(`${below}/${parts.map((at) => (climbing(at) ? ".." : at)).join("/")}`, shut);
+			if (part === undefined || walked.kept || walked.climbs || walked.part !== part) return true;
+		}
 	}
 	return false;
 }
@@ -2154,12 +2258,15 @@ export function checkToolCall(
 		}
 		// Last, so a command refused before keeps its reason: Orrery's commands that change memory or settings (in a
 		// session that is no agent's, every one the CLI refuses it: PLAIN_REFUSED_COMMANDS), the tools' session records,
-		// and Grok's folder but its open parts, or the folder itself, in every session.
+		// and Grok's folder but its open parts, or the folder itself, in every session; and, where the call runs in Grok's
+		// folder (its cwd, as the hook gives it), a ".." that leaves the open part it runs in.
 		const orrery = orreryCommandIn(reading, agent ? AGENT_REFUSED : PLAIN_REFUSED);
 		if (orrery !== undefined) return agent ? ORRERY_COMMAND_REFUSED(orrery) : ORRERY_COMMAND_REFUSED_PLAIN(orrery);
 		if (transcriptsNamed(command, reading, protect.reach, transcripts())) return agent ? TRANSCRIPT_COMMAND : TRANSCRIPT_COMMAND_PLAIN;
 		if (inReading((form) => grokNamed(form, grok()))) return agent ? GROK_COMMAND : GROK_COMMAND_PLAIN;
 		if (inReading((form) => grokReaches(form, grok()))) return GROK_REACH;
+		const cwd = options.cwd;
+		if (cwd !== undefined && posix.isAbsolute(cwd) && inReading((form) => grokClimbsFrom(form, grok(), cwd))) return GROK_CLIMB;
 	}
 	const raw = call.arguments.path;
 	if (typeof raw !== "string") return undefined;

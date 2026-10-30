@@ -387,6 +387,34 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 		}
 	});
 
+	it("reads shell text as the shell would where the guard knows more: a path in a command substitution, a .. from a call run in Grok's folder, an open part a link takes out of it, in both sessions", () => {
+		const { home, grok, options, plain } = inHome();
+		const named = /^This command names Grok's folder or what Grok loads and runs in it .*: agents may read those with file tools, not with commands\.$/;
+		const namedPlain = /^This command names Grok's folder or what Grok loads and runs in it .*: they may be read with file tools, not with commands\.$/;
+		const climb = /^This command runs in Grok's folder .* has a relative path whose \.\. leads out of the part it runs in, which could reach the rest of Grok's folder .*\.$/;
+		// An open part's path in a command substitution: the shell may make another path of it.
+		for (const command of ["echo x > $(dirname ~/.grok/skills)/hooks/e.json", "echo x > `dirname ~/.grok/skills/x/SKILL.md | xargs dirname | xargs dirname`/hooks/e.json"]) {
+			expect([command, bash(command, options)]).toEqual([command, expect.stringMatching(named)]);
+			expect([command, bash(command, plain)]).toEqual([command, expect.stringMatching(namedPlain)]);
+		}
+		// A call run in a session worktree: a ".." read from there.
+		const wt = join(grok, "worktrees", "r");
+		for (const opts of [{ ...options, cwd: wt }, { ...plain, cwd: wt }]) {
+			expect(bash("echo x > ../../hooks/e.json", opts)).toMatch(climb);
+			expect(bash("cat ../r2/README.md", opts)).toBeUndefined();
+		}
+		// skills/ linked to a dotfiles folder: open through the link to file tools, which follow it; kept from shell text.
+		mkdirSync(join(home, "dotfiles", "grok-skills"), { recursive: true });
+		rmSync(join(grok, "skills"), { recursive: true });
+		symlinkSync(join(home, "dotfiles", "grok-skills"), join(grok, "skills"));
+		expect(guardToolCall("write", { path: join(grok, "skills", "x", "SKILL.md"), content: "x" }, options)).toBeUndefined();
+		expect(guardToolCall("write", { path: join(grok, "skills", "x", "SKILL.md"), content: "x" }, plain)).toBeUndefined();
+		expect(bash("echo x > ~/.grok/skills/x/SKILL.md", options)).toMatch(named);
+		expect(bash("echo x > ~/.grok/skills/x/SKILL.md", plain)).toMatch(namedPlain);
+		expect(bash("echo x > ~/dotfiles/grok-skills/x/SKILL.md", options)).toBeUndefined();
+		expect(bash("echo x > ~/.grok/workflows/w.rhai", options)).toBeUndefined();
+	});
+
 	it("refuses its writes in the durable harness too, where a link takes an entry too, and lets what its own features write through", async () => {
 		const { root, grok, options } = inHome();
 		const env = new NodeExecutionEnv({ cwd: options.folder });

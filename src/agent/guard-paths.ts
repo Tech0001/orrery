@@ -71,13 +71,19 @@
  *   and later runs does, and as shell profiles and the rest of the person's files that later run in sessions do. The
  *   same holds for the files Grok's config or its hooks-paths list names outside Grok's folder (a hook or status-line
  *   script kept elsewhere, a hook file listed in hooks-paths): the guard keeps Grok's folder, not what it points at.
+ *   So is a Grok session worktree's own git config and hooks, writable as any project's: if Grok runs git there on its
+ *   own (its cleanup pass; unverified), a core.fsmonitor or hook planted there runs outside the guard.
  * - A Grok plugin's hooks may name its data folder (plugin-data/, Grok's own skills' state among it, which agents may
  *   write), so a plugin that reads commands from there could be steered by a write there.
  * - Shell text that names an open part of Grok's folder and changes folder (but into its session worktrees alone),
- *   holds a ".." or makes a link (ln, cp -s, cp -l) is refused (guard-rules.ts grokReaches), but a link brought into an
+ *   holds a ".." or makes a link (ln, cp -s, cp -l) is refused (guard-rules.ts grokReaches), and so is a ".." that
+ *   leaves the open part a call runs in (a grok -w session in its worktree; grokClimbsFrom). But a link brought into an
  *   open part whole (cp -a, mv, tar, rsync -a, git clone, a checkout in a session worktree) or made by a script, and a
- *   relative path from a session or subagent started in an open part (every grok -w session starts in its worktree),
- *   which the text doesn't name, reach the rest of the folder from the shell (file tools follow links and are refused).
+ *   relative path the guard doesn't read from where it leads (after a cd in the same text, or with no ".." from Grok's
+ *   folder itself), reach the rest of the folder from the shell (file tools follow links and are refused).
+ * - Shell text that reaches the protected parts of Grok's folder through another program's folder change (find
+ *   -execdir, env -C, tar -C, xargs, sh -c) or link-making (link, busybox ln, rsync or cp keeping links) gets through,
+ *   as a script the agent writes and runs does.
  */
 
 import { type Dirent, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";

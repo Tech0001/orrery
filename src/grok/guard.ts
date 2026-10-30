@@ -53,11 +53,16 @@
  * config or its hooks-paths list names outside its folder (a hook or status-line script, a hook file kept elsewhere).
  * A hook or server an agent plants there runs outside the guard in a later session, and a hook may rewrite a call's
  * input after Orrery judged it (Grok applies updatedInput after every handler), as a script an agent writes and later
- * runs does. A plugin's hooks may name its data folder (plugin-data/, open to writes), so a plugin that reads commands
- * from there could be steered by a write there. Shell text naming an open part may not change folder (but into its
- * session worktrees alone), hold a ".." or make a link, but a link brought there whole (cp -a, mv, tar, git clone, a
- * checkout) or by a script, and a relative path from a session or subagent started there (a grok -w session in its
- * worktree), reach the rest from the shell (src/agent/guard-paths.ts, Known limits).
+ * runs does. So is a session worktree's own git config and hooks: if Grok runs git there on its own (its cleanup pass;
+ * unverified), a core.fsmonitor or hook planted there runs outside the guard. A plugin's hooks may name its data folder
+ * (plugin-data/, open to writes), so a plugin that reads commands from there could be steered by a write there. Shell
+ * text naming an open part may not change folder (but into its session worktrees alone), hold a ".." or make a link,
+ * nor name it in a command substitution, or through a link out of Grok's folder; a call run in an open part (a grok -w
+ * session in its worktree, its cwd as Grok gives it) may not have a ".." that leaves it. But a link brought there whole
+ * (cp -a, mv, tar, git clone, a checkout) or by a script, a relative path after a cd in the same text, and a folder
+ * change or link made by another program (find -execdir, env -C, tar -C, xargs, sh -c; link, busybox ln, rsync or cp
+ * keeping links) reach the rest from the shell, as a script the agent writes and runs does (src/agent/guard-paths.ts,
+ * Known limits).
  */
 
 import { homedir } from "node:os";
