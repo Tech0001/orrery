@@ -176,8 +176,9 @@ export async function checkResolvedPath(
 		if (openCodeLoads(target, openCode) || openCodeLoads(real, openCode)) return OPENCODE_READ_ONLY(real);
 		// Grok's folder but its open parts (guard-rules.ts grokRule), where the tool writes and where that really is: its
 		// folders and entries as this machine's links lead them (guard-paths.ts grokOf, a dangling link followed as
-		// realTarget follows it), and as the tools' file system's do (every entry listed, so an env that reports kinds
-		// differently still has its links followed; an open part linked out of the open parts kept).
+		// realTarget follows it, a link that leads nowhere found by its kind), and as the tools' file system's do (every
+		// entry listed and taken for a link when its real path is elsewhere, so an env that reports kinds differently
+		// still has its links followed; an open part linked into the rest of the folder kept).
 		const home = options.home ?? homedir();
 		const folders = grokFolders(process.env, home);
 		const listed = await Promise.all(
@@ -188,7 +189,9 @@ export async function checkResolvedPath(
 		);
 		const spots = [home, ...folders, ...folders.flatMap((folder, at) => [...(listed[at] ?? []), ...GROK_OPEN].map((name) => posix.join(folder, name)))];
 		const reached = new Map(await Promise.all(spots.map(async (spot) => [spot, await realPath(env, spot, context)] as const)));
-		const realGrok = grokRule(process.env, home, (path) => reached.get(path) ?? path, (folder) => listed[folders.indexOf(folder)] ?? []);
+		const reachedAt = (path: string) => reached.get(path) ?? path;
+		const linkedIn = (folder: string) => (listed[folders.indexOf(folder)] ?? []).filter((name) => reachedAt(posix.join(folder, name)) !== posix.join(reachedAt(folder), name));
+		const realGrok = grokRule(process.env, home, reachedAt, linkedIn);
 		if ([grokOf(options, home), realGrok].some((rule) => grokLoads(target, rule) || grokLoads(real, rule))) return GROK_READ_ONLY(real);
 		// A skill OpenCode loads: not with front matter it may run as code (guard-rules.ts), an edit judged on the file it
 		// would leave, read where the tool runs.

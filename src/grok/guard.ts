@@ -53,7 +53,9 @@
  * A hook or server an agent plants there runs outside the guard in a later session, and a hook may rewrite a call's
  * input after Orrery judged it (Grok applies updatedInput after every handler), as a script an agent writes and later
  * runs does. A plugin's hooks may name its data folder (plugin-data/, open to writes), so a plugin that reads commands
- * from there could be steered by a write there (src/agent/guard-paths.ts, Known limits).
+ * from there could be steered by a write there. Shell text naming an open part may not change folder, hold a ".." or
+ * make a link, but a link brought there whole (cp -a, mv, tar, git clone) or by a script, and a relative path from a
+ * session or subagent started there, reach the rest from the shell (src/agent/guard-paths.ts, Known limits).
  */
 
 import { homedir } from "node:os";

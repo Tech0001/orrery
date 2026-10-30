@@ -72,6 +72,10 @@
  *   script kept elsewhere, a hook file listed in hooks-paths): the guard keeps Grok's folder, not what it points at.
  * - A Grok plugin's hooks may name its data folder (plugin-data/, Grok's own skills' state among it, which agents may
  *   write), so a plugin that reads commands from there could be steered by a write there.
+ * - Shell text that names an open part of Grok's folder and changes folder, holds a ".." or makes a link (ln, cp -s,
+ *   cp -l) is refused (guard-rules.ts grokReaches), but a link brought into an open part whole (cp -a, mv, tar, rsync
+ *   -a, git clone) or made by a script, and a relative path from a session or subagent started in an open part, which
+ *   the text doesn't name, reach the rest of the folder from the shell (file tools follow links and are refused).
  */
 
 import { type Dirent, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";

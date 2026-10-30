@@ -270,9 +270,9 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 	/**
 	 * Grok's and the person's own, written by Grok's features through calls the guard sees: its memory (its "forget" edits
 	 * it), the skills and workflows it and the person write, /learn's runs, the background-task skill's logs, plugins'
-	 * data, the bundled skills, its docs and its logs.
+	 * data, /implement's notes, the bundled skills, its docs and its logs.
 	 */
-	const OPEN = ["memory-v2/global/MEMORY.md", "skills/x/SKILL.md", "workflows/w.rhai", "learn/state.json", "long-running-background-tasks/x.log", "plugin-data/p/x.json", "bundled/skills/x/SKILL.md", "docs/x.md", "logs/unified.jsonl"];
+	const OPEN = ["memory-v2/global/MEMORY.md", "skills/x/SKILL.md", "workflows/w.rhai", "learn/state.json", "long-running-background-tasks/x.log", "plugin-data/p/x.json", "implement-memory/x.md", "bundled/skills/x/SKILL.md", "docs/x.md", "logs/unified.jsonl"];
 
 	/** An agent opened in its home, so the work area holds Grok's folder; and a session that is no agent's there. */
 	function inHome() {
@@ -359,6 +359,29 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 		}
 	});
 
+	it("refuses shell text that names what its own features write and also changes folder, has a .. path part or makes a link, in both sessions", () => {
+		const { grok, options, plain } = inHome();
+		const reach = /^This command names a part of Grok's folder its own features write .* could reach the rest of Grok's folder .*\.$/;
+		for (const command of [
+			"cd ~/.grok/skills && echo x > ../hooks/e.json",
+			"pushd $GROK_HOME/learn; cat ../config.toml",
+			`git -C ${grok}/skills status`,
+			"cat ~/.grok/workflows/../skills/x/SKILL.md",
+			"cat ~/.grok/docs/x.md ../x",
+			"ln -s ../hooks ~/.grok/skills/h",
+			"cp -s x ~/.grok/skills/h",
+		]) {
+			expect([command, bash(command, options)]).toEqual([command, expect.stringMatching(reach)]);
+			expect([command, bash(command, plain)]).toEqual([command, expect.stringMatching(reach)]);
+		}
+		// A shipped skill's helper beside it (bundled/skills/<name>/../shared/), and a ".." or cd with no part of Grok's
+		// folder named.
+		for (const command of ["python3 ~/.grok/bundled/skills/implement/../shared/scripts/host.py setup", "cd /src && cat ../x", "cat ~/.grok/skills/x/SKILL.md"]) {
+			expect([command, bash(command, options)]).toEqual([command, undefined]);
+			expect([command, bash(command, plain)]).toEqual([command, undefined]);
+		}
+	});
+
 	it("refuses its writes in the durable harness too, where a link takes an entry too, and lets what its own features write through", async () => {
 		const { root, grok, options } = inHome();
 		const env = new NodeExecutionEnv({ cwd: options.folder });
@@ -380,7 +403,7 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 		expect(await checkResolvedPath(env, join(grok, "hooks", "orrery.json"), "read", options, ctx)).toBeUndefined();
 		expect(await checkResolvedPath(env, join(grok, "memory-v2", "global", "MEMORY.md"), "write", options, ctx)).toBeUndefined();
 		expect(await checkResolvedPath(env, join(grok, "skills", "x", "SKILL.md"), "write", options, ctx)).toBeUndefined();
-		for (const file of ["docs/x.md", "logs/unified.jsonl", "plugin-data/p/x.json", "bundled/skills/x/s.py", "learn/state.json"]) {
+		for (const file of ["docs/x.md", "logs/unified.jsonl", "plugin-data/p/x.json", "bundled/skills/x/s.py", "learn/state.json", "implement-memory/x.md"]) {
 			expect([file, await checkResolvedPath(env, join(grok, file), "write", options, ctx)]).toEqual([file, undefined]);
 		}
 		// A dangling link: an entry linked to a file not made yet is kept where it points, as the hooks' guard reads it
@@ -388,12 +411,19 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 		rmSync(join(grok, "newthing.toml"));
 		symlinkSync(join(root, "dotfiles", "grok-new.toml"), join(grok, "newthing.toml"));
 		expect(await checkResolvedPath(env, join(root, "dotfiles", "grok-new.toml"), "write", { ...options, folder: root }, ctx)).toMatch(/Grok's folder/);
-		// An open part linked out of Grok's open parts is kept through the link, and judged as itself where it really is.
+		// An open part linked out of Grok's folder (a dotfiles folder) stays writable, through the link and where it really
+		// is; one linked into what Grok loads, or to a link that leads nowhere, is kept.
 		mkdirSync(join(root, "dotfiles", "grok-skills"));
 		rmSync(join(grok, "skills"), { recursive: true });
 		symlinkSync(join(root, "dotfiles", "grok-skills"), join(grok, "skills"));
-		expect(await checkResolvedPath(env, join(grok, "skills", "x", "SKILL.md"), "write", { ...options, folder: root }, ctx)).toMatch(/Grok's folder/);
+		expect(await checkResolvedPath(env, join(grok, "skills", "x", "SKILL.md"), "write", { ...options, folder: root }, ctx)).toBeUndefined();
 		expect(await checkResolvedPath(env, join(root, "dotfiles", "grok-skills", "x", "SKILL.md"), "write", { ...options, folder: root }, ctx)).toBeUndefined();
+		rmSync(join(grok, "logs"), { recursive: true });
+		symlinkSync(join(grok, "hooks"), join(grok, "logs"));
+		expect(await checkResolvedPath(env, join(grok, "logs", "x.json"), "write", options, ctx)).toMatch(/Grok's folder/);
+		rmSync(join(grok, "learn"), { recursive: true });
+		symlinkSync("learn", join(grok, "learn"));
+		expect(await checkResolvedPath(env, join(grok, "learn", "x.json"), "write", options, ctx)).toMatch(/Grok's folder/);
 	});
 
 	it("refuses a plain OMP session's language server edits where its folder holds Grok's folder or is inside it, but in what its own features write", () => {
