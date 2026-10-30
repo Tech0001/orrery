@@ -205,6 +205,34 @@ describe("orrery agent", () => {
 		expect(off.status, off.stderr).toBe(0);
 		expect(off.stdout).toContain("Orrery's recording hooks are switched off in Grok's /hooks, so this session won't be fully recorded: switch them on there, then start a new session (/new).");
 		expect(readFileSync(s.out, "utf8")).toBe("grok|Atlas|--no-leader\n");
+		// A switch file Orrery can't read: said so, not that a hook is off.
+		rmSync(join(s.grok, "disabled-hooks"));
+		mkdirSync(join(s.grok, "disabled-hooks"));
+		rmSync(s.out);
+		const unread = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
+		expect(unread.status, unread.stderr).toBe(0);
+		expect(unread.stdout).toContain(`Orrery couldn't read Grok's /hooks settings (${join(s.grok, "disabled-hooks")}), so it can't tell whether its hooks are switched off there`);
+		expect(unread.stdout).not.toContain("switched off in Grok's /hooks");
+		expect(readFileSync(s.out, "utf8")).toBe("grok|Atlas|--no-leader\n");
+	});
+
+	it("opens Grok without asking when Grok runs this Orrery's hooks and a config entry of Orrery's was removed, and says which", () => {
+		const s = grokScene();
+		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok", "--yes").status).toBe(0);
+		// The person removes Orrery's status row (on purpose, say), keeping its memory tools.
+		const config = join(s.grok, "config.toml");
+		const full = readFileSync(config, "utf8");
+		const kept = full.slice(full.indexOf("[mcp_servers.orrery]"));
+		writeFileSync(config, kept);
+		rmSync(s.out);
+		// No terminal and no --yes: nothing to answer, so it opens.
+		const r = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
+		expect(r.status, r.stderr).toBe(0);
+		expect(r.stdout).toContain("Grok's config has no [ui.status_line], so this session shows no Orrery status row; orrery setup adds it back.");
+		expect(r.stdout).not.toContain("Connect Orrery to Grok now?");
+		expect(readFileSync(s.out, "utf8")).toBe("grok|Atlas|--no-leader\n");
+		// The launch adds nothing back.
+		expect(readFileSync(config, "utf8")).toBe(kept);
 	});
 
 	it("names the tools --tool takes, and the configured agents for an unknown name", () => {

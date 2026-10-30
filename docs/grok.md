@@ -34,10 +34,11 @@ writes two things in Grok's folder (`$GROK_HOME`, else `~/.grok`):
   `orrery grok-status` from it; it reads Grok's status JSON on stdin). An `[mcp_servers.orrery]` of your own stays too,
   and Grok then gets no memory tools from Orrery.
 
-If you later delete one of Orrery's entries, the next setup or update asks again before adding it back. `orrery
-uninstall` removes the hook file and the two entries while they still read as Orrery wrote them, after a copy of the
-config, and leaves the rest of the file as it was. A rollback or an update to a release before 0.10.0 removes them too:
-an older Orrery answers Grok's hooks with an error, which would block every prompt.
+If you later delete one of Orrery's entries, the next setup or update asks again before adding it back, and
+`orrery agent` names it at each launch, without asking (see What happens at launch). `orrery uninstall` removes the
+hook file and the two entries while they still read as Orrery wrote them, after a copy of the config, and leaves the
+rest of the file as it was. A rollback or an update to a release before 0.10.0 removes them too: an older Orrery
+answers Grok's hooks with an error, which would block every prompt.
 
 The Tools page shows Grok's wiring with the version tested (`tested with Grok 1.0.70`), and `orrery tools` the same.
 `orrery tools install` doesn't take Grok; setup and `I` do.
@@ -99,8 +100,8 @@ session (see The memory view).
 
 Orrery's hooks, status row and memory tools come from Grok's own folder (see Install). Without the hooks a session
 would get its memory section but no recording and no Orrery guard (unless Grok loads Orrery's Claude Code plugin,
-whose guard then runs), and without the config entries, no memory tools or row. So when Grok's row in the tools check
-isn't this Orrery's, `orrery agent` and the TUI ask first, as they ask for pi's extension, with the steps setup takes:
+whose guard then runs), and without the config entries, no memory tools or row. So when Grok's hook file isn't this
+Orrery's, `orrery agent` and the TUI ask first, as they ask for pi's extension, with the steps setup takes:
 
 ```
 Orrery's hooks for Grok are not installed, so this session won't record. Connecting Orrery to Grok will:
@@ -109,12 +110,18 @@ Orrery's hooks for Grok are not installed, so this session won't record. Connect
 Connect Orrery to Grok now?
 ```
 
-A config entry of Orrery's you removed is asked about the same way (`Grok's config lacks Orrery's status row or memory
-tools`), and so is a hook file of another Orrery's, or one that isn't Orrery's, which is set aside first (`Grok doesn't
-run this Orrery's hooks, so this session may not record`). Yes connects it, as setup does, and opens the agent; no, or
-no terminal to answer on, opens nothing (`--yes` answers yes). When Orrery can't read Grok's folder to tell, it says so
-and opens the agent. When Orrery's hooks are connected but switched off in Grok's `/hooks`, it says which (the
-recording hooks, the guard, or both) and how to switch them on, and opens the agent.
+A hook file of another Orrery's, or one that isn't Orrery's, is asked about the same way, and set aside first (`Grok
+doesn't run this Orrery's hooks, so this session may not record`). Yes connects it, as setup does, and opens the agent;
+no, or no terminal to answer on, opens nothing (`--yes` answers yes).
+
+When the hook file is this Orrery's and only a config entry of Orrery's is missing (you may have removed it on purpose),
+the session still records and is guarded, so nothing is asked: the launch names the entry and opens the agent, and
+adds nothing back (`Grok's config has no [ui.status_line], so this session shows no Orrery status row; orrery setup
+adds it back.`). When Orrery can't read Grok's folder to tell, it says so and opens the agent. When Orrery's hooks are
+connected but switched off in Grok's `/hooks`, it says which (the recording hooks, the guard, or both) and how to
+switch them on, and opens the agent. When it can't read Grok's `/hooks` settings (`disabled-hooks` in Grok's folder),
+it says that instead, and that the guard of Orrery's Claude Code plugin, if Grok loads it, keeps checking the session's
+tool calls.
 
 ## What's recorded
 
@@ -343,7 +350,8 @@ and keeps that agent's rules in its guard (both agents' rules, in another agent'
   agent's among them.
 - Grok's `/hooks` tab can switch Orrery's hooks off; Grok saves that in `disabled-hooks` in its folder. With them off,
   the session isn't recorded (the row says so). With the guard hook off, tool calls run unguarded, unless Grok also
-  loads Orrery's Claude Code plugin, whose guard then runs instead. `orrery agent` says at launch which of them are off.
+  loads Orrery's Claude Code plugin, whose guard then runs instead. `orrery agent` says at launch which of them are off,
+  or that it couldn't read `disabled-hooks`.
 
 ## Troubleshooting
 

@@ -23,13 +23,14 @@ import { type OpenCodeGate, opencodePluginGate, type probePlugin } from "../open
 import { argsRefusal, inheritsOrreryPlugin, launchConfigContent, opencodeArgs, pluginFolder } from "../opencode/launch.ts";
 import { configContent } from "../opencode/options.ts";
 import { removeOnSignals, removeTokenFile, tokenFilePath, writeTokenFile } from "../opencode/token-file.ts";
-import { grokGuardSwitchedOff, grokHooksInstalled, grokRecordingSwitchedOff } from "../grok/install.ts";
+import { grokConfigLacks, grokGuardSwitchedOff, grokHooksInstalled, grokRecordingSwitchedOff, grokSwitchesUnreadable } from "../grok/install.ts";
 import { grokArgs, grokArgsRefusal, grokResumeNotice, grokRules } from "../grok/launch.ts";
 import { buildRunning, readBuild } from "./build.ts";
 import { findAgent, type HarnessConfig, insideFolder, type AgentConfig, type AgentLauncher, type AgentTool } from "./config.ts";
 import { type AgentRow, TOOL_LABELS } from "./overview.ts";
 import { AGENT_ENV, claimedBy, newToken, releaseClaim, TOKEN_ENV, workArea } from "./pick.ts";
 import { TOOL_MARKERS } from "./sessions.ts";
+import { safeText } from "./source-labels.ts";
 import { BINARIES, codexVersion, findOnPath, type InstallStep, installSteps, orreryVersion, wiringRoot, type Runner, realRunner, runInstall, type ToolCheck } from "./tools.ts";
 
 const HINTS: Record<AgentTool, string> = { pi: "Get it at https://pi.dev", "claude-code": "Get it at https://claude.com/claude-code", codex: "Get it at https://github.com/openai/codex", omp: "Get it at https://omp.sh", opencode: "Get it at https://opencode.ai", grok: "Get Grok Build from xAI" };
@@ -121,42 +122,56 @@ function installQuestion(what: string, check: ToolCheck, options: { root?: strin
 
 /**
  * Grok's step for its row in the tools check (src/grok/install.ts grokWiring), in the place of pi's, OMP's and Claude
- * Code's install question. When Orrery's side of Grok isn't this Orrery's ("missing", "other", "update available"):
- * setup's question, `Connect Orrery to Grok`, with setup's steps (installSteps, src/grok/install.ts grokInstallSteps),
- * which a yes runs (install-grok) and a no opens nothing. When it is ("installed"): a word when Grok's /hooks tab has
- * switched Orrery's hooks off (grokRecordingSwitchedOff, grokGuardSwitchedOff), and the launch goes on. A row Orrery
- * can't read ("unknown") has no steps to offer: it is said, and the launch goes on.
+ * Code's install question. When Grok's hook file isn't this Orrery's ("missing" without it, "other", "update
+ * available"), the session can't record or be guarded: setup's question, `Connect Orrery to Grok`, with setup's steps
+ * (installSteps, src/grok/install.ts grokInstallSteps), which a yes runs (install-grok) and a no opens nothing. When it
+ * is ("installed", or "missing" for a config entry alone, which the person may have removed on purpose): a word for
+ * each config entry of Orrery's missing and that setup adds it back, a word when Grok's /hooks tab has switched Orrery's
+ * hooks off or can't be read (grokSwitchedOff), and the launch goes on. A row Orrery can't read ("unknown") has no steps
+ * to offer: it is said, and the launch goes on.
  */
 function grokWiringSteps(check: ToolCheck, options: { root?: string; env?: NodeJS.ProcessEnv }): LaunchStep[] {
 	const env = options.env ?? process.env;
-	if (check.wiring === "installed") {
-		const off = grokSwitchedOff(env);
-		return off === undefined ? [] : [{ text: off, confirm: false }];
-	}
 	if (check.wiring === "unknown") return [{ text: "Orrery can't tell whether Grok runs its hooks, so this session may not record; orrery tools says why.", confirm: false }];
-	if (check.wiring !== "missing" && check.wiring !== "other" && check.wiring !== "update available") return [];
+	if (check.wiring !== "installed" && check.wiring !== "missing" && check.wiring !== "other" && check.wiring !== "update available") return [];
 	const root = options.root ?? wiringRoot(options.env).root;
+	if (check.wiring === "installed" || (check.wiring === "missing" && grokHooksInstalled(root, env) === true)) {
+		const lacks = check.wiring === "missing" ? grokLacksText(grokConfigLacks(root, env)) : undefined;
+		return [lacks, grokSwitchedOff(env)].flatMap((text) => (text === undefined ? [] : [{ text, confirm: false }]));
+	}
 	const steps = installSteps(check, root, env);
 	if (steps.length === 0) return [];
-	// Why, by what Grok runs now: another hook file; this Orrery's hooks with a config entry missing (the session
-	// records); Orrery's hooks of this install's other shape, whose entry app/current lacks; or none of Orrery's.
+	// Why, by what Grok runs now: another hook file; Orrery's hooks of this install's other shape, whose entry
+	// app/current lacks; or none of Orrery's.
 	const why =
 		check.wiring === "other"
 			? "Grok doesn't run this Orrery's hooks, so this session may not record"
-			: grokHooksInstalled(root, env) === true
-				? "Grok's config lacks Orrery's status row or memory tools"
-				: check.now !== undefined
-					? "Orrery's hooks for Grok name the other install shape's entry, so this session won't record"
-					: "Orrery's hooks for Grok are not installed, so this session won't record";
+			: check.now !== undefined
+				? "Orrery's hooks for Grok name the other install shape's entry, so this session won't record"
+				: "Orrery's hooks for Grok are not installed, so this session won't record";
 	return [{ text: stepsQuestion(why, steps, "Connecting Orrery to Grok", "Connect Orrery to Grok now?"), confirm: true, fix: "install-grok" }];
+}
+
+/** What Grok's session goes without for the config tables it lacks (grokConfigLacks), and that setup adds them back; undefined for none. */
+function grokLacksText(lacks: readonly string[]): string | undefined {
+	if (lacks.length === 0) return undefined;
+	const tables = lacks.map((name) => `[${name}]`).join(" or ");
+	const status = lacks.includes("ui.status_line");
+	const server = lacks.includes("mcp_servers.orrery");
+	const without = status && server ? "has no Orrery status row or memory tools" : status ? "shows no Orrery status row" : "has no Orrery memory tools";
+	return `Grok's config has no ${tables}, so this session ${without}; orrery setup adds ${lacks.length > 1 ? "them" : "it"} back.`;
 }
 
 /**
  * Which of Orrery's Grok hooks Grok's /hooks tab has switched off, and how they go back on; undefined when none is. With
  * a recording hook off the session is recorded in part or not at all (its status row says not recording:
- * src/grok/status.ts). A disabled-hooks file that can't be read counts as the guard switched off (grokGuardSwitchedOff).
+ * src/grok/status.ts). A disabled-hooks file that can't be read tells nothing either way, and is said as that: the guard
+ * of Orrery's Claude Code plugin, which reads it as switched off (grokGuardSwitchedOff), keeps guarding then
+ * (src/cli/main.ts grokGuarded), when Grok loads it.
  */
 function grokSwitchedOff(env: NodeJS.ProcessEnv): string | undefined {
+	const unread = grokSwitchesUnreadable(env);
+	if (unread !== undefined) return `Orrery couldn't read Grok's /hooks settings (${safeText(unread)}), so it can't tell whether its hooks are switched off there; if Grok loads Orrery's Claude Code plugin, that plugin's guard keeps checking this session's tool calls.`;
 	const recording = grokRecordingSwitchedOff(env);
 	const guard = grokGuardSwitchedOff(env);
 	if (recording && guard) return "Orrery's recording hooks and its guard are switched off in Grok's /hooks, so this session won't be fully recorded and the guard checks none of its tool calls: switch them on there, then start a new session (/new).";

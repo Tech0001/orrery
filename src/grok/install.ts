@@ -306,16 +306,29 @@ const DISABLED_HOOKS = "disabled-hooks";
  */
 const orreryHook = (event: string) => new RegExp(`^global/orrery:${event}\\[\\d+\\]\\.hooks\\[\\d+\\]$`);
 
+/** Grok's disabled-hooks file: its text, "" when there is none, undefined when it can't be read. */
+function disabledHooks(env: NodeJS.ProcessEnv): string | undefined {
+	try {
+		return readFileSync(join(grokFiles(env).home, DISABLED_HOOKS), "utf8");
+	} catch (error) {
+		return (error as { code?: unknown }).code === "ENOENT" ? "" : undefined;
+	}
+}
+
 /** Whether Grok's disabled-hooks file names a hook of Orrery's for one of `events`; `unreadable` when it can't be read. */
 function switchedOff(env: NodeJS.ProcessEnv, events: readonly string[], unreadable: boolean): boolean {
-	let text: string;
-	try {
-		text = readFileSync(join(grokFiles(env).home, DISABLED_HOOKS), "utf8");
-	} catch (error) {
-		return (error as { code?: unknown }).code === "ENOENT" ? false : unreadable;
-	}
+	const text = disabledHooks(env);
+	if (text === undefined) return unreadable;
 	const hooks = events.map(orreryHook);
 	return text.split("\n").some((line) => hooks.some((hook) => hook.test(line.trim())));
+}
+
+/**
+ * Grok's disabled-hooks file when it is there but can't be read, so whether Orrery's hooks are switched off in Grok's
+ * /hooks tab can't be told (the launch says so: src/agent/launch.ts); else undefined.
+ */
+export function grokSwitchesUnreadable(env: NodeJS.ProcessEnv): string | undefined {
+	return disabledHooks(env) === undefined ? join(grokFiles(env).home, DISABLED_HOOKS) : undefined;
 }
 
 /**
@@ -338,7 +351,8 @@ export function grokRecordingSwitchedOff(env: NodeJS.ProcessEnv): boolean {
 /**
  * Grok's row in the tools check: Orrery's hook file and config tables in Grok's folder, for the Orrery at `root`.
  * - "missing": no hook file; or Orrery's, for this root, with a table of Orrery's missing from the config (none written
- *   yet, or the person removed it): adding one is asked, as connecting is, and never done by an update on its own.
+ *   yet, or the person removed it): adding one is asked, as connecting is, and never done by an update on its own; a
+ *   launch only says so (src/agent/launch.ts).
  * - "other": a hook file that is not Orrery's, or Orrery's for another Orrery (`now` says which).
  * - "update available": Orrery's for this root's other install shape, the config tables there.
  * - "installed": the hook file runs this root's command and the config has both tables (a status line of the person's
@@ -373,6 +387,24 @@ export function grokWiring(root: string, env: NodeJS.ProcessEnv): Pick<ToolCheck
 	if (added.length > 0) return { wiring: "missing", detail: `${safeText(config)} has no ${added.map((name) => `[${name}]`).join(" or ")}`, ...moved };
 	if (otherShape) return { wiring: "update available", detail: `Orrery's hook file runs this Orrery's other install shape; setup moves it to this version's`, ...moved };
 	return { wiring: "installed", detail: safeText(hooks) };
+}
+
+/**
+ * The tables of Orrery's that Grok's config lacks for the Orrery at `root`, in the order setup adds them; none when the
+ * config can't be read or isn't TOML (grokWiring says "unknown" then).
+ */
+export function grokConfigLacks(root: string, env: NodeJS.ProcessEnv): Name[] {
+	let text = "";
+	try {
+		text = readFileSync(grokFiles(env).config, "utf8");
+	} catch (error) {
+		if ((error as { code?: unknown }).code !== "ENOENT") return [];
+	}
+	try {
+		return addGrokConfig(text, entries(root).cli).added as Name[];
+	} catch {
+		return [];
+	}
 }
 
 /**

@@ -5,7 +5,7 @@ import { parse } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 import { GROK_HOOK_EVENTS } from "../../src/grok/hooks.ts";
 import { checkTools, type ToolCheck } from "../../src/agent/tools.ts";
-import { addGrokConfig, grokGuardSwitchedOff, grokHookFile, grokHooksInstalled, grokStatusCommand, isOrreryHookFile, removeGrokConfig } from "../../src/grok/install.ts";
+import { addGrokConfig, grokConfigLacks, grokGuardSwitchedOff, grokHookFile, grokHooksInstalled, grokRecordingSwitchedOff, grokStatusCommand, grokSwitchesUnreadable, isOrreryHookFile, removeGrokConfig } from "../../src/grok/install.ts";
 import { wireReport } from "../../src/install/wire.ts";
 import { cleanupScratch, fakeRun, grokScratch, tempDir } from "../install/support.ts";
 
@@ -180,6 +180,49 @@ describe("Grok's hook file", () => {
 		rmSync(disabled);
 		mkdirSync(disabled);
 		expect(grokGuardSwitchedOff(t.env)).toBe(true);
+	});
+
+	it("names Grok's disabled-hooks file when it is there but can't be read, apart from what it switches off", () => {
+		const t = grokScratch();
+		const disabled = join(t.grok, "disabled-hooks");
+		// No file, or one that reads: nothing to say about reading it.
+		expect(grokSwitchesUnreadable(t.env)).toBeUndefined();
+		writeFileSync(disabled, "global/orrery:pre_tool_use[0].hooks[0]\n");
+		expect(grokSwitchesUnreadable(t.env)).toBeUndefined();
+		if (process.getuid?.() !== 0) {
+			chmodSync(disabled, 0o000);
+			try {
+				expect(grokSwitchesUnreadable(t.env)).toBe(disabled);
+				// The guard's own reading is unchanged: can't be told, so switched off; recording: nothing told.
+				expect(grokGuardSwitchedOff(t.env)).toBe(true);
+				expect(grokRecordingSwitchedOff(t.env)).toBe(false);
+			} finally {
+				chmodSync(disabled, 0o600);
+			}
+		}
+		rmSync(disabled);
+		mkdirSync(disabled);
+		expect(grokSwitchesUnreadable(t.env)).toBe(disabled);
+	});
+
+	it("names the config tables of Orrery's that Grok's config lacks, none when it can't be read", () => {
+		const t = grokScratch();
+		const config = join(t.grok, "config.toml");
+		const full = addGrokConfig("", join(t.current, "bin", "orrery")).next;
+		// No config yet: both.
+		expect(grokConfigLacks(t.current, t.env)).toEqual(["ui.status_line", "mcp_servers.orrery"]);
+		writeFileSync(config, full.slice(0, full.indexOf("[mcp_servers.orrery]")));
+		expect(grokConfigLacks(t.current, t.env)).toEqual(["mcp_servers.orrery"]);
+		writeFileSync(config, full.slice(full.indexOf("[mcp_servers.orrery]")));
+		expect(grokConfigLacks(t.current, t.env)).toEqual(["ui.status_line"]);
+		writeFileSync(config, full);
+		expect(grokConfigLacks(t.current, t.env)).toEqual([]);
+		// A status line of the person's own counts as one.
+		writeFileSync(config, `[ui.status_line]\ntype = "command"\ncommand = "mine"\n`);
+		expect(grokConfigLacks(t.current, t.env)).toEqual(["mcp_servers.orrery"]);
+		// Not TOML: none (the tools check says "unknown").
+		writeFileSync(config, "[ui\n");
+		expect(grokConfigLacks(t.current, t.env)).toEqual([]);
 	});
 });
 

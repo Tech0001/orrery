@@ -245,15 +245,36 @@ describe("opening an agent in Grok", () => {
 		expect(launchPlan(config, row, after, options).steps).toEqual([]);
 	});
 
-	it("asks to add back a config entry of Orrery's the person removed, saying the session still records", () => {
+	it("says, without asking, which config entry of Orrery's Grok's config lacks when Grok runs this Orrery's hooks, and opens Grok", () => {
 		const { config, row, env } = setup("grok");
-		// Orrery's hooks, and its status row without its memory server.
+		const { config: grokConfig, disabled } = grokFolder(env);
+		const options = { root: orreryRoot(), env };
 		const full = addGrokConfig("", own()).next;
-		grokFiles(env, own(), full.slice(0, full.indexOf("[mcp_servers.orrery]")));
-		const tools = checkTools({ root: orreryRoot(), env });
-		expect(tools.find((t) => t.id === "grok")?.wiring).toBe("missing");
-		const plan = launchPlan(config, row, tools, { root: orreryRoot(), env });
-		expect(plan.steps).toEqual([{ text: connect("Grok's config lacks Orrery's status row or memory tools", [`add Orrery's status row and memory tools to ${grokFolder(env).config} unless it has its own (a copy of it first)`]), confirm: true, fix: "install-grok" }]);
+		const status = full.slice(0, full.indexOf("[mcp_servers.orrery]"));
+		const server = full.slice(full.indexOf("[mcp_servers.orrery]"));
+		/** The launch with Orrery's own hook file and `text` as Grok's config: its wiring is "missing", for a config entry alone. */
+		const open = (text: string) => {
+			grokFiles(env, own(), text);
+			const tools = checkTools(options);
+			expect(tools.find((t) => t.id === "grok")?.wiring).toBe("missing");
+			return launchPlan(config, row, tools, options);
+		};
+		// The memory tools removed (the session still records, with Orrery's guard): said, and Grok opens.
+		const noServer = open(status);
+		expect(noServer.steps).toEqual([{ text: "Grok's config has no [mcp_servers.orrery], so this session has no Orrery memory tools; orrery setup adds it back.", confirm: false }]);
+		expect(noServer).toMatchObject({ command: join(env.PATH, "grok"), args: ["--no-leader"] });
+		expect(noServer.blocked).toBeUndefined();
+		// The status row removed, on purpose say: said at every launch, never asked.
+		expect(open(server).steps).toEqual([{ text: "Grok's config has no [ui.status_line], so this session shows no Orrery status row; orrery setup adds it back.", confirm: false }]);
+		expect(open("").steps).toEqual([{ text: "Grok's config has no [ui.status_line] or [mcp_servers.orrery], so this session has no Orrery status row or memory tools; orrery setup adds them back.", confirm: false }]);
+		// The launch changes nothing in Grok's config.
+		expect(readFileSync(grokConfig, "utf8")).toBe("");
+		// Orrery's hooks switched off in Grok's /hooks as well: both are said.
+		writeFileSync(disabled, "global/orrery:pre_tool_use[0].hooks[0]\n");
+		expect(open(status).steps).toEqual([
+			{ text: "Grok's config has no [mcp_servers.orrery], so this session has no Orrery memory tools; orrery setup adds it back.", confirm: false },
+			{ text: "Orrery's guard is switched off in Grok's /hooks, so it checks none of this session's tool calls: switch it on there.", confirm: false },
+		]);
 	});
 
 	it("asks to connect Orrery to Grok when Grok runs Orrery's hooks of the other install shape, or another hook file", () => {
@@ -267,6 +288,12 @@ describe("opening an agent in Grok", () => {
 		grokFiles(env, shape, addGrokConfig("", own()).next);
 		expect(check().find((t) => t.id === "grok")?.wiring).toBe("update available");
 		expect(launchPlan(config, row, check(), options).steps).toEqual([{ text: connect("Orrery's hooks for Grok name the other install shape's entry, so this session won't record", [replace(`runs ${shape}`)]), confirm: true, fix: "install-grok" }]);
+		// The same, with a config entry of Orrery's missing too ("missing"): asked, since the hook file isn't this install's.
+		grokFiles(env, shape, "");
+		expect(check().find((t) => t.id === "grok")).toMatchObject({ wiring: "missing", now: `runs ${shape}` });
+		expect(launchPlan(config, row, check(), options).steps).toEqual([
+			{ text: connect("Orrery's hooks for Grok name the other install shape's entry, so this session won't record", [replace(`runs ${shape}`), `add Orrery's status row and memory tools to ${grokFolder(env).config} unless it has its own (a copy of it first)`]), confirm: true, fix: "install-grok" },
+		]);
 		// Another Orrery's hooks: that Orrery may record the session, or may not.
 		grokFiles(env, "/opt/other/bin/orrery", addGrokConfig("", own()).next);
 		expect(check().find((t) => t.id === "grok")?.wiring).toBe("other");
@@ -305,6 +332,29 @@ describe("opening an agent in Grok", () => {
 		const both = open();
 		expect(both.steps).toEqual([{ text: "Orrery's recording hooks and its guard are switched off in Grok's /hooks, so this session won't be fully recorded and the guard checks none of its tool calls: switch them on there, then start a new session (/new).", confirm: false }]);
 		expect(both).toMatchObject({ command: join(env.PATH, "grok"), args: ["--no-leader"] });
+	});
+
+	it("says it couldn't read Grok's /hooks settings when the disabled-hooks file can't be read, not that the guard is off, then opens Grok", () => {
+		const { config, row, tools, env } = connected("grok");
+		const { disabled } = grokFolder(env);
+		const open = () => launchPlan(config, row, tools, { root: orreryRoot(), env });
+		const unread = [{ text: `Orrery couldn't read Grok's /hooks settings (${disabled}), so it can't tell whether its hooks are switched off there; if Grok loads Orrery's Claude Code plugin, that plugin's guard keeps checking this session's tool calls.`, confirm: false }];
+		// A file there that can't be read (skipped as root, who reads it anyway).
+		if (process.getuid?.() !== 0) {
+			writeFileSync(disabled, "global/orrery:pre_tool_use[0].hooks[0]\n");
+			chmodSync(disabled, 0o000);
+			try {
+				expect(open().steps).toEqual(unread);
+			} finally {
+				chmodSync(disabled, 0o600);
+			}
+			rmSync(disabled);
+		}
+		// Not a file: the same.
+		mkdirSync(disabled);
+		const plan = open();
+		expect(plan.steps).toEqual(unread);
+		expect(plan).toMatchObject({ command: join(env.PATH, "grok"), args: ["--no-leader"] });
 	});
 
 	/** A fake grok that writes down what it was started with: the agent, the token, the folder and each argument on its own line. */
