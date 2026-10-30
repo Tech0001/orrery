@@ -243,7 +243,8 @@ describe("a Codex session, process by process", () => {
 		const holder = spawn(c.cmd, c.args, { env: cleanEnv({ ORRERY_CONFIG: t.configPath }), stdio: "ignore" });
 		try {
 			const exited = new Promise<number | null>((resolve) => holder.on("exit", resolve));
-			await waitUntil(() => readMode(t.agent.dir, "s1")?.mode === "recording", 15_000);
+			// The holder writes its mode, then its first heartbeat: a slow machine can be read between the two.
+			await waitUntil(() => readMode(t.agent.dir, "s1")?.mode === "recording" && readHolder(t.agent.dir) !== undefined, 15_000);
 			expect(readHolder(t.agent.dir)).toMatchObject({ claudePid: codex.pid, host: "codex" });
 			codex.kill();
 			expect(await exited).toBe(0);
