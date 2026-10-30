@@ -947,20 +947,46 @@ function namedBy(text: string | undefined, names: readonly string[]): string[] {
 	return units === undefined ? [] : names.filter((name) => globMatches(units, name));
 }
 
+/** Each escape that printf or echo -e turns into a blank (ESCAPE_BEFORE). */
+const ESCAPES = new RegExp(ESCAPE_BEFORE, "g");
+/**
+ * A run of a piece's characters with no ( ) , ; | & < > # but in a bracket expression, kept whole: a "[" that doesn't
+ * close before the next "[" is itself, so a piece is read in linear time.
+ */
+const GROK_PART = /(?:\[[!^]?\]?[^\][]*\]|[^(),;|&<>#])+/g;
+
 /**
  * A word of Grok's as the words it may stand for: quotes and escapes gone, split at the blanks a quoted part holds, and
  * a brace group (from its first brace to its last) and what is built at run time read as a glob's *; a piece built
  * whole at run time is left out (builtAtRunTime judges the word). Split at a parenthesis, a comma, ;, |, &, <, > or #
  * too, which no name of Grok's holds: a quote that closes another's text reads as one that opens, so the word runs on
- * past that text's end (python3 -c "print('grok update')", sh -c 'grok update';true).
+ * past that text's end (python3 -c "print('grok update')", sh -c 'grok update';true). Not inside a glob's bracket
+ * expression, which is one character whatever it holds (up[d#]ate may be update). A word holding an escape that printf
+ * or echo -e turns into a blank (ESCAPE_BEFORE) is read again with each one a blank, and the pieces that reading adds
+ * count too: piped into sh, printf 'grok update\n' runs grok update (the first reading keeps up\date as update).
  */
 function grokPieces(word: string): string[] {
+	const bare = word.replace(EXPANSION, "\0");
+	const pieces = grokReading(bare);
+	const spaced = bare.includes("\\") ? bare.replace(ESCAPES, " ") : bare;
+	if (spaced === bare) return pieces;
+	const seen = new Set(pieces);
+	for (const piece of grokReading(spaced)) {
+		if (seen.has(piece)) continue;
+		seen.add(piece);
+		pieces.push(piece);
+	}
+	return pieces;
+}
+
+/** The pieces of one reading of a word (grokPieces), its expansions already \0. */
+function grokReading(bare: string): string[] {
 	const pieces: string[] = [];
-	for (const piece of word.replace(EXPANSION, "\0").replace(/\\([^])|["']/g, "$1").split(/\s+/)) {
+	for (const piece of bare.replace(/\\([^])|["']/g, "$1").split(/\s+/)) {
 		const open = piece.indexOf("{");
 		const close = piece.lastIndexOf("}");
 		const braced = open !== -1 && close > open && /,|\.\./.test(piece.slice(open, close)) ? `${piece.slice(0, open)}*${piece.slice(close + 1)}` : piece;
-		for (const part of braced.split(/[(),;|&<>#]+/)) if (!/^\0*$/.test(part)) pieces.push(part.replace(/\0+/g, "*"));
+		for (const part of braced.match(GROK_PART) ?? []) if (!/^\0*$/.test(part)) pieces.push(part.replace(/\0+/g, "*"));
 	}
 	return pieces;
 }

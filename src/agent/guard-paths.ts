@@ -109,6 +109,10 @@
  *   Grok's built whole at run time (`grok $C`, `grok mcp $SUB orrery`) is refused, as it may be any. Grok's commands
  *   are Grok 1.0.70's: a later Grok's new command, or a read-only one's new option that writes, passes until Orrery
  *   refuses it, unless its name is one refused already.
+ * - A refused grok command spelt through the shell's expansion tricks gets past the grok command rule, as one whose
+ *   name is built in a variable does: brace groups nested (`{grok,{update,x}}`), holding a quoted blank
+ *   (`{grok,' update'}`) or an ANSI-C string (`{grok,$'\x75pdate'}`), glob brackets around a name's letters
+ *   (`gr[o]k update`), or a backslash-newline that joins a quoted string to the next line (`echo 'grok update\' | sh`).
  * - A path to Grok's folder assembled from variables, parameter expansions or substitutions gets through, from a
  *   session started inside Grok's folder too (`$X/../hooks` or `$(pwd)/../config.toml` from a call run in an open part,
  *   a ".." held in a variable, `P=<home>/skills; … ${P%/skills}/hooks/x`), as a path split into pieces or a script the

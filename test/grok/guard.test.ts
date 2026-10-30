@@ -1839,6 +1839,23 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 		]);
 	});
 
+	it("reads a glob's bracket expression whole, a ;, &, |, <, > or # in it too, and an escape printf or echo -e makes a blank as a blank, glued to a word's end too", () => {
+		refusesEach([
+			// A bracket expression is one character of a glob, whatever it holds: up[d#]ate may be update.
+			["grok up[d#]ate", "grok up[d#]ate"],
+			["grok up[d\\;]ate", "grok up[d\\;]ate"],
+			["grok mcp dis[a#]ble orrery", "grok mcp dis[a#]ble"],
+			["grok -[-#]trust", "grok --trust"],
+			// printf and echo -e turn \n, \t and \x0a into blanks, so a pipe into sh, sh -c and ssh read grok update.
+			["printf 'grok update\\n' | sh", "grok update"],
+			['echo -e "grok --trust\\n" | sh', "grok --trust"],
+			["printf 'grok update\\t' | sh", "grok update"],
+			["printf 'grok update\\x0a' | sh", "grok update"],
+			["sh -c \"$(printf 'grok update\\n')\"", "grok update"],
+			["printf 'grok update\\n' | ssh host sh", "grok update"],
+		]);
+	});
+
 	it("reads every word to the command's end: a substitution's or a backquote's (a ; inside them too), past a part built at run time, whatever a shell drops from the program's name, and what xargs feeds it", () => {
 		refusesEach([
 			["grok -m $(cat m) mcp disable orrery", "grok mcp disable"],
