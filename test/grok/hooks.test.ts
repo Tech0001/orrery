@@ -1,3 +1,4 @@
+import { type ChildProcess, spawn } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,25 +7,29 @@ import { readHolder } from "../../src/agent/handover.ts";
 import { agentModelSource } from "../../src/agent/model-source.ts";
 import { openFiles } from "../../src/agent/open-files.ts";
 import { claimedBy, newToken } from "../../src/agent/pick.ts";
-import { processEnv } from "../../src/agent/process.ts";
-import { forgetSession, liveSession } from "../../src/agent/sessions.ts";
+import { processArgv, processEnv } from "../../src/agent/process.ts";
+import { forgetSession, liveSession, recordSession } from "../../src/agent/sessions.ts";
 import { Holder } from "../../src/claude/holder.ts";
 import { sessionDir } from "../../src/claude/paths.ts";
-import { listSessions, pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
+import { listSessions, pendingEvents, readEvent, readMode, spoolEvent, writeMode } from "../../src/claude/spool.ts";
 import { readUnconfirmed } from "../../src/claude/transcript.ts";
 import { LAUNCH_VARIABLES } from "../../src/codex/pick.ts";
 import { GROK_HOOK_EVENTS, type GrokHookContext, grokOwnConfig, runGrokHook } from "../../src/grok/hooks.ts";
-import { grokFolder } from "../../src/grok/log.ts";
+import { GROK_SHARED, grokFolder } from "../../src/grok/log.ts";
+import { grokStatus } from "../../src/grok/status.ts";
 import { fauxModels } from "../agent/support.ts";
 import { cleanupDirs, messages, seed, startedWith, type TestAgent, testAgent, waitUntil } from "../claude/support.ts";
 import { type GrokHome, grokHomeIn, grokLog, grokSession } from "./log-lines.ts";
 
 const holders: Holder[] = [];
 const homes = new Map<string, GrokHome>();
+/** Processes a test started (a second Grok): killed after each test. */
+const children: ChildProcess[] = [];
 /** The data folders this file's Grok was recorded in as a host: forgotten after each test. */
 const dataDirs: string[] = [];
 afterEach(async () => {
 	for (const holder of holders.splice(0)) await holder.stop("test over");
+	for (const child of children.splice(0)) child.kill("SIGKILL");
 	for (const home of homes.values()) home.close();
 	homes.clear();
 	for (const dir of dataDirs.splice(0)) forgetSession(dir, GROK);
@@ -670,6 +675,143 @@ describe("a plain grok (no ORRERY_AGENT): Orrery's hooks run in every Grok sessi
 			expect(await run(event, input({ source: "new", prompt: "Hello.", lastAssistantMessage: "Hi.", promptId: "p-1", reason: "end_turn" }), c), event).toBe("");
 		}
 		expect(state(t)).toEqual({});
+	});
+});
+
+describe("a second Grok that opens a session another Grok records (grok -r <its id>): the session is marked, and its recording stops", () => {
+	/** What a second Grok's process runs: its command line names it. */
+	const SECOND = "setTimeout(() => {}, 60_000)";
+	/**
+	 * A second Grok: a live process, this one's child, that holds `path` open as Grok holds a session's events.jsonl (for
+	 * writing; `flags`), returned once its command line reads as its own. Killed after the test.
+	 */
+	async function secondGrok(path: string, flags = "a"): Promise<number> {
+		const fd = openSync(path, flags);
+		let pid: number;
+		try {
+			const child = spawn(process.execPath, ["-e", SECOND], { stdio: [fd, "ignore", "ignore"] });
+			children.push(child);
+			pid = child.pid as number;
+		} finally {
+			closeSync(fd);
+		}
+		for (const deadline = Date.now() + 5_000; !(processArgv(pid)?.join(" ").includes(SECOND) ?? false); ) {
+			if (Date.now() > deadline) throw new Error(`process ${pid}'s command line never read as its own`);
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		return pid;
+	}
+	const PAUSED = `read-only: ${GROK_SHARED}`;
+	const kinds = (t: TestAgent, session: string) => spooled(t, session).map((event) => event.kind);
+	/** The status row of this test's Grok for `session`. */
+	const row = (t: TestAgent, c: GrokHookContext, session: string) => grokStatus(JSON.stringify({ session_id: id(session) }), { config: t.config, env: c.env, grokPid: GROK, grokParent: GROK, ...(c.envOf === undefined ? {} : { envOf: c.envOf }), ...(c.alive === undefined ? {} : { alive: c.alive }) });
+
+	it("a second Grok resuming the live session (one started from its shell) marks it: the outer recorder confirms nothing more, so a forged prompt for the second Grok's turn records nothing, and the outer's earlier turns stay", async () => {
+		const t = testAgent();
+		const living = new Set([GROK]);
+		const alive = (pid: number) => living.has(pid);
+		const c = ctx(t, { startHolder: realHolder({ graceMs: 300, alive }), modeWaitMs: 5000, alive });
+		await run("session-start", input({ source: "new" }), c);
+		await run("user-prompt-submit", input({ prompt: "Real words.", promptId: "p-1" }), c);
+		await run("stop", input({ lastAssistantMessage: "Real answer.", promptId: "p-1", reason: "end_turn" }), c);
+		await waitUntil(() => messages(t.agent).length === 2, 10_000);
+		// The second Grok: a real process, started from this Grok's shell (its child, with its launch's variables), that
+		// has the session's events.jsonl open for writing, as `grok -p … -r <id>` has (seen live, 1.0.70).
+		const second = await secondGrok(join(homeOf(t).dir(id("s1")), "events.jsonl"));
+		living.add(second);
+		const theirs: GrokHookContext = { ...c, grokPid: second, grokParent: second, startHolder: () => { throw new Error("no holder may start"); } };
+		expect(await runGrokHook("session-start", input({ source: "load" }), theirs)).toBe(JSON.stringify({ systemMessage: "Orrery: started inside Test's session (Grok), so this one opens no memory and records nothing." }));
+		// The outer recorder takes the mark and pauses the session.
+		await waitUntil(() => readMode(t.agent.dir, id("s1"))?.reason === GROK_SHARED, 10_000);
+		expect(readMode(t.agent.dir, id("s1"))).toMatchObject({ mode: "read-only", reason: GROK_SHARED, claudePid: GROK });
+		// The second Grok's turn, as it writes it into the live log (a typed-looking prompt), its own prompt hook (nested:
+		// nothing), and the outer Grok's shell's made-up prompt hook with that turn's id.
+		homeOf(t).add(id("s1"), grokLog.hookRun(id("s1"), "user_prompt_submit", "p-2"), grokLog.typed(id("s1"), "Words from another Grok.", 1), grokLog.completed(id("s1"), "p-2", "error"));
+		expect(await runGrokHook("user-prompt-submit", input({ prompt: "Words from another Grok.", promptId: "p-2" }), theirs)).toBe("");
+		await forged("user-prompt-submit", input({ prompt: "Words from another Grok.", promptId: "p-2" }), c);
+		// One that slipped into the spool before the pause, as the forged hook would have spooled it: dropped and counted.
+		spoolEvent(t.agent.dir, id("s1"), { kind: "prompt", at: Date.now(), claudePid: GROK, text: "Words from another Grok.", host: "grok", promptId: "p-2" });
+		await waitUntil(() => readUnconfirmed(t.agent.dir) === 1 && pendingEvents(t.agent.dir, id("s1")).length === 0, 10_000);
+		await new Promise((resolve) => setTimeout(resolve, 400));
+		expect(messages(t.agent)).toEqual(["user: Real words.", "talk: Real answer."]);
+		// The status row and the next SessionStart (a resume of it in the same Grok) say so, in one line.
+		expect(row(t, c, "s1")).toBe(`Orrery · Test · 2 msgs · ${PAUSED}`);
+		expect(await run("session-start", input({ source: "load" }), c)).toEqual({ systemMessage: `Orrery · Test · 2 msgs · ${PAUSED}` });
+		// The outer Grok's own next turn isn't recorded either: its hooks spool nothing for a paused session.
+		await run("user-prompt-submit", input({ prompt: "Later words.", promptId: "p-3" }), c);
+		expect(kinds(t, "s1").filter((kind) => kind === "prompt")).toEqual([]);
+		expect(messages(t.agent)).toEqual(["user: Real words.", "talk: Real answer."]);
+	});
+
+	it("reopened while the second Grok lives, the session stays paused; once it is gone, a reopen records again", async () => {
+		const t = testAgent();
+		const living = new Set([GROK]);
+		const alive = (pid: number) => living.has(pid);
+		const c = ctx(t, { startHolder: realHolder({ graceMs: 300, alive }), modeWaitMs: 5000, alive });
+		await run("session-start", input({ source: "new" }), c);
+		const second = await secondGrok(join(homeOf(t).dir(id("s1")), "events.jsonl"));
+		living.add(second);
+		await runGrokHook("session-start", input({ source: "load" }), { ...c, grokPid: second, grokParent: second, startHolder: () => {} });
+		await waitUntil(() => readMode(t.agent.dir, id("s1"))?.reason === GROK_SHARED, 10_000);
+		/** Reopens the session: the recorder and this Grok's record gone (Grok quit), then its resume's SessionStart. */
+		const reopen = async () => {
+			for (const holder of holders.splice(0)) await holder.stop("reopened");
+			forgetSession(t.config.dataDir, GROK);
+			return run("session-start", input({ source: "load" }), c);
+		};
+		expect(((await reopen()) as Answer).systemMessage).toMatch(new RegExp(`^Orrery · Test · (no memory yet|0 msgs) · ${PAUSED}$`));
+		await run("user-prompt-submit", input({ prompt: "While the other Grok runs.", promptId: "p-1" }), c);
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		expect(existsSync(join(t.agent.dir, "memory.sqlite")) ? messages(t.agent) : []).toEqual([]);
+		// The second Grok is gone: a reopen records again, from where the session is now.
+		living.delete(second);
+		expect(((await reopen()) as Answer).systemMessage).toMatch(/^Orrery · Test · (no memory yet|0 msgs) · recording$/);
+		await run("user-prompt-submit", input({ prompt: "After the reopen.", promptId: "p-2" }), c);
+		await run("stop", input({ lastAssistantMessage: "Recorded again.", promptId: "p-2", reason: "end_turn" }), c);
+		await waitUntil(() => messages(t.agent).length === 2, 10_000);
+		expect(messages(t.agent)).toEqual(["user: After the reopen.", "talk: Recorded again."]);
+	});
+
+	it("a plain grok resuming it (no ORRERY_AGENT: from a plain terminal or window) marks it too", async () => {
+		const t = testAgent();
+		const c = ctx(t, { startHolder: answer("recording"), modeWaitMs: 5000 });
+		await run("session-start", input({ source: "new" }), c);
+		const second = await secondGrok(join(homeOf(t).dir(id("s1")), "events.jsonl"));
+		const plainEnv = { GROK_HOME: homeOf(t).home };
+		const plain: GrokHookContext = { ...c, env: plainEnv, envOf: grokStarted(plainEnv, () => ({ GROK_HOME: homeOf(t).home })), grokPid: second, grokParent: second, startHolder: () => { throw new Error("no holder may start"); } };
+		expect(await runGrokHook("session-start", input({ source: "load" }), plain)).toBe(JSON.stringify({ systemMessage: "Orrery: this folder is Test's, but this Grok wasn't opened as Test, so it opens no memory and records nothing. Open it with orrery agent Test --tool grok." }));
+		expect(kinds(t, "s1")).toEqual(["grok-log", "grok-shared"]);
+	});
+
+	it("an agent's Grok that opens a session another live Grok records marks it, records nothing of it and says why", async () => {
+		const t = testAgent();
+		// The first Grok: another live process that has session s1 open for writing and records it as Test's.
+		homeOf(t).begin(id("s1"));
+		const first = await secondGrok(join(homeOf(t).dir(id("s1")), "events.jsonl"));
+		expect(recordSession(t.config.dataDir, { agent: "Test", tool: "grok", pid: first, grokSession: id("s1"), config: t.configPath })).toBe(true);
+		dataDirs.push(t.config.dataDir);
+		const c = ctx(t, { startHolder: () => { throw new Error("no holder may start"); } });
+		// This Grok, opened as Test from the person's terminal, resumes s1 (this process has its events.jsonl open too).
+		expect(await run("session-start", input({ source: "load" }), c)).toEqual({ systemMessage: "Orrery: another Grok has this session open and records it, so this one isn't recorded." });
+		expect(spooled(t, "s1")).toEqual([{ kind: "grok-shared", at: 0, claudePid: GROK, start: expect.any(String) }]);
+		expect(liveSession(t.config.dataDir, GROK)).toBeUndefined();
+		forgetSession(t.config.dataDir, first);
+	});
+
+	it("marks nothing for a second process that has another file of the same session id open (grok -s <id> in another folder), or the session's file open only to read it", async () => {
+		const t = testAgent();
+		const c = ctx(t, { startHolder: answer("recording") });
+		await run("session-start", input({ source: "new" }), c);
+		const otherHome = grokHomeIn(join(t.dir, "elsewhere"), join(t.dir, "elsewhere-ws"));
+		homes.set(otherHome.home, otherHome);
+		otherHome.begin(id("s1"), { open: false });
+		const elsewhere = await secondGrok(join(otherHome.dir(id("s1")), "events.jsonl"));
+		const reader = await secondGrok(join(homeOf(t).dir(id("s1")), "events.jsonl"), "r");
+		for (const pid of [elsewhere, reader]) {
+			await runGrokHook("session-start", input({ source: "new" }), { ...c, grokPid: pid, grokParent: pid, startHolder: () => {} });
+		}
+		expect(kinds(t, "s1")).toEqual(["grok-log"]);
+		expect(readMode(t.agent.dir, id("s1"))?.mode).toBe("recording");
 	});
 });
 

@@ -35,6 +35,32 @@ import { AppendedLines, realish, under } from "../agent/appended-lines.ts";
 import type { OpenFile } from "../agent/open-files.ts";
 import { validSession } from "../claude/paths.ts";
 
+/**
+ * Why a Grok session's recording stopped once another Grok had it open too (src/grok/hooks.ts markShared): the reason in
+ * its mode, which its status row and the next SessionStart say, each in one line.
+ */
+export const GROK_SHARED = "another Grok wrote to this session; recording paused — reopen it to record again";
+
+/**
+ * The Grok a session's log is shared with, as memory meta keeps it in the session's log place (src/claude/holder.ts):
+ * `{"shared":{"pid":…,"start":…}}`, which parseGrokLogMark reads as no log, so nothing of it is confirmed. Whether that
+ * Grok still lives (`alive`, and its start unchanged when known); false for any other text.
+ */
+export function sharedLogLives(text: string | undefined, alive: (pid: number) => boolean, startOf: (pid: number) => string | undefined): boolean {
+	if (text === undefined) return false;
+	try {
+		const shared = record(record(JSON.parse(text))?.shared);
+		const pid = shared?.pid;
+		if (typeof pid !== "number" || !Number.isInteger(pid) || pid < 1 || !alive(pid)) return false;
+		return typeof shared?.start !== "string" || startOf(pid) === shared.start;
+	} catch {
+		return false;
+	}
+}
+
+/** Memory meta's text for a session's log shared with the Grok `pid`, started at `start` (sharedLogLives). */
+export const sharedLogMark = (pid: number, start: string | undefined): string => JSON.stringify({ shared: { pid, ...(start === undefined ? {} : { start }) } });
+
 /** A spooled prompt or reply of a Grok turn. */
 export interface GrokSaid {
 	readonly kind: "prompt" | "reply";

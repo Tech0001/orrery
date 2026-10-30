@@ -392,6 +392,11 @@ export function liveSession(dataDir: string, pid: number, deps: SessionDeps = {}
 	return found.kind === "live" ? found.record : undefined;
 }
 
+/** Every live session `dataDir` holds a record of (liveSession), oldest pid first; a stale one found goes. */
+export function liveSessions(dataDir: string, deps: SessionDeps = {}): SessionRecord[] {
+	return [...recordedPids(dataDir)].sort((a, b) => a - b).flatMap((pid) => liveSession(dataDir, pid, deps) ?? []);
+}
+
 /** The pids `dataDir` holds records for (none when its folder can't be read). */
 function recordedPids(dataDir: string): Set<number> {
 	try {

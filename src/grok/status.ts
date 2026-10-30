@@ -19,7 +19,8 @@
  *   session; Grok 1.0.70 quits rather than run an untrusted folder beside a hook file), Orrery's hooks are switched off in
  *   Grok's /hooks tab (its disabled-hooks file names SessionStart, UserPromptSubmit or Stop of Orrery's hook file: seen
  *   live, 1.0.70), this Grok records another of its sessions now (Grok keeps every session it ran open), or the recorder
- *   stopped.
+ *   stopped. A session whose holder paused it for another Grok that had it open too (src/grok/hooks.ts markShared) says
+ *   so as the holder's reason (`read-only: another Grok wrote to this session; …`).
  * - What SessionStart leaves can't tell one still running from one that never ran, and Grok runs the row beside it at
  *   every /new and /clear (seen live, 1.0.70: some 10 ms after the hook starts, before it records the session). So while
  *   SessionStart may still be running, within its timeout of the claim (made at the launch) or of the session's own

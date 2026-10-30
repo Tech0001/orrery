@@ -62,19 +62,29 @@
  *   anything.
  * - UserPromptSubmit and Stop spool only for the session this Grok's host record names, and what they spool is held
  *   until Grok's log confirms it, then dropped and counted if it doesn't.
+ * - A second Grok writes a session's log as the first does: one resuming a session live in another Grok (`grok -r <id>`,
+ *   which the guard refuses in shell text, or a script) appends its own prompt there, which reads as typed. So every
+ *   SessionStart, whatever its Grok (an agent's, a plain one, one started inside a session), looks for a live host
+ *   record of another Grok process that names its session, and when that Grok and this one have the session's
+ *   events.jsonl open for writing, the same file (or when either's open files can't be read), marks the session in that
+ *   record's agent's spool (markShared, a `grok-shared` event): its holder confirms nothing more of the session's log
+ *   while this Grok lives, and its status row and next SessionStart say so (src/claude/holder.ts, GROK_SHARED). This
+ *   Grok records nothing of it either: a nested or plain one never does, and an agent's says why. A Grok that runs no
+ *   Orrery hook (another GROK_HOME, its hooks masked), one under a leader, or one whose Orrery config names another data
+ *   folder marks nothing: the second-program limit.
  */
 
 import { randomUUID } from "node:crypto";
 import { lstatSync, realpathSync, type Stats } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { type AgentConfig, agentForCwd, defaultConfigPath, type HarnessConfig } from "../agent/config.ts";
 import { holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
 import { readMemory } from "../agent/memory-read.ts";
 import { type OpenFile, openFiles } from "../agent/open-files.ts";
 import { AGENT_ENV, agentNamed } from "../agent/pick.ts";
 import type { PlainDeps } from "../agent/plain-nested.ts";
-import { processCwd } from "../agent/process.ts";
-import { liveSession, nestedNotice, plainFields, recordSession, type SessionRecord } from "../agent/sessions.ts";
+import { processCwd, processStart } from "../agent/process.ts";
+import { liveSession, liveSessions, nestedNotice, plainFields, recordSession, type SessionRecord } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { NOT_RECORDED, type StatusState, statusText } from "../agent/status-text.ts";
 import { noticeShownBefore, waitForMode } from "../claude/hooks.ts";
@@ -83,7 +93,7 @@ import { holderLog, validSession } from "../claude/paths.ts";
 import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
 import { grokAgent, LAUNCH_VARIABLES, launchedEnv, startEnvOf } from "../codex/pick.ts";
 import { grokHostNotice, grokHostRefusal } from "./host.ts";
-import { type GrokHeld, grokHeldSessions, grokLogStart, grokSessionKind, grokStartHome } from "./log.ts";
+import { GROK_SHARED, type GrokHeld, grokHeldSessions, grokLogStart, grokSessionKind, grokStartHome } from "./log.ts";
 import { GROK_HOOK_EVENTS } from "./names.ts";
 
 /** The events `orrery grok-hook` answers (pre-tool-use is the guard), kept in src/grok/names.ts, where the install reads them. */
@@ -341,6 +351,58 @@ function ownSession(session: string, ctx: GrokHookContext): OwnLog | string {
 	return { path: log, home, offset: start.offset, ...(start.file === undefined ? {} : { file: start.file }) };
 }
 
+/**
+ * The session files (events.jsonl, under a Grok folder's sessions/<folder>/<session>/) for `session` that a process has
+ * open (`open`: its open files), but those it has open only to read: each as the very file ("device:inode") where the
+ * system says it, else its path as it really is. Undefined when its open files can't be read.
+ */
+function sessionFiles(open: readonly OpenFile[] | undefined, session: string): ReadonlySet<string> | undefined {
+	if (open === undefined) return undefined;
+	const files = new Set<string>();
+	for (const held of open) {
+		const { path } = held;
+		if (held.writes === false || !isAbsolute(path) || basename(path) !== "events.jsonl" || basename(dirname(path)) !== session) continue;
+		if (basename(dirname(dirname(dirname(path)))) !== "sessions") continue;
+		files.add(held.file ?? realOf(path) ?? path);
+	}
+	return files;
+}
+
+/**
+ * Marks `session` for the holder of each other live Grok that records it, when this Grok has it open too (module doc):
+ * whether it marked one. The two have the same session file open for writing, or either's open files can't be read (the
+ * mark only stops a recording). Never throws: a SessionStart goes on as ever.
+ */
+function markShared(session: string, ctx: GrokHookContext): boolean {
+	let others: SessionRecord[];
+	try {
+		others = liveSessions(ctx.config.dataDir).filter((record) => record.tool === "grok" && record.grokSession === session && record.pid !== ctx.grokPid);
+	} catch {
+		return false;
+	}
+	if (others.length === 0) return false;
+	const read = ctx.openFiles ?? openFiles;
+	const mine = sessionFiles(read(ctx.grokPid), session);
+	const start = processStart(ctx.grokPid);
+	let marked = false;
+	for (const other of others) {
+		const theirs = sessionFiles(read(other.pid), session);
+		if (mine !== undefined && theirs !== undefined && ![...mine].some((file) => theirs.has(file))) continue;
+		const agent = agentNamed(ctx.config, other.agent);
+		if (agent === undefined) continue;
+		try {
+			spoolEvent(agent.dir, session, { kind: "grok-shared", at: Date.now(), claudePid: ctx.grokPid, ...(start === undefined ? {} : { start }) });
+			marked = true;
+		} catch {
+			// The agent's spool can't be written: nothing else this hook can do for it.
+		}
+	}
+	return marked;
+}
+
+/** What an agent's SessionStart says of a session another live Grok records (markShared): it records nothing of it either. */
+const SHARED_HERE = "Orrery: another Grok has this session open and records it, so this one isn't recorded.";
+
 /** A plain grok's SessionStart (module doc): in an agent's folder, how to open that agent; elsewhere nothing. */
 function plainStart(ctx: GrokHookContext): object | undefined {
 	const cwd = (ctx.cwdOf ?? processCwd)(ctx.grokPid);
@@ -355,8 +417,10 @@ function plainStart(ctx: GrokHookContext): object | undefined {
  * ORRERY_AGENT, only tells the person.
  */
 export async function sessionStart(input: GrokHookInput, ctx: GrokHookContext): Promise<object | undefined> {
-	if (!opened(ctx)) return plainStart(ctx);
 	const session = sessionOf(input);
+	// A session another live Grok records, which this one has open too (module doc): marked, whatever this Grok is.
+	const shared = session !== undefined && markShared(session, ctx);
+	if (!opened(ctx)) return plainStart(ctx);
 	if (session === undefined) return undefined;
 	const refuse = (why: string) => ({ systemMessage: `Orrery: can't confirm this is this Grok's own session (${safeText(why)}), so this session isn't recorded.` });
 	// Before anything is decided, claimed or recorded: is this session this Grok's own?
@@ -373,6 +437,7 @@ export async function sessionStart(input: GrokHookInput, ctx: GrokHookContext): 
 	if (pick.kind === "refused") return { systemMessage: pick.notice };
 	if (pick.kind === "nested") return { systemMessage: nestedNotice({ agent: pick.outer, tool: pick.tool, via: "ancestry", dataDir: "", ...plainFields(pick) }) };
 	const { agent } = pick;
+	if (shared) return { systemMessage: SHARED_HERE };
 	// The session this Grok's host record names already: nothing to record again.
 	const recorded = hostRecord(ctx);
 	const current = recorded?.grokSession === session && recorded.agent === agent.name;
@@ -405,11 +470,13 @@ export async function sessionStart(input: GrokHookInput, ctx: GrokHookContext): 
 			state = "not recording yet";
 			warnings.push(`Orrery: ${agent.name}'s recorder did not answer in time; see ${holderLog(agent.dir)}.`);
 		} else if (mode.mode === "read-only") {
-			state = NOT_RECORDED;
+			// Paused for another Grok that had the session open (src/claude/holder.ts): said in the status line alone.
+			state = mode.reason === GROK_SHARED ? { readOnly: GROK_SHARED } : NOT_RECORDED;
 			if (held) warnings.push(`Orrery: ${agent.name} is ${openElsewhere(agent.dir, "grok")}; this session reads memory but is not recorded.`);
 		}
 		// A recording recorder's notices (memory kept aside, unsaved turns kept) are said once per recorder start.
-		if (!held && typeof mode?.reason === "string" && !(mode.mode === "recording" && noticeShownBefore(agent.dir, session, mode.nonce))) warnings.push(safeText(mode.reason));
+		const reason = mode?.reason === GROK_SHARED ? undefined : mode?.reason;
+		if (!held && typeof reason === "string" && !(mode?.mode === "recording" && noticeShownBefore(agent.dir, session, mode.nonce))) warnings.push(safeText(reason));
 	}
 	let memory: { readonly messages?: number } = {};
 	try {
