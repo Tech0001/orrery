@@ -326,7 +326,10 @@ may not run `grok` (or a path to it, or its release binary) with any of these wo
   `stdio`, `serve`, `headless` and `leader` run sessions outside `orrery agent` and load them by id); `leader`, `worker`
   and their `start`, `stop`, `status` and the rest (which run Grok's shared leader); `dashboard`; `export` and `trace`
   (they write files, the clipboard or an upload); `clone`; `wrap`; and `worktree`'s commands that change worktrees;
-- `du`'s `--clean` and `--clean-orphaned`, and `plugin list`'s `--available`.
+- `du`'s `--clean` and `--clean-orphaned`, and `plugin list`'s `--available`;
+- a word built at run time as a whole, which could be any of these: `grok $C`, `grok "$C"`, `grok $(cat x)`, `grok mcp
+  $SUB orrery`, and a prompt that is only a variable (`grok -p "$PROMPT"`). Write the word out, or quote it with other
+  words: `grok -p "summarize $FILE please"` passes.
 
 Its read-only commands pass: `grok --version`, `--help`, `help`, `version`, `models`, `inspect`, `completions`,
 `usage`, `du`, `mcp list`, `plugin list`, `plugin details` and `validate`, `plugin marketplace list`, `sessions list` and
@@ -337,13 +340,19 @@ server), and `-h` doesn't count, since Orrery reads the text in lower case and `
 Orrery doesn't read where a word stands: Grok takes its subcommand after its prompt too (`grok hi mcp list` runs `mcp
 list`), an option such as `-w` takes a value or none, and a shell turns a brace group into several words (`grok {hi,mcp}
 {disable,list}` runs `grok hi mcp disable list`). So each word counts alone, as every word it could be: a brace group, or
-a part built at run time (`dis$X`), as a wildcard. A word built at run time as a whole (`grok $C`) could be anything and
-gets through (see Limits). A prompt holding one of these words passes when it is quoted as one word and `grok` runs as
-the command (`grok "update the docs"`, `timeout 60 grok -p "add tests"`); an unquoted one is refused (`grok -p update`),
-and so is a quoted one in text that only names `grok` (`echo grok "mcp disable orrery" | sh`). As with Orrery's commands,
-text that only names one is refused too (`echo grok update`, a commit message that names `grok` and later `update`): give
-git a message from a file (`git commit -F`). Grok's `--help` lists no option that starts it without its hooks. Run these
-yourself in your own terminal.
+a part built at run time (`dis$X`), as a wildcard. A prompt holding one of these words passes when it is quoted as one
+word and `grok` runs as the command (`grok "update the docs"`, `timeout 60 grok -p "add tests"`); an unquoted one is
+refused (`grok -p update`), and so is a quoted one that starts with `-` (`grok "--trust x"`) or holds a substitution
+(`grok -p "update $(date)"`). Each `grok` in the text is read on its own, one inside another's prompt or substitution
+too (`grok "x $(grok mcp disable orrery)"`).
+
+The rule reads `grok` only where it runs as a command: at a command's start, after `;`, `&&`, `|`, `(`, a keyword or an
+assignment, in a substitution, or after a program that runs its words (`env`, `sudo`, `nohup`, `timeout`, `xargs`,
+`find -exec` and the like). Text that names it as another command's argument passes (`git commit -m "Add grok support
+and update docs"`, `gh pr create --head grok …`), unless a substitution, a comment, a here-document, a parenthesis or
+a brace comes before it in the text, where a shell may read the rest otherwise (quotes nest in a substitution, and a
+function may run its words): give git such a message from a file (`git commit -F <file>`). Grok's `--help` lists no
+option that starts it without its hooks. Run these yourself in your own terminal.
 
 ### Its limits in Grok
 
@@ -376,8 +385,8 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
   through.
 - **A name built from a variable**, read from a file, or printed by another program gets through the shell-text rules,
   as in every tool, and so does a `grok` command reached that way, through an alias or a link of another name, or from
-  a script, and one with a word built at run time as a whole (`grok $C`, with `C` holding `mcp disable orrery`; `grok
-  mcp $SUB orrery`; `grok du $X`).
+  a script. So does one another program runs from text it is handed (`eval grok …`, `sh -c "grok …"`, `echo grok … |
+  sh`, `ssh`, a program that runs its words that Orrery doesn't know): there `grok` is only named.
 - **Grok's commands are 1.0.70's.** A command a later Grok adds, or an option it adds to a read-only command that
   writes, passes until Orrery refuses it, unless its name is one Orrery refuses already.
 - **A coding tool an agent starts with its own settings** is a second program, as a script is: a Grok started with

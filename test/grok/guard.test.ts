@@ -1358,8 +1358,6 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 		["grok agent --leader serve", "grok agent serve"],
 		["grok agent", "grok agent"],
 		["grok wrap grok -c", "grok wrap"],
-		// Text that only names one is refused too, as for Orrery's commands.
-		["echo grok update", "grok update"],
 	];
 	/** Command lines that stay open: Grok's read-only commands, prompts, and text that names Grok otherwise. */
 	const open = [
@@ -1412,8 +1410,11 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 		refusesEach(refused);
 	});
 
-	it("says why: a session that may be live elsewhere stops recording, --trust changes Grok's setup, and only Grok's read-only commands run", () => {
+	it("says why: a session that may be live elsewhere stops recording, --trust changes Grok's setup, only Grok's read-only commands run, and a word built at run time may be any", () => {
 		const { options } = setup();
+		expect(grokGuard("run_terminal_command", { command: "grok $C" }, options, false)).toMatch(
+			/^grok \$c can't run from a session's shell: a word built at run time may be any of Grok's commands, and only those that read run here \(grok help, .*\)\. Write the word out, or quote it with other words \(a prompt\)\. Run it in your own terminal\./,
+		);
 		expect(grokGuard("run_terminal_command", { command: `grok -p hi -r ${ID}` }, options, false)).toMatch(/opens a Grok session by its id or the latest one, which may be live in another Grok .* stops Orrery recording that session/);
 		expect(grokGuard("run_terminal_command", { command: "grok --trust" }, options, false)).toMatch(/trusts a folder for good, which changes Grok's own setup \(its MCP servers, plugins, trusted folders, sign-in, managed config or saved sessions\)/);
 		for (const command of ["grok mcp disable orrery", "grok agent stdio", "grok worker start"]) {
@@ -1498,7 +1499,7 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 		]);
 	});
 
-	it("a word built at run time or a glob is read as each word it could be, wherever it stands; one built whole at run time may be any and passes (Known limits)", () => {
+	it("a word built at run time or a glob is read as each word it could be, wherever it stands; one built whole at run time may be any and is refused", () => {
 		refusesEach([
 			// A value built at run time is no reason to stop reading.
 			["grok --model $M mcp disable orrery", "grok mcp disable"],
@@ -1525,21 +1526,60 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 			["grok --tr* -p hi", "grok --trust"],
 			[`grok --re* ${ID}`, "grok --resume"],
 		]);
+		opensEach(["ls src/grok src/*.ts"]);
+	});
+
+	it("refuses a word of Grok's built whole at run time, which may be any of its commands: an expansion or a substitution outside quotes, or quoted with nothing else but blanks; a quoted one with other words passes", () => {
+		refusesEach([
+			// C holding update, or mcp disable orrery, runs it.
+			["grok $C", "grok $c"],
+			['grok "$C"', 'grok "$c"'],
+			['grok "$A $B"', 'grok "$a $b"'],
+			['grok " $C "', 'grok " $c "'],
+			["grok ${C}", "grok ${c}"],
+			['grok "${C}"', 'grok "${c}"'],
+			["grok $(cat x)", "grok $(…)"],
+			['grok "$(cat x)"', 'grok "$(cat x)"'],
+			["grok `cat x`", "grok `…`"],
+			['grok "`cat x`"', 'grok "`cat x`"'],
+			["grok$X", "grok $x"],
+			["x=`grok \\`cat x\\``", "grok \\`cat"],
+			["grok mcp dis`echo able` orrery", "grok mcp `…`"],
+			// Specials count, and nested groups can't hide one.
+			["grok $$", "grok $$"],
+			["grok $?", "grok $?"],
+			['grok "${A:-${B}}"', 'grok "${a:-${b}}"'],
+			['grok "$(cat $(f))"', 'grok "$(cat $(f))"'],
+			// Round B's: a group's command, or du's option, built at run time.
+			["grok mcp $SUB orrery", "grok mcp $sub"],
+			["grok plugin marketplace $SUB ./m", "grok plugin marketplace $sub"],
+			["grok du $X", "grok du $x"],
+			// Any of Grok's words, an option's value or a prompt too (accepted over-refusal: write it out, or add words).
+			['grok -p "$PROMPT"', 'grok "$prompt"'],
+			['grok "$PROMPT" --model m', 'grok "$prompt"'],
+			['x=$(grok -p "$(cat prompt.md)")', 'grok "$(cat prompt.md)"'],
+			["grok --model=$M -p hi", "grok --model=$m"],
+			["grok $X help", "grok help $x"],
+			["grok sessions list --debug-file $F", "grok sessions list $f"],
+			["grok sessions search $Q", "grok sessions search $q"],
+			[`grok usage "$ID"`, 'grok usage "$id"'],
+			["grok mcp list --debug-file $F", "grok mcp list $f"],
+			// A refused word on the line names the command first.
+			[`grok -p "$(cat prompt.txt)" -r ${ID}`, "grok -r"],
+		]);
 		opensEach([
-			'grok -p "$PROMPT"',
-			'grok "$PROMPT"',
-			'grok "$PROMPT" --model m',
-			"grok $X help",
-			"grok sessions list --debug-file $F",
-			"grok sessions search $Q",
-			`grok usage "$ID"`,
-			"grok mcp list --debug-file $F",
-			"ls src/grok src/*.ts",
-			// A whole word built at run time may be any: the documented limit (grok $C, C holding mcp disable orrery).
-			"grok $C",
-			"grok mcp $SUB orrery",
-			"grok plugin marketplace $SUB ./m",
-			"grok du $X",
+			'grok -p "summarize $FILE please"',
+			'for f in a b; do grok -p "review $f and add tests"; done',
+			'grok "x $(echo update)"',
+			"grok -p $'line one\\nline two'",
+			"grok -p 'it costs $5'",
+			'grok -p "cost: \\$5"',
+			// The program's own substitution, closed before its command ends.
+			"x=$(grok --version)",
+			"x=`grok --version`",
+			'echo "`grok --version`"',
+			"VERSION=`grok --version`; git add .",
+			'x=`grok mcp list`; echo "$x"',
 		]);
 	});
 
@@ -1600,7 +1640,7 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 		opensEach(["grok -w", "grok -w -p hi", "grok -w feat -p hi", 'grok -w feat "add the tests"', "grok --worktree=feat -p hi", "grok -w feat mcp list"]);
 	});
 
-	it("a quoted prompt holding a refused word passes where grok runs as the command; unquoted, or in text that only names grok, its words count (accepted over-refusal)", () => {
+	it("a quoted prompt holding a refused word passes where grok runs as the command; unquoted, starting with a -, or holding a substitution, its words count (accepted over-refusal)", () => {
 		opensEach([
 			'grok "please update the docs"',
 			'grok -p "add a test and remove the old one"',
@@ -1619,13 +1659,72 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 			["grok please update the docs", "grok update"],
 			['grok -p "update"', "grok update"],
 			["grok -- -r", "grok -r"],
-			// Where grok doesn't run as the command, a shell may read the text again without its quotes.
-			['eval grok "mcp disable orrery"', "grok mcp disable"],
-			['echo grok "mcp disable orrery" | sh', "grok mcp disable"],
-			['sh -c "grok mcp disable orrery"', "grok mcp disable"],
-			["bash -c \"grok 'update the docs'\"", "grok update"],
-			// A quoted string glued to more is no prompt: echo prints grok mcp disable orrery y.
-			['echo "x\ngrok "mcp disable orrery" y" | sh', "grok mcp disable"],
+			// A quoted word that starts with a - is no prompt: Grok reads an option there.
+			['grok "--trust x"', "grok --trust"],
+			["grok '--resume abc'", "grok --resume"],
+			['grok "-r abc"', "grok -r"],
+			['grok -p hi "--continue now"', "grok --continue"],
+			// A quoted word holding a substitution or a ${…} is no prompt (accepted over-refusal).
+			['grok -p "please update $(date)"', "grok update"],
+			['grok "summary of $(cat notes) please" mcp disable orrery', "grok mcp disable"],
+		]);
+	});
+
+	it("reads each grok on its own: one in another's quoted prompt, substitution or backquotes, nested twice too", () => {
+		refusesEach([
+			['grok "x $(grok mcp disable orrery)"', "grok mcp disable"],
+			['grok "x `grok mcp disable orrery`"', "grok mcp disable"],
+			['grok "x $(echo "$(grok mcp disable orrery)")"', "grok mcp disable"],
+			['grok -p "a $(b $(grok update))"', "grok update"],
+			['echo "`grok update`"', "grok update"],
+			["x=`grok mcp disable orrery`", "grok mcp disable"],
+		]);
+	});
+
+	it("reads grok only where it runs as a command: text that names it as another command's argument passes, but after a substitution, a comment, a here-document, a parenthesis or a brace (accepted over-refusal)", () => {
+		opensEach([
+			'git commit -m "Add grok support and update docs"',
+			'gh pr create --head grok --title "Add Grok support" --body "It refuses grok update and grok mcp disable"',
+			'git commit -m "feat(grok): add update docs"',
+			'git commit -m "Fix #12: grok update"',
+			"echo grok update",
+			"rg -n 'grok mcp disable' src",
+			"cd repo && git log grok -- install.sh",
+		]);
+		refusesEach([
+			// A command's start: after ;, &&, ||, |, (, {, a keyword, or in a substitution.
+			["x && grok mcp disable orrery", "grok mcp disable"],
+			["(grok update)", "grok update"],
+			["$(grok login)", "grok login"],
+			["echo $(grok login)", "grok login"],
+			["if grok update; then :; fi", "grok update"],
+			["case x in a) grok update;; esac", "grok update"],
+			["f() { grok update; }", "grok update"],
+			// After assignments, quoted ones too, and the programs that run their words.
+			["env A=1 grok setup", "grok setup"],
+			['A="x y" grok update', "grok update"],
+			["sudo -u root grok update", "grok update"],
+			["/usr/bin/env grok update", "grok update"],
+			["stdbuf -o0 grok mcp disable orrery", "grok mcp disable"],
+			["find . -exec grok update {} +", "grok update"],
+			["noglob grok update", "grok update"],
+			['"grok" update', "grok update"],
+			// Past a substitution, a comment, a here-document or a brace, quotes may nest otherwise, or a function may run its
+			// words: text that names grok counts.
+			["# it's\nenv 'A=x; y z' grok update", "grok update"],
+			['function f { "$@"; }; f grok update', "grok update"],
+			['x=$(date); git commit -m "grok update"', "grok update"],
+			["git commit -F - <<'EOF'\nAdd grok support and update docs\nEOF", "grok update"],
+		]);
+	});
+
+	it("the second-program class is a known limit: a program handed text it runs (eval, sh -c, a pipe into sh) names grok only", () => {
+		opensEach([
+			'eval grok "mcp disable orrery"',
+			'echo grok "mcp disable orrery" | sh',
+			'sh -c "grok mcp disable orrery"',
+			"bash -c \"grok 'update the docs'\"",
+			'echo "x\ngrok "mcp disable orrery" y" | sh',
 		]);
 	});
 

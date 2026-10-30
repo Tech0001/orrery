@@ -97,11 +97,13 @@
  *   another GROK_HOME (or HOME) loads none of Orrery's hooks, so it has no guard and marks no session it opens
  *   (src/grok/hooks.ts markShared); a Claude Code started with its own config folder loads no Orrery plugin. A grok
  *   command run through an alias, a link of another name, a brace sequence in its name (`{g..g}rok`) or a script gets
- *   past the grok command rule too (guard-rules.ts grokCommandIn), and so does a refused word built whole at run time
- *   (`grok $C`, C holding `mcp disable orrery`; `grok mcp $SUB orrery`; `grok du $X`, X holding `--clean`): such a word
- *   may be any, so it is passed over; only a word that is part of one is read, as a glob. Grok's commands are Grok
- *   1.0.70's: a later Grok's new command, or a read-only one's new option that writes, passes until Orrery refuses it,
- *   unless its name is one refused already.
+ *   past the grok command rule too (guard-rules.ts grokCommandIn), and so does one another program runs from text it is
+ *   handed (`eval grok …`, `sh -c "grok …"`, `echo grok … | sh`, ssh, a program that runs its words the rule doesn't
+ *   know): the rule reads grok only where it runs as a command, and passes text that names it as another command's
+ *   argument. A subcommand assembled another way (a script, an alias) is the script's case; a word of Grok's built whole
+ *   at run time (`grok $C`, `grok mcp $SUB orrery`) is refused, as it may be any. Grok's commands are Grok 1.0.70's: a
+ *   later Grok's new command, or a read-only one's new option that writes, passes until Orrery refuses it, unless its
+ *   name is one refused already.
  * - A path to Grok's folder assembled from variables, parameter expansions or substitutions gets through, from a
  *   session started inside Grok's folder too (`$X/../hooks` or `$(pwd)/../config.toml` from a call run in an open part,
  *   a ".." held in a variable, `P=<home>/skills; … ${P%/skills}/hooks/x`), as a path split into pieces or a script the
