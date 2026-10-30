@@ -43,7 +43,7 @@ const GROK_UNNAMED = ["lsp.json", "newthing.toml", "pager.toml", "bundled/agents
 /**
  * What in Grok's folder its own features write to or run from, only through calls the guard sees: its memory, skills
  * and workflows, /learn's runs, the background-task skill's logs and watchers, plugins' data, /implement's notes, the
- * bundled skills (their scripts), its docs and its logs.
+ * bundled skills (their scripts), its docs and its logs; and its session worktrees, the person's checkouts (grok -w).
  */
 const GROK_OPEN = [
 	"memory-v2/global/MEMORY.md",
@@ -56,6 +56,7 @@ const GROK_OPEN = [
 	"bundled/skills/pptx/scripts/x.py",
 	"docs/user-guide/10-hooks.md",
 	"logs/unified.jsonl",
+	"worktrees/repo-x/src/a.ts",
 ];
 
 /** Grok's folder under a home: the above, its login and a session's system prompt. */
@@ -100,6 +101,8 @@ const OUTSIDE = /outside this agent's folder/;
 const GROK_FOLDER = /Grok's folder/;
 /** Shell text that names an open part of Grok's folder and could reach the rest from there. */
 const GROK_REACH = /names a part of Grok's folder its own features write .* also changes folder .* makes a link .* could reach the rest of Grok's folder/;
+/** Shell text that names Grok's folder itself or what Grok loads and runs in it. */
+const GROK_NAMED = /^This command names Grok's folder or what Grok loads and runs in it/;
 const patch = (...lines: string[]) => ["*** Begin Patch", ...lines, "*** End Patch"].join("\n");
 /** A string past 4 KiB as Grok cuts one: its start, a tag of its whole value, and " [truncated]". */
 const cut = (start: string) => `${start}${" ".repeat(5000)} <sha256:ab12> [truncated]`;
@@ -367,7 +370,7 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 		}
 	});
 
-	it("leaves what its own features write writable (its memory, skills, workflows, /learn's runs, background-task logs, plugins' data, bundled skills, docs and logs), in both sessions", () => {
+	it("leaves what its own features write writable (its memory, skills, workflows, /learn's runs, background-task logs, plugins' data, bundled skills, docs, logs and session worktrees), in both sessions", () => {
 		const { grok, atHome, plain } = setup();
 		for (const file of GROK_OPEN) {
 			for (const opts of [atHome, plain]) {
@@ -579,6 +582,115 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 					expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, expect.stringMatching(GROK_REACH)]);
 				}
 				expect(grokGuard("run_terminal_command", { command: `cp x ${moved}/skills/y/SKILL.md` }, opts, false)).toBeUndefined();
+			}
+		} finally {
+			if (before === undefined) delete process.env.GROK_HOME;
+			else process.env.GROK_HOME = before;
+		}
+	});
+
+	it("lets Grok's session worktrees (worktrees/, the person's checkouts) be worked in: a folder change into one goes through; a .., a link, another open part beside it and Grok's worktree state stay refused, in both sessions and under $GROK_HOME", () => {
+		const { root, grok, options, atHome, plain } = setup();
+		const wt = join(grok, "worktrees", "repo-x");
+		// An agent's grok -w session runs in the worktree, outside the agent's folder: it may write where it runs.
+		const inWorktree = { ...options, folder: wt, cwd: wt };
+		const plainInWorktree = { ...plain, folder: wt, cwd: wt };
+		for (const opts of [options, atHome, inWorktree, plain, plainInWorktree]) {
+			for (const command of [
+				`cd ${wt} && npm test`,
+				"cd ~/.grok/worktrees/repo-x && npm test",
+				'cd "$GROK_HOME/worktrees/repo-x" && git add -A && git commit -m x',
+				"(cd ~/.grok/worktrees/repo-x; npm run build)",
+				"pushd ~/.grok/worktrees/repo-x; npm test; popd",
+				"cd ~/.grok/worktrees && ls",
+				`git -C ${wt} status`,
+				"git -C ~/.grok/worktrees/repo-x diff HEAD",
+				"make -C ~/.grok/worktrees/repo-x",
+				"npm --prefix ~/.grok/worktrees/repo-x test",
+			]) {
+				expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, undefined]);
+				expect([command, grokGuard("monitor", { command }, opts, false)]).toEqual([command, undefined]);
+			}
+			// A ".." or a link made there could still reach the rest; and another open part named beside a folder change keeps
+			// the rule in full.
+			for (const command of [
+				`cd ${wt} && echo x > ../../hooks/e.json`,
+				"cd ~/.grok/worktrees/repo-x; cat ../../config.toml",
+				"cd $GROK_HOME/worktrees/repo-x && echo x > ../../hooks/e.json",
+				"git -C ~/.grok/worktrees/repo-x mv a ../../hooks/a.json",
+				"cat ~/.grok/worktrees/repo-x/../../skills/x/SKILL.md",
+				"ln -s ../../hooks ~/.grok/worktrees/repo-x/h",
+				"cd ~/.grok/worktrees/repo-x && ln -s /elsewhere h",
+				"cp -s x ~/.grok/worktrees/repo-x/h",
+				"cd ~/.grok/worktrees/repo-x && cp ~/.grok/skills/x/SKILL.md .",
+				"git -C ~/.grok/worktrees/repo-x log > ~/.grok/docs/log.txt",
+			]) {
+				expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, expect.stringMatching(GROK_REACH)]);
+			}
+			// What Grok loads, its worktree state (the registry and open-session list beside worktrees/, its pool), a variable or
+			// substitution after the path, and a name beside it: named, as before.
+			for (const command of [
+				`ln -s ${grok}/hooks ${grok}/worktrees/h`,
+				"cd ~/.grok/worktrees/repo-x && echo x > ~/.grok/hooks/e.json",
+				"cat ~/.grok/worktrees/../hooks/orrery.json",
+				"cd ~/.grok/worktrees/$name && echo x > e.json",
+				"cd ~/.grok/worktrees/`echo ..`",
+				"echo x > ~/.grok/worktrees.db",
+				"rm ~/.grok/active_sessions.json",
+				"cp -r x ~/.grok/worktree_pool/repo-x/y",
+				"cd ~/.grok/worktreesx",
+			]) {
+				expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, expect.stringMatching(GROK_NAMED)]);
+			}
+		}
+		// File tools: the checkouts are writable where a session may write; Grok's worktree state is not.
+		for (const opts of [atHome, inWorktree, plain, plainInWorktree]) {
+			for (const path of [join(wt, "src", "a.ts"), "~/.grok/worktrees/repo-x/src/a.ts"]) {
+				expect([path, grokGuard("write", { file_path: path, content: "x" }, opts, false)]).toEqual([path, undefined]);
+				expect([path, grokGuard("search_replace", { file_path: path, old_string: "x", new_string: "y" }, opts, false)]).toEqual([path, undefined]);
+			}
+			for (const path of [join(grok, "worktrees.db"), join(grok, "active_sessions.json"), join(grok, "worktree_pool", "repo-x", "a.ts"), join(grok, "worktreesx", "a.ts")]) {
+				expect([path, grokGuard("write", { file_path: path, content: "x" }, opts, false)]).toEqual([path, expect.stringMatching(GROK_FOLDER)]);
+			}
+		}
+		for (const opts of [inWorktree, plainInWorktree]) {
+			expect(grokGuard("write", { file_path: "src/a.ts", content: "x" }, opts, false)).toBeUndefined();
+			expect(grokGuard("write", { file_path: "../../hooks/e.json", content: "{}" }, opts, false)).toMatch(GROK_FOLDER);
+		}
+		// Another worktree: open where a session may write; an agent's session writes there as anywhere outside where it
+		// may: not at all.
+		for (const opts of [atHome, plain, plainInWorktree]) expect(grokGuard("write", { file_path: join(grok, "worktrees", "repo-y", "new.ts"), content: "x" }, opts, false)).toBeUndefined();
+		expect(grokGuard("write", { file_path: join(grok, "worktrees", "repo-y", "new.ts"), content: "x" }, inWorktree, false)).toMatch(OUTSIDE);
+		expect(grokGuard("write", { file_path: join(wt, "src", "a.ts"), content: "x" }, options, false)).toMatch(OUTSIDE);
+		// worktrees/ moved to another disk by a link (grok du counts one): writable through the link and where it is.
+		const disk = join(root, "disk", "worktrees");
+		mkdirSync(join(disk, "repo-z"), { recursive: true });
+		rmSync(join(grok, "worktrees"), { recursive: true });
+		symlinkSync(disk, join(grok, "worktrees"));
+		for (const opts of [{ ...options, folder: root, cwd: root }, plain]) {
+			for (const path of [join(grok, "worktrees", "repo-z", "a.ts"), join(disk, "repo-z", "a.ts")]) {
+				expect([path, grokGuard("write", { file_path: path, content: "x" }, opts, false)]).toEqual([path, undefined]);
+			}
+			expect(grokGuard("run_terminal_command", { command: "cd ~/.grok/worktrees/repo-z && npm test" }, opts, false)).toBeUndefined();
+		}
+		// A folder GROK_HOME moves Grok's to, named by its path or the variable.
+		const moved = join(root, "grok-home");
+		mkdirSync(join(moved, "worktrees", "repo-x", "src"), { recursive: true });
+		const before = process.env.GROK_HOME;
+		process.env.GROK_HOME = moved;
+		try {
+			for (const opts of [{ ...options, folder: root, cwd: root }, { ...plain, folder: root, cwd: root }]) {
+				for (const command of [`cd ${moved}/worktrees/repo-x && npm test`, "cd $GROK_HOME/worktrees/repo-x && npm test", `git -C ${moved}/worktrees/repo-x status`]) {
+					expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, undefined]);
+				}
+				for (const command of [`cd ${moved}/worktrees/repo-x && echo x > ../../hooks/e.json`, "cd $GROK_HOME/worktrees/repo-x && echo x > ../../hooks/e.json", `ln -s ../../hooks ${moved}/worktrees/repo-x/h`]) {
+					expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, expect.stringMatching(GROK_REACH)]);
+				}
+				for (const command of [`ln -s ${moved}/hooks ${moved}/worktrees/h`, `echo x > ${moved}/worktrees.db`, "echo x > $GROK_HOME/worktrees.db"]) {
+					expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, expect.stringMatching(GROK_NAMED)]);
+				}
+				expect(grokGuard("write", { file_path: join(moved, "worktrees", "repo-x", "src", "a.ts"), content: "x" }, opts, false)).toBeUndefined();
+				expect(grokGuard("write", { file_path: join(moved, "worktrees.db"), content: "x" }, opts, false)).toMatch(GROK_FOLDER);
 			}
 		} finally {
 			if (before === undefined) delete process.env.GROK_HOME;
@@ -847,6 +959,20 @@ describe("the PreToolUse hook (runGrokGuard)", () => {
 		expect(runGrokGuard(call("read_file", { target_file: join(home, ".grok", "hooks", "orrery.json") }, elsewhere), plain)).toBeUndefined();
 		// Grok's own memory is the person's: Grok's memory "forget" edits it.
 		expect(runGrokGuard(call("search_replace", { file_path: join(home, ".grok", "memory-v2", "global", "MEMORY.md"), old_string: "a", new_string: "b" }, elsewhere), plain)).toBeUndefined();
+	});
+
+	it("lets an agent's grok -w session, and a plain one, work in its worktree in Grok's folder as in a project", () => {
+		const { ctx, home } = agentWorld();
+		const wt = join(home, ".grok", "worktrees", "repo-x");
+		mkdirSync(join(wt, "src"), { recursive: true });
+		for (const context of [ctx(), ctx({ env: {} })]) {
+			expect(runGrokGuard(call("write", { file_path: "src/a.ts", content: "x" }, wt), context)).toBeUndefined();
+			expect(runGrokGuard(call("search_replace", { file_path: join(wt, "src", "a.ts"), old_string: "a", new_string: "b" }, wt), context)).toBeUndefined();
+			expect(runGrokGuard(call("run_terminal_command", { command: `cd ${wt} && npm test` }, wt), context)).toBeUndefined();
+			expect(runGrokGuard(call("run_terminal_command", { command: `git -C ${wt} status` }, wt), context)).toBeUndefined();
+			expect(runGrokGuard(call("run_terminal_command", { command: `cd ${wt} && echo x > ../../hooks/e.json` }, wt), context)).toMatch(/^Orrery guard: .*could reach the rest of Grok's folder/);
+			expect(runGrokGuard(call("write", { file_path: "../../hooks/e.json", content: "{}" }, wt), context)).toMatch(/^Orrery guard: .* is in Grok's folder/);
+		}
 	});
 
 	it("judges a session opened as an agent but refused by no agent's rules: only where it runs, every agent's view kept from it", () => {

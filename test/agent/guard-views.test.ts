@@ -270,9 +270,10 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 	/**
 	 * Grok's and the person's own, written by Grok's features through calls the guard sees: its memory (its "forget" edits
 	 * it), the skills and workflows it and the person write, /learn's runs, the background-task skill's logs, plugins'
-	 * data, /implement's notes, the bundled skills, its docs and its logs.
+	 * data, /implement's notes, the bundled skills, its docs and its logs; and its session worktrees, the person's
+	 * checkouts.
 	 */
-	const OPEN = ["memory-v2/global/MEMORY.md", "skills/x/SKILL.md", "workflows/w.rhai", "learn/state.json", "long-running-background-tasks/x.log", "plugin-data/p/x.json", "implement-memory/x.md", "bundled/skills/x/SKILL.md", "docs/x.md", "logs/unified.jsonl"];
+	const OPEN = ["memory-v2/global/MEMORY.md", "skills/x/SKILL.md", "workflows/w.rhai", "learn/state.json", "long-running-background-tasks/x.log", "plugin-data/p/x.json", "implement-memory/x.md", "bundled/skills/x/SKILL.md", "docs/x.md", "logs/unified.jsonl", "worktrees/r/src/a.ts"];
 
 	/** An agent opened in its home, so the work area holds Grok's folder; and a session that is no agent's there. */
 	function inHome() {
@@ -370,13 +371,17 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 			"cat ~/.grok/docs/x.md ../x",
 			"ln -s ../hooks ~/.grok/skills/h",
 			"cp -s x ~/.grok/skills/h",
+			// A session worktree: a folder change into it goes through, but not a "..", a link, or another open part beside it.
+			"cd ~/.grok/worktrees/r && echo x > ../../hooks/e.json",
+			"ln -s ../../hooks ~/.grok/worktrees/r/h",
+			"cd ~/.grok/worktrees/r && cat ~/.grok/skills/x/SKILL.md",
 		]) {
 			expect([command, bash(command, options)]).toEqual([command, expect.stringMatching(reach)]);
 			expect([command, bash(command, plain)]).toEqual([command, expect.stringMatching(reach)]);
 		}
-		// A shipped skill's helper beside it (bundled/skills/<name>/../shared/), and a ".." or cd with no part of Grok's
-		// folder named.
-		for (const command of ["python3 ~/.grok/bundled/skills/implement/../shared/scripts/host.py setup", "cd /src && cat ../x", "cat ~/.grok/skills/x/SKILL.md"]) {
+		// A shipped skill's helper beside it (bundled/skills/<name>/../shared/), a folder change into a session worktree, and
+		// a ".." or cd with no part of Grok's folder named.
+		for (const command of ["python3 ~/.grok/bundled/skills/implement/../shared/scripts/host.py setup", "cd ~/.grok/worktrees/r && npm test", `git -C ${grok}/worktrees/r status`, "cd /src && cat ../x", "cat ~/.grok/skills/x/SKILL.md"]) {
 			expect([command, bash(command, options)]).toEqual([command, undefined]);
 			expect([command, bash(command, plain)]).toEqual([command, undefined]);
 		}
@@ -387,7 +392,7 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 		const env = new NodeExecutionEnv({ cwd: options.folder });
 		expect(await checkResolvedPath(env, join(grok, "hooks", "orrery.json"), "write", options, ctx)).toMatch(/Grok's folder/);
 		expect(await checkResolvedPath(env, join(grok, "agents", "a.md"), "write", options, ctx)).toMatch(/Grok's folder/);
-		for (const file of ["lsp.json", "newthing.toml", "bundled/agents/a.md", "skills-old/x"]) {
+		for (const file of ["lsp.json", "newthing.toml", "bundled/agents/a.md", "skills-old/x", "worktrees.db"]) {
 			expect([file, await checkResolvedPath(env, join(grok, file), "write", options, ctx)]).toEqual([file, expect.stringMatching(/Grok's folder/)]);
 		}
 		// An entry Orrery doesn't name, kept in a dotfiles folder: where it really is.
@@ -403,7 +408,7 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 		expect(await checkResolvedPath(env, join(grok, "hooks", "orrery.json"), "read", options, ctx)).toBeUndefined();
 		expect(await checkResolvedPath(env, join(grok, "memory-v2", "global", "MEMORY.md"), "write", options, ctx)).toBeUndefined();
 		expect(await checkResolvedPath(env, join(grok, "skills", "x", "SKILL.md"), "write", options, ctx)).toBeUndefined();
-		for (const file of ["docs/x.md", "logs/unified.jsonl", "plugin-data/p/x.json", "bundled/skills/x/s.py", "learn/state.json", "implement-memory/x.md"]) {
+		for (const file of ["docs/x.md", "logs/unified.jsonl", "plugin-data/p/x.json", "bundled/skills/x/s.py", "learn/state.json", "implement-memory/x.md", "worktrees/r/src/a.ts"]) {
 			expect([file, await checkResolvedPath(env, join(grok, file), "write", options, ctx)]).toEqual([file, undefined]);
 		}
 		// A dangling link: an entry linked to a file not made yet is kept where it points, as the hooks' guard reads it

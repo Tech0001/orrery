@@ -1345,8 +1345,9 @@ export function openCodeNamed(text: string, rule?: OpenCodeRule): boolean {
 // workflows (whose agents' calls come to the guard), and where its bundled skills keep their files: /learn's runs and
 // state (learn/), the background-task skill's logs and watchers (long-running-background-tasks/), plugins' data
 // (plugin-data/, pr-babysit's state among it), /implement's notes (implement-memory/, which its helper writes and reads
-// back into prompts), the bundled skills themselves (bundled/skills/, whose scripts a call runs), and Grok's docs and
-// logs, which it writes and loads nothing from. What it loads is why, and a file a later Grok adds that runs code is
+// back into prompts), the bundled skills themselves (bundled/skills/, whose scripts a call runs), Grok's docs and
+// logs, which it writes and loads nothing from, and its session worktrees (worktrees/, the person's checkouts, which
+// its model works in as in any project). What it loads is why, and a file a later Grok adds that runs code is
 // kept the same way. For example: every hooks/*.json is a hook file (Orrery's hooks/orrery.json among them);
 // config.toml holds hooks, MCP servers and the status row (Orrery's entries among them); requirements.toml and
 // managed_config.toml hold hooks and a pin that switches every other hook off; disabled-hooks is the /hooks tab's
@@ -1358,20 +1359,22 @@ export function openCodeNamed(text: string, rule?: OpenCodeRule): boolean {
 // prompts against. A file a tool wrote in any of these could switch Orrery's guard or recording off, run code outside
 // the guard, or put words in a session's record. Nor may shell text name the folder itself (a copy, an archive or a cd
 // into it reaches all of it), nor name an open part and, in the same text, change folder (cd, pushd, git -C and the
-// like), hold a ".." path part (but one in the open part's own path that stays in it, as a bundled skill names the
-// helper beside it: bundled/skills/<name>/../shared/) or make a link (ln, cp -s, cp -l): a relative path read from the
-// open part, or a link made there, could reach the rest. Where a link takes an entry out of the folder (a config.toml
-// kept in a dotfiles folder), it is kept where it really is too; an open part a link takes to the folder itself, to a
+// like; but where the text names the session worktrees alone, which the model works in), hold a ".." path part (but
+// one in the open part's own path that stays in it, as a bundled skill names the helper beside it: bundled/skills/
+// <name>/../shared/) or make a link (ln, cp -s, cp -l): a relative path read from the open part, or a link made there,
+// could reach the rest. Where a link takes an entry out of the folder (a config.toml kept in a dotfiles folder), it is
+// kept where it really is too; an open part a link takes to the folder itself, to a
 // folder that holds it, or into the rest of it (skills/ linked to hooks/), or a link that leads nowhere, is kept as the
 // rest is. One a link takes out of the folder (skills/ kept in a dotfiles folder, as people do) stays open through the
 // link, and where it really is is judged by the other rules, as any path is. File tools may read all of it, but an
 // agent's session reads neither the session records nor Grok's login (HOME_SECRETS; a moved folder's by
 // src/agent/guard-paths.ts). Limits, as for every shell-text rule: a spelling through another variable, a link the
 // guard doesn't know (a link planted inside an open part that leads to the rest of it, by a script, or copied or moved
-// there whole from elsewhere: cp -a, mv, tar, rsync -a), used from the shell, and a relative path from a folder the
-// text doesn't name (a session or subagent started in an open part). A project's own .grok folder is the project's,
-// its hooks, config.toml and lsp.json among them, and so are Grok's other hook sources outside its folder (a project's
-// .claude/settings*.json and .cursor/hooks.json, the person's Claude Code settings file and Cursor hooks file), and the
+// there whole from elsewhere: cp -a, mv, tar, rsync -a, a checkout's own), used from the shell, and a relative path
+// from a folder the text doesn't name (a session or subagent started in an open part, as every grok -w session starts
+// in its worktree). A project's own .grok folder (a session worktree's too) is the project's, its hooks, config.toml
+// and lsp.json among them, and so are Grok's other hook sources outside its folder (a project's .claude/settings*.json
+// and .cursor/hooks.json, the person's Claude Code settings file and Cursor hooks file), and the
 // files Grok's config or its hooks-paths list names outside its folder (a hook or status-line script, a hook file kept
 // elsewhere): a hook or server planted there runs outside the guard in a later session, and a hook may rewrite a call
 // after Orrery judged it, as a script an agent writes and later runs does. A plugin that reads commands from its own
@@ -1389,9 +1392,18 @@ export function grokFolders(env: NodeJS.ProcessEnv = process.env, home: string =
  * Grok's folder's open parts (above), each a path below the folder, folded: tools write there as anywhere. Of bundled/
  * only its skills: the rest of it loads as Grok's own agents, whose hooks Grok runs, and workflows (18-sandbox.md,
  * 15-agent-mode.md). implement-memory/ is the bundled implement skill's (its scripts/memory.py), under ~/.grok whatever
- * GROK_HOME says; Grok's manual names it nowhere and nothing loads it.
+ * GROK_HOME says; Grok's manual names it nowhere and nothing loads it. worktrees/ is GROK_CHECKOUTS.
  */
-export const GROK_OPEN: readonly string[] = ["memory-v2", "skills", "workflows", "learn", "long-running-background-tasks", "plugin-data", "implement-memory", "bundled/skills", "docs", "logs"];
+export const GROK_OPEN: readonly string[] = ["memory-v2", "skills", "workflows", "learn", "long-running-background-tasks", "plugin-data", "implement-memory", "bundled/skills", "docs", "logs", "worktrees"];
+
+/**
+ * The open part that holds Grok's session worktrees (worktrees/<repo>/<name>: grok -w, grok worktree create, a subagent's
+ * or workflow step's worktree isolation; 17-sessions.md, 18-sandbox.md), the person's checkouts, which Grok's model works
+ * in as in any project: a folder change into it goes through (grokReaches). A checkout's own .grok, .claude and .cursor
+ * folders are its project's (Known limits). Grok keeps its worktree state beside it, not in it (its registry, the open
+ * sessions list, worktree_pool/), so that stays kept.
+ */
+const GROK_CHECKOUTS = "worktrees";
 
 /** The open part (but those `shut` names) the parts of a path below one of Grok's folders (folded) are in, or none. */
 function grokOpenIn(parts: readonly string[], shut: readonly string[] = []): string | undefined {
@@ -1508,6 +1520,8 @@ interface GrokPath {
 	readonly kept: boolean;
 	/** A ".." in it climbs above the open part it ends in (workflows/../skills): a link there could take it anywhere. */
 	readonly climbs: boolean;
+	/** The open part (of GROK_OPEN) it ends in; none when it is kept. */
+	readonly part?: string;
 }
 
 /** Whether a path part is ".." or a glob that could match it (only one that starts with "." can). */
@@ -1523,7 +1537,7 @@ const climbing = (part: string) => part === ".." || (part.startsWith(".") && glo
 function grokPathAfter(form: string, start: number, at: number, shut?: readonly string[]): GrokPath {
 	GROK_REST.lastIndex = at;
 	const end = at + (GROK_REST.exec(form)?.[0].length ?? 0);
-	const path = (kept: boolean, climbs = false): GrokPath => ({ start, end, kept, climbs });
+	const path = (kept: boolean, climbs = false, part?: string): GrokPath => ({ start, end, kept, climbs, ...(part === undefined ? {} : { part }) });
 	const rest = form.slice(at, end).replace(SHELL_PID, "0").replace(/["'\\]/g, "");
 	if (/[$`]/.test(rest)) return path(true);
 	const parts: string[] = [];
@@ -1537,7 +1551,7 @@ function grokPathAfter(form: string, start: number, at: number, shut?: readonly 
 		else parts.push(part);
 	}
 	const open = grokOpenIn(parts, shut);
-	return open === undefined ? path(true) : path(false, low < open.split("/").length);
+	return open === undefined ? path(true) : path(false, low < open.split("/").length, open);
 }
 
 /**
@@ -1584,12 +1598,15 @@ const copiesAsLink = (word: string) => /^-[a-z]*[sl][a-z]*$/.test(word) || (word
  * path part (or a glob that could match one) anywhere; or makes a link (ln; cp -s, -l and their long names), which
  * could lead an open part into the rest. Words are read bluntly, as the other shell rules read them: cd, pushd or ln
  * anywhere counts. A ".." in an open part's own path that stays in it (a bundled skill's
- * bundled/skills/<name>/../shared/scripts/host.py) adds nothing a planted link wouldn't: it goes through.
+ * bundled/skills/<name>/../shared/scripts/host.py) adds nothing a planted link wouldn't: it goes through. When every
+ * path it names is in GROK_CHECKOUTS (the session worktrees Grok's model works in), a folder change goes through: from
+ * there a relative path reaches the rest only through a "..", or a link, which stay refused.
  */
 function grokReaches(form: string, rule: GrokRule): boolean {
 	const paths = grokPaths(form, rule).sort((a, b) => a.start - b.start);
 	if (paths.length === 0) return false;
 	if (paths.some((path) => path.climbs)) return true;
+	const moves = paths.some((path) => path.part !== GROK_CHECKOUTS);
 	let rest = "";
 	let from = 0;
 	for (const { start, end } of paths) {
@@ -1605,9 +1622,9 @@ function grokReaches(form: string, rule: GrokRule): boolean {
 		if (/[;|&()\n`]/.test(rest.slice(last, match.index))) tools.clear();
 		last = match.index + word.length;
 		const name = word.slice(word.lastIndexOf("/") + 1);
-		if (MOVES.test(word) || name === "ln" || word.split(/[/=:,{}]/).some(climbing)) return true;
+		if ((moves && MOVES.test(word)) || name === "ln" || word.split(/[/=:,{}]/).some(climbing)) return true;
 		if (name === "cp" || FOLDER_OPTIONS.has(name)) tools.add(name);
-		else if ([...tools].some((tool) => (tool === "cp" ? copiesAsLink(word) : folderOption(tool, word)))) return true;
+		else if ([...tools].some((tool) => (tool === "cp" ? copiesAsLink(word) : moves && folderOption(tool, word)))) return true;
 	}
 	return false;
 }

@@ -36,7 +36,8 @@
  * nothing proves the agent of, may write only where it runs. A plain grok (no ORRERY_AGENT: Orrery's Grok hooks are
  * global), and one started from a coding tool's session that is no agent's where no agent would open, get Orrery's own
  * rules (spec 2026-10-19-no-agent-sessions §3): every agent's memory and Orrery's settings and data, Grok's folder but
- * its open parts (its memory, skills, workflows and what its bundled skills, docs and logs write), which are Grok's own
+ * its open parts (its memory, skills, workflows and what its bundled skills, docs and logs write, and its session
+ * worktrees, the person's checkouts), which are Grok's own
  * (what Grok loads and runs is kept there: its hooks, config and policy files, /hooks switch, trust list, plugins,
  * agents, the bundle's agents and language servers), and the session records. So does
  * every session of Grok's shared leader (leader mode: src/grok/host.ts), which runs every session's hooks with its
@@ -53,9 +54,10 @@
  * A hook or server an agent plants there runs outside the guard in a later session, and a hook may rewrite a call's
  * input after Orrery judged it (Grok applies updatedInput after every handler), as a script an agent writes and later
  * runs does. A plugin's hooks may name its data folder (plugin-data/, open to writes), so a plugin that reads commands
- * from there could be steered by a write there. Shell text naming an open part may not change folder, hold a ".." or
- * make a link, but a link brought there whole (cp -a, mv, tar, git clone) or by a script, and a relative path from a
- * session or subagent started there, reach the rest from the shell (src/agent/guard-paths.ts, Known limits).
+ * from there could be steered by a write there. Shell text naming an open part may not change folder (but into its
+ * session worktrees alone), hold a ".." or make a link, but a link brought there whole (cp -a, mv, tar, git clone, a
+ * checkout) or by a script, and a relative path from a session or subagent started there (a grok -w session in its
+ * worktree), reach the rest from the shell (src/agent/guard-paths.ts, Known limits).
  */
 
 import { homedir } from "node:os";

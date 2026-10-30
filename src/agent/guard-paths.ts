@@ -23,9 +23,10 @@
  * it keeps what it loads and runs (its hooks, Orrery's hook file among them, its config and policy files, the /hooks
  * switch, the trust list, plugins, agent definitions, the bundle's agents and language servers; guard-rules.ts
  * grokRule) and its session records, is written by no tool and named in no shell text, nor is the folder itself, in
- * every session, but its open parts (GROK_OPEN: its memory, skills and workflows, and what its bundled skills, docs and
- * logs write), which are Grok's own. Its login and session records are read by no agent's session (HOME_SECRETS,
- * grokCredentials). A session that is no agent's (GuardOptions.orreryOnly, spec 2026-10-19-no-agent-sessions §3) gets
+ * every session, but its open parts (GROK_OPEN: its memory, skills and workflows, what its bundled skills, docs and
+ * logs write, and its session worktrees), which are Grok's own. Its login and session records are read by no agent's
+ * session (HOME_SECRETS, grokCredentials). A session that is no agent's (GuardOptions.orreryOnly, spec
+ * 2026-10-19-no-agent-sessions §3) gets
  * Orrery's own rules alone (orreryJudge): Orrery's home, its credentials file, config and installed program, where
  * agents' sessions load code from outside its home (orreryEntries: read, never written, not named in shell text),
  * Grok's folder but its open parts, every agent's memory view (each is another's: it reads no agent's memory), the
@@ -72,10 +73,11 @@
  *   script kept elsewhere, a hook file listed in hooks-paths): the guard keeps Grok's folder, not what it points at.
  * - A Grok plugin's hooks may name its data folder (plugin-data/, Grok's own skills' state among it, which agents may
  *   write), so a plugin that reads commands from there could be steered by a write there.
- * - Shell text that names an open part of Grok's folder and changes folder, holds a ".." or makes a link (ln, cp -s,
- *   cp -l) is refused (guard-rules.ts grokReaches), but a link brought into an open part whole (cp -a, mv, tar, rsync
- *   -a, git clone) or made by a script, and a relative path from a session or subagent started in an open part, which
- *   the text doesn't name, reach the rest of the folder from the shell (file tools follow links and are refused).
+ * - Shell text that names an open part of Grok's folder and changes folder (but into its session worktrees alone),
+ *   holds a ".." or makes a link (ln, cp -s, cp -l) is refused (guard-rules.ts grokReaches), but a link brought into an
+ *   open part whole (cp -a, mv, tar, rsync -a, git clone, a checkout in a session worktree) or made by a script, and a
+ *   relative path from a session or subagent started in an open part (every grok -w session starts in its worktree),
+ *   which the text doesn't name, reach the rest of the folder from the shell (file tools follow links and are refused).
  */
 
 import { type Dirent, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
