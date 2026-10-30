@@ -122,7 +122,7 @@ const forged = async (event: string, json: string, c: GrokHookContext): Promise<
 	return out === "" ? "" : (JSON.parse(out) as Answer);
 };
 /** SessionStart's answer for a session it can't confirm as this Grok's own, for reason `why`. */
-const notOwn = (why: string) => `Orrery: can't confirm this is this Grok's own session (${why}), so it opens no memory and records nothing.`;
+const notOwn = (why: string) => `Orrery: can't confirm this is this Grok's own session (${why}), so this session isn't recorded.`;
 /**
  * A Grok folder the agent's own shell made up at `home`: session `session`'s folder in it as Grok makes one (summary.json,
  * under the folder this Grok runs in), its events.jsonl a link to `events`, and a log of the forger's own, empty for now.
@@ -242,14 +242,14 @@ describe("hook calls forged by the agent's own shell: Grok's session folder is t
 		const before = state(t);
 		const home = homeOf(t);
 		home.begin(id("old"), { open: false });
-		expect(await forged("session-start", input({ session: "old", source: "load" }), c)).toEqual({ systemMessage: "Orrery: can't confirm this is this Grok's own session (Grok doesn't have it open), so it opens no memory and records nothing." });
+		expect(await forged("session-start", input({ session: "old", source: "load" }), c)).toEqual({ systemMessage: "Orrery: can't confirm this is this Grok's own session (Grok doesn't have it open), so this session isn't recorded." });
 		home.begin(id("sub"), { kind: "subagent" });
 		expect(await forged("session-start", input({ session: "sub", source: "new" }), c)).toEqual({
-			systemMessage: "Orrery: can't confirm this is this Grok's own session (it is no session of the person's own, but a subagent's or another kind), so it opens no memory and records nothing.",
+			systemMessage: "Orrery: can't confirm this is this Grok's own session (it is no session of the person's own, but a subagent's or another kind), so this session isn't recorded.",
 		});
 		expect(await forged("session-start", input({ session: "none", source: "load" }), c)).toEqual({ systemMessage: notOwn("Grok doesn't have it open") });
 		expect(await forged("session-start", input({ session: "s1", source: "new" }), ctx(t, { cwdOf: () => undefined }))).toEqual({
-			systemMessage: "Orrery: can't confirm this is this Grok's own session (the folder Grok runs in can't be read), so it opens no memory and records nothing.",
+			systemMessage: "Orrery: can't confirm this is this Grok's own session (the folder Grok runs in can't be read), so this session isn't recorded.",
 		});
 		expect(state(t)).toEqual(before);
 		expect(started).toEqual([id("s1")]);

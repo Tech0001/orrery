@@ -306,7 +306,7 @@ export async function sessionStart(input: GrokHookInput, ctx: GrokHookContext): 
 	if (!opened(ctx)) return plainStart(ctx);
 	const session = sessionOf(input);
 	if (session === undefined) return undefined;
-	const refuse = (why: string) => ({ systemMessage: `Orrery: can't confirm this is this Grok's own session (${safeText(why)}), so it opens no memory and records nothing.` });
+	const refuse = (why: string) => ({ systemMessage: `Orrery: can't confirm this is this Grok's own session (${safeText(why)}), so this session isn't recorded.` });
 	// Before anything is decided, claimed or recorded: is this session this Grok's own?
 	const log = ownSession(session, ctx);
 	if (typeof log === "string") return refuse(log);

@@ -19,6 +19,7 @@ import { tempDir } from "../agent/support.ts";
 import { fakeOpenCode } from "../opencode/fake-opencode.ts";
 import { codexHomeIn } from "../codex/rollout-lines.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
+import { isOrreryHookFile } from "../../src/grok/install.ts";
 
 const SCRIPT = systemCommand("script");
 const hasScript = process.platform === "linux" && SCRIPT !== undefined && spawnSync(SCRIPT, ["--version"]).status === 0;
@@ -153,6 +154,57 @@ describe("orrery agent", () => {
 		const yes = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "omp", "--yes");
 		expect(yes.status, yes.stderr).toBe(0);
 		expect(readFileSync(s.out, "utf8")).toBe("omp|Atlas\n");
+	});
+
+	/** A fake Grok 1.0.70 in the scene's bin, and the scene's own Grok folder (never the one this test runs beside). */
+	function grokScene() {
+		const s = scene();
+		writeFileSync(join(s.dir, "bin", "grok"), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "grok 1.0.70 (abc) [stable]"; exit 0; fi\nprintf 'grok|%s|%s\\n' "$ORRERY_AGENT" "$*" > ${JSON.stringify(s.out)}\n`, { mode: 0o755 });
+		const grok = join(s.dir, "grok-home");
+		return { ...s, env: { ...s.env, GROK_HOME: grok }, grok, hooks: join(grok, "hooks", "orrery.json") };
+	}
+
+	it("asks to connect Orrery to Grok before a Grok launch: no terminal is a no, and nothing opens or is written; --yes connects it as setup does", () => {
+		const s = grokScene();
+		// No terminal to answer on: the connect question is a no, as pi's install question is.
+		const no = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
+		expect(no.status).toBe(1);
+		expect(no.stdout).toContain("Not opened.");
+		expect(existsSync(s.out)).toBe(false);
+		expect(existsSync(s.grok)).toBe(false);
+		const yes = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok", "--yes");
+		expect(yes.status, yes.stderr).toBe(0);
+		expect(yes.stdout).toContain(`wrote ${s.hooks}`);
+		expect(isOrreryHookFile(readFileSync(s.hooks, "utf8"))).toBe(true);
+		expect(readFileSync(join(s.grok, "config.toml"), "utf8")).toMatch(/\[ui\.status_line\][\s\S]*\[mcp_servers\.orrery\]/);
+		expect(readFileSync(s.out, "utf8")).toBe("grok|Atlas|--no-leader\n");
+		// Connected: the next launch asks nothing, with or without a terminal.
+		rmSync(s.out);
+		const again = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
+		expect(again.status, again.stderr).toBe(0);
+		expect(readFileSync(s.out, "utf8")).toBe("grok|Atlas|--no-leader\n");
+	});
+
+	it.skipIf(!hasScript)("in a terminal, asks to connect Orrery to Grok, listing what it writes; no opens nothing and writes nothing", () => {
+		const s = grokScene();
+		const no = typedInTerminal("n\n", s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
+		expect(no.status).toBe(1);
+		expect(no.stdout).toContain("Orrery's hooks for Grok are not installed, so this session won't record. Connecting Orrery to Grok will:");
+		expect(no.stdout).toContain(`write ${s.hooks} (Orrery's hooks for every Grok session)`);
+		expect(no.stdout).toContain("Connect Orrery to Grok now? (y/n)");
+		expect(no.stdout).toContain("Not opened.");
+		expect(existsSync(s.out)).toBe(false);
+		expect(existsSync(s.grok)).toBe(false);
+	});
+
+	it("says at launch when Orrery's Grok hooks are switched off in Grok's /hooks, and opens Grok", () => {
+		const s = grokScene();
+		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok", "--yes").status).toBe(0);
+		writeFileSync(join(s.grok, "disabled-hooks"), "global/orrery:user_prompt_submit[0].hooks[0]\n");
+		const off = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
+		expect(off.status, off.stderr).toBe(0);
+		expect(off.stdout).toContain("Orrery's recording hooks are switched off in Grok's /hooks, so this session won't be fully recorded: switch them on there, then start a new session (/new).");
+		expect(readFileSync(s.out, "utf8")).toBe("grok|Atlas|--no-leader\n");
 	});
 
 	it("names the tools --tool takes, and the configured agents for an unknown name", () => {

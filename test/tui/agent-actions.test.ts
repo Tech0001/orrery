@@ -236,6 +236,36 @@ describe("L launch", () => {
 		await none.idle();
 		expect(screen(none)).toContain("pi is not on PATH");
 	});
+
+	it("asks to connect Orrery to Grok before a Grok launch: no launches nothing and changes nothing, yes connects it, then opens Grok", async () => {
+		// Grok's folder for this test alone: empty, so Orrery's side of Grok is missing there.
+		const grok = tempDir("orrery-tui-grok-");
+		dirs.push(grok);
+		vi.stubEnv("GROK_HOME", grok);
+		const fixes: string[] = [];
+		const plans: LaunchPlan[] = [];
+		const deps = fakeDeps(
+			{ tools: () => [tool("pi"), tool("grok", { wiring: "missing", detail: `no ${join(grok, "hooks", "orrery.json")}; tested with Grok 1.0.70` })], applyFix: (fix) => (fixes.push(fix), "fixed"), launch: async (plan) => (plans.push(plan), { code: 0, signal: null }) },
+			[row({ name: "Alpha", tool: "grok", folder: "/" })],
+		);
+		const app = makeApp(deps, [agentsPage]);
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "Connect Orrery to Grok now?", "n");
+		await app.idle();
+		expect([fixes, plans]).toEqual([[], []]);
+		expect(screen(app)).toContain("Not launched.");
+		expect(readdirSync(grok)).toEqual([]);
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "Orrery's hooks for Grok are not installed, so this session won't record", "y");
+		await answer(app, "Done", ENTER);
+		await app.idle();
+		expect(fixes).toEqual(["install-grok"]);
+		expect(plans).toHaveLength(1);
+		expect(plans[0]).toMatchObject({ tool: "grok", command: "/bin/grok", env: { ORRERY_AGENT: "Alpha" } });
+		expect(screen(app)).toContain("Back from Grok (Alpha).");
+	});
 });
 
 describe("Enter opens an agent", () => {

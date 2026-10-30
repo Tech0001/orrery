@@ -3,7 +3,8 @@
  * runs and where, what to ask first, fixing what can be fixed, and running the tool with the terminal attached, as the
  * agent (ORRERY_AGENT and a fresh ORRERY_AGENT_TOKEN, src/agent/pick.ts). `orrery agent` and the TUI's Enter and L use
  * it. No tool gets a coding tool's variables (toolEnv), even ones this process inherited.
- * Grok gets the agent's memory section and instructions as its one `--rules` value (src/grok/launch.ts).
+ * Grok gets the agent's memory section and instructions as its one `--rules` value (src/grok/launch.ts), after the
+ * question that connects Orrery to Grok when it isn't (setup's steps, src/grok/install.ts).
  * Codex gets Orrery's hooks, memory tools and instructions on its command line (src/codex/launch.ts), after the hook
  * check (src/codex/check.ts). OpenCode gets Orrery's plugin through OPENCODE_CONFIG_CONTENT and the agent's token as a
  * file, never in its environment (src/opencode/launch.ts, src/opencode/token-file.ts), after the plugin check
@@ -22,17 +23,18 @@ import { type OpenCodeGate, opencodePluginGate, type probePlugin } from "../open
 import { argsRefusal, inheritsOrreryPlugin, launchConfigContent, opencodeArgs, pluginFolder } from "../opencode/launch.ts";
 import { configContent } from "../opencode/options.ts";
 import { removeOnSignals, removeTokenFile, tokenFilePath, writeTokenFile } from "../opencode/token-file.ts";
+import { grokGuardSwitchedOff, grokHooksInstalled, grokRecordingSwitchedOff } from "../grok/install.ts";
 import { grokArgs, grokArgsRefusal, grokResumeNotice, grokRules } from "../grok/launch.ts";
 import { buildRunning, readBuild } from "./build.ts";
 import { findAgent, type HarnessConfig, insideFolder, type AgentConfig, type AgentLauncher, type AgentTool } from "./config.ts";
 import { type AgentRow, TOOL_LABELS } from "./overview.ts";
 import { AGENT_ENV, claimedBy, newToken, releaseClaim, TOKEN_ENV, workArea } from "./pick.ts";
 import { TOOL_MARKERS } from "./sessions.ts";
-import { BINARIES, codexVersion, findOnPath, installSteps, orreryVersion, wiringRoot, type Runner, realRunner, runInstall, type ToolCheck } from "./tools.ts";
+import { BINARIES, codexVersion, findOnPath, type InstallStep, installSteps, orreryVersion, wiringRoot, type Runner, realRunner, runInstall, type ToolCheck } from "./tools.ts";
 
 const HINTS: Record<AgentTool, string> = { pi: "Get it at https://pi.dev", "claude-code": "Get it at https://claude.com/claude-code", codex: "Get it at https://github.com/openai/codex", omp: "Get it at https://omp.sh", opencode: "Get it at https://opencode.ai", grok: "Get Grok Build from xAI" };
 
-export type LaunchFix = "create-folder" | "install-pi" | "install-omp" | "install-claude-code" | "claude-setup-mod";
+export type LaunchFix = "create-folder" | "install-pi" | "install-omp" | "install-claude-code" | "install-grok" | "claude-setup-mod";
 
 export interface LaunchStep {
 	readonly text: string;
@@ -107,10 +109,60 @@ export interface LaunchOptions {
 /** Ori starts OpenCode its own way (with config of its own, unchecked): an OpenCode agent opens directly. */
 const ORI_OPENCODE = (name: string) => `Orrery doesn't open OpenCode through Ori yet: open ${name} with launcher = "direct" (orrery agent set ${name} launcher direct), or in another tool.`;
 
+/** "<what>. <doing> will:\n  <step>\n  <step>\n<ask>": a question that lists what a yes does first (spec §4.6). */
+function stepsQuestion(what: string, steps: readonly InstallStep[], doing = "Installing it", ask = "Install it now?"): string {
+	return `${what}. ${doing} will:\n${steps.map((step) => `  ${step.describe}`).join("\n")}\n${ask}`;
+}
+
 /** "<what>. Installing it will:\n  <step>\n  <step>\nInstall it now?": an install question that lists what a yes does first (spec §4.6). */
 function installQuestion(what: string, check: ToolCheck, options: { root?: string; env?: NodeJS.ProcessEnv }): string {
-	const steps = installSteps(check, options.root ?? wiringRoot(options.env).root, options.env ?? process.env);
-	return `${what}. Installing it will:\n${steps.map((step) => `  ${step.describe}`).join("\n")}\nInstall it now?`;
+	return stepsQuestion(what, installSteps(check, options.root ?? wiringRoot(options.env).root, options.env ?? process.env));
+}
+
+/**
+ * Grok's step for its row in the tools check (src/grok/install.ts grokWiring), in the place of pi's, OMP's and Claude
+ * Code's install question. When Orrery's side of Grok isn't this Orrery's ("missing", "other", "update available"):
+ * setup's question, `Connect Orrery to Grok`, with setup's steps (installSteps, src/grok/install.ts grokInstallSteps),
+ * which a yes runs (install-grok) and a no opens nothing. When it is ("installed"): a word when Grok's /hooks tab has
+ * switched Orrery's hooks off (grokRecordingSwitchedOff, grokGuardSwitchedOff), and the launch goes on. A row Orrery
+ * can't read ("unknown") has no steps to offer: it is said, and the launch goes on.
+ */
+function grokWiringSteps(check: ToolCheck, options: { root?: string; env?: NodeJS.ProcessEnv }): LaunchStep[] {
+	const env = options.env ?? process.env;
+	if (check.wiring === "installed") {
+		const off = grokSwitchedOff(env);
+		return off === undefined ? [] : [{ text: off, confirm: false }];
+	}
+	if (check.wiring === "unknown") return [{ text: "Orrery can't tell whether Grok runs its hooks, so this session may not record; orrery tools says why.", confirm: false }];
+	if (check.wiring !== "missing" && check.wiring !== "other" && check.wiring !== "update available") return [];
+	const root = options.root ?? wiringRoot(options.env).root;
+	const steps = installSteps(check, root, env);
+	if (steps.length === 0) return [];
+	// Why, by what Grok runs now: another hook file; this Orrery's hooks with a config entry missing (the session
+	// records); Orrery's hooks of this install's other shape, whose entry app/current lacks; or none of Orrery's.
+	const why =
+		check.wiring === "other"
+			? "Grok doesn't run this Orrery's hooks, so this session may not record"
+			: grokHooksInstalled(root, env) === true
+				? "Grok's config lacks Orrery's status row or memory tools"
+				: check.now !== undefined
+					? "Orrery's hooks for Grok name the other install shape's entry, so this session won't record"
+					: "Orrery's hooks for Grok are not installed, so this session won't record";
+	return [{ text: stepsQuestion(why, steps, "Connecting Orrery to Grok", "Connect Orrery to Grok now?"), confirm: true, fix: "install-grok" }];
+}
+
+/**
+ * Which of Orrery's Grok hooks Grok's /hooks tab has switched off, and how they go back on; undefined when none is. With
+ * a recording hook off the session is recorded in part or not at all (its status row says not recording:
+ * src/grok/status.ts). A disabled-hooks file that can't be read counts as the guard switched off (grokGuardSwitchedOff).
+ */
+function grokSwitchedOff(env: NodeJS.ProcessEnv): string | undefined {
+	const recording = grokRecordingSwitchedOff(env);
+	const guard = grokGuardSwitchedOff(env);
+	if (recording && guard) return "Orrery's recording hooks and its guard are switched off in Grok's /hooks, so this session won't be fully recorded and the guard checks none of its tool calls: switch them on there, then start a new session (/new).";
+	if (recording) return "Orrery's recording hooks are switched off in Grok's /hooks, so this session won't be fully recorded: switch them on there, then start a new session (/new).";
+	if (guard) return "Orrery's guard is switched off in Grok's /hooks, so it checks none of this session's tool calls: switch it on there.";
+	return undefined;
 }
 
 /**
@@ -188,6 +240,7 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 			steps.push({ text: installQuestion(`The Orrery plugin for Claude Code is ${check.wiring === "missing" ? "not installed" : "out of date"}`, check, options), confirm: true, fix: "install-claude-code" });
 		}
 	}
+	if (tool === "grok") steps.push(...grokWiringSteps(check, options));
 	// Codex: Orrery's hooks, memory tools and instructions go on its command line, before the person's arguments.
 	const codex = tool === "codex" ? codexLaunch(agent, options.orrery ?? orreryCommand(options.env ?? process.env)) : undefined;
 	for (const notice of codex?.notices ?? []) steps.push({ text: notice, confirm: false });
@@ -297,7 +350,7 @@ export function applyFix(fix: LaunchFix, config: HarnessConfig, row: AgentRow, t
 		return `Created ${folder}.`;
 	}
 	if (fix === "claude-setup-mod") return modSetupReport(claudeSetupMod(findAgent(config, row.name)));
-	const check = tools.find((t) => t.id === (fix === "install-pi" ? "pi" : fix === "install-omp" ? "omp" : "claude-code"));
+	const check = tools.find((t) => t.id === (fix === "install-pi" ? "pi" : fix === "install-omp" ? "omp" : fix === "install-grok" ? "grok" : "claude-code"));
 	if (check === undefined) throw new Error("That tool was not checked.");
 	const result = runInstall(installSteps(check, options.root ?? wiringRoot(options.env).root, options.env), options.run ?? realRunner);
 	if (!result.ok) throw new Error(result.output);
