@@ -738,9 +738,10 @@ files, `/hooks` switch, trust list, plugins and agents): no tool writes there an
 parts Grok's own features write (its memory, skills, workflows, `/learn`'s runs, the background-task skill's logs,
 plugins' data, `/implement`'s notes, the bundled skills, its docs and logs, and its session worktrees). An agent's
 session reads neither Grok's login nor its session records. In the same scope, shell text may not run Grok's own CLI
-where it writes those (`grok mcp add|remove|enable|disable`, `plugin` but its read-only commands, `update`, `login`,
-`logout`, `setup`, `sessions delete`, `--trust` anywhere) or opens a session by its id or the latest one (`-r`, `-c`,
-`-s`, and `grok agent`'s servers), which may be live in another Grok ([Grok](grok.md#the-guard)).
+but its read-only commands (`grok mcp list`, `plugin list`, `sessions list`, `--version`, `--help` and the like:
+everything else writes those, writes files, or runs sessions or Grok's leader outside `orrery agent`), nor `--trust`
+anywhere, nor an option that opens a session by its id or the latest one (`-r`, `-c`, `-s`), which may be live in
+another Grok ([Grok](grok.md#the-guard)).
 OpenCode's config and code are read-only in every tool, because OpenCode loads plugins, runs commands and takes
 permissions from them with no prompt, next to the guard, the next time it opens a folder: no tool writes `opencode.json`
 or `opencode.jsonc` in any folder, a `.opencode` folder (OpenCode's Plan folder, `~/.opencode/plan`, aside), OpenCode's

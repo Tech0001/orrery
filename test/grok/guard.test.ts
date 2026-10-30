@@ -1316,7 +1316,7 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 	});
 });
 
-describe("Grok's own commands in shell text: none that opens a session by its id or the latest, or changes Grok's setup, in any session", () => {
+describe("Grok's own commands in shell text: none but its read-only ones, and none that opens a session by its id or the latest, in any session", () => {
 	const ID = "01a18bb1-6f58-71b3-b214-904c0bfc4abd";
 	/** Each refused command line, and the command its refusal names. */
 	const refused: [string, string][] = [
@@ -1356,7 +1356,7 @@ describe("Grok's own commands in shell text: none that opens a session by its id
 		["grok agent stdio", "grok agent stdio"],
 		["grok agent --leader serve", "grok agent serve"],
 		["grok agent", "grok agent"],
-		["grok wrap grok -c", "grok -c"],
+		["grok wrap grok -c", "grok wrap"],
 		// Text that only names one is refused too, as for Orrery's commands, and so is a prompt given as Grok's first word
 		// that starts with a subcommand's name: the shell may read it without its quotes.
 		["echo grok update", "grok update"],
@@ -1368,17 +1368,13 @@ describe("Grok's own commands in shell text: none that opens a session by its id
 		"grok --help",
 		"grok -h",
 		"grok mcp list",
-		"grok mcp doctor",
 		"grok mcp add --help",
 		"grok plugin list",
 		"grok plugin details pr-babysit",
 		"grok plugin marketplace list",
 		"grok sessions list",
 		"grok sessions search resume",
-		`grok export ${ID} -c`,
 		"grok inspect",
-		"grok update --check",
-		"grok setup --json",
 		"grok agent --help",
 		"grok help mcp",
 		'grok "fix the bug"',
@@ -1393,30 +1389,171 @@ describe("Grok's own commands in shell text: none that opens a session by its id
 		"ls src/grok",
 	];
 
-	it("refuses each in an agent's session and in one that is no agent's, by Grok's guard and by every tool's (the shared rule)", () => {
+	/** Each of `lines` refused in an agent's session and in one that is no agent's, by Grok's guard and every tool's, naming its command. */
+	function refusesEach(lines: readonly (readonly [string, string])[]) {
 		const { options, plain } = setup();
-		for (const [command, named] of refused) {
+		for (const [command, named] of lines) {
 			const why = grokGuard("run_terminal_command", { command }, options, false);
 			expect([command, why]).toEqual([command, expect.stringContaining(`${named} can't run from a session's shell`)]);
 			expect([command, grokGuard("run_terminal_command", { command }, plain, false)]).toEqual([command, why]);
 			expect([command, checkToolCall({ name: "bash", arguments: { command } }, options)]).toEqual([command, why]);
 			expect([command, runsGrokCommand(command)?.command]).toEqual([command, named]);
 		}
-	});
+	}
 
-	it("says why: a session that may be live elsewhere stops recording, or Grok's own setup", () => {
-		const { options } = setup();
-		expect(grokGuard("run_terminal_command", { command: `grok -p hi -r ${ID}` }, options, false)).toMatch(/opens a Grok session by its id or the latest one, which may be live in another Grok .* stops Orrery recording that session/);
-		expect(grokGuard("run_terminal_command", { command: "grok agent stdio" }, options, false)).toMatch(/opens a Grok session/);
-		expect(grokGuard("run_terminal_command", { command: "grok mcp disable orrery" }, options, false)).toMatch(/changes Grok's own setup \(its MCP servers, plugins, trusted folders, sign-in, managed config or saved sessions\)/);
-	});
-
-	it("lets Grok's read-only commands, a prompt and text that names Grok otherwise through", () => {
+	/** Each of `lines` let through in both kinds of session. */
+	function opensEach(lines: readonly string[]) {
 		const { options, plain } = setup();
-		for (const command of open) {
+		for (const command of lines) {
 			expect([command, grokGuard("run_terminal_command", { command }, options, false)]).toEqual([command, undefined]);
 			expect([command, grokGuard("run_terminal_command", { command }, plain, false)]).toEqual([command, undefined]);
 		}
+	}
+
+	it("refuses each in an agent's session and in one that is no agent's, by Grok's guard and by every tool's (the shared rule)", () => {
+		refusesEach(refused);
+	});
+
+	it("says why: a session that may be live elsewhere stops recording, --trust changes Grok's setup, and only Grok's read-only commands run", () => {
+		const { options } = setup();
+		expect(grokGuard("run_terminal_command", { command: `grok -p hi -r ${ID}` }, options, false)).toMatch(/opens a Grok session by its id or the latest one, which may be live in another Grok .* stops Orrery recording that session/);
+		expect(grokGuard("run_terminal_command", { command: "grok --trust" }, options, false)).toMatch(/trusts a folder for good, which changes Grok's own setup \(its MCP servers, plugins, trusted folders, sign-in, managed config or saved sessions\)/);
+		for (const command of ["grok mcp disable orrery", "grok agent stdio", "grok worker start"]) {
+			expect(grokGuard("run_terminal_command", { command }, options, false)).toMatch(
+				/of Grok's own commands only those that read run here \(grok help, version, models, inspect, completions, usage, du, mcp list, plugin list, details and validate, plugin marketplace list, sessions list and search, worktree list and show, and any command's --help\); the others change Grok's own setup .* or run Grok sessions outside Orrery's launch/,
+			);
+		}
+	});
+
+	it("lets Grok's read-only commands, a prompt and text that names Grok otherwise through", () => {
+		opensEach(open);
+	});
+
+	it("refuses every subcommand grok --help (1.0.70) lists but its read-only ones: leader, worker, agent, setup, update, login, logout, and every one that writes, runs a session or a server, or opens one", () => {
+		refusesEach([
+			...["agent", "agent stdio", "agent headless", "agent serve", "agent leader", "clone", "dashboard", "doctor", "doctor fix", "leader", "leader list", "leader info", "leader kill", "leader worker start"].map((command): [string, string] => [`grok ${command}`, `grok ${command}`]),
+			...["login", "logout", "memory clear", "setup", "trace", "update", "worker", "worker start", "worker status", "worker list", "worker controller", "worker stop", "wrap"].map((command): [string, string] => [`grok ${command}`, `grok ${command}`]),
+			...["mcp add", "mcp remove", "mcp enable", "mcp disable", "mcp doctor", "plugin install", "plugin uninstall", "plugin rm", "plugin remove", "plugin update", "plugin enable", "plugin disable", "plugin tag"].map((command): [string, string] => [`grok ${command}`, `grok ${command}`]),
+			...["plugin marketplace add", "plugin marketplace remove", "plugin marketplace update", "sessions delete", "worktree create", "worktree rm", "worktree gc", "worktree detach", "worktree salvage", "worktree clean-artifacts", "worktree redirect", "worktree db"].map((command): [string, string] => [`grok ${command}`, `grok ${command}`]),
+			// export writes a file or the clipboard (and prints another session's whole transcript); trace writes and uploads.
+			[`grok export ${ID}`, "grok export"],
+			[`grok export ${ID} -c`, "grok export"],
+			[`grok export ${ID} /tmp/x.md`, "grok export"],
+			[`grok trace ${ID} --local`, "grok trace"],
+			// update and setup whole, their read-only forms too; a read-only one's option that writes.
+			["grok update --check", "grok update"],
+			["grok setup --json", "grok setup"],
+			["grok du --clean", "grok du"],
+			["grok disk-usage --clean-orphaned --yes", "grok disk-usage"],
+			["grok plugin list --json --available", "grok plugin list"],
+			// One that needs its own subcommand, with none or one Grok doesn't have.
+			["grok mcp", "grok mcp"],
+			["grok plugin marketplace", "grok plugin marketplace"],
+			["grok sessions", "grok sessions"],
+			// Grok reads its subcommand after its prompt too (grok hi mcp list runs mcp list: seen live, 1.0.70).
+			["grok hi mcp disable orrery", "grok mcp disable"],
+			['grok "fix it" update', "grok update"],
+			["grok -p hi worker start", "grok worker start"],
+			["grok --model m hi leader worker start", "grok leader worker start"],
+		]);
+	});
+
+	it("lets each of Grok's read-only commands through, with their read-only options, and any command's help", () => {
+		opensEach([
+			"grok -v",
+			"grok version",
+			"grok v --json",
+			"grok help",
+			"grok help mcp add",
+			"grok models",
+			"grok inspect --json",
+			"grok completions bash",
+			`grok usage ${ID}`,
+			`grok usage ${ID} 3`,
+			"grok du",
+			"grok du --json",
+			"grok disk-usage",
+			"grok mcp list --json",
+			"grok mcp help",
+			"grok mcp help add",
+			"grok plugin list --json",
+			"grok plugin details pr-babysit",
+			"grok plugin validate ./p",
+			"grok plugin marketplace list --json",
+			"grok plugin marketplace help",
+			"grok sessions list -n 5",
+			"grok sessions list --limit=5",
+			"grok sessions search 'resume the bridge'",
+			"grok worktree list --all --repo x",
+			"grok worktree ls",
+			"grok worktree show feat",
+			"grok agent help",
+			"grok agent --help",
+			"grok leader --help",
+			"grok worker --help",
+			"grok worker --help start",
+			"grok --help mcp add x",
+			"grok mcp add --help x",
+			"grok mcp --help add x",
+			"grok plugin --help install ./p",
+			"grok mcp add -e K=V --help x",
+			"grok --debug --leader-socket /tmp/l.sock mcp list",
+			"grok hi there",
+		]);
+	});
+
+	it("a word built at run time or a glob: an option's value is passed over, and where Grok's subcommand stands the rest is searched (fail closed)", () => {
+		refusesEach([
+			// A value built at run time fills its option, and reading goes on.
+			["grok --model $M mcp disable orrery", "grok mcp disable"],
+			['grok --model "$M" mcp disable orrery', "grok mcp disable"],
+			['grok -m "$(cat model.txt)" mcp disable orrery', "grok mcp disable"],
+			["grok mcp --debug-file $F disable orrery", "grok mcp disable"],
+			['grok --rules "$R" update', "grok update"],
+			// Where Grok's subcommand stands: a refused one any later word names, under any command it is one of.
+			["grok $X mcp disable orrery", "grok mcp disable"],
+			["grok -m$M mcp disable orrery", "grok mcp disable"],
+			["grok hi $C disable orrery", "grok mcp disable"],
+			["grok $C add evil -- node s.js", "grok mcp add"],
+			["grok $C start", "grok leader worker start"],
+			// Where a subcommand's own stands: which one can't be told.
+			["grok mcp $SUB orrery", "grok mcp"],
+			["grok plugin marketplace $SUB ./m", "grok plugin marketplace"],
+			// A read-only one with an option that writes: a word that may be that option.
+			["grok du $X", "grok du"],
+			// A glob that could name a refused one (the shell may make it a file's name).
+			["grok m?p disable orrery", "grok mcp disable"],
+			["grok up*", "grok update"],
+			["grok mcp dis*ble orrery", "grok mcp"],
+			["grok du --cl*", "grok du"],
+			["grok --tr* -p hi", "grok --trust"],
+			[`grok --re* ${ID}`, "grok --resume"],
+		]);
+		opensEach([
+			'grok -p "$PROMPT"',
+			'grok "$PROMPT"',
+			'grok "$PROMPT" --model m',
+			"grok $X help",
+			"grok sessions list --debug-file $F",
+			"grok sessions search $Q",
+			`grok usage "$ID"`,
+			"grok mcp list --debug-file $F",
+			"ls src/grok src/*.ts",
+		]);
+	});
+
+	it("help counts only before the first word past the subcommands that is no option or value, never after --, and never as an option's value or as -h", () => {
+		refusesEach([
+			["grok mcp add x -- cmd --help", "grok mcp add"],
+			["grok mcp add x node s.js --help", "grok mcp add"],
+			["grok plugin install ./p --help", "grok plugin install"],
+			["grok mcp add -e --help x -- node s.js", "grok mcp add"],
+			["grok --model --help mcp add x", "grok mcp add"],
+			// -h doesn't count: the readings are lower case, and mcp add's -H (a header) reads as -h.
+			["grok mcp add x -h", "grok mcp add"],
+			['grok mcp add -H "authorization: x" --transport http api https://example.invalid/mcp', "grok mcp add"],
+			["grok -h mcp add x", "grok mcp add"],
+		]);
 	});
 });
 

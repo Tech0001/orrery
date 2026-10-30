@@ -25,9 +25,10 @@
  * grokRule) and its session records, is written by no tool and named in no shell text, nor is the folder itself, in
  * every session, but its open parts (GROK_OPEN: its memory, skills and workflows, what its bundled skills, docs and
  * logs write, and its session worktrees), which are Grok's own. Its login and session records are read by no agent's
- * session (HOME_SECRETS, grokCredentials). Nor may shell text, in every session, run Grok's own CLI where it writes
- * those or opens a session that may be live in another Grok (guard-rules.ts grokCommandIn). A session that is no agent's (GuardOptions.orreryOnly, spec
- * 2026-10-19-no-agent-sessions §3) gets Orrery's own rules alone (orreryJudge): Orrery's home, its credentials file,
+ * session (HOME_SECRETS, grokCredentials). Nor may shell text, in every session, run Grok's own CLI but its read-only
+ * commands, nor with an option that opens a session that may be live in another Grok (guard-rules.ts grokCommandIn). A
+ * session that is no agent's (GuardOptions.orreryOnly, spec 2026-10-19-no-agent-sessions §3) gets Orrery's own rules
+ * alone (orreryJudge): Orrery's home, its credentials file,
  * config and installed program, where agents' sessions load code from outside its home (orreryEntries: read, never
  * written, not named in shell text), Grok's folder but its open parts, every agent's memory view (each is another's: it
  * reads no agent's memory), the session records, and Orrery's commands and plumbing in shell text. What the guard can't
@@ -93,7 +94,11 @@
  * - A coding tool an agent starts with settings of its own is a second program, as a script is: a Grok started with
  *   another GROK_HOME (or HOME) loads none of Orrery's hooks, so it has no guard and marks no session it opens
  *   (src/grok/hooks.ts markShared); a Claude Code started with its own config folder loads no Orrery plugin. A grok
- *   command run through an alias, a link of another name or a script gets past the grok command rule too.
+ *   command run through an alias, a link of another name or a script gets past the grok command rule too (guard-rules.ts
+ *   grokCommandIn), and so does one whose subcommand and its own words all come from words built at run time (`grok $C`,
+ *   C holding `mcp disable orrery`): where Grok's subcommand stands, such a word is refused only when a later word names
+ *   a refused command. Grok's read-only commands are Grok 1.0.70's: a later Grok's new subcommand is refused until it is
+ *   listed, but a new option of a read-only one that writes passes until it is.
  * - A path to Grok's folder assembled from variables, parameter expansions or substitutions gets through, from a
  *   session started inside Grok's folder too (`$X/../hooks` or `$(pwd)/../config.toml` from a call run in an open part,
  *   a ".." held in a variable, `P=<home>/skills; … ${P%/skills}/hooks/x`), as a path split into pieces or a script the

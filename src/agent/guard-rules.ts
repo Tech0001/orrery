@@ -738,28 +738,32 @@ export const ORRERY_COMMAND_REFUSED_PLAIN = (command: string) =>
 // ---- Grok's own commands from any session's shell ----
 //
 // Grok's CLI writes, past the guard, what the guard keeps in Grok's folder (its MCP servers, plugins, trusted folders,
-// managed config, sign-in and saved sessions: Grok's manual, 07-mcp-servers.md and 09-plugins.md), and it can open a
+// managed config, sign-in, memory and saved sessions: Grok's manual, 07-mcp-servers.md and 09-plugins.md); it runs
+// sessions and leaders outside Orrery's launch (agent's servers, leader, worker, the dashboard); and it can open a
 // session that is live in another Grok, an agent's among them, whose log is what Orrery confirms that session's prompts
 // by: a second Grok resuming it appends its own prompt there, which reads as typed (src/grok/hooks.ts marks such a
 // session, and its recording stops). So in every session, as Grok's folder is kept, shell text is refused where Grok's
 // program (grok, or a release binary's name, grok-<os>-<arch>, alone or ending a path) is followed in the same command
 // by (grokCommandIn):
 // - an option that picks an existing session or names one (grok --help 1.0.70's -r/--resume, -c/--continue and
-//   -s/--session-id, also in a cluster of short options), among its own words before its subcommand, the prompt's after
-//   it included (Grok reads options after its prompt too);
+//   -s/--session-id, also in a cluster of short options), among its own words, after its prompt too (Grok reads options
+//   after its prompt);
 // - --trust (a hidden option that trusts a folder for good) anywhere;
-// - a subcommand that changes Grok's setup or runs sessions outside Orrery's launch: mcp add, remove, enable or disable;
-//   plugin, but list, details, validate and help (marketplace but list); update, but --check; login; logout; setup, but
-//   --json; sessions delete; agent (its stdio, serve, headless and leader servers, which load sessions by id), but help.
-//   One that asks for its help (-h, --help) passes.
-// Its read-only commands stay open: mcp list, plugin list, sessions list, export, inspect, --version, --help, and the
-// rest. No option grok --help lists starts Grok without its hooks. The words are read as the orrery rule reads them
-// (wordAt), lower case as every reading is, past Grok's own options and their values; a valued option followed by a word
-// that starts with "-" takes no value (fail closed), an option whose value is optional (-w) takes none, and an option
-// Grok doesn't list takes none. A word with an expansion or a substitution is skipped: a name or option built at run
-// time, an alias, a link of another name to Grok's program, a script, or a Grok started with an environment that loads
-// no Orrery hooks (another GROK_HOME) gets through, as for every shell-text rule. Text that only names such a command is
-// refused too (echo grok update).
+// - any of its subcommands (grok --help 1.0.70's) but its read-only ones (GROK_CLI_READS, each of which only prints):
+//   help, version, models, inspect, completions, usage, du (but --clean), mcp list, plugin list (but --available),
+//   details and validate, plugin marketplace list, sessions list and search, worktree list and show, and any
+//   subcommand's help. Grok takes its subcommand from its first word that is no option nor an option's value, or, when
+//   that is its prompt, from the next one (grok hi mcp list runs mcp list: seen live). One that is refused passes only
+//   when it asks for its help: --help before the first such word past its subcommands, and before any "--" (grok mcp
+//   add x -- cmd --help adds a server). -h doesn't count: the readings are lower case, and mcp add's -H is a header.
+// The words are read as the orrery rule reads them (wordAt), past Grok's options and their values: a valued option
+// followed by a word that starts with "-" takes no value (but --help, which is read as its value: fail closed), an
+// option whose value is optional (-w) takes none, and an option Grok doesn't list takes none. A word with an expansion,
+// a substitution or a glob is read failing closed: as an option's value it is passed over; where Grok's subcommand
+// stands, a refused subcommand it could name (a glob's), or one any later word names under any of Grok's commands, is
+// refused; where a subcommand's own stands, it is refused. A text that only names such a command is refused too (echo
+// grok update), and so is one whose prompt, read without its quotes, puts a subcommand's name where Grok's stands
+// (grok "update the docs"). Limits: src/agent/guard-paths.ts, Known limits.
 
 /** Grok's program as a word (src/grok/names.ts isGrokProcess's names), its name in group 1; also after "[" or "!". */
 const GROK_RUN = new RegExp(`(?:${PLUMBING_START}|[[!])(grok(?:-[a-z]+-[a-z0-9_]+)?)(?=$|[\\s"';|&()<>\`{}$\\\\,\\]])`, "g");
@@ -772,22 +776,64 @@ const GROK_VALUED: ReadonlySet<string> = new Set([
 	...["--agent-profile", "--plugin-dir", "--grok-ws-origin", "--grok-ws-url", "--cli-chat-proxy-base-url", "--xai-api-base-url"],
 ]);
 /** Grok's options that pick an existing session or name one. */
-const GROK_SESSION_OPTIONS: ReadonlySet<string> = new Set(["-r", "--resume", "-c", "--continue", "-s", "--session-id"]);
-/** Grok's short options whose value follows them in a cluster (-pword), and those of them that pick a session. */
+const GROK_SESSION_OPTIONS: readonly string[] = ["-r", "--resume", "-c", "--continue", "-s", "--session-id"];
+/**
+ * Grok's short options whose value is the rest of their cluster (-pword), those of them whose value is the next word
+ * when they end it (-vp word; -w's value is optional: none), and those that pick a session.
+ */
 const GROK_SHORT_VALUED = "mpw";
+const GROK_SHORT_NEXT = "mp";
 const GROK_SHORT_SESSION = "rcs";
-/** Grok's subcommands (grok --help 1.0.70): a first word that is one is its subcommand, any other its prompt. */
-const GROK_SUBCOMMANDS: ReadonlySet<string> = new Set([
-	...["agent", "clone", "completions", "dashboard", "doctor", "du", "disk-usage", "export", "help", "inspect", "leader"],
-	...["login", "logout", "mcp", "memory", "models", "plugin", "sessions", "setup", "trace", "update", "usage", "version"],
-	...["v", "worker", "worktree", "wrap"],
+
+/** Grok's worker's subcommands (grok worker, grok leader worker). */
+const GROK_WORKER = ["start", "stop", "status", "list", "controller", "help"];
+/** Grok's subcommands (grok --help 1.0.70), and each one's own, by the words that name it ("" for Grok's). */
+const GROK_SUBCOMMANDS: ReadonlyMap<string, readonly string[]> = new Map([
+	["", ["agent", "clone", "completions", "dashboard", "doctor", "du", "disk-usage", "export", "help", "inspect", "leader", "login", "logout", "mcp", "memory", "models", "plugin", "sessions", "setup", "trace", "update", "usage", "version", "v", "worker", "worktree", "wrap"]],
+	["agent", ["stdio", "headless", "serve", "leader", "help"]],
+	["doctor", ["fix", "help"]],
+	["leader", ["list", "info", "kill", "worker", "help"]],
+	["leader worker", GROK_WORKER],
+	["mcp", ["list", "add", "remove", "enable", "disable", "doctor", "help"]],
+	["memory", ["clear", "help"]],
+	["plugin", ["list", "install", "uninstall", "rm", "remove", "update", "enable", "disable", "details", "validate", "tag", "marketplace", "help"]],
+	["plugin marketplace", ["list", "add", "remove", "update", "help"]],
+	["sessions", ["list", "search", "delete", "help"]],
+	["worker", GROK_WORKER],
+	["worktree", ["create", "list", "ls", "show", "rm", "gc", "detach", "salvage", "clean-artifacts", "redirect", "db", "help"]],
+]);
+/** Grok's own subcommands. */
+const GROK_COMMANDS = GROK_SUBCOMMANDS.get("") as readonly string[];
+
+/**
+ * Grok's read-only commands (grok --help 1.0.70), by the words that name them, each with the options of its that aren't
+ * (refused with them): what they do is print. A help subcommand, at any depth, is one too. Not among them: export
+ * (writes a file or the clipboard), trace (writes and uploads), doctor (its fix), mcp doctor (starts the servers), the
+ * dashboard (opens any session), update --check and setup --json (update and setup are refused whole).
+ */
+const GROK_CLI_READS: ReadonlyMap<string, readonly string[]> = new Map([
+	...["help", "version", "v", "models", "inspect", "completions", "usage"].map((path): [string, readonly string[]] => [path, []]),
+	...["du", "disk-usage"].map((path): [string, readonly string[]] => [path, ["--clean", "--clean-orphaned"]]),
+	...["mcp list", "plugin details", "plugin validate", "plugin marketplace list", "sessions list", "sessions search"].map((path): [string, readonly string[]] => [path, []]),
+	["plugin list", ["--available"]],
+	...["worktree list", "worktree ls", "worktree show"].map((path): [string, readonly string[]] => [path, []]),
 ]);
 
-/** A Grok command shell text may not run (grokCommandIn): as the refusal names it, and why. */
+/** The options of Grok's subcommands (grok --help 1.0.70) whose next word is their value (mcp add's -H, read as -h, aside). */
+const GROK_SUB_VALUED: ReadonlySet<string> = new Set([
+	...["--debug-file", "--leader-socket", "-m", "--model", "--reasoning-effort", "--effort", "--agent-profile", "--plugin-dir"],
+	...["--grok-ws-origin", "--grok-ws-url", "--cli-chat-proxy-base-url", "--xai-api-base-url", "--version", "-t", "--transport"],
+	...["-s", "--scope", "-e", "--env", "--header", "-o", "--output", "-n", "--limit", "--repo", "--type", "-b", "--branch"],
+	...["--redirect-dir", "--name", "--worker-dir", "--max-agents", "--pool-name", "--label", "--labels-file", "--api-key"],
+	...["--auth-token-file", "--on-session-start", "--on-session-end", "--management-addr", "--idle-release-timeout", "--pid"],
+	...["--ref", "--max-age", "--cursor-worker-name", "--cursor-worker-dir", "--cursor-worker-max-agents"],
+]);
+
+/** A Grok command shell text may not run (grokCommandIn): as the refusal names it, and why (GROK_CLI_REFUSED). */
 interface GrokCommand {
 	readonly command: string;
-	/** It opens a session that may be live elsewhere, or serves sessions outside Orrery's launch; else it changes Grok's setup. */
-	readonly opens: boolean;
+	/** It opens a session by its id or the latest one; it trusts a folder (--trust); it is a subcommand that isn't read-only. */
+	readonly why: "opens" | "trust" | "command";
 }
 
 /** Past the shell word at `at`: its quotes, escapes and substitutions' quotes included, to the next blank or command end. */
@@ -845,97 +891,138 @@ function grokWords(form: string, at: number, work: { left: number }): (string | 
 	}
 }
 
-/** The options of Grok's subcommands whose next word is their value (all take --debug-file and --leader-socket). */
-const GROK_SUB_VALUED: ReadonlySet<string> = new Set(["--debug-file", "--leader-socket", "--version", ...GROK_VALUED]);
+/** Whether a word is an option of Grok's (a "-", then more). */
+const optionWord = (text: string) => text.length > 1 && text.startsWith("-");
 
-/** The first of a subcommand's words that is no option nor an option's value: null when it can't be read, undefined for none. */
-function firstPositional(words: readonly (string | undefined)[]): string | null | undefined {
+/** Which of `names` a word names: itself, or each a glob (a word with *, ? or [) could match; none for no word. */
+function namedBy(text: string | undefined, names: readonly string[]): string[] {
+	if (text === undefined) return [];
+	if (!GLOB.test(text)) return names.includes(text) ? [text] : [];
+	const units = globUnits(text, Math.max(...names.map((name) => name.length)));
+	return units === undefined ? [] : names.filter((name) => globMatches(units, name));
+}
+
+/**
+ * What Grok's subcommand `sub`, its words after it `rest`, runs that shell text may not, or undefined: any but a
+ * read-only one (GROK_CLI_READS), unless it asks for its help (above). `help`: Grok's own words before it asked.
+ */
+function grokSubcommand(sub: string, rest: readonly (string | undefined)[], help: boolean): GrokCommand | undefined {
+	const path = [sub];
+	const options: string[] = [];
 	let value = false;
-	for (const text of words) {
-		if (text === undefined) return null;
-		if (value && !text.startsWith("-")) {
+	// Past its subcommands (a word read that is no option nor an option's value); such a word, or an option, that can't be
+	// read (built at run time, or a glob).
+	let past = false;
+	let unclear = false;
+	const refused = (): GrokCommand => ({ command: `grok ${path.join(" ")}`, why: "command" });
+	for (const text of rest) {
+		// What follows a "--" is no word of Grok's (a server's command line: mcp add x -- cmd --help).
+		if (text === "--") break;
+		if (value) {
 			value = false;
+			// Its value, built at run time or not; but a word that starts with "-" is read as an option, and --help as a value.
+			if (text === undefined || text === "--help" || !optionWord(text)) continue;
+		}
+		if (text !== undefined && optionWord(text)) {
+			const equals = text.indexOf("=");
+			const name = equals === -1 ? text : text.slice(0, equals);
+			if (text === "--help" && !past) help = true;
+			if (GLOB.test(name)) unclear = true;
+			options.push(name);
+			value = equals === -1 && GROK_SUB_VALUED.has(name);
 			continue;
 		}
-		value = false;
-		if (text.length > 1 && text.startsWith("-")) {
-			value = GROK_SUB_VALUED.has(text) && !text.includes("=");
+		const children = past ? undefined : GROK_SUBCOMMANDS.get(path.join(" "));
+		if (children !== undefined && (text === undefined || GLOB.test(text))) {
+			// Where a subcommand of its own stands, a word built at run time or a glob: which one can't be told.
+			return help ? undefined : refused();
+		}
+		if (children?.includes(text as string) === true) {
+			path.push(text as string);
+			if (text === "help") return undefined;
 			continue;
 		}
-		return text;
+		past = true;
+		if (text === undefined || GLOB.test(text)) unclear = true;
+	}
+	if (help) return undefined;
+	const writes = GROK_CLI_READS.get(path.join(" "));
+	if (writes === undefined) return refused();
+	// A read-only one, but with an option of its that writes, or a word that may be one.
+	if (writes.length > 0 && (unclear || options.some((option) => namedBy(option, writes).length > 0))) return refused();
+	return undefined;
+}
+
+/**
+ * Read failing closed where Grok's subcommand stands but can't be read (a word built at run time): the first command
+ * that `words` (the words after it) name and that is refused, a subcommand's own taken under each command it is one of
+ * (grok $C disable orrery is mcp disable or plugin disable). Past MAX_WORDS words, Grok itself, refused.
+ */
+function refusedAmong(words: readonly (string | undefined)[]): GrokCommand | undefined {
+	if (words.length > MAX_WORDS) return { command: "grok", why: "command" };
+	for (const [at, text] of words.entries()) {
+		if (text === undefined || GLOB.test(text)) continue;
+		for (const [parent, children] of GROK_SUBCOMMANDS) {
+			if (!children.includes(text)) continue;
+			const [first, ...more] = parent === "" ? [text] : [...parent.split(" "), text];
+			const found = grokSubcommand(first as string, [...more, ...words.slice(at + 1)], false);
+			if (found !== undefined) return found;
+		}
 	}
 	return undefined;
 }
 
-/** What Grok's subcommand `sub`, with its words `rest`, does that shell text may not, or undefined (above). */
-function grokSubcommand(sub: string, rest: readonly (string | undefined)[]): GrokCommand | undefined {
-	// Its own words: what follows a "--" is another command's (a server's command line: mcp add x -- cmd --help).
-	const end = rest.indexOf("--");
-	const own = end === -1 ? rest : rest.slice(0, end);
-	if (own.some((word) => word === "-h" || word === "--help")) return undefined;
-	const first = firstPositional(own);
-	const setup = (command: string): GrokCommand => ({ command: `grok ${command}`, opens: false });
-	switch (sub) {
-		case "mcp":
-			return first === null ? setup("mcp") : first !== undefined && ["add", "remove", "enable", "disable"].includes(first) ? setup(`mcp ${first}`) : undefined;
-		case "plugin": {
-			if (first === undefined || (first !== null && ["list", "details", "validate", "help"].includes(first))) return undefined;
-			if (first !== "marketplace") return setup(first === null ? "plugin" : `plugin ${first}`);
-			const next = firstPositional(own.slice(own.indexOf("marketplace") + 1));
-			return next === undefined || next === "list" || next === "help" ? undefined : setup(next === null ? "plugin marketplace" : `plugin marketplace ${next}`);
-		}
-		case "update":
-			return own.includes("--check") ? undefined : setup("update");
-		case "setup":
-			return own.includes("--json") ? undefined : setup("setup");
-		case "login":
-		case "logout":
-			return setup(sub);
-		case "sessions":
-			return first === null || first === "delete" ? setup("sessions delete") : undefined;
-		case "agent":
-			return first === "help" ? undefined : { command: `grok agent${typeof first === "string" ? ` ${first}` : ""}`, opens: true };
-		default:
-			return undefined;
-	}
-}
-
 /** What the words after Grok's program run that shell text may not (above), or undefined. */
 function grokRefused(words: readonly (string | undefined)[]): GrokCommand | undefined {
-	if (words.some((word) => word === "--trust" || word?.startsWith("--trust=") === true)) return { command: "grok --trust", opens: false };
+	if (words.some((word) => word !== undefined && optionWord(word) && namedBy(word.split("=")[0], ["--trust"]).length > 0)) return { command: "grok --trust", why: "trust" };
 	let value = false;
-	let prompt = false;
+	let help = false;
+	// Grok's words read that are no option nor an option's value: its subcommand stands first, or second after its prompt.
+	let positionals = 0;
 	for (const [at, text] of words.entries()) {
-		if (text === undefined) {
-			// A value, or the prompt, built at run time: what follows is read as ever.
+		if (value) {
 			value = false;
-			prompt = true;
-			continue;
+			// Its value, built at run time or not; but a word that starts with "-" is read as an option (grok -p -r <id>), and
+			// --help as the value.
+			if (text === undefined || text === "--help" || !optionWord(text)) continue;
 		}
-		if (value && !(text.length > 1 && text.startsWith("-"))) {
-			value = false;
-			continue;
-		}
-		value = false;
 		// After "--" every word is the prompt's.
 		if (text === "--") return undefined;
-		if (text.length > 1 && text.startsWith("-")) {
+		if (text !== undefined && optionWord(text)) {
 			const equals = text.indexOf("=");
 			const name = equals === -1 ? text : text.slice(0, equals);
-			if (GROK_SESSION_OPTIONS.has(name)) return { command: `grok ${name}`, opens: true };
+			const session = namedBy(name, GROK_SESSION_OPTIONS)[0];
+			if (session !== undefined) return { command: `grok ${session}`, why: "opens" };
+			if (text === "--help") help = true;
 			if (!name.startsWith("--") && name.length > 2) {
-				// A cluster of short options (-vc): one that picks a session, or a valued one, whose value is the rest.
-				for (const letter of name.slice(1)) {
-					if (GROK_SHORT_SESSION.includes(letter)) return { command: `grok -${letter}`, opens: true };
-					if (GROK_SHORT_VALUED.includes(letter)) break;
+				// A cluster of short options (-vc): one that picks a session, or a valued one, whose value is the rest, or the
+				// next word when it ends the cluster.
+				const letters = name.slice(1);
+				for (const [index, letter] of [...letters].entries()) {
+					if (GROK_SHORT_SESSION.includes(letter)) return { command: `grok -${letter}`, why: "opens" };
+					if (GROK_SHORT_VALUED.includes(letter)) {
+						value = equals === -1 && index === letters.length - 1 && GROK_SHORT_NEXT.includes(letter);
+						break;
+					}
 				}
 				continue;
 			}
-			value = GROK_VALUED.has(name) && equals === -1;
+			value = equals === -1 && GROK_VALUED.has(name);
 			continue;
 		}
-		if (!prompt && GROK_SUBCOMMANDS.has(text)) return grokSubcommand(text, words.slice(at + 1));
-		prompt = true;
+		if (positionals < 2) {
+			if (text === undefined || GLOB.test(text)) {
+				// Where Grok's subcommand stands, a word built at run time or a glob: a refused subcommand it could name, or
+				// any one the words after it name (refusedAmong).
+				for (const sub of namedBy(text, GROK_COMMANDS)) {
+					const found = grokSubcommand(sub, words.slice(at + 1), help);
+					if (found !== undefined) return found;
+				}
+				const found = refusedAmong(words.slice(at + 1));
+				if (found !== undefined) return found;
+			} else if (GROK_COMMANDS.includes(text)) return grokSubcommand(text, words.slice(at + 1), help);
+		}
+		positionals++;
 	}
 	return undefined;
 }
@@ -952,11 +1039,19 @@ function grokCommandIn(form: string): GrokCommand | undefined {
 	return undefined;
 }
 
+/** The read-only commands of Grok's that run from a session's shell (GROK_CLI_READS), as the refusal names them. */
+const GROK_CLI_READS_NAMED =
+	"grok help, version, models, inspect, completions, usage, du, mcp list, plugin list, details and validate, plugin marketplace list, sessions list and search, worktree list and show, and any command's --help";
+/** How each refusal ends: where to run it, and that text naming it is refused too. */
+const GROK_RUN_IT = "Run it in your own terminal. Text that only names it is refused too: search with a file tool, and give git a message that names it from a file (git commit -F).";
+
 /** Why shell text that runs one of them is refused (grokCommandIn), in any session. */
-export const GROK_CLI_REFUSED = ({ command, opens }: GrokCommand) =>
-	opens
-		? `${command} can't run from a session's shell: it opens a Grok session by its id or the latest one, which may be live in another Grok (an agent's among them), and a second Grok writing a live session's record stops Orrery recording that session. Run it in your own terminal. Text that only names it is refused too: search with a file tool, and give git a message that names it from a file (git commit -F).`
-		: `${command} can't run from a session's shell: it changes Grok's own setup (its MCP servers, plugins, trusted folders, sign-in, managed config or saved sessions), which no session's tools may change. Run it in your own terminal. Text that only names it is refused too: search with a file tool, and give git a message that names it from a file (git commit -F).`;
+export const GROK_CLI_REFUSED = ({ command, why }: GrokCommand) =>
+	why === "opens"
+		? `${command} can't run from a session's shell: it opens a Grok session by its id or the latest one, which may be live in another Grok (an agent's among them), and a second Grok writing a live session's record stops Orrery recording that session. ${GROK_RUN_IT}`
+		: why === "trust"
+			? `${command} can't run from a session's shell: it trusts a folder for good, which changes Grok's own setup (its MCP servers, plugins, trusted folders, sign-in, managed config or saved sessions), which no session's tools may change. ${GROK_RUN_IT}`
+			: `${command} can't run from a session's shell: of Grok's own commands only those that read run here (${GROK_CLI_READS_NAMED}); the others change Grok's own setup (its MCP servers, plugins, trusted folders, sign-in, managed config, memory or saved sessions) or run Grok sessions outside Orrery's launch, which no session's tools may do. ${GROK_RUN_IT}`;
 
 /** The Grok command any reading of shell text runs that it may not (grokCommandIn), as GROK_CLI_REFUSED names it, or undefined. */
 export function runsGrokCommand(text: string): GrokCommand | undefined {

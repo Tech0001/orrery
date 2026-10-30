@@ -438,11 +438,12 @@ refused too.
 in every session the guard runs in, one that is no agent's included, but in the parts Grok's own features write (its
 memory, skills, workflows, docs, logs, session worktrees and the like). An agent's session may read the rest with file
 tools, but not Grok's login or session records, and shell text that names Grok's folder or the parts it keeps is
-refused (`ls ~/.grok`, `cat ~/.grok/config.toml`). So is a `grok` command that writes them for you (`grok mcp
-disable`, `grok plugin install`, `grok update`, `grok login`, `--trust` and the like), or one that opens a session by
-its id or the latest one (`grok -r`, `-c`, `-s`), which may be live in another Grok: a second Grok writing a live
-session's log stops Orrery recording it. The cost: an agent can't change Grok's settings for you. See
-[Grok](docs/grok.md#the-guard).
+refused (`ls ~/.grok`, `cat ~/.grok/config.toml`). So is every `grok` command but its read-only ones (`grok mcp
+list`, `sessions list`, `--help` and the like): the others write them for you (`grok mcp disable`, `grok plugin
+install`, `grok update`, `grok login`, `--trust`) or run sessions outside `orrery agent` (`grok agent`, `leader`,
+`worker`), and one that opens a session by its id or the latest one (`grok -r`, `-c`, `-s`) may open one that is live
+in another Grok: a second Grok writing a live session's log stops Orrery recording it. The cost: an agent can't change
+Grok's settings for you. See [Grok](docs/grok.md#the-guard).
 
 **Agents can't change OpenCode's config or code, in any tool.** OpenCode loads plugins, runs commands and takes
 permissions from its config, with no prompt, the next time it opens a folder, so a file an agent wrote there from any
