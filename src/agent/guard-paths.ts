@@ -96,11 +96,12 @@
  * - A coding tool an agent starts with settings of its own is a second program, as a script is: a Grok started with
  *   another GROK_HOME (or HOME) loads none of Orrery's hooks, so it has no guard and marks no session it opens
  *   (src/grok/hooks.ts markShared); a Claude Code started with its own config folder loads no Orrery plugin. A grok
- *   command run through an alias, a link of another name or a script gets past the grok command rule too (guard-rules.ts
- *   grokCommandIn), and so does one whose subcommand and its own words all come from words built at run time (`grok $C`,
- *   C holding `mcp disable orrery`): where Grok's subcommand stands, such a word is refused only when a later word names
- *   a refused command. Grok's read-only commands are Grok 1.0.70's: a later Grok's new subcommand is refused until it is
- *   listed, but a new option of a read-only one that writes passes until it is.
+ *   command run through an alias, a link of another name, a brace sequence in its name (`{g..g}rok`) or a script gets
+ *   past the grok command rule too (guard-rules.ts grokCommandIn), and so does a refused word built whole at run time
+ *   (`grok $C`, C holding `mcp disable orrery`; `grok mcp $SUB orrery`; `grok du $X`, X holding `--clean`): such a word
+ *   may be any, so it is passed over; only a word that is part of one is read, as a glob. Grok's commands are Grok
+ *   1.0.70's: a later Grok's new command, or a read-only one's new option that writes, passes until Orrery refuses it,
+ *   unless its name is one refused already.
  * - A path to Grok's folder assembled from variables, parameter expansions or substitutions gets through, from a
  *   session started inside Grok's folder too (`$X/../hooks` or `$(pwd)/../config.toml` from a call run in an open part,
  *   a ".." held in a variable, `P=<home>/skills; … ${P%/skills}/hooks/x`), as a path split into pieces or a script the

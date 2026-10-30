@@ -313,31 +313,35 @@ names it, in every session, plain ones too, but in the parts Grok's own features
 
 **Grok's own commands.** Grok's CLI writes what the guard keeps in Grok's folder, runs sessions and leaders outside
 `orrery agent`, and can open a session that is live in another Grok, so in every session, plain ones too, shell text
-may not run `grok` (or a path to it, or its release binary) with:
+may not run `grok` (or a path to it, or its release binary) with any of these words, wherever it stands in the command:
 
-- `-r`/`--resume`, `-c`/`--continue` or `-s`/`--session-id`, among its own options, before or after its prompt. A second
-  Grok that opens a live session writes its own prompt into that session's log, where it would read as typed (see
-  [What's recorded](#whats-recorded));
-- `--trust`, anywhere: it trusts a folder for good;
-- any subcommand Grok 1.0.70's `--help` lists but its read-only ones: so `mcp add`, `remove`, `enable`, `disable` and
-  `doctor`; `plugin install` and the rest that change plugins or marketplaces; `update` and `setup` (even `--check`
-  and `--json`); `login`; `logout`; `memory clear`; `sessions delete`; `agent` (its `stdio`, `serve`, `headless` and
-  `leader` run sessions outside `orrery agent` and load them by id); `leader` and `worker` (which run Grok's shared
-  leader); `dashboard`; `export` and `trace` (they write files, the clipboard or an upload); `clone`; `wrap`; `doctor`;
-  and `worktree`'s commands that change worktrees.
+- `-r`/`--resume`, `-c`/`--continue` or `-s`/`--session-id`. A second Grok that opens a live session writes its own
+  prompt into that session's log, where it would read as typed (see [What's recorded](#whats-recorded));
+- `--trust`: it trusts a folder for good;
+- the name of any command Grok 1.0.70's `--help`, or a command's own `--help`, lists but a read-only one: so `add`,
+  `remove`, `enable`, `disable` and `doctor` (of `mcp`); `install` and the rest that change plugins or marketplaces;
+  `update` and `setup` (even `--check` and `--json`); `login`; `logout`; `memory`; `delete` (of `sessions`); `agent` (its
+  `stdio`, `serve`, `headless` and `leader` run sessions outside `orrery agent` and load them by id); `leader`, `worker`
+  and their `start`, `stop`, `status` and the rest (which run Grok's shared leader); `dashboard`; `export` and `trace`
+  (they write files, the clipboard or an upload); `clone`; `wrap`; and `worktree`'s commands that change worktrees;
+- `du`'s `--clean` and `--clean-orphaned`, and `plugin list`'s `--available`.
 
 Its read-only commands pass: `grok --version`, `--help`, `help`, `version`, `models`, `inspect`, `completions`,
-`usage`, `du` (but `--clean`), `mcp list`, `plugin list` (but `--available`), `plugin details` and `validate`, `plugin
-marketplace list`, `sessions list` and `search`, and `worktree list` and `show`. So does any command's own `--help`, given
-before the command's first argument and before any `--` (`grok mcp add --help`, not `grok mcp add x -- cmd --help`);
-`-h` doesn't count, since Orrery reads the text in lower case and `mcp add`'s `-H` is a header. Grok takes its
-subcommand from the first word that is no option or value, or from the next when that first is its prompt (`grok hi mcp
-list` runs `mcp list`), and both places are read. A word built at run time (`$M`, `$(…)`) or a glob counts as an
-option's value when one comes before it; where the subcommand stands it is refused when it could be a refused command
-(a glob that could name one, or a later word that is one: `grok $C disable orrery`). As with Orrery's commands, text
-that only names one is refused too (`echo grok update`), and so is a prompt given as Grok's first word that starts with
-a subcommand's name (`grok "update the docs"`): give it with `-p`. Grok's `--help` lists no option that starts it
-without its hooks. Run these yourself in your own terminal.
+`usage`, `du`, `mcp list`, `plugin list`, `plugin details` and `validate`, `plugin marketplace list`, `sessions list` and
+`search`, and `worktree list` and `show`. So does a command's help asked plainly: `grok mcp add --help` (`--help` last,
+after Grok's commands alone) or `grok help mcp add`; help anywhere else is refused (`grok mcp add x -- cmd --help` adds a
+server), and `-h` doesn't count, since Orrery reads the text in lower case and `mcp add`'s `-H` is a header.
+
+Orrery doesn't read where a word stands: Grok takes its subcommand after its prompt too (`grok hi mcp list` runs `mcp
+list`), an option such as `-w` takes a value or none, and a shell turns a brace group into several words (`grok {hi,mcp}
+{disable,list}` runs `grok hi mcp disable list`). So each word counts alone, as every word it could be: a brace group, or
+a part built at run time (`dis$X`), as a wildcard. A word built at run time as a whole (`grok $C`) could be anything and
+gets through (see Limits). A prompt holding one of these words passes when it is quoted as one word and `grok` runs as
+the command (`grok "update the docs"`, `timeout 60 grok -p "add tests"`); an unquoted one is refused (`grok -p update`),
+and so is a quoted one in text that only names `grok` (`echo grok "mcp disable orrery" | sh`). As with Orrery's commands,
+text that only names one is refused too (`echo grok update`, a commit message that names `grok` and later `update`): give
+git a message from a file (`git commit -F`). Grok's `--help` lists no option that starts it without its hooks. Run these
+yourself in your own terminal.
 
 ### Its limits in Grok
 
@@ -370,9 +374,10 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
   through.
 - **A name built from a variable**, read from a file, or printed by another program gets through the shell-text rules,
   as in every tool, and so does a `grok` command reached that way, through an alias or a link of another name, or from
-  a script, and one whose whole subcommand is built at run time (`grok $C`, with `C` holding `mcp disable orrery`).
-- **Grok's read-only commands are 1.0.70's.** A subcommand a later Grok adds is refused until Orrery lists it, but an
-  option a later Grok adds to a read-only command that writes passes until Orrery refuses it.
+  a script, and one with a word built at run time as a whole (`grok $C`, with `C` holding `mcp disable orrery`; `grok
+  mcp $SUB orrery`; `grok du $X`).
+- **Grok's commands are 1.0.70's.** A command a later Grok adds, or an option it adds to a read-only command that
+  writes, passes until Orrery refuses it, unless its name is one Orrery refuses already.
 - **A coding tool an agent starts with its own settings** is a second program, as a script is: a Grok started with
   another `GROK_HOME` (or another home) loads none of Orrery's hooks, so it has no guard and doesn't mark a session it
   opens; a Claude Code started with its own config folder loads no Orrery plugin. Started from an agent's shell they

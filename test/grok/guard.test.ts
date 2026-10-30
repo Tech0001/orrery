@@ -1338,7 +1338,8 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 		[`x=$(grok -p hi -c)`, "grok -c"],
 		[`grok -p "$(cat prompt.txt)" -r ${ID}`, "grok -r"],
 		["grok --trust -p hi", "grok --trust"],
-		["grok plugin install ./p --trust", "grok --trust"],
+		["grok --no-leader -p hi --trust", "grok --trust"],
+		["grok plugin install ./p --trust", "grok plugin install"],
 		["grok mcp disable orrery", "grok mcp disable"],
 		["grok mcp remove orrery", "grok mcp remove"],
 		["grok mcp enable orrery", "grok mcp enable"],
@@ -1357,10 +1358,8 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 		["grok agent --leader serve", "grok agent serve"],
 		["grok agent", "grok agent"],
 		["grok wrap grok -c", "grok wrap"],
-		// Text that only names one is refused too, as for Orrery's commands, and so is a prompt given as Grok's first word
-		// that starts with a subcommand's name: the shell may read it without its quotes.
+		// Text that only names one is refused too, as for Orrery's commands.
 		["echo grok update", "grok update"],
-		['grok "update the docs"', "grok update"],
 	];
 	/** Command lines that stay open: Grok's read-only commands, prompts, and text that names Grok otherwise. */
 	const open = [
@@ -1378,10 +1377,9 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 		"grok agent --help",
 		"grok help mcp",
 		'grok "fix the bug"',
+		'grok "update the docs"',
 		'grok -p "resume where we left off"',
-		"grok -p update",
 		"grok -w feat -p hi",
-		"grok -- -r",
 		"git checkout grok -- src/x.ts",
 		"cd .worktrees/grok && npm test",
 		"npm test -- test/grok/hooks.test.ts",
@@ -1420,7 +1418,7 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 		expect(grokGuard("run_terminal_command", { command: "grok --trust" }, options, false)).toMatch(/trusts a folder for good, which changes Grok's own setup \(its MCP servers, plugins, trusted folders, sign-in, managed config or saved sessions\)/);
 		for (const command of ["grok mcp disable orrery", "grok agent stdio", "grok worker start"]) {
 			expect(grokGuard("run_terminal_command", { command }, options, false)).toMatch(
-				/of Grok's own commands only those that read run here \(grok help, version, models, inspect, completions, usage, du, mcp list, plugin list, details and validate, plugin marketplace list, sessions list and search, worktree list and show, and any command's --help\); the others change Grok's own setup .* or run Grok sessions outside Orrery's launch/,
+				/of Grok's own commands only those that read run here \(grok help, version, models, inspect, completions, usage, du, mcp list, plugin list, details and validate, plugin marketplace list, sessions list and search, worktree list and show, and a command's help \(grok <command> --help, grok help <command>\)\); the others change Grok's own setup .* or run Grok sessions outside Orrery's launch/,
 			);
 		}
 	});
@@ -1443,13 +1441,9 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 			// update and setup whole, their read-only forms too; a read-only one's option that writes.
 			["grok update --check", "grok update"],
 			["grok setup --json", "grok setup"],
-			["grok du --clean", "grok du"],
-			["grok disk-usage --clean-orphaned --yes", "grok disk-usage"],
-			["grok plugin list --json --available", "grok plugin list"],
-			// One that needs its own subcommand, with none or one Grok doesn't have.
-			["grok mcp", "grok mcp"],
-			["grok plugin marketplace", "grok plugin marketplace"],
-			["grok sessions", "grok sessions"],
+			["grok du --clean", "grok du --clean"],
+			["grok disk-usage --clean-orphaned --yes", "grok disk-usage --clean-orphaned"],
+			["grok plugin list --json --available", "grok plugin list --available"],
 			// Grok reads its subcommand after its prompt too (grok hi mcp list runs mcp list: seen live, 1.0.70).
 			["grok hi mcp disable orrery", "grok mcp disable"],
 			['grok "fix it" update', "grok update"],
@@ -1458,13 +1452,14 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 		]);
 	});
 
-	it("lets each of Grok's read-only commands through, with their read-only options, and any command's help", () => {
+	it("lets each of Grok's read-only commands through, with their read-only options, a command's help asked plainly, and a group with no command of its own", () => {
 		opensEach([
 			"grok -v",
 			"grok version",
 			"grok v --json",
 			"grok help",
 			"grok help mcp add",
+			"grok help plugin install",
 			"grok models",
 			"grok inspect --json",
 			"grok completions bash",
@@ -1491,41 +1486,42 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 			"grok agent --help",
 			"grok leader --help",
 			"grok worker --help",
-			"grok worker --help start",
-			"grok --help mcp add x",
-			"grok mcp add --help x",
-			"grok mcp --help add x",
-			"grok plugin --help install ./p",
-			"grok mcp add -e K=V --help x",
+			"grok leader worker start --help",
+			"grok plugin marketplace add --help",
+			"grok mcp add --help 2>&1 | head -20",
 			"grok --debug --leader-socket /tmp/l.sock mcp list",
 			"grok hi there",
+			// A group with no command of its own: Grok prints its help and exits 2 (seen live, 1.0.70).
+			"grok mcp",
+			"grok sessions",
+			"grok plugin marketplace",
 		]);
 	});
 
-	it("a word built at run time or a glob: an option's value is passed over, and where Grok's subcommand stands the rest is searched (fail closed)", () => {
+	it("a word built at run time or a glob is read as each word it could be, wherever it stands; one built whole at run time may be any and passes (Known limits)", () => {
 		refusesEach([
-			// A value built at run time fills its option, and reading goes on.
+			// A value built at run time is no reason to stop reading.
 			["grok --model $M mcp disable orrery", "grok mcp disable"],
 			['grok --model "$M" mcp disable orrery', "grok mcp disable"],
 			['grok -m "$(cat model.txt)" mcp disable orrery', "grok mcp disable"],
 			["grok mcp --debug-file $F disable orrery", "grok mcp disable"],
 			['grok --rules "$R" update', "grok update"],
-			// Where Grok's subcommand stands: a refused one any later word names, under any command it is one of.
+			// A refused command any word names, beside one built at run time.
 			["grok $X mcp disable orrery", "grok mcp disable"],
 			["grok -m$M mcp disable orrery", "grok mcp disable"],
-			["grok hi $C disable orrery", "grok mcp disable"],
-			["grok $C add evil -- node s.js", "grok mcp add"],
-			["grok $C start", "grok leader worker start"],
-			// Where a subcommand's own stands: which one can't be told.
-			["grok mcp $SUB orrery", "grok mcp"],
-			["grok plugin marketplace $SUB ./m", "grok plugin marketplace"],
-			// A read-only one with an option that writes: a word that may be that option.
-			["grok du $X", "grok du"],
+			["grok hi $C disable orrery", "grok disable"],
+			["grok $C add evil -- node s.js", "grok add"],
+			["grok $C start", "grok start"],
+			// Part of a word built at run time: read as a glob, named as written (the readings are lower case).
+			["grok mcp dis$SUB orrery", "grok mcp dis$sub"],
+			["grok mcp ${X}disable orrery", "grok mcp ${x}disable"],
+			["grok plugin marketplace ad$SUB ./m", "grok plugin marketplace ad$sub"],
+			["grok du --cl$X", "grok du --clean"],
 			// A glob that could name a refused one (the shell may make it a file's name).
-			["grok m?p disable orrery", "grok mcp disable"],
-			["grok up*", "grok update"],
-			["grok mcp dis*ble orrery", "grok mcp"],
-			["grok du --cl*", "grok du"],
+			["grok m?p disable orrery", "grok disable"],
+			["grok up*", "grok up*"],
+			["grok mcp dis*ble orrery", "grok mcp dis*ble"],
+			["grok du --cl*", "grok du --clean"],
 			["grok --tr* -p hi", "grok --trust"],
 			[`grok --re* ${ID}`, "grok --resume"],
 		]);
@@ -1539,10 +1535,15 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 			`grok usage "$ID"`,
 			"grok mcp list --debug-file $F",
 			"ls src/grok src/*.ts",
+			// A whole word built at run time may be any: the documented limit (grok $C, C holding mcp disable orrery).
+			"grok $C",
+			"grok mcp $SUB orrery",
+			"grok plugin marketplace $SUB ./m",
+			"grok du $X",
 		]);
 	});
 
-	it("help counts only before the first word past the subcommands that is no option or value, never after --, and never as an option's value or as -h", () => {
+	it("help counts only as grok <commands> --help or grok <commands> help <names>: never after --, as an option's value, as -h, or past a command's own words (accepted over-refusal: help elsewhere is refused)", () => {
 		refusesEach([
 			["grok mcp add x -- cmd --help", "grok mcp add"],
 			["grok mcp add x node s.js --help", "grok mcp add"],
@@ -1553,7 +1554,95 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 			["grok mcp add x -h", "grok mcp add"],
 			['grok mcp add -H "authorization: x" --transport http api https://example.invalid/mcp', "grok mcp add"],
 			["grok -h mcp add x", "grok mcp add"],
+			// help as a command's own word (a server named help), or past one.
+			["grok mcp add help", "grok mcp add help"],
+			["grok mcp add add --help", "grok mcp add add"],
+			// Help anywhere else, though Grok would only print it (accepted over-refusal).
+			["grok worker --help start", "grok worker start"],
+			["grok --help mcp add x", "grok mcp add"],
+			["grok mcp add --help x", "grok mcp add"],
+			["grok mcp --help add x", "grok mcp add"],
+			["grok plugin --help install ./p", "grok plugin install"],
+			["grok mcp add -e K=V --help x", "grok mcp add"],
 		]);
+	});
+
+	it("reads no word by where it stands: a brace group in each place, several in one word, a sequence, and one in the program's name (bash makes each several words)", () => {
+		refusesEach([
+			// bash runs grok x mcp disable orrery: the group as Grok's first word, its second, a subcommand's own.
+			["grok {x,mcp} disable orrery", "grok disable"],
+			["grok hi {x,mcp} disable orrery", "grok disable"],
+			["grok mcp {x,disable} orrery", "grok mcp {x,disable}"],
+			// Each reading alone is harmless (grok hi disable, grok mcp list), but bash runs grok hi mcp disable list.
+			["grok {hi,mcp} {disable,list}", "grok {hi,mcp}"],
+			["grok {hi,mcp} {--json,disable} orrery", "grok {hi,mcp}"],
+			// Several groups in one word (bash's disable is in no reading: xdisable, yable, zable), and a sequence.
+			["grok mcp {x,,}{dis,y,z}able orrery", "grok mcp {x,,}{dis,y,z}able"],
+			["grok mcp {d..d}isable orrery", "grok mcp {d..d}isable"],
+			// The program's name in a group, or split by one.
+			["{grok,x} mcp disable orrery", "grok mcp disable"],
+			["gr{o,x}k mcp disable orrery", "grok mcp disable"],
+			// A text with a brace group is read with its quotes away too: a quoted prompt there counts (accepted over-refusal).
+			['grok -p "update the {a,b} docs"', "grok update"],
+		]);
+		opensEach(["grok plugin validate ./plugins/{a,b}", "grok sessions list > sessions.{txt,bak}"]);
+	});
+
+	it("-w takes a value or none: a refused command after it is refused either way, and -w with a value or none runs", () => {
+		refusesEach([
+			["grok -w foo mcp disable orrery", "grok mcp disable"],
+			["grok -w foo hi mcp disable orrery", "grok mcp disable"],
+			["grok -w mcp disable orrery", "grok mcp disable"],
+			["grok --worktree foo hi mcp disable orrery", "grok mcp disable"],
+			["grok --worktree=foo hi mcp disable orrery", "grok mcp disable"],
+			[`grok -w foo -r ${ID}`, "grok -r"],
+		]);
+		opensEach(["grok -w", "grok -w -p hi", "grok -w feat -p hi", 'grok -w feat "add the tests"', "grok --worktree=feat -p hi", "grok -w feat mcp list"]);
+	});
+
+	it("a quoted prompt holding a refused word passes where grok runs as the command; unquoted, or in text that only names grok, its words count (accepted over-refusal)", () => {
+		opensEach([
+			'grok "please update the docs"',
+			'grok -p "add a test and remove the old one"',
+			"grok -p 'install the deps, then update'",
+			'cd repo && GROK_X=1 grok -p "fix the update"',
+			'timeout 60 grok -p "update the README"',
+			'nice -n 5 grok "install the deps"',
+			'x=$(grok -p "add tests")',
+			'for f in a b; do grok -p "review $f and add tests"; done',
+			// A prompt that names grok is a prompt still.
+			'grok -p "ask grok to update the docs"',
+		]);
+		refusesEach([
+			// Unquoted, or a quoted single word: Grok reads it as a word of its own (accepted over-refusal for a prompt).
+			["grok -p update", "grok update"],
+			["grok please update the docs", "grok update"],
+			['grok -p "update"', "grok update"],
+			["grok -- -r", "grok -r"],
+			// Where grok doesn't run as the command, a shell may read the text again without its quotes.
+			['eval grok "mcp disable orrery"', "grok mcp disable"],
+			['echo grok "mcp disable orrery" | sh', "grok mcp disable"],
+			['sh -c "grok mcp disable orrery"', "grok mcp disable"],
+			["bash -c \"grok 'update the docs'\"", "grok update"],
+			// A quoted string glued to more is no prompt: echo prints grok mcp disable orrery y.
+			['echo "x\ngrok "mcp disable orrery" y" | sh', "grok mcp disable"],
+		]);
+	});
+
+	it("reads every word to the command's end: a substitution's or a backquote's (a ; inside them too), past a part built at run time, whatever a shell drops from the program's name, and what xargs feeds it", () => {
+		refusesEach([
+			["grok -m $(cat m) mcp disable orrery", "grok mcp disable"],
+			["grok -m $(echo a; echo b) mcp disable orrery", "grok mcp disable"],
+			["grok -p hi `x` mcp disable orrery", "grok mcp disable"],
+			["grok -m `a;b` mcp disable orrery", "grok mcp disable"],
+			["grok$X mcp disable orrery", "grok mcp disable"],
+			['gr""ok mcp disable orrery', "grok mcp disable"],
+			["\\grok mcp disable orrery", "grok mcp disable"],
+			["g\\rok mcp disable orrery", "grok mcp disable"],
+			["echo mcp disable memory | xargs grok", "grok disable"],
+			["printf '%s\\n' -r | xargs grok", "grok -r"],
+		]);
+		opensEach(["x=$(grok --version); git add .", "(grok mcp list) && git add .", "grok mcp list | xargs echo", "grok -p 'x' > update.log"]);
 	});
 });
 
