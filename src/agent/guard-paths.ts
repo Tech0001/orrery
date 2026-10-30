@@ -87,6 +87,18 @@
  * - Shell text that reaches the protected parts of Grok's folder through another program's folder change (find
  *   -execdir, env -C, tar -C, xargs, sh -c) or link-making (link, busybox ln, rsync or cp keeping links) gets through,
  *   as a script the agent writes and runs does.
+ * - A path to Grok's folder assembled from variables, parameter expansions or substitutions gets through, from a
+ *   session started inside Grok's folder too (`$X/../hooks` or `$(pwd)/../config.toml` from a call run in an open part,
+ *   a ".." held in a variable, `P=<home>/skills; … ${P%/skills}/hooks/x`), as a path split into pieces or a script the
+ *   agent writes and runs does: the guard reads the paths the text names whole (one after a command substitution's
+ *   opening as anything).
+ * - Grok's persistent shell keeps a folder change (and the pushd stack) from one call to the next, but the hook's cwd
+ *   stays the folder the session started in (Grok's manual, 10-hooks.md "Input": its own shell sends the session's
+ *   folder). So the guard can't see where a later call's shell really runs, nor the folder stack an earlier call left:
+ *   after a call that goes into a session worktree (`cd <home>/worktrees/<repo>/<name>`, which goes through), a later
+ *   call's relative path (`echo x > ../../../hooks/e.json`) is read from the session's folder and gets through, and so
+ *   does a later call's `popd` or `cd -` back into a folder an earlier call went to, as a relative path after a cd in
+ *   the same text does.
  */
 
 import { type Dirent, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";

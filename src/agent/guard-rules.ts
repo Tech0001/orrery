@@ -1364,31 +1364,35 @@ export function openCodeNamed(text: string, rule?: OpenCodeRule): boolean {
 // a bundled skill names the helper beside it: bundled/skills/<name>/../shared/) or make a link (ln, cp -s, cp -l): a
 // relative path read from the open part, or a link made there, could reach the rest. An open part's path in a command
 // substitution ($(…) or `…`), or followed by its close, counts as the rest (the shell may make another path of it:
-// $(dirname <home>/skills)/hooks). Where the call runs in the folder (a grok -w session in its worktree), a relative
-// path with a ".." is read from there: refused unless it stays in the open part it runs in; where it runs in the folder
-// itself or what it loads, every relative path is, as if the text named it (a bare word by the entries there). Where a
-// link takes an entry out of the folder (a config.toml kept in a dotfiles folder), it is kept where it really is too;
-// an open part a link takes to the folder itself, to a folder that holds it, or into the rest of it (skills/ linked to
-// hooks/), or a link that leads nowhere, is kept as the rest is. One a link takes out of the folder (skills/ kept in a
-// dotfiles folder, as people do) stays open to file tools through the link, and where it really is is judged by the
-// other rules, as any path is; shell text, which can't follow the link, may name it there only where it really is. File
-// tools may read all of it, but an agent's session reads neither the session records nor Grok's login (HOME_SECRETS; a
-// moved folder's by src/agent/guard-paths.ts). Limits, as for every shell-text rule: a spelling through another
-// variable, a link the guard doesn't know (a link planted inside an open part that leads to the rest of it, by a
-// script, or copied or moved there whole from elsewhere: cp -a, mv, tar, rsync -a, a checkout's own), used from the
-// shell, a relative path from a folder the text doesn't name and the call doesn't run in (after a cd in the same text),
-// a bare word run in the folder itself naming an entry Grok would load that isn't there yet (not one a redirection
-// writes), and a folder change or link made by another program (find -execdir, env -C, tar -C, xargs, sh -c; link,
-// busybox ln, rsync or cp keeping links), as a script the agent writes and runs. A project's own .grok folder (a
-// session worktree's too) is the project's, its hooks, config.toml and lsp.json among them, and so are Grok's other
-// hook sources outside its folder (a project's .claude/settings*.json and .cursor/hooks.json, the person's Claude Code
-// settings file and Cursor hooks file), and the files Grok's config or its hooks-paths list names outside its folder (a
-// hook or status-line script, a hook file kept elsewhere): a hook or server planted there runs outside the guard in a
-// later session, and a hook may rewrite a call after Orrery judged it, as a script an agent writes and later runs does.
-// So is a session worktree's own git config and hooks: if Grok runs git there on its own (its cleanup pass;
-// unverified), a core.fsmonitor or hook planted there runs outside the guard. A plugin that reads commands from its own
-// data folder (plugin-data/, which its hooks may name) could be steered by a write there (src/agent/guard-paths.ts,
-// Known limits).
+// $(dirname <home>/skills)/hooks); read failing closed, so does one after any substitution's opening ($(, a backquote,
+// bash's ${ …; }) or in text whose parentheses don't pair up (a quoted ")" or a case pattern's closes none). Where the
+// call runs in the folder (a grok -w session in its worktree), a relative path with a ".." is read from there: refused
+// unless it stays in the open part it runs in; where it runs in the folder itself or what it loads, every relative path
+// is, as if the text named it (a bare word by the entries there). Where a link takes an entry out of the folder (a
+// config.toml kept in a dotfiles folder), it is kept where it really is too; an open part a link takes to the folder
+// itself, to a folder that holds it, or into the rest of it (skills/ linked to hooks/), or a link that leads nowhere,
+// is kept as the rest is. One a link takes out of the folder (skills/ kept in a dotfiles folder, as people do) stays
+// open to file tools through the link, and where it really is is judged by the other rules, as any path is; shell text,
+// which can't follow the link, may name it there only where it really is. File tools may read all of it, but an agent's
+// session reads neither the session records nor Grok's login (HOME_SECRETS; a moved folder's by
+// src/agent/guard-paths.ts). Limits, as for every shell-text rule: a spelling through another variable, a path
+// assembled from variables, parameter expansions or substitutions (from a session started in the folder too:
+// $X/../hooks, ${P%/skills}/hooks), a link the guard doesn't know (a link planted inside an open part that leads to the
+// rest of it, by a script, or copied or moved there whole from elsewhere: cp -a, mv, tar, rsync -a, a checkout's own),
+// used from the shell, a relative path from a folder the text doesn't name and the call doesn't run in (after a cd in
+// the same text, or in an earlier call in Grok's persistent shell, where a cd and the pushd stack carry over but the
+// hook gives the folder the session started in), a bare word run in the folder itself naming an entry Grok would load
+// that isn't there yet (not one a redirection writes), and a folder change or link made by another program (find
+// -execdir, env -C, tar -C, xargs, sh -c; link, busybox ln, rsync or cp keeping links), as a script the agent writes
+// and runs. A project's own .grok folder (a session worktree's too) is the project's, its hooks, config.toml and
+// lsp.json among them, and so are Grok's other hook sources outside its folder (a project's .claude/settings*.json and
+// .cursor/hooks.json, the person's Claude Code settings file and Cursor hooks file), and the files Grok's config or its
+// hooks-paths list names outside its folder (a hook or status-line script, a hook file kept elsewhere): a hook or
+// server planted there runs outside the guard in a later session, and a hook may rewrite a call after Orrery judged it,
+// as a script an agent writes and later runs does. So is a session worktree's own git config and hooks: if Grok runs
+// git there on its own (its cleanup pass; unverified), a core.fsmonitor or hook planted there runs outside the guard. A
+// plugin that reads commands from its own data folder (plugin-data/, which its hooks may name) could be steered by a
+// write there (src/agent/guard-paths.ts, Known limits).
 
 /** Grok's folders for `home` and `env`: ~/.grok, and the one GROK_HOME names (absolute, as given; realTarget is the caller's). */
 export function grokFolders(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] {
@@ -1566,9 +1570,10 @@ const climbing = (part: string) => part === ".." || (part.startsWith(".") && glo
 /**
  * The path after one of Grok's folders in a reading, its spelling from `start` to `at`: kept when it names any of the
  * folder but its open parts (GROK_OPEN, but those `shut` names): nothing after it but "/" (the folder itself: a copy,
- * an archive or a cd reaches all of it), or parts, once "." and ".." are walked, in none of them (grokWalk). One in a
- * command substitution (`nested`: $(…) or `…`), or followed by its close, is a command's word whose output the shell
- * may make another path of ($(dirname <home>/skills)/hooks): it counts, as a variable after it does.
+ * an archive or a cd reaches all of it), or parts, once "." and ".." are walked, in none of them (grokWalk). One that
+ * may be in a command substitution (`nested`: inSubstitution), or followed by a close, ")" or a backquote, is a
+ * command's word whose output the shell may make another path of ($(dirname <home>/skills)/hooks): it counts, as a
+ * variable after it does.
  */
 function grokPathAfter(form: string, start: number, at: number, shut: readonly string[], nested: boolean): GrokPath {
 	GROK_REST.lastIndex = at;
@@ -1601,32 +1606,18 @@ function grokWalk(rest: string, shut: readonly string[]): Omit<GrokPath, "start"
 	return open === undefined ? kept : { kept: false, climbs: low < open.split("/").length, part: open };
 }
 
+/** Where a command substitution may open: $( (arithmetic's $(( too), a backquote, bash's ${ …; } and ${| …; } (5.3). */
+const SUBSTITUTION_OPENS = /\$\(|`|\$\{[\s|]/;
+
 /**
- * For each of `starts` (places in a reading), whether it sits in a command substitution, $(…) or `…`, read bluntly in
- * one pass: a "(" opens a group the next ")" closes, a backquote opens or closes one, and a backslash escapes what
- * follows it.
+ * For each of `starts` (places in a reading), whether it may sit in a command substitution, read failing closed: a
+ * count can't tell a quoted ")" or a case pattern's from a close, so a substitution's opening anywhere before it (one
+ * escaped or quoted too), or a reading whose "(" and ")" differ in number, counts.
  */
 function inSubstitution(form: string, starts: readonly number[]): boolean[] {
-	const groups: boolean[] = [];
-	let open = 0;
-	let ticked = false;
-	let i = 0;
-	const inside = new Map<number, boolean>();
-	for (const start of [...new Set(starts)].sort((a, b) => a - b)) {
-		for (; i < start; i++) {
-			const c = form.charAt(i);
-			if (c === "\\") i++;
-			else if (c === "`") ticked = !ticked;
-			else if (c === "$" && form.charAt(i + 1) === "(") {
-				groups.push(true);
-				open++;
-				i++;
-			} else if (c === "(") groups.push(false);
-			else if (c === ")" && groups.pop() === true) open--;
-		}
-		inside.set(start, ticked || open > 0);
-	}
-	return starts.map((start) => inside.get(start) === true);
+	const unpaired = form.split("(").length !== form.split(")").length;
+	const first = form.search(SUBSTITUTION_OPENS);
+	return starts.map((start) => unpaired || (first !== -1 && first < start));
 }
 
 /**

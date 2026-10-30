@@ -397,10 +397,22 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 		const named = /^This command names Grok's folder or what Grok loads and runs in it .*: agents may read those with file tools, not with commands\.$/;
 		const namedPlain = /^This command names Grok's folder or what Grok loads and runs in it .*: they may be read with file tools, not with commands\.$/;
 		const climb = /^This command runs in Grok's folder .* has a relative path whose \.\. leads out of the part it runs in, which could reach the rest of Grok's folder .*\.$/;
-		// An open part's path in a command substitution: the shell may make another path of it.
-		for (const command of ["echo x > $(dirname ~/.grok/skills)/hooks/e.json", "echo x > `dirname ~/.grok/skills/x/SKILL.md | xargs dirname | xargs dirname`/hooks/e.json"]) {
+		// An open part's path in a command substitution: the shell may make another path of it. Read failing closed: after any
+		// substitution's opening (a quoted ")" or a case pattern's can't close one), or in text whose parentheses don't pair up.
+		for (const command of [
+			"echo x > $(dirname ~/.grok/skills)/hooks/e.json",
+			"echo x > `dirname ~/.grok/skills/x/SKILL.md | xargs dirname | xargs dirname`/hooks/e.json",
+			'echo x > $(: ")"; dirname ~/.grok/skills )/hooks/e.json',
+			"echo x > $(case a in a) dirname ~/.grok/skills;; esac)/hooks/e.json",
+			"echo x > ${ dirname ~/.grok/skills; }/hooks/e.json",
+			'case "$1" in a) cp a ~/.grok/skills/x;; esac',
+		]) {
 			expect([command, bash(command, options)]).toEqual([command, expect.stringMatching(named)]);
 			expect([command, bash(command, plain)]).toEqual([command, expect.stringMatching(namedPlain)]);
+		}
+		for (const command of ["cp a ~/.grok/skills/x", "cp a ~/.grok/skills/x; echo $(date)"]) {
+			expect([command, bash(command, options)]).toEqual([command, undefined]);
+			expect([command, bash(command, plain)]).toEqual([command, undefined]);
 		}
 		// A call run in a session worktree: a ".." read from there.
 		const wt = join(grok, "worktrees", "r");

@@ -57,13 +57,17 @@
  * unverified), a core.fsmonitor or hook planted there runs outside the guard. A plugin's hooks may name its data folder
  * (plugin-data/, open to writes), so a plugin that reads commands from there could be steered by a write there. Shell
  * text naming an open part may not change folder (where it names its session worktrees alone, but into one of them),
- * hold a ".." or make a link, nor name it in a command substitution, or through a link out of Grok's folder; a call run
- * in an open part (a grok -w session in its worktree, its cwd as Grok gives it) may not have a ".." that leaves it, and
- * one run in Grok's folder itself or what it loads no relative path but into an open part (a bare word by the entries
- * there). But a link brought there whole (cp -a, mv, tar, git clone, a checkout) or by a script, a relative path after
- * a cd in the same text, a bare word naming an entry Grok would load that isn't there yet, and a folder change or link
- * made by another program (find -execdir, env -C, tar -C, xargs, sh -c; link, busybox ln, rsync or cp keeping links)
- * reach the rest from the shell, as a script the agent writes and runs does (src/agent/guard-paths.ts, Known limits).
+ * hold a ".." or make a link, nor name it in a command substitution (read failing closed: after any substitution's
+ * opening, or in text whose parentheses don't pair up), or through a link out of Grok's folder; a call run in an open
+ * part (a grok -w session in its worktree, its cwd as Grok gives it) may not have a ".." that leaves it, and one run in
+ * Grok's folder itself or what it loads no relative path but into an open part (a bare word by the entries there). But
+ * a link brought there whole (cp -a, mv, tar, git clone, a checkout) or by a script, a relative path after a cd in the
+ * same text, or in an earlier call in Grok's persistent shell (which keeps a cd and the pushd stack from one call to
+ * the next, while the hook's cwd stays the folder the session started in), a path assembled from variables, parameter
+ * expansions or substitutions (from a session started in Grok's folder too), a bare word naming an entry Grok would
+ * load that isn't there yet, and a folder change or link made by another program (find -execdir, env -C, tar -C, xargs,
+ * sh -c; link, busybox ln, rsync or cp keeping links) reach the rest from the shell, as a script the agent writes and
+ * runs does (src/agent/guard-paths.ts, Known limits).
  */
 
 import { homedir } from "node:os";

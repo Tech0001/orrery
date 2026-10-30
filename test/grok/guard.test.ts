@@ -526,7 +526,7 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 		}
 	});
 
-	it("takes an open part's path in a command substitution, $(…) or `…`, or followed by ) or a backquote, as anything: the shell may make another path of it, in both sessions and under $GROK_HOME", () => {
+	it("takes an open part's path after a command substitution's opening ($(, a backquote, ${ …; }), followed by ) or a backquote, or in text whose parentheses don't pair up, as anything: the shell may make another path of it, in both sessions and under $GROK_HOME", () => {
 		const { root, grok, options, atHome, plain } = setup();
 		const refused = [
 			"echo x > $(dirname ~/.grok/skills)/hooks/e.json",
@@ -539,16 +539,41 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 			"echo x > `dirname ~/.grok/skills`/hooks/e.json",
 			"echo x > `dirname ~/.grok/skills/x/SKILL.md | xargs dirname | xargs dirname`/hooks/e.json",
 			'cp x "`dirname "$GROK_HOME/docs/a" | xargs dirname`/config.toml"',
-			// A backquote escaped before it is no substitution's.
+			// An escaped backquote before it changes nothing.
 			"echo \\` ; echo x > `dirname ~/.grok/skills/x/SKILL.md | xargs dirname | xargs dirname`/hooks/e.json",
+			// Read failing closed, as a count can't tell a quoted ")" or a case pattern's from a close: a substitution's
+			// opening anywhere before the path counts.
+			'echo x > $(: ")"; dirname ~/.grok/skills )/hooks/e.json',
+			"echo x > $(: ')'; dirname ~/.grok/skills )/hooks/e.json",
+			"echo x > $(: \\); dirname ~/.grok/skills )/hooks/e.json",
+			"echo x > $(case a in a) dirname ~/.grok/skills;; esac)/hooks/e.json",
+			'echo x > `: ")"; dirname ~/.grok/skills `/hooks/e.json',
+			// One beside the path, before it, too.
+			'echo "$(date)" >> ~/.grok/logs/x.log',
+			"x=$(date); echo $x >> ~/.grok/logs/x.log",
+			// bash's own ${ …; } and ${| …; } (5.3).
+			"echo x > ${ dirname ~/.grok/skills; }/hooks/e.json",
+			"echo x > ${\ndirname ~/.grok/skills\n}/hooks/e.json",
+			"echo x > ${| REPLY=~/.grok/skills; REPLY=${REPLY%/*}; }/hooks/e.json",
+			// Parentheses that don't pair up in number, with no substitution before the path.
+			'case "$1" in a) cp a ~/.grok/skills/x;; esac',
+			'cp a ~/.grok/skills/x; echo ")"',
+			'cp a ~/.grok/skills/x; echo "$(date"',
 		];
 		for (const opts of [options, atHome, plain]) {
 			for (const command of refused) {
 				expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, expect.stringMatching(GROK_NAMED)]);
 				expect([command, grokGuard("monitor", { command }, opts, false)]).toEqual([command, expect.stringMatching(GROK_NAMED)]);
 			}
-			// A substitution beside the path, not around it.
-			for (const command of ['echo "$(date)" >> ~/.grok/logs/x.log', "x=$(date); echo $x >> ~/.grok/logs/x.log", "echo x > ~/.grok/skills/x/SKILL.md; echo `date`", "(cd ~/.grok/worktrees/repo-x; npm test)"]) {
+			// No substitution before the path (one after it, or a variable), and parentheses that pair up.
+			for (const command of [
+				"cp a ~/.grok/skills/x",
+				"cp a ~/.grok/skills/x; echo $(date)",
+				"echo x > ~/.grok/skills/x/SKILL.md; echo `date`",
+				'echo "${HOME}" >> ~/.grok/logs/x.log',
+				"(cd ~/.grok/worktrees/repo-x; npm test)",
+				"cp a ~/.grok/skills/x; case $1 in (a) echo a;; esac",
+			]) {
 				expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, undefined]);
 			}
 		}
@@ -559,10 +584,20 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 		process.env.GROK_HOME = moved;
 		try {
 			for (const opts of [{ ...options, folder: root, cwd: root }, { ...plain, folder: root, cwd: root }]) {
-				for (const command of [`echo x > $(dirname ${moved}/skills)/hooks/e.json`, "echo x > $(dirname $GROK_HOME/skills)/hooks/e.json", `echo x > \`dirname ${moved}/skills/x y\`/hooks/e.json`]) {
+				for (const command of [
+					`echo x > $(dirname ${moved}/skills)/hooks/e.json`,
+					"echo x > $(dirname $GROK_HOME/skills)/hooks/e.json",
+					`echo x > \`dirname ${moved}/skills/x y\`/hooks/e.json`,
+					`echo x > $(: ")"; dirname ${moved}/skills )/hooks/e.json`,
+					"echo x > $(case a in a) dirname $GROK_HOME/skills;; esac)/hooks/e.json",
+					`echo "$(date)" >> ${moved}/skills/x/log`,
+					'case "$1" in a) cp a $GROK_HOME/skills/x;; esac',
+				]) {
 					expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, expect.stringMatching(GROK_NAMED)]);
 				}
-				expect(grokGuard("run_terminal_command", { command: `echo "$(date)" >> ${moved}/skills/x/log` }, opts, false)).toBeUndefined();
+				for (const command of [`cp a ${moved}/skills/x`, "cp a $GROK_HOME/skills/x; echo $(date)"]) {
+					expect([command, grokGuard("run_terminal_command", { command }, opts, false)]).toEqual([command, undefined]);
+				}
 			}
 		} finally {
 			if (before === undefined) delete process.env.GROK_HOME;
