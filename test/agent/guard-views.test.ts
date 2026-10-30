@@ -375,6 +375,11 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 			"cd ~/.grok/worktrees/r && echo x > ../../hooks/e.json",
 			"ln -s ../../hooks ~/.grok/worktrees/r/h",
 			"cd ~/.grok/worktrees/r && cat ~/.grok/skills/x/SKILL.md",
+			// Nor a folder change there to anything but a worktree: back, to home, worktrees/ itself, the folder stack.
+			"cd ~/.grok/worktrees/r && cd - && echo x > hooks/e.json",
+			"cd ~/.grok/worktrees/r && cd && echo x > .grok/hooks/e.json",
+			"cd ~/.grok/worktrees && ls",
+			"pushd ~/.grok/worktrees/r; pushd +1; echo x > hooks/e.json",
 		]) {
 			expect([command, bash(command, options)]).toEqual([command, expect.stringMatching(reach)]);
 			expect([command, bash(command, plain)]).toEqual([command, expect.stringMatching(reach)]);
@@ -402,6 +407,14 @@ describe("Grok Build's folder: all but what its own features write (its hooks, c
 		for (const opts of [{ ...options, cwd: wt }, { ...plain, cwd: wt }]) {
 			expect(bash("echo x > ../../hooks/e.json", opts)).toMatch(climb);
 			expect(bash("cat ../r2/README.md", opts)).toBeUndefined();
+		}
+		// A call run in Grok's folder itself: every relative path read from there, its open parts open.
+		for (const [opts, message] of [
+			[{ ...options, cwd: grok }, named],
+			[{ ...plain, cwd: grok }, namedPlain],
+		] as const) {
+			for (const command of ["echo x > hooks/e.json", "cp a config.toml", "cp /tmp/e.json hooks"]) expect([command, bash(command, opts)]).toEqual([command, expect.stringMatching(message)]);
+			for (const command of ["echo x > skills/x/SKILL.md", "ls -la"]) expect([command, bash(command, opts)]).toEqual([command, undefined]);
 		}
 		// skills/ linked to a dotfiles folder: open through the link to file tools, which follow it; kept from shell text.
 		mkdirSync(join(home, "dotfiles", "grok-skills"), { recursive: true });
