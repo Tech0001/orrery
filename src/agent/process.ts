@@ -7,8 +7,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, readlinkSync } from "node:fs";
-import { basename } from "node:path";
+import { readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { basename, isAbsolute } from "node:path";
 
 /**
  * True when `pid` is a live process (one we may not signal still counts as live). A pid that is no positive integer
@@ -291,6 +291,28 @@ export function processArgv(pid: number, deps: ArgvDeps = {}): readonly string[]
 	const words = args.split(/\s+/);
 	const end = first === undefined ? -1 : words.findIndex((word) => basename(word) === basename(first));
 	return end > 0 ? [words.slice(0, end + 1).join(" "), ...words.slice(end + 1)] : words;
+}
+
+/**
+ * The file process `pid` runs, as it really is (links followed), or undefined when it can't be read (gone, or no way to
+ * ask here): Linux's /proc/<pid>/exe, without the " (deleted)" of a file replaced since the process started; macOS's ps
+ * `comm=`, the path it was started by, links followed (a path that isn't absolute is none). Its name tells a program
+ * apart where a process's own name (Linux's comm, macOS's argv[0]) is only what started it called it: a link named grok
+ * to another program runs that program.
+ */
+export function processExecutable(pid: number, deps: Pick<ArgvDeps, "platform" | "ps"> = {}): string | undefined {
+	if (!Number.isInteger(pid) || pid < 1) return undefined;
+	const platform = deps.platform ?? process.platform;
+	try {
+		if (platform === "linux") return readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, "");
+		if (platform === "darwin") {
+			const path = (deps.ps ?? psOutput)(["-o", "comm=", "-p", String(pid)])?.trim();
+			return path !== undefined && isAbsolute(path) ? realpathSync(path) : undefined;
+		}
+	} catch {
+		// unreadable: none
+	}
+	return undefined;
 }
 
 /** A process's parent and name, or undefined when it cannot be read (gone, or no way to ask here). */

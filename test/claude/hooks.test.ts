@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Holder } from "../../src/claude/holder.ts";
@@ -13,7 +14,7 @@ import { newToken } from "../../src/agent/pick.ts";
 import { listSessions, pendingEvents, readEvent, readMode, writeMode } from "../../src/claude/spool.ts";
 import { VIEW_IMPORT, writeSetupMarker } from "../../src/claude/view-file.ts";
 import { forgetSession, liveSession, processStart } from "../../src/agent/sessions.ts";
-import type { ProcessInfo } from "../../src/agent/process.ts";
+import { type ProcessInfo, processExecutable, processInfo } from "../../src/agent/process.ts";
 import { hostIsGrok } from "../../src/grok/host.ts";
 import { type AgentConfig, parseConfig } from "../../src/agent/config.ts";
 import { holderFile, writeHolder } from "../../src/agent/handover.ts";
@@ -764,21 +765,70 @@ describe("under Grok, Orrery's Claude Code plugin stands down (spec 2026-10-29-g
 		70: { ppid: 50, name: "node-MainThread" },
 	};
 	const info = (pid: number) => tree[pid];
+	/** The file each process runs, links followed: Grok's download, node, Claude Code's own program. */
+	const files: Record<number, string> = {
+		20: "/usr/bin/node",
+		30: "/home/u/.grok/downloads/grok-linux-x86_64",
+		40: "/home/u/.grok/downloads/grok-linux-x86_64",
+		60: "/home/u/.local/share/claude/versions/2.1.300",
+		70: "/usr/bin/node",
+	};
+	const exeOf = (pid: number) => files[pid];
 
 	it("under Grok, every claude-hook event reads stdin, prints nothing, records nothing: the hook's own host is Grok", () => {
-		expect(hostIsGrok(30, info)).toBe(true);
-		expect(hostIsGrok(31, info)).toBe(true);
-		expect(hostIsGrok(32, info)).toBe(true);
-		expect(hostIsGrok(40, info)).toBe(true);
+		expect(hostIsGrok(30, info, exeOf)).toBe(true);
+		expect(hostIsGrok(31, info, exeOf)).toBe(true);
+		expect(hostIsGrok(32, info, exeOf)).toBe(true);
+		expect(hostIsGrok(40, info, exeOf)).toBe(true);
 		// A process that can't be read is no Grok.
-		expect(hostIsGrok(99, info)).toBe(false);
+		expect(hostIsGrok(99, info, exeOf)).toBe(false);
 	});
 
 	it("Claude Code started from a Grok shell still records: the hook's host is claude, not grok", () => {
-		expect(hostIsGrok(60, info)).toBe(false);
-		expect(hostIsGrok(61, info)).toBe(false);
-		expect(hostIsGrok(70, info)).toBe(false);
+		expect(hostIsGrok(60, info, exeOf)).toBe(false);
+		expect(hostIsGrok(61, info, exeOf)).toBe(false);
+		expect(hostIsGrok(70, info, exeOf)).toBe(false);
 		// npm's launcher above Grok is not Grok's program.
-		expect(hostIsGrok(20, info)).toBe(false);
+		expect(hostIsGrok(20, info, exeOf)).toBe(false);
+	});
+
+	it("judges the host by the file it runs, not its name: a program started through a link named grok is that program", () => {
+		// Named grok, running Claude Code's program (a link named grok to it), or a file that can't be read: no Grok.
+		const named: Record<number, ProcessInfo> = { 80: { ppid: 1, name: "grok" } };
+		expect(hostIsGrok(80, (pid) => named[pid], () => "/home/u/.local/share/claude/versions/2.1.300")).toBe(false);
+		expect(hostIsGrok(80, (pid) => named[pid], () => undefined)).toBe(false);
+		// Named otherwise, running Grok's program: Grok.
+		expect(hostIsGrok(30, () => ({ ppid: 1, name: "node-MainThread" }), () => "/opt/grok/grok")).toBe(true);
+	});
+
+	it.runIf(process.platform === "linux")("a real process through a link named grok is judged by the program it runs (Linux's /proc/<pid>/exe)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "orrery-grok-link-"));
+		const link = join(dir, "grok");
+		symlinkSync("/bin/sleep", link);
+		const child = spawn(link, ["30"], { stdio: "ignore" });
+		try {
+			const pid = child.pid as number;
+			for (let i = 0; i < 100 && processExecutable(pid) !== realpathSync("/bin/sleep"); i++) await new Promise((done) => setTimeout(done, 10));
+			// Its name is grok, as the old judgment by name took it; the program it runs is sleep.
+			expect(processInfo(pid)?.name).toBe("grok");
+			expect(processExecutable(pid)).toBe(realpathSync("/bin/sleep"));
+			expect(hostIsGrok(pid)).toBe(false);
+		} finally {
+			child.kill();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("macOS: the path ps gives, links followed", () => {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "orrery-grok-link-")));
+		try {
+			const link = join(dir, "grok");
+			symlinkSync(process.execPath, link);
+			expect(processExecutable(4242, { platform: "darwin", ps: () => `${link}\n` })).toBe(realpathSync(process.execPath));
+			expect(processExecutable(4242, { platform: "darwin", ps: () => "grok\n" })).toBeUndefined();
+			expect(processExecutable(4242, { platform: "darwin", ps: () => undefined })).toBeUndefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

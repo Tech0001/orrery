@@ -6,7 +6,8 @@
  * Codex (src/codex/host.ts).
  */
 
-import { type ProcessInfo, processArgv, processInfo } from "../agent/process.ts";
+import { basename } from "node:path";
+import { type ProcessInfo, processArgv, processExecutable, processInfo } from "../agent/process.ts";
 import { hostPid } from "../codex/host.ts";
 import { isGrokProcess } from "./names.ts";
 
@@ -19,11 +20,14 @@ export function grokPid(start: number = process.ppid, info: (pid: number) => Pro
  * Whether the process that started this one (default: its parent), past shells, is Grok's program: the host of a hook or
  * MCP server of Orrery's Claude Code plugin, which Grok runs through its Claude Code compatibility. The plugin stands down
  * there (src/cli/main.ts), so Orrery's Grok hooks and Grok's own `orrery` server are the only ones. Judged by the
- * process's own host, never a variable: a Claude Code started from a Grok shell is its hooks' host, and keeps them.
+ * process's own host, never a variable: a Claude Code started from a Grok shell is its hooks' host, and keeps them. And
+ * by the file that host runs (`exeOf`, links followed: src/agent/process.ts processExecutable), never by its name alone:
+ * a Claude Code started through a link named grok runs Claude Code's program, and keeps its plugin. A file that can't be
+ * read is no Grok's. A copy of another program named like Grok's counts as Grok, as a script the agent writes does.
  */
-export function hostIsGrok(start: number = process.ppid, info: (pid: number) => ProcessInfo | undefined = processInfo): boolean {
-	const name = info(hostPid(start, info))?.name;
-	return name !== undefined && isGrokProcess(name);
+export function hostIsGrok(start: number = process.ppid, info: (pid: number) => ProcessInfo | undefined = processInfo, exeOf: (pid: number) => string | undefined = processExecutable): boolean {
+	const exe = exeOf(hostPid(start, info));
+	return exe !== undefined && isGrokProcess(basename(exe));
 }
 
 /**
