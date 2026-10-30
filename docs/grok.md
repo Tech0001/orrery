@@ -94,7 +94,9 @@ agent. Its command line adds:
   instructions (see [The memory view](#the-memory-view) and [Instructions](#instructions)).
 
 The memory section and the instructions travel on Grok's command line, so they show in `ps`, like every argument, and
-other users of the computer can read them while the session runs, though the memory files themselves are private.
+other users of the computer can read them while the session runs, though the memory files themselves are private. So
+can every program of yours, other agents' shells among them (`ps auxww`, `/proc/<pid>/cmdline`), whatever their
+`reads` allows.
 `orrery agent` says before Grok starts when the memory had to be made smaller to fit, and when the arguments resume a
 session (see The memory view).
 
@@ -121,7 +123,9 @@ adds it back.`). When Orrery can't read Grok's folder to tell, it says so and op
 connected but switched off in Grok's `/hooks`, it says which (the recording hooks, the guard, or both) and how to
 switch them on, and opens the agent. When it can't read Grok's `/hooks` settings (`disabled-hooks` in Grok's folder),
 it says that instead, and that the guard of Orrery's Claude Code plugin, if Grok loads it, keeps checking the session's
-tool calls.
+tool calls. When Grok's config switches Orrery's memory tools off (`grok mcp disable orrery`, or Grok's `/mcps`: the
+entry's `enabled = false`, or `disabled_mcp_servers` naming it), it says so and how to switch them back on (`grok mcp
+enable orrery`, in your own terminal), and opens the agent; `orrery tools` says so on Grok's row too.
 
 ## What's recorded
 
@@ -145,6 +149,16 @@ tool calls.
   recorded.`
 - `/new` and `/clear` start a new session in the same Grok, and the recording moves to it. Grok keeps the earlier one
   open (`/dashboard` switches back to it), but Orrery records only the session the latest session start took.
+- **A second Grok on the same session.** A Grok that opens a session another Grok records (`grok -r <id>`, which the
+  guard refuses in shell text, or one you start yourself) writes its own turns into the same log, so the log can no
+  longer tell your typed prompts from the other Grok's. Orrery's hooks run in that Grok too, and its session start marks
+  the session: the first Grok's recorder confirms nothing more of it, and its row and next session start say so in one
+  line, `read-only: another Grok wrote to this session; recording paused — reopen it to record again`. Turns recorded
+  before stay. Reopen the session once the other Grok is gone (quit Grok and resume it with `orrery agent <Name> --tool
+  grok -- --resume <id>`, or switch to another session and back): it records again from there. Opened while the other
+  Grok still runs, it stays paused. The second Grok records nothing of it either: one started from an agent's shell or
+  a plain one never does, and an agent's says `Orrery: another Grok has this session open and records it, so this one
+  isn't recorded.`
 - Resuming through `orrery agent <Name> --tool grok -- --resume <id>` goes on recording into the same memory, from
   where the session is now: its old turns are not recorded again.
 - The hooks only drop each event in a spool; a recorder in the background holds the agent for the session, records the
@@ -163,7 +177,8 @@ Under the prompt, Grok shows Orrery's row for an agent's session:
 
 - `Orrery · <Name> · N msgs · recording` (`no memory yet` in place of the count for an agent with none);
 - `… · not recording yet`: the recorder hasn't started yet;
-- `… · read-only: open in pi` (or wherever the agent is open), or the recorder's own reason;
+- `… · read-only: open in pi` (or wherever the agent is open), or the recorder's own reason, such as `another Grok
+  wrote to this session; recording paused — reopen it to record again` (see [What's recorded](#whats-recorded));
 - `… · not recording: ` and why: Orrery's hooks are switched off in `/hooks`; Orrery's session start hasn't run for
   this session; this Grok records another of its sessions now; or Orrery's recorder stopped (see
   [Troubleshooting](#troubleshooting));
@@ -287,6 +302,24 @@ names it, in every session, plain ones too, but in the parts Grok's own features
   read as its path, so what is refused by its full path is refused that way too. A project's own `.grok` folder is the
   project's.
 
+**Grok's own commands.** Grok's CLI writes what the guard keeps in Grok's folder, and can open a session that is live in
+another Grok, so in every session, plain ones too, shell text may not run `grok` (or a path to it, or its release
+binary) with:
+
+- `-r`/`--resume`, `-c`/`--continue` or `-s`/`--session-id`, among its own options, before or after its prompt. A second
+  Grok that opens a live session writes its own prompt into that session's log, where it would read as typed (see
+  [What's recorded](#whats-recorded));
+- `--trust`, anywhere: it trusts a folder for good;
+- `mcp add`, `remove`, `enable` or `disable`; `plugin` (but `list`, `details`, `validate`, and `marketplace list`);
+  `update` (but `--check`); `login`; `logout`; `setup` (but `--json`); `sessions delete`; and `agent`, whose servers
+  (`stdio`, `serve`, `headless`, `leader`) run sessions outside `orrery agent` and load them by id.
+
+Its read-only commands pass (`grok --version`, `--help`, `mcp list`, `plugin list`, `sessions list`, `export`,
+`inspect`), and so does any command's own `--help`. As with Orrery's commands, text that only names one is refused too
+(`echo grok update`), and so is a prompt given as Grok's first word that starts with a subcommand's name (`grok "update
+the docs"`): give it with `-p`. Grok's `--help` lists no option that starts it without its hooks. Run these yourself in
+your own terminal.
+
 ### Its limits in Grok
 
 It is a seatbelt, not a sandbox. On top of the limits every tool has (see
@@ -317,7 +350,12 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
   call's relative path (`echo x > ../../../hooks/e.json`), or its `popd` or `cd -` back, is read from there and gets
   through.
 - **A name built from a variable**, read from a file, or printed by another program gets through the shell-text rules,
-  as in every tool.
+  as in every tool, and so does a `grok` command reached that way, through an alias or a link of another name, or from
+  a script.
+- **A coding tool an agent starts with its own settings** is a second program, as a script is: a Grok started with
+  another `GROK_HOME` (or another home) loads none of Orrery's hooks, so it has no guard and doesn't mark a session it
+  opens; a Claude Code started with its own config folder loads no Orrery plugin. Started from an agent's shell they
+  still open no memory and record nothing.
 
 ## A plain Grok
 
@@ -376,6 +414,15 @@ and keeps that agent's rules in its guard (both agents' rules, in another agent'
 - `not recording: Orrery's recorder stopped; a new session or a resume starts it again`: do that; `holder.log` says why
   it stopped.
 - `read-only`: the agent is open elsewhere, in the tool the row names. `orrery status` shows it.
+- `read-only: another Grok wrote to this session; recording paused — reopen it to record again`: another Grok opened
+  this session (see [What's recorded](#whats-recorded)). Once it is gone, quit and resume the session with `orrery agent
+  <Name> --tool grok -- --resume <id>`, or switch to another session and back.
+- `Orrery: another Grok has this session open and records it, so this one isn't recorded.`: you opened a session that
+  is live in another Grok. Close one of the two.
+- `grok -r can't run from a session's shell` (or `grok mcp disable`, `grok --trust` and the others): run that `grok`
+  command in your own terminal (see [The guard](#the-guard)).
+- `Orrery's memory tools are switched off in Grok's config`: `grok mcp disable orrery` or Grok's `/mcps` switched
+  them off; `grok mcp enable orrery`, in your own terminal, switches them back on.
 - `can't confirm this is this Grok's own session`: the reason follows in brackets, such as Grok not holding the session
   open, a link on the way, a subagent's session, or a system that can't say which files Grok has open. The session is
   not recorded; open the agent again with `orrery agent`.
@@ -440,11 +487,16 @@ Grok keeps its usual files in its folder: its sessions (Orrery reads a session's
 
 - Grok changes fast. The session log's fields are Grok 1.0.70's; a Grok that writes them differently isn't recorded.
 - The view is read at launch only. A resumed session keeps its first launch's memory section.
-- The memory section and the instructions are on Grok's command line, which other users of the computer can read.
+- The memory section and the instructions are on Grok's command line, which other users of the computer can read, and
+  so can other agents' shells.
 - Leader mode is not supported: agents open with `--no-leader`.
 - A program of yours that writes in Grok's folder (appends to a live session's log, puts files in a live session's
   folder, or renames a session folder there) can make words look like Grok's own. The guard keeps agents' tools out of
   Grok's folder, not a program that builds the path itself.
+- A second Grok on a live session marks it only when Orrery's hooks run in it and its Orrery config is the same data
+  folder's: one started with another `GROK_HOME`, with Grok's hooks masked, under a leader, or with another Orrery home
+  marks nothing, and its turns in the log could be confirmed by a prompt hook made up in the recording Grok's shell.
+  Starting one is refused in shell text; a script or a program of another name gets through.
 - A made-up session start that names another session the same Grok keeps open moves the recording there until the next
   real session start. It adds no words: only Grok's own log confirms them.
 - `orrery usage` shows only summary tokens for Grok sessions, not the session's own.
@@ -452,7 +504,9 @@ Grok keeps its usual files in its folder: its sessions (Orrery reads a session's
 - Only the Grok Build terminal app is covered. Grok's ACP agent (`grok agent`), its dashboard and its desktop app were
   not checked.
 - **macOS is not yet verified.** There Orrery asks `lsof` which files Grok holds open, and `ps` for its environment; if
-  either can't say, the session start says so and records nothing. A Grok folder or home folder whose path holds a
-  space isn't recorded there either.
+  either can't say, the session start says so and records nothing. `ps` joins the environment with spaces, so a value
+  holding one can't be read for sure: when `HOME`, `GROK_HOME`, `ORRERY_HOME` or `ORRERY_CONFIG` holds a space (or one
+  of them stands twice), Grok's sessions there aren't recorded, and the session start says it can't tell (fail closed).
+  Each hook, status row run and guard call asks `ps` twice there.
 
 For the architecture of hooks and confirmation across tools, see [the architecture guide](architecture.md).

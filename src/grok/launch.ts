@@ -5,7 +5,8 @@
  * argument. The instructions go in whole (at most 32 KB, as for every tool: readInstructions), and the memory section
  * takes the room they leave: a view at a smaller ceiling when the agent's own is too large, or that view's newest
  * lines, the older left out, which the zoom and search tools still reach (fitMemory, src/agent/memory-read.ts).
- * The text is on Grok's command line, where other users of the computer can read it (docs/architecture.md, Limits).
+ * The text is on Grok's command line, where other users of the computer can read it, and every process of this user, other
+ * agents' shells among them, whatever their `reads` allows (docs/architecture.md, Limits).
  */
 
 import type { AgentConfig } from "../agent/config.ts";

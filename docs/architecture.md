@@ -555,7 +555,12 @@ session.
   ended and its final agent message has the same words, or begins as the hook's copy, which Grok cuts at 32,768
   characters; the log's words are recorded. A subagent's own session is a log of its own, never read. The field names
   are Grok 1.0.70's. A Grok keeps every session it ran open, so a made-up session start may name one of those: the
-  recording moves there until the next real session start, and only Grok's log of it confirms any words.
+  recording moves there until the next real session start, and only Grok's log of it confirms any words. A second
+  Grok that opens a session another Grok records writes its own prompts into the same log, as typed ones: its session
+  start (Orrery's hooks run in every Grok) finds the live host record of the other Grok naming that session, and when
+  both have its `events.jsonl` open for writing, the same file, spools a mark for that record's agent. Its recorder
+  then confirms nothing more of that log and turns the session read-only, saying so in the row and the next session
+  start, until a recorder starts for it again with the second Grok gone.
 
 A prompt or reply not confirmed within a grace (30 seconds) after its turn ends is dropped and counted, in
 `claude/unconfirmed.json` in the agent's data folder; `orrery status` shows the count (`unconfirmedMessages` in its
@@ -607,8 +612,9 @@ command it was told to run.
 - Codex: a Codex process that runs several threads at once (an editor, or its app server) records only the one its
   host record names.
 - Grok: an agent's memory section and instructions travel on Grok's command line (`--rules`), so while the session runs
-  other users of the computer can read them (`ps`, `/proc/<pid>/cmdline`), though the memory files themselves are
-  private (mode 0600). One argument holds at most 131,000 bytes. The instructions go in whole (at most 32 KB, as for
+  other users of the computer can read them (`ps`, `/proc/<pid>/cmdline`), and so can every process of the same user,
+  other agents' shells among them, whatever their `reads` allows, though the memory files themselves are private (mode
+  0600). One argument holds at most 131,000 bytes. The instructions go in whole (at most 32 KB, as for
   every tool) and the memory section gets the rest: a memory view too large for it starts the session with a smaller
   view, or, while its newer lines aren't summarized yet, with that view's newest lines. The model is told that the
   older lines are left out, and its zoom and search tools still reach them.
@@ -621,7 +627,18 @@ command it was told to run.
   later and may rewrite a call after Orrery judged it ([Grok](grok.md#its-limits-in-grok)).
 - Grok: under its shared leader (leader mode, which `orrery agent` refuses; a policy pin might force it, unverified)
   nothing is recorded and no memory tools are served, since one session's agent can't be told from another's there;
-  the guard keeps Orrery's own rules. macOS (`lsof`, `ps -E`) is not yet verified with a real Grok.
+  the guard keeps Orrery's own rules. macOS (`lsof`, `ps -E`) is not yet verified with a real Grok; there a `HOME`,
+  `GROK_HOME`, `ORRERY_HOME` or `ORRERY_CONFIG` holding a space can't be read from `ps` for sure, so such a Grok's
+  sessions aren't recorded.
+- Grok: a second Grok that opens a session another Grok records writes its own turns into that session's log. Orrery's
+  hooks in the second Grok mark the session, and the first Grok's recorder confirms nothing more of it until the
+  session is reopened with the second gone ([Grok](grok.md#whats-recorded)). A Grok that runs no Orrery hook (another
+  `GROK_HOME`, its hooks masked), runs under a leader, or reads another data folder's config marks nothing; starting one
+  from an agent's shell is refused in shell text, but a script gets through.
+- Nested coding tools started with settings of their own (a Grok with another `GROK_HOME`, which loads none of Orrery's
+  hooks, a Claude Code with its own config folder, which loads no Orrery plugin) are second programs, as a script the
+  agent writes is: they have no Orrery guard. Started from an agent's shell they still open no memory and record
+  nothing.
 - Shell-text gaps: `cd ~/.claude` and then relative paths; tools that walk a folder (`find ~/.claude -exec …`);
   `find … -exec orrery {}`, which takes its arguments from file names; a wildcard spelling of Orrery's home
   (`ls -d ~/.orr*`), and extglob and zsh alternation (`cat ~/.(orrery|x)/config.toml`); a recursive command rooted
@@ -720,7 +737,10 @@ because Grok loads and runs much of what is there (its hooks, Orrery's hook file
 files, `/hooks` switch, trust list, plugins and agents): no tool writes there and no shell text names it, but in the
 parts Grok's own features write (its memory, skills, workflows, `/learn`'s runs, the background-task skill's logs,
 plugins' data, `/implement`'s notes, the bundled skills, its docs and logs, and its session worktrees). An agent's
-session reads neither Grok's login nor its session records.
+session reads neither Grok's login nor its session records. In the same scope, shell text may not run Grok's own CLI
+where it writes those (`grok mcp add|remove|enable|disable`, `plugin` but its read-only commands, `update`, `login`,
+`logout`, `setup`, `sessions delete`, `--trust` anywhere) or opens a session by its id or the latest one (`-r`, `-c`,
+`-s`, and `grok agent`'s servers), which may be live in another Grok ([Grok](grok.md#the-guard)).
 OpenCode's config and code are read-only in every tool, because OpenCode loads plugins, runs commands and takes
 permissions from them with no prompt, next to the guard, the next time it opens a folder: no tool writes `opencode.json`
 or `opencode.jsonc` in any folder, a `.opencode` folder (OpenCode's Plan folder, `~/.opencode/plan`, aside), OpenCode's
