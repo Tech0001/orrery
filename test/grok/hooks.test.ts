@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfig } from "../../src/agent/config.ts";
@@ -12,10 +12,11 @@ import { Holder } from "../../src/claude/holder.ts";
 import { sessionDir } from "../../src/claude/paths.ts";
 import { listSessions, pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
 import { readUnconfirmed } from "../../src/claude/transcript.ts";
-import { GROK_HOOK_EVENTS, type GrokHookContext, runGrokHook } from "../../src/grok/hooks.ts";
+import { LAUNCH_VARIABLES } from "../../src/codex/pick.ts";
+import { GROK_HOOK_EVENTS, type GrokHookContext, grokOwnConfig, runGrokHook } from "../../src/grok/hooks.ts";
 import { grokFolder } from "../../src/grok/log.ts";
 import { fauxModels } from "../agent/support.ts";
-import { cleanupDirs, messages, seed, type TestAgent, testAgent, waitUntil } from "../claude/support.ts";
+import { cleanupDirs, messages, seed, startedWith, type TestAgent, testAgent, waitUntil } from "../claude/support.ts";
 import { type GrokHome, grokHomeIn, grokLog, grokSession } from "./log-lines.ts";
 
 const holders: Holder[] = [];
@@ -60,20 +61,32 @@ const tokenOf = (t: TestAgent) => {
 	tokens.set(t, token);
 	return token;
 };
+/**
+ * The environment a grok process was started with: ORRERY_AGENT and its token as `env` has them (Grok hands its hooks its
+ * own), and the folder variables `folder` gives (undefined: none can be read).
+ */
+const grokStarted =
+	(env: NodeJS.ProcessEnv, folder: NonNullable<GrokHookContext["envOf"]>): NonNullable<GrokHookContext["envOf"]> =>
+	(pid, names) => {
+		const own = folder(pid, names);
+		return own === undefined ? undefined : { ...startedWith(env)(pid, names.filter((name) => LAUNCH_VARIABLES.includes(name))), ...own };
+	};
 const ctx = (t: TestAgent, extra: Partial<GrokHookContext> = {}, token = tokens.get(t) ?? tokenOf(t)): GrokHookContext => {
 	if (!dataDirs.includes(t.config.dataDir)) dataDirs.push(t.config.dataDir);
+	// Grok's own GROK_HOME, as its hooks inherit it: Orrery finds Grok's folder from the grok process, never from this.
+	const env = extra.env ?? { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, GROK_HOME: homeOf(t).home };
 	return {
 		config: t.config,
-		// Grok's own GROK_HOME, as its hooks inherit it: Orrery finds Grok's folder from the grok process, never from this.
-		env: { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, GROK_HOME: homeOf(t).home },
+		env,
 		grokPid: GROK,
-		// The environment the grok process was started with: its GROK_HOME is the folder its sessions must be under.
-		envOf: () => ({ GROK_HOME: homeOf(t).home }),
 		cwdOf: () => t.folder,
 		startHolder: () => {},
 		modeWaitMs: 200,
 		alive: (pid) => pid === GROK,
 		...extra,
+		// The environment the grok process was started with: the hook's ORRERY_AGENT and token, and its GROK_HOME, the
+		// folder its sessions must be under (or the folder variables `extra.envOf` gives).
+		envOf: grokStarted(env, extra.envOf ?? (() => ({ GROK_HOME: homeOf(t).home }))),
 	};
 };
 /** A hook's input for session `session` (by name), as Grok sends it (camelCase, with Claude's snake_case aliases). */
@@ -123,6 +136,8 @@ const forged = async (event: string, json: string, c: GrokHookContext): Promise<
 };
 /** SessionStart's answer for a session it can't confirm as this Grok's own, for reason `why`. */
 const notOwn = (why: string) => `Orrery: can't confirm this is this Grok's own session (${why}), so this session isn't recorded.`;
+/** SessionStart's answer when whose Grok this is can't be told from its start environment, for reason `why`. */
+const notWhose = (why: string) => `Orrery: can't tell which agent this Grok is (${why}), so this session isn't recorded.`;
 /**
  * A Grok folder the agent's own shell made up at `home`: session `session`'s folder in it as Grok makes one (summary.json,
  * under the folder this Grok runs in), its events.jsonl a link to `events`, and a log of the forger's own, empty for now.
@@ -460,7 +475,8 @@ describe("Grok's folder is the one the grok process was started with (its own GR
 		const t = testAgent();
 		const start = (envOf: GrokHookContext["envOf"]) => run("session-start", input({ source: "new" }), ctx(t, { startHolder: answer("recording"), envOf }));
 		const before = state(t);
-		expect(await start(() => undefined)).toEqual({ systemMessage: notOwn("Grok's environment can't be read") });
+		// No start environment at all: whose Grok this is can't be told, before its folder is asked.
+		expect(await start(() => undefined)).toEqual({ systemMessage: notWhose("the environment this Grok was started with can't be read") });
 		expect(await start(() => ({}))).toEqual({ systemMessage: notOwn("Grok's environment names neither GROK_HOME nor HOME") });
 		expect(await start(() => ({ GROK_HOME: join(t.dir, "no-such-grok") }))).toEqual({ systemMessage: notOwn("Grok's folder can't be read") });
 		// Another folder than the one the session is under (the hook's own environment still names the right one).
@@ -484,12 +500,14 @@ describe("Grok's folder is the one the grok process was started with (its own GR
 		// A made-up folder Grok holds a session open in, for writing, named by a word among Grok's arguments (its --rules carry the memory).
 		const dir = madeUpFolder(t, id("s3"));
 		const args = `/Users/u/.grok/bin/grok --rules GROK_HOME=${join(t.dir, "made-up-grok")}`;
-		const mac = (env: string): GrokHookContext["envOf"] => (pid, names) => processEnv(pid, names, { platform: "darwin", withoutArgs: true, ps: (asked) => (asked.includes("-wwE") ? `${args} ${env}\n` : `${args}\n`) });
-		expect(await holding(join(dir, "events.jsonl"), "a", () => forged("session-start", input({ session: "s3", source: "new" }), { ...c, envOf: mac("PATH=/usr/bin HOME=/Users/u") }))).toEqual({
+		const mac = (env: string): GrokHookContext["envOf"] => (pid, names) =>
+			processEnv(pid, names, { platform: "darwin", withoutArgs: true, unambiguous: true, ps: (asked) => (asked.includes("-wwE") ? `${args} ${env}\n` : `${args}\n`) });
+		const launch = `ORRERY_AGENT=Test ORRERY_AGENT_TOKEN=${c.env.ORRERY_AGENT_TOKEN}`;
+		expect(await holding(join(dir, "events.jsonl"), "a", () => forged("session-start", input({ session: "s3", source: "new" }), { ...c, envOf: mac(`PATH=/usr/bin HOME=/Users/u ${launch}`) }))).toEqual({
 			systemMessage: notOwn("Grok's folder can't be read"),
 		});
 		// Its environment's GROK_HOME: the honest session records.
-		const honest = { ...c, envOf: mac(`PATH=/usr/bin HOME=/Users/u GROK_HOME=${homeOf(t).home}`) };
+		const honest = { ...c, envOf: mac(`PATH=/usr/bin HOME=/Users/u ${launch} GROK_HOME=${homeOf(t).home}`) };
 		expect(((await run("session-start", input({ source: "new" }), honest)) as Answer).systemMessage).toMatch(/^Orrery · Test · (no memory yet|0 msgs) · recording$/);
 		await run("user-prompt-submit", input({ prompt: "Codename Saffron.", promptId: "p-1" }), honest);
 		await run("stop", input({ lastAssistantMessage: "Noted: Saffron.", promptId: "p-1", reason: "end_turn" }), honest);
@@ -612,7 +630,10 @@ describe("the agent of a Grok session: ORRERY_AGENT and its token, never a folde
 		];
 		for (const [env, notice] of cases) {
 			const started: string[] = [];
-			const c = { ...ctx(t, { startHolder: answer("recording", started) }), env };
+			// A Grok started with this environment, whose hooks get it too: a new grok process each, so no earlier one's
+			// decision stands under this test's pid (one of the same start but another identity would refuse it).
+			rmSync(join(t.config.dataDir, "grok-processes"), { recursive: true, force: true });
+			const c = ctx(t, { startHolder: answer("recording", started), env });
 			expect(await run("session-start", input({ source: "new" }), c), JSON.stringify(env)).toEqual({ systemMessage: notice });
 			await run("user-prompt-submit", input({ prompt: "Not memory.", promptId: "p-1" }), c);
 			await run("stop", input({ lastAssistantMessage: "Not memory either.", promptId: "p-1", reason: "end_turn" }), c);
@@ -625,7 +646,7 @@ describe("the agent of a Grok session: ORRERY_AGENT and its token, never a folde
 describe("a plain grok (no ORRERY_AGENT): Orrery's hooks run in every Grok session", () => {
 	it("plain grok in an agent's folder gets the notice naming `orrery agent <Name> --tool grok` and records nothing", async () => {
 		const t = testAgent();
-		const c = { ...ctx(t, { startHolder: () => { throw new Error("no holder may start"); } }), env: { GROK_HOME: homeOf(t).home } };
+		const c = ctx(t, { startHolder: () => { throw new Error("no holder may start"); }, env: { GROK_HOME: homeOf(t).home } });
 		const before = state(t);
 		expect(await run("session-start", input({ source: "new" }), c)).toEqual({
 			systemMessage: "Orrery: this folder is Test's, but this Grok wasn't opened as Test, so it opens no memory and records nothing. Open it with orrery agent Test --tool grok.",
@@ -644,7 +665,7 @@ describe("a plain grok (no ORRERY_AGENT): Orrery's hooks run in every Grok sessi
 		const t = testAgent();
 		const elsewhere = join(t.dir, "elsewhere");
 		mkdirSync(elsewhere);
-		const c = { ...ctx(t, { cwdOf: () => elsewhere }), env: { GROK_HOME: homeOf(t).home } };
+		const c = ctx(t, { cwdOf: () => elsewhere, env: { GROK_HOME: homeOf(t).home } });
 		for (const event of GROK_HOOK_EVENTS) {
 			expect(await run(event, input({ source: "new", prompt: "Hello.", lastAssistantMessage: "Hi.", promptId: "p-1", reason: "end_turn" }), c), event).toBe("");
 		}
@@ -661,5 +682,39 @@ describe("runGrokHook", () => {
 		}
 		expect(await runGrokHook("pre-tool-use", input({ toolName: "run_terminal_command", toolInput: { command: "ls" } }), ctx(t))).toBe("");
 		await expect(runGrokHook("post-compact", input(), ctx(t))).rejects.toThrow("unknown hook event post-compact");
+	});
+});
+
+describe("grokOwnConfig: the host record and the holder take the config Grok was started with", () => {
+	it("takes Grok's ORRERY_CONFIG, else its Orrery home's (or the default), and refuses a hook that would read another file", () => {
+		const t = testAgent();
+		const home = join(t.dir, "user-home");
+		mkdirSync(join(home, ".orrery"), { recursive: true });
+		writeFileSync(join(home, ".orrery", "config.toml"), readFileSync(t.configPath, "utf8"));
+		const own = join(home, ".orrery", "config.toml");
+		const other = join(t.dir, "other.toml");
+		writeFileSync(other, readFileSync(t.configPath, "utf8"));
+		const started = { HOME: home, ORRERY_CONFIG: t.configPath };
+		const another = { refused: "this hook would read another Orrery config than the one this Grok was started with" };
+		// Grok's ORRERY_CONFIG: the hook's own, or a link to that file, is the one.
+		expect(grokOwnConfig(undefined, { HOME: home, ORRERY_CONFIG: t.configPath }, started, t.folder)).toEqual({ path: t.configPath });
+		symlinkSync(t.configPath, join(t.dir, "link.toml"));
+		expect(grokOwnConfig(join(t.dir, "link.toml"), { HOME: home }, started, t.folder)).toEqual({ path: t.configPath });
+		// Another: a --config of the caller's, its own ORRERY_CONFIG, or its Orrery home's (no ORRERY_CONFIG of its own).
+		expect(grokOwnConfig(other, { HOME: home, ORRERY_CONFIG: t.configPath }, started, t.folder)).toEqual(another);
+		expect(grokOwnConfig(undefined, { HOME: home, ORRERY_CONFIG: other }, started, t.folder)).toEqual(another);
+		expect(grokOwnConfig(undefined, { HOME: home }, started, t.folder)).toEqual(another);
+		// No ORRERY_CONFIG at Grok's start: its HOME's Orrery home, or its ORRERY_HOME's.
+		expect(grokOwnConfig(undefined, { HOME: home }, { HOME: home }, t.folder)).toEqual({ path: own });
+		expect(grokOwnConfig(undefined, { HOME: home, ORRERY_HOME: join(t.dir, "elsewhere") }, { HOME: home }, t.folder)).toEqual(another);
+		expect(grokOwnConfig(undefined, { HOME: t.dir, ORRERY_HOME: join(home, ".orrery") }, { HOME: home }, t.folder)).toEqual({ path: own });
+		// A relative ORRERY_CONFIG of Grok's is read from the folder Grok runs in.
+		expect(grokOwnConfig(t.configPath, {}, { HOME: home, ORRERY_CONFIG: "../data/config.toml" }, t.folder)).toEqual({ path: join(t.dir, "data", "config.toml") });
+		expect(grokOwnConfig(t.configPath, {}, { HOME: home, ORRERY_CONFIG: "../data/config.toml" }, undefined)).toEqual({ refused: "the folder Grok runs in can't be read" });
+		// Grok's environment unread, or saying too little: refused (fail closed).
+		expect(grokOwnConfig(undefined, { HOME: home }, undefined, t.folder)).toEqual({ refused: "the environment this Grok was started with can't be read" });
+		expect(grokOwnConfig(undefined, { HOME: home }, {}, t.folder)).toEqual({ refused: "Grok's environment names no HOME" });
+		expect(grokOwnConfig(undefined, { HOME: home }, { HOME: home, ORRERY_HOME: "relative" }, t.folder)).toEqual({ refused: "Grok's ORRERY_HOME is no absolute path" });
+		expect(grokOwnConfig(undefined, { HOME: home, ORRERY_HOME: "relative" }, { HOME: home }, t.folder)).toEqual({ refused: "this hook's ORRERY_HOME is no absolute path" });
 	});
 });

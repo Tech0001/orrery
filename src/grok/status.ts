@@ -6,7 +6,9 @@
  * turn runs. It prints one line, which Grok shows under the prompt, or nothing, which shows no row:
  * - It speaks only for the agent ORRERY_AGENT names, and only when its token is claimed by this Grok, as a hook event
  *   finds it (src/codex/pick.ts grokAgent, never claiming or deciding): the memory server's start or SessionStart made
- *   that claim. The stdin session_id only chooses which of that agent's sessions the row describes, never the agent. No
+ *   that claim. Both are taken as the grok process was started with them (src/codex/pick.ts launchedEnv), never from the
+ *   row's own environment: one that names another agent or token, or a Grok whose start environment can't be read, gets
+ *   nothing. The stdin session_id only chooses which of that agent's sessions the row describes, never the agent. No
  *   ORRERY_AGENT (a plain grok), a token that isn't this Grok's (made up, another process's, a Grok started inside
  *   another session), or input that isn't Grok's status JSON: nothing.
  * - Its state is what SessionStart (src/grok/hooks.ts) left for the session: this Grok's host record naming it, the mode
@@ -41,7 +43,7 @@ import { safeText } from "../agent/source-labels.ts";
 import { type StatusState, statusText } from "../agent/status-text.ts";
 import { validSession } from "../claude/paths.ts";
 import { readMode } from "../claude/spool.ts";
-import { grokAgent } from "../codex/pick.ts";
+import { grokAgent, LAUNCH_VARIABLES, launchedEnv, startEnvOf } from "../codex/pick.ts";
 import { GROK_LEADER_REFUSAL, grokHostRefusal, grokPid } from "./host.ts";
 import { GROK_SESSION_START_TIMEOUT, grokRecordingSwitchedOff } from "./install.ts";
 
@@ -59,6 +61,8 @@ export interface GrokStatusContext {
 	readonly alive?: (pid: number) => boolean;
 	/** A process's command line (default processArgv): whether Grok's process is its shared leader. */
 	readonly argvOf?: (pid: number) => readonly string[] | undefined;
+	/** Named variables of the environment a process was started with (default startEnvOf): whose Grok this is. */
+	readonly envOf?: (pid: number, names: readonly string[]) => Readonly<Record<string, string>> | undefined;
 }
 
 /**
@@ -95,8 +99,12 @@ function rowOf(stdin: string, ctx: GrokStatusContext): string | undefined {
 	if (refused !== undefined) return refused === GROK_LEADER_REFUSAL ? `Orrery · not recording: ${LEADER}` : undefined;
 	const session = sessionOf(stdin);
 	if (session === undefined) return undefined;
+	// Whose Grok this is, as it was started: never the row's own environment's say (module doc).
+	const launched = launchedEnv("grok", ctx.env, (ctx.envOf ?? startEnvOf)(pid, LAUNCH_VARIABLES));
+	if ("refused" in launched) return undefined;
+	const env = launched.env;
 	const pick = grokAgent(ctx.config, {
-		env: ctx.env,
+		env,
 		pid,
 		takeover: false,
 		session,
@@ -109,8 +117,8 @@ function rowOf(stdin: string, ctx: GrokStatusContext): string | undefined {
 	// SessionStart may still run: Grok gives it its timeout from the launch (whose claim of the token this is) or from the
 	// session's own start.
 	const young = (at: number | undefined) => at !== undefined && now - at >= 0 && now - at < GROK_SESSION_START_TIMEOUT * 1000;
-	const starting = () => young(claimMadeAt(agent.dir, ctx.env[TOKEN_ENV] ?? "")) || young(sessionStartedAt(session));
-	const state = stateOf(ctx.config, agent, session, pid, now, () => grokRecordingSwitchedOff(ctx.env), starting);
+	const starting = () => young(claimMadeAt(agent.dir, env[TOKEN_ENV] ?? "")) || young(sessionStartedAt(session));
+	const state = stateOf(ctx.config, agent, session, pid, now, () => grokRecordingSwitchedOff(env), starting);
 	return statusText({ name: agent.name, count: readMessageCount(agent), state });
 }
 

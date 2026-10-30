@@ -32,7 +32,16 @@
  *   stderr or in a log.
  *
  * Grok runs a hook through a pipe, so the agent's own shell can run this command with made-up input and its own
- * environment (GROK_HOME, HOME). So no event changes what such a call could abuse:
+ * environment (ORRERY_AGENT, its token, GROK_HOME, HOME, ORRERY_CONFIG). So no event changes what such a call could abuse:
+ * - Whose session it is comes from the grok process's own start environment (src/codex/pick.ts launchedEnv: Linux
+ *   /proc/<pid>/environ; macOS ps -E, its arguments left out, read only when it can't be read two ways), never from the
+ *   hook's own: ORRERY_AGENT and its token as Grok was started with them, none there a plain grok. A hook whose own
+ *   environment names another agent or token than that, or whose Grok's can't be read, decides, claims, records and
+ *   spools nothing (SessionStart says why). The process's decision refuses any other identity too (src/codex/pick.ts),
+ *   and SessionStart never takes over a live host record of this Grok's that names another agent.
+ * - The host record and the holder take the Orrery config the grok process was started with (its ORRERY_CONFIG, else its
+ *   Orrery home's or the default: grokOwnConfig); a hook that would load another (its --config, its own ORRERY_CONFIG or
+ *   ORRERY_HOME) is refused, as src/cli/gate.ts refuses one inside an agent's session.
  * - SessionStart takes a session only when it is Grok's own, all before it decides, claims or records anything. What it
  *   checks, never taking a folder from the hook's own environment or its input:
  *   - Grok's folder is the one the grok process was started with: its own environment's GROK_HOME, else its HOME's
@@ -57,14 +66,14 @@
 
 import { randomUUID } from "node:crypto";
 import { lstatSync, realpathSync, type Stats } from "node:fs";
-import { join } from "node:path";
-import { type AgentConfig, agentForCwd, type HarnessConfig } from "../agent/config.ts";
+import { isAbsolute, join, resolve } from "node:path";
+import { type AgentConfig, agentForCwd, defaultConfigPath, type HarnessConfig } from "../agent/config.ts";
 import { holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
 import { readMemory } from "../agent/memory-read.ts";
 import { type OpenFile, openFiles } from "../agent/open-files.ts";
-import { AGENT_ENV } from "../agent/pick.ts";
+import { AGENT_ENV, agentNamed } from "../agent/pick.ts";
 import type { PlainDeps } from "../agent/plain-nested.ts";
-import { processCwd, processEnv } from "../agent/process.ts";
+import { processCwd } from "../agent/process.ts";
 import { liveSession, nestedNotice, plainFields, recordSession, type SessionRecord } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { NOT_RECORDED, type StatusState, statusText } from "../agent/status-text.ts";
@@ -72,7 +81,7 @@ import { noticeShownBefore, waitForMode } from "../claude/hooks.ts";
 import { summaryNotice, updateNotice } from "../claude/notices.ts";
 import { holderLog, validSession } from "../claude/paths.ts";
 import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
-import { grokAgent } from "../codex/pick.ts";
+import { grokAgent, LAUNCH_VARIABLES, launchedEnv, startEnvOf } from "../codex/pick.ts";
 import { grokHostNotice, grokHostRefusal } from "./host.ts";
 import { type GrokHeld, grokHeldSessions, grokLogStart, grokSessionKind, grokStartHome } from "./log.ts";
 import { GROK_HOOK_EVENTS } from "./names.ts";
@@ -99,8 +108,8 @@ export interface GrokHookContext {
 	/** The files a process has open (default src/agent/open-files.ts openFiles): Grok's session folders are found by them. */
 	readonly openFiles?: (pid: number) => readonly OpenFile[] | undefined;
 	/**
-	 * Named variables of the environment a process was started with (default processEnv, src/agent/process.ts, without
-	 * the process's arguments): Grok's folder is the one the grok process's names.
+	 * Named variables of the environment a process was started with (default src/codex/pick.ts startEnvOf, without the
+	 * process's arguments): whose session it is, and Grok's folder, are the grok process's.
 	 */
 	readonly envOf?: (pid: number, names: readonly string[]) => Readonly<Record<string, string>> | undefined;
 	/** Grok's process (src/grok/host.ts): the token's owner and the holder's host. */
@@ -241,8 +250,51 @@ function realOf(path: string): string | undefined {
 /** The variables of the grok process's start environment that name Grok's folder. */
 const GROK_FOLDER_VARIABLES = ["GROK_HOME", "HOME"];
 
-/** A process's start environment, never a word of its arguments (Grok's --rules hold the agent's memory). */
-const startEnv = (pid: number, names: readonly string[]) => processEnv(pid, names, { withoutArgs: true });
+/**
+ * The variables of the grok process's start environment a hook reads (module doc), at once: whose session it is, the
+ * Orrery config it runs with, and Grok's folder.
+ */
+export const GROK_START_VARIABLES: readonly string[] = [...LAUNCH_VARIABLES, "ORRERY_CONFIG", "ORRERY_HOME", ...GROK_FOLDER_VARIABLES];
+
+/** `path` as it really is, or as given (absolute) when it can't be resolved: two paths name one file when these match. */
+const fileOf = (path: string) => realOf(path) ?? resolve(path);
+
+/**
+ * The Orrery config of the grok process, which its host record and holder take (module doc): the one its start
+ * environment (`started`) names, ORRERY_CONFIG (from the folder it runs in, `cwd`, when relative), else its Orrery home's,
+ * or the default, as defaultConfigPath finds them from its own HOME. Or why a hook can't run with it: that environment
+ * can't be read, or says too little, or the config the hook itself would load (its --config `given`, else its own
+ * ORRERY_CONFIG, Orrery home or default, from `env`) is another file.
+ */
+export function grokOwnConfig(given: string | undefined, env: NodeJS.ProcessEnv, started: Readonly<Record<string, string>> | undefined, cwd: string | undefined): { readonly path: string } | { readonly refused: string } {
+	if (started === undefined) return { refused: "the environment this Grok was started with can't be read" };
+	let own: string;
+	const set = started.ORRERY_CONFIG;
+	if (set) {
+		if (!isAbsolute(set) && cwd === undefined) return { refused: "the folder Grok runs in can't be read" };
+		own = isAbsolute(set) ? set : resolve(cwd as string, set);
+	} else {
+		if (!started.HOME) return { refused: "Grok's environment names no HOME" };
+		try {
+			own = defaultConfigPath({ HOME: started.HOME, ...(started.ORRERY_HOME === undefined ? {} : { ORRERY_HOME: started.ORRERY_HOME }) });
+		} catch {
+			return { refused: "Grok's ORRERY_HOME is no absolute path" };
+		}
+	}
+	let would: string;
+	try {
+		would = given ?? defaultConfigPath(env);
+	} catch {
+		return { refused: "this hook's ORRERY_HOME is no absolute path" };
+	}
+	if (fileOf(would) !== fileOf(own)) return { refused: "this hook would read another Orrery config than the one this Grok was started with" };
+	return { path: own };
+}
+
+/** What SessionStart says when grokOwnConfig refuses, in a Grok opened as an agent: nothing is recorded. */
+export function ownConfigNotice(why: string): string {
+	return JSON.stringify({ systemMessage: `Orrery: can't tell which Orrery config this Grok runs with (${safeText(why)}), so this session isn't recorded.` });
+}
 
 /**
  * Session `session` as this Grok's own (module doc): its log and where to read it from, or why it can't be confirmed.
@@ -256,7 +308,7 @@ const startEnv = (pid: number, names: readonly string[]) => processEnv(pid, name
 function ownSession(session: string, ctx: GrokHookContext): OwnLog | string {
 	const cwd = (ctx.cwdOf ?? processCwd)(ctx.grokPid);
 	if (cwd === undefined) return "the folder Grok runs in can't be read";
-	const started = (ctx.envOf ?? startEnv)(ctx.grokPid, GROK_FOLDER_VARIABLES);
+	const started = (ctx.envOf ?? startEnvOf)(ctx.grokPid, GROK_FOLDER_VARIABLES);
 	if (started === undefined) return "Grok's environment can't be read";
 	const named = grokStartHome(started, cwd);
 	if (named === undefined) return "Grok's environment names neither GROK_HOME nor HOME";
@@ -310,6 +362,12 @@ export async function sessionStart(input: GrokHookInput, ctx: GrokHookContext): 
 	// Before anything is decided, claimed or recorded: is this session this Grok's own?
 	const log = ownSession(session, ctx);
 	if (typeof log === "string") return refuse(log);
+	// A live host record of this Grok's that names another agent stays as it is (module doc): before any claim.
+	const live = liveSession(ctx.config.dataDir, ctx.grokPid);
+	const asked = agentNamed(ctx.config, ctx.env[AGENT_ENV]?.trim() ?? "");
+	if (live?.tool === "grok" && asked !== undefined && live.agent !== asked.name) {
+		return { systemMessage: `Orrery: this Grok hosts ${safeText(live.agent)}'s session, so this session isn't recorded as ${safeText(asked.name)}'s.` };
+	}
 	// Every SessionStart may be the process's first asker (Grok fires none at a compaction): it decides, and may claim.
 	const pick = agentOf(ctx, session, input.source === "new" || input.source === "load");
 	if (pick.kind === "refused") return { systemMessage: pick.notice };
@@ -371,6 +429,19 @@ export async function runGrokHook(event: string, stdin: string, ctx: GrokHookCon
 	// Before anything is read, decided, claimed or recorded: a leader hosts no agent's session (module doc).
 	const refused = grokHostRefusal(ctx.grokPid, ctx.argvOf);
 	if (refused !== undefined) return event === "session-start" && opened(ctx) ? JSON.stringify({ systemMessage: grokHostNotice(refused) }) : "";
+	// Whose session it is: ORRERY_AGENT and its token as the grok process was started with them, never this hook's own
+	// (module doc). Grok's start environment is read once, for its folder too.
+	const started = (ctx.envOf ?? startEnvOf)(ctx.grokPid, GROK_START_VARIABLES);
+	const launched = launchedEnv("grok", ctx.env, started);
+	if ("refused" in launched) {
+		const named = opened(ctx) || (started?.[AGENT_ENV]?.trim() ?? "") !== "";
+		return event === "session-start" && named ? JSON.stringify({ systemMessage: `Orrery: can't tell which agent this Grok is (${safeText(launched.refused)}), so this session isn't recorded.` }) : "";
+	}
+	return runOwnHook(event, stdin, { ...ctx, env: launched.env, envOf: () => started });
+}
+
+/** The hook for `event`, with Grok's own identity in ctx.env (runGrokHook). */
+async function runOwnHook(event: string, stdin: string, ctx: GrokHookContext): Promise<string> {
 	let input: GrokHookInput;
 	try {
 		const parsed = JSON.parse(stdin) as unknown;

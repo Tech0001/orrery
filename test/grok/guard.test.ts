@@ -7,7 +7,7 @@ import { CODEX_GUARD_DEADLINE_MS, CODEX_GUARD_WATCHDOG_MS, isGrokGuard } from ".
 import { GROK_AS_CLAUDE, type GrokGuardContext, grokGuard, grokRefusal, runGrokGuard } from "../../src/grok/guard.ts";
 import { grokHookFile } from "../../src/grok/install.ts";
 import { GROK_HOOK_EVENTS } from "../../src/grok/names.ts";
-import { cleanupDirs, testAgent } from "../claude/support.ts";
+import { cleanupDirs, startedWith, testAgent } from "../claude/support.ts";
 
 let dir: string | undefined;
 afterEach(() => {
@@ -1347,16 +1347,21 @@ describe("the PreToolUse hook (runGrokGuard)", () => {
 		writeFileSync(join(home, ".grok", "hooks", "orrery.json"), "{}");
 		mkdirSync(join(t.folder, "sub"));
 		writeFileSync(join(t.folder, "protected.txt"), "x");
-		const ctx = (extra: Partial<GrokGuardContext> = {}): GrokGuardContext => ({
-			config: t.config,
-			env: { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token },
-			grokPid: 4343,
-			alive: (pid) => pid === 4343,
-			argvOf: () => ["/home/u/.grok/downloads/grok-linux-x86_64", "--no-leader", "--rules", "x"],
-			home,
-			configFile: t.configPath,
-			...extra,
-		});
+		const ctx = (extra: Partial<GrokGuardContext> = {}): GrokGuardContext => {
+			const env = extra.env ?? { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token };
+			return {
+				config: t.config,
+				env,
+				grokPid: 4343,
+				alive: (pid) => pid === 4343,
+				argvOf: () => ["/home/u/.grok/downloads/grok-linux-x86_64", "--no-leader", "--rules", "x"],
+				home,
+				configFile: t.configPath,
+				// The Grok was started with the environment its hooks get.
+				envOf: startedWith(env),
+				...extra,
+			};
+		};
 		// The token's claim, as the memory server or SessionStart makes it for this Grok.
 		mkdirSync(join(t.agent.dir, "claims"), { recursive: true, mode: 0o700 });
 		writeFileSync(join(t.agent.dir, "claims", token), "4343\n");
@@ -1395,6 +1400,18 @@ describe("the PreToolUse hook (runGrokGuard)", () => {
 		expect(runGrokGuard(call("read_file", { target_file: "../protected.txt" }, cwd), ctx({ config: protect }))).toMatch(/protected by \[guard\] protect/);
 		expect(runGrokGuard(call("read_file", { target_file: t.configPath }, cwd), ctx())).toBeUndefined();
 		expect(runGrokGuard(call("search_replace", { file_path: t.configPath, old_string: "a", new_string: "b" }, cwd), ctx())).toMatch(/Orrery's config/);
+	});
+
+	it("judges whose session it is by the Grok's start environment: a hook whose own names another agent or token, or a Grok whose start can't be read, gets no agent's rules", () => {
+		const { t, ctx } = agentWorld();
+		const cwd = join(t.folder, "sub");
+		const grok = ctx().env;
+		const up = call("write", { file_path: "../top.md", content: "x" }, cwd);
+		expect(runGrokGuard(up, ctx())).toBeUndefined();
+		const other = { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: newToken() };
+		for (const context of [ctx({ env: other, envOf: startedWith(grok) }), ctx({ envOf: () => undefined })]) {
+			expect(runGrokGuard(up, context)).toMatch(/is outside this agent's folder and allowed roots$/);
+		}
 	});
 
 	it("reads Claude Code's snake_case aliases when the camelCase names are missing, and a truncated input as Grok marks it", () => {

@@ -30,9 +30,11 @@
  * openCodeSkillRefusal). The tag's layout is not relied on alone (it is unverified live).
  *
  * Whose rules (runGrokGuard): the agent ORRERY_AGENT names, with its token claimed by this Grok (src/codex/pick.ts
- * grokAgent), gets its own: where it may write (its folder, or the folder it was opened in, and its allowed roots) and
- * every other agent's view another's. A Grok started inside an agent's session gets that agent's rules, never looser
- * than the folder's own (src/agent/nested-rules.ts); one opened as an agent but refused, or started inside a session
+ * grokAgent), both as the grok process was started with them (src/codex/pick.ts launchedEnv: a hook whose own
+ * disagree, or a Grok whose start can't be read, proves no agent's host, and is judged as one whose command line can't
+ * be read, below), gets its own: where it may write (its folder, or the folder it was opened in, and its allowed
+ * roots) and every other agent's view another's. A Grok started inside an agent's session gets that agent's rules, never
+ * looser than the folder's own (src/agent/nested-rules.ts); one opened as an agent but refused, or started inside a session
  * nothing proves the agent of, may write only where it runs. A plain grok (no ORRERY_AGENT: Orrery's Grok hooks are
  * global), and one started from a coding tool's session that is no agent's where no agent would open, get Orrery's own
  * rules (spec 2026-10-19-no-agent-sessions §3): every agent's memory and Orrery's settings and data, Grok's folder but
@@ -83,7 +85,7 @@ import { processArgv } from "../agent/process.ts";
 import { agentGuardOptions, type ClaudeGuardOptions, claudeGuard, plainGuardOptions } from "../claude/guard.ts";
 import { TOOL_INPUT_MAX } from "../claude/hooks.ts";
 import { codexGuard, codexRefusal, contentGuard } from "../codex/guard.ts";
-import { grokAgent, grokNested } from "../codex/pick.ts";
+import { grokAgent, grokNested, LAUNCH_VARIABLES, launchedEnv, startEnvOf } from "../codex/pick.ts";
 import { isGrokLeader } from "./host.ts";
 
 /**
@@ -236,6 +238,11 @@ export interface GrokGuardContext {
 	 * when it can't be read.
 	 */
 	readonly argvOf?: (pid: number) => readonly string[] | undefined;
+	/**
+	 * Named variables of the environment a process was started with (default src/codex/pick.ts startEnvOf): whose session
+	 * this is, as Grok's hooks take it.
+	 */
+	readonly envOf?: (pid: number, names: readonly string[]) => Readonly<Record<string, string>> | undefined;
 }
 
 /** The fields of Grok's PreToolUse input the guard reads (camelCase, else Claude Code's aliases); each is checked before use. */
@@ -288,8 +295,14 @@ function sessionRules(ctx: GrokGuardContext, cwd: string, session: string | unde
 	if (argv !== undefined && isGrokLeader(argv)) return { plain: true };
 	// A command line that can't be read proves no agent's host, whatever token it holds: ORRERY_AGENT alone decides.
 	if (argv === undefined) return noAgent();
+	// Whose session it is, as Grok's hooks take it (src/grok/hooks.ts): ORRERY_AGENT and its token as the grok process was
+	// started with them. A start environment that can't be read, or that this hook's own disagrees with (never so for a
+	// call Grok makes), proves no agent's host either.
+	const launched = launchedEnv("grok", env, (ctx.envOf ?? startEnvOf)(ctx.grokPid, LAUNCH_VARIABLES));
+	if ("refused" in launched) return noAgent();
+	const own = launched.env;
 	const pick = grokAgent(config, {
-		env,
+		env: own,
 		pid: ctx.grokPid,
 		takeover: false,
 		...(ctx.grokParent === undefined ? {} : { parent: ctx.grokParent }),
@@ -300,12 +313,12 @@ function sessionRules(ctx: GrokGuardContext, cwd: string, session: string | unde
 	if (pick.kind === "agent") return { plain: false, rules: { workArea: workArea(pick.agent, cwd), allowedRoots: pick.agent.allowedRoots }, agent: pick.agent };
 	// A Grok whose SessionStart made no decision (a plain grok's decides nothing) is looked up now: was it started inside
 	// a session?
-	const nested = pick.kind === "nested" ? pick : pick.undecided === true ? grokNested(config, env, ctx.grokPid, ctx.plain) : undefined;
+	const nested = pick.kind === "nested" ? pick : pick.undecided === true ? grokNested(config, own, ctx.grokPid, ctx.plain) : undefined;
 	if (nested?.kind === "nested") {
 		const outer = nestedRules(config, nested.outer, cwd);
 		if (outer !== undefined) return { plain: false, rules: outer };
 		// Started from a coding tool's session that is no agent's, where no agent would open: a plain one.
-		if (nested.plain !== undefined && !opensHere(config, env, cwd)) return { plain: true };
+		if (nested.plain !== undefined && !opensHere(config, own, cwd)) return { plain: true };
 		return { plain: false, rules: { workArea: workArea({}, cwd), allowedRoots: [] } };
 	}
 	return noAgent();

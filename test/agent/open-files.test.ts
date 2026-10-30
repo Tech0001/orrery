@@ -76,5 +76,23 @@ describe("processEnv withoutArgs: the environment of a process whose arguments o
 	it("Linux: /proc/<pid>/environ holds the environment alone, read as ever", () => {
 		const read = () => "PATH=/usr/bin\0HOME=/home/u\0GROK_HOME=/g\0";
 		expect(processEnv(4242, ["GROK_HOME", "HOME"], { platform: "linux", withoutArgs: true, read })).toEqual({ HOME: "/home/u", GROK_HOME: "/g" });
+		// unambiguous changes nothing there: each variable is its own string, spaces and all.
+		const spaced = () => "PATH=/usr/bin\0HOME=/home/u u\0ORRERY_AGENT=Atlas\0";
+		expect(processEnv(4242, ["HOME", "ORRERY_AGENT"], { platform: "linux", withoutArgs: true, unambiguous: true, read: spaced })).toEqual({ HOME: "/home/u u", ORRERY_AGENT: "Atlas" });
+	});
+
+	it("macOS unambiguous: a variable asked for that stands twice, or whose value a space cut, can't be read; others don't matter", () => {
+		const args = "/Users/u/.grok/bin/grok --rules x";
+		const mac = (env: string) => ({ platform: "darwin" as const, withoutArgs: true, unambiguous: true, ps: (arg: readonly string[]) => (arg.includes("-wwE") ? `${args} ${env}\n` : `${args}\n`) });
+		const names = ["ORRERY_AGENT", "ORRERY_AGENT_TOKEN", "HOME"];
+		expect(processEnv(4242, names, mac("PATH=/usr/bin HOME=/Users/u ORRERY_AGENT=Atlas ORRERY_AGENT_TOKEN=0123"))).toEqual({ HOME: "/Users/u", ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: "0123" });
+		// A variable not asked for may hold spaces; one asked for, last, with nothing after it, is whole.
+		expect(processEnv(4242, names, mac("PATH=/usr/bin TERM_TITLE=a b c HOME=/Users/u ORRERY_AGENT=Atlas"))).toEqual({ HOME: "/Users/u", ORRERY_AGENT: "Atlas" });
+		// Twice (a value of another variable that reads as one), or cut by a space: undefined.
+		expect(processEnv(4242, names, mac("PATH=/usr/bin X=ORRERY_AGENT ORRERY_AGENT=Birch HOME=/Users/u ORRERY_AGENT=Atlas"))).toBeUndefined();
+		expect(processEnv(4242, names, mac("PATH=/usr/bin HOME=/Users/u u ORRERY_AGENT=Atlas"))).toBeUndefined();
+		expect(processEnv(4242, names, mac("PATH=/usr/bin HOME=/Users/u ORRERY_AGENT=At las"))).toBeUndefined();
+		// Without unambiguous, as before: the last word naming one, and a value cut at its space.
+		expect(processEnv(4242, ["HOME"], { ...mac("PATH=/usr/bin HOME=/Users/u u"), unambiguous: false })).toEqual({ HOME: "/Users/u" });
 	});
 });

@@ -849,8 +849,10 @@ const denyToolCall = (reason: string) =>
  * With --tool codex it is Codex's (src/codex/launch.ts): the agent ORRERY_AGENT names, with its token, and nothing else
  * (src/codex/pick.ts), claimed for the Codex that started it, at its start, before any SessionStart. With --tool grok it
  * is Grok's, the same way (grokAgent): Grok's config names it for every session (src/grok/install.ts), and gives it the
- * launch's ORRERY_AGENT and token, so a plain grok's gets none and serves no tools. Under Grok the Claude Code plugin's
- * own server serves nothing (dispatch), so the model sees one set of tools.
+ * launch's ORRERY_AGENT and token, so a plain grok's gets none and serves no tools. Both are taken as the grok process
+ * was started with them (src/codex/pick.ts launchedEnv): a server whose own name another agent or token, or whose Grok's
+ * start environment can't be read, serves no tools and decides nothing. Under Grok the Claude Code plugin's own server
+ * serves nothing (dispatch), so the model sees one set of tools.
  * Inside an agent's session (`inside`, src/cli/gate.ts) it serves that agent or nothing, with the config that holds the
  * session's memory (`trusted`); and when its parent is that session's recorded host (a restarted server, or the agent's
  * shell exec'ing `orrery mcp`), it only reads the decision the host made, so no folder or variable given to it can
@@ -869,18 +871,31 @@ async function mcpServer(configPath: string | undefined, tool: string | undefine
 	if (gated.notice !== undefined) process.stderr.write(`${gated.notice}\n`);
 	const config = hostAgent === null ? undefined : gatedConfig(gated, configPath, "orrery mcp");
 	const ours = (agent: AgentConfig) => (inside === undefined || agent.name === inside.agent) && (hostAgent === undefined || agent.name === hostAgent);
-	// A plain grok (no ORRERY_AGENT: Grok's config gives every session's server the launch's, maybe none) decides nothing
-	// for its process, as its hooks don't (src/grok/hooks.ts), and serves no tools.
-	const { AGENT_ENV } = await import("../agent/pick.ts");
-	const plainGrok = tool === "grok" && (process.env[AGENT_ENV]?.trim() ?? "") === "";
 	if (config !== undefined && (tool === "codex" || tool === "grok")) {
-		if (!plainGrok) {
-			const [{ codexAgent, grokAgent }, { codexPid }, { grokPid }] = await Promise.all([import("../codex/pick.ts"), import("../codex/host.ts"), import("../grok/host.ts")]);
-			// Codex and Grok start their servers themselves (seen live for Grok: each session's own grok process, with its
-			// launch's environment): the host is this server's parent, unless it passed over one by its name.
-			const asking = { env: process.env, parent: process.ppid, takeover: true };
-			const pick = tool === "codex" ? codexAgent(config, { ...asking, pid: codexPid() }) : grokAgent(config, { ...asking, pid: grokPid() });
+		const [{ codexAgent, grokAgent, LAUNCH_VARIABLES, launchedEnv, startEnvOf }, { codexPid }, { grokPid }, { AGENT_ENV }] = await Promise.all([
+			import("../codex/pick.ts"),
+			import("../codex/host.ts"),
+			import("../grok/host.ts"),
+			import("../agent/pick.ts"),
+		]);
+		// Codex and Grok start their servers themselves (seen live for Grok: each session's own grok process, with its
+		// launch's environment): the host is this server's parent, unless it passed over one by its name.
+		const asking = { parent: process.ppid, takeover: true };
+		if (tool === "codex") {
+			const pick = codexAgent(config, { ...asking, env: process.env, pid: codexPid() });
 			if (pick.kind === "agent" && ours(pick.agent)) tools = agentTools(config, pick.agent);
+		} else {
+			// Grok's: whose it is comes from the grok process's own start environment, as its hooks take it
+			// (src/grok/hooks.ts); a server whose own names another agent or token is refused. A plain grok (no ORRERY_AGENT
+			// there: Grok's config gives every session's server the launch's, maybe none) decides nothing for its process, as
+			// its hooks don't, and serves no tools.
+			const pid = grokPid();
+			const launched = launchedEnv("grok", process.env, startEnvOf(pid, LAUNCH_VARIABLES));
+			if ("refused" in launched) process.stderr.write(`orrery: mcp serves no agent here: ${launched.refused}.\n`);
+			else if ((launched.env[AGENT_ENV]?.trim() ?? "") !== "") {
+				const pick = grokAgent(config, { ...asking, env: launched.env, pid });
+				if (pick.kind === "agent" && ours(pick.agent)) tools = agentTools(config, pick.agent);
+			}
 		}
 	} else if (config !== undefined) {
 		const [{ claudeSession, markedUnconfirmed }, { liveSession }] = await Promise.all([import("../claude/pick.ts"), import("../agent/sessions.ts")]);
@@ -1071,27 +1086,44 @@ async function grokGuardHook(configPath: string | undefined): Promise<number> {
  * `orrery grok-hook <event>`: the hooks Orrery's install gives Grok Build (src/grok/hooks.ts), global, so they run in
  * every Grok session. pre-tool-use is the guard (grokGuardHook). The others never fail the session: exit 0 (a 2 would
  * block the prompt, or keep a turn going), only their JSON answer on stdout, and an error in one stderr line, never with
- * message contents. A config that cannot be read is said at SessionStart in a Grok opened as an agent; anywhere else (a
- * plain grok, or no config at all) they say nothing. Run by Grok's shared leader (leader mode), every event but the guard
- * decides, claims and records nothing (src/grok/hooks.ts runGrokHook); the guard judges there by Orrery's own rules.
+ * message contents. They run with the Orrery config the grok process was started with (its ORRERY_CONFIG, else the
+ * default: src/grok/hooks.ts grokOwnConfig), which the holder is given too; one the hook would read otherwise (a --config
+ * of its caller's, its own ORRERY_CONFIG or ORRERY_HOME) is refused. A config that cannot be read, or refused, is said at
+ * SessionStart in a Grok opened as an agent; anywhere else (a plain grok, or no config at all) they say nothing. Run by
+ * Grok's shared leader (leader mode), every event but the guard decides, claims and records nothing (src/grok/hooks.ts
+ * runGrokHook); the guard judges there by Orrery's own rules.
  */
 async function grokHook(event: string | undefined, configPath: string | undefined): Promise<number> {
 	if (event === "pre-tool-use") return grokGuardHook(configPath);
 	try {
 		const stdin = (await readStdin(Number.POSITIVE_INFINITY)) ?? "";
-		const hooks = await import("../grok/hooks.ts");
-		let config: HarnessConfig;
-		try {
-			config = loadConfig(configPath);
-		} catch (error) {
-			const { AGENT_ENV } = await import("../agent/pick.ts");
-			if (event === "session-start" && (process.env[AGENT_ENV]?.trim() ?? "") !== "") process.stdout.write(hooks.configNotice(errorText(error)));
+		const [hooks, { grokPid }, { spawnHolder }, { startEnvOf }, { AGENT_ENV }, { processCwd }] = await Promise.all([
+			import("../grok/hooks.ts"),
+			import("../grok/host.ts"),
+			import("../claude/hooks.ts"),
+			import("../codex/pick.ts"),
+			import("../agent/pick.ts"),
+			import("../agent/process.ts"),
+		]);
+		const pid = grokPid();
+		// Grok's own start environment, read once: whose session it is, its Orrery config and its folder (src/grok/hooks.ts).
+		const started = startEnvOf(pid, hooks.GROK_START_VARIABLES);
+		const named = (process.env[AGENT_ENV]?.trim() ?? "") !== "" || (started?.[AGENT_ENV]?.trim() ?? "") !== "";
+		// The host record and the holder take the config Grok was started with; a hook that would read another is refused.
+		const own = hooks.grokOwnConfig(configPath, process.env, started, processCwd(pid));
+		if ("refused" in own) {
+			if (event === "session-start" && named) process.stdout.write(hooks.ownConfigNotice(own.refused));
 			return 0;
 		}
-		const [{ grokPid }, { spawnHolder }] = await Promise.all([import("../grok/host.ts"), import("../claude/hooks.ts")]);
-		const pid = grokPid();
-		const startHolder = (agent: AgentConfig, session: string, nonce: string, since: number) => spawnHolder(agent, session, nonce, pid, since, configPath, "grok");
-		process.stdout.write(await hooks.runGrokHook(event ?? "", stdin, { config, env: process.env, grokPid: pid, grokParent: process.ppid, startHolder, updateNotices: true }));
+		let config: HarnessConfig;
+		try {
+			config = loadConfig(own.path);
+		} catch (error) {
+			if (event === "session-start" && named) process.stdout.write(hooks.configNotice(errorText(error)));
+			return 0;
+		}
+		const startHolder = (agent: AgentConfig, session: string, nonce: string, since: number) => spawnHolder(agent, session, nonce, pid, since, own.path, "grok");
+		process.stdout.write(await hooks.runGrokHook(event ?? "", stdin, { config, env: process.env, grokPid: pid, grokParent: process.ppid, startHolder, updateNotices: true, envOf: () => started }));
 	} catch (error) {
 		process.stderr.write(`Orrery: ${event ?? "grok-hook"}: ${errorText(error)}\n`);
 	}

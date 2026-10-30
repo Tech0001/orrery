@@ -13,6 +13,7 @@ import { runGrokHook } from "../../src/grok/hooks.ts";
 import { grokStatus } from "../../src/grok/status.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { tempDir } from "../agent/support.ts";
+import { startedWith } from "../claude/support.ts";
 import { grokHomeIn } from "./log-lines.ts";
 
 /**
@@ -104,6 +105,8 @@ const ctx = (config: HarnessConfig, env: NodeJS.ProcessEnv, extra: object = {}) 
 	grokParent: GROK,
 	alive: (pid: number) => pid === GROK || pid === OTHER_GROK,
 	argvOf: () => GROK_ARGV,
+	// Grok was started with the agent and token the row gets (Grok runs its row with its own environment).
+	envOf: startedWith(env),
 	...extra,
 });
 /** Switches hooks of Orrery's hook file off in Grok's /hooks tab, as Grok 1.0.70 writes its disabled-hooks file (seen live). */
@@ -141,6 +144,25 @@ describe("orrery grok-status", () => {
 		expect(out).not.toContain("secret-word");
 		// The agent's name as ORRERY_AGENT gives it, in any case, is the configured one.
 		expect(grokStatus(payload(session), ctx(w.config, as("scratch", token)))).toBe("Orrery · Scratch · 42 msgs · recording");
+	});
+
+	it("speaks for the agent and token its Grok was started with, never the row's own: another agent or token, or a start that can't be read, prints nothing", () => {
+		const w = world();
+		remember(w.scratch, 3);
+		remember(w.other, 5);
+		const session = randomUUID();
+		const token = started(w.config, w.scratch, session);
+		// Other's token claimed for this Grok too (no record, mode or holder of its own).
+		const other = started(w.config, w.other, randomUUID(), { record: false, mode: "none", beat: "none" });
+		const grok = as("Scratch", token);
+		// The honest row: its environment is its Grok's.
+		expect(grokStatus(payload(session), ctx(w.config, grok))).toBe("Orrery · Scratch · 3 msgs · recording");
+		// The same Grok, the row's own environment naming another agent (whose token this Grok holds too), another token, or none.
+		for (const own of [as("Other", other), as("Scratch", newToken()), { ORRERY_AGENT: "Scratch" }]) {
+			expect(grokStatus(payload(session), ctx(w.config, own, { envOf: startedWith(grok) })), JSON.stringify(own)).toBe("");
+		}
+		// Its Grok's start environment can't be read: nothing.
+		expect(grokStatus(payload(session), ctx(w.config, grok, { envOf: () => undefined }))).toBe("");
 	});
 
 	it("an agent with no memory yet says so", () => {
@@ -414,7 +436,7 @@ describe("orrery grok-status", () => {
 				config: w.config,
 				env,
 				grokPid: GROK,
-				envOf: () => ({ GROK_HOME: home.home }),
+				envOf: startedWith(env),
 				cwdOf: () => w.scratch.folder,
 				startHolder,
 				modeWaitMs: 200,

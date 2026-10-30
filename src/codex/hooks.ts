@@ -22,6 +22,9 @@
  * Codex runs a hook through a pipe, so the agent's own shell (or another tool's: Claude Code's Bash inherits a launch's
  * ORRERY_AGENT and token) can run this command with made-up input, and nothing about the caller tells them apart (spec
  * 2026-10-18-agent-permissions §3c). So no event changes what such a call could abuse:
+ * - Whose session it is comes from the Codex process's own start environment (src/codex/pick.ts launchedEnv), never
+ *   from the hook's own: a hook whose own ORRERY_AGENT or token isn't the one Codex was started with (the agent's shell
+ *   naming another agent), or whose Codex's can't be read, decides, claims, records and spools nothing.
  * - SessionStart takes a session only when this Codex holds its rollout open, found by the session's id under Codex's
  *   own folder, and the rollout says it is a person's own thread (not a spawned agent's), before it decides, claims or
  *   records anything: no other process can name a session. A Codex older than 0.162.1 doesn't say who started a turn,
@@ -51,7 +54,7 @@ import { settleView } from "../claude/mod-view.ts";
 import { summaryNotice, updateNotice } from "../claude/notices.ts";
 import { holderLog, validSession } from "../claude/paths.ts";
 import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
-import { codexAgent } from "./pick.ts";
+import { codexAgent, LAUNCH_VARIABLES, launchedEnv, startEnvOf } from "./pick.ts";
 import { codexSessionOf, recordCodexSession } from "./resume.ts";
 import { readCodexCheck } from "./check.ts";
 import { attributesTurns, codexHome, findRollout, holdsOpen, MIN_CODEX, type OpenFile, readerStart, rolloutThread } from "./rollout.ts";
@@ -97,6 +100,11 @@ export interface CodexHookContext {
 	readonly updateNotices?: boolean;
 	/** How a coding tool's session that is no agent's is looked for (src/agent/plain-nested.ts); tests pass their own. */
 	readonly plain?: PlainDeps;
+	/**
+	 * Named variables of the environment a process was started with (default src/codex/pick.ts startEnvOf): whose session
+	 * this is comes from Codex's process's.
+	 */
+	readonly envOf?: (pid: number, names: readonly string[]) => Readonly<Record<string, string>> | undefined;
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -335,6 +343,15 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 /** The hook's stdout for `event` (an empty string: nothing to say). An event it does not record throws. */
 export async function runCodexHook(event: string, stdin: string, ctx: CodexHookContext): Promise<string> {
 	if (!(CODEX_RECORD_EVENTS as readonly string[]).includes(event)) throw new Error(`unknown hook event ${event}; expected one of ${[...CODEX_RECORD_EVENTS, "pre-tool-use"].join(", ")}`);
+	// Whose session it is: ORRERY_AGENT and its token as Codex's process was started with them, never this hook's own
+	// (module doc).
+	const launched = launchedEnv("codex", ctx.env, (ctx.envOf ?? startEnvOf)(ctx.codexPid, LAUNCH_VARIABLES));
+	if ("refused" in launched) return event === "session-start" ? JSON.stringify({ systemMessage: `Orrery: can't tell which agent this Codex is (${safeText(launched.refused)}), so it opens no memory and records nothing.` }) : "";
+	return runOwnHook(event, stdin, { ...ctx, env: launched.env });
+}
+
+/** The hook for `event`, with Codex's own identity in ctx.env (runCodexHook). */
+async function runOwnHook(event: string, stdin: string, ctx: CodexHookContext): Promise<string> {
 	let input: CodexHookInput;
 	try {
 		const parsed = JSON.parse(stdin) as unknown;

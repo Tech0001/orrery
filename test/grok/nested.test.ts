@@ -1,15 +1,17 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { AgentConfig } from "../../src/agent/config.ts";
 import { claimedBy, claimToken, newToken } from "../../src/agent/pick.ts";
 import { processArgv } from "../../src/agent/process.ts";
 import { forgetSession, liveSession, recordSession, type SessionTool } from "../../src/agent/sessions.ts";
-import { pendingEvents, readEvent } from "../../src/claude/spool.ts";
-import { grokAgent, grokNested } from "../../src/codex/pick.ts";
+import { listSessions, pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
+import { codexAgent, grokAgent, grokNested } from "../../src/codex/pick.ts";
 import { type GrokHookContext, runGrokHook } from "../../src/grok/hooks.ts";
 import { plainDeps, STARTS } from "../agent/plain-support.ts";
+import { startedWith } from "../claude/support.ts";
 import { cleanup, world } from "../pi/world.ts";
 import { type GrokHome, grokHomeIn, grokSession } from "./log-lines.ts";
 
@@ -82,8 +84,8 @@ const hookCtx = (w: ReturnType<typeof grokWorld>, extra: Partial<GrokHookContext
 	env: { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token, GROK_HOME: w.grok.home },
 	grokPid: process.pid,
 	grokParent: process.pid,
-	// The environment the grok process was started with: its sessions are under its GROK_HOME.
-	envOf: () => ({ GROK_HOME: w.grok.home }),
+	// The environment the grok process was started with: Birch's launch variables, and its sessions are under its GROK_HOME.
+	envOf: startedWith({ ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token, GROK_HOME: w.grok.home }),
 	cwdOf: () => w.grok.cwd,
 	startHolder: () => {
 		throw new Error("no holder may start");
@@ -107,6 +109,8 @@ const run = async (event: string, json: string, c: GrokHookContext): Promise<Ans
 const spooled = (dir: string, session: string) => pendingEvents(dir, id(session)).map((event) => readEvent(event.path)?.kind);
 
 const ATLAS = "Orrery: started inside Atlas's session (Claude Code), so this one opens no memory and records nothing.";
+/** SessionStart's answer to a hook whose ORRERY_AGENT or token isn't the one its Grok was started with. */
+const NOT_WHOSE = "Orrery: can't tell which agent this Grok is (ORRERY_AGENT or its token isn't the one this Grok was started with), so this session isn't recorded.";
 
 describe("a Grok started inside an agent's session (review focus 1)", () => {
 	it("SessionStart says why, claims no token, starts no holder and records no host; nothing is spooled", async () => {
@@ -226,5 +230,102 @@ describe("a Grok started from a coding tool's session that is no agent's", () =>
 			expect(grokAgent(w.config, { env, pid: process.pid, parent: process.pid, takeover: true, plain: plainDeps(process.pid, chain, w.dataDir) }), start).toMatchObject({ kind: "agent", agent: { name: "Birch" } });
 			expect(claimedBy(w.birch.dir, w.token), start).toBe(process.pid);
 		}
+	});
+});
+
+describe("whose a Grok's events are: its own start environment's ORRERY_AGENT and token, never the hook's", () => {
+	/** A recorder that answers recording at once, as the holder would. */
+	const recording = (agent: AgentConfig, session: string, nonce: string, since: number) => writeMode(agent.dir, session, { mode: "recording", pid: 1, claudePid: process.pid, nonce, since });
+	/** What a hook made by the agent's own shell, as `as`, could have changed for `agent`: its claims and its spool. */
+	const touched = (dir: string) => ({ claims: existsSync(join(dir, "claims")) ? readdirSync(join(dir, "claims")) : [], spool: listSessions(dir) });
+	/** The decision this Grok made, as recorded. */
+	const decision = (w: ReturnType<typeof grokWorld>) => {
+		const file = join(w.dataDir, "grok-processes", `${process.pid}.json`);
+		return existsSync(file) ? readFileSync(file, "utf8") : undefined;
+	};
+
+	it("a SessionStart the agent's own shell makes as another agent, with a fresh token, after Grok's own: claims, records and spools nothing for it, and the host record stays; nor does a prompt it repeats", async () => {
+		const w = grokWorld();
+		const atlas = w.config.agents.get("Atlas") as AgentConfig;
+		const c = hookCtx(w, { startHolder: recording });
+		expect(((await run("session-start", input("s1", { source: "new" }), c)) as Answer).systemMessage).toMatch(/^Orrery · Birch · .* · recording$/);
+		recorded.push({ dataDir: w.dataDir, pid: process.pid });
+		const host = liveSession(w.dataDir, process.pid);
+		expect(host).toMatchObject({ agent: "Birch", tool: "grok", grokSession: id("s1") });
+		const decided = decision(w);
+		// From Birch's shell (the hook's parent, past which Grok was reached): Atlas, a fresh token; Birch, another token; no
+		// agent at all. Grok's own start environment names Birch and its token.
+		const shell = await bystander();
+		const fresh = newToken();
+		for (const env of [
+			{ ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: fresh, GROK_HOME: w.grok.home },
+			{ ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: fresh, GROK_HOME: w.grok.home },
+			{ GROK_HOME: w.grok.home },
+		]) {
+			const forged = { ...c, env, grokParent: shell };
+			expect(await runGrokHook("session-start", input("s1", { source: "new" }), forged), JSON.stringify(env)).toBe(JSON.stringify({ systemMessage: NOT_WHOSE }));
+			expect(await runGrokHook("user-prompt-submit", input("s1", { prompt: "Not the person's words.", promptId: "p-0" }), forged)).toBe("");
+		}
+		expect(touched(atlas.dir)).toEqual({ claims: [], spool: [] });
+		expect(claimedBy(w.birch.dir, fresh)).toBeUndefined();
+		expect(liveSession(w.dataDir, process.pid)).toEqual(host);
+		expect(decision(w)).toBe(decided);
+		// The person types in Birch's Grok: its own hook spools the prompt, and a copy the shell makes as Atlas spools nothing.
+		await run("user-prompt-submit", input("s1", { prompt: "My plan.", promptId: "p-1" }), c);
+		await runGrokHook("user-prompt-submit", input("s1", { prompt: "My plan.", promptId: "p-1" }), { ...c, env: { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: fresh, GROK_HOME: w.grok.home }, grokParent: shell });
+		expect(spooled(w.birch.dir, "s1")).toEqual(["grok-log", "prompt"]);
+		expect(touched(atlas.dir)).toEqual({ claims: [], spool: [] });
+	});
+
+	it("in a plain grok, a SessionStart the agent's own shell makes as an agent claims, decides, records and spools nothing, nor does a prompt after it", async () => {
+		const w = grokWorld();
+		const atlas = w.config.agents.get("Atlas") as AgentConfig;
+		const plainEnv = { GROK_HOME: w.grok.home };
+		const c = hookCtx(w, { env: plainEnv, envOf: startedWith(plainEnv), startHolder: recording });
+		expect(((await run("session-start", input("s1", { source: "new" }), c)) as Answer).systemMessage).toBe("Orrery: this folder is Birch's, but this Grok wasn't opened as Birch, so it opens no memory and records nothing. Open it with orrery agent Birch --tool grok.");
+		const shell = await bystander();
+		const fresh = newToken();
+		for (const name of ["Atlas", "Birch"]) {
+			const forged = { ...c, env: { ORRERY_AGENT: name, ORRERY_AGENT_TOKEN: fresh, GROK_HOME: w.grok.home }, grokParent: shell };
+			expect(await runGrokHook("session-start", input("s1", { source: "new" }), forged), name).toBe(JSON.stringify({ systemMessage: NOT_WHOSE }));
+			expect(await runGrokHook("user-prompt-submit", input("s1", { prompt: "My plan.", promptId: "p-1" }), forged)).toBe("");
+		}
+		expect(touched(atlas.dir)).toEqual({ claims: [], spool: [] });
+		expect(touched(w.birch.dir)).toEqual({ claims: [], spool: [] });
+		expect(liveSession(w.dataDir, process.pid)).toBeUndefined();
+		expect(decision(w)).toBeUndefined();
+	});
+
+	it("a SessionStart never takes over a live host record of this Grok's that names another agent: before any claim", async () => {
+		const w = grokWorld();
+		hostRecord(w.dataDir, "Atlas", "grok", process.pid, id("s1"));
+		const before = liveSession(w.dataDir, process.pid);
+		const c = hookCtx(w, { startHolder: recording });
+		expect(await run("session-start", input("s1", { source: "new" }), c)).toEqual({ systemMessage: "Orrery: this Grok hosts Atlas's session, so this session isn't recorded as Birch's." });
+		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+		expect(liveSession(w.dataDir, process.pid)).toEqual(before);
+		expect(spooled(w.birch.dir, "s1")).toEqual([]);
+	});
+
+	it("the process's decision refuses an asker of the same start under another identity: no claim, no replace (Codex's too)", () => {
+		const w = grokWorld();
+		const atlas = w.config.agents.get("Atlas") as AgentConfig;
+		const birch = { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token };
+		expect(grokAgent(w.config, { env: birch, pid: process.pid, takeover: true })).toMatchObject({ kind: "agent", agent: { name: "Birch" } });
+		const decided = decision(w);
+		const fresh = newToken();
+		const other = "Orrery: this Grok already decided which agent it is under another ORRERY_AGENT or token, so this session runs without memory.";
+		for (const env of [{ ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: fresh }, { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: fresh }, {}]) {
+			expect(grokAgent(w.config, { env, pid: process.pid, takeover: true }), JSON.stringify(env)).toEqual({ kind: "refused", notice: other });
+		}
+		expect(claimedBy(atlas.dir, fresh)).toBeUndefined();
+		expect(claimedBy(w.birch.dir, fresh)).toBeUndefined();
+		expect(decision(w)).toBe(decided);
+		// The decision's own identity still finds its claim.
+		expect(grokAgent(w.config, { env: birch, pid: process.pid, takeover: true })).toMatchObject({ kind: "agent", agent: { name: "Birch" } });
+		// Codex's decisions, the same way.
+		expect(codexAgent(w.config, { env: birch, pid: process.pid, takeover: true })).toMatchObject({ kind: "agent", agent: { name: "Birch" } });
+		expect(codexAgent(w.config, { env: { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: fresh }, pid: process.pid, takeover: true })).toEqual({ kind: "refused", notice: other.replace("this Grok", "this Codex") });
+		expect(claimedBy(atlas.dir, fresh)).toBeUndefined();
 	});
 });

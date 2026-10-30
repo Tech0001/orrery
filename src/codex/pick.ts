@@ -20,8 +20,15 @@
  * exclusively): whose (ORRERY_AGENT and its token's sha256), when the process started, and what. Every later asker
  * reads it: a later SessionStart (a compaction, /clear, resume) neither judges again nor takes a claim over, so a Codex
  * started inside an agent's session stays without memory once that session ends. A record is this process's only when
- * it names the process's identity and start, both known; any other (another identity, another start: a reused pid) the
- * first asker replaces. A process whose start can't be read decides nothing and claims nothing: no memory (fail closed).
+ * it names the process's identity and start, both known; one of another start (a reused pid), or one that can't be read,
+ * the first asker replaces. One of this very start but another identity is no stale one: an asker whose ORRERY_AGENT or
+ * token isn't the one the process decided with (a hook the agent's own shell ran, naming another agent) is refused, and
+ * claims and replaces nothing. A process whose start can't be read decides nothing and claims nothing: no memory (fail
+ * closed).
+ *
+ * Whose an event is comes from the host's own start environment (launchedEnv, startEnvOf): a hook or memory server takes
+ * ORRERY_AGENT and its token as the Codex (or Grok) process was started with them, never as its own environment has them,
+ * which any shell may set; one whose own disagree is refused, and one with none there is no agent's.
  * A new decision prunes the records of processes that are gone. An agent whose decision can't be recorded stays the
  * agent (its claim of the token is durable) and SessionStart says so.
  * A nested or refused one whose decision can't be recorded claims nothing, and an asker that is no first one only finds
@@ -51,7 +58,7 @@ import { join } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { beingMade, publish, removeStale, stray, temporaryOf } from "../agent/exclusive.ts";
 import { AGENT_ENV, agentNamed, claimToken, refusedNotice, TOKEN_ENV, tokenForm, tokenHeld } from "../agent/pick.ts";
-import { processAlive } from "../agent/process.ts";
+import { processAlive, processEnv } from "../agent/process.ts";
 import { type PlainDeps, plainNested } from "../agent/plain-nested.ts";
 import { insideSession, liveSession, type PlainFound, plainFields, processStart, recordedPlain, SESSION_TOOLS, type SessionRecord, type SessionTool } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
@@ -100,6 +107,36 @@ export interface CodexAsker {
 	readonly session?: string;
 	/** How a coding tool's session that is no agent's is looked for (src/agent/plain-nested.ts); tests pass their own. */
 	readonly plain?: PlainDeps;
+}
+
+/** The variables of a host's start environment that say whose session it is: ORRERY_AGENT and its token. */
+export const LAUNCH_VARIABLES: readonly string[] = [AGENT_ENV, TOKEN_ENV];
+
+/**
+ * The variables `names` of the environment the host process `pid` was started with (src/agent/process.ts processEnv):
+ * Linux's /proc/<pid>/environ; on macOS ps's words after the process's arguments (Grok's --rules hold the agent's memory),
+ * and only when they can't be read two ways (a variable standing twice, or a value a space cut). Undefined when it can't
+ * be read so.
+ */
+export function startEnvOf(pid: number, names: readonly string[]): Readonly<Record<string, string>> | undefined {
+	return processEnv(pid, names, { withoutArgs: true, unambiguous: true });
+}
+
+/**
+ * The environment an event of `host`'s process is judged by (module doc): the event's own, `env`, with ORRERY_AGENT and
+ * its token as `started` (the process's start environment, startEnvOf) has them, set or not. Or why not: that
+ * environment couldn't be read, or the event's own names another agent or token than it (a hook the agent's own shell
+ * ran, as another agent): nothing such an event says is taken.
+ */
+export function launchedEnv(host: PickHost, env: NodeJS.ProcessEnv, started: Readonly<Record<string, string>> | undefined): { readonly env: NodeJS.ProcessEnv } | { readonly refused: string } {
+	const label = HOSTS[host].label;
+	if (started === undefined) return { refused: `the environment this ${label} was started with can't be read` };
+	const agent = (from: Readonly<Record<string, string | undefined>>) => from[AGENT_ENV]?.trim() ?? "";
+	const token = (from: Readonly<Record<string, string | undefined>>) => from[TOKEN_ENV] ?? "";
+	if (agent(env) !== agent(started) || token(env) !== token(started)) return { refused: `ORRERY_AGENT or its token isn't the one this ${label} was started with` };
+	const { [AGENT_ENV]: _agent, [TOKEN_ENV]: _token, ...rest } = env;
+	const own = (name: string) => (started[name] === undefined ? {} : { [name]: started[name] });
+	return { env: { ...rest, ...own(AGENT_ENV), ...own(TOKEN_ENV) } };
 }
 
 /** Started inside a session whose agent and tool nothing proves: what a check that can't judge says (fail closed). */
@@ -178,6 +215,15 @@ function identityOf(env: NodeJS.ProcessEnv, pid: number): Identity | undefined {
 /** The same agent, token and start. */
 const sameIdentity = (recorded: Identity, asker: Identity) => recorded.agent === asker.agent && recorded.token === asker.token && recorded.start === asker.start;
 
+/** A decision this very process made (the same start) under another identity than the asker's (module doc). */
+const anotherIdentity = (found: ReturnType<typeof readDecision>, asker: Identity) => found !== undefined && found !== "unreadable" && found.identity.start === asker.start && !sameIdentity(found.identity, asker);
+
+/** What an asker gets whose ORRERY_AGENT or token isn't the one its process decided with: no memory, no claim. */
+const otherIdentity = (host: PickHost): CodexPicked => ({
+	kind: "refused",
+	notice: `Orrery: this ${HOSTS[host].label} already decided which agent it is under another ORRERY_AGENT or token, so this session runs without memory.`,
+});
+
 /** A decision file's record: undefined when there is none; "unreadable" when there is one that is no record. */
 function readDecision(file: string): { readonly identity: Identity; readonly decision: Decision } | "unreadable" | undefined {
 	let value: Record<string, unknown>;
@@ -210,7 +256,8 @@ function ownDecision(host: PickHost, config: HarnessConfig, pid: number, identit
 
 /**
  * Records a decision whole, published exclusively (src/agent/exclusive.ts): true, "exists" when another asker of the
- * process recorded first, or the error's text. A stale record (`replace`: another identity's) is taken down first.
+ * process recorded first, or the error's text. A stale record (`replace`: another start's, a reused pid's, or one that
+ * can't be read) is taken down first; one of this very start, whoever's, never is.
  */
 function recordDecision(host: PickHost, config: HarnessConfig, pid: number, identity: Identity, decision: Decision, replace: boolean): true | "exists" | string {
 	const file = decisionFile(host, config, pid);
@@ -220,10 +267,10 @@ function recordDecision(host: PickHost, config: HarnessConfig, pid: number, iden
 		const content = `${JSON.stringify({ ...identity, ...decision })}\n`;
 		writeFileSync(temporary, content, { flag: "wx", mode: 0o600 });
 		if (replace) {
-			// Another identity's, or one this version can't read (no start): stale.
+			// Another start's (a reused pid's), or one this version can't read (no start): stale.
 			removeStale(file, (moved) => {
 				const found = readDecision(moved);
-				return found === undefined || found === "unreadable" || !sameIdentity(found.identity, identity);
+				return found === undefined || found === "unreadable" || found.identity.start !== identity.start;
 			});
 		}
 		return publish(temporary, file, content);
@@ -298,15 +345,19 @@ function hostAgent(host: PickHost, config: HarnessConfig, asking: CodexAsker): C
 	const settled = (decision: Decision) => (decision.kind === "nested" ? nestedPick(decision) : claimed(host, config, asking, false));
 	const own = read(recorded);
 	if (own !== undefined) return settled(own);
+	// This very process decided under another identity (module doc): nothing is claimed or replaced.
+	if (anotherIdentity(recorded, identity)) return otherIdentity(host);
 	// The process's first decision: before its claim, whether this Codex was started inside an agent's session.
 	prune(host, config, asking.alive ?? processAlive);
 	const pick = hostNested(host, config, asking.env, asking.pid, asking.plain) ?? claimed(host, config, asking, true);
 	const written = recordDecision(host, config, asking.pid, identity, toDecision(pick), recorded !== undefined);
 	if (written === true) return pick;
 	if (written === "exists") {
-		// Another asker of this process decided first: its decision holds.
-		const theirs = read(readDecision(decisionFile(host, config, asking.pid)));
+		// Another asker of this process decided first: its decision holds, and one under another identity refuses this one.
+		const first = readDecision(decisionFile(host, config, asking.pid));
+		const theirs = read(first);
 		if (theirs !== undefined) return settled(theirs);
+		if (anotherIdentity(first, identity)) return otherIdentity(host);
 	}
 	// Not recorded: an agent's own claim keeps it the agent's (SessionStart says so). A nested or refused one claimed
 	// nothing; an asker that is no first one (a compaction, /clear) can only find a claim, so it stays without memory.

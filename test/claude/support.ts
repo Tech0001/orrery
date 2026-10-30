@@ -226,6 +226,14 @@ export function cleanEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
 	return { ...Object.fromEntries(kept), HOME: scratchHome(), ORRERY_RELEASES_URL: "http://127.0.0.1:9/releases", ...extra };
 }
 
+/**
+ * A host process's start environment, as src/codex/pick.ts startEnvOf reads one: the variables asked for that `env` sets.
+ * For a hook context whose host (a Codex or a Grok) was started with `env`, as `orrery agent` starts one.
+ */
+export function startedWith(env: Readonly<Record<string, string | undefined>>): (pid: number, names: readonly string[]) => Readonly<Record<string, string>> {
+	return (_pid, names) => Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, env[name] as string]])));
+}
+
 /** Runs `orrery claude-hook <event>` as Claude Code does: the input as JSON on stdin, only the given environment. */
 export function hookCli(event: string, input: object, env: Record<string, string>): SpawnSyncReturns<string> {
 	const c = cliCommand(["claude-hook", event]);

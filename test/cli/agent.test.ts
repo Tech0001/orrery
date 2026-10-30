@@ -13,7 +13,7 @@ import { type CodexGate, WITHOUT_ORRERY_QUESTION, WITHOUT_ORRERY_SAID } from "..
 import { runCodexHook } from "../../src/codex/hooks.ts";
 import { CODEX_HOOKS, trustKey } from "../../src/codex/launch.ts";
 import { hookShell } from "../../src/codex/shell.ts";
-import { cleanEnv, cliCommand, statusOf } from "../claude/support.ts";
+import { cleanEnv, cliCommand, startedWith, statusOf } from "../claude/support.ts";
 import { systemCommand } from "../install/support.ts";
 import { tempDir } from "../agent/support.ts";
 import { fakeOpenCode } from "../opencode/fake-opencode.ts";
@@ -404,6 +404,8 @@ describe("orrery agent", () => {
 				const hookCtx = {
 					config: loadConfig(s.config),
 					env: { ...plan.env, CODEX_HOME: codexHome.home },
+					// The Codex was started with the launch's environment.
+					envOf: startedWith(plan.env),
 					home: s.dir,
 					codexPid: pid,
 					modeWaitMs: 100,
