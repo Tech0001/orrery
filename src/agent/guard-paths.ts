@@ -99,13 +99,16 @@
  *   command the text doesn't hold gets past the grok command rule too (guard-rules.ts grokCommandIn): one run through
  *   an alias, a function or a link of another name, a program name built at run time (`P=grok; $P update`), a brace
  *   sequence in the name (`{g..g}rok`), or a script or file another program reads (`sh x.sh`, a pager or a --pre in
- *   git's or rg's config). So does one an alias or a function runs under the name of a program the rule lets name grok
- *   (echo, grep, git commit and the rest), one an earlier call left in Grok's persistent shell too: the rule reads the
- *   text, not what a name stands for in the shell. Grok text a program is handed in the text itself (`eval grok …`,
- *   `sh -c "grok …"`, `echo grok … | sh`, ssh, npx) is refused: only a program that never runs its arguments may name
- *   grok. A word of Grok's built whole at run time (`grok $C`, `grok mcp $SUB orrery`) is refused, as it may be any.
- *   Grok's commands are Grok 1.0.70's: a later Grok's new command, or a read-only one's new option that writes, passes
- *   until Orrery refuses it, unless its name is one refused already.
+ *   git's or rg's config). So does one that environment or shell state an earlier command set makes a program the rule
+ *   lets name grok (echo, grep, git commit and the rest) run, in the same text or in an earlier call (Grok's shell is
+ *   persistent): an alias or a function under its name (`alias echo='sh -c'`), an exported editor or pager (`export
+ *   GIT_EDITOR=sh; git commit -e …`), `printf -v PS4 …; set -x`, `hash -p …`, or a git or gh alias a case variant
+ *   reaches (`git COMMIT` runs alias.commit; the rule reads text in lower case): the rule reads the text, not what a
+ *   name stands for in the shell. Grok text a program is handed in the text itself (`eval grok …`, `sh -c "grok …"`,
+ *   `echo grok … | sh`, ssh, npx) is refused: only a program that never runs its arguments may name grok. A word of
+ *   Grok's built whole at run time (`grok $C`, `grok mcp $SUB orrery`) is refused, as it may be any. Grok's commands
+ *   are Grok 1.0.70's: a later Grok's new command, or a read-only one's new option that writes, passes until Orrery
+ *   refuses it, unless its name is one refused already.
  * - A path to Grok's folder assembled from variables, parameter expansions or substitutions gets through, from a
  *   session started inside Grok's folder too (`$X/../hooks` or `$(pwd)/../config.toml` from a call run in an open part,
  *   a ".." held in a variable, `P=<home>/skills; … ${P%/skills}/hooks/x`), as a path split into pieces or a script the

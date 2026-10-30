@@ -1691,7 +1691,7 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 			'git commit -m "feat(grok): add update docs"',
 			'git commit -m "Fix #12: grok update"',
 			"echo grok update",
-			"rg -n 'grok mcp disable' src",
+			"grep -rn 'grok mcp disable' src",
 			"cd repo && git log grok -- install.sh",
 		]);
 		refusesEach([
@@ -1731,7 +1731,7 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 		]);
 	});
 
-	it("reads grok as run unless its command's program never runs its arguments: echo, printf, cat, ls, head, tail, wc, grep, rg, jq, and git's and gh's commands that run none (each one its output is piped into too); a case arm, eval, sh -c, npx, repeat, watch and every other program run it", () => {
+	it("reads grok as run unless its command's program never runs its arguments: echo, printf, cat, ls, head, tail, wc, grep, jq, and git's and gh's commands that run none (each one its output is piped into too); a case arm, eval, sh -c, npx, repeat, watch and every other program run it, one that would only print it too (python3 -c, rg, sed: accepted over-refusal)", () => {
 		refusesEach([
 			// A case arm, glued, spaced or in parentheses: its pattern is no program, even one named like a program on the list.
 			["case $x in a) grok update;; esac", "grok update"],
@@ -1754,14 +1754,20 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 			["echo grok update > >(sh)", "grok update"],
 			["./echo grok update", "grok update"],
 			// git and gh only with their commands that run none of their words (git -C reads as -c: the readings are lower
-			// case); rg only without --pre or --hostname-bin, which run a program.
+			// case).
 			['git -c core.pager="grok update" log', "grok update"],
 			['git rebase -x "grok update" main', "grok update"],
 			['git -C repo commit -m "grok update"', "grok update"],
 			['git --no-pager log --grep "grok update"', "grok update"],
 			["gh x grok update", "grok update"],
+			// rg's --pre and --hostname-bin run a program, written as rg reads them or not, so rg is off the list (accepted
+			// over-refusal for an rg that only searches).
 			["rg --pre grok x update", "grok update"],
 			["rg --hostname-bin=grok update x", "grok update"],
+			['rg --p""re grok x update', "grok update"],
+			["rg --p\\re grok x update", "grok update"],
+			['rg --hostname-b""in=grok update x', "grok update"],
+			["rg -n 'grok update' src | head -5", "grok update"],
 			// sed's e command runs its text, so sed is off the list (accepted over-refusal for a sed that only prints).
 			["sed '1e grok update' notes.md", "grok update"],
 			// Words before the program are none of its arguments, and an assignment before it may make it run another
@@ -1778,7 +1784,7 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 			'echo "grok update"',
 			"printf '%s\\n' 'grok mcp disable orrery'",
 			'grep -rn "grok update" docs',
-			"rg -n 'grok update' src | head -5",
+			"grep -rn 'grok update' src | head -5",
 			'git log --oneline | grep "grok update" | wc -l',
 			'gh pr create --title "grok update" --body-file pr.md',
 			'gh issue comment 3 --body "grok mcp disable orrery"',
@@ -1788,6 +1794,48 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 			"cat notes.md; ls grok update",
 			"jq -r '.x' grok update",
 			"head -5 grok update && tail -5 grok update",
+		]);
+	});
+
+	it("reads text as a shell does: a pipe's next stage on the next line, a closing quote with ;, |, &, <, > or # glued after it, a blank escaped after grok's name, and a brace group that is a word of its own (each alternative a word); a listed program may end its pipeline with no words", () => {
+		refusesEach([
+			// A pipe's next stage may stand on the next line.
+			["echo grok update |\ncat | sh", "grok update"],
+			["printf 'grok update' |\ngrep grok | sh", "grok update"],
+			["git log --grep 'grok update' |\n head -5 | sh", "grok update"],
+			["echo grok update |\ncat > >(sh)", "grok update"],
+			// Grok in another program's quoted text, its command's end glued after the closing quote.
+			["sh -c 'grok update'; true", "grok update"],
+			["eval 'grok update';ls", "grok update ls"],
+			["echo 'grok update'|sh", "grok update"],
+			['bash -c "grok update">/dev/null', "grok update"],
+			["sh -c 'grok --trust';:", "grok --trust"],
+			["sh -c 'cd /tmp && grok update';echo done", "grok update"],
+			["timeout 5 sh -c 'grok update';:", "grok update"],
+			['eval "grok update"&', "grok update"],
+			// An escaped blank after grok's name: eval, sh -c, a pipe into sh and ssh read it as a blank.
+			["sh -c grok\\ update", "grok update"],
+			["eval grok\\ mcp\\ disable\\ orrery", "grok mcp disable"],
+			["echo grok\\ update | sh", "grok update"],
+			["sh -c 'grok'\\ update", "grok update"],
+			// A brace group that is a word of its own is a word per alternative: {grok,update} is grok update.
+			["{grok,update}", "grok update"],
+			["{grok,mcp,disable,orrery}", "grok mcp disable"],
+			["eval {grok,update}", "grok update"],
+			["echo {grok,update} | sh", "grok update"],
+			["{grok,--trust}", "grok --trust"],
+			["{sh,-c,grok\\ update}", "grok update"],
+		]);
+		opensEach([
+			// A listed program ending its pipeline with no words of its own.
+			'grep -rn "grok update" src | head',
+			"echo grok update | cat",
+			"git log --oneline | grep 'grok update' | head",
+			"grep -c 'grok update' x | cat\nls",
+			// A brace group's words as a listed program's, and a group with text glued to it, which is that text on each
+			// alternative (docs/grok docs/update).
+			"echo {grok,update}",
+			"mkdir -p docs/{grok,update}",
 		]);
 	});
 

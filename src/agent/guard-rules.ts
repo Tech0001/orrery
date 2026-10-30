@@ -830,13 +830,14 @@ const SHELL_PLAIN = "[^\\s\"'\\\\$`;|&()<>]";
  */
 const RUNS_AS_COMMAND = new RegExp(`^(?:[\\s!{]|(?:[a-z_][a-z0-9_]*=)?\\$?\\(|(?:[a-z_][a-z0-9_]*=${SHELL_PLAIN}*|then|do|else|env|exec|command|nohup|nice|time|timeout|-${SHELL_PLAIN}*|[0-9][0-9.]*[a-z]?)(?=\\s))*(?:${SHELL_PLAIN}*\\/)?$`);
 /**
- * A command's program past plain redirections (sticky), when it never runs its arguments: a bare name (a path may be
- * another program); git's and gh's only with a command that runs none (git -c, rebase -x, grep -O and gh's extensions
- * do, as sed's e command does; the readings are lower case, so git -C is -c); rg in group 1 (namesOnly reads its
- * options); and Grok's own, whose words this rule reads from the program itself. No assignment may stand before it: one
- * may make the program run another (GIT_EDITOR=sh git commit -e, GIT_PAGER, GH_EDITOR, LESSOPEN), so any loses this.
+ * A command's program (sticky), past blank lines (a pipe's next stage may start on the next line) and plain
+ * redirections on its own line, when it never runs its arguments, then a blank or its command's end: a bare name (a
+ * path may be another program); git's and gh's only with a command that runs none (git -c, rebase -x, grep -O and gh's
+ * extensions do, as sed's e command and rg's --pre do; the readings are lower case, so git -C is -c); and Grok's own,
+ * whose words this rule reads from the program itself. No assignment may stand before it: one may make the program run
+ * another (GIT_EDITOR=sh git commit -e, GIT_PAGER, GH_EDITOR, LESSOPEN), so any loses this.
  */
-const READS_ONLY = new RegExp(`(?:\\s*${REDIRECTION.source}\\s*${SHELL_PLAIN}+(?=\\s))*\\s*(?:echo|printf|cat|ls|head|tail|wc|grep|jq|(rg)|git[ \\t]+(?:commit|log|show|diff|status|add|tag)|gh[ \\t]+(?:pr|issue|release|search|api)|grok(?:-[a-z]+-[a-z0-9_]+)?)(?=[ \\t])`, "y");
+const READS_ONLY = new RegExp(`\\s*(?:${REDIRECTION.source}[ \\t]*${SHELL_PLAIN}+[ \\t]+)*(?:echo|printf|cat|ls|head|tail|wc|grep|jq|git[ \\t]+(?:commit|log|show|diff|status|add|tag)|gh[ \\t]+(?:pr|issue|release|search|api)|grok(?:-[a-z]+-[a-z0-9_]+)?)(?=[ \\t|;&\\n]|$)`, "y");
 /** A word that is one quoted string: Grok's prompt where Grok's program runs as the command and it holds a blank. */
 const QUOTED = /^(?:"(?:[^"\\]|\\[^])*"|'[^']*')$/;
 /** A parameter expansion or a substitution in a word ($X, ${…}, $(…), `…`; a bare $, or one cut short, too). */
@@ -880,7 +881,8 @@ function pastWord(form: string, at: number): number {
  * (grok$X) is a word of its own, and a word ending at a $( is written $(…). A backquote past the first is written `…`:
  * the first may close a substitution the program runs in (x=`grok --version`), but one past it is a substitution's
  * among Grok's words (grok `cat x`). `closes`: the program surely runs in backquotes, so the first closes them and its
- * command. Undefined when the program's word goes on past its name (grok's, grokfile): no program.
+ * command. Undefined when the program's word goes on past its name (grok's, grokfile): no program. An escaped blank
+ * ends it, as eval, sh -c, a pipe into sh and ssh read it (grok\ update).
  */
 function grokWords(form: string, at: number, closes: boolean): { readonly words: readonly string[]; readonly end: number } | undefined {
 	let i = at;
@@ -891,7 +893,7 @@ function grokWords(form: string, at: number, closes: boolean): { readonly words:
 	for (; !wordEnds(form.charAt(i)); i++) {
 		const c = form.charAt(i);
 		if (c === "\\") {
-			if (form.charAt(i + 1) === "\n" || ((ESCAPE_AT.lastIndex = i), ESCAPE_AT.test(form))) break;
+			if (form.charAt(i + 1) === "\n" || blank(form.charAt(i + 1)) || ((ESCAPE_AT.lastIndex = i), ESCAPE_AT.test(form))) break;
 			return undefined;
 		}
 		if (c === "$" || c === ",") {
@@ -948,8 +950,9 @@ function namedBy(text: string | undefined, names: readonly string[]): string[] {
 /**
  * A word of Grok's as the words it may stand for: quotes and escapes gone, split at the blanks a quoted part holds, and
  * a brace group (from its first brace to its last) and what is built at run time read as a glob's *; a piece built
- * whole at run time is left out (builtAtRunTime judges the word). Split at a parenthesis or a comma too, which no name
- * of Grok's holds: a quote that closes another's text reads as one that opens (python3 -c "print('grok update')").
+ * whole at run time is left out (builtAtRunTime judges the word). Split at a parenthesis, a comma, ;, |, &, <, > or #
+ * too, which no name of Grok's holds: a quote that closes another's text reads as one that opens, so the word runs on
+ * past that text's end (python3 -c "print('grok update')", sh -c 'grok update';true).
  */
 function grokPieces(word: string): string[] {
 	const pieces: string[] = [];
@@ -957,7 +960,7 @@ function grokPieces(word: string): string[] {
 		const open = piece.indexOf("{");
 		const close = piece.lastIndexOf("}");
 		const braced = open !== -1 && close > open && /,|\.\./.test(piece.slice(open, close)) ? `${piece.slice(0, open)}*${piece.slice(close + 1)}` : piece;
-		for (const part of braced.split(/[(),]+/)) if (!/^\0*$/.test(part)) pieces.push(part.replace(/\0+/g, "*"));
+		for (const part of braced.split(/[(),;|&<>#]+/)) if (!/^\0*$/.test(part)) pieces.push(part.replace(/\0+/g, "*"));
 	}
 	return pieces;
 }
@@ -1065,17 +1068,18 @@ function grokRefused(words: readonly string[], prompts: boolean): GrokCommand | 
 
 /**
  * Where a reading's command from `from` only names Grok's program: its program's end when it never runs its arguments
- * (READS_ONLY; rg without --pre or --hostname-bin), nor does any its output is piped into (echo grok update | sh), and
- * no tangle (separatorsOf) stands before that pipeline's end; else -1. Reading costs `work`.
+ * (READS_ONLY), nor does any its output is piped into (echo grok update | sh; a stage may start on the next line, so
+ * each ends at the first separator past its program), and no tangle (separatorsOf) stands before that pipeline's end;
+ * else -1. Reading costs `work`.
  */
 function namesOnly(form: string, from: number, separators: readonly number[], tangle: number, work: { left: number }): number {
 	let end = -1;
 	for (let at = from; ; at++) {
 		READS_ONLY.lastIndex = at;
-		const program = READS_ONLY.exec(form);
-		const stop = separators[firstFrom(separators, at)] ?? form.length;
+		if (!READS_ONLY.test(form)) return -1;
+		const stop = separators[firstFrom(separators, READS_ONLY.lastIndex)] ?? form.length;
 		work.left -= stop - at + 1;
-		if (program === null || tangle < stop || work.left < 0 || (program[1] !== undefined && /--pre|--hostname-bin/.test(form.slice(at, stop)))) return -1;
+		if (tangle < stop || work.left < 0) return -1;
 		if (end === -1) end = READS_ONLY.lastIndex;
 		if (form.charAt(stop) !== "|" || form.charAt(stop + 1) === "|") return end;
 		at = stop;
@@ -1122,7 +1126,7 @@ function grokCommandIn(form: string, prompts: boolean, whole: boolean): GrokComm
 const GROK_CLI_READS_NAMED =
 	"grok help, version, models, inspect, completions, usage, du, mcp list, plugin list, details and validate, plugin marketplace list, sessions list and search, worktree list and show, and a command's help (grok <command> --help, grok help <command>)";
 /** How each refusal ends: where to run it, and that text naming it is refused too. */
-const GROK_RUN_IT = "Run it in your own terminal. Text that names it is refused too, but as the words of a program that never runs them (echo, printf, cat, ls, head, tail, wc, grep, rg, jq, git commit, log, show, diff, status, add or tag, gh pr, issue, release, search or api) with no assignment before it and no substitution, comment, here-document, parenthesis or brace before its end: give git a message that names it from a file (git commit -F).";
+const GROK_RUN_IT = "Run it in your own terminal. Text that names it is refused too, but as the words of a program that never runs them (echo, printf, cat, ls, head, tail, wc, grep, jq, git commit, log, show, diff, status, add or tag, gh pr, issue, release, search or api) with no assignment before it and no substitution, comment, here-document, parenthesis or brace before its end: give git a message that names it from a file (git commit -F).";
 
 /** Why shell text that runs one of them is refused (grokCommandIn), in any session. */
 export const GROK_CLI_REFUSED = ({ command, why }: GrokCommand) =>
@@ -1141,8 +1145,10 @@ export function runsGrokCommand(text: string): GrokCommand | undefined {
 
 /**
  * grokCommandIn over shell text `text`, read as `reading`: as written, and with its $'…' decoded; with a brace group,
- * every reading of it (each brace alternative's reads the quotes away, so no prompt is quoted there), and its pieces,
- * where a program is never only named (a piece starts anywhere in a command).
+ * every reading of it (each brace alternative's reads the quotes away, so no prompt is quoted there), the text with
+ * each group that is a word of its own read in place as its alternatives (BRACE_WORD: {grok,update} is grok update;
+ * no prompt is quoted there either), and its pieces, where a program is never only named (a piece starts anywhere in a
+ * command).
  */
 function grokCommandOf(text: string, reading: Reading): GrokCommand | undefined {
 	const lower = text.toLowerCase();
@@ -1152,6 +1158,9 @@ function grokCommandOf(text: string, reading: Reading): GrokCommand | undefined 
 		const found = grokCommandIn(form, !braced, true);
 		if (found !== undefined) return found;
 	}
+	const inPlace = lower.replace(BRACE_WORD, (_group, body: string) => body.replaceAll(",", " "));
+	const found = inPlace === lower ? undefined : grokCommandIn(inPlace, false, true);
+	if (found !== undefined) return found;
 	for (const piece of braced ? reading.pieces : []) {
 		const found = grokCommandIn(piece, false, false);
 		if (found !== undefined) return found;
@@ -1547,6 +1556,12 @@ const MAX_BRACE_WORD = 4096;
 const WORD = /[^\s;|&()<>`]+/g;
 const BRACE_ONE = /\{[^{}\s,]*(?:,[^{}\s,]*)+\}/;
 const BRACE = /\{([^{}\s,]*(?:,[^{}\s,]*)+)\}/g;
+/**
+ * A brace group that is a word of its own (a blank, a command's end, a parenthesis, < or >, a backquote, a quote or the
+ * text's edge on either side), escapes in it too, which bash makes a word per alternative ({sh,-c,grok\ update} is sh
+ * -c grok\ update); one with text glued to it is that text on each.
+ */
+const BRACE_WORD = /(?<=^|[\s;|&()<>`"'])\{((?:[^{}\s,\\]|\\[^])*(?:,(?:[^{}\s,\\]|\\[^])*)+)\}(?=$|[\s;|&()<>`"'])/g;
 
 /** Each brace group read as alternative `pick` (the last one for a group with fewer). */
 function braces(text: string, pick: number): string {
