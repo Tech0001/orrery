@@ -4,6 +4,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, writeFileSync 
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { claimedBy, claimToken, newToken } from "../../src/agent/pick.ts";
+import { processArgv } from "../../src/agent/process.ts";
 import { forgetSession, liveSession, recordSession, type SessionTool } from "../../src/agent/sessions.ts";
 import { pendingEvents, readEvent } from "../../src/claude/spool.ts";
 import { grokAgent, grokNested } from "../../src/codex/pick.ts";
@@ -48,16 +49,29 @@ function hostRecord(dataDir: string, agent: string, tool: SessionTool, pid: numb
 	recorded.push({ dataDir, pid });
 }
 
-/** A live process that is no ancestor of this one; with `holds`, it has that file open for writing, as Grok holds a session's events.jsonl. */
-function bystander(holds?: string): number {
+/** What a bystander runs: its command line names it. */
+const BYSTANDER = "setTimeout(() => {}, 60_000)";
+
+/**
+ * A live process that is no ancestor of this one; with `holds`, it has that file open for writing, as Grok holds a
+ * session's events.jsonl. Returned once its command line reads as its own: spawn returns while the exec is still under
+ * way, when the command line reads empty (no Grok's, to Orrery) or as this test's.
+ */
+async function bystander(holds?: string): Promise<number> {
 	const fd = holds === undefined ? "ignore" : openSync(holds, "a");
+	let pid: number;
 	try {
-		const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: [fd, "ignore", "ignore"] });
+		const child = spawn(process.execPath, ["-e", BYSTANDER], { stdio: [fd, "ignore", "ignore"] });
 		children.push(child);
-		return child.pid as number;
+		pid = child.pid as number;
 	} finally {
 		if (typeof fd === "number") closeSync(fd);
 	}
+	for (const deadline = Date.now() + 5_000; !(processArgv(pid)?.join(" ").includes(BYSTANDER) ?? false); ) {
+		if (Date.now() > deadline) throw new Error(`bystander ${pid}'s command line never read as its own`);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	return pid;
 }
 
 const hosts = (dataDir: string): string[] => (existsSync(join(dataDir, "session-hosts")) ? readdirSync(join(dataDir, "session-hosts")) : []);
@@ -115,7 +129,7 @@ describe("a Grok started inside an agent's session (review focus 1)", () => {
 		const w = grokWorld();
 		// The Grok grokPid() reached, past this test's process (taken for a shell): it hosts Birch's other session.
 		w.grok.begin(id("s1"), { open: false });
-		const outer = bystander(join(w.grok.dir(id("s1")), "events.jsonl"));
+		const outer = await bystander(join(w.grok.dir(id("s1")), "events.jsonl"));
 		hostRecord(w.dataDir, "Birch", "grok", outer, id("outer-session"));
 		const c = hookCtx(w, { grokPid: outer, grokParent: process.pid });
 		expect(await run("session-start", input("s1", { source: "new" }), c)).toEqual({ systemMessage: "Orrery: started inside Birch's session (Grok), so this one opens no memory and records nothing." });
@@ -123,7 +137,7 @@ describe("a Grok started inside an agent's session (review focus 1)", () => {
 		expect(spooled(w.birch.dir, "s1")).toEqual([]);
 		expect(liveSession(w.dataDir, outer)).toMatchObject({ grokSession: id("outer-session") });
 		// Another tool's session there is no Grok of this session's either.
-		const pi = bystander();
+		const pi = await bystander();
 		hostRecord(w.dataDir, "Atlas", "pi", pi);
 		expect(grokAgent(w.config, { env: c.env, pid: pi, parent: process.pid, takeover: true, session: id("s1") })).toEqual({ kind: "nested", outer: "Atlas", tool: "pi" });
 	});
@@ -131,7 +145,7 @@ describe("a Grok started inside an agent's session (review focus 1)", () => {
 	it("past a shell that did not exec, its own session's record proves the Grok; with none yet (its first start) it decides as ever", async () => {
 		const w = grokWorld();
 		w.grok.begin(id("s1"), { open: false });
-		const grok = bystander(join(w.grok.dir(id("s1")), "events.jsonl"));
+		const grok = await bystander(join(w.grok.dir(id("s1")), "events.jsonl"));
 		const c = hookCtx(w, { grokPid: grok, grokParent: process.pid, startHolder: () => {} });
 		await run("session-start", input("s1", { source: "new" }), c);
 		expect(claimedBy(w.birch.dir, w.token)).toBe(grok);
@@ -143,7 +157,7 @@ describe("a Grok started inside an agent's session (review focus 1)", () => {
 
 	it("Grok's hook run from a Claude Code agent's shell (its token inherited) records nothing", async () => {
 		const w = grokWorld();
-		const other = bystander();
+		const other = await bystander();
 		hostRecord(w.dataDir, "Birch", "claude-code", other);
 		expect(claimToken(w.birch.dir, w.token, other)).toBe(true);
 		const c = hookCtx(w, { grokPid: other, grokParent: other, alive: (pid) => pid === other });

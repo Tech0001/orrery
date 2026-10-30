@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { type AgentConfig, type HarnessConfig, parseConfig } from "../../src/agent/config.ts";
 import { writeHolder } from "../../src/agent/handover.ts";
@@ -9,7 +10,6 @@ import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
 import { statusText } from "../../src/agent/status-text.ts";
 import { writeMode } from "../../src/claude/spool.ts";
 import { runGrokHook } from "../../src/grok/hooks.ts";
-import { GROK_LEADER_REFUSAL } from "../../src/grok/host.ts";
 import { grokStatus } from "../../src/grok/status.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { tempDir } from "../agent/support.ts";
@@ -112,6 +112,12 @@ const switchOff = (config: HarnessConfig, ...events: string[]) => {
 	writeFileSync(join(grokHomeOf(config), "disabled-hooks"), events.map((event) => `global/orrery:${event}[0].hooks[0]\n`).join(""));
 };
 const as = (agent: string, token: string) => ({ ORRERY_AGENT: agent, ORRERY_AGENT_TOKEN: token });
+/** A session id as Grok 1.0.70 makes them (seen live): a UUIDv7, the ms it was made at in its first 48 bits. */
+const uuidV7 = (ms: number) => {
+	const time = Math.floor(ms).toString(16).padStart(12, "0");
+	const random = randomUUID();
+	return `${time.slice(0, 8)}-${time.slice(8)}-7${random.slice(15, 18)}-${random.slice(19, 23)}-${random.slice(24)}`;
+};
 
 describe("statusText", () => {
 	it("says the agent, its count and its state, as Codex's and Claude Code's SessionStart say it", () => {
@@ -144,6 +150,18 @@ describe("orrery grok-status", () => {
 		expect(grokStatus(payload(session), ctx(w.config, as("Scratch", token)))).toBe("Orrery · Scratch · no memory yet · recording");
 	});
 
+	it("reads the message count alone, not the memory: summaries aren't loaded", () => {
+		const w = world();
+		remember(w.scratch, 6);
+		// A summary record a full load refuses: the row never loads summaries, so its count stands.
+		const raw = new DatabaseSync(join(w.scratch.dir, "memory.sqlite"));
+		raw.prepare("INSERT INTO tree (l, i, text, size) VALUES (?, ?, ?, ?)").run(1, 0, Buffer.from("summary"), 999);
+		raw.close();
+		const session = randomUUID();
+		const token = started(w.config, w.scratch, session);
+		expect(grokStatus(payload(session), ctx(w.config, as("Scratch", token)))).toBe("Orrery · Scratch · 6 msgs · recording");
+	});
+
 	it("read-only prints the reason", () => {
 		const w = world();
 		remember(w.scratch, 3);
@@ -161,18 +179,34 @@ describe("orrery grok-status", () => {
 		expect(grokStatus(payload(remote), ctx(w.config, as("Scratch", token)))).toBe("Orrery · Scratch · 3 msgs · read-only: laptop: moved to another[31m machine");
 	});
 
-	it("the agent named by the environment has no record for this session_id: `not recording: Grok didn't run Orrery's hooks; trust this folder (/hooks-trust)`", () => {
+	it("the agent named by the environment has no record for this session_id: `not recording: Orrery's SessionStart hasn't run for this session; resume it or start a new one`", () => {
 		const w = world();
 		remember(w.scratch, 5);
-		const hooksNeverRan = "Orrery · Scratch · 5 msgs · not recording: Grok didn't run Orrery's hooks; trust this folder (/hooks-trust)";
-		// Folder not trusted, or Orrery's hooks switched off: no SessionStart ran, so only the memory server's claim is there.
+		const notRun = "Orrery · Scratch · 5 msgs · not recording: Orrery's SessionStart hasn't run for this session; resume it or start a new one";
+		// SessionStart crashed or timed out (Grok goes on without it), or was switched on only after the session started: only
+		// the memory server's claim is there.
 		const token = newToken();
 		expect(claimToken(w.scratch.dir, token, GROK, () => true)).toBe(true);
-		expect(grokStatus(payload(randomUUID()), ctx(w.config, as("Scratch", token)))).toBe(hooksNeverRan);
-		// A record of this Grok that names another of its sessions, and nothing of this one: this one's hooks never ran either.
+		const later = { now: Date.now() + 60_000 };
+		expect(grokStatus(payload(randomUUID()), ctx(w.config, as("Scratch", token), later))).toBe(notRun);
+		// A record of this Grok that names another of its sessions, and nothing of this one: this one's SessionStart hasn't run either.
 		const first = randomUUID();
 		started(w.config, w.scratch, first, { token });
-		expect(grokStatus(payload(randomUUID()), ctx(w.config, as("Scratch", token)))).toBe(hooksNeverRan);
+		expect(grokStatus(payload(randomUUID()), ctx(w.config, as("Scratch", token), later))).toBe(notRun);
+		// Never the old advice: the folder is trusted (Grok quits rather than run an untrusted one beside a hook file).
+		expect(grokStatus(payload(randomUUID()), ctx(w.config, as("Scratch", token), later))).not.toMatch(/trust/);
+	});
+
+	it("with no record of this Grok's at all, a mode it left for the session is no other session of its own", () => {
+		const w = world();
+		remember(w.scratch, 5);
+		const session = randomUUID();
+		const token = started(w.config, w.scratch, session);
+		// The record is gone (taken down, or unreadable), though this Grok's mode for the session is there.
+		forgetSession(w.config.dataDir, GROK);
+		const out = grokStatus(payload(session), ctx(w.config, as("Scratch", token), { now: Date.now() + 60_000 }));
+		expect(out).toBe("Orrery · Scratch · 5 msgs · not recording: Orrery's SessionStart hasn't run for this session; resume it or start a new one");
+		expect(out).not.toContain("another of its sessions");
 	});
 
 	it("Orrery's hooks switched off in Grok's /hooks tab: the row says so, not to trust the folder, and never recording", () => {
@@ -247,6 +281,32 @@ describe("orrery grok-status", () => {
 		expect(grokStatus(payload(session), ctx(w.config, as("Scratch", token)))).toBe("Orrery · Scratch · no memory yet · not recording yet");
 	});
 
+	it("while SessionStart may still run (younger than its 15 s timeout), a session it hasn't recorded yet is not recording yet", () => {
+		const w = world();
+		remember(w.scratch, 5);
+		const yet = "Orrery · Scratch · 5 msgs · not recording yet";
+		const notRun = "Orrery · Scratch · 5 msgs · not recording: Orrery's SessionStart hasn't run for this session; resume it or start a new one";
+		// The launch: the token claimed (by the memory server or SessionStart), no record yet. Each side of 15 s from the claim.
+		const token = newToken();
+		expect(claimToken(w.scratch.dir, token, GROK, () => true)).toBe(true);
+		const claimed = statSync(join(w.scratch.dir, "claims", token)).mtimeMs;
+		const session = randomUUID();
+		expect(grokStatus(payload(session), ctx(w.config, as("Scratch", token), { now: claimed + 14_999 }))).toBe(yet);
+		expect(grokStatus(payload(session), ctx(w.config, as("Scratch", token), { now: claimed + 15_000 }))).toBe(notRun);
+		// /new or /clear (seen live): the claim is the launch's and the record names the session before, but the new
+		// session's id says when it began (Grok's ids are UUIDv7). Each side of 15 s from that.
+		started(w.config, w.scratch, randomUUID(), { token });
+		const began = claimed + 60_000;
+		const fresh = uuidV7(began);
+		expect(grokStatus(payload(fresh), ctx(w.config, as("Scratch", token), { now: began + 14_999 }))).toBe(yet);
+		expect(grokStatus(payload(fresh), ctx(w.config, as("Scratch", token), { now: began + 15_000 }))).toBe(notRun);
+		// An id that is no UUIDv7 tells no time: only the claim's counts.
+		expect(grokStatus(payload(randomUUID()), ctx(w.config, as("Scratch", token), { now: began }))).toBe(notRun);
+		// A hook of Orrery's switched off is said at once.
+		switchOff(w.config, "session_start");
+		expect(grokStatus(payload(fresh), ctx(w.config, as("Scratch", token), { now: began }))).toBe("Orrery · Scratch · 5 msgs · not recording: Orrery's hooks are switched off in /hooks");
+	});
+
 	it("no ORRERY_AGENT or a bad token: prints nothing", () => {
 		const w = world();
 		remember(w.scratch, 4);
@@ -278,8 +338,8 @@ describe("orrery grok-status", () => {
 		const mine = randomUUID();
 		const token = started(w.config, w.scratch, mine);
 		// The row's session_id names Other's session: it says only what Scratch's record says of it.
-		const out = grokStatus(payload(others), ctx(w.config, as("Scratch", token)));
-		expect(out).toBe("Orrery · Scratch · 4 msgs · not recording: Grok didn't run Orrery's hooks; trust this folder (/hooks-trust)");
+		const out = grokStatus(payload(others), ctx(w.config, as("Scratch", token), { now: Date.now() + 60_000 }));
+		expect(out).toBe("Orrery · Scratch · 4 msgs · not recording: Orrery's SessionStart hasn't run for this session; resume it or start a new one");
 		expect(out).not.toMatch(/Other|9 msgs|other-words/);
 		// Other's own name and token, from this Grok (whose token is Scratch's): nothing.
 		expect(grokStatus(payload(others), ctx(w.config, as("Other", otherToken)))).toBe("");
@@ -318,7 +378,8 @@ describe("orrery grok-status", () => {
 		const session = randomUUID();
 		const token = started(w.config, w.scratch, session);
 		const leader = { argvOf: () => ["/opt/grok/downloads/grok-linux-x86_64", "agent", "leader", "--no-exit-on-disconnect"] };
-		expect(grokStatus(payload(session), ctx(w.config, as("Scratch", token), leader))).toBe(`Orrery · not recording: ${GROK_LEADER_REFUSAL}`);
+		// Short enough for the row: what it is, and what Orrery does instead.
+		expect(grokStatus(payload(session), ctx(w.config, as("Scratch", token), leader))).toBe("Orrery · not recording: leader mode; Orrery opens agents with --no-leader");
 		// A plain grok under a leader: nothing.
 		expect(grokStatus(payload(session), ctx(w.config, {}, leader))).toBe("");
 		// A command line that can't be read: whether it is the leader can't be told, so nothing.

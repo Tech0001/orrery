@@ -1,6 +1,7 @@
 /**
  * Reading an agent's memory for a tool's launch or session start, from a read-only snapshot: the message count and the
- * memory section (Codex's hooks), or Grok's section made to fit a size (Grok's launch).
+ * memory section (Codex's hooks), or Grok's section made to fit a size (Grok's launch); and the message count alone,
+ * without loading the memory (Grok's status row).
  */
 
 import { existsSync } from "node:fs";
@@ -27,6 +28,12 @@ function withSnapshot<T>(agent: AgentConfig, use: (store: MemoryStore) => T): T 
  */
 export function readMemory(agent: AgentConfig, withSection: boolean): { readonly messages?: number; readonly section?: string } {
 	return withSnapshot(agent, (store) => ({ messages: store.root.length, ...(withSection ? { section: memorySection(new MemoryView(store, agent.memory.viewBytes), "codex") } : {}) })) ?? {};
+}
+
+/** The agent's message count alone (MemoryStore.messageCount: no writer lock, nothing loaded); undefined when it has no memory yet. */
+export function readMessageCount(agent: AgentConfig): number | undefined {
+	const file = join(agent.dir, "memory.sqlite");
+	return existsSync(file) ? MemoryStore.messageCount(file) : undefined;
 }
 
 /** Grok's memory section made to fit a size (fitMemory). */

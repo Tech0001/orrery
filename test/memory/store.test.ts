@@ -260,4 +260,22 @@ describe("MemoryStore", () => {
 		writer.close();
 		expect(() => MemoryStore.openReadOnly(join(dir, "missing.sqlite"))).toThrow(/No memory store/);
 	});
+
+	it("counts messages alone beside the writer: no writer lock, nothing else loaded", () => {
+		const writer = MemoryStore.open(path);
+		writer.appendBatch([{ kind: "user", text: "first" }, { kind: "talk", text: "second" }, { kind: "user", text: "third" }]);
+		// The writer holds the lock and the store stays open for writing: the count needs neither.
+		expect(MemoryStore.messageCount(path)).toBe(3);
+		writer.append("talk", "fourth");
+		expect(MemoryStore.messageCount(path)).toBe(4);
+		expect(writer.writable).toBe(true);
+		writer.close();
+		// The summaries aren't loaded: a summary record a full load refuses doesn't stop the count.
+		const raw = new DatabaseSync(path);
+		raw.prepare("INSERT INTO tree (l, i, text, size) VALUES (?, ?, ?, ?)").run(1, 0, Buffer.from("summary"), 999);
+		raw.close();
+		expect(() => MemoryStore.openReadOnly(path)).toThrow(/Invalid tree record/);
+		expect(MemoryStore.messageCount(path)).toBe(4);
+		expect(() => MemoryStore.messageCount(join(dir, "missing.sqlite"))).toThrow(/No memory store/);
+	});
 });

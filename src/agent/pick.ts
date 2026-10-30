@@ -17,7 +17,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type HarnessConfig, insideFolder, type AgentConfig, agentForCwd } from "./config.ts";
 import { beingMade, publish, removeStale, stray, temporaryOf } from "./exclusive.ts";
@@ -247,6 +247,20 @@ export function claimedBy(agentDir: string, token: string): number | undefined {
  */
 export function tokenHeld(agentDir: string, token: string, alive: (pid: number) => boolean = processAlive): boolean {
 	return TOKEN.test(token) && holding(join(agentDir, "claims", token), alive) !== "dead";
+}
+
+/**
+ * When the claim on `token` for the agent was made (its file's modification time, ms: a claim is written once, whole,
+ * and only a takeover writes another), read without following a link; undefined when there is none (or the token is no
+ * token).
+ */
+export function claimMadeAt(agentDir: string, token: string): number | undefined {
+	if (!TOKEN.test(token)) return undefined;
+	try {
+		return lstatSync(join(agentDir, "claims", token)).mtimeMs;
+	} catch {
+		return undefined;
+	}
 }
 
 /**

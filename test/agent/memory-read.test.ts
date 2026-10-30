@@ -2,7 +2,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type AgentConfig, parseConfig } from "../../src/agent/config.ts";
-import { fitMemory, readMemory } from "../../src/agent/memory-read.ts";
+import { fitMemory, readMemory, readMessageCount } from "../../src/agent/memory-read.ts";
 import { GROK_READ_ONLY, grokLeftOut, memorySection } from "../../src/agent/view-text.ts";
 import { MemoryStore, MemoryView, Part } from "../../src/memory/index.ts";
 import { fillMemory, tempDir } from "./support.ts";
@@ -55,6 +55,16 @@ function withView<T>(agent: AgentConfig, ceiling: number, use: (view: MemoryView
 
 /** Grok's section of `view` from its line `k` on, the older lines left out. */
 const fromLine = (view: MemoryView, k: number, options: { readonly readOnly?: boolean } = {}) => memorySection(view, "grok", { ...options, from: view.parts[k] });
+
+describe("readMessageCount", () => {
+	it("is the count readMemory gives, and undefined for an agent with no memory yet", () => {
+		const agent = agentA();
+		expect(readMessageCount(agent)).toBeUndefined();
+		fillMemory(store(agent), 12, line, true);
+		expect(readMessageCount(agent)).toBe(12);
+		expect(readMemory(agent, false)).toEqual({ messages: 12 });
+	});
+});
 
 describe("fitMemory", () => {
 	it("is undefined for an agent with no memory yet, as readMemory is {}", () => {

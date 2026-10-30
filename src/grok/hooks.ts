@@ -359,7 +359,8 @@ export async function sessionStart(input: GrokHookInput, ctx: GrokHookContext): 
 	} catch (error) {
 		warnings.push(`Orrery: ${agent.name}'s memory could not be read: ${safeText(errorText(error))}`);
 	}
-	// In the status row's words (src/grok/status.ts), with why on the lines after.
+	// The status line as statusText says it, which the status row (src/grok/status.ts) uses too, with why on the lines
+	// after. Their words can differ: a read-only row says where the agent is open, this line that the session isn't recorded.
 	const status = statusText({ name: agent.name, count: memory.messages, state });
 	return { systemMessage: [status, ...warnings, ...noticeLines(agent, session, ctx)].join("\n") };
 }

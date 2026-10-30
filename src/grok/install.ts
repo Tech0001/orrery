@@ -72,11 +72,14 @@ const quoted = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
 const RUN = '[ -x "$o" ] || { cat >/dev/null; exit 0; }; exec "$o" grok-hook "$1"';
 const SCRIPT_START = /^o='((?:[^']|'\\'')*)'; /;
 
+/** How long Grok gives Orrery's SessionStart, in seconds (its other hooks get 10): Grok goes on without it after that. */
+export const GROK_SESSION_START_TIMEOUT = 15;
+
 /** The hook file's text for the Orrery command at `orrery` (src/install/layout.ts entries(...).cli). */
 export function grokHookFile(orrery: string): string {
 	const script = `o=${quoted(orrery)}; ${RUN}`;
 	const hooks = Object.fromEntries(
-		GROK_HOOK_EVENTS.map((event) => [EVENT_NAMES[event], [{ hooks: [{ type: "command", command: "/bin/sh", args: ["-c", script, "orrery-grok", event], timeout: event === "session-start" ? 15 : 10 }] }]]),
+		GROK_HOOK_EVENTS.map((event) => [EVENT_NAMES[event], [{ hooks: [{ type: "command", command: "/bin/sh", args: ["-c", script, "orrery-grok", event], timeout: event === "session-start" ? GROK_SESSION_START_TIMEOUT : 10 }] }]]),
 	);
 	return `${JSON.stringify({ hooks }, null, 2)}\n`;
 }
