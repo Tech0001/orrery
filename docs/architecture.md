@@ -275,6 +275,13 @@ Summaries can also go through a paid or own-key model of OpenCode's, as short-li
 Before an OpenCode or Orrery version it has not seen, the launch asks a private OpenCode server whether the plugin loads.
 See [OpenCode](opencode.md) for the details and the guard's OpenCode-specific limits.
 
+**Grok Build:** Orrery's side is installed once, in Grok's folder: one global hook file (`hooks/orrery.json`) and two `config.toml` entries, the status row (`orrery grok-status`) and the `orrery` MCP server, which gets the launch's `ORRERY_AGENT` and token.
+`orrery agent` launches `grok --no-leader --rules <memory section + instructions>`: Grok's session start can't give the model context, so the memory comes on the command line, appended to the system prompt for the whole session, which `/compact` and `/clear` keep; Grok doesn't apply `--rules` on a resume, so a resumed session keeps its first launch's.
+The hooks and the holder are Codex's, generalized to Grok's process: the hooks spool typed prompts and final replies, and the holder records each only once Grok's session log confirms it (see [Agent sessions](#prompts-checked-against-the-tools-record)).
+The agent is the one `ORRERY_AGENT` names, with its token; the hooks are global, so a plain `grok` runs them as a session that is no agent's, and Grok's leader mode, where one process runs every session's hooks, is refused.
+Under Grok the Claude Code plugin's hooks and server stand down, so nothing runs twice.
+See [Grok](grok.md) for folder trust, the status row and the guard's Grok-specific limits.
+
 **Ori:** Ori supplies OpenRouter models to the agent executable.
 Orrery launches `ori pi`, `ori omp`, `ori claude` or `ori codex` in the folder the agent is opened in.
 The optional `ori_model` is passed through as `--model`.
@@ -321,12 +328,12 @@ another project, a plain `codex`) runs as the person too: there `orrery` reads n
 
 Every tool session that opens an agent's memory, recording or read-only, records its host process in the data folder
 that holds that memory, `<data>/session-hosts/<pid>.json` (0600 in a 0700 folder): the agent, the tool, the process's
-start time, on Linux its pid namespace and the boot's id, the config file it loaded, and for Codex the session's id. pi,
-OMP, OpenCode's server, `orrery run`, Claude Code (the desktop app and folder agents set up with `claude-setup`
-included) and Codex all record. A record goes when its session closes; one whose process is gone, or started at
-another time (a reused pid), is stale and cleaned up by the next look. A record made in another pid namespace, or one
-that can't be read, is kept, never taken for a dead session: it is no session to the walk below, but a marker that
-points at it means a session whose agent is unknown.
+start time, on Linux its pid namespace and the boot's id, the config file it loaded, and for Codex and Grok the
+session's id. pi, OMP, OpenCode's server, `orrery run`, Claude Code (the desktop app and folder agents set up with
+`claude-setup` included), Codex and Grok all record. A record goes when its session closes; one whose process is
+gone, or started at another time (a reused pid), is stale and cleaned up by the next look. A record made in another
+pid namespace, or one that can't be read, is kept, never taken for a dead session: it is no session to the walk
+below, but a marker that points at it means a session whose agent is unknown.
 
 A command is inside an agent's session when one of its ancestor processes is recorded, live, in a data folder it is
 judged by: Linux walks `/proc`, macOS takes one `ps` snapshot, and the nearest recorded ancestor wins. Its record names
@@ -356,7 +363,7 @@ Codex's ids, so there `orrery` runs only `help` and the version.
 | `status`, `usage` (a name, `.`, or none) | the agent itself and the agents it may read; with no name, only those rows |
 | `browse <Name>` or `.` (`--open`; not `--out`) | the agent itself and the agents it may read |
 | `compactor .` or the agent's own name | shows, and switches the agent's own summary model among the providers, sign-ins, keys and local servers already saved; no new provider or sign-in |
-| `mcp`, `claude-mod`, `holder` | the plugins' own commands, for the session's own agent only |
+| `mcp`, `claude-mod`, `grok-status`, `holder` | the plugins' own commands, for the session's own agent only |
 | everything else, and the TUI | refused |
 
 A refusal exits non-zero with one line, such as `orrery restore can't run inside an agent session (Atlas, Claude
@@ -366,8 +373,9 @@ gets the fix: `Atlas may not read Birch. Allow it in the TUI (C, Reads) or with:
 write, the config and memory included; the page still goes to its usual place, which is all `/orrery:browse` uses.
 Inside a session the CLI uses the config the session's host loaded, as its record names it, never one the caller
 names: a `--config`, `ORRERY_CONFIG` or `ORRERY_HOME` that leads elsewhere is refused, and so is every command but help
-and the version when that config can't be read. The hook commands (`claude-hook`, `codex-hook`) skip this walk, since
-they run on every tool call: their own decision per process, and the checks below, govern them.
+and the version when that config can't be read. The hook commands (`claude-hook`, `codex-hook`, `grok-hook`) skip this
+walk, since they run on every tool call: their own decision per process, and the checks below, govern them. So does
+Grok's status row (`grok-status`), which runs several times a second during a turn and decides and writes nothing.
 
 The guard is the second belt, in every tool: shell text that runs Orrery's program (`orrery`, the plugin's
 `orrery-run`, or a path ending in one) followed, after its options, by a command this table refuses is refused before
@@ -394,12 +402,12 @@ the Claude Code desktop app in a folder that is no agent's) still has the person
 program. It is asked for only when the look above finds no agent's session, which still wins.
 
 - **Ancestry.** The nearest ancestor (the same walk) whose program is a coding tool: `claude`, `codex`, `opencode`,
-  `pi`, `omp`, `gemini`, `qwen`, `cursor-agent`, `aider`, `goose`, `amp`, `crush`, `droid` or `copilot`, matched
-  exactly, case and all, so the desktop apps' own processes (`claude-desktop`, macOS's `Claude` and `Codex`) and the
-  tools' helpers are none. A program is a file name without `.exe`: the process's name, else argv[0], and for an
-  interpreter (node, bun, deno, python, bash, sh) its script, past the interpreter's own options and without `.js`,
-  `.mjs`, `.cjs` or `.py`, or python's `-m` module. Linux reads argv for every ancestor whose name is no tool; macOS
-  asks `ps` for an interpreter's arguments only.
+  `grok` (and Grok's downloaded program, any `grok-<os>-<arch>`), `pi`, `omp`, `gemini`, `qwen`, `cursor-agent`,
+  `aider`, `goose`, `amp`, `crush`, `droid` or `copilot`, matched exactly, case and all, so the desktop apps' own
+  processes (`claude-desktop`, macOS's `Claude` and `Codex`) and the tools' helpers are none. A program is a file
+  name without `.exe`: the process's name, else argv[0], and for an interpreter (node, bun, deno, python, bash, sh)
+  its script, past the interpreter's own options and without `.js`, `.mjs`, `.cjs` or `.py`, or python's `-m` module.
+  Linux reads argv for every ancestor whose name is no tool; macOS asks `ps` for an interpreter's arguments only.
 - **Variables**, wherever no tool is found above (a chain cut by Codex's sandboxed shell or a detached process, or a
   variable left over): the first set of `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CODEX_THREAD_ID`, `CODEX_SESSION_ID`,
   `CODEX_SANDBOX`, `OPENCODE`, `OPENCODE_SESSION_ID` and `PI_CODING_AGENT`. Never `AGENT`, `AI_AGENT` or `CI`, which several tools set and anyone
@@ -466,8 +474,10 @@ or the credentials file is refused, and a content search whose root holds an age
 server's edits pass unless the session's folder, or the file the action names, holds or is inside one of Orrery's
 places; an OMP glob may use ordinary groups unless one holds `/`, `..`, `~` or `$`, is unbalanced, or expands to a
 path that starts elsewhere. No folder confinement or allowed roots, no `[guard] protect`, no `.env`, built-in secret or
-home-login rules (the tools' own logins included), and no OpenCode or skills rules: those are an agent's. A plain
-Codex, OpenCode or other tool that doesn't load Orrery's plugin gets the CLI's check only.
+home-login rules (the tools' own logins included), and no OpenCode or skills rules: those are an agent's. Grok's
+folder is kept here too, all but the parts Grok's own features write, and Orrery's Grok hooks, being global, run this
+guard in a plain `grok` and under Grok's leader. A plain Codex, OpenCode or other tool that doesn't load Orrery's
+plugin gets the CLI's check only.
 
 ### Tools started from one
 
@@ -500,8 +510,9 @@ it, and opens as before.
 
 ### Prompts checked against the tool's record
 
-pi, OMP and OpenCode record inside their own process. Claude Code and Codex record through hooks, which are commands
-any process of the person's can run, so what a hook says is checked against the tool's own record of the session.
+pi, OMP and OpenCode record inside their own process. Claude Code, Codex and Grok record through hooks, which are
+commands any process of the person's can run, so what a hook says is checked against the tool's own record of the
+session.
 
 - **Claude Code.** A writing hook (session start, prompt, stop, session end) acts only when the other end of its stdin
   is the recorded Claude Code process, with the same start time (Linux `SO_PEERCRED`, macOS `LOCAL_PEERPID`, asked
@@ -531,6 +542,19 @@ any process of the person's can run, so what a hook says is checked against the 
   session takes a turn of that session running, which Codex starts before the session start. Codex before 0.162.1
   doesn't say who started a turn, so its sessions are refused at the start, with a notice (Orrery needs 0.162.1 or
   later); the field names are 0.163.0's.
+- **Grok Build.** Its hooks come through a pipe too, so the session's log is the proof, and nothing about it comes from
+  the hook's input or environment. A session start counts only when Grok's folder is the one the grok process was
+  started with (its start environment's `GROK_HOME`, else its `HOME`'s `.grok`; Linux `/proc/<pid>/environ`, macOS
+  `ps -E`), the grok process has exactly one `events.jsonl` of that session open for writing under it, in the folder
+  named for the one it runs in (Linux `/proc/<pid>/fd` and `fdinfo`; macOS `lsof`), no link is on the way, and the
+  session's summary names a person's own session, not a subagent's. The log read is the `updates.jsonl` beside it,
+  from the session start's place on. A prompt counts once the log has a user message with a numeric prompt index, not
+  marked synthetic or hidden (Grok writes a scheduled prompt's and a background task's or subagent's wake-up that
+  way), with the same words, and the turn's later lines carry the hook's prompt id. A reply counts once that turn has
+  ended and its final agent message has the same words, or begins as the hook's copy, which Grok cuts at 32,768
+  characters; the log's words are recorded. A subagent's own session is a log of its own, never read. The field names
+  are Grok 1.0.70's. A Grok keeps every session it ran open, so a made-up session start may name one of those: the
+  recording moves there until the next real session start, and only Grok's log of it confirms any words.
 
 A prompt or reply not confirmed within a grace (30 seconds) after its turn ends is dropped and counted, in
 `claude/unconfirmed.json` in the agent's data folder; `orrery status` shows the count (`unconfirmedMessages` in its
@@ -587,6 +611,16 @@ command it was told to run.
   every tool) and the memory section gets the rest: a memory view too large for it starts the session with a smaller
   view, or, while its newer lines aren't summarized yet, with that view's newest lines. The model is told that the
   older lines are left out, and its zoom and search tools still reach them.
+- Grok: a process of the same user that writes in Grok's folder (appends to a live session's `updates.jsonl`, puts
+  files in a live session's folder, or renames a session folder there) can make words look like Grok's; the guard
+  keeps agents' tools out of Grok's folder, not a program that builds the path itself. A hook that crashes or times
+  out lets the call through, and a `!` command raises no hook. Grok also runs hooks and servers from sources Orrery
+  doesn't keep (a project's `.grok`, `.claude` and `.cursor` hook and server files, the person's Claude Code and Cursor
+  hook files, files Grok's config names outside its folder), where a hook planted by an agent runs outside the guard
+  later and may rewrite a call after Orrery judged it ([Grok](grok.md#its-limits-in-grok)).
+- Grok: under its shared leader (leader mode, which `orrery agent` refuses; a policy pin might force it, unverified)
+  nothing is recorded and no memory tools are served, since one session's agent can't be told from another's there;
+  the guard keeps Orrery's own rules. macOS (`lsof`, `ps -E`) is not yet verified with a real Grok.
 - Shell-text gaps: `cd ~/.claude` and then relative paths; tools that walk a folder (`find ~/.claude -exec …`);
   `find … -exec orrery {}`, which takes its arguments from file names; a wildcard spelling of Orrery's home
   (`ls -d ~/.orr*`), and extglob and zsh alternation (`cat ~/.(orrery|x)/config.toml`); a recursive command rooted
@@ -664,10 +698,10 @@ Shared rules handle normalization and symlinks; adapters map each host's argumen
 Host-specific checks cover multi-file edits and known credential locations.
 Some ambiguous OMP edit or glob forms are refused because their targets cannot be judged reliably.
 The rules are tested against concrete tool shapes and need review when upstream parsers change.
-Shell text that runs Orrery's hook plumbing is refused in every tool: a hook command (`codex-hook`, `claude-hook`) named
-as a word, or Orrery's program with the word `holder`. Otherwise an agent could run a hook by hand with made-up input
-and put a "user:" message in its own memory. The cost is that a command which only mentions those names, such as a
-`grep` or a commit message, is refused too; a name built at run time still gets through.
+Shell text that runs Orrery's hook plumbing is refused in every tool: a hook command (`codex-hook`, `claude-hook`,
+`grok-hook`) named as a word, or Orrery's program with the word `holder`. Otherwise an agent could run a hook by hand
+with made-up input and put a "user:" message in its own memory. The cost is that a command which only mentions those
+names, such as a `grep` or a commit message, is refused too; a name built at run time still gets through.
 In the same style, shell text that runs Orrery's program with a command an agent's session may not run is refused, and
 so is shell text that names Claude Code's or Codex's session records (`~/.claude/projects`, `~/.codex/sessions` and
 `archived_sessions`, or where `CLAUDE_CONFIG_DIR` and `CODEX_HOME` put them), which no file tool may write, Claude
@@ -676,7 +710,16 @@ In Codex the guard runs as its `PreToolUse` hook, which sees neither a command's
 which Codex lets through when the hook crashes or times out; the guard therefore refuses within its own deadline, and
 [Codex](codex.md#its-limits-in-codex) lists what remains. In OpenCode it runs on the plugin's tool hook, where a throw
 refuses the call but nothing limits the hook's time: it refuses past its own 4-second deadline, and
-[OpenCode](opencode.md#its-limits-in-opencode) lists what remains.
+[OpenCode](opencode.md#its-limits-in-opencode) lists what remains. In Grok it runs as Grok's `PreToolUse` hook, from
+the global hook file, so in every Grok session (a plain one with Orrery's own rules); Grok too lets a call through when
+the hook crashes or times out, so the guard refuses within its own deadline, and [Grok](grok.md#its-limits-in-grok)
+lists what remains.
+Grok Build's folder (`~/.grok`, or `GROK_HOME`) is read-only in every tool, in sessions that are no agent's too,
+because Grok loads and runs much of what is there (its hooks, Orrery's hook file among them, its config, policy
+files, `/hooks` switch, trust list, plugins and agents): no tool writes there and no shell text names it, but in the
+parts Grok's own features write (its memory, skills, workflows, `/learn`'s runs, the background-task skill's logs,
+plugins' data, `/implement`'s notes, the bundled skills, its docs and logs, and its session worktrees). An agent's
+session reads neither Grok's login nor its session records.
 OpenCode's config and code are read-only in every tool, because OpenCode loads plugins, runs commands and takes
 permissions from them with no prompt, next to the guard, the next time it opens a folder: no tool writes `opencode.json`
 or `opencode.jsonc` in any folder, a `.opencode` folder (OpenCode's Plan folder, `~/.opencode/plan`, aside), OpenCode's
@@ -727,7 +770,7 @@ Adapter tests exercise resumes, rewinds, tool calls, recording conflicts and cro
 Real pi, OMP, Codex and OpenCode tests load the actual installed binaries with scratch homes and fake model services.
 The real-Ori test uses a fake catalog and synthetic credentials without a live model call.
 A missing binary skips its real-tool tests; a known Ori/OMP mismatch is a named compatibility skip.
-Paid live checks and the opt-in Claude Code, Codex and OpenCode scripts are separate from the default test suite; they run from the person's own terminal, since an agent's shell is refused the commands they need.
+Paid live checks and the opt-in Claude Code, Codex, OpenCode and Grok scripts are separate from the default test suite; they run from the person's own terminal, since an agent's shell is refused the commands they need.
 Claude Code's hooks confirm their caller only in the compiled program, so the tests that record through real hook processes run under `npm run test:binary`.
 
 The core trade-off is compression with recoverable detail: summaries can lose facts, but `zoom` reaches the source.

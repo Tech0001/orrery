@@ -22,8 +22,8 @@ from pi to Claude Code, open the agent in another project or carry on from anoth
 
 ## What you can do
 
-- **Keep one agent across tools.** pi, OMP (oh-my-pi), Claude Code, Codex and OpenCode all read and record the same
-  agent's memory. OpenRouter's Ori can launch it too.
+- **Keep one agent across tools.** pi, OMP (oh-my-pi), Claude Code, Codex, OpenCode and Grok Build all read and record
+  the same agent's memory. OpenRouter's Ori can launch it too.
 - **Open any agent anywhere.** `orrery agent Atlas` starts Atlas's tool in the folder you are in, with its
   instructions and memory. The folder's own `AGENTS.md` or `CLAUDE.md` still applies as that project's rules.
 - **Turn existing chats into an agent.** Pick one or more of your Claude Code or Codex chats from a list and they
@@ -55,7 +55,8 @@ from pi to Claude Code, open the agent in another project or carry on from anoth
 
 You need:
 - Linux or macOS, x64 or arm64. On Windows, use WSL. Alpine and other musl Linux is not supported yet.
-- At least one coding tool: pi, OMP, Claude Code, Codex (0.162.1 or later) or OpenCode, installed on its own.
+- At least one coding tool: pi, OMP, Claude Code, Codex (0.162.1 or later), OpenCode or Grok Build, installed on its
+  own.
 - A way to make summaries: a ChatGPT or OpenRouter account, an API key, or a local model server (see
   [Summaries](#summaries)).
 
@@ -66,8 +67,9 @@ curl -fsSL https://github.com/Tech0001/orrery/releases/latest/download/install.s
 ```
 
 The script checks the download, installs Orrery into `~/.orrery`, and asks before connecting it to each coding tool
-it finds (Codex and OpenCode need nothing: Orrery's side comes with each launch). It puts the `orrery` command in
-`~/.local/bin`; add that folder to your PATH if it is not there already.
+it finds (Codex and OpenCode need nothing: Orrery's side comes with each launch; for Grok it writes Orrery's hook file
+and two config entries in `~/.grok`). It puts the `orrery` command in `~/.local/bin`; add that folder to your PATH if
+it is not there already.
 
 **2. Start Orrery.**
 
@@ -92,7 +94,7 @@ agent's folder, it asks whether to open the agent here or there. Its tool starts
 | **1 Agents** | **Enter** open · **i** details · **N** new · **M** summary model · **E** instructions · **C** settings · **s** sort · **/** filter. On an agent's details: **B** browse its memory, **A** archive it |
 | **2 Logins** | **A** add or replace a sign-in or key · **T** test · **D** remove · **R** add a remote |
 | **3 Usage** | **+** / **-** more or fewer days |
-| **4 Tools** | **Enter** details · **I** install or repair Orrery's side of pi, OMP or Claude Code |
+| **4 Tools** | **Enter** details · **I** install or repair Orrery's side of pi, OMP, Claude Code or Grok |
 
 **?** shows help on any page and **q** quits. Nearly everything the TUI does can also be done from the command line;
 `orrery help` lists the commands, and `orrery help <command>` every option of one.
@@ -113,8 +115,8 @@ memory, up to 32 KB. Only you edit them: an agent can suggest a change in chat b
 **Default folder.** An agent can have one (`folder = "…"`, or **C** in the TUI). Starting its tool there, or in any
 folder inside it, picks that agent automatically, as if you had run `orrery agent`. Choose a folder that belongs to
 the agent, not a broad one like your home folder, or every session under it records into that agent. With no default
-folder, the agent opens only through Orrery. Claude Code needs one setup step per agent first; Codex and OpenCode never
-pick an agent by its folder, and open agents only through Orrery; see [Coding tools](#coding-tools).
+folder, the agent opens only through Orrery. Claude Code needs one setup step per agent first; Codex, OpenCode and Grok
+never pick an agent by its folder, and open agents only through Orrery; see [Coding tools](#coding-tools).
 
 **Importing chats.** **N**, then **From an existing chat**, lists your Claude Code and Codex chats, newest first,
 and marks the ones written to in the last ten minutes as in use. Pick one, or mark several with Space and they are
@@ -136,7 +138,7 @@ pi and OMP add those tools once per run, so a pi or OMP that first opened an age
 a restart.
 
 **One session at a time.** An agent records from one session. A second session on the same agent runs without its
-memory in pi and OMP, and read-only in Claude Code, Codex and OpenCode.
+memory in pi and OMP, and read-only in Claude Code, Codex, OpenCode and Grok.
 
 **Archiving.** **A** on a closed agent's page takes it out of the list; its memory stays on disk.
 
@@ -183,6 +185,7 @@ the one in that environment variable.
 | Ori | Launches the agent with an OpenRouter model; Orrery keeps the memory | [docs/ori.md](docs/ori.md) |
 | Codex | Memory, recording, the memory tools and the guard, on Codex's command line at each `orrery agent` launch | [docs/codex.md](docs/codex.md) |
 | OpenCode | A plugin for each `orrery agent` launch: memory, recording, the memory tools, the guard, compaction from memory and `/compactor` | [docs/opencode.md](docs/opencode.md) |
+| Grok Build | Hooks for recording and the guard, a status row and the memory tools, connected once in Grok's folder; memory and instructions on Grok's command line at each `orrery agent` launch | [docs/grok.md](docs/grok.md) |
 
 Connect a tool with **I** on the **Tools** page, or `orrery tools install pi`. Each guide lists the versions tested
 and the known limits. Claude Code needs no step per agent: with Claude Code 2.1.287 or newer, the Orrery mod brings
@@ -192,9 +195,11 @@ any folder, and records it. `orrery claude-setup Atlas` is only for the older fi
 instructions on Codex's command line and writes nothing to `~/.codex`. A plain `codex` is not an agent's session.
 Neither does OpenCode: `orrery agent Atlas --tool opencode` (or the agent's tool set to `opencode`) starts
 `opencode --standalone` with Orrery's plugin for that launch, after checking once per OpenCode version that the plugin
-loads, and writes nothing to OpenCode's config. A plain `opencode` is not an agent's session either. Inside a plain
-session of any coding tool, `orrery` reads no agent's memory and changes nothing; see
-[Sessions that are no agent's](#sessions-that-are-no-agents).
+loads, and writes nothing to OpenCode's config. A plain `opencode` is not an agent's session either. Grok Build is
+connected once, by setup or **I**: Orrery's hook file and two entries (its status row and memory tools) in Grok's
+folder. Open its agents with `orrery agent Atlas --tool grok`, which gives Grok the agent's memory and instructions on
+its command line; a plain `grok` is not an agent's session. Inside a plain session of any coding tool, `orrery` reads
+no agent's memory and changes nothing; see [Sessions that are no agent's](#sessions-that-are-no-agents).
 
 The Claude Code desktop app works too: start a session in the agent's folder, and the app's Claude Code records it
 and loads the memory (tested with the Linux app and the file setup). Claude Code on the web runs in the
@@ -210,8 +215,8 @@ itself and the agents it may read; and `compactor` for the agent itself, choosin
 servers already saved. Everything else, the TUI included, is refused there with a message: the person runs it in
 their own terminal or the TUI (see [Safety](#safety)).
 
-**In any other coding tool's session** (Claude Code, Codex, OpenCode, pi, OMP or another coding tool started outside
-the person's agents), `orrery` runs only `help`, `--version`, `status` and `usage`, and those show no agent.
+**In any other coding tool's session** (Claude Code, Codex, OpenCode, Grok, pi, OMP or another coding tool started
+outside the person's agents), `orrery` runs only `help`, `--version`, `status` and `usage`, and those show no agent.
 Everything else is refused there with a message (see [Sessions that are no agent's](#sessions-that-are-no-agents)):
 ask the person to run the commands below in their own terminal, and to share what you need.
 
@@ -239,17 +244,20 @@ Leave these to the person, in their own terminal:
 
 Orrery's own files are off-limits to agents: your tools are refused anywhere in `~/.orrery`, except that file tools may
 read the config and the installed program, and shell commands that name `.orrery` are refused. Ask the CLI instead.
-Shell commands that name Orrery's hook plumbing (`codex-hook`, `claude-hook`, or `orrery` with `holder`), or run an
-`orrery` command an agent's session may not run (`orrery setup`, `orrery remote` and the like), are refused too, even
-in a `grep` or a commit message: leave those to the person, search with your file tools, and write a commit message
-that names one to a file (`git commit -F`). So are shell commands that name Claude Code's or Codex's session records
-(`~/.claude/projects`, `~/.codex/sessions`), which you may read with your file tools but not change, and OpenCode's
-config (`opencode.json`, a `.opencode` folder, OpenCode's own folders) or a skills folder (`.claude/skills`,
-`.agents/skills`): read those with your file tools. You can't write OpenCode's config, so ask the person to set up
-OpenCode for a project; skills you may write with your file tools, with plain YAML front matter. Your own memory has
-its own tools: `zoom`, `date` and `search` (`memory_search` in OMP; in Codex, from the `orrery` MCP server). In a
-session that is no agent's, the guard keeps only Orrery's own files, the session records and Orrery's commands from
-you; see [Sessions that are no agent's](#sessions-that-are-no-agents).
+Shell commands that name Orrery's hook plumbing (`codex-hook`, `claude-hook`, `grok-hook`, or `orrery` with
+`holder`), or run an `orrery` command an agent's session may not run (`orrery setup`, `orrery remote` and the like), are
+refused too, even in a `grep` or a commit message: leave those to the person, search with your file tools, and write a
+commit message that names one to a file (`git commit -F`). So are shell commands that name Claude Code's or Codex's
+session records (`~/.claude/projects`, `~/.codex/sessions`), which you may read with your file tools but not change,
+OpenCode's config (`opencode.json`, a `.opencode` folder, OpenCode's own folders) or a skills folder (`.claude/skills`,
+`.agents/skills`): read those with your file tools. Grok's folder (`~/.grok`) is the same, all but the parts Grok's own
+features write (its memory, skills, workflows, docs, logs and the like): read it with your file tools (but not Grok's
+login or session records, which you can't read at all), and leave changes to Grok's settings and hooks to the person.
+You can't write OpenCode's config, so ask the person to set up OpenCode for a project; skills you may write with your
+file tools, with plain YAML front matter. Your own memory has its own tools: `zoom`, `date` and `search`
+(`memory_search` in OMP; in Codex and Grok, from the `orrery` MCP server). In a session that is no agent's, the guard
+keeps only Orrery's own files, the session records, Grok's folder and Orrery's commands from you; see
+[Sessions that are no agent's](#sessions-that-are-no-agents).
 
 ## Memory that follows you
 
@@ -287,11 +295,11 @@ Code](docs/claude-code.md#install-once-per-machine) and [Codex](docs/codex.md#tr
 what happens). The Agents page says when one is waiting, and the pi, OMP, Claude Code, Codex or OpenCode session says
 once: "Orrery was updated to 0.6.2; restart this session to use it." Orrery
 checks for a new release at most once a day, shared by the TUI and every agent's session (pi, OMP, OpenCode, and the
-recorder of Claude Code and Codex sessions); the TUI header and each session then say once that it is out. A session
-never waits on the check: it shows what the last one found, and a newer answer when it comes. The check is one request to `github.com`,
-which sees your IP address; `check = false` under `[updates]` in `config.toml` turns it off, and the release notice with
-it (the restart notice needs no request and stays). Notices reach you, never the model. `orrery uninstall --purge` also
-deletes `~/.orrery`, after you type `delete`.
+recorder of Claude Code, Codex and Grok sessions); the TUI header and each session then say once that it is out. A
+session never waits on the check: it shows what the last one found, and a newer answer when it comes. The check is
+one request to `github.com`, which sees your IP address; `check = false` under `[updates]` in `config.toml` turns it
+off, and the release notice with it (the restart notice needs no request and stays). Notices reach you, never the
+model. `orrery uninstall --purge` also deletes `~/.orrery`, after you type `delete`.
 
 The install script also takes `--yes` (answer every question yes; with no terminal and no `--yes`, it skips the
 questions, lists them and exits non-zero), `ORRERY_VERSION` (a specific release) and `ORRERY_HOME` (somewhere other
@@ -318,7 +326,7 @@ refused, and Orrery's own config and program are read-only to agents. Out of the
   `~/.terraform.d/credentials.tfrc.json`, wrangler's login (`~/.wrangler`, `~/.config/.wrangler`, and
   `~/Library/Preferences/.wrangler` on macOS), Hugging Face's tokens, `~/.password-store`, the 1Password CLI's
   `~/.config/op`, and the logins of pi, OMP, Codex, OpenCode (its database, wherever `XDG_DATA_HOME` or
-  `OPENCODE_DB` puts it) and Orrery (Claude Code's too, in its sessions).
+  `OPENCODE_DB` puts it), Grok (wherever `GROK_HOME` puts it) and Orrery (Claude Code's too, in its sessions).
 - **Secret files in any folder:** `.env` and `.env.<anything>`, `.dev.vars` and `.dev.vars.<anything>` (Cloudflare
   Workers), `.secrets`, `secrets.toml`, `master.key` and `.htpasswd`. The shared templates stay open: `.env.example`,
   `.env.sample`, `.env.template` and `.env.dist`, and the same for `.dev.vars`.
@@ -372,7 +380,8 @@ only:
 - `compactor` for the agent itself: it shows the summary model and switches among the sign-ins, keys and local
   servers already saved, with no new sign-in (so `/orrery:compactor` keeps working). An agent may therefore switch
   its own summary model to any provider already in your config and logins, but it can add no provider and no login;
-- the commands the plugins run, for the session's own agent.
+- the commands the plugins run, for the session's own agent (`orrery claude-mod` and Grok's status row, `orrery
+  grok-status`, among them).
 
 Everything else is refused, with a message that says to run it in your own terminal or the TUI: `orrery agent` (open,
 add, set, edit, archive, push, pull and the rest), `run`, `import` (the dry run too), `compact`, `backup`, `restore`,
@@ -389,34 +398,45 @@ The guard adds a second belt in every tool: shell text that runs `orrery` with a
 before it runs, wherever it stands in the text, so a `grep` for `orrery restore` or a commit message that names
 `orrery setup` is refused too ([CONTRIBUTING.md](CONTRIBUTING.md) lists the workarounds).
 
-**A tool an agent starts is no agent's.** A `claude -p`, `codex exec`, `opencode run`, `pi -p` or OMP that an agent
-starts from its shell opens no memory, records nothing and says so (`Orrery: started inside Atlas's session (pi), so
-this one opens no memory and records nothing.`). Its guard keeps that agent's rules, and both agents' at once when it
-runs in another agent's folder. Its prompts come from the agent, not from you, so they never enter memory as your
-words. `orrery run` and `orrery agent` are refused there.
+**A tool an agent starts is no agent's.** A `claude -p`, `codex exec`, `opencode run`, `pi -p`, `grok` or OMP that an
+agent starts from its shell opens no memory, records nothing and says so (`Orrery: started inside Atlas's session
+(pi), so this one opens no memory and records nothing.`). Its guard keeps that agent's rules, and both agents' at once
+when it runs in another agent's folder. Its prompts come from the agent, not from you, so they never enter memory as
+your words. `orrery run` and `orrery agent` are refused there.
 
-**Coding tools outside your agents get the same limits.** A Claude Code in another project, a plain `codex`, or any
-other coding tool's session that is no agent's can't read or change Orrery's memory or settings through `orrery`, and
-a tool it starts opens no memory: see [Sessions that are no agent's](#sessions-that-are-no-agents).
+**Coding tools outside your agents get the same limits.** A Claude Code in another project, a plain `codex` or `grok`,
+or any other coding tool's session that is no agent's can't read or change Orrery's memory or settings through
+`orrery`, and a tool it starts opens no memory: see [Sessions that are no agent's](#sessions-that-are-no-agents).
 
-**Prompts are checked against the tool's own record.** Claude Code and Codex record through hooks, which are commands
-any program of yours could run, so Orrery checks what they say. In Claude Code, a hook counts only when Claude Code
-itself called it, and a prompt only once Claude Code's transcript shows it as yours (typed, queued, or given to
-`claude -p`); a message another process sent into the session, such as a subagent's report, is kept as
+**Prompts are checked against the tool's own record.** Claude Code, Codex and Grok record through hooks, which are
+commands any program of yours could run, so Orrery checks what they say. In Claude Code, a hook counts only when
+Claude Code itself called it, and a prompt only once Claude Code's transcript shows it as yours (typed, queued, or
+given to `claude -p`); a message another process sent into the session, such as a subagent's report, is kept as
 `[subagent] …`, never as your words, and a task notification is dropped. In Codex (0.162.1 or later; an older one's
 session isn't recorded, and Orrery says so), a prompt or reply counts only once the session's rollout file has it, in
 your own thread and a turn you started: a spawned agent's thread, and a turn another agent or `codex queue` started,
-are never recorded. What is never confirmed is dropped and counted: `orrery status` shows "N unconfirmed messages not
-recorded" (`unconfirmedMessages` in `orrery status --json`). Agents may read Claude Code's and Codex's
-session records with file tools, but no tool may change them, and shell text that names those folders
-(`~/.claude/projects`, `~/.codex/sessions`) is refused; Claude Code's own memory folder for the project stays writable.
-pi, OMP and OpenCode record inside their own process, so there is no hook to fake. Where Orrery can't make the check
-(see the [Claude Code](docs/claude-code.md#daily-use) and [Codex](docs/codex.md#whats-recorded) guides), the session
-says why and records nothing.
+are never recorded. In Grok, a prompt counts only once the session's own log in Grok's folder shows it as typed, in a
+session of your own that the Grok process holds open: a turn Grok starts on its own (a scheduled prompt, a background
+task's result) and a subagent's session are never recorded. What is never confirmed is dropped and counted: `orrery
+status` shows "N unconfirmed messages not recorded" (`unconfirmedMessages` in `orrery status --json`). Agents may read
+Claude Code's and Codex's session records with file tools, but no tool may change them, and shell text that names
+those folders (`~/.claude/projects`, `~/.codex/sessions`) is refused; Claude Code's own memory folder for the project
+stays writable. Grok's session records (`~/.grok/sessions`) an agent's session can't read either. pi, OMP and OpenCode
+record inside their own process, so there is no hook to fake. Where Orrery can't make the check (see the
+[Claude Code](docs/claude-code.md#daily-use), [Codex](docs/codex.md#whats-recorded) and
+[Grok](docs/grok.md#whats-recorded) guides), the session says why and records nothing.
 
-**Agents can't run Orrery's hook plumbing.** Shell text that names the hook commands (`codex-hook`, `claude-hook`) or
-Orrery's program with `holder` is refused, so an agent cannot feed a hook made-up input and put words in your mouth in
-its memory. The cost: an agent's `grep` for those names, or a commit message that mentions one, is refused too.
+**Agents can't run Orrery's hook plumbing.** Shell text that names the hook commands (`codex-hook`, `claude-hook`,
+`grok-hook`) or Orrery's program with `holder` is refused, so an agent cannot feed a hook made-up input and put words
+in your mouth in its memory. The cost: an agent's `grep` for those names, or a commit message that mentions one, is
+refused too.
+
+**Agents can't change Grok's hooks or settings, in any tool.** Grok Build loads and runs much of what is in its folder
+(`~/.grok`, or `GROK_HOME`): its hooks, Orrery's among them, its config, plugins and agents. So no tool writes there,
+in every session the guard runs in, one that is no agent's included, but in the parts Grok's own features write (its
+memory, skills, workflows, docs, logs, session worktrees and the like). File tools may read the rest, Grok's login and
+session records aside, and shell text that names Grok's folder or the parts it keeps is refused (`ls ~/.grok`, `cat
+~/.grok/config.toml`). The cost: an agent can't change Grok's settings for you. See [Grok](docs/grok.md#the-guard).
 
 **Agents can't change OpenCode's config or code, in any tool.** OpenCode loads plugins, runs commands and takes
 permissions from its config, with no prompt, the next time it opens a folder, so a file an agent wrote there from any
@@ -441,11 +461,11 @@ through its shell, one plain `cat`, `head`, `tail`, `sed -n`, `ls` or `wc` of sk
 around it: shell text that spells Orrery's home with a wildcard (`ls -d ~/.orr*`), a recursive shell command rooted
 above it (`find ~`, `grep -r`), a name built at run time or a script still reaches Orrery's files, in every session.
 The [architecture guide](docs/architecture.md#the-credential-guard) lists the known limits, and
-[Codex's](docs/codex.md#its-limits-in-codex) and [OpenCode's](docs/opencode.md#its-limits-in-opencode) guides the ones
-that are their own. The session rules above are a seatbelt too: an agent that deliberately detaches a process from
-its session, clears or sidesteps its markers (pointing `ORRERY_CONFIG` at a scratch config, say) and hides Orrery's
-name from the guard can still run any `orrery` command, and a process of yours can still write into a tool's own
-records. Only an operating-system sandbox closes that; the
+[Codex's](docs/codex.md#its-limits-in-codex), [OpenCode's](docs/opencode.md#its-limits-in-opencode) and
+[Grok's](docs/grok.md#its-limits-in-grok) guides the ones that are their own. The session rules above are a seatbelt
+too: an agent that deliberately detaches a process from its session, clears or sidesteps its markers (pointing
+`ORRERY_CONFIG` at a scratch config, say) and hides Orrery's name from the guard can still run any `orrery` command,
+and a process of yours can still write into a tool's own records. Only an operating-system sandbox closes that; the
 [limits](docs/architecture.md#limits) are listed in full.
 
 Logins are kept in private files (mode 0600), never in the config. Your agents' memory on disk is not encrypted;
@@ -454,14 +474,15 @@ copies sent to a remote are. Model providers see whatever context is sent to the
 ### Sessions that are no agent's
 
 A coding tool you start outside your agents is a session that is no agent's: Claude Code in another project (the
-desktop app's too), a plain `codex`, `opencode`, `pi` or `omp`, or another coding tool. Its shell runs as you, so
-without a check it could read any agent's memory with `orrery browse`, or plant made-up messages with `orrery import`.
-So there `orrery` reads no agent's memory and changes nothing.
+desktop app's too), a plain `codex`, `opencode`, `grok`, `pi` or `omp`, or another coding tool. Its shell runs as you,
+so without a check it could read any agent's memory with `orrery browse`, or plant made-up messages with `orrery
+import`. So there `orrery` reads no agent's memory and changes nothing.
 
-**Who counts.** Orrery looks above the command for a coding tool's program: `claude`, `codex`, `opencode`, `pi`,
-`omp`, `gemini`, `qwen`, `cursor-agent`, `aider`, `goose`, `amp`, `crush`, `droid` or `copilot` (also a script of that
-name run by Node, Bun, Deno, Python, bash or sh). Wherever it finds no tool above (a chain cut by Codex's sandboxed
-shell or a detached process, or a variable left over), it looks for a variable the tool gives its shell: `CLAUDECODE`
+**Who counts.** Orrery looks above the command for a coding tool's program: `claude`, `codex`, `opencode`, `grok`
+(and Grok's own `grok-<os>-<arch>`), `pi`, `omp`, `gemini`, `qwen`, `cursor-agent`, `aider`, `goose`, `amp`, `crush`,
+`droid` or `copilot` (also a script of that name run by Node, Bun, Deno, Python, bash or sh). Wherever it finds no
+tool above (a chain cut by Codex's sandboxed shell or a detached process, or a variable left over), it looks for a
+variable the tool gives its shell: `CLAUDECODE`
 or `CLAUDE_CODE_ENTRYPOINT` (Claude Code), `CODEX_THREAD_ID`, `CODEX_SESSION_ID` or `CODEX_SANDBOX` (Codex),
 `OPENCODE` or `OPENCODE_SESSION_ID` (OpenCode), and `PI_CODING_AGENT` (pi). An agent's own session is told first, and keeps the rules in [Safety](#safety).
 
@@ -485,8 +506,9 @@ keeps elsewhere (`data_dir`), the logins and SSH keys that config names, and wha
 command that touches only a scratch home is not judged, so test suites that run `orrery` against scratch homes work from
 any session. Your own terminal and the TUI keep full access.
 
-**The guard there.** Claude Code's plugin runs the guard in every session, and pi's and OMP's extension in every
-folder, once Orrery has a config. In a session that is no agent's it keeps Orrery's own files only:
+**The guard there.** Claude Code's plugin runs the guard in every session, pi's and OMP's extension in every folder,
+and Orrery's Grok hooks in every Grok session, once Orrery has a config. In a session that is no agent's it keeps
+Orrery's own files only:
 
 - Orrery's home and data folder and its logins file: no reads or writes. Its config and installed program: read,
   never written.
@@ -496,8 +518,10 @@ folder, once Orrery has a config. In a session that is no agent's it keeps Orrer
   (`~/.claude/plugins/cache/orrery`, `plugins/marketplaces/orrery`, `known_marketplaces.json`,
   `installed_plugins.json`): read by file tools, never written, and not named in shell text.
 - Every agent's memory view (`.orrery/view.md` in an agent's folder): not read or written.
-- Claude Code's and Codex's session records (`~/.claude/projects`, `~/.codex/sessions`): file tools may read them, no
-  tool writes them, and shell text may not name them.
+- Claude Code's, Codex's and Grok's session records (`~/.claude/projects`, `~/.codex/sessions`, `~/.grok/sessions`):
+  file tools may read them, no tool writes them, and shell text may not name them.
+- Grok's folder (`~/.grok`), but the parts Grok's own features write: read by file tools, never written, and not named
+  in shell text.
 - Shell text that runs or names an `orrery` command other than `help`, `--version`, `status` and `usage`, or Orrery's
   hook plumbing.
 - A search whose folder holds Orrery's home (one from your home folder, say), and a content search (grep) whose folder

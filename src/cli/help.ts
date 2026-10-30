@@ -33,7 +33,7 @@ const GROUPS: readonly Group[] = [
 		detail: [
 			[
 				"agent <Name> [--tool pi|omp|claude-code|codex|opencode|grok] [--yes] [-- <tool arguments>]",
-				"open the agent here: its tool starts in this folder with its instructions and memory (--tool: another tool this time; --yes: answers its questions yes; what follows -- goes to the tool). Codex gets Orrery's hooks, memory tools and instructions on its command line, after a check that the hooks load in that Codex; OpenCode gets Orrery's plugin for this launch (opencode --standalone, nothing written to OpenCode's config), after a check that it loads in that OpenCode; Grok gets its memory and instructions as --rules; only a person at a terminal can start either without them",
+				"open the agent here: its tool starts in this folder with its instructions and memory (--tool: another tool this time; --yes: answers its questions yes; what follows -- goes to the tool). Codex gets Orrery's hooks, memory tools and instructions on its command line, after a check that the hooks load in that Codex; OpenCode gets Orrery's plugin for this launch (opencode --standalone, nothing written to OpenCode's config), after a check that it loads in that OpenCode, and only a person at a terminal can start either without them; Grok gets the agent's memory and instructions as --rules (with --no-leader), and Orrery's hooks, status row and memory tools from Grok's own folder, which setup connects once",
 			],
 			[
 				"agent add <Name> --folder DIR --tool pi|omp|claude-code|codex|opencode|grok --summary provider/id [--thinking L] [--reads all|none|A,B]",
@@ -132,7 +132,7 @@ const GROUPS: readonly Group[] = [
 		],
 		detail: [
 			["update [--check] [--version V] [--yes]", "install the newest release (or V); --check only says whether one is out; --yes answers setup's questions yes"],
-			["tools [--json]", "pi, Claude Code, Codex, OMP, OpenCode, Grok and Ori: found, version, Orrery's side installed (Codex's, OpenCode's and Grok's come with each launch)"],
+			["tools [--json]", "pi, Claude Code, Codex, OMP, OpenCode, Grok and Ori: found, version, Orrery's side installed (Codex's and OpenCode's come with each launch)"],
 			["tools install <pi|claude-code|omp> [--yes]", "install or update Orrery's side of a tool (shows what it does first)"],
 			[
 				"claude-setup <Name> [--mod]",
@@ -140,13 +140,13 @@ const GROUPS: readonly Group[] = [
 			],
 			[
 				"setup [--yes]",
-				"wire the orrery command, pi, OMP, Claude Code and the backup service to the installed version; asks on the terminal before connecting a tool or replacing anything that is not Orrery's (--yes: answers yes)",
+				"wire the orrery command, pi, OMP, Claude Code, Grok and the backup service to the installed version; asks on the terminal before connecting a tool or replacing anything that is not Orrery's (--yes: answers yes)",
 			],
 			["install --from DIR [--yes]", "install an unpacked release folder, then run setup (install.sh and orrery update run this)"],
 			["install --rollback [--yes] | --list", "switch back to the previous installed version and run setup, or list versions and which agents run them"],
 			[
 				"uninstall [--purge]",
-				"unwire pi, OMP and Claude Code, remove the command, the backup service and the installed versions; agents' memory, config and logins stay (--purge: delete them too, after typing delete)",
+				"unwire pi, OMP, Claude Code and Grok, remove the command, the backup service and the installed versions; agents' memory, config and logins stay (--purge: delete them too, after typing delete)",
 			],
 			["version, --version, -v", "the running version (a checkout's also names its folder)"],
 		],
