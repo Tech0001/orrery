@@ -262,6 +262,7 @@ describe("Orrery's commands in shell text", () => {
 		// Orrery's commands that run inside a session, and help on any.
 		["orrery status Atlas --json && orrery usage --days 3 && orrery compactor ."],
 		["orrery claude-mod view --cwd ."],
+		["orrery grok-status < status.json"],
 		["orrery mcp --tool codex"],
 		["orrery help setup && orrery help all"],
 		["orrery version && orrery -v && orrery -h"],

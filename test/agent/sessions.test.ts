@@ -793,6 +793,6 @@ describe("ALLOWED_INSIDE", () => {
 	it("names the commands that run inside an agent session, in a module of its own with no imports, which sessions.ts re-exports", () => {
 		expect(ALLOWED_INSIDE).toBe(ALLOWED_ALONE);
 		expect(readFileSync(new URL("../../src/agent/inside-commands.ts", import.meta.url), "utf8")).not.toMatch(/^import /m);
-		expect([...ALLOWED_INSIDE].sort()).toEqual(["browse", "claude-hook", "claude-mod", "codex-hook", "compactor", "grok-hook", "help", "holder", "mcp", "status", "usage"]);
+		expect([...ALLOWED_INSIDE].sort()).toEqual(["browse", "claude-hook", "claude-mod", "codex-hook", "compactor", "grok-hook", "grok-status", "help", "holder", "mcp", "status", "usage"]);
 	});
 });

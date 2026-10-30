@@ -145,6 +145,7 @@ describe("a session that is no agent's, in every gate", () => {
 		// Orrery's plumbing typed in shell text, the mod's view and the memory tools' server too, detached or not.
 		["the mod's view", "orrery claude-mod view --cwd .", /^orrery claude-mod can't run from a session that is no agent's/],
 		["a detached mod's view", "(env -i setsid orrery claude-mod view --cwd . > out &)", /^orrery claude-mod can't run from a session that is no agent's/],
+		["Grok's status row fed a session", "echo '{\"session_id\":\"s\"}' | orrery grok-status", /^orrery grok-status can't run from a session that is no agent's/],
 		["the memory tools' server fed requests", "cd ../agent-Atlas && printf '{}' | orrery mcp", /^orrery mcp can't run from a session that is no agent's/],
 		["a detached recorder", "(env -i setsid orrery holder Atlas --session s > out &)", /hook plumbing/],
 		["a detached hook", "(env -i setsid orrery claude-hook user-prompt-submit < x.json &)", /hook plumbing/],
@@ -154,8 +155,9 @@ describe("a session that is no agent's, in every gate", () => {
 		expect(verdicts(command, { orreryOnly: true })).toEqual(Array(10).fill(expect.stringMatching(refusal)));
 	});
 
-	it("leaves an agent's session the mod's view and the memory tools' server, as before", () => {
+	it("leaves an agent's session the mod's view and the memory tools' server, as before, and Grok's status row, which only reads", () => {
 		expect(verdicts("orrery claude-mod view --cwd . && orrery mcp")).toEqual(Array(10).fill(undefined));
+		expect(verdicts("echo '{\"session_id\":\"s\"}' | orrery grok-status")).toEqual(Array(10).fill(undefined));
 	});
 
 	it("leaves an agent's session browse and compactor, as before", () => {

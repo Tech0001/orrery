@@ -67,6 +67,7 @@ import type { PlainDeps } from "../agent/plain-nested.ts";
 import { processCwd, processEnv } from "../agent/process.ts";
 import { liveSession, nestedNotice, plainFields, recordSession, type SessionRecord } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
+import { NOT_RECORDED, type StatusState, statusText } from "../agent/status-text.ts";
 import { noticeShownBefore, waitForMode } from "../claude/hooks.ts";
 import { summaryNotice, updateNotice } from "../claude/notices.ts";
 import { holderLog, validSession } from "../claude/paths.ts";
@@ -325,11 +326,11 @@ export async function sessionStart(input: GrokHookInput, ctx: GrokHookContext): 
 	// Where the holder reads this session's log from: a session new to this Grok's record only.
 	if (hosted && !current) spoolEvent(agent.dir, session, { kind: "grok-log", at: since, claudePid: ctx.grokPid, path: log.path, home: log.home, offset: log.offset, ...(log.file === undefined ? {} : { file: log.file }) });
 	const warnings: string[] = [];
-	let state = "recording";
+	let state: StatusState = "recording";
 	if (pick.notRecorded !== undefined) warnings.push(`Orrery: which agent this Grok is could not be recorded (${safeText(pick.notRecorded)}), so each SessionStart works it out again.`);
 	if (!hosted) {
 		// Its prompts are confirmed by the session the host record names: with none, nothing records.
-		state = "read-only: this session is not recorded";
+		state = NOT_RECORDED;
 		warnings.push(`Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s, and it isn't recorded.`);
 	} else {
 		const holder = readHolder(agent.dir);
@@ -346,7 +347,7 @@ export async function sessionStart(input: GrokHookInput, ctx: GrokHookContext): 
 			state = "not recording yet";
 			warnings.push(`Orrery: ${agent.name}'s recorder did not answer in time; see ${holderLog(agent.dir)}.`);
 		} else if (mode.mode === "read-only") {
-			state = "read-only: this session is not recorded";
+			state = NOT_RECORDED;
 			if (held) warnings.push(`Orrery: ${agent.name} is ${openElsewhere(agent.dir, "grok")}; this session reads memory but is not recorded.`);
 		}
 		// A recording recorder's notices (memory kept aside, unsaved turns kept) are said once per recorder start.
@@ -358,7 +359,8 @@ export async function sessionStart(input: GrokHookInput, ctx: GrokHookContext): 
 	} catch (error) {
 		warnings.push(`Orrery: ${agent.name}'s memory could not be read: ${safeText(errorText(error))}`);
 	}
-	const status = `Orrery · ${agent.name} · ${memory.messages === undefined ? "no memory yet" : `${memory.messages} msgs`} · ${state}`;
+	// In the status row's words (src/grok/status.ts), with why on the lines after.
+	const status = statusText({ name: agent.name, count: memory.messages, state });
 	return { systemMessage: [status, ...warnings, ...noticeLines(agent, session, ctx)].join("\n") };
 }
 

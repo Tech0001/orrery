@@ -45,6 +45,7 @@ import { readMemory } from "../agent/memory-read.ts";
 import type { PlainDeps } from "../agent/plain-nested.ts";
 import { liveSession, nestedNotice, plainFields, recordSession, type SessionRecord } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
+import { NOT_RECORDED, type StatusState, statusText } from "../agent/status-text.ts";
 import { noticeShownBefore, waitForMode } from "../claude/hooks.ts";
 import { settleView } from "../claude/mod-view.ts";
 import { summaryNotice, updateNotice } from "../claude/notices.ts";
@@ -279,12 +280,12 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 	// At resume (and a fork) the session's history holds the view it had: another would sit beside it.
 	const withView = input.source !== "resume" && input.source !== "fork";
 	const warnings: string[] = [];
-	let state = "recording";
+	let state: StatusState = "recording";
 	// Its own claim keeps this Codex the agent's; each SessionStart decides again, which is said once a session.
 	if (pick.notRecorded !== undefined && input.source !== "compact") warnings.push(`Orrery: which agent this Codex is could not be recorded (${safeText(pick.notRecorded)}), so each SessionStart works it out again.`);
 	if (!hosted) {
 		// Its prompts are confirmed by the session the host record names: with none, nothing records.
-		state = "read-only: this session is not recorded";
+		state = NOT_RECORDED;
 		warnings.push(`Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s, and it isn't recorded.`);
 	} else {
 		const holder = readHolder(agent.dir);
@@ -301,7 +302,7 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 			state = "not recording yet";
 			warnings.push(`Orrery: ${agent.name}'s recorder did not answer in time; see ${holderLog(agent.dir)}.`);
 		} else if (mode.mode === "read-only") {
-			state = "read-only: this session is not recorded";
+			state = NOT_RECORDED;
 			if (held) warnings.push(`Orrery: ${agent.name} is ${openElsewhere(agent.dir, "codex")}; this session reads memory but is not recorded.`);
 		}
 		// A recording recorder's notices (memory kept aside, unsaved turns kept) are said once per recorder start, not again
@@ -321,7 +322,7 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 	} catch (error) {
 		warnings.push(`Orrery: ${agent.name}'s memory could not be read: ${safeText(errorText(error))}`);
 	}
-	const status = `Orrery · ${agent.name} · ${memory.messages === undefined ? "no memory yet" : `${memory.messages} msgs`} · ${state}`;
+	const status = statusText({ name: agent.name, count: memory.messages, state });
 	const head = [status, ...warnings].join("\n");
 	// For the person only (systemMessage), never the model's context.
 	const shown = [head, ...noticeLines(agent, session, ctx)].join("\n");

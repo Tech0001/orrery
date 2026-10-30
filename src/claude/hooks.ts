@@ -55,6 +55,7 @@ import { processAlive } from "../agent/process.ts";
 import { liveSession, processStart } from "../agent/sessions.ts";
 import { selfCommand } from "../agent/running.ts";
 import { safeText } from "../agent/source-labels.ts";
+import { NOT_RECORDED, type StatusState, statusText } from "../agent/status-text.ts";
 import { type HolderHost, holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
 import { agentGuardOptions, claudeGuard, claudeStateRoots, plainGuardOptions } from "./guard.ts";
 import { summaryNotice, updateNotice } from "./notices.ts";
@@ -491,7 +492,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	if (liveSession(ctx.config.dataDir, ctx.claudePid) === undefined && processAlive(ctx.claudePid)) {
 		warnings.push(`Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s.`);
 	}
-	let state = "recording";
+	let state: StatusState = "recording";
 	// Where the session's prompts are confirmed (src/claude/transcript.ts), or why they can't be. Subagents' events are
 	// not memory.
 	const confirm = input.agent_id === undefined ? confirmable(input, ctx) : undefined;
@@ -520,7 +521,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	if (unconfirmable !== undefined && !keep) {
 		// Its prompts can't be confirmed: none of it is recorded, whatever comes later.
 		markNotConfirmable(agent, session, ctx, unconfirmable.notice);
-		state = "read-only: this session is not recorded";
+		state = NOT_RECORDED;
 	} else {
 		let mode: SessionMode | undefined;
 		if (recordingHere) mode = readMode(agent.dir, session);
@@ -535,7 +536,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 			state = "not recording yet";
 			warnings.push(`Orrery: ${agent.name}'s recorder did not answer in time; see ${holderLog(agent.dir)}.`);
 		} else if (mode.mode === "read-only") {
-			state = "read-only: this session is not recorded";
+			state = NOT_RECORDED;
 			if (genericHeld) warnings.push(`Orrery: ${agent.name} is ${openElsewhere(agent.dir, "claude-code")}; this session reads memory but is not recorded.`);
 		}
 		// A recording recorder's notices (memory kept aside, unsaved turns kept) are said once per recorder start, not
@@ -569,7 +570,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	}
 	// For the user only (systemMessage), never the model's context; this also records the session's key.
 	const summaries = notice(input, ctx) as { systemMessage?: string } | undefined;
-	const status = `Orrery · ${agent.name} · ${messages === undefined ? "no memory yet" : `${messages} msgs`} · ${state}${mod ? " · memory from the Orrery mod" : ""}`;
+	const status = statusText({ name: agent.name, count: messages, state, extra: mod ? ["memory from the Orrery mod"] : [] });
 	const shown = [...warnings, ...(summaries?.systemMessage ? [summaries.systemMessage] : [])];
 	return {
 		// With no memory yet the mod adds no section by design, so there is nothing for the model to look for.

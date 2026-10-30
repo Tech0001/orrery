@@ -186,9 +186,9 @@ const CREDENTIALS = [...SENSITIVE, HOME_NAMED];
  *   a list ({orrery,holder}). A glob that could name the program counts as it does (~/.local/bin/orr*y: programGlobs).
  *   Text that names both for other reasons (`cd ~/orrery && grep holder src`) is refused too.
  * A word may also start or end at an escape that printf or echo -e turns into a separator (`printf 'A\nholder'`).
- * Orrery's other commands (orrery status, orrery help…) stay open; `orrery claude-mod view` only reads. As with every
- * shell-text rule, a name built at run time (o=orrery; $o holder, or codex-$x"hook"), read from a file (xargs -a), or a
- * link or alias of another name to Orrery's program gets through.
+ * Orrery's other commands (orrery status, orrery help…) stay open; `orrery claude-mod view` and `orrery grok-status` only
+ * read. As with every shell-text rule, a name built at run time (o=orrery; $o holder, or codex-$x"hook"), read from a
+ * file (xargs -a), or a link or alias of another name to Orrery's program gets through.
  */
 const ESCAPE_BEFORE = "\\\\(?:[a-z]|x[0-9a-f]{1,2}|[0-7]{1,3})";
 const PLUMBING_START = `(?:^|[\\s"'=:/~<>;|&()\`{},*@]|(?:^|[\\s"'])-[a-z]+|${ESCAPE_BEFORE})`;
@@ -251,7 +251,7 @@ export const PLUMBING_REFUSED = "This command runs Orrery's hook plumbing (codex
 export const ORRERY_COMMANDS: readonly string[] = [
 	...["help", "agent", "run", "status", "import", "compact", "browse", "backup", "restore", "login", "logins", "logout"],
 	...["compactor", "usage", "remote", "trust-host", "update", "tools", "claude-setup", "setup", "install", "uninstall"],
-	...["version", "holder", "claude-mod", "mcp", "claude-hook", "codex-hook", "grok-hook"],
+	...["version", "holder", "claude-mod", "mcp", "claude-hook", "codex-hook", "grok-hook", "grok-status"],
 ];
 
 /**

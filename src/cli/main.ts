@@ -523,6 +523,9 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 	if (command === "claude-hook") return claudeHook(arg, values.config);
 	if (command === "codex-hook") return codexHook(arg, values.config);
 	if (command === "grok-hook") return grokHook(arg, values.config);
+	// Grok's status row runs several times a second during a turn, and decides and writes nothing: as a hook event, the
+	// claim its Grok already holds names its agent.
+	if (command === "grok-status") return grokStatusCommand(values.config);
 	// The Claude Code plugin's memory server, started by Grok (its Claude Code compatibility): it serves nothing, and
 	// decides nothing for Grok's process, so Orrery's own server for Grok (--tool grok) is the only one there.
 	if (command === "mcp" && (values.tool === undefined || values.tool === "claude-code") && (await import("../grok/host.ts")).hostIsGrok()) {
@@ -1091,6 +1094,30 @@ async function grokHook(event: string | undefined, configPath: string | undefine
 		process.stdout.write(await hooks.runGrokHook(event ?? "", stdin, { config, env: process.env, grokPid: pid, grokParent: process.ppid, startHolder, updateNotices: true }));
 	} catch (error) {
 		process.stderr.write(`Orrery: ${event ?? "grok-hook"}: ${errorText(error)}\n`);
+	}
+	return 0;
+}
+
+/** The most of Grok's status JSON read: it is a few kilobytes; more is no status of Grok's. */
+const GROK_STATUS_INPUT_MAX = 1024 * 1024;
+
+/**
+ * `orrery grok-status`: Grok Build's status row (src/grok/status.ts), which Orrery's install names in Grok's config. Grok
+ * runs it with its status JSON on stdin; it prints one line, or nothing for no row. It never fails into the row (Grok
+ * paints a failing command's exit code there): exit 0 and nothing on stderr, whatever happens, a config that can't be
+ * read included. A plain grok's (no ORRERY_AGENT) reads no config at all.
+ */
+async function grokStatusCommand(configPath: string | undefined): Promise<number> {
+	try {
+		const stdin = (await readStdin(GROK_STATUS_INPUT_MAX)) ?? "";
+		const { AGENT_ENV } = await import("../agent/pick.ts");
+		if ((process.env[AGENT_ENV]?.trim() ?? "") === "") return 0;
+		const config = loadConfig(configPath);
+		const [{ grokStatus }, { grokPid }] = await Promise.all([import("../grok/status.ts"), import("../grok/host.ts")]);
+		const line = grokStatus(stdin, { config, env: process.env, grokPid: grokPid(), grokParent: process.ppid });
+		if (line !== "") process.stdout.write(`${line}\n`);
+	} catch {
+		// No row.
 	}
 	return 0;
 }

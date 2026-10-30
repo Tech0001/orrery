@@ -298,10 +298,22 @@ export function grokHooksInstalled(root: string, env: NodeJS.ProcessEnv): boolea
 const DISABLED_HOOKS = "disabled-hooks";
 
 /**
- * The name Grok 1.0.70 gives the guard of Orrery's hook file (hooks/orrery.json, PreToolUse) in that file: seen live,
- * `global/orrery:pre_tool_use[0].hooks[0]`.
+ * The name Grok 1.0.70 gives a hook of Orrery's hook file (hooks/orrery.json) for `event` (Grok's snake_case name) in that
+ * file: seen live, `global/orrery:pre_tool_use[0].hooks[0]` and `global/orrery:session_start[0].hooks[0]`.
  */
-const ORRERY_GUARD_HOOK = /^global\/orrery:pre_tool_use\[\d+\]\.hooks\[\d+\]$/;
+const orreryHook = (event: string) => new RegExp(`^global/orrery:${event}\\[\\d+\\]\\.hooks\\[\\d+\\]$`);
+
+/** Whether Grok's disabled-hooks file names a hook of Orrery's for one of `events`; `unreadable` when it can't be read. */
+function switchedOff(env: NodeJS.ProcessEnv, events: readonly string[], unreadable: boolean): boolean {
+	let text: string;
+	try {
+		text = readFileSync(join(grokFiles(env).home, DISABLED_HOOKS), "utf8");
+	} catch (error) {
+		return (error as { code?: unknown }).code === "ENOENT" ? false : unreadable;
+	}
+	const hooks = events.map(orreryHook);
+	return text.split("\n").some((line) => hooks.some((hook) => hook.test(line.trim())));
+}
 
 /**
  * Whether the guard of Orrery's Grok hook file is switched off in Grok's /hooks tab (its disabled-hooks file names it),
@@ -309,13 +321,15 @@ const ORRERY_GUARD_HOOK = /^global\/orrery:pre_tool_use\[\d+\]\.hooks\[\d+\]$/;
  * (src/cli/main.ts grokGuarded). No file: nothing is switched off.
  */
 export function grokGuardSwitchedOff(env: NodeJS.ProcessEnv): boolean {
-	let text: string;
-	try {
-		text = readFileSync(join(grokFiles(env).home, DISABLED_HOOKS), "utf8");
-	} catch (error) {
-		return (error as { code?: unknown }).code !== "ENOENT";
-	}
-	return text.split("\n").some((line) => ORRERY_GUARD_HOOK.test(line.trim()));
+	return switchedOff(env, ["pre_tool_use"], true);
+}
+
+/**
+ * Whether a hook Orrery records with (SessionStart, UserPromptSubmit, Stop) is switched off in Grok's /hooks tab, for the
+ * status row (src/grok/status.ts). A file that can't be read tells nothing: false.
+ */
+export function grokRecordingSwitchedOff(env: NodeJS.ProcessEnv): boolean {
+	return switchedOff(env, ["session_start", "user_prompt_submit", "stop"], false);
 }
 
 /**
