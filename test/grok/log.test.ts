@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { confirmGrok, GrokLogReader, grokFolder, grokHeldSessions, grokHome, grokLogIn, grokLogStart, grokSessionKind, grokStartHome, parseGrokLogMark, sharedLogLives } from "../../src/grok/log.ts";
@@ -227,8 +227,10 @@ describe("GrokLogReader", () => {
 		appendFileSync(path, `${grokLog.typed(S, "Hello.", 0)}\n`);
 		const reader = new GrokLogReader({ path, home, offset: 0 });
 		reader.read();
-		rmSync(path);
-		writeFileSync(path, `${grokLog.typed(S, "Planted.", 0)}\n${grokLog.thought(S, "p-1")}\n`);
+		// Put in its place while it still is, as Grok holds its log open: an inode freed first may come back (ext4).
+		const planted = join(home, "planted.jsonl");
+		writeFileSync(planted, `${grokLog.typed(S, "Planted.", 0)}\n${grokLog.thought(S, "p-1")}\n`);
+		renameSync(planted, path);
 		reader.read();
 		expect(reader.confirm(prompt("p-1", "Planted.")).verdict).toBe("wait");
 	});

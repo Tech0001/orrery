@@ -591,7 +591,9 @@ describe("Orrery's Claude Code plugin under Grok, which runs it through its Clau
 		expect(listSessions(t.agent.dir)).toEqual([]);
 	}, 60_000);
 
-	it("Claude Code started from a Grok shell still records: its hooks' host is that Claude Code, not Grok", () => {
+	// Not under Bun (test:bun-suite): its stand-in Claude Code is then Bun, whose stdin to the hook is no socket pair on
+	// Linux; Node's (npm test) and the binary's runs judge it.
+	it.skipIf(process.versions.bun !== undefined)("Claude Code started from a Grok shell still records: its hooks' host is that Claude Code, not Grok", () => {
 		const t = testAgent({ setup: true });
 		const transcript = transcriptIn(t.dir);
 		const env = cleanEnv({ ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: t.folder, CLAUDE_CONFIG_DIR: transcript.configDir });
