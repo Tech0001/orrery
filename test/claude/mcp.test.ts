@@ -16,7 +16,7 @@ import { writeMode } from "../../src/claude/spool.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { seedAtlas } from "../agent/support.ts";
 import { cleanup, isolatedHome, pi, world } from "../pi/world.ts";
-import { cleanEnv, cliCommand, grokLaunch, grokLeaderFolder, grokLeaderLaunch } from "./support.ts";
+import { cleanEnv, cliCommand, grokLaunch, grokLeaderFolder, grokLeaderLaunch, grokWorkerLaunch } from "./support.ts";
 
 afterEach(cleanup);
 // One test starts a real pi; the MCP processes below get a scratch HOME of their own (the world's root).
@@ -424,12 +424,15 @@ describe("the memory tools in Grok Build (spec 2026-10-29-grok-build)", () => {
 		const { root, config, configPath } = world();
 		seedAtlas(root);
 		const token = newToken();
-		// The leader starts every session's server: Grok gives each one its own client's ORRERY_AGENT and token.
-		const served = await serve(root, ["--tool", "grok"], { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token }, grokLeaderLaunch, grokLeaderFolder());
-		expect([served.code, served.tools]).toEqual([0, []]);
-		expect(served.err).toBe("Orrery: Grok runs this session's hooks and memory tools in its shared leader process (leader mode), where one session's agent can't be told from another's; Orrery opens its agents with --no-leader. This session records nothing and gets no memory tools.\n");
-		expect(existsSync(join(config.dataDir, "grok-processes"))).toBe(false);
-		expect(claimedBy(join(root, "data", "agents", "Atlas"), token)).toBeUndefined();
+		// The leader starts every session's server: Grok gives each one its own client's ORRERY_AGENT and token. Leader
+		// mode's, and one `grok worker start` runs in its own process.
+		for (const launch of [grokLeaderLaunch, grokWorkerLaunch]) {
+			const served = await serve(root, ["--tool", "grok"], { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token }, launch, grokLeaderFolder());
+			expect([launch.name, served.code, served.tools]).toEqual([launch.name, 0, []]);
+			expect(served.err).toBe("Orrery: Grok runs this session's hooks and memory tools in its shared leader process (leader mode), where one session's agent can't be told from another's; Orrery opens its agents with --no-leader. This session records nothing and gets no memory tools.\n");
+			expect(existsSync(join(config.dataDir, "grok-processes"))).toBe(false);
+			expect(claimedBy(join(root, "data", "agents", "Atlas"), token)).toBeUndefined();
+		}
 		// The same server started by a session's own grok serves Atlas.
 		expect((await serve(root, ["--tool", "grok"], { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token }, grokLaunch)).tools).toEqual(["zoom", "date", "search"]);
 	});

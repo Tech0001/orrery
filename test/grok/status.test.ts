@@ -406,6 +406,10 @@ describe("orrery grok-status", () => {
 		expect(grokStatus(payload(session), ctx(w.config, {}, leader))).toBe("");
 		// A command line that can't be read: whether it is the leader can't be told, so nothing.
 		expect(grokStatus(payload(session), ctx(w.config, as("Scratch", token), { argvOf: () => undefined }))).toBe("");
+		// One run in its own process (worker start, leader worker start), and one with global options before agent: the same.
+		for (const argv of [["grok", "worker", "start"], ["grok", "leader", "worker", "--max-agents", "2", "start"], ["grok", "--debug", "agent", "leader"]]) {
+			expect([argv.join(" "), grokStatus(payload(session), ctx(w.config, as("Scratch", token), { argvOf: () => argv }))]).toEqual([argv.join(" "), "Orrery · not recording: leader mode; Orrery opens agents with --no-leader"]);
+		}
 	});
 
 	it("reads and writes nothing it shouldn't: no claim, no decision, no record", () => {

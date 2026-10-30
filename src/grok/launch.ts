@@ -1,18 +1,20 @@
 /**
  * What opening an agent in Grok Build adds to its command line: `--no-leader` (grokArgs), and one `--rules` value, which
  * Grok appends to the system prompt for the whole session and keeps through /compact. It holds the agent's memory
- * section, then its instructions. Grok 1.0.70 accepts `--rules` once only ("cannot be used multiple times"), and Linux takes at most 128 KiB in one
- * argument. The instructions go in whole (at most 32 KB, as for every tool: readInstructions), and the memory section
- * takes the room they leave: a view at a smaller ceiling when the agent's own is too large, or that view's newest
- * lines, the older left out, which the zoom and search tools still reach (fitMemory, src/agent/memory-read.ts).
- * The text is on Grok's command line, where other users of the computer can read it, and every process of this user, other
- * agents' shells among them, whatever their `reads` allows (docs/architecture.md, Limits).
+ * section, then its instructions. Grok 1.0.70 accepts `--rules` once only ("cannot be used multiple times"), and Linux
+ * takes at most 128 KiB in one argument. The instructions go in whole (at most 32 KB, as for every tool:
+ * readInstructions), and the memory section takes the room they leave: a view at a smaller ceiling when the agent's own
+ * is too large, or that view's newest lines, the older left out, which the zoom and search tools still reach (fitMemory,
+ * src/agent/memory-read.ts). The text is on Grok's command line, where other users of the computer can read it, and
+ * every process of this user, other agents' shells among them, whatever their `reads` allows (docs/architecture.md,
+ * Limits).
  */
 
 import type { AgentConfig } from "../agent/config.ts";
 import { cutNotice, type Instructions, instructionsSection, readInstructions } from "../agent/instructions.ts";
 import { fitMemory } from "../agent/memory-read.ts";
 import { safeText } from "../agent/source-labels.ts";
+import { GROK_VALUE_OPTIONS } from "./names.ts";
 
 /** The most bytes (UTF-8) one argument may hold: Linux's limit is 131,072; this leaves some room. */
 export const GROK_ARG_MAX = 131_000;
@@ -85,21 +87,12 @@ export function grokRules(agent: AgentConfig, readOnly: boolean): GrokLaunch {
 const RULES_FLAGS = ["--rules", "--append-system-prompt"];
 
 /**
- * Grok 1.0.70's options that take a value (`grok --help`): the word after one is its value, never a command. The optional
- * values of --resume and --worktree are not among them, so a command after either is still read as one.
- */
-const VALUE_OPTIONS = new Set([
-	...["--add-dir", "--agent", "--agents", "--allow", "--allowedTools", "--allowed-tools", "--cwd", "--debug-file", "--deny", "--disallowedTools", "--disallowed-tools"],
-	...["--json-schema", "--leader-socket", "-m", "--model", "--output-format", "-p", "--single", "--permission-mode", "--prompt-file", "--prompt-json"],
-	...["--reasoning-effort", "--effort", "--rules", "--append-system-prompt", "-s", "--session-id", "--sandbox", "--system-prompt-override", "--system-prompt"],
-	...["--tools", "--worktree-ref", "--ref"],
-]);
-
-/**
  * What in the person's arguments starts Grok's shared leader before a `--`, as a refusal names it, or undefined: the
  * `--leader` flag; `agent … leader`, Grok's own; or Grok's commands that run a leader in the calling process, `leader
  * worker start` and `worker start` (1.0.70's help: "Run a leader in this terminal"), read as any `leader` or `worker`
- * word that is no option's value, named with the words after it up to the next option.
+ * word that is no option's value, named with the words after it up to the next option. Read more widely than a running
+ * Grok's own command line is (src/grok/host.ts isGrokLeader, which knows the same leaders): a word the person gives here
+ * may be refused for nothing more than its name.
  */
 function startsLeader(args: readonly string[]): string | undefined {
 	const until = args.indexOf("--");
@@ -107,7 +100,7 @@ function startsLeader(args: readonly string[]): string | undefined {
 	if (hasFlag(own, ["--leader"])) return "--leader";
 	const agent = own.indexOf("agent");
 	if (agent >= 0 && own.indexOf("leader", agent + 1) > agent) return "Grok's agent leader command";
-	const at = own.findIndex((word, index) => (word === "leader" || word === "worker") && !VALUE_OPTIONS.has(own[index - 1] ?? ""));
+	const at = own.findIndex((word, index) => (word === "leader" || word === "worker") && !GROK_VALUE_OPTIONS.has(own[index - 1] ?? ""));
 	if (at < 0) return undefined;
 	const next = own.findIndex((word, index) => index > at && word.startsWith("-"));
 	return `Grok's ${own.slice(at, next < 0 ? undefined : next).join(" ")} command`;

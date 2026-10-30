@@ -182,14 +182,16 @@ export function grokLaunch(cmd: string, args: readonly string[]): [string, strin
 let leaderFolder: string | undefined;
 
 /**
- * The folder to start grokLeaderLaunch's command in: it holds the script `agent`, which node runs from there as `node
- * agent leader …`, so that process's command line is Grok's shared leader's (`<grok> agent leader …`, leader mode).
+ * The folder to start grokLeaderLaunch's and grokWorkerLaunch's commands in: it holds the scripts `agent` and `worker`,
+ * which node runs from there as `node agent leader …` and `node worker … start …`, so that process's command line is
+ * Grok's shared leader's (`<grok> agent leader …`, leader mode; `<grok> worker start`, one run in its own process).
  */
 export function grokLeaderFolder(): string {
 	if (leaderFolder === undefined || !existsSync(leaderFolder)) {
 		leaderFolder = tempDir("orrery-grok-leader-");
 		// Runs the command its last argument names, as its child, with the leader's stdin, stdout and stderr; exits as it does.
-		writeFileSync(join(leaderFolder, "agent"), `import("node:child_process").then(({ spawn }) => {\n\tconst [cmd, ...args] = JSON.parse(process.argv[process.argv.length - 1]);\n\tspawn(cmd, args, { stdio: "inherit" }).on("exit", (code) => process.exit(code ?? 1));\n});\n`);
+		const script = `import("node:child_process").then(({ spawn }) => {\n\tconst [cmd, ...args] = JSON.parse(process.argv[process.argv.length - 1]);\n\tspawn(cmd, args, { stdio: "inherit" }).on("exit", (code) => process.exit(code ?? 1));\n});\n`;
+		for (const name of ["agent", "worker"]) writeFileSync(join(leaderFolder, name), script);
 	}
 	return leaderFolder;
 }
@@ -202,6 +204,12 @@ export function grokLeaderFolder(): string {
 export function grokLeaderLaunch(cmd: string, args: readonly string[]): [string, string[]] {
 	grokLeaderFolder();
 	return [process.execPath, ["agent", "leader", "--no-exit-on-disconnect", JSON.stringify([cmd, ...args])]];
+}
+
+/** The same as grokLeaderLaunch's, under `grok worker start`, which runs Grok's shared leader in its own process (1.0.70's help). */
+export function grokWorkerLaunch(cmd: string, args: readonly string[]): [string, string[]] {
+	grokLeaderFolder();
+	return [process.execPath, ["worker", "--name", "w", "start", JSON.stringify([cmd, ...args])]];
 }
 
 // Imported at the top of a test file, this hook is that file's.

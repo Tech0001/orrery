@@ -251,6 +251,18 @@ describe("Grok's shared leader (leader mode), which runs every session's hooks w
 		await run("user-prompt-submit", input({ prompt: "Own words.", promptId: "p-2" }), c);
 		expect(spooled(t, "s1").map((event) => event.kind)).toEqual(["grok-log", "prompt"]);
 	});
+
+	it("so does one run in its own process (worker start, leader worker start), and one started with global options before agent", async () => {
+		const t = testAgent();
+		const started: string[] = [];
+		for (const argv of [["grok", "worker", "start"], ["grok", "leader", "worker", "start"], ["grok", "--debug", "--leader-socket", "/tmp/l.sock", "agent", "leader"]]) {
+			const c = ctx(t, { startHolder: answer("recording", started), argvOf: () => argv }, tokenOf(t));
+			expect([argv.join(" "), ((await run("session-start", input({ source: "new" }), c)) as Answer).systemMessage]).toEqual([argv.join(" "), expect.stringMatching(/^Orrery: Grok runs this session's hooks and memory tools in its shared leader process \(leader mode\)/)]);
+			await run("user-prompt-submit", input({ prompt: "Codename Saffron.", promptId: "p-1" }), c);
+		}
+		expect(state(t)).toEqual({});
+		expect(started).toEqual([]);
+	});
 });
 
 describe("hook calls forged by the agent's own shell: Grok's session folder is the proof", () => {
@@ -518,6 +530,33 @@ describe("Grok's folder is the one the grok process was started with (its own GR
 		await run("stop", input({ lastAssistantMessage: "Noted: Saffron.", promptId: "p-1", reason: "end_turn" }), honest);
 		await waitUntil(() => messages(t.agent).length === 2);
 		expect(messages(t.agent)).toEqual(["user: Codename Saffron.", "talk: Noted: Saffron."]);
+	});
+
+	it("on macOS, a HOME, GROK_HOME, ORRERY_HOME or ORRERY_CONFIG that ps cuts at a space, or that stands twice, reads as unreadable, never as the shorter folder: the session start says so and nothing is decided, claimed or spooled", async () => {
+		const t = testAgent();
+		const c = ctx(t, { startHolder: answer("recording") });
+		const args = "/Users/u/.grok/bin/grok --no-leader";
+		const mac = (env: string): GrokHookContext["envOf"] => (pid, names) =>
+			processEnv(pid, names, { platform: "darwin", withoutArgs: true, unambiguous: true, ps: (asked) => (asked.includes("-wwE") ? `${args} ${env}\n` : `${args}\n`) });
+		const launch = `ORRERY_AGENT=Test ORRERY_AGENT_TOKEN=${c.env.ORRERY_AGENT_TOKEN}`;
+		const before = state(t);
+		// ps joins the environment with spaces: a value holding one runs into a word that is no variable of its own. Read
+		// so, HOME would be /Users/my, a folder the agent could make; it is read as nothing.
+		for (const env of [
+			`PATH=/usr/bin HOME=/Users/my home ${launch} GROK_HOME=${homeOf(t).home}`,
+			`PATH=/usr/bin HOME=/Users/u ${launch} GROK_HOME=/Users/u/grok home`,
+			`PATH=/usr/bin HOME=/Users/u ORRERY_HOME=/Users/u/my orrery ${launch} GROK_HOME=${homeOf(t).home}`,
+			`PATH=/usr/bin HOME=/Users/u ORRERY_CONFIG=/Users/u/my config.toml ${launch} GROK_HOME=${homeOf(t).home}`,
+			// One standing twice can't be told either.
+			`PATH=/usr/bin HOME=/Users/u HOME=/tmp/x ${launch} GROK_HOME=${homeOf(t).home}`,
+		]) {
+			expect([env, await run("session-start", input({ source: "new" }), { ...c, envOf: mac(env) })]).toEqual([env, { systemMessage: notWhose("the environment this Grok was started with can't be read") }]);
+			await run("user-prompt-submit", input({ prompt: "Codename Saffron.", promptId: "p-1" }), { ...c, envOf: mac(env) });
+		}
+		expect(state(t)).toEqual(before);
+		// The same values without a space: read, and the session records.
+		const whole = `PATH=/usr/bin HOME=/Users/u ${launch} GROK_HOME=${homeOf(t).home}`;
+		expect(((await run("session-start", input({ source: "new" }), { ...c, envOf: mac(whole) })) as Answer).systemMessage).toMatch(/^Orrery · Test · (no memory yet|0 msgs) · recording$/);
 	});
 });
 

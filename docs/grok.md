@@ -93,7 +93,10 @@ agent. Its command line adds:
 
 - `--no-leader`. In Grok's leader mode (`--leader`, or `[cli] use_leader = true` in its config, which `--no-leader`
   overrides) one shared process runs every session's hooks and memory tools with its first session's environment,
-  where one agent's session can't be told from another's.
+  where one agent's session can't be told from another's. Orrery's hooks, guard, status row and memory tools know such
+  a process wherever it comes from (`grok agent leader`, or `grok worker start` and `grok leader worker start`, which
+  run one in their own process, global options before the command included) and record nothing, serve no memory
+  tools, and guard with the rules of a session that is no agent's there.
 - `--rules`, which Grok appends to its system prompt for the whole session: the agent's memory section, then its
   instructions (see [The memory view](#the-memory-view) and [Instructions](#instructions)).
 

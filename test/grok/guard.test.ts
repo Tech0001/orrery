@@ -1744,8 +1744,14 @@ describe("the PreToolUse hook (runGrokGuard)", () => {
 
 	it("under Grok's shared leader, applies the plain-window rules to every session, whatever agent and token it names", () => {
 		const { t, ctx, home } = agentWorld();
-		const leaderArgv = ["/home/u/.grok/downloads/grok-linux-x86_64", "agent", "leader", "--no-exit-on-disconnect"];
-		for (const c of [ctx({ argvOf: () => leaderArgv }), ctx({ argvOf: () => leaderArgv, env: {} })]) {
+		// Leader mode's, one run in its own process (worker start, leader worker start), one with global options before agent.
+		const leaders = [
+			["/home/u/.grok/downloads/grok-linux-x86_64", "agent", "leader", "--no-exit-on-disconnect"],
+			["grok", "worker", "--name", "w", "start"],
+			["grok", "leader", "worker", "start"],
+			["grok", "--debug", "--leader-socket", "/tmp/l.sock", "agent", "leader"],
+		];
+		for (const c of leaders.flatMap((leaderArgv) => [ctx({ argvOf: () => leaderArgv }), ctx({ argvOf: () => leaderArgv, env: {} })])) {
 			// Never allow-all: Orrery's settings and every agent's memory and Grok's folder stay write-protected.
 			expect(runGrokGuard(call("write", { file_path: t.configPath, content: "[" }, t.folder), c)).toMatch(/^Orrery guard: /);
 			expect(runGrokGuard(call("read_file", { target_file: join(t.folder, ".orrery", "view.md") }, t.folder), c)).toMatch(/another agent's memory view|sensitive/);

@@ -58,6 +58,43 @@ describe("Grok's shared leader (leader mode)", () => {
 		}
 	});
 
+	it("knows the leaders the launch refuses (startsLeader): `worker start` and `leader worker start` in their own process, and global options before the command", () => {
+		for (const argv of [
+			// Grok's commands that run a leader in the calling process (1.0.70: "Run a leader in this terminal").
+			["grok", "worker", "start"],
+			["grok", "worker", "--name", "w", "--max-agents", "2", "start"],
+			["grok", "worker", "--pool", "pool-a", "start"],
+			["grok", "leader", "worker", "start"],
+			["grok", "--debug", "leader", "worker", "--label", "k=v", "start"],
+			// Global options before agent, as the launch reads them.
+			["grok", "--debug", "agent", "leader"],
+			["grok", "--leader-socket", "/tmp/l.sock", "agent", "leader", "--no-exit-on-disconnect"],
+			["/home/u/.grok/downloads/grok-linux-x86_64", "--debug-file", "/tmp/d", "agent", "--reasoning-effort", "high", "leader"],
+			// Grok reads its command after its prompt too.
+			["grok", "hi", "worker", "start"],
+			["grok", "-p", "hi", "agent", "leader"],
+		]) {
+			expect(isGrokLeader(argv), argv.join(" ")).toBe(true);
+		}
+		for (const argv of [
+			// worker's and leader's other commands run no leader.
+			["grok", "worker", "status"],
+			["grok", "worker", "stop"],
+			["grok", "leader", "worker", "status"],
+			["grok", "leader", "list"],
+			// An option's value, a word after the prompt and the next, or after "--", is no command.
+			["grok", "--model", "worker", "start"],
+			["grok", "fix", "the", "worker", "start"],
+			["grok", "--", "worker", "start"],
+			["grok", "-p", "agent", "leader"],
+			// macOS's ps splits a session's --rules into words: they start with its section's heading, then its text.
+			["grok", "--no-leader", "--rules", "#", "Memory", "Earlier", "conversation", "worker", "start", "agent", "leader"],
+			["grok", "--no-leader", "--rules", "#", "Agent:", "Atlas", "Run", "the", "worker", "start", "script"],
+		]) {
+			expect(isGrokLeader(argv), argv.join(" ")).toBe(false);
+		}
+	});
+
 	it("refuses a leader, and a process whose command line can't be read; never asks about its parent, which a leader may have lost", () => {
 		const argv: Record<number, readonly string[]> = { 30: ["grok", "--no-leader", "--rules", "x"], 40: LEADER };
 		const argvOf = (pid: number) => argv[pid];
@@ -74,19 +111,24 @@ describe("Grok's shared leader (leader mode)", () => {
 		// Its parent gone: a shell that started it in the background and exited (the leader keeps running, reparented).
 		const orphan = spawnSync("/bin/sh", ["-c", `${JSON.stringify(process.execPath)} agent leader >/dev/null 2>&1 & echo $!`], { cwd: t.dir, encoding: "utf8" });
 		const orphanPid = Number(orphan.stdout.trim());
-		const session = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)", "agent", "leader"], { stdio: "ignore" });
+		// One run in its own process, as `grok worker start` runs one (a script named `worker` with `start` after it).
+		writeFileSync(join(t.dir, "worker"), "setTimeout(() => {}, 60_000);\n");
+		const worker = spawn(process.execPath, ["worker", "--name", "w", "start"], { cwd: t.dir, stdio: "ignore" });
+		const session = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)", "x", "agent", "leader"], { stdio: "ignore" });
 		try {
-			const ready = (pid: number) => spawnSync("/bin/sh", ["-c", `ps -o args= -p ${pid}`], { encoding: "utf8" }).stdout.includes("leader");
-			for (const pid of [live.pid as number, orphanPid, session.pid as number]) {
+			const ready = (pid: number) => /leader|start/.test(spawnSync("/bin/sh", ["-c", `ps -o args= -p ${pid}`], { encoding: "utf8" }).stdout);
+			for (const pid of [live.pid as number, orphanPid, worker.pid as number, session.pid as number]) {
 				for (let i = 0; i < 50 && !ready(pid); i++) await new Promise((done) => setTimeout(done, 20));
 			}
 			expect(grokHostRefusal(live.pid as number)).toBe(GROK_LEADER_REFUSAL);
 			expect(grokHostRefusal(orphanPid)).toBe(GROK_LEADER_REFUSAL);
-			// Not Grok's leader: its first argument is node's own.
+			expect(grokHostRefusal(worker.pid as number)).toBe(GROK_LEADER_REFUSAL);
+			// Not Grok's leader: `agent leader` comes after its first two words that are no option, where Grok reads no command.
 			expect(grokHostRefusal(session.pid as number)).toBeUndefined();
 			expect(grokHostRefusal(process.pid)).toBeUndefined();
 		} finally {
 			live.kill();
+			worker.kill();
 			session.kill();
 			try {
 				process.kill(orphanPid);
