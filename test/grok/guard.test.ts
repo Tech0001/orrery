@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { checkToolCall, runsGrokCommand } from "../../src/agent/guard-rules.ts";
 import { newToken } from "../../src/agent/pick.ts";
 import { CODEX_GUARD_DEADLINE_MS, CODEX_GUARD_WATCHDOG_MS, isGrokGuard } from "../../src/codex/guard-exit.ts";
 import { GROK_AS_CLAUDE, type GrokGuardContext, grokGuard, grokRefusal, runGrokGuard } from "../../src/grok/guard.ts";
@@ -1311,6 +1312,110 @@ describe("Grok's folder: all but what its own features write (what can switch Or
 			expect(grokGuard("run_terminal_command", { command: "cat SKILL.md" }, inSkill, false)).toBeUndefined();
 			// One run in Grok's folder itself reads skills/ as the text naming it would.
 			expect(grokGuard("run_terminal_command", { command: "cp x skills/x/SKILL.md" }, { ...opts, folder: grok, cwd: grok }, false)).toMatch(GROK_NAMED);
+		}
+	});
+});
+
+describe("Grok's own commands in shell text: none that opens a session by its id or the latest, or changes Grok's setup, in any session", () => {
+	const ID = "01a18bb1-6f58-71b3-b214-904c0bfc4abd";
+	/** Each refused command line, and the command its refusal names. */
+	const refused: [string, string][] = [
+		[`grok -p "hi" -r ${ID} --no-leader`, "grok -r"],
+		[`grok --resume ${ID}`, "grok --resume"],
+		[`grok --resume=${ID} -p hi`, "grok --resume"],
+		["grok -r", "grok -r"],
+		["grok -c -p hi", "grok -c"],
+		["grok --continue", "grok --continue"],
+		[`grok -s ${ID} -p hi`, "grok -s"],
+		[`grok --session-id=${ID}`, "grok --session-id"],
+		[`grok "fix the bug" -r ${ID}`, "grok -r"],
+		[`grok -p -r ${ID}`, "grok -r"],
+		["grok -vc", "grok -c"],
+		[`/usr/local/bin/grok --model grok-4 -r ${ID}`, "grok -r"],
+		[`cd repo && GROK_X=1 grok -p "go on" --continue`, "grok --continue"],
+		[`env FOO=1 grok-linux-x86_64 -r ${ID}`, "grok -r"],
+		[`(grok -c) && echo done`, "grok -c"],
+		[`x=$(grok -p hi -c)`, "grok -c"],
+		[`grok -p "$(cat prompt.txt)" -r ${ID}`, "grok -r"],
+		["grok --trust -p hi", "grok --trust"],
+		["grok plugin install ./p --trust", "grok --trust"],
+		["grok mcp disable orrery", "grok mcp disable"],
+		["grok mcp remove orrery", "grok mcp remove"],
+		["grok mcp enable orrery", "grok mcp enable"],
+		["grok mcp add x -- node server.js", "grok mcp add"],
+		["grok mcp --debug-file /tmp/d add x -- node s.js --help", "grok mcp add"],
+		["grok plugin install ./p", "grok plugin install"],
+		["grok plugin rm pr-babysit", "grok plugin rm"],
+		["grok plugin marketplace add ./m", "grok plugin marketplace add"],
+		["grok update", "grok update"],
+		["grok update --version 1.0.71", "grok update"],
+		["grok login --device-auth", "grok login"],
+		["grok logout", "grok logout"],
+		["grok setup", "grok setup"],
+		[`grok sessions delete ${ID}`, "grok sessions delete"],
+		["grok agent stdio", "grok agent stdio"],
+		["grok agent --leader serve", "grok agent serve"],
+		["grok agent", "grok agent"],
+		["grok wrap grok -c", "grok -c"],
+		// Text that only names one is refused too, as for Orrery's commands, and so is a prompt given as Grok's first word
+		// that starts with a subcommand's name: the shell may read it without its quotes.
+		["echo grok update", "grok update"],
+		['grok "update the docs"', "grok update"],
+	];
+	/** Command lines that stay open: Grok's read-only commands, prompts, and text that names Grok otherwise. */
+	const open = [
+		"grok --version",
+		"grok --help",
+		"grok -h",
+		"grok mcp list",
+		"grok mcp doctor",
+		"grok mcp add --help",
+		"grok plugin list",
+		"grok plugin details pr-babysit",
+		"grok plugin marketplace list",
+		"grok sessions list",
+		"grok sessions search resume",
+		`grok export ${ID} -c`,
+		"grok inspect",
+		"grok update --check",
+		"grok setup --json",
+		"grok agent --help",
+		"grok help mcp",
+		'grok "fix the bug"',
+		'grok -p "resume where we left off"',
+		"grok -p update",
+		"grok -w feat -p hi",
+		"grok -- -r",
+		"git checkout grok -- src/x.ts",
+		"cd .worktrees/grok && npm test",
+		"npm test -- test/grok/hooks.test.ts",
+		"git log grok --oneline",
+		"ls src/grok",
+	];
+
+	it("refuses each in an agent's session and in one that is no agent's, by Grok's guard and by every tool's (the shared rule)", () => {
+		const { options, plain } = setup();
+		for (const [command, named] of refused) {
+			const why = grokGuard("run_terminal_command", { command }, options, false);
+			expect([command, why]).toEqual([command, expect.stringContaining(`${named} can't run from a session's shell`)]);
+			expect([command, grokGuard("run_terminal_command", { command }, plain, false)]).toEqual([command, why]);
+			expect([command, checkToolCall({ name: "bash", arguments: { command } }, options)]).toEqual([command, why]);
+			expect([command, runsGrokCommand(command)?.command]).toEqual([command, named]);
+		}
+	});
+
+	it("says why: a session that may be live elsewhere stops recording, or Grok's own setup", () => {
+		const { options } = setup();
+		expect(grokGuard("run_terminal_command", { command: `grok -p hi -r ${ID}` }, options, false)).toMatch(/opens a Grok session by its id or the latest one, which may be live in another Grok .* stops Orrery recording that session/);
+		expect(grokGuard("run_terminal_command", { command: "grok agent stdio" }, options, false)).toMatch(/opens a Grok session/);
+		expect(grokGuard("run_terminal_command", { command: "grok mcp disable orrery" }, options, false)).toMatch(/changes Grok's own setup \(its MCP servers, plugins, trusted folders, sign-in, managed config or saved sessions\)/);
+	});
+
+	it("lets Grok's read-only commands, a prompt and text that names Grok otherwise through", () => {
+		const { options, plain } = setup();
+		for (const command of open) {
+			expect([command, grokGuard("run_terminal_command", { command }, options, false)]).toEqual([command, undefined]);
+			expect([command, grokGuard("run_terminal_command", { command }, plain, false)]).toEqual([command, undefined]);
 		}
 	});
 });
