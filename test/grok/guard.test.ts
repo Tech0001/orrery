@@ -1764,8 +1764,15 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 			["rg --hostname-bin=grok update x", "grok update"],
 			// sed's e command runs its text, so sed is off the list (accepted over-refusal for a sed that only prints).
 			["sed '1e grok update' notes.md", "grok update"],
-			// Words before the program are none of its arguments.
+			// Words before the program are none of its arguments, and an assignment before it may make it run another
+			// program (an editor, a pager), so with one the command is read as any other.
 			['GIT_EDITOR="grok update" git commit', "grok update"],
+			["GIT_EDITOR='grok update' git commit", "grok update"],
+			['PAGER="grok mcp disable orrery" git log', "grok mcp disable"],
+			["GH_EDITOR='grok update' gh pr create", "grok update create"],
+			['GIT_EDITOR=sh git commit -e -m "grok update"', "grok update"],
+			['GIT_PAGER=sh git log -1 --format="grok update"', "grok update"],
+			['A=1 git commit -m "grok update"', "grok update"],
 		]);
 		opensEach([
 			'echo "grok update"',
@@ -1776,7 +1783,7 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 			'gh pr create --title "grok update" --body-file pr.md',
 			'gh issue comment 3 --body "grok mcp disable orrery"',
 			'git tag -a v1 -m "grok update"',
-			'A=1 git commit -m "grok update"',
+			'git commit -m "grok update docs"',
 			'2>/dev/null git log --grep "grok update"',
 			"cat notes.md; ls grok update",
 			"jq -r '.x' grok update",

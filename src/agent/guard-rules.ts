@@ -765,9 +765,10 @@ export const ORRERY_COMMAND_REFUSED_PLAIN = (command: string) =>
 // substitution or a ${…}, or starts with a "-" (grok "--trust x"); elsewhere, unquoted (grok -p update), and in a text
 // with a brace group (grokCommandOf), each of its words counts. Each time the program is named it is read on its own,
 // in another's words or substitution too (grok "x $(grok mcp disable orrery)"), but as the argument of a program that
-// never runs its arguments (namesOnly: git commit -m "add grok support and update docs" passes; a case arm, eval,
-// sh -c, npx and echo grok update | sh don't). What xargs or parallel feed the program counts wherever it stands. A
-// command that only asks for a command's help passes (asksHelp). Limits: src/agent/guard-paths.ts, Known limits.
+// never runs its arguments with no assignment before it (namesOnly: git commit -m "add grok support and update docs"
+// passes; a case arm, eval, sh -c, npx, echo grok update | sh and GIT_EDITOR=sh git commit -e don't). What xargs or
+// parallel feed the program counts wherever it stands. A command that only asks for a command's help passes (asksHelp).
+// Limits: src/agent/guard-paths.ts, Known limits.
 
 /** What a shell drops from a word: a quote, a backslash, a line continuation, an empty substitution, the $ of $"…". */
 const DROPS = "(?:\\\\\\n|[\\\\\"']|\\$\\(\\)|\\$(?=[\"'])|``)";
@@ -829,12 +830,13 @@ const SHELL_PLAIN = "[^\\s\"'\\\\$`;|&()<>]";
  */
 const RUNS_AS_COMMAND = new RegExp(`^(?:[\\s!{]|(?:[a-z_][a-z0-9_]*=)?\\$?\\(|(?:[a-z_][a-z0-9_]*=${SHELL_PLAIN}*|then|do|else|env|exec|command|nohup|nice|time|timeout|-${SHELL_PLAIN}*|[0-9][0-9.]*[a-z]?)(?=\\s))*(?:${SHELL_PLAIN}*\\/)?$`);
 /**
- * A command's program past plain assignments and redirections (sticky), when it never runs its arguments: a bare name
- * (a path may be another program); git's and gh's only with a command that runs none (git -c, rebase -x, grep -O and
- * gh's extensions do, as sed's e command does; the readings are lower case, so git -C is -c); rg in group 1 (namesOnly
- * reads its options); and Grok's own, whose words this rule reads from the program itself.
+ * A command's program past plain redirections (sticky), when it never runs its arguments: a bare name (a path may be
+ * another program); git's and gh's only with a command that runs none (git -c, rebase -x, grep -O and gh's extensions
+ * do, as sed's e command does; the readings are lower case, so git -C is -c); rg in group 1 (namesOnly reads its
+ * options); and Grok's own, whose words this rule reads from the program itself. No assignment may stand before it: one
+ * may make the program run another (GIT_EDITOR=sh git commit -e, GIT_PAGER, GH_EDITOR, LESSOPEN), so any loses this.
  */
-const READS_ONLY = new RegExp(`(?:\\s*(?:[a-z_][a-z0-9_]*=${SHELL_PLAIN}*|${REDIRECTION.source}\\s*${SHELL_PLAIN}+)(?=\\s))*\\s*(?:echo|printf|cat|ls|head|tail|wc|grep|jq|(rg)|git[ \\t]+(?:commit|log|show|diff|status|add|tag)|gh[ \\t]+(?:pr|issue|release|search|api)|grok(?:-[a-z]+-[a-z0-9_]+)?)(?=[ \\t])`, "y");
+const READS_ONLY = new RegExp(`(?:\\s*${REDIRECTION.source}\\s*${SHELL_PLAIN}+(?=\\s))*\\s*(?:echo|printf|cat|ls|head|tail|wc|grep|jq|(rg)|git[ \\t]+(?:commit|log|show|diff|status|add|tag)|gh[ \\t]+(?:pr|issue|release|search|api)|grok(?:-[a-z]+-[a-z0-9_]+)?)(?=[ \\t])`, "y");
 /** A word that is one quoted string: Grok's prompt where Grok's program runs as the command and it holds a blank. */
 const QUOTED = /^(?:"(?:[^"\\]|\\[^])*"|'[^']*')$/;
 /** A parameter expansion or a substitution in a word ($X, ${…}, $(…), `…`; a bare $, or one cut short, too). */
@@ -1120,7 +1122,7 @@ function grokCommandIn(form: string, prompts: boolean, whole: boolean): GrokComm
 const GROK_CLI_READS_NAMED =
 	"grok help, version, models, inspect, completions, usage, du, mcp list, plugin list, details and validate, plugin marketplace list, sessions list and search, worktree list and show, and a command's help (grok <command> --help, grok help <command>)";
 /** How each refusal ends: where to run it, and that text naming it is refused too. */
-const GROK_RUN_IT = "Run it in your own terminal. Text that names it is refused too, but as the words of a program that never runs them (echo, printf, cat, ls, head, tail, wc, grep, rg, jq, git commit, log, show, diff, status, add or tag, gh pr, issue, release, search or api) with no substitution, comment, here-document, parenthesis or brace before its end: give git a message that names it from a file (git commit -F).";
+const GROK_RUN_IT = "Run it in your own terminal. Text that names it is refused too, but as the words of a program that never runs them (echo, printf, cat, ls, head, tail, wc, grep, rg, jq, git commit, log, show, diff, status, add or tag, gh pr, issue, release, search or api) with no assignment before it and no substitution, comment, here-document, parenthesis or brace before its end: give git a message that names it from a file (git commit -F).";
 
 /** Why shell text that runs one of them is refused (grokCommandIn), in any session. */
 export const GROK_CLI_REFUSED = ({ command, why }: GrokCommand) =>

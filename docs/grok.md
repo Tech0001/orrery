@@ -353,7 +353,8 @@ commit`, `log`, `show`, `diff`, `status`, `add` and `tag`, and `gh pr`, `issue`,
 commit -m "Add grok support and update docs"` and `gh pr create --title …` pass, and `eval grok update`, `sh -c "grok
 update"`, `npx grok update` and `echo grok update | sh` are refused, as is the same text after any other program, even
 one that would only print it (`sed`, whose `e` command runs its text; `python3 -c "print('grok update')"`; `git -C`,
-which Orrery reads in lower case as `git -c`). The exception doesn't hold where that program's output is piped into
+which Orrery reads in lower case as `git -c`). The exception doesn't hold where an assignment comes before that program
+(one may make it run another: `GIT_EDITOR=sh git commit -e -m "grok update"`), where its output is piped into
 another program, or where a substitution, a comment, a here-document, a parenthesis or a brace comes before the end of
 its command, where a shell may read the rest otherwise (quotes nest in a substitution, a function may run its words,
 and a `case` arm's command starts past its pattern): give git such a message from a file (`git commit -F <file>`).
