@@ -375,7 +375,8 @@ Inside a session the CLI uses the config the session's host loaded, as its recor
 names: a `--config`, `ORRERY_CONFIG` or `ORRERY_HOME` that leads elsewhere is refused, and so is every command but help
 and the version when that config can't be read. The hook commands (`claude-hook`, `codex-hook`, `grok-hook`) skip this
 walk, since they run on every tool call: their own decision per process, and the checks below, govern them. So does
-Grok's status row (`grok-status`), which runs several times a second during a turn and decides and writes nothing.
+Grok's status row (`grok-status`), which runs several times a second during a turn, decides nothing and writes nothing
+of its own, but can take down a stale host record it finds, as every reader of the records does.
 
 The guard is the second belt, in every tool: shell text that runs Orrery's program (`orrery`, the plugin's
 `orrery-run`, or a path ending in one) followed, after its options, by a command this table refuses is refused before

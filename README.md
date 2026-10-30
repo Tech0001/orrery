@@ -198,8 +198,9 @@ Neither does OpenCode: `orrery agent Atlas --tool opencode` (or the agent's tool
 loads, and writes nothing to OpenCode's config. A plain `opencode` is not an agent's session either. Grok Build is
 connected once, by setup or **I**: Orrery's hook file and two entries (its status row and memory tools) in Grok's
 folder. Open its agents with `orrery agent Atlas --tool grok`, which gives Grok the agent's memory and instructions on
-its command line; a plain `grok` is not an agent's session. Inside a plain session of any coding tool, `orrery` reads
-no agent's memory and changes nothing; see [Sessions that are no agent's](#sessions-that-are-no-agents).
+its command line, and asks to connect Orrery to Grok first when it isn't; a plain `grok` is not an agent's session.
+Inside a plain session of any coding tool, `orrery` reads no agent's memory and changes nothing; see [Sessions that
+are no agent's](#sessions-that-are-no-agents).
 
 The Claude Code desktop app works too: start a session in the agent's folder, and the app's Claude Code records it
 and loads the memory (tested with the Linux app and the file setup). Claude Code on the web runs in the
@@ -400,9 +401,10 @@ before it runs, wherever it stands in the text, so a `grep` for `orrery restore`
 
 **A tool an agent starts is no agent's.** A `claude -p`, `codex exec`, `opencode run`, `pi -p`, `grok` or OMP that an
 agent starts from its shell opens no memory, records nothing and says so (`Orrery: started inside Atlas's session
-(pi), so this one opens no memory and records nothing.`). Its guard keeps that agent's rules, and both agents' at once
-when it runs in another agent's folder. Its prompts come from the agent, not from you, so they never enter memory as
-your words. `orrery run` and `orrery agent` are refused there.
+(pi), so this one opens no memory and records nothing.`; Grok 1.0.70 shows it after `/clear` or a resume, but not at a
+fresh launch). Its guard keeps that agent's rules, and both agents' at once when it runs in another agent's folder.
+Its prompts come from the agent, not from you, so they never enter memory as your words. `orrery run` and `orrery
+agent` are refused there.
 
 **Coding tools outside your agents get the same limits.** A Claude Code in another project, a plain `codex` or `grok`,
 or any other coding tool's session that is no agent's can't read or change Orrery's memory or settings through
@@ -434,9 +436,10 @@ refused too.
 **Agents can't change Grok's hooks or settings, in any tool.** Grok Build loads and runs much of what is in its folder
 (`~/.grok`, or `GROK_HOME`): its hooks, Orrery's among them, its config, plugins and agents. So no tool writes there,
 in every session the guard runs in, one that is no agent's included, but in the parts Grok's own features write (its
-memory, skills, workflows, docs, logs, session worktrees and the like). File tools may read the rest, Grok's login and
-session records aside, and shell text that names Grok's folder or the parts it keeps is refused (`ls ~/.grok`, `cat
-~/.grok/config.toml`). The cost: an agent can't change Grok's settings for you. See [Grok](docs/grok.md#the-guard).
+memory, skills, workflows, docs, logs, session worktrees and the like). An agent's session may read the rest with file
+tools, but not Grok's login or session records, and shell text that names Grok's folder or the parts it keeps is
+refused (`ls ~/.grok`, `cat ~/.grok/config.toml`). The cost: an agent can't change Grok's settings for you. See
+[Grok](docs/grok.md#the-guard).
 
 **Agents can't change OpenCode's config or code, in any tool.** OpenCode loads plugins, runs commands and takes
 permissions from its config, with no prompt, the next time it opens a folder, so a file an agent wrote there from any

@@ -10,14 +10,18 @@
 #   summary model is called.
 # - Grok runs with your own Grok folder ($GROK_HOME, default ~/.grok) for its sign-in and config, with Grok's own memory
 #   off (GROK_MEMORY=0), so nothing of the run reaches it, in a scratch git repo that it trusts with --trust. At the end
-#   the run takes that repo's entry out of Grok's trusted_folders.toml again, checks that Grok's config.toml and hooks/
-#   are byte for byte the same, stops every process it started, and lists the session folders Grok made for the repo.
+#   the run stops every process it started, Grok among them, then takes that repo's entry out of Grok's
+#   trusted_folders.toml again (a copy of it first), checks that Grok's config.toml and hooks/ are byte for byte the
+#   same, and lists the session folders Grok made for the repo.
 # - When Grok's folder has no Orrery hook file, the scratch repo gets this run's Orrery as its project hooks
 #   (.grok/hooks/orrery.json) and memory server (.grok/config.toml), as `orrery install` writes them for Grok's folder.
 #   When Orrery's hook file is installed there, the run uses the installed hooks, status row and memory server instead
 #   (two hook files would record each turn twice), and says so.
 # - It opens the agent the way a person does, `orrery agent E2E --tool grok -- --trust`, from this checkout's CLI, or the
-#   program ORRERY_E2E_BIN names (a built release's bin/orrery).
+#   program ORRERY_E2E_BIN names (a built release's bin/orrery). `orrery agent` checks Orrery's side of Grok in its own
+#   GROK_HOME, so it runs with a Grok folder of the run's, empty at first: the first launch asks to connect Orrery to
+#   Grok, and says yes (--yes), which writes there, never in your Grok folder; the second asks nothing. Grok itself is
+#   started through $tmp/bin/grok, which sets GROK_HOME back to your Grok folder.
 # - Checks: a new session's system prompt holds the first session's codeword, and the model still answers it after
 #   /compact; typed turns are recorded once each; `orrery grok-status` in the agent's shell prints the status row (and
 #   the row shows on screen when Orrery's row is in Grok's config); a forged `grok-hook` run from the agent's shell is
@@ -42,14 +46,11 @@ grok_home="$(cd "$grok_home" && pwd -P)"
 node_bin="$(node -p process.execPath)"
 echo "Grok $("$grok_bin" --version 2>/dev/null | tail -n 1), Orrery from $orrery_cli"
 
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/orrery-grok-e2e-XXXXXX")"
-tmp="$(cd "$tmp" && pwd -P)"
-ws="$tmp/repo"
-agent="$tmp/data/agents/E2E"
+# Everything the run makes is under $tmp. The exit trap is set before $tmp is made, so a failure at any point leaves
+# nothing of the run behind.
+tmp=""
 sock="orrery-grok-e2e-$$"
-mkdir -p "$ws/.grok/hooks" "$tmp/data" "$tmp/runs" "$tmp/bin" "$tmp/home"
-git -C "$ws" -c init.defaultBranch=main init -q
-
+sessions=()
 fail=0
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; fail=1; fi; }
 skip() { echo "SKIP  $*"; }
@@ -57,8 +58,105 @@ info() { printf 'INFO  %s\n' "$*"; }
 node_ts() { local code="$1"; shift; node --disable-warning=ExperimentalWarning --input-type=module -e "$code" "$@"; }
 tmux_() { tmux -u -L "$sock" "$@"; }
 
+# This run's processes, Grok's among them: the ones whose environment carries the run's marker. Linux reads it in
+# /proc; macOS in ps's listing, which prints this user's processes' environments after their command lines (-E), and
+# by its recorders' and tmux server's command lines too.
+leftovers() {
+	[ -n "$tmp" ] || return 0
+	local s pid rest table
+	if [ -d /proc/self ]; then
+		{ grep -lzxF -- "ORRERY_E2E_RUN=$tmp" /proc/[0-9]*/environ 2>/dev/null || true; } | sed -E 's#^/proc/([0-9]+)/environ$#\1#'
+	else
+		# The listing is read whole first, so no process that reads it has the marker in its own command line.
+		table="$(ps -A -E -ww -o pid= -o command= 2>/dev/null || true)"
+		while read -r pid rest; do
+			case " $rest " in *" ORRERY_E2E_RUN=$tmp "*) echo "$pid" ;; esac
+		done <<<"$table"
+		for s in ${sessions[@]+"${sessions[@]}"}; do pgrep -f -- "holder E2E --session $s" || true; done
+		pgrep -f -- "-L $sock" || true
+	fi
+	return 0
+}
+
+# Grok's trust list, which Grok itself writes when --trust trusts the run's repo.
+trust_file="$grok_home/trusted_folders.toml"
+trust_absent=""
+[ -e "$trust_file" ] || trust_absent="absent"
+# Set just before the first launch: only from then on may the trust list hold anything of the run's.
+launched=""
+# The trust list as it was before the run took its entries out, and whether none of the run's is left.
+trust_copy=""
+trust_clean=""
+# Set when the trust list's copy must outlive the run: the exit trap then keeps $tmp, and says so.
+keep_tmp=""
+
+# Takes the run's entries out of Grok's trust list, after a copy of it in $tmp (its mode kept). When anything naming the
+# run's folder is left, it says exactly which lines to remove by hand, and where the copy is, which it keeps.
+untrust() {
+	{ [ -n "$launched" ] && [ -e "$trust_file" ]; } || { trust_clean=1; return 0; }
+	trust_copy="$tmp/trusted_folders.toml.before-untrust"
+	if ! cp -p -- "$trust_file" "$trust_copy"; then
+		trust_copy=""
+		echo "FAIL  could not copy $trust_file before taking this run's entries out, so it was left as it is" >&2
+	elif ! node "$tmp/trust.mjs" remove "$trust_file" "$tmp" "$trust_absent" >/dev/null; then
+		echo "FAIL  could not take this run's entries out of $trust_file" >&2
+	fi
+	if [ ! -e "$trust_file" ] || { [ "$(node "$tmp/trust.mjs" count "$trust_file" "$tmp")" = 0 ] && ! grep -qF -- "$tmp" "$trust_file"; }; then
+		trust_clean=1
+		return 0
+	fi
+	echo "FAIL  $trust_file still names this run's folder: remove by hand each entry below (its [table] line and the lines up to the next table), or the line itself where it is no table" >&2
+	grep -nF -- "$tmp" "$trust_file" | sed -E 's/^([0-9]+):/FAIL    line \1: /' >&2 || true
+	if [ -n "$trust_copy" ]; then
+		keep_tmp=1
+		echo "FAIL    the file as it was before this run's edit: $trust_copy" >&2
+	fi
+	return 0
+}
+
+tore_down=""
+# Quits what is left of Grok, stops this run's processes, Grok's own among them, and only then takes the run's entries
+# out of Grok's trust list. Run once at the end of the checks, and again (doing nothing then) by the exit trap.
+teardown() {
+	[ -n "$tore_down" ] && return 0
+	tore_down=1
+	[ -n "$tmp" ] || return 0
+	tmux_ kill-server 2>/dev/null || true
+	local pid _
+	for _ in $(seq 1 30); do [ -z "$(leftovers)" ] && break; sleep 0.5; done
+	for pid in $(leftovers); do kill "$pid" 2>/dev/null || true; done
+	for _ in $(seq 1 10); do [ -z "$(leftovers)" ] && break; sleep 0.5; done
+	for pid in $(leftovers); do kill -9 "$pid" 2>/dev/null || true; done
+	untrust
+	return 0
+}
+cleanup() {
+	teardown
+	[ -n "$tmp" ] || return 0
+	if [ -n "$keep_tmp" ]; then
+		echo "INFO  kept $tmp for the trust list's copy; delete it with: rm -r '$tmp'" >&2
+	else
+		rm -rf -- "$tmp"
+	fi
+	return 0
+}
+trap cleanup EXIT
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/orrery-grok-e2e-XXXXXX")"
+real="$(cd "$tmp" && pwd -P)"
+tmp="$real"
+ws="$tmp/repo"
+agent="$tmp/data/agents/E2E"
+# The Grok folder `orrery agent` checks Orrery's side of Grok in (its GROK_HOME): the run's own, empty at first, so the
+# first launch asks to connect Orrery to Grok and writes there, never in yours. Grok itself runs with yours
+# ($tmp/bin/grok).
+launch_grok="$tmp/grok-home"
+mkdir -p "$ws/.grok/hooks" "$tmp/data" "$tmp/runs" "$tmp/bin" "$tmp/home" "$launch_grok"
+git -C "$ws" -c init.defaultBranch=main init -q
+
 # Grok's trust list: how many entries this run's folders have (count), or those entries taken out (remove), the rest of
-# the file kept byte for byte. An entry is a [folders."<path>"] table, up to the next table.
+# the file kept byte for byte. An entry is a [folders."<path>"] table and its keys, up to the next table: the comments
+# and blank lines after its last key stay with the table that follows, and the blank lines right above it go with it.
 cat >"$tmp/trust.mjs" <<'EOF'
 import { chmodSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 const [mode, file, root, absentBefore] = process.argv.slice(2);
@@ -81,15 +179,24 @@ const ours = (line) => {
 		return false;
 	}
 };
+const table = (line) => /^\s*\[/.test(line);
+const nothing = (line) => /^\s*(?:#.*)?\r?$/.test(line);
 const kept = [];
-let dropping = false;
 let dropped = 0;
-for (const line of lines) {
-	if (/^\s*\[/.test(line)) {
-		dropping = ours(line);
-		if (dropping) dropped++;
+for (let at = 0; at < lines.length; ) {
+	if (!(table(lines[at]) && ours(lines[at]))) {
+		kept.push(lines[at++]);
+		continue;
 	}
-	if (!dropping) kept.push(line);
+	dropped++;
+	let end = at + 1;
+	while (end < lines.length && !table(lines[end])) end++;
+	let last = end;
+	while (last > at + 1 && nothing(lines[last - 1])) last--;
+	while (kept.length > 0 && kept[kept.length - 1].trim() === "") kept.pop();
+	at = last;
+	// At the file's start, no blank line before what follows.
+	if (kept.length === 0) while (at < end && lines[at].trim() === "" && at < lines.length - 1) at++;
 }
 if (mode === "count") {
 	console.log(String(dropped));
@@ -149,42 +256,6 @@ const out = {
 console.log((out[mode] ?? (() => `unknown mode ${mode}`))());
 EOF
 
-# This run's processes: the ones whose environment carries its marker (Linux; elsewhere, its recorders and tmux server).
-sessions=()
-leftovers() {
-	local s
-	if [ -d /proc/self ]; then
-		{ grep -lzxF -- "ORRERY_E2E_RUN=$tmp" /proc/[0-9]*/environ 2>/dev/null || true; } | sed -E 's#^/proc/([0-9]+)/environ$#\1#'
-	else
-		for s in ${sessions[@]+"${sessions[@]}"}; do pgrep -f -- "holder E2E --session $s" || true; done
-		pgrep -f -- "-L $sock" || true
-	fi
-	return 0
-}
-trust_absent=""
-[ -e "$grok_home/trusted_folders.toml" ] || trust_absent="absent"
-tore_down=""
-# Quits what is left of Grok, stops this run's processes and takes its entry out of Grok's trust list. Run once at the
-# end of the checks, and again (doing nothing then) by the exit trap.
-teardown() {
-	[ -n "$tore_down" ] && return 0
-	tore_down=1
-	tmux_ kill-server 2>/dev/null || true
-	local pid _
-	for _ in $(seq 1 30); do [ -z "$(leftovers)" ] && break; sleep 0.5; done
-	for pid in $(leftovers); do kill "$pid" 2>/dev/null || true; done
-	for _ in $(seq 1 10); do [ -z "$(leftovers)" ] && break; sleep 0.5; done
-	for pid in $(leftovers); do kill -9 "$pid" 2>/dev/null || true; done
-	node "$tmp/trust.mjs" remove "$grok_home/trusted_folders.toml" "$tmp" "$trust_absent" >/dev/null || echo "FAIL  could not take this run's entry out of $grok_home/trusted_folders.toml: remove the [folders.\"$ws\"] table by hand" >&2
-	return 0
-}
-cleanup() {
-	teardown
-	rm -rf "$tmp"
-	return 0
-}
-trap cleanup EXIT
-
 # Grok's files that this run must leave as they were: each one's sha256 (every file of a folder), or "none".
 fingerprint() { node -e 'const { createHash } = require("node:crypto"); const fs = require("node:fs"); const path = require("node:path");
 const hash = (file) => { const h = createHash("sha256"); const walk = (at) => { const s = fs.lstatSync(at); if (s.isDirectory()) { for (const name of fs.readdirSync(at).sort()) { h.update(name + "\0"); walk(path.join(at, name)); } } else h.update(s.isSymbolicLink() ? "link " + fs.readlinkSync(at) : fs.readFileSync(at)); }; try { walk(file); return h.digest("hex"); } catch { return "none"; } };
@@ -205,19 +276,27 @@ compactor_model = "openai/gpt-6.1-sol"
 EOF
 export ORRERY_CONFIG="$tmp/config.toml" ORRERY_HOME="$tmp/orrery-home" ORRERY_NO_OPEN=1
 # What a session's shell and hooks run as orrery: this run's, by a path whose last name is orrery (as the guard knows
-# Orrery's program). Grok and node by their own paths, for the temp HOME.
+# Orrery's program). Grok and node by their own paths, for the temp HOME; Grok with your Grok folder, whatever GROK_HOME
+# `orrery agent` had (the run's own, $launch_grok).
 cat >"$tmp/bin/orrery" <<EOF
 #!/bin/sh
 exec "$orrery_cli" "\$@"
 EOF
 chmod 700 "$tmp/bin/orrery"
-ln -s "$grok_bin" "$tmp/bin/grok"
+{
+	echo '#!/usr/bin/env bash'
+	printf 'export GROK_HOME=%q\n' "$grok_home"
+	printf 'exec %q "$@"\n' "$grok_bin"
+} >"$tmp/bin/grok"
+chmod 700 "$tmp/bin/grok"
 ln -s "$node_bin" "$tmp/bin/node"
 o="$tmp/bin/orrery"
 
+# The Orrery command a hook file runs, when it is exactly Orrery's ("" for none, or a file that isn't Orrery's).
+hook_target() { node_ts "import { readFileSync } from 'node:fs'; import { grokHookTarget } from '$repo/src/grok/install.ts';
+let text = ''; try { text = readFileSync(process.argv[1], 'utf8'); } catch {} console.log(grokHookTarget(text) ?? '');" "$1"; }
 # Orrery's side of Grok: the installed one when Grok's folder has Orrery's hook file, else this run's, in the repo.
-installed="$(node_ts "import { readFileSync } from 'node:fs'; import { grokHookTarget } from '$repo/src/grok/install.ts';
-let text = ''; try { text = readFileSync(process.argv[1], 'utf8'); } catch {} console.log(grokHookTarget(text) ?? '');" "$grok_home/hooks/orrery.json")"
+installed="$(hook_target "$grok_home/hooks/orrery.json")"
 if [ -n "$installed" ]; then
 	info "Orrery's hook file is installed in Grok's folder (it runs $installed): this run's hooks, status row and memory server are the installed ones"
 else
@@ -241,13 +320,15 @@ model=()
 [ -n "${ORRERY_E2E_MODEL:-}" ] && model=(-m "$ORRERY_E2E_MODEL")
 extra=()
 [ -n "${ORRERY_E2E_GROK_ARGS:-}" ] && read -r -a extra <<<"$ORRERY_E2E_GROK_ARGS"
-# launch.sh <name>: one `orrery agent E2E --tool grok -- --trust …` in the repo, in the pane; its exit code to runs/<name>.exit.
+# launch.sh <name> [orrery options]: one `orrery agent E2E --tool grok [options] -- --trust …` in the repo, in the pane;
+# its exit code to runs/<name>.exit.
 {
 	echo '#!/usr/bin/env bash'
 	printf 'cd %q || exit 1\n' "$ws"
-	printf '%q agent E2E --tool grok -- --trust' "$orrery_cli"
+	printf 'name="$1"\nshift\n'
+	printf '%q agent E2E --tool grok "$@" -- --trust' "$orrery_cli"
 	for word in ${model[@]+"${model[@]}"} ${extra[@]+"${extra[@]}"}; do printf ' %q' "$word"; done
-	printf '\necho "$?" >%q/runs/"$1".exit\n' "$tmp"
+	printf '\necho "$?" >%q/runs/"$name".exit\n' "$tmp"
 } >"$tmp/launch.sh"
 chmod 700 "$tmp/launch.sh"
 printf 'set -g remain-on-exit on\nset -g history-limit 50000\n' >"$tmp/tmux.conf"
@@ -255,7 +336,7 @@ printf 'set -g remain-on-exit on\nset -g history-limit 50000\n' >"$tmp/tmux.conf
 pane_env=(HOME="$tmp/home" PATH="$tmp/bin:$PATH" TERM="${TERM:-xterm-256color}" LANG="${LANG:-C.UTF-8}" USER="${USER:-$(id -un)}" SHELL="${SHELL:-/bin/sh}")
 [ -n "${LC_ALL:-}" ] && pane_env+=(LC_ALL="$LC_ALL")
 [ -n "${XDG_RUNTIME_DIR:-}" ] && pane_env+=(XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR")
-pane_env+=(GROK_HOME="$grok_home" GROK_MEMORY=0 BROWSER=/bin/true ORRERY_CONFIG="$ORRERY_CONFIG" ORRERY_HOME="$ORRERY_HOME" ORRERY_NO_OPEN=1 ORRERY_E2E_RUN="$tmp")
+pane_env+=(GROK_HOME="$launch_grok" GROK_MEMORY=0 BROWSER=/bin/true ORRERY_CONFIG="$ORRERY_CONFIG" ORRERY_HOME="$ORRERY_HOME" ORRERY_NO_OPEN=1 ORRERY_E2E_RUN="$tmp")
 
 count() { node_ts "import { MemoryStore } from '$repo/src/memory/index.ts'; let n = 0; try { n = MemoryStore.messageCount(process.argv[1]); } catch {} console.log(n);" "$agent/memory.sqlite"; }
 dump() { node_ts "import { MemoryStore } from '$repo/src/memory/index.ts';
@@ -273,13 +354,15 @@ recorder_gone() { for _ in $(seq 1 60); do [ -e "$agent/claude/holder.json" ] ||
 screen() { tmux_ capture-pane -p -J -t "$1" 2>/dev/null || true; }
 show_screen() { screen "$1" | grep -v '^\s*$' | tail -n "${2:-15}" | sed "s/^/INFO  $1 screen: /" || true; }
 
-# open <name>: starts the launch in a pane of its own and waits for SessionStart to take the session as E2E's and the
-# recorder to choose (Grok runs SessionStart at launch). The session's id goes to $sid ("" when that never came).
+# open <name> [orrery options]: starts the launch in a pane of its own and waits for SessionStart to take the session as
+# E2E's and the recorder to choose (Grok runs SessionStart at launch). The session's id goes to $sid ("" when that never
+# came).
 sid=""
 open() {
 	local name="$1" s="" _
+	launched=1
 	# A clean client too: tmux copies some of the client's variables (update-environment) into each new session.
-	env -i "${pane_env[@]}" tmux -u -L "$sock" -f "$tmp/tmux.conf" new-session -d -s "$name" -x 200 -y 50 "$tmp/launch.sh $name"
+	env -i "${pane_env[@]}" tmux -u -L "$sock" -f "$tmp/tmux.conf" new-session -d -s "$name" -x 200 -y 50 "$(printf '%q ' "$tmp/launch.sh" "$@")"
 	for _ in $(seq 1 90); do
 		s="$(host_session)"
 		[ -n "$s" ] && [ -e "$agent/claude/sessions/$s/mode.json" ] && break
@@ -333,8 +416,10 @@ row_pattern='Orrery · E2E · [0-9]+ msgs · recording'
 refusal="This command runs Orrery's hook plumbing"
 
 # 1. A first launch: two typed turns recorded once each; grok-status in the agent's shell; a forged grok-hook refused.
-open one
+# Orrery isn't connected to Grok in the launch's Grok folder yet, so `orrery agent` asks first; --yes says yes.
+open one --yes
 s1="$sid"
+check "the first launch asked to connect Orrery to Grok, and its yes connected the run's Grok folder (not yours)" '[ -n "$(hook_target "$launch_grok/hooks/orrery.json")" ] && grep -qs "mcp_servers.orrery" "$launch_grok/config.toml"'
 check "orrery agent opened Grok as E2E, and SessionStart took its session" '[ -n "$s1" ]'
 if [ -n "$s1" ]; then
 	turn one "Remember the codeword $code. Reply with exactly: OK"
@@ -361,9 +446,10 @@ fi
 # 2. A second launch: its system prompt holds the first session's codeword (the memory section, from --rules), and the
 # model still answers it after Grok's /compact, which keeps the system prompt; the turns after it are recorded.
 if [ -n "$s1" ]; then
+	# Connected now: this launch asks nothing (no --yes), or it would wait at the question.
 	open two
 	s2="$sid"
-	check "a second launch opened as E2E" '[ -n "$s2" ] && [ "$s2" != "$s1" ]'
+	check "a second launch opened as E2E, asking nothing" '[ -n "$s2" ] && [ "$s2" != "$s1" ]'
 	if [ -n "$s2" ]; then
 		if [ -e "$sessions_dir/$s2/system_prompt.txt" ]; then
 			check "the new session's system prompt holds the codeword (the memory section from --rules)" 'grep -qF "$code" "$sessions_dir/$s2/system_prompt.txt"'
@@ -388,7 +474,7 @@ info "orrery status: $("$o" status E2E 2>&1 | head -n 1)"
 dump | sed 's/^/INFO  memory: /'
 teardown
 check "Grok's config.toml and hooks/ are unchanged" '[ "$(fingerprint)" = "$before" ]'
-check "Grok's trust list holds no entry of this run" '[ "$(node "$tmp/trust.mjs" count "$grok_home/trusted_folders.toml" "$tmp")" = 0 ] && ! grep -qsF "$tmp" "$grok_home/trusted_folders.toml"'
+check "Grok's trust list holds no entry of this run (else the lines to remove by hand are above)" '[ -n "$trust_clean" ]'
 check "no process of this run is left" '[ -z "$(leftovers)" ]'
 if [ -d "$sessions_dir" ]; then
 	for s in "$sessions_dir"/*/; do [ -d "$s" ] && info "Grok session $(basename "$s")"; done

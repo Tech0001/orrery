@@ -1,9 +1,10 @@
 # Agents in Grok Build
 
 An agent can run in Grok Build as well as in pi, OMP, Claude Code, Codex and OpenCode, on the same memory
-(`~/.orrery/agents/<Name>/`). Monday in Codex and Tuesday in Grok are one memory. A Grok session of an agent gets the
-agent's memory view and instructions at launch, the memory tools, Orrery's guard on every tool call, and a status row
-under the prompt, and each turn you type is recorded into the agent's memory.
+(`~/.orrery/agents/<Name>/`). Monday in Codex and Tuesday in Grok are one memory. Once Orrery is connected to Grok
+(see [Install](#install)), a Grok session of an agent gets the agent's memory view and instructions at launch, the
+memory tools, Orrery's guard on every tool call, and a status row under the prompt, and each turn you type is recorded
+into the agent's memory.
 
 Tested with Grok Build 1.0.70 on Linux (`grok --version`). macOS is not yet verified (see Limits). Grok's own manual
 comes with it, in `~/.grok/docs/user-guide/`.
@@ -16,8 +17,9 @@ comes with it, in `~/.grok/docs/user-guide/`.
    or another source from the README's Summaries.
 
 Orrery's setup (the install script and `orrery update` run it; `orrery setup` runs it again) asks `Connect Orrery to
-Grok?` when `grok` is on PATH or Grok's folder is there. Or open Tools (4), select Grok and press `I`. It writes two
-things in Grok's folder (`$GROK_HOME`, else `~/.grok`):
+Grok?` when `grok` is on PATH or Grok's folder is there. Or open Tools (4), select Grok and press `I`; `orrery agent
+<Name> --tool grok` asks too, when Orrery isn't connected (see [What happens at launch](#what-happens-at-launch)). It
+writes two things in Grok's folder (`$GROK_HOME`, else `~/.grok`):
 
 - **`hooks/orrery.json`**, Orrery's hooks for every Grok session: the session's start, each prompt, each tool call,
   each turn's end, a turn you interrupt, and the session's end. Each runs `orrery grok-hook <event>` from the installed
@@ -95,8 +97,24 @@ other users of the computer can read them while the session runs, though the mem
 `orrery agent` says before Grok starts when the memory had to be made smaller to fit, and when the arguments resume a
 session (see The memory view).
 
-Orrery's hooks, status row and memory tools come from Grok's own folder (see Install). `orrery agent` doesn't check that
-they are there: without them the session gets its memory section, but isn't recorded and has no memory tools or row.
+Orrery's hooks, status row and memory tools come from Grok's own folder (see Install). Without the hooks a session
+would get its memory section but no recording and no Orrery guard (unless Grok loads Orrery's Claude Code plugin,
+whose guard then runs), and without the config entries, no memory tools or row. So when Grok's row in the tools check
+isn't this Orrery's, `orrery agent` and the TUI ask first, as they ask for pi's extension, with the steps setup takes:
+
+```
+Orrery's hooks for Grok are not installed, so this session won't record. Connecting Orrery to Grok will:
+  write ~/.grok/hooks/orrery.json (Orrery's hooks for every Grok session)
+  add Orrery's status row and memory tools to ~/.grok/config.toml unless it has its own (a copy of it first)
+Connect Orrery to Grok now?
+```
+
+A config entry of Orrery's you removed is asked about the same way (`Grok's config lacks Orrery's status row or memory
+tools`), and so is a hook file of another Orrery's, or one that isn't Orrery's, which is set aside first (`Grok doesn't
+run this Orrery's hooks, so this session may not record`). Yes connects it, as setup does, and opens the agent; no, or
+no terminal to answer on, opens nothing (`--yes` answers yes). When Orrery can't read Grok's folder to tell, it says so
+and opens the agent. When Orrery's hooks are connected but switched off in Grok's `/hooks`, it says which (the
+recording hooks, the guard, or both) and how to switch them on, and opens the agent.
 
 ## What's recorded
 
@@ -116,8 +134,8 @@ they are there: without them the session gets its memory section, but isn't reco
 
   What the log never confirms is dropped after a grace of 30 seconds, and `orrery status` counts it: `N unconfirmed
   messages not recorded` (`unconfirmedMessages` in `orrery status --json`). A session start that can't be confirmed
-  says so and records nothing: `Orrery: can't confirm this is this Grok's own session (…), so it opens no memory and
-  records nothing.`
+  says so and records nothing: `Orrery: can't confirm this is this Grok's own session (…), so this session isn't
+  recorded.`
 - `/new` and `/clear` start a new session in the same Grok, and the recording moves to it. Grok keeps the earlier one
   open (`/dashboard` switches back to it), but Orrery records only the session the latest session start took.
 - Resuming through `orrery agent <Name> --tool grok -- --resume <id>` goes on recording into the same memory, from
@@ -141,7 +159,10 @@ Under the prompt, Grok shows Orrery's row for an agent's session:
 - `… · read-only: open in pi` (or wherever the agent is open), or the recorder's own reason;
 - `… · not recording: ` and why: Orrery's hooks are switched off in `/hooks`; Orrery's session start hasn't run for
   this session; this Grok records another of its sessions now; or Orrery's recorder stopped (see
-  [Troubleshooting](#troubleshooting)).
+  [Troubleshooting](#troubleshooting));
+- `Orrery · not recording: leader mode; Orrery opens agents with --no-leader`, with no agent's name: the row runs under
+  Grok's shared leader (leader mode; see [What happens at launch](#what-happens-at-launch)). A session's own Grok in
+  leader mode shows no row.
 
 A plain grok shows no row. Grok runs the row command at every change and while a turn runs; it reads only the agent's
 message count, never a word of memory, and takes no lock. Grok hides the row on its welcome screen, and after a launch
@@ -195,12 +216,12 @@ refuses an agent open on another machine, and asks before taking over a stale lo
 
 ## The guard
 
-Every tool call in a Grok session goes through Orrery's guard first (Grok's `PreToolUse` hook), subagents' and
-workflows' calls included. Orrery's hooks are global, so the guard runs in every Grok session: in an agent's with the
-rules every tool gets (credential files, `.env` and the other secret files, what `[guard] protect` lists, Orrery's data
-folder and other agents' memory views refused; writes inside the folder Grok was opened in, or the agent's default
-folder when it is inside it, and its `allowed_roots`; see the README's Safety), and in a plain grok with Orrery's own
-rules (see [A plain Grok](#a-plain-grok)).
+Once Orrery is connected to Grok (see [Install](#install)), every tool call in a Grok session goes through Orrery's
+guard first (Grok's `PreToolUse` hook), subagents' and workflows' calls included. Orrery's hooks are global, so the
+guard runs in every Grok session: in an agent's with the rules every tool gets (credential files, `.env` and the other
+secret files, what `[guard] protect` lists, Orrery's data folder and other agents' memory views refused; writes inside
+the folder Grok was opened in, or the agent's default folder when it is inside it, and its `allowed_roots`; see the
+README's Safety), and in a plain grok with Orrery's own rules (see [A plain Grok](#a-plain-grok)).
 
 How it reads Grok's tools:
 
@@ -309,8 +330,8 @@ This is a Grok session that is no agent's (process 4242), so it shows no agent. 
 ```
 
 A Grok started from inside an agent's session (a `grok` the agent runs from its shell) opens no memory and records
-nothing, says so at its session start, and keeps that agent's rules in its guard (both agents' rules, in another
-agent's folder).
+nothing, says so at its session start (which Grok 1.0.70 shows after `/clear` or a resume, but not at a fresh launch),
+and keeps that agent's rules in its guard (both agents' rules, in another agent's folder).
 
 ## Your own Grok settings still apply
 
@@ -322,15 +343,17 @@ agent's folder).
   agent's among them.
 - Grok's `/hooks` tab can switch Orrery's hooks off; Grok saves that in `disabled-hooks` in its folder. With them off,
   the session isn't recorded (the row says so). With the guard hook off, tool calls run unguarded, unless Grok also
-  loads Orrery's Claude Code plugin, whose guard then runs instead.
+  loads Orrery's Claude Code plugin, whose guard then runs instead. `orrery agent` says at launch which of them are off.
 
 ## Troubleshooting
 
 - Grok asks `Do you trust the contents of this directory?`: that is Grok's folder trust (see Install). Say yes to open
   the agent there.
 - No row, nothing recorded and no memory tools: the session is a plain `grok` (open the agent with `orrery agent <Name>
-  --tool grok`), or Orrery's side of Grok isn't installed (`orrery tools` shows Grok's row; run `orrery setup`, or press
-  `I` on Tools). Remember the row stays empty until your first prompt.
+  --tool grok`), or Orrery's side of Grok isn't installed, and then no Orrery guard runs either (Orrery's Claude Code
+  plugin guards the session, if Grok loads it). `orrery agent` asks to connect it (see What happens at launch);
+  `orrery tools` shows Grok's row, and `orrery setup`, or `I` on Tools, connect it too. Remember the row stays empty
+  until your first prompt.
 - A status line of your own and no Orrery row: setup kept yours. Run `orrery grok-status` from it.
 - `not recording yet`: the recorder hasn't started yet. Right after `/new` or `/clear` that is Grok not refreshing the
   row (see The status row); it changes with your next prompt. If it stays, read `holder.log` in the agent's data folder,
@@ -394,13 +417,16 @@ Grok keeps its usual files in its folder: its sessions (Orrery reads a session's
   `/compact`, so it costs usage. Run it from your own terminal, not an agent's shell; it needs `tmux`. It uses a temp
   agent in a temp Orrery home, a temp home folder and a scratch git repo, with your Grok folder for the sign-in and
   Grok's own memory off for the run. With Orrery's hooks not installed in Grok's folder, it puts this checkout's hook
-  file and memory server in the scratch repo's `.grok`; with them installed, the run uses those. It trusts only the
-  scratch repo (`--trust`), and removes that entry from Grok's trust list at the end. It checks that a new session's
-  system prompt holds a codeword from the first session's memory and that the model still answers it after `/compact`,
-  that typed turns are recorded once each, that a forged `grok-hook` run from the agent's shell is refused and plants
-  nothing, and the status row's text from `orrery grok-status` in the agent's shell (and on screen, when Orrery's row is
-  in Grok's config). It checks that Grok's `config.toml` and `hooks/` are unchanged, leaves no process behind, and
-  lists the Grok session folders it made.
+  file and memory server in the scratch repo's `.grok`; with them installed, the run uses those. `orrery agent` runs
+  with a Grok folder of the run's own, so the first launch's question to connect Orrery to Grok (answered yes) writes
+  there, and Grok itself runs with yours. It trusts only the scratch repo (`--trust`), and at the end, once every
+  process it started is gone, removes that entry from Grok's trust list, after a copy of it; if anything of the run's is
+  left there, it names the lines to remove by hand and keeps the copy. It checks that a new session's system prompt
+  holds a codeword from the first session's memory and that the model still answers it after `/compact`, that typed
+  turns are recorded once each, that a forged `grok-hook` run from the agent's shell is refused and plants nothing, and
+  the status row's text from `orrery grok-status` in the agent's shell (and on screen, when Orrery's row is in Grok's
+  config). It checks that Grok's `config.toml` and `hooks/` are unchanged, leaves no process behind, and lists the Grok
+  session folders it made.
 
 ## Limits
 
