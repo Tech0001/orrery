@@ -206,7 +206,10 @@ export function grokLeaderLaunch(cmd: string, args: readonly string[]): [string,
 	return [process.execPath, ["agent", "leader", "--no-exit-on-disconnect", JSON.stringify([cmd, ...args])]];
 }
 
-/** The same as grokLeaderLaunch's, under `grok worker start`, which runs Grok's shared leader in its own process (1.0.70's help). */
+/**
+ * The same as grokLeaderLaunch's, under `grok worker start`, which runs Grok's shared leader in its own process
+ * (1.0.70's help).
+ */
 export function grokWorkerLaunch(cmd: string, args: readonly string[]): [string, string[]] {
 	grokLeaderFolder();
 	return [process.execPath, ["worker", "--name", "w", "start", JSON.stringify([cmd, ...args])]];
@@ -235,8 +238,8 @@ export function cleanEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
 }
 
 /**
- * A host process's start environment, as src/codex/pick.ts startEnvOf reads one: the variables asked for that `env` sets.
- * For a hook context whose host (a Codex or a Grok) was started with `env`, as `orrery agent` starts one.
+ * A host process's start environment, as src/codex/pick.ts startEnvOf reads one: the variables asked for that `env`
+ * sets. For a hook context whose host (a Codex or a Grok) was started with `env`, as `orrery agent` starts one.
  */
 export function startedWith(env: Readonly<Record<string, string | undefined>>): (pid: number, names: readonly string[]) => Readonly<Record<string, string>> {
 	return (_pid, names) => Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, env[name] as string]])));

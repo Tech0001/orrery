@@ -18,8 +18,8 @@ export function isGrokProcess(name: string): boolean {
 }
 
 /**
- * Grok 1.0.70's options that take a value (`grok --help`): the word after one is its value, never a command. The optional
- * values of --resume and --worktree are not among them, so a command after either is still read as one.
+ * Grok 1.0.70's options that take a value (`grok --help`): the word after one is its value, never a command. The
+ * optional values of --resume and --worktree are not among them, so a command after either is still read as one.
  */
 export const GROK_VALUE_OPTIONS: ReadonlySet<string> = new Set([
 	...["--add-dir", "--agent", "--agents", "--allow", "--allowedTools", "--allowed-tools", "--cwd", "--debug-file", "--deny", "--disallowedTools", "--disallowed-tools"],
@@ -28,7 +28,10 @@ export const GROK_VALUE_OPTIONS: ReadonlySet<string> = new Set([
 	...["--tools", "--worktree-ref", "--ref"],
 ]);
 
-/** Grok 1.0.70's commands (`grok --help`): Grok takes its first word that is one as its command, any other as its prompt. */
+/**
+ * Grok 1.0.70's commands (`grok --help`): Grok takes its first word that is one as its command, any other as its
+ * prompt.
+ */
 export const GROK_COMMANDS: ReadonlySet<string> = new Set([
 	...["agent", "clone", "completions", "dashboard", "doctor", "du", "disk-usage", "export", "help", "inspect", "leader", "login", "logout", "mcp"],
 	...["memory", "models", "plugin", "sessions", "setup", "trace", "update", "usage", "version", "v", "worker", "worktree", "wrap"],

@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { confirmGrok, GrokLogReader, grokFolder, grokHeldSessions, grokHome, grokLogIn, grokLogStart, grokSessionKind, grokStartHome, parseGrokLogMark } from "../../src/grok/log.ts";
+import { confirmGrok, GrokLogReader, grokFolder, grokHeldSessions, grokHome, grokLogIn, grokLogStart, grokSessionKind, grokStartHome, parseGrokLogMark, sharedLogLives } from "../../src/grok/log.ts";
 import { tempDir } from "../agent/support.ts";
 import { grokLog, grokSession } from "./log-lines.ts";
 
@@ -254,5 +254,26 @@ describe("GrokLogReader", () => {
 		expect(restarted.recordedBefore("p-1/reply")).toBe(true);
 		expect(parseGrokLogMark("nonsense")).toBeUndefined();
 		expect(parseGrokLogMark(JSON.stringify({ path, home, offset: -1 }))).toBeUndefined();
+	});
+});
+
+describe("sharedLogLives", () => {
+	const mark = (pid: number, start?: string) => JSON.stringify({ shared: { pid, ...(start === undefined ? {} : { start }) } });
+	const alive = (pid: number) => pid === 42;
+
+	it("holds while the Grok a session's log is shared with lives, and its start, when the mark has one, is unchanged", () => {
+		expect(sharedLogLives(mark(42, "s"), alive, () => "s")).toBe(true);
+		expect(sharedLogLives(mark(42), alive, () => undefined)).toBe(true);
+		// Gone, or another process at its pid (another start): a reopen records again.
+		expect(sharedLogLives(mark(7, "s"), alive, () => "s")).toBe(false);
+		expect(sharedLogLives(mark(42, "s"), alive, () => "another start")).toBe(false);
+		// No mark, or one that isn't this one.
+		expect(sharedLogLives(undefined, alive, () => "s")).toBe(false);
+		expect(sharedLogLives('{"offset":0}', alive, () => "s")).toBe(false);
+		expect(sharedLogLives("not json", alive, () => "s")).toBe(false);
+	});
+
+	it("fails closed: a live Grok whose start can't be read may be the one the mark names, so the session stays paused", () => {
+		expect(sharedLogLives(mark(42, "s"), alive, () => undefined)).toBe(true);
 	});
 });

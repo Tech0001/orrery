@@ -33,18 +33,18 @@
  * grokAgent), both as the grok process was started with them (src/codex/pick.ts launchedEnv: a hook whose own
  * disagree, or a Grok whose start can't be read, proves no agent's host, and is judged as one whose command line can't
  * be read, below), gets its own: where it may write (its folder, or the folder it was opened in, and its allowed
- * roots) and every other agent's view another's. A Grok started inside an agent's session gets that agent's rules, never
- * looser than the folder's own (src/agent/nested-rules.ts); one opened as an agent but refused, or started inside a session
- * nothing proves the agent of, may write only where it runs. A plain grok (no ORRERY_AGENT: Orrery's Grok hooks are
- * global), and one started from a coding tool's session that is no agent's where no agent would open, get Orrery's own
- * rules (spec 2026-10-19-no-agent-sessions §3): every agent's memory and Orrery's settings and data, Grok's folder but
- * its open parts (its memory, skills, workflows and what its bundled skills, docs and logs write, and its session
- * worktrees, the person's checkouts), which are Grok's own (what Grok loads and runs is kept there: its hooks, config
- * and policy files, /hooks switch, trust list, plugins, agents, the bundle's agents and language servers), and the
- * session records. So does every session of Grok's shared leader (leader mode: src/grok/host.ts), which runs every
- * session's hooks with its first client's environment, so no session there can be told to be an agent's or not. A Grok
- * whose command line can't be read is no proved host of an agent's session: ORRERY_AGENT set, it is judged as one
- * opened as an agent but refused (only where it runs); unset, as a plain grok.
+ * roots) and every other agent's view another's. A Grok started inside an agent's session gets that agent's rules,
+ * never looser than the folder's own (src/agent/nested-rules.ts); one opened as an agent but refused, or started inside
+ * a session nothing proves the agent of, may write only where it runs. A plain grok (no ORRERY_AGENT: Orrery's Grok
+ * hooks are global), and one started from a coding tool's session that is no agent's where no agent would open, get
+ * Orrery's own rules (spec 2026-10-19-no-agent-sessions §3): every agent's memory and Orrery's settings and data,
+ * Grok's folder but its open parts (its memory, skills, workflows and what its bundled skills, docs and logs write, and
+ * its session worktrees, the person's checkouts), which are Grok's own (what Grok loads and runs is kept there: its
+ * hooks, config and policy files, /hooks switch, trust list, plugins, agents, the bundle's agents and language
+ * servers), and the session records. So does every session of Grok's shared leader (leader mode: src/grok/host.ts),
+ * which runs every session's hooks with its first client's environment, so no session there can be told to be an
+ * agent's or not. A Grok whose command line can't be read is no proved host of an agent's session: ORRERY_AGENT set, it
+ * is judged as one opened as an agent but refused (only where it runs); unset, as a plain grok.
  * Limits, as Grok gives them: a hook that crashes or times out lets the call through (only an explicit deny or exit 2
  * blocks), so the guard answers within its own time and src/codex/guard-exit.ts refuses a crash or a stall; and `!`
  * bash mode commands are the person's own and raise no hook. The rest (the shell-text limits every gate has, what Grok

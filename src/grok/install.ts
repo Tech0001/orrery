@@ -7,11 +7,12 @@
  *   parent stays Grok; with no command there (Orrery removed) it reads its input and exits 0, so Grok shows no hook error.
  *   Nothing of the hook's input is in the script: Grok gives it on stdin. SessionStart may wait for the recorder, so it
  *   gets 15 s; the others 10 s (Grok's default is 5).
- * - `config.toml` gets the status row (`[ui.status_line]`, running `orrery grok-status`; with no command there, nothing,
- *   as the hook file's script does) and Orrery's memory tools (`[mcp_servers.orrery]`, `orrery mcp --tool grok`, given
- *   the launch's ORRERY_AGENT and its token: Grok expands them at load time), each only when it has none. Every line already there stays as it was, and the edit is checked as
- *   src/agent/config-edit.ts checks its own: the result must parse, and differ from the file by exactly those tables. A
- *   status line of the person's own stays; they are told how to show Orrery's.
+ * - `config.toml` gets the status row (`[ui.status_line]`, running `orrery grok-status`; with no command there,
+ *   nothing, as the hook file's script does) and Orrery's memory tools (`[mcp_servers.orrery]`, `orrery mcp --tool
+ *   grok`, given the launch's ORRERY_AGENT and its token: Grok expands them at load time), each only when it has none.
+ *   Every line already there stays as it was, and the edit is checked as src/agent/config-edit.ts checks its own: the
+ *   result must parse, and differ from the file by exactly those tables. A status line of the person's own stays; they
+ *   are told how to show Orrery's.
  * - Only a version that answers `grok-hook` (GROK_SINCE on) is wired: an older Orrery answers it with an error, which
  *   blocks every prompt, so a rollback to one removes the wiring (src/install/uninstall.ts unwireGrok).
  * Writing them is src/agent/tools.ts's (installSteps, runInstall); this file makes and reads their text.
@@ -113,9 +114,9 @@ const NAMES = [STATUS, SERVER] as const;
 type Name = (typeof NAMES)[number];
 
 /**
- * The status row's command for the Orrery command at `orrery`: a shell line, which Grok runs through sh. With no command
- * there (Orrery removed), it exits 0 and prints nothing, as the hook file's script does, so Grok shows no row rather than
- * an error; else it execs the command, so its parent stays Grok.
+ * The status row's command for the Orrery command at `orrery`: a shell line, which Grok runs through sh. With no
+ * command there (Orrery removed), it exits 0 and prints nothing, as the hook file's script does, so Grok shows no row
+ * rather than an error; else it execs the command, so its parent stays Grok.
  */
 export function grokStatusCommand(orrery: string): string {
 	return `[ -x ${quoted(orrery)} ] || exit 0; exec ${quoted(orrery)} grok-status`;
@@ -355,8 +356,8 @@ export function grokRecordingSwitchedOff(env: NodeJS.ProcessEnv): boolean {
 /**
  * Whether Grok's config switches Orrery's memory-tools server off (`grok mcp disable orrery`, or Grok's /mcps tab): its
  * table's `enabled = false`, or `disabled_mcp_servers` naming it (Grok's manual, 07-mcp-servers.md and
- * 26-config-reference.md). Grok then serves the session no zoom, date or search, and says nothing. False when the config
- * isn't there, can't be read or isn't TOML (grokWiring says which).
+ * 26-config-reference.md). Grok then serves the session no zoom, date or search, and says nothing. False when the
+ * config isn't there, can't be read or isn't TOML (grokWiring says which).
  */
 export function grokMemoryToolsSwitchedOff(env: NodeJS.ProcessEnv): boolean {
 	let config: Table;
@@ -370,7 +371,10 @@ export function grokMemoryToolsSwitchedOff(env: NodeJS.ProcessEnv): boolean {
 	return (isTable(server) && server.enabled === false) || (Array.isArray(disabled) && disabled.includes("orrery"));
 }
 
-/** What the tools check and the launch say when Grok's config switches Orrery's memory tools off (grokMemoryToolsSwitchedOff). */
+/**
+ * What the tools check and the launch say when Grok's config switches Orrery's memory tools off
+ * (grokMemoryToolsSwitchedOff).
+ */
 export const GROK_TOOLS_SWITCHED_OFF = "Orrery's memory tools are switched off in Grok's config, so its sessions get no zoom, date or search; grok mcp enable orrery, run in your own terminal, switches them back on.";
 
 /**

@@ -22,9 +22,10 @@ export function grokPid(start: number = process.ppid, info: (pid: number) => Pro
  * MCP server of Orrery's Claude Code plugin, which Grok runs through its Claude Code compatibility. The plugin stands down
  * there (src/cli/main.ts), so Orrery's Grok hooks and Grok's own `orrery` server are the only ones. Judged by the
  * process's own host, never a variable: a Claude Code started from a Grok shell is its hooks' host, and keeps them. And
- * by the file that host runs (`exeOf`, links followed: src/agent/process.ts processExecutable), never by its name alone:
- * a Claude Code started through a link named grok runs Claude Code's program, and keeps its plugin. A file that can't be
- * read is no Grok's. A copy of another program named like Grok's counts as Grok, as a script the agent writes does.
+ * by the file that host runs (`exeOf`, links followed: src/agent/process.ts processExecutable), never by its name
+ * alone: a Claude Code started through a link named grok runs Claude Code's program, and keeps its plugin. A file that
+ * can't be read is no Grok's. A copy of another program named like Grok's counts as Grok, as a script the agent writes
+ * does.
  */
 export function hostIsGrok(start: number = process.ppid, info: (pid: number) => ProcessInfo | undefined = processInfo, exeOf: (pid: number) => string | undefined = processExecutable): boolean {
 	const exe = exeOf(hostPid(start, info));
@@ -44,8 +45,8 @@ const COMMAND_VALUE_OPTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The commands of Grok's agent, leader and worker (their --help, 1.0.70): agent's leader is leader mode's, worker's start
- * runs one in its own process, and leader's worker is worker's.
+ * The commands of Grok's agent, leader and worker (their --help, 1.0.70): agent's leader is leader mode's, worker's
+ * start runs one in its own process, and leader's worker is worker's.
  */
 const OWN_COMMANDS: Readonly<Record<string, readonly string[]>> = {
 	agent: ["stdio", "headless", "serve", "leader", "help"],
@@ -85,9 +86,9 @@ function positionals(args: readonly string[]): string[] {
  * its options and their values (global ones before the command too: `grok --debug agent leader`), its command is its
  * first word that is no option nor value, or the next one when that first is its prompt (Grok runs `grok hi worker
  * start` as worker start); then that command's own is the first of its words that names one of its commands
- * (OWN_COMMANDS: an option's value Orrery doesn't know is passed over so). Nothing past those is read, so a session's own
- * (Orrery's flags first, its --rules value one argument, or on macOS many words, which start with its section's heading)
- * never reads as it.
+ * (OWN_COMMANDS: an option's value Orrery doesn't know is passed over so). Nothing past those is read, so a session's
+ * own (Orrery's flags first, its --rules value one argument, or on macOS many words, which start with its section's
+ * heading) never reads as it.
  */
 export function isGrokLeader(argv: readonly string[]): boolean {
 	const words = positionals(argv.slice(1));

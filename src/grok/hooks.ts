@@ -32,16 +32,17 @@
  *   stderr or in a log.
  *
  * Grok runs a hook through a pipe, so the agent's own shell can run this command with made-up input and its own
- * environment (ORRERY_AGENT, its token, GROK_HOME, HOME, ORRERY_CONFIG). So no event changes what such a call could abuse:
+ * environment (ORRERY_AGENT, its token, GROK_HOME, HOME, ORRERY_CONFIG). So no event changes what such a call could
+ * abuse:
  * - Whose session it is comes from the grok process's own start environment (src/codex/pick.ts launchedEnv: Linux
  *   /proc/<pid>/environ; macOS ps -E, its arguments left out, read only when it can't be read two ways), never from the
  *   hook's own: ORRERY_AGENT and its token as Grok was started with them, none there a plain grok. A hook whose own
  *   environment names another agent or token than that, or whose Grok's can't be read, decides, claims, records and
  *   spools nothing (SessionStart says why). The process's decision refuses any other identity too (src/codex/pick.ts),
  *   and SessionStart never takes over a live host record of this Grok's that names another agent.
- * - The host record and the holder take the Orrery config the grok process was started with (its ORRERY_CONFIG, else its
- *   Orrery home's or the default: grokOwnConfig); a hook that would load another (its --config, its own ORRERY_CONFIG or
- *   ORRERY_HOME) is refused, as src/cli/gate.ts refuses one inside an agent's session.
+ * - The host record and the holder take the Orrery config the grok process was started with (its ORRERY_CONFIG, else
+ *   its Orrery home's or the default: grokOwnConfig); a hook that would load another (its --config, its own
+ *   ORRERY_CONFIG or ORRERY_HOME) is refused, as src/cli/gate.ts refuses one inside an agent's session.
  * - SessionStart takes a session only when it is Grok's own, all before it decides, claims or records anything. What it
  *   checks, never taking a folder from the hook's own environment or its input:
  *   - Grok's folder is the one the grok process was started with: its own environment's GROK_HOME, else its HOME's
@@ -62,16 +63,16 @@
  *   anything.
  * - UserPromptSubmit and Stop spool only for the session this Grok's host record names, and what they spool is held
  *   until Grok's log confirms it, then dropped and counted if it doesn't.
- * - A second Grok writes a session's log as the first does: one resuming a session live in another Grok (`grok -r <id>`,
- *   which the guard refuses in shell text, or a script) appends its own prompt there, which reads as typed. So every
- *   SessionStart, whatever its Grok (an agent's, a plain one, one started inside a session), looks for a live host
- *   record of another Grok process that names its session, and when that Grok and this one have the session's
+ * - A second Grok writes a session's log as the first does: one resuming a session live in another Grok (`grok -r
+ *   <id>`, which the guard refuses in shell text, or a script) appends its own prompt there, which reads as typed. So
+ *   every SessionStart, whatever its Grok (an agent's, a plain one, one started inside a session), looks for a live
+ *   host record of another Grok process that names its session, and when that Grok and this one have the session's
  *   events.jsonl open for writing, the same file (or when either's open files can't be read), marks the session in that
  *   record's agent's spool (markShared, a `grok-shared` event): its holder confirms nothing more of the session's log
  *   while this Grok lives, and its status row and next SessionStart say so (src/claude/holder.ts, GROK_SHARED). This
  *   Grok records nothing of it either: a nested or plain one never does, and an agent's says why. A Grok that runs no
- *   Orrery hook (another GROK_HOME, its hooks masked), one under a leader, or one whose Orrery config names another data
- *   folder marks nothing: the second-program limit.
+ *   Orrery hook (another GROK_HOME, its hooks masked), one under a leader, or one whose Orrery config names another
+ *   data folder marks nothing: the second-program limit.
  */
 
 import { randomUUID } from "node:crypto";
@@ -257,15 +258,17 @@ function realOf(path: string): string | undefined {
 	}
 }
 
-/** `path` as it really is, or as given (absolute) when it can't be resolved: two paths name one file when these match. */
+/**
+ * `path` as it really is, or as given (absolute) when it can't be resolved: two paths name one file when these match.
+ */
 const fileOf = (path: string) => realOf(path) ?? resolve(path);
 
 /**
  * The Orrery config of the grok process, which its host record and holder take (module doc): the one its start
- * environment (`started`) names, ORRERY_CONFIG (from the folder it runs in, `cwd`, when relative), else its Orrery home's,
- * or the default, as defaultConfigPath finds them from its own HOME. Or why a hook can't run with it: that environment
- * can't be read, or says too little, or the config the hook itself would load (its --config `given`, else its own
- * ORRERY_CONFIG, Orrery home or default, from `env`) is another file.
+ * environment (`started`) names, ORRERY_CONFIG (from the folder it runs in, `cwd`, when relative), else its Orrery
+ * home's, or the default, as defaultConfigPath finds them from its own HOME. Or why a hook can't run with it: that
+ * environment can't be read, or says too little, or the config the hook itself would load (its --config `given`, else
+ * its own ORRERY_CONFIG, Orrery home or default, from `env`) is another file.
  */
 export function grokOwnConfig(given: string | undefined, env: NodeJS.ProcessEnv, started: Readonly<Record<string, string>> | undefined, cwd: string | undefined): { readonly path: string } | { readonly refused: string } {
 	if (started === undefined) return { refused: "the environment this Grok was started with can't be read" };
@@ -391,7 +394,10 @@ function markShared(session: string, ctx: GrokHookContext): boolean {
 	return marked;
 }
 
-/** What an agent's SessionStart says of a session another live Grok records (markShared): it records nothing of it either. */
+/**
+ * What an agent's SessionStart says of a session another live Grok records (markShared): it records nothing of it
+ * either.
+ */
 const SHARED_HERE = "Orrery: another Grok has this session open and records it, so this one isn't recorded.";
 
 /** A plain grok's SessionStart (module doc): in an agent's folder, how to open that agent; elsewhere nothing. */

@@ -409,6 +409,30 @@ describe("opening an agent in Grok", () => {
 		expect(others.grok.detail).not.toContain("switched off");
 	});
 
+	it("says Grok's config switches Orrery's memory tools off after the question that connects Orrery, and after the word that the wiring can't be read: connecting keeps that switch", () => {
+		const { config, row, env } = setup("grok");
+		const options = { root: orreryRoot(), env };
+		const off = { text: "Orrery's memory tools are switched off in Grok's config, so its sessions get no zoom, date or search; grok mcp enable orrery, run in your own terminal, switches them back on.", confirm: false };
+		const unknownText = { text: "Orrery can't tell whether Grok runs its hooks, so this session may not record; orrery tools says why.", confirm: false };
+		// The memory tools switched off (grok mcp disable orrery), then Orrery's hook file gone: connecting asks, then
+		// says so.
+		grokFiles(env, undefined, `disabled_mcp_servers = ["orrery"]\n\n${addGrokConfig("", own()).next}`);
+		const tools = checkTools(options);
+		expect(tools.find((t) => t.id === "grok")?.wiring).toBe("missing");
+		const plan = launchPlan(config, row, tools, options);
+		expect(plan.steps.map((step) => step.fix)).toEqual(["install-grok", undefined]);
+		expect(plan.steps[0]?.text).toMatch(/^Orrery's hooks for Grok are not installed, so this session won't record\. Connecting Orrery to Grok will:/);
+		expect(plan.steps[1]).toEqual(off);
+		// The wiring can't be read: the same word after it.
+		const unknown = tools.map((t) => (t.id === "grok" ? { ...t, wiring: "unknown" as const, detail: `cannot read ${grokFolder(env).hooks}` } : t));
+		expect(launchPlan(config, row, unknown, options).steps).toEqual([unknownText, off]);
+		// A yes connects Orrery and leaves Grok's switch as it is: the next launch says it alone.
+		applyFix("install-grok", config, row, tools, options);
+		const after = checkTools(options);
+		expect(after.find((t) => t.id === "grok")?.wiring).toBe("installed");
+		expect(launchPlan(config, row, after, options).steps).toEqual([off]);
+	});
+
 	it("says it couldn't read Grok's /hooks settings when the disabled-hooks file can't be read, not that the guard is off, then opens Grok", () => {
 		const { config, row, tools, env } = connected("grok");
 		const { disabled } = grokFolder(env);

@@ -442,8 +442,9 @@ describe("the memory tools in Grok Build (spec 2026-10-29-grok-build)", () => {
 		seedAtlas(root);
 		const token = newToken();
 		const fresh = newToken();
-		// Atlas's Grok (a stand-in started with Atlas's launch variables); a server its shell starts as Birch, with a fresh token, or
-		// with Atlas and another token, or with none: run through env, which execs it, so the Grok is still its parent.
+		// Atlas's Grok (a stand-in started with Atlas's launch variables); a server its shell starts as Birch, with a fresh
+		// token, or with Atlas and another token, or with none: run through env, which execs it, so the Grok is still its
+		// parent.
 		const launch = { ORRERY_CONFIG: configPath, ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: token };
 		for (const own of [["ORRERY_AGENT=Birch", `ORRERY_AGENT_TOKEN=${fresh}`], ["ORRERY_AGENT=Atlas", `ORRERY_AGENT_TOKEN=${fresh}`], ["-u", "ORRERY_AGENT", "-u", "ORRERY_AGENT_TOKEN"]]) {
 			const viaEnv = (cmd: string, args: string[]) => grokLaunch("/usr/bin/env", [...own, cmd, ...args]);

@@ -108,9 +108,9 @@ export interface LaunchOptions {
 }
 
 /**
- * The tools Orrery doesn't open through Ori: OpenCode, which Ori starts its own way (with config of its own, unchecked),
- * and Grok, whose Ori launch (--no-leader and the memory section after `ori grok`) no one has checked. Such an agent
- * opens directly.
+ * The tools Orrery doesn't open through Ori: OpenCode, which Ori starts its own way (with config of its own,
+ * unchecked), and Grok, whose Ori launch (--no-leader and the memory section after `ori grok`) no one has checked. Such
+ * an agent opens directly.
  */
 const NOT_THROUGH_ORI: readonly AgentTool[] = ["opencode", "grok"];
 const NOT_THROUGH_ORI_TEXT = (tool: AgentTool, name: string) => `Orrery doesn't open ${TOOL_LABELS[tool]} through Ori yet: open ${name} with launcher = "direct" (orrery agent set ${name} launcher direct), or in another tool.`;
@@ -134,22 +134,19 @@ function installQuestion(what: string, check: ToolCheck, options: { root?: strin
  * each config entry of Orrery's missing and that setup adds it back, a word when Grok's /hooks tab has switched Orrery's
  * hooks off or can't be read (grokSwitchedOff), one when Grok's config switches Orrery's memory tools off
  * (grokMemoryToolsSwitchedOff), and the launch goes on. A row Orrery can't read ("unknown") has no steps
- * to offer: it is said, and the launch goes on. The /hooks word follows the question and the "unknown" word too: hooks
- * connected now, or that may be there, still run nothing that is switched off there.
+ * to offer: it is said, and the launch goes on. The /hooks and memory-tools words follow the question and the "unknown"
+ * word too: hooks connected now, or that may be there, still run nothing that is switched off there, and connecting
+ * keeps Grok's own switch of the memory tools.
  */
 function grokWiringSteps(check: ToolCheck, options: { root?: string; env?: NodeJS.ProcessEnv }): LaunchStep[] {
 	const env = options.env ?? process.env;
-	const switched = (): LaunchStep[] => {
-		const text = grokSwitchedOff(env);
-		return text === undefined ? [] : [{ text, confirm: false }];
-	};
-	if (check.wiring === "unknown") return [{ text: "Orrery can't tell whether Grok runs its hooks, so this session may not record; orrery tools says why.", confirm: false }, ...switched()];
+	const said = (...texts: (string | undefined)[]): LaunchStep[] => texts.flatMap((text) => (text === undefined ? [] : [{ text, confirm: false }]));
+	const switched = () => said(grokSwitchedOff(env), grokMemoryToolsSwitchedOff(env) ? GROK_TOOLS_SWITCHED_OFF : undefined);
+	if (check.wiring === "unknown") return [...said("Orrery can't tell whether Grok runs its hooks, so this session may not record; orrery tools says why."), ...switched()];
 	if (check.wiring !== "installed" && check.wiring !== "missing" && check.wiring !== "other" && check.wiring !== "update available") return [];
 	const root = options.root ?? wiringRoot(options.env).root;
 	if (check.wiring === "installed" || (check.wiring === "missing" && grokHooksInstalled(root, env) === true)) {
-		const lacks = check.wiring === "missing" ? grokLacksText(grokConfigLacks(root, env)) : undefined;
-		const toolsOff = grokMemoryToolsSwitchedOff(env) ? GROK_TOOLS_SWITCHED_OFF : undefined;
-		return [lacks, grokSwitchedOff(env), toolsOff].flatMap((text) => (text === undefined ? [] : [{ text, confirm: false }]));
+		return [...said(check.wiring === "missing" ? grokLacksText(grokConfigLacks(root, env)) : undefined), ...switched()];
 	}
 	const steps = installSteps(check, root, env);
 	if (steps.length === 0) return [];

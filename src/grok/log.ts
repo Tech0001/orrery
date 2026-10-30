@@ -36,15 +36,16 @@ import type { OpenFile } from "../agent/open-files.ts";
 import { validSession } from "../claude/paths.ts";
 
 /**
- * Why a Grok session's recording stopped once another Grok had it open too (src/grok/hooks.ts markShared): the reason in
- * its mode, which its status row and the next SessionStart say, each in one line.
+ * Why a Grok session's recording stopped once another Grok had it open too (src/grok/hooks.ts markShared): the reason
+ * in its mode, which its status row and the next SessionStart say, each in one line.
  */
 export const GROK_SHARED = "another Grok wrote to this session; recording paused — reopen it to record again";
 
 /**
  * The Grok a session's log is shared with, as memory meta keeps it in the session's log place (src/claude/holder.ts):
  * `{"shared":{"pid":…,"start":…}}`, which parseGrokLogMark reads as no log, so nothing of it is confirmed. Whether that
- * Grok still lives (`alive`, and its start unchanged when known); false for any other text.
+ * Grok may still live (`alive`, and its start unchanged when the mark has one; a start that can't be read now may be
+ * unchanged, so the session stays paused); false for any other text.
  */
 export function sharedLogLives(text: string | undefined, alive: (pid: number) => boolean, startOf: (pid: number) => string | undefined): boolean {
 	if (text === undefined) return false;
@@ -52,7 +53,8 @@ export function sharedLogLives(text: string | undefined, alive: (pid: number) =>
 		const shared = record(record(JSON.parse(text))?.shared);
 		const pid = shared?.pid;
 		if (typeof pid !== "number" || !Number.isInteger(pid) || pid < 1 || !alive(pid)) return false;
-		return typeof shared?.start !== "string" || startOf(pid) === shared.start;
+		const start = typeof shared?.start === "string" ? startOf(pid) : undefined;
+		return start === undefined || start === shared?.start;
 	} catch {
 		return false;
 	}

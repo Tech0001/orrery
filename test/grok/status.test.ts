@@ -158,7 +158,8 @@ describe("orrery grok-status", () => {
 		const grok = as("Scratch", token);
 		// The honest row: its environment is its Grok's.
 		expect(grokStatus(payload(session), ctx(w.config, grok))).toBe("Orrery · Scratch · 3 msgs · recording");
-		// The same Grok, the row's own environment naming another agent (whose token this Grok holds too), another token, or none.
+		// The same Grok, the row's own environment naming another agent (whose token this Grok holds too), another token, or
+		// none.
 		for (const own of [as("Other", other), as("Scratch", newToken()), { ORRERY_AGENT: "Scratch" }]) {
 			expect(grokStatus(payload(session), ctx(w.config, own, { envOf: startedWith(grok) })), JSON.stringify(own)).toBe("");
 		}

@@ -20,15 +20,15 @@
  * exclusively): whose (ORRERY_AGENT and its token's sha256), when the process started, and what. Every later asker
  * reads it: a later SessionStart (a compaction, /clear, resume) neither judges again nor takes a claim over, so a Codex
  * started inside an agent's session stays without memory once that session ends. A record is this process's only when
- * it names the process's identity and start, both known; one of another start (a reused pid), or one that can't be read,
- * the first asker replaces. One of this very start but another identity is no stale one: an asker whose ORRERY_AGENT or
- * token isn't the one the process decided with (a hook the agent's own shell ran, naming another agent) is refused, and
- * claims and replaces nothing. A process whose start can't be read decides nothing and claims nothing: no memory (fail
- * closed).
+ * it names the process's identity and start, both known; one of another start (a reused pid), or one that can't be
+ * read, the first asker replaces. One of this very start but another identity is no stale one: an asker whose
+ * ORRERY_AGENT or token isn't the one the process decided with (a hook the agent's own shell ran, naming another agent)
+ * is refused, and claims and replaces nothing. A process whose start can't be read decides nothing and claims nothing:
+ * no memory (fail closed).
  *
- * Whose an event is comes from the host's own start environment (launchedEnv, startEnvOf): a hook or memory server takes
- * ORRERY_AGENT and its token as the Codex (or Grok) process was started with them, never as its own environment has them,
- * which any shell may set; one whose own disagree is refused, and one with none there is no agent's.
+ * Whose an event is comes from the host's own start environment (launchedEnv, startEnvOf): a hook or memory server
+ * takes ORRERY_AGENT and its token as the Codex (or Grok) process was started with them, never as its own environment
+ * has them, which any shell may set; one whose own disagree is refused, and one with none there is no agent's.
  * A new decision prunes the records of processes that are gone. An agent whose decision can't be recorded stays the
  * agent (its claim of the token is durable) and SessionStart says so.
  * A nested or refused one whose decision can't be recorded claims nothing, and an asker that is no first one only finds
@@ -114,9 +114,9 @@ export const LAUNCH_VARIABLES: readonly string[] = [AGENT_ENV, TOKEN_ENV];
 
 /**
  * The variables `names` of the environment the host process `pid` was started with (src/agent/process.ts processEnv):
- * Linux's /proc/<pid>/environ; on macOS ps's words after the process's arguments (Grok's --rules hold the agent's memory),
- * and only when they can't be read two ways (a variable standing twice, or a value a space cut). Undefined when it can't
- * be read so.
+ * Linux's /proc/<pid>/environ; on macOS ps's words after the process's arguments (Grok's --rules hold the agent's
+ * memory), and only when they can't be read two ways (a variable standing twice, or a value a space cut). Undefined
+ * when it can't be read so.
  */
 export function startEnvOf(pid: number, names: readonly string[]): Readonly<Record<string, string>> | undefined {
 	return processEnv(pid, names, { withoutArgs: true, unambiguous: true });

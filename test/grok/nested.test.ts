@@ -84,7 +84,8 @@ const hookCtx = (w: ReturnType<typeof grokWorld>, extra: Partial<GrokHookContext
 	env: { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token, GROK_HOME: w.grok.home },
 	grokPid: process.pid,
 	grokParent: process.pid,
-	// The environment the grok process was started with: Birch's launch variables, and its sessions are under its GROK_HOME.
+	// The environment the grok process was started with: Birch's launch variables, and its sessions are under its
+	// GROK_HOME.
 	envOf: startedWith({ ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token, GROK_HOME: w.grok.home }),
 	cwdOf: () => w.grok.cwd,
 	startHolder: () => {
@@ -270,7 +271,8 @@ describe("whose a Grok's events are: its own start environment's ORRERY_AGENT an
 		expect(claimedBy(w.birch.dir, fresh)).toBeUndefined();
 		expect(liveSession(w.dataDir, process.pid)).toEqual(host);
 		expect(decision(w)).toBe(decided);
-		// The person types in Birch's Grok: its own hook spools the prompt, and a copy the shell makes as Atlas spools nothing.
+		// The person types in Birch's Grok: its own hook spools the prompt, and a copy the shell makes as Atlas spools
+		// nothing.
 		await run("user-prompt-submit", input("s1", { prompt: "My plan.", promptId: "p-1" }), c);
 		await runGrokHook("user-prompt-submit", input("s1", { prompt: "My plan.", promptId: "p-1" }), { ...c, env: { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: fresh, GROK_HOME: w.grok.home }, grokParent: shell });
 		expect(spooled(w.birch.dir, "s1")).toEqual(["grok-log", "prompt"]);

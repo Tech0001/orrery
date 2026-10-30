@@ -653,8 +653,8 @@ function firstFrom(list: readonly number[], at: number): number {
 
 /**
  * Where a reading's commands end, in one pass: ;, a pipe, & (but a redirection's, 2>&1 or &>) and a newline, outside
- * quotes ('…', $'…' and "…", with their escapes). A quote left open runs to the end. `tangle`, when given, gets the first
- * place past which a shell may read the text otherwise: outside single quotes a substitution or a ${…} ($(, ${, a
+ * quotes ('…', $'…' and "…", with their escapes). A quote left open runs to the end. `tangle`, when given, gets the
+ * first place past which a shell may read the text otherwise: outside single quotes a substitution or a ${…} ($(, ${, a
  * backquote: quotes nest there), and outside quotes a comment, a here-document, a parenthesis or a brace (#, <<, a
  * subshell's, a process substitution's or a function's opening, or a case pattern's end: a function may run its
  * words, and a case arm's command starts past its pattern).
@@ -763,8 +763,8 @@ export const ORRERY_COMMAND_REFUSED_PLAIN = (command: string) =>
 // mcp dis$X), a glob as each name it could match. Where the program runs as the command (RUNS_AS_COMMAND), a word that
 // is one quoted string holding a blank is its prompt, whatever it says (grok "update the docs"), but one that holds a
 // substitution or a ${…}, or starts with a "-" (grok "--trust x"); elsewhere, unquoted (grok -p update), and in a text
-// with a brace group (grokCommandOf), each of its words counts. Each time the program is named it is read on its own, in
-// another's words or substitution too (grok "x $(grok mcp disable orrery)"), but as the argument of a program that
+// with a brace group (grokCommandOf), each of its words counts. Each time the program is named it is read on its own,
+// in another's words or substitution too (grok "x $(grok mcp disable orrery)"), but as the argument of a program that
 // never runs its arguments (namesOnly: git commit -m "add grok support and update docs" passes; a case arm, eval,
 // sh -c, npx and echo grok update | sh don't). What xargs or parallel feed the program counts wherever it stands. A
 // command that only asks for a command's help passes (asksHelp). Limits: src/agent/guard-paths.ts, Known limits.

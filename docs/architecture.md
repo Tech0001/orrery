@@ -279,6 +279,7 @@ See [OpenCode](opencode.md) for the details and the guard's OpenCode-specific li
 `orrery agent` launches `grok --no-leader --rules <memory section + instructions>`: Grok's session start can't give the model context, so the memory comes on the command line, appended to the system prompt for the whole session, which `/compact` and `/clear` keep; Grok doesn't apply `--rules` on a resume, so a resumed session keeps its first launch's.
 The hooks and the holder are Codex's, generalized to Grok's process: the hooks spool typed prompts and final replies, and the holder records each only once Grok's session log confirms it (see [Agent sessions](#prompts-checked-against-the-tools-record)).
 The agent is the one `ORRERY_AGENT` names, with its token; the hooks are global, so a plain `grok` runs them as a session that is no agent's, and Grok's leader mode, where one process runs every session's hooks, is refused.
+Codex's and Grok's hooks take `ORRERY_AGENT` and its token (and Grok's the Orrery config) from the environment their host process was started with, never their own, and a session start that can't tell which agent or config that is, comes after its process decided under another agent or token, or (Grok) asks for another agent than the one its process hosts, says so in one line and records nothing ([Grok](grok.md#troubleshooting), [Codex](codex.md#troubleshooting)).
 Under Grok the Claude Code plugin's hooks and server stand down, so nothing runs twice.
 See [Grok](grok.md) for folder trust, the status row and the guard's Grok-specific limits.
 

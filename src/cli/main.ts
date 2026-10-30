@@ -850,9 +850,9 @@ const denyToolCall = (reason: string) =>
  * (src/codex/pick.ts), claimed for the Codex that started it, at its start, before any SessionStart. With --tool grok it
  * is Grok's, the same way (grokAgent): Grok's config names it for every session (src/grok/install.ts), and gives it the
  * launch's ORRERY_AGENT and token, so a plain grok's gets none and serves no tools. Both are taken as the grok process
- * was started with them (src/codex/pick.ts launchedEnv): a server whose own name another agent or token, or whose Grok's
- * start environment can't be read, serves no tools and decides nothing. Under Grok the Claude Code plugin's own server
- * serves nothing (dispatch), so the model sees one set of tools.
+ * was started with them (src/codex/pick.ts launchedEnv): a server whose own environment names another agent or token,
+ * or whose Grok's start environment can't be read, serves no tools and decides nothing. Under Grok the Claude Code
+ * plugin's own server serves nothing (dispatch), so the model sees one set of tools.
  * Inside an agent's session (`inside`, src/cli/gate.ts) it serves that agent or nothing, with the config that holds the
  * session's memory (`trusted`); and when its parent is that session's recorded host (a restarted server, or the agent's
  * shell exec'ing `orrery mcp`), it only reads the decision the host made, so no folder or variable given to it can
@@ -1087,11 +1087,11 @@ async function grokGuardHook(configPath: string | undefined): Promise<number> {
  * every Grok session. pre-tool-use is the guard (grokGuardHook). The others never fail the session: exit 0 (a 2 would
  * block the prompt, or keep a turn going), only their JSON answer on stdout, and an error in one stderr line, never with
  * message contents. They run with the Orrery config the grok process was started with (its ORRERY_CONFIG, else the
- * default: src/grok/hooks.ts grokOwnConfig), which the holder is given too; one the hook would read otherwise (a --config
- * of its caller's, its own ORRERY_CONFIG or ORRERY_HOME) is refused. A config that cannot be read, or refused, is said at
- * SessionStart in a Grok opened as an agent; anywhere else (a plain grok, or no config at all) they say nothing. Run by
- * Grok's shared leader (leader mode), every event but the guard decides, claims and records nothing (src/grok/hooks.ts
- * runGrokHook); the guard judges there by Orrery's own rules.
+ * default: src/grok/hooks.ts grokOwnConfig), which the holder is given too; one the hook would read otherwise (a
+ * --config of its caller's, its own ORRERY_CONFIG or ORRERY_HOME) is refused. A config that cannot be read, or refused,
+ * is said at SessionStart in a Grok opened as an agent; anywhere else (a plain grok, or no config at all) they say
+ * nothing. Run by Grok's shared leader (leader mode), every event but the guard decides, claims and records nothing
+ * (src/grok/hooks.ts runGrokHook); the guard judges there by Orrery's own rules.
  */
 async function grokHook(event: string | undefined, configPath: string | undefined): Promise<number> {
 	if (event === "pre-tool-use") return grokGuardHook(configPath);

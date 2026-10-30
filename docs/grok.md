@@ -473,6 +473,24 @@ and keeps that agent's rules in its guard (both agents' rules, in another agent'
 - `can't confirm this is this Grok's own session`: the reason follows in brackets, such as Grok not holding the session
   open, a link on the way, a subagent's session, or a system that can't say which files Grok has open. The session is
   not recorded; open the agent again with `orrery agent`.
+- `Orrery: can't tell which agent this Grok is (…), so this session isn't recorded.`: Orrery takes the agent from the
+  `ORRERY_AGENT` and token the grok process was started with, never from the hook's own environment. The reason says
+  which failed: that environment can't be read (on macOS, see Limits), or the hook's own names another agent or token
+  (something other than this Grok ran the hook, or changed those variables for it). Quit Grok and open the agent again
+  with `orrery agent <Name> --tool grok`.
+- `Orrery: can't tell which Orrery config this Grok runs with (…), so this session isn't recorded.`: the hooks use the
+  config the grok process was started with (its `ORRERY_CONFIG`, else its Orrery home's, else the default under its
+  `HOME`). The reason says why that can't be told: Grok's start environment or folder can't be read, it names no
+  `HOME`, an `ORRERY_HOME` there or the hook's own is no absolute path, or the hook would read another config than
+  that one (`ORRERY_CONFIG` or `ORRERY_HOME` changed after Grok started). Open the agent again with `orrery agent
+  <Name> --tool grok`, with the same `ORRERY_HOME` and `ORRERY_CONFIG` throughout.
+- `Orrery: this Grok already decided which agent it is under another ORRERY_AGENT or token, so this session runs
+  without memory.`: a Grok process decides once whose it is, when its memory server starts or at its first session
+  start, and this session start brings another agent or token than that one. Quit that Grok and open the agent with
+  `orrery agent <Name> --tool grok`.
+- `Orrery: this Grok hosts <A>'s session, so this session isn't recorded as <B>'s.`: this Grok process already runs
+  A's session, and a session start in it asked for B. A keeps recording; one Grok is one agent's. Open B in a Grok of
+  its own with `orrery agent <B> --tool grok`.
 - `Orrery opens Grok with --no-leader: in leader mode …`: leave out `--leader` (or the leader command it names). If
   Grok runs its leader anyway (a policy pin of `use_leader`, say), the session start says `Grok runs this session's
   hooks and memory tools in its shared leader process (leader mode) …`: nothing is recorded, no memory tools are served,

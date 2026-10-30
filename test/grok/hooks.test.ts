@@ -67,8 +67,8 @@ const tokenOf = (t: TestAgent) => {
 	return token;
 };
 /**
- * The environment a grok process was started with: ORRERY_AGENT and its token as `env` has them (Grok hands its hooks its
- * own), and the folder variables `folder` gives (undefined: none can be read).
+ * The environment a grok process was started with: ORRERY_AGENT and its token as `env` has them (Grok hands its hooks
+ * its own), and the folder variables `folder` gives (undefined: none can be read).
  */
 const grokStarted =
 	(env: NodeJS.ProcessEnv, folder: NonNullable<GrokHookContext["envOf"]>): NonNullable<GrokHookContext["envOf"]> =>

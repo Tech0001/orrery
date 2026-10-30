@@ -1385,7 +1385,10 @@ describe("Grok's own commands in shell text: none but its read-only ones, and no
 		"ls src/grok",
 	];
 
-	/** Each of `lines` refused in an agent's session and in one that is no agent's, by Grok's guard and every tool's, naming its command. */
+	/**
+	 * Each of `lines` refused in an agent's session and in one that is no agent's, by Grok's guard and every tool's,
+	 * naming its command.
+	 */
 	function refusesEach(lines: readonly (readonly [string, string])[]) {
 		const { options, plain } = setup();
 		for (const [command, named] of lines) {
@@ -1985,7 +1988,8 @@ describe("the PreToolUse hook (runGrokGuard)", () => {
 
 	it("under Grok's shared leader, applies the plain-window rules to every session, whatever agent and token it names", () => {
 		const { t, ctx, home } = agentWorld();
-		// Leader mode's, one run in its own process (worker start, leader worker start), one with global options before agent.
+		// Leader mode's, one run in its own process (worker start, leader worker start), one with global options before
+		// agent.
 		const leaders = [
 			["/home/u/.grok/downloads/grok-linux-x86_64", "agent", "leader", "--no-exit-on-disconnect"],
 			["grok", "worker", "--name", "w", "start"],

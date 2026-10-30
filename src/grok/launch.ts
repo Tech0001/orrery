@@ -4,10 +4,10 @@
  * section, then its instructions. Grok 1.0.70 accepts `--rules` once only ("cannot be used multiple times"), and Linux
  * takes at most 128 KiB in one argument. The instructions go in whole (at most 32 KB, as for every tool:
  * readInstructions), and the memory section takes the room they leave: a view at a smaller ceiling when the agent's own
- * is too large, or that view's newest lines, the older left out, which the zoom and search tools still reach (fitMemory,
- * src/agent/memory-read.ts). The text is on Grok's command line, where other users of the computer can read it, and
- * every process of this user, other agents' shells among them, whatever their `reads` allows (docs/architecture.md,
- * Limits).
+ * is too large, or that view's newest lines, the older left out, which the zoom and search tools still reach
+ * (fitMemory, src/agent/memory-read.ts). The text is on Grok's command line, where other users of the computer can read
+ * it, and every process of this user, other agents' shells among them, whatever their `reads` allows
+ * (docs/architecture.md, Limits).
  */
 
 import type { AgentConfig } from "../agent/config.ts";
@@ -91,8 +91,8 @@ const RULES_FLAGS = ["--rules", "--append-system-prompt"];
  * `--leader` flag; `agent … leader`, Grok's own; or Grok's commands that run a leader in the calling process, `leader
  * worker start` and `worker start` (1.0.70's help: "Run a leader in this terminal"), read as any `leader` or `worker`
  * word that is no option's value, named with the words after it up to the next option. Read more widely than a running
- * Grok's own command line is (src/grok/host.ts isGrokLeader, which knows the same leaders): a word the person gives here
- * may be refused for nothing more than its name.
+ * Grok's own command line is (src/grok/host.ts isGrokLeader, which knows the same leaders): a word the person gives
+ * here may be refused for nothing more than its name.
  */
 function startsLeader(args: readonly string[]): string | undefined {
 	const until = args.indexOf("--");

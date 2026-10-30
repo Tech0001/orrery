@@ -23,10 +23,10 @@
  *   holder that starts with an event still held looks for it first, where its predecessor left off. No prompt, and no
  *   Codex or Grok reply, is recorded as it comes.
  * - A Grok session that another Grok has open too (a `grok-shared` mark: src/grok/hooks.ts) confirms nothing more: its
- *   log can't tell the recording Grok's turns from the other's. Its log place in memory meta names that Grok instead, so
- *   no later holder confirms anything from it while that Grok lives. Its own session turns read-only, with the reason
- *   its status row and its next SessionStart say (GROK_SHARED), for the rest of this holder's run; a holder that starts
- *   for it later (it reopened) records it again once that Grok is gone.
+ *   log can't tell the recording Grok's turns from the other's. Its log place in memory meta names that Grok instead,
+ *   so no later holder confirms anything from it while that Grok lives. Its own session turns read-only, with the
+ *   reason its status row and its next SessionStart say (GROK_SHARED), for the rest of this holder's run; a holder that
+ *   starts for it later (it reopened) records it again once that Grok is gone.
  * It logs lifecycle and errors only, never message contents; its lines name the host (Claude Code, Codex or Grok).
  */
 
@@ -733,8 +733,8 @@ export class Holder {
 	}
 
 	/**
-	 * Its own session turns read-only (module doc): the mode this holder wrote for it, with GROK_SHARED for the reason and,
-	 * for another holder that takes the session's leftovers, `since` the mark's time.
+	 * Its own session turns read-only (module doc): the mode this holder wrote for it, with GROK_SHARED for the reason
+	 * and, for another holder that takes the session's leftovers, `since` the mark's time.
 	 */
 	#pause(at: number): void {
 		this.#shared = true;

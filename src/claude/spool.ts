@@ -29,9 +29,9 @@ import { sessionDir, sessionsDir, validSession } from "./paths.ts";
  *   only once Grok's session log confirms it (src/grok/log.ts), and records the log's words.
  * - `grok-log`: Grok's SessionStart's, once Grok was seen holding the session open: the session's log under Grok's folder
  *   (`home`), both as they really are, the file it is ("device:inode", when Grok had made it), and where to read it from.
- * - `grok-shared`: another Grok's SessionStart's, for a session a live Grok records, which that other Grok (`claudePid`,
- *   started at `start`) has open too (src/grok/hooks.ts): its log is no proof of the recording Grok's turns any more, so
- *   the holder confirms nothing more of it while that Grok lives.
+ * - `grok-shared`: another Grok's SessionStart's, for a session a live Grok records, which that other Grok
+ *   (`claudePid`, started at `start`) has open too (src/grok/hooks.ts): its log is no proof of the recording Grok's
+ *   turns any more, so the holder confirms nothing more of it while that Grok lives.
  */
 export type SpoolEvent =
 	| { readonly kind: "prompt"; readonly at: number; readonly claudePid: number; readonly text: string; readonly promptId?: string; readonly host?: "codex" | "grok"; readonly turnId?: string }
