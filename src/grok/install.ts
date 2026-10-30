@@ -349,6 +349,27 @@ export function grokRecordingSwitchedOff(env: NodeJS.ProcessEnv): boolean {
 }
 
 /**
+ * Whether Grok's config switches Orrery's memory-tools server off (`grok mcp disable orrery`, or Grok's /mcps tab): its
+ * table's `enabled = false`, or `disabled_mcp_servers` naming it (Grok's manual, 07-mcp-servers.md and
+ * 26-config-reference.md). Grok then serves the session no zoom, date or search, and says nothing. False when the config
+ * isn't there, can't be read or isn't TOML (grokWiring says which).
+ */
+export function grokMemoryToolsSwitchedOff(env: NodeJS.ProcessEnv): boolean {
+	let config: Table;
+	try {
+		config = parse(readFileSync(grokFiles(env).config, "utf8")) as Table;
+	} catch {
+		return false;
+	}
+	const server = at(config, SERVER);
+	const disabled = config.disabled_mcp_servers;
+	return (isTable(server) && server.enabled === false) || (Array.isArray(disabled) && disabled.includes("orrery"));
+}
+
+/** What the tools check and the launch say when Grok's config switches Orrery's memory tools off (grokMemoryToolsSwitchedOff). */
+export const GROK_TOOLS_SWITCHED_OFF = "Orrery's memory tools are switched off in Grok's config, so its sessions get no zoom, date or search; grok mcp enable orrery, run in your own terminal, switches them back on.";
+
+/**
  * Grok's row in the tools check: Orrery's hook file and config tables in Grok's folder, for the Orrery at `root`.
  * - "missing": no hook file; or Orrery's, for this root, with a table of Orrery's missing from the config (none written
  *   yet, or the person removed it): adding one is asked, as connecting is, and never done by an update on its own; a
@@ -356,7 +377,8 @@ export function grokRecordingSwitchedOff(env: NodeJS.ProcessEnv): boolean {
  * - "other": a hook file that is not Orrery's, or Orrery's for another Orrery (`now` says which).
  * - "update available": Orrery's for this root's other install shape, the config tables there.
  * - "installed": the hook file runs this root's command and the config has both tables (a status line of the person's
- *   own counts). "unknown": a file that can't be read, or a config that is not TOML.
+ *   own counts); its detail says so when the config switches Orrery's memory tools off (grokMemoryToolsSwitchedOff).
+ *   "unknown": a file that can't be read, or a config that is not TOML.
  */
 export function grokWiring(root: string, env: NodeJS.ProcessEnv): Pick<ToolCheck, "wiring" | "detail" | "now"> {
 	const { hooks, config } = grokFiles(env);
@@ -386,7 +408,7 @@ export function grokWiring(root: string, env: NodeJS.ProcessEnv): Pick<ToolCheck
 	const moved = otherShape ? { now: `runs ${safeText(target)}` } : {};
 	if (added.length > 0) return { wiring: "missing", detail: `${safeText(config)} has no ${added.map((name) => `[${name}]`).join(" or ")}`, ...moved };
 	if (otherShape) return { wiring: "update available", detail: `Orrery's hook file runs this Orrery's other install shape; setup moves it to this version's`, ...moved };
-	return { wiring: "installed", detail: safeText(hooks) };
+	return { wiring: "installed", detail: grokMemoryToolsSwitchedOff(env) ? `${safeText(hooks)}; ${GROK_TOOLS_SWITCHED_OFF}` : safeText(hooks) };
 }
 
 /**

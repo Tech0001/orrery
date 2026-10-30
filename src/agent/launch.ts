@@ -23,7 +23,7 @@ import { type OpenCodeGate, opencodePluginGate, type probePlugin } from "../open
 import { argsRefusal, inheritsOrreryPlugin, launchConfigContent, opencodeArgs, pluginFolder } from "../opencode/launch.ts";
 import { configContent } from "../opencode/options.ts";
 import { removeOnSignals, removeTokenFile, tokenFilePath, writeTokenFile } from "../opencode/token-file.ts";
-import { grokConfigLacks, grokGuardSwitchedOff, grokHooksInstalled, grokRecordingSwitchedOff, grokSwitchesUnreadable } from "../grok/install.ts";
+import { GROK_TOOLS_SWITCHED_OFF, grokConfigLacks, grokGuardSwitchedOff, grokHooksInstalled, grokMemoryToolsSwitchedOff, grokRecordingSwitchedOff, grokSwitchesUnreadable } from "../grok/install.ts";
 import { grokArgs, grokArgsRefusal, grokResumeNotice, grokRules } from "../grok/launch.ts";
 import { buildRunning, readBuild } from "./build.ts";
 import { findAgent, type HarnessConfig, insideFolder, type AgentConfig, type AgentLauncher, type AgentTool } from "./config.ts";
@@ -127,7 +127,8 @@ function installQuestion(what: string, check: ToolCheck, options: { root?: strin
  * (installSteps, src/grok/install.ts grokInstallSteps), which a yes runs (install-grok) and a no opens nothing. When it
  * is ("installed", or "missing" for a config entry alone, which the person may have removed on purpose): a word for
  * each config entry of Orrery's missing and that setup adds it back, a word when Grok's /hooks tab has switched Orrery's
- * hooks off or can't be read (grokSwitchedOff), and the launch goes on. A row Orrery can't read ("unknown") has no steps
+ * hooks off or can't be read (grokSwitchedOff), one when Grok's config switches Orrery's memory tools off
+ * (grokMemoryToolsSwitchedOff), and the launch goes on. A row Orrery can't read ("unknown") has no steps
  * to offer: it is said, and the launch goes on.
  */
 function grokWiringSteps(check: ToolCheck, options: { root?: string; env?: NodeJS.ProcessEnv }): LaunchStep[] {
@@ -137,7 +138,8 @@ function grokWiringSteps(check: ToolCheck, options: { root?: string; env?: NodeJ
 	const root = options.root ?? wiringRoot(options.env).root;
 	if (check.wiring === "installed" || (check.wiring === "missing" && grokHooksInstalled(root, env) === true)) {
 		const lacks = check.wiring === "missing" ? grokLacksText(grokConfigLacks(root, env)) : undefined;
-		return [lacks, grokSwitchedOff(env)].flatMap((text) => (text === undefined ? [] : [{ text, confirm: false }]));
+		const toolsOff = grokMemoryToolsSwitchedOff(env) ? GROK_TOOLS_SWITCHED_OFF : undefined;
+		return [lacks, grokSwitchedOff(env), toolsOff].flatMap((text) => (text === undefined ? [] : [{ text, confirm: false }]));
 	}
 	const steps = installSteps(check, root, env);
 	if (steps.length === 0) return [];
