@@ -426,8 +426,9 @@ export class Holder {
 				if (event.session === this.session) this.#attempt("pausing the session", () => this.#pause(parsed.at));
 				this.#log(`${event.session}: another Grok (pid ${parsed.claudePid}) has this session open; its log confirms nothing more`);
 			} else if (parsed?.kind === "reply" && this.#codexSession(event.session, parsed.claudePid)) {
-				// A Codex reply with no turn to check (spooled by an Orrery from before the rollout check): never recorded.
-				unconfirmed = "a reply Codex's rollout does not confirm";
+				// A Codex reply with no turn to check (spooled by an Orrery from before the rollout check), or a reply in this
+				// Grok holder's own session that isn't marked Grok's: never recorded. The log line names the tool's record.
+				unconfirmed = event.session === this.session && this.#host === "grok" ? "a reply Grok's log does not confirm" : "a reply Codex's rollout does not confirm";
 			} else if (parsed?.kind === "reply" && parsed.text.trim() && !commandReply) {
 				// Claude Code's: its Stop hook's caller was checked (src/claude/peer.ts).
 				items.push({ kind: "talk", text: parsed.text, date: localIso(new Date(parsed.at)) });

@@ -224,8 +224,6 @@ export function findRollout(home: string, session: string): string | undefined {
 	return undefined;
 }
 
-export { holdsOpen, type OpenFile, openFiles, parseLsof } from "../agent/open-files.ts";
-
 /**
  * A rollout's first line, its `session_meta`: the session it records, the kind of thread ("user": a person's own), and
  * the Codex that wrote it (`cli_version`, there since 0.153.4 at least).

@@ -90,7 +90,7 @@ export function holderFresh(holder: HolderState | undefined, now = Date.now()): 
  */
 export type HoldingTool = "pi" | "omp" | "opencode" | HolderHost;
 
-export const HOLDING_LABELS: Record<HoldingTool, string> = { pi: "pi", omp: "OMP", opencode: "OpenCode", ...HOST_LABELS };
+const HOLDING_LABELS: Record<HoldingTool, string> = { pi: "pi", omp: "OMP", opencode: "OpenCode", ...HOST_LABELS };
 
 /** A status.json this fresh is from a running session (pi and OMP write it every 5 s; as overview.ts's STATUS_FRESH_MS). */
 const STATUS_FRESH_MS = 30_000;

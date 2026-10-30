@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { confirmGrok, GrokLogReader, grokFolder, grokHeldSessions, grokHome, grokLogIn, grokLogStart, grokSessionKind, grokSessionLog, grokStartHome, parseGrokLogMark } from "../../src/grok/log.ts";
+import { confirmGrok, GrokLogReader, grokFolder, grokHeldSessions, grokHome, grokLogIn, grokLogStart, grokSessionKind, grokStartHome, parseGrokLogMark } from "../../src/grok/log.ts";
 import { tempDir } from "../agent/support.ts";
 import { grokLog, grokSession } from "./log-lines.ts";
 
@@ -24,7 +24,12 @@ describe("where Grok keeps a session's log", () => {
 		// The folder names Grok 1.0.70 made (live): a plain path, and one with spaces, brackets, !'* and a multi-byte letter.
 		expect(grokFolder("/tmp/work-1000/-home-x/projects/app_2.v1")).toBe("%2Ftmp%2Fwork-1000%2F-home-x%2Fprojects%2Fapp_2.v1");
 		expect(grokFolder("/tmp/odd (dir)!'*~ é")).toBe("%2Ftmp%2Fodd%20%28dir%29%21%27%2A~%20%C3%A9");
-		expect(grokSessionLog("/h/.grok", "/w/app", S)).toBe(`/h/.grok/sessions/%2Fw%2Fapp/${S}/updates.jsonl`);
+		// A session's log there, as Grok writes it, is the one grokLogIn takes.
+		const home = join(scratch(), "grok");
+		const log = join(home, "sessions", grokFolder("/w/app"), S, "updates.jsonl");
+		expect(log).toBe(`${home}/sessions/%2Fw%2Fapp/${S}/updates.jsonl`);
+		mkdirSync(join(log, ".."), { recursive: true });
+		expect(grokLogIn(log, home, S)).toBe(log);
 	});
 
 	it("is under GROK_HOME when it is set, else ~/.grok", () => {
@@ -70,7 +75,7 @@ describe("where Grok keeps a session's log", () => {
 
 	it("takes only a session's own log under Grok's sessions folder, never one a link or a made-up path leads to", () => {
 		const home = join(scratch(), "grok");
-		const path = grokSessionLog(home, "/w", S);
+		const path = join(home, "sessions", grokFolder("/w"), S, "updates.jsonl");
 		mkdirSync(join(path, ".."), { recursive: true });
 		expect(grokLogIn(path, home, S)).toBe(path);
 		expect(grokLogIn(path, home, grokSession())).toBeUndefined();

@@ -64,12 +64,13 @@
  * - A pi or OMP session that starts while the config cannot be read (src/pi/index.ts unreadableGuard) knows no agent, so
  *   its foreignViews is empty: other agents' views are still refused by name in commands and paths, but a content search
  *   (grep) of an agent's folder is not, since the guard cannot know which folders hold a view.
- * - Grok Build also runs hooks and MCP servers from a project's .grok/hooks/*.json and .grok/config.toml, its
- *   .claude/settings*.json and .cursor/hooks.json, and the person's Claude Code settings file and Cursor hooks file, and
- *   language servers from a project's .grok/lsp.json. These are the project's and the person's, as Claude Code's
- *   project settings are, and the guard keeps none of them: a hook or server an agent plants there runs outside the
- *   guard in a later session, and a hook may rewrite a call's input after Orrery judged it, as a script an agent writes
- *   and later runs does, and as shell profiles and the rest of the person's files that later run in sessions do. The
+ * - Grok Build also runs hooks and MCP servers from a project's .grok/hooks/*.json and .grok/config.toml (a session
+ *   worktree's own .grok too), its .claude/settings*.json and .cursor/hooks.json, and the person's Claude Code settings
+ *   file and Cursor hooks file, and language servers from a project's .grok/lsp.json. These are the project's and the
+ *   person's, as Claude Code's project settings are, and the guard keeps none of them: a hook or server an agent plants
+ *   there runs outside the guard in a later session, and a hook may rewrite a call's input after Orrery judged it (Grok
+ *   applies updatedInput after every handler), as a script an agent writes and later runs does, and as shell profiles
+ *   and the rest of the person's files that later run in sessions do. The
  *   same holds for the files Grok's config or its hooks-paths list names outside Grok's folder (a hook or status-line
  *   script kept elsewhere, a hook file listed in hooks-paths): the guard keeps Grok's folder, not what it points at.
  *   So is a Grok session worktree's own git config and hooks, writable as any project's: if Grok runs git there on its
@@ -77,17 +78,18 @@
  * - A Grok plugin's hooks may name its data folder (plugin-data/, Grok's own skills' state among it, which agents may
  *   write), so a plugin that reads commands from there could be steered by a write there.
  * - Shell text that names an open part of Grok's folder and changes folder (where it names its session worktrees alone,
- *   but into one of them), holds a ".." or makes a link (ln, cp -s, cp -l) is refused (guard-rules.ts grokReaches), and
- *   so is a ".." that leaves the open part a call runs in (a grok -w session in its worktree; grokClimbsFrom), a
- *   relative path from Grok's folder itself or what it loads but into an open part, or a substitution or ${ there
- *   (grokNamedFrom), and Grok's folder spelt from the folder a call runs in, above or beside it (.grok from home,
- *   ../.grok beside it; grokSpeltFrom). But a link brought into an open part whole (cp -a, mv, tar, rsync -a, git
- *   clone, a checkout in a session worktree) or made by a script, a relative path the guard doesn't read from where the
- *   shell does (after a cd in the same text, or in an earlier call in Grok's persistent shell, below) or spelt
- *   otherwise from the call's folder (../u/.grok from home, through a link), and a bare word run in Grok's folder
- *   itself naming an entry Grok would load that isn't there yet (touch disabled-hooks, cp -r x agents; not one an
- *   output redirection writes: >, >>, >|, &>, >&) reach the rest of the folder from the shell (file tools follow links
- *   and are refused).
+ *   but into one of them), holds a ".." or makes a link (ln, cp -s, cp -l), or names it in a command substitution (read
+ *   failing closed: after any substitution's opening, or in text whose parentheses don't pair up) or through a link out
+ *   of Grok's folder, is refused (guard-rules.ts grokReaches), and so is a ".." that leaves the open part a call runs in
+ *   (a grok -w session in its worktree; grokClimbsFrom), a relative path from Grok's folder itself or what it loads but
+ *   into an open part, or a substitution or ${ there (grokNamedFrom), and Grok's folder spelt from the folder a call runs
+ *   in, above or beside it (.grok from home, ../.grok beside it; grokSpeltFrom). But a link brought into an open part
+ *   whole (cp -a, mv, tar, rsync -a, git clone, a checkout in a session worktree) or made by a script, a relative path
+ *   the guard doesn't read from where the shell does (after a cd in the same text, or in an earlier call in Grok's
+ *   persistent shell, below) or spelt otherwise from the call's folder (../u/.grok from home, through a link), and a
+ *   bare word run in Grok's folder itself naming an entry Grok would load that isn't there yet (touch disabled-hooks,
+ *   cp -r x agents; not one an output redirection writes: >, >>, >|, &>, >&) reach the rest of the folder from the
+ *   shell (file tools follow links and are refused).
  * - Shell text that reaches the protected parts of Grok's folder through another program's folder change (find
  *   -execdir, env -C, tar -C, xargs, sh -c) or link-making (link, busybox ln, rsync or cp keeping links) gets through,
  *   as a script the agent writes and runs does.

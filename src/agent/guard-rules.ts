@@ -1708,25 +1708,8 @@ export function openCodeNamed(text: string, rule?: OpenCodeRule): boolean {
 // of the folder (skills/ kept in a dotfiles folder, as people do) stays open to file tools through the link, and where
 // it really is is judged by the other rules, as any path is; shell text, which can't follow the link, may name it there
 // only where it really is. File tools may read all of it, but an agent's session reads neither the session records nor
-// Grok's login (HOME_SECRETS; a moved folder's by src/agent/guard-paths.ts). Limits, as for every shell-text rule: a
-// spelling through another variable, a path assembled from variables, parameter expansions or substitutions (from a
-// session started in the folder too: $X/../hooks, ${P%/skills}/hooks), a link the guard doesn't know (a link planted
-// inside an open part that leads to the rest of it, by a script, or copied or moved there whole from elsewhere: cp -a,
-// mv, tar, rsync -a, a checkout's own), used from the shell, a relative path the guard doesn't read from where the
-// shell does (after a cd in the same text, or in an earlier call in Grok's persistent shell, where a cd and the pushd
-// stack carry over but the hook gives the folder the session started in) or spelt from the call's folder otherwise than
-// as the folder's own (../u/.grok from home, through a link), a bare word run in the folder itself naming an entry Grok
-// would load that isn't there yet (not one an output redirection writes: >, >>, >|, &>, >&), and a folder change or
-// link made by another program (find -execdir, env -C, tar -C, xargs, sh -c; link, busybox ln, rsync or cp keeping
-// links), as a script the agent writes and runs. A project's own .grok folder (a session worktree's too) is the
-// project's, its hooks, config.toml and lsp.json among them, and so are Grok's other hook sources outside its folder (a
-// project's .claude/settings*.json and .cursor/hooks.json, the person's Claude Code settings file and Cursor hooks
-// file), and the files Grok's config or its hooks-paths list names outside its folder (a hook or status-line script, a
-// hook file kept elsewhere): a hook or server planted there runs outside the guard in a later session, and a hook may
-// rewrite a call after Orrery judged it, as a script an agent writes and later runs does. So is a session worktree's
-// own git config and hooks: if Grok runs git there on its own (its cleanup pass; unverified), a core.fsmonitor or hook
-// planted there runs outside the guard. A plugin that reads commands from its own data folder (plugin-data/, which its
-// hooks may name) could be steered by a write there (src/agent/guard-paths.ts, Known limits).
+// Grok's login (HOME_SECRETS; a moved folder's by src/agent/guard-paths.ts). Limits: src/agent/guard-paths.ts, Known
+// limits.
 
 /** Grok's folders for `home` and `env`: ~/.grok, and the one GROK_HOME names (absolute, as given; realTarget is the caller's). */
 export function grokFolders(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] {

@@ -57,7 +57,8 @@ import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
 import { codexAgent, LAUNCH_VARIABLES, launchedEnv, startEnvOf } from "./pick.ts";
 import { codexSessionOf, recordCodexSession } from "./resume.ts";
 import { readCodexCheck } from "./check.ts";
-import { attributesTurns, codexHome, findRollout, holdsOpen, MIN_CODEX, type OpenFile, readerStart, rolloutThread } from "./rollout.ts";
+import { holdsOpen, type OpenFile } from "../agent/open-files.ts";
+import { attributesTurns, codexHome, findRollout, MIN_CODEX, readerStart, rolloutThread } from "./rollout.ts";
 
 /** The events `orrery codex-hook` records (pre-tool-use is the guard, src/codex/guard.ts). */
 export const CODEX_RECORD_EVENTS = ["session-start", "user-prompt-submit", "stop", "session-end"] as const;
@@ -79,7 +80,7 @@ export interface CodexHookContext {
 	readonly env: NodeJS.ProcessEnv;
 	/** The home folder ~/.codex is in when CODEX_HOME is not set (default os.homedir()). */
 	readonly home?: string;
-	/** The files a process has open (default src/codex/rollout.ts openFiles); tests give their own. */
+	/** The files a process has open (default src/agent/open-files.ts openFiles); tests give their own. */
 	readonly openFiles?: (pid: number) => readonly OpenFile[] | undefined;
 	/** Codex's process (src/codex/host.ts): the token's owner and the holder's host. */
 	readonly codexPid: number;

@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
-import { attributesTurns, codexHome, confirmCodex, findRollout, holdsOpen, MIN_CODEX, openFiles, parseLsof, parseRolloutMark, readerStart, RolloutReader, rolloutIn, rolloutThread } from "../../src/codex/rollout.ts";
+import { holdsOpen, openFiles, parseLsof } from "../../src/agent/open-files.ts";
+import { attributesTurns, codexHome, confirmCodex, findRollout, MIN_CODEX, parseRolloutMark, readerStart, RolloutReader, rolloutIn, rolloutThread } from "../../src/codex/rollout.ts";
 import { tempDir } from "../agent/support.ts";
 import { type CodexHome, codexHomeIn, codexSession, rollout } from "./rollout-lines.ts";
 

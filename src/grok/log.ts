@@ -92,11 +92,6 @@ export function grokFolder(cwd: string): string {
 	return encodeURIComponent(cwd).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
-/** Session `sessionId`'s log, for a Grok whose folder is `grokHome`, started in folder `cwd` (as it really is). */
-export function grokSessionLog(grokHome: string, cwd: string, sessionId: string): string {
-	return join(grokHome, "sessions", grokFolder(cwd), sessionId, "updates.jsonl");
-}
-
 /**
  * Grok's folder as the grok process was started with it (`env`: its start environment's GROK_HOME and HOME, never the
  * hook's; `cwd`: the folder it runs in): its GROK_HOME (a relative one taken from `cwd`), else its HOME's .grok.
