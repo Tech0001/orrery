@@ -27,8 +27,9 @@ writes two things in Grok's folder (`$GROK_HOME`, else `~/.grok`):
   Orrery is gone, the hook reads its input and exits quietly, so Grok shows no hook error. Session start may take 15
   seconds, the others 10. A file of that name that is not Orrery's is set aside first, after asking, as
   `orrery.json.before-orrery-<date>`, a name Grok doesn't load.
-- **Two entries in `config.toml`**: the status row (`[ui.status_line]`, running `orrery grok-status`) and the memory
-  tools (`[mcp_servers.orrery]`, running `orrery mcp --tool grok` with the launch's `ORRERY_AGENT` and its token). Each
+- **Two entries in `config.toml`**: the status row (`[ui.status_line]`, running `orrery grok-status`, or nothing,
+  quietly, if Orrery is gone) and the memory tools (`[mcp_servers.orrery]`, running `orrery mcp --tool grok` with the
+  launch's `ORRERY_AGENT` and its token). Each
   is added only when the config has none, after every line already there, and the config is copied first, as
   `config.toml.before-orrery-<date>`. A status line of your own stays: setup says so, and how to show Orrery's row (run
   `orrery grok-status` from it; it reads Grok's status JSON on stdin). An `[mcp_servers.orrery]` of your own stays too,
@@ -77,6 +78,9 @@ asks to trust a new folder: see [Folder trust](#folder-trust)).
   [A plain Grok](#a-plain-grok).
 - `orrery agent` refuses an agent whose memory is still being built, and asks before opening an agent that is already
   open elsewhere (a second session is read-only), as for every tool.
+- Not through Ori yet: an agent whose `launcher` is `ori` is refused for Grok, as for OpenCode, and told to set it to
+  `direct` (`orrery agent set <Name> launcher direct`). A Grok session through Ori has not been checked (see
+  [Ori](ori.md)).
 
 Moving an agent over: close it in the other tool, then `orrery agent <Name> --tool grok`. It can go back later.
 Orrery doesn't import Grok chats; the README's Importing chats covers Claude Code and Codex.
@@ -112,16 +116,18 @@ Orrery's hooks for Grok are not installed, so this session won't record. Connect
 Connect Orrery to Grok now?
 ```
 
-A hook file of another Orrery's, or one that isn't Orrery's, is asked about the same way, and set aside first (`Grok
-doesn't run this Orrery's hooks, so this session may not record`). Yes connects it, as setup does, and opens the agent;
-no, or no terminal to answer on, opens nothing (`--yes` answers yes).
+A hook file of another Orrery's, or one that isn't Orrery's, is asked about the same way (`Grok doesn't run this
+Orrery's hooks, so this session may not record`): a yes replaces another Orrery's, and sets one that isn't Orrery's
+aside first. Yes connects it, as setup does, and opens the agent; no, or no terminal to answer on, opens nothing
+(`--yes` answers yes).
 
 When the hook file is this Orrery's and only a config entry of Orrery's is missing (you may have removed it on purpose),
 the session still records and is guarded, so nothing is asked: the launch names the entry and opens the agent, and
 adds nothing back (`Grok's config has no [ui.status_line], so this session shows no Orrery status row; orrery setup
 adds it back.`). When Orrery can't read Grok's folder to tell, it says so and opens the agent. When Orrery's hooks are
-connected but switched off in Grok's `/hooks`, it says which (the recording hooks, the guard, or both) and how to
-switch them on, and opens the agent. When it can't read Grok's `/hooks` settings (`disabled-hooks` in Grok's folder),
+switched off in Grok's `/hooks` (connected already, connected by the question above, or when Orrery can't tell), it
+says which (the recording hooks, the guard, or both) and how to switch them on, and opens the agent: connecting
+doesn't switch them back on. When it can't read Grok's `/hooks` settings (`disabled-hooks` in Grok's folder),
 it says that instead, and that the guard of Orrery's Claude Code plugin, if Grok loads it, keeps checking the session's
 tool calls. When Grok's config switches Orrery's memory tools off (`grok mcp disable orrery`, or Grok's `/mcps`: the
 entry's `enabled = false`, or `disabled_mcp_servers` naming it), it says so and how to switch them back on (`grok mcp
@@ -501,7 +507,8 @@ Grok keeps its usual files in its folder: its sessions (Orrery reads a session's
 - The view is read at launch only. A resumed session keeps its first launch's memory section.
 - The memory section and the instructions are on Grok's command line, which other users of the computer can read, and
   so can other agents' shells.
-- Leader mode is not supported: agents open with `--no-leader`.
+- Leader mode is not supported: agents open with `--no-leader`. Nor is Ori: a Grok agent whose launcher is `ori` is
+  refused.
 - A program of yours that writes in Grok's folder (appends to a live session's log, puts files in a live session's
   folder, or renames a session folder there) can make words look like Grok's own. The guard keeps agents' tools out of
   Grok's folder, not a program that builds the path itself.

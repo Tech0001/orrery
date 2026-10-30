@@ -317,6 +317,55 @@ describe("opening an agent in Grok", () => {
 		expect(plan.command).toBe(join(env.PATH, "grok"));
 	});
 
+	it("says when Grok's /hooks tab switched Orrery's hooks off, or can't be read, after the question that connects Orrery and after the word that the wiring can't be read", () => {
+		const { config, row, tools, env } = setup("grok");
+		const { hooks, config: grokConfig, disabled } = grokFolder(env);
+		const options = { root: orreryRoot(), env };
+		const guardOff = { text: "Orrery's guard is switched off in Grok's /hooks, so it checks none of this session's tool calls: switch it on there.", confirm: false };
+		const unknownText = { text: "Orrery can't tell whether Grok runs its hooks, so this session may not record; orrery tools says why.", confirm: false };
+		// Orrery's hooks were switched off in /hooks, then its hook file went (a rollback, say): connecting again asks, and
+		// says what the switch will still do.
+		mkdirSync(dirname(disabled), { recursive: true });
+		writeFileSync(disabled, "global/orrery:pre_tool_use[0].hooks[0]\n");
+		const plan = launchPlan(config, row, tools, options);
+		expect(plan.steps).toEqual([
+			{
+				text: connect("Orrery's hooks for Grok are not installed, so this session won't record", [`write ${hooks} (Orrery's hooks for every Grok session)`, `add Orrery's status row and memory tools to ${grokConfig} unless it has its own (a copy of it first)`]),
+				confirm: true,
+				fix: "install-grok",
+			},
+			guardOff,
+		]);
+		// The wiring can't be read: the same word after it.
+		const unknown = tools.map((t) => (t.id === "grok" ? { ...t, wiring: "unknown" as const, detail: `cannot read ${hooks}` } : t));
+		expect(launchPlan(config, row, unknown, options).steps).toEqual([unknownText, guardOff]);
+		// The recording hooks too, then a /hooks file that can't be read: said so on both paths.
+		writeFileSync(disabled, "global/orrery:session_start[0].hooks[0]\nglobal/orrery:pre_tool_use[0].hooks[0]\n");
+		expect(launchPlan(config, row, unknown, options).steps[1]?.text).toMatch(/^Orrery's recording hooks and its guard are switched off in Grok's \/hooks/);
+		rmSync(disabled);
+		mkdirSync(disabled);
+		const unread = { text: `Orrery couldn't read Grok's /hooks settings (${disabled}), so it can't tell whether its hooks are switched off there; if Grok loads Orrery's Claude Code plugin, that plugin's guard keeps checking this session's tool calls.`, confirm: false };
+		expect(launchPlan(config, row, tools, options).steps.slice(1)).toEqual([unread]);
+		expect(launchPlan(config, row, unknown, options).steps).toEqual([unknownText, unread]);
+		// Nothing switched off: the question alone, or the word alone.
+		rmSync(disabled, { recursive: true });
+		expect(launchPlan(config, row, tools, options).steps.map((step) => step.fix)).toEqual(["install-grok"]);
+		expect(launchPlan(config, row, unknown, options).steps).toEqual([unknownText]);
+	});
+
+	it("refuses a Grok agent whose launcher is Ori, as OpenCode's: a Grok session through Ori has not been checked", () => {
+		const { config, row, env } = setup("grok", undefined, 'launcher = "ori"\n');
+		const tools = checkTools({ root: orreryRoot(), env });
+		const plan = launchPlan(config, row, tools, { root: orreryRoot(), env });
+		expect(plan.blocked).toBe('Orrery doesn\'t open Grok through Ori yet: open A with launcher = "direct" (orrery agent set A launcher direct), or in another tool.');
+		expect(plan.steps).toEqual([]);
+		expect(plan.command).toBeUndefined();
+		// The same agent opened directly, or in another tool through Ori, is not refused.
+		expect(launchPlan(config, row, tools, { root: orreryRoot(), env, tool: "pi" }).blocked).toBeUndefined();
+		const direct = setup("grok", undefined, 'launcher = "direct"\n');
+		expect(launchPlan(direct.config, direct.row, direct.tools, { root: orreryRoot(), env: direct.env }).blocked).toBeUndefined();
+	});
+
 	it("says which of Orrery's hooks Grok's /hooks tab has switched off, and how to switch them on, then opens Grok", () => {
 		const { config, row, tools, env } = connected("grok");
 		const { disabled } = grokFolder(env);

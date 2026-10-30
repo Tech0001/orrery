@@ -336,6 +336,30 @@ describe("Grok's config entries", () => {
 		expect([readFileSync(config, "utf8"), asides(config), statSync(config).mtimeMs]).toEqual([configText, copies, changed]);
 	});
 
+	it("the status row's command runs grok-status by exec (its parent stays Grok), and with Orrery removed prints nothing and exits 0", () => {
+		// What Orrery writes: the hook file's fallback, then the command.
+		expect(grokStatusCommand(ORRERY)).toBe(`[ -x '${ORRERY}' ] || exit 0; exec '${ORRERY}' grok-status`);
+		const { next } = addGrokConfig("", ORRERY);
+		expect((parse(next) as { ui: { status_line: unknown } }).ui.status_line).toEqual({ type: "command", command: grokStatusCommand(ORRERY) });
+		// Run as Grok runs a status line (through sh), with an Orrery whose path needs quoting.
+		const dir = tempDir("orrery-grok-status-line-");
+		const bin = join(dir, "it's my $HOME", "bin", "orrery");
+		mkdirSync(dirname(bin), { recursive: true });
+		writeFileSync(bin, `#!/bin/sh\nprintf '%s ' "$PPID" "$@"\ncat\n`, { mode: 0o755 });
+		const status = JSON.stringify({ schema_version: 1, session_id: "s1", trigger: "state" });
+		const run = spawnSync("/bin/sh", ["-c", grokStatusCommand(bin)], { input: status, encoding: "utf8" });
+		expect([run.status, run.stdout, run.stderr]).toEqual([0, `${process.pid} grok-status ${status}`, ""]);
+		// Orrery removed, or its command no program: no row, no error code for Grok to paint, stdin left unread.
+		chmodSync(bin, 0o644);
+		expect(spawnSync("/bin/sh", ["-c", grokStatusCommand(bin)], { input: status, encoding: "utf8" })).toMatchObject({ status: 0, stdout: "", stderr: "" });
+		rmSync(bin);
+		expect(spawnSync("/bin/sh", ["-c", grokStatusCommand(bin)], { input: status, encoding: "utf8" })).toMatchObject({ status: 0, stdout: "", stderr: "" });
+		// Orrery's own table, with its new text, is recognised to keep and to remove; another Orrery's is not.
+		expect(addGrokConfig(next, ORRERY)).toEqual({ next, added: [], kept: [] });
+		expect(removeGrokConfig(next, ORRERY)).toEqual({ next: "", removed: ["ui.status_line", "mcp_servers.orrery"], kept: [] });
+		expect(removeGrokConfig(next, "/other/app/current/bin/orrery").kept).toEqual(["ui.status_line", "mcp_servers.orrery"]);
+	});
+
 	it("removeGrokConfig removes only entries that still read as Orrery wrote them", () => {
 		const base = '# mine\n[ui]\npermission_mode = "auto"\n';
 		const { next: added } = addGrokConfig(base, ORRERY);

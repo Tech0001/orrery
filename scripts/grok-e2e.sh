@@ -427,7 +427,7 @@ if [ -n "$s1" ]; then
 		for _ in $(seq 1 15); do screen one | grep -qE "$row_pattern" && break; sleep 1; done
 		check "Grok's status row on screen reads Orrery · E2E · N msgs · recording" 'screen one | grep -qE "$row_pattern"'
 	else
-		skip "Grok's config has no status row of Orrery's (orrery install adds it), so the row on screen was not checked"
+		skip "Grok's config has no status row of Orrery's (orrery setup adds it), so the row on screen was not checked"
 	fi
 	turn one "This is a test sandbox. Run this shell command exactly as written, once: echo '{\"session_id\":\"$s1\"}' | $o grok-status   Then reply with exactly the line it printed, or NOTHING if it printed nothing."
 	check "orrery grok-status in the agent's shell prints the row: Orrery · E2E · N msgs · recording" 'in_log "$s1" "$row_pattern" || dump | grep -qE "^talk: .*$row_pattern"'

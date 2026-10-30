@@ -107,8 +107,13 @@ export interface LaunchOptions {
 	readonly orrery?: readonly string[];
 }
 
-/** Ori starts OpenCode its own way (with config of its own, unchecked): an OpenCode agent opens directly. */
-const ORI_OPENCODE = (name: string) => `Orrery doesn't open OpenCode through Ori yet: open ${name} with launcher = "direct" (orrery agent set ${name} launcher direct), or in another tool.`;
+/**
+ * The tools Orrery doesn't open through Ori: OpenCode, which Ori starts its own way (with config of its own, unchecked),
+ * and Grok, whose Ori launch (--no-leader and the memory section after `ori grok`) no one has checked. Such an agent
+ * opens directly.
+ */
+const NOT_THROUGH_ORI: readonly AgentTool[] = ["opencode", "grok"];
+const NOT_THROUGH_ORI_TEXT = (tool: AgentTool, name: string) => `Orrery doesn't open ${TOOL_LABELS[tool]} through Ori yet: open ${name} with launcher = "direct" (orrery agent set ${name} launcher direct), or in another tool.`;
 
 /** "<what>. <doing> will:\n  <step>\n  <step>\n<ask>": a question that lists what a yes does first (spec §4.6). */
 function stepsQuestion(what: string, steps: readonly InstallStep[], doing = "Installing it", ask = "Install it now?"): string {
@@ -129,11 +134,16 @@ function installQuestion(what: string, check: ToolCheck, options: { root?: strin
  * each config entry of Orrery's missing and that setup adds it back, a word when Grok's /hooks tab has switched Orrery's
  * hooks off or can't be read (grokSwitchedOff), one when Grok's config switches Orrery's memory tools off
  * (grokMemoryToolsSwitchedOff), and the launch goes on. A row Orrery can't read ("unknown") has no steps
- * to offer: it is said, and the launch goes on.
+ * to offer: it is said, and the launch goes on. The /hooks word follows the question and the "unknown" word too: hooks
+ * connected now, or that may be there, still run nothing that is switched off there.
  */
 function grokWiringSteps(check: ToolCheck, options: { root?: string; env?: NodeJS.ProcessEnv }): LaunchStep[] {
 	const env = options.env ?? process.env;
-	if (check.wiring === "unknown") return [{ text: "Orrery can't tell whether Grok runs its hooks, so this session may not record; orrery tools says why.", confirm: false }];
+	const switched = (): LaunchStep[] => {
+		const text = grokSwitchedOff(env);
+		return text === undefined ? [] : [{ text, confirm: false }];
+	};
+	if (check.wiring === "unknown") return [{ text: "Orrery can't tell whether Grok runs its hooks, so this session may not record; orrery tools says why.", confirm: false }, ...switched()];
 	if (check.wiring !== "installed" && check.wiring !== "missing" && check.wiring !== "other" && check.wiring !== "update available") return [];
 	const root = options.root ?? wiringRoot(options.env).root;
 	if (check.wiring === "installed" || (check.wiring === "missing" && grokHooksInstalled(root, env) === true)) {
@@ -151,7 +161,7 @@ function grokWiringSteps(check: ToolCheck, options: { root?: string; env?: NodeJ
 			: check.now !== undefined
 				? "Orrery's hooks for Grok name the other install shape's entry, so this session won't record"
 				: "Orrery's hooks for Grok are not installed, so this session won't record";
-	return [{ text: stepsQuestion(why, steps, "Connecting Orrery to Grok", "Connect Orrery to Grok now?"), confirm: true, fix: "install-grok" }];
+	return [{ text: stepsQuestion(why, steps, "Connecting Orrery to Grok", "Connect Orrery to Grok now?"), confirm: true, fix: "install-grok" }, ...switched()];
 }
 
 /** What Grok's session goes without for the config tables it lacks (grokConfigLacks), and that setup adds them back; undefined for none. */
@@ -221,7 +231,7 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 		env: { [AGENT_ENV]: agent.name, [TOKEN_ENV]: newToken() },
 		agentDir: agent.dir,
 	};
-	if (tool === "opencode" && agent.launcher === "ori") return { ...base, steps: [], blocked: ORI_OPENCODE(agent.name) };
+	if (NOT_THROUGH_ORI.includes(tool) && agent.launcher === "ori") return { ...base, steps: [], blocked: NOT_THROUGH_ORI_TEXT(tool, agent.name) };
 	const ori = agent.launcher === "ori" ? findOnPath("ori", options.env ?? process.env) : undefined;
 	if (agent.launcher === "ori" && ori === undefined) return { ...base, steps: [], blocked: 'Ori isn\'t installed: see docs/ori.md (or set launcher = "direct")' };
 	if (check?.path === undefined) return { ...base, steps: [], blocked: `${label} is not on PATH (looked for "${BINARIES[tool]}"). ${HINTS[tool]}, or ${options.changeTool ?? "change the agent's tool with C"}.` };

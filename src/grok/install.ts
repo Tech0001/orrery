@@ -7,9 +7,9 @@
  *   parent stays Grok; with no command there (Orrery removed) it reads its input and exits 0, so Grok shows no hook error.
  *   Nothing of the hook's input is in the script: Grok gives it on stdin. SessionStart may wait for the recorder, so it
  *   gets 15 s; the others 10 s (Grok's default is 5).
- * - `config.toml` gets the status row (`[ui.status_line]`, running `orrery grok-status`) and Orrery's memory tools
- *   (`[mcp_servers.orrery]`, `orrery mcp --tool grok`, given the launch's ORRERY_AGENT and its token: Grok expands them at
- *   load time), each only when it has none. Every line already there stays as it was, and the edit is checked as
+ * - `config.toml` gets the status row (`[ui.status_line]`, running `orrery grok-status`; with no command there, nothing,
+ *   as the hook file's script does) and Orrery's memory tools (`[mcp_servers.orrery]`, `orrery mcp --tool grok`, given
+ *   the launch's ORRERY_AGENT and its token: Grok expands them at load time), each only when it has none. Every line already there stays as it was, and the edit is checked as
  *   src/agent/config-edit.ts checks its own: the result must parse, and differ from the file by exactly those tables. A
  *   status line of the person's own stays; they are told how to show Orrery's.
  * - Only a version that answers `grok-hook` (GROK_SINCE on) is wired: an older Orrery answers it with an error, which
@@ -112,9 +112,13 @@ const SERVER = "mcp_servers.orrery";
 const NAMES = [STATUS, SERVER] as const;
 type Name = (typeof NAMES)[number];
 
-/** The status row's command for the Orrery command at `orrery`: a shell line, which Grok runs through sh. */
+/**
+ * The status row's command for the Orrery command at `orrery`: a shell line, which Grok runs through sh. With no command
+ * there (Orrery removed), it exits 0 and prints nothing, as the hook file's script does, so Grok shows no row rather than
+ * an error; else it execs the command, so its parent stays Grok.
+ */
 export function grokStatusCommand(orrery: string): string {
-	return `${quoted(orrery)} grok-status`;
+	return `[ -x ${quoted(orrery)} ] || exit 0; exec ${quoted(orrery)} grok-status`;
 }
 
 /** What Orrery writes in each table, for the Orrery command at `orrery`. */
