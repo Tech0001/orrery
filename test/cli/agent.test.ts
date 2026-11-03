@@ -98,10 +98,10 @@ function started(out: string): { agent?: string; token?: string; cwd: string; ar
 }
 
 describe("orrery agent", () => {
-	it("an agent whose tool this Orrery doesn't know (a newer Orrery set it) is refused before anything runs, whatever --tool says; status lists it, and the other agents open as ever", () => {
+	it("an agent whose tool this Orrery doesn't know (a typo, or a newer Orrery set it) is refused before anything runs, whatever --tool says; status lists it, and the other agents open as ever", () => {
 		const s = scene();
 		writeFileSync(s.config, `${readFileSync(s.config, "utf8").replace('tool = "pi"', 'tool = "grok"')}[agents.Birch]\nfolder = ${JSON.stringify(s.elsewhere)}\ntool = "pi"\ncompactor_model = "openai/gpt-6.1-sol"\n`);
-		const refused = "Atlas is set up for grok, a tool this Orrery doesn't know: it needs a newer Orrery. Update Orrery (orrery update), or pick another tool for Atlas (C in the TUI, or orrery agent set Atlas --tool T). Nothing was run.";
+		const refused = 'Atlas is set up for an unknown tool "grok": a typo, or set by a newer Orrery. Set its tool (C in the TUI, or orrery agent set Atlas --tool T), or update Orrery (orrery update). Nothing was run.';
 		for (const args of [[], ["--tool", "pi"]]) {
 			const r = orrery(s.env, s.elsewhere, "agent", "Atlas", "--yes", ...args);
 			expect(r.status, args.join(" ")).toBe(1);
@@ -111,7 +111,7 @@ describe("orrery agent", () => {
 		expect(existsSync(s.agentDir)).toBe(false);
 		const status = orrery(s.env, s.dir, "status");
 		expect(status.status, status.stderr).toBe(0);
-		expect(status.stdout).toMatch(/^Atlas +closed +grok \(needs a newer Orrery\) +no memory yet/m);
+		expect(status.stdout).toMatch(/^Atlas +closed +grok \(unknown tool\) +no memory yet/m);
 		expect(status.stdout).toMatch(/^Birch +closed +pi /m);
 		const json = JSON.parse(orrery(s.env, s.dir, "status", "--json").stdout) as { agents: { name: string; unknownTool?: string }[] };
 		expect(json.agents.map((agent) => [agent.name, agent.unknownTool])).toEqual([["Atlas", "grok"], ["Birch", undefined]]);

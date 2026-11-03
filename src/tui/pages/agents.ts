@@ -207,7 +207,7 @@ function detailLines(app: App, row: AgentRow, width: number): string[] {
 		...field("Folder", row.folder === undefined ? "none (it opens wherever it is opened)" : safeText(row.folder)),
 		...field("Instructions", instructionsField(row)),
 		...field("Data folder", safeText(row.dataDir)),
-		...field("Tool", row.unknownTool !== undefined ? `${safeText(row.unknownTool)}, which this Orrery doesn't know (a newer Orrery set it): update Orrery to open ${row.name} in it, or set another tool with C` : row.toolSet ? TOOL_LABELS[row.tool] : `${TOOL_LABELS[row.tool]} (guessed: the config has no tool key; set it with C)`),
+		...field("Tool", row.unknownTool !== undefined ? `unknown tool "${safeText(row.unknownTool)}": a typo, or set by a newer Orrery. Set the tool with C, or update Orrery to open ${row.name} in it` : row.toolSet ? TOOL_LABELS[row.tool] : `${TOOL_LABELS[row.tool]} (guessed: the config has no tool key; set it with C)`),
 		...field("Launcher", row.launcher === "ori" ? `Ori${row.oriModel === undefined ? "" : ` (model ${safeText(row.oriModel)})`}` : "Direct"),
 		...(row.remote !== undefined || (app.config?.remotes.size ?? 0) > 0 ? field("Memory home", row.remote ?? "local") : []),
 		...field("Memory", row.hasMemory ? `${row.messages} messages, ${row.summaries} summaries, view ${kb(row.viewBytes)}/${kb(row.viewBudget)} KB` : "no memory yet"),

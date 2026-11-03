@@ -78,9 +78,9 @@ export interface AgentConfig {
 	/** The tool the agent is launched in; undefined when the config does not say (the TUI then guesses). */
 	readonly tool?: AgentTool;
 	/**
-	 * The tool the config names when it is none this version knows (one a newer Orrery set, such as "grok"); `tool` is
-	 * then undefined. The agent loads, so the config does, but it opens in no tool here: `orrery agent` and the TUI refuse
-	 * it (src/agent/launch.ts newerToolRefusal), and nothing launches a name kept only here.
+	 * The tool the config names when it is none this version knows (a typo, or one a newer Orrery set, such as "grok");
+	 * `tool` is then undefined. The agent loads, so the config does, but `orrery agent` and the TUI launch it in no tool
+	 * here (src/agent/launch.ts unknownToolRefusal), and nothing launches a name kept only here.
 	 */
 	readonly unknownTool?: string;
 	/** Absent in older callers means direct. Parsed configs always supply the default. */
@@ -448,7 +448,8 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 		const model = modelRef === undefined ? undefined : parseModelChoice(modelRef, str(t, "thinking", where, "medium"), `${where}.model`);
 		const compactorRef = t.compactor_model === undefined && model !== undefined ? `${model.provider}/${model.modelId}` : str(t, "compactor_model", where);
 		const tool = optStr(t, "tool", where);
-		// A tool this version doesn't know (a newer Orrery set it) fails no config: the agent loads, and opens in no tool here.
+		// A tool this version doesn't know (a typo, or a newer Orrery set it) fails no config: the agent loads, and `orrery
+		// agent` and the TUI launch it in no tool here.
 		const known = tool === undefined || knownTool(tool);
 		const launcher = str(t, "launcher", where, "direct");
 		if (launcher !== "direct" && launcher !== "ori") throw new ConfigError(`${where}.launcher must be one of direct, ori`);

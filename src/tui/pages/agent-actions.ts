@@ -11,7 +11,7 @@ import { COMPACT_AT_MIN, findAgent, type HarnessConfig, AGENT_TOOLS, agentNamePr
 import { editInstructionsFile } from "../../agent/editor.ts";
 import { instructionsTemplate, readInstructions } from "../../agent/instructions.ts";
 import { summaryLine } from "../../agent/agent-commands.ts";
-import { exitText, launchLabel, type LaunchPlan, launchPlan, newerToolRefusal, remoteGate, runAgent, withoutOrrery } from "../../agent/launch.ts";
+import { exitText, launchLabel, type LaunchPlan, launchPlan, remoteGate, runAgent, unknownToolRefusal, withoutOrrery } from "../../agent/launch.ts";
 import { withoutOrreryQuestion } from "../../agent/load-check.ts";
 import type { CodexGate } from "../../codex/check.ts";
 import { archiveRefusal, type AgentRow, TOOL_LABELS, toolLabel } from "../../agent/overview.ts";
@@ -124,9 +124,9 @@ export function launchAgent(app: App, row: AgentRow | undefined): void {
 	const config = app.config;
 	if (row === undefined || config === undefined) return;
 	app.run(`Launching ${row.name}`, async () => {
-		// A tool this version doesn't know (a newer Orrery's): refused before anything runs, the remote's check included.
-		const newer = newerToolRefusal(row);
-		if (newer !== undefined) throw new Error(newer);
+		// A tool this version doesn't know (a typo, or a newer Orrery's): refused before anything runs, the remote's check included.
+		const unknown = unknownToolRefusal(row);
+		if (unknown !== undefined) throw new Error(unknown);
 		const refresh = app.deps.refreshRemote;
 		const gate = await remoteGate(config, row, { overview: (c) => app.deps.overview(c), say: (text) => app.say(text), ...(refresh === undefined ? {} : { refreshRemote: (c: HarnessConfig, name: string) => refresh(c, name) }) });
 		if (!gate.go) throw new Error(gate.text);

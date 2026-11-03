@@ -132,13 +132,13 @@ function claudeCodeRefusal(config: HarnessConfig, agent: AgentConfig, cwd: strin
 }
 
 /**
- * Why `agent` opens in no tool here: its config names a tool this version doesn't know (AgentConfig.unknownTool, one a
- * newer Orrery set), whatever tool is asked for. `orrery agent` and the TUI say it before anything runs (a remote's
- * check, a tool's), and launchPlan blocks on it. Undefined for any other agent.
+ * Why `orrery agent` and the TUI launch `agent` in no tool: its config names a tool this version doesn't know
+ * (AgentConfig.unknownTool: a typo, or one a newer Orrery set), whatever tool is asked for. They say it before anything
+ * runs (a remote's check, a tool's), and launchPlan blocks on it. Undefined for any other agent.
  */
-export function newerToolRefusal(agent: { readonly name: string; readonly unknownTool?: string }): string | undefined {
+export function unknownToolRefusal(agent: { readonly name: string; readonly unknownTool?: string }): string | undefined {
 	if (agent.unknownTool === undefined) return undefined;
-	return `${agent.name} is set up for ${safeText(agent.unknownTool)}, a tool this Orrery doesn't know: it needs a newer Orrery. Update Orrery (orrery update), or pick another tool for ${agent.name} (C in the TUI, or orrery agent set ${agent.name} --tool T). Nothing was run.`;
+	return `${agent.name} is set up for an unknown tool "${safeText(agent.unknownTool)}": a typo, or set by a newer Orrery. Set its tool (C in the TUI, or orrery agent set ${agent.name} --tool T), or update Orrery (orrery update). Nothing was run.`;
 }
 
 /**
@@ -162,8 +162,8 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 		agentDir: agent.dir,
 	};
 	// A tool this version doesn't know: `tool` is only a guess, and nothing is launched.
-	const newer = newerToolRefusal(agent);
-	if (newer !== undefined) return { ...base, steps: [], blocked: newer };
+	const unknown = unknownToolRefusal(agent);
+	if (unknown !== undefined) return { ...base, steps: [], blocked: unknown };
 	if (tool === "opencode" && agent.launcher === "ori") return { ...base, steps: [], blocked: ORI_OPENCODE(agent.name) };
 	const ori = agent.launcher === "ori" ? findOnPath("ori", options.env ?? process.env) : undefined;
 	if (agent.launcher === "ori" && ori === undefined) return { ...base, steps: [], blocked: 'Ori isn\'t installed: see docs/ori.md (or set launcher = "direct")' };

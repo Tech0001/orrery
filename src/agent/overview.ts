@@ -36,8 +36,9 @@ export interface AgentRow {
 	/** False when the config has no `tool` key, so `tool` is a guess from the last status. */
 	readonly toolSet: boolean;
 	/**
-	 * The tool the config names when it is none this version knows (AgentConfig.unknownTool, a newer Orrery's): `tool` is
-	 * then a guess, toolSet false, and the agent opens in no tool here (src/agent/launch.ts newerToolRefusal).
+	 * The tool the config names when it is none this version knows (AgentConfig.unknownTool: a typo, or a newer Orrery's):
+	 * `tool` is then a guess, toolSet false, and the launcher and the TUI open the agent in no tool here
+	 * (src/agent/launch.ts unknownToolRefusal).
 	 */
 	readonly unknownTool?: string;
 	readonly state: AgentState;
@@ -79,7 +80,7 @@ export const STATUS_FRESH_MS = 30_000;
 export const TOOL_LABELS: Record<AgentTool, string> = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", opencode: "OpenCode" };
 
 /** An agent's tool as said to a person: its label, or a tool this version doesn't know (AgentRow.unknownTool) by its name. */
-export const toolLabel = (row: Pick<AgentRow, "tool" | "unknownTool">): string => (row.unknownTool === undefined ? TOOL_LABELS[row.tool] : `${safeText(row.unknownTool)} (needs a newer Orrery)`);
+export const toolLabel = (row: Pick<AgentRow, "tool" | "unknownTool">): string => (row.unknownTool === undefined ? TOOL_LABELS[row.tool] : `${safeText(row.unknownTool)} (unknown tool)`);
 
 interface MemoryFacts {
 	readonly messages: number;

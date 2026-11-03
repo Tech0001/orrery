@@ -3,6 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ConfigError, findAgent, agentForCwd, agentNameProblem, parseConfig, parseModelChoice, RESERVED_NAMES } from "../../src/agent/config.ts";
+import { unknownToolRefusal } from "../../src/agent/launch.ts";
 
 const FULL = `
 data_dir = "/var/lib/orrery"
@@ -275,7 +276,7 @@ model = "openai/gpt-6.1-sol"
 		expect(parseConfig(`[agents.A]\nfolder = "/w/a"\nmodel = "a/b"\n`, "/x").agents.get("A")?.tool).toBeUndefined();
 	});
 
-	it("reads a tool it doesn't know (a newer Orrery's) as the agent's unknown tool, never as one it launches; the other agents and settings as ever", () => {
+	it("reads a tool it doesn't know (a newer Orrery's, or a typo) as the agent's unknown tool, never as one it launches; the other agents and settings as ever", () => {
 		// An agent as Orrery 0.10.0 writes one for Grok Build, beside one of this version's tools.
 		const text = `data_dir = "/srv/orrery-data"
 
@@ -300,6 +301,12 @@ reads = ["Vela"]
 		expect(config.agents.get("Cedar")).toMatchObject({ tool: "codex", reads: ["Vela"] });
 		expect(config.agents.get("Cedar")?.unknownTool).toBeUndefined();
 		expect(parseConfig(`[agents.A]\nfolder = "/w"\nmodel = "a/b"\ntool = "vim"\n`, "/x").agents.get("A")).toMatchObject({ unknownTool: "vim" });
+		// A typo loads the same way, and launching it says so by its value, a typo or a newer Orrery's.
+		for (const typo of ["claude", "Codex"]) {
+			const agent = parseConfig(`[agents.A]\nfolder = "/w"\nmodel = "a/b"\ntool = "${typo}"\n`, "/x").agents.get("A");
+			expect(agent).toMatchObject({ unknownTool: typo });
+			expect(unknownToolRefusal(agent ?? { name: "none" })).toMatch(new RegExp(`^A is set up for an unknown tool "${typo}": a typo, or set by a newer Orrery\\. `));
+		}
 	});
 
 	it("still refuses a tool that is no name, and an agent with neither model nor compactor_model", () => {
