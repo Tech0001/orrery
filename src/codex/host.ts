@@ -5,7 +5,7 @@
  * that did not exec stands in between, and is passed over. A shell with no parent of its own (orphaned: its parent is
  * init, or 0 at the top of a pid namespace) was started by no Codex, and is never taken for one: there is no Codex.
  * Reads /proc on Linux and asks ps on macOS; elsewhere the parent is taken as it is. Grok's process is found the same way,
- * past shells (src/grok/host.ts).
+ * past shells, and an orphaned shell is no Grok either (src/grok/host.ts).
  */
 
 import { type ProcessInfo, processInfo } from "../agent/process.ts";
@@ -28,9 +28,13 @@ function pastShells(start: number, info: (pid: number) => ProcessInfo | undefine
 	return { pid, orphaned: false };
 }
 
-/** The tool's pid from a process it started (`start`), passing over shells in between; an orphaned shell is taken as it is. */
-export function hostPid(start: number, info: (pid: number) => ProcessInfo | undefined = processInfo): number {
-	return pastShells(start, info).pid;
+/**
+ * The tool's pid from a process it started (`start`), passing over shells in between; undefined when a shell on the way
+ * has no parent of its own (module doc).
+ */
+export function toolPid(start: number, info: (pid: number) => ProcessInfo | undefined = processInfo): number | undefined {
+	const found = pastShells(start, info);
+	return found.orphaned ? undefined : found.pid;
 }
 
 /**
@@ -38,6 +42,5 @@ export function hostPid(start: number, info: (pid: number) => ProcessInfo | unde
  * shell on the way has no parent of its own (module doc).
  */
 export function codexPid(start: number = process.ppid, info: (pid: number) => ProcessInfo | undefined = processInfo): number | undefined {
-	const found = pastShells(start, info);
-	return found.orphaned ? undefined : found.pid;
+	return toolPid(start, info);
 }

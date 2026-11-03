@@ -284,6 +284,7 @@ See [OpenCode](opencode.md) for the details and the guard's OpenCode-specific li
 The hooks and the holder are Codex's, generalized to Grok's process: the hooks spool typed prompts and final replies, and the holder records each only once Grok's session log confirms it (see [Agent sessions](#prompts-checked-against-the-tools-record)).
 The agent is the one `ORRERY_AGENT` names, with its token; the hooks are global, so a plain `grok` runs them as a session that is no agent's, and Grok's leader mode, where one process runs every session's hooks, is refused.
 Codex's and Grok's hooks take `ORRERY_AGENT` and its token, and the Orrery config, from the environment their host process was started with, never their own, and a session start that can't tell which agent or config that is, comes after its process decided under another agent or token, or (Grok) asks for another agent than the one its process hosts, says so in one line and records nothing ([Grok](grok.md#troubleshooting), [Codex](codex.md#troubleshooting)).
+A Grok session that a live (or unsure) host record of another process already names is taken by no other process, as a Codex session is: a second Grok on the session, or a program the agent's shell started holding its `events.jsonl` open, records nothing, and its session start names the process that hosts it. A shell with no parent of its own is never taken for Grok either.
 Under Grok the Claude Code plugin's hooks and server stand down, so nothing runs twice.
 See [Grok](grok.md) for folder trust, the status row and the guard's Grok-specific limits.
 
@@ -562,10 +563,12 @@ session.
   are Grok 1.0.70's. A Grok keeps every session it ran open, so a made-up session start may name one of those: the
   recording moves there until the next real session start, and only Grok's log of it confirms any words. A second
   Grok that opens a session another Grok records writes its own prompts into the same log, as typed ones: its session
-  start (Orrery's hooks run in every Grok) finds the live host record of the other Grok naming that session, and when
-  both have its `events.jsonl` open for writing, the same file, spools a mark for that record's agent. Its recorder
-  then confirms nothing more of that log and turns the session read-only, saying so in the row and the next session
-  start, until a recorder starts for it again with the second Grok gone.
+  start (Orrery's hooks run in every Grok) finds the live (or unsure) host record of the other Grok naming that
+  session, in its data folder or where its agent's data really is, and when both have its `events.jsonl` open for
+  writing, the same file (or the other's open files can't be read), spools a mark for that record's agent, in the data
+  folder the record is in. Its recorder then confirms nothing more of that log and turns the session read-only, saying
+  so in the row and the next session start, until a recorder starts for it again with the second Grok gone. The second
+  Grok itself is refused the session, as any process is one another process hosts.
 
 A prompt or reply not confirmed within a grace (30 seconds) after its turn ends is dropped and counted, in
 `claude/unconfirmed.json` in the agent's data folder; `orrery status` shows the count (`unconfirmedMessages` in its
@@ -638,8 +641,9 @@ command it was told to run.
 - Grok: a second Grok that opens a session another Grok records writes its own turns into that session's log. Orrery's
   hooks in the second Grok mark the session, and the first Grok's recorder confirms nothing more of it until the
   session is reopened with the second gone ([Grok](grok.md#whats-recorded)). A Grok that runs no Orrery hook (another
-  `GROK_HOME`, its hooks masked), runs under a leader, or reads another data folder's config marks nothing; starting one
-  from an agent's shell is refused in shell text, but a script gets through.
+  `GROK_HOME`, its hooks masked), runs under a leader, or reads another data folder's config whose agent's folder
+  leads to none of the first's records marks nothing; starting one from an agent's shell is refused in shell text, but
+  a script gets through.
 - Nested coding tools started with settings of their own (a Grok with another `GROK_HOME`, which loads none of Orrery's
   hooks, a Claude Code with its own config folder, which loads no Orrery plugin) are second programs, as a script the
   agent writes is: they have no Orrery guard. Started from an agent's shell they still open no memory and record

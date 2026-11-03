@@ -1,10 +1,16 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { AgentConfig } from "../../src/agent/config.ts";
 import { newToken } from "../../src/agent/pick.ts";
-import { listSessions } from "../../src/claude/spool.ts";
-import { cleanEnv, cleanupDirs, cliCommand, grokLeaderFolder, grokLeaderLaunch, testAgent } from "../claude/support.ts";
+import { processArgv } from "../../src/agent/process.ts";
+import { forgetSession, liveSession, recordSession } from "../../src/agent/sessions.ts";
+import { listSessions, pendingEvents, readEvent } from "../../src/claude/spool.ts";
+import { grokFolder } from "../../src/grok/log.ts";
+import { grokLog } from "../grok/log-lines.ts";
+import { cleanEnv, cleanupDirs, cliCommand, grokLeaderFolder, grokLeaderLaunch, messages, testAgent } from "../claude/support.ts";
 
 afterEach(cleanupDirs);
 
@@ -157,4 +163,141 @@ describe("orrery grok-hook", () => {
 		expect(r.stderr).toContain("unknown hook event post-compact");
 		expect(r.stderr).not.toContain("Saffron");
 	});
+});
+
+describe("a Grok session another process hosts: a program the agent's shell started, detached, takes it as another agent (replayed)", () => {
+	/** Processes the test started: killed after it. */
+	const pids: number[] = [];
+	/** Host records it made: forgotten after it. */
+	const hosted: { dataDir: string; pid: number }[] = [];
+	afterEach(() => {
+		for (const pid of pids.splice(0)) {
+			try {
+				process.kill(pid, "SIGKILL");
+			} catch {
+				// gone already
+			}
+		}
+		for (const { dataDir, pid } of hosted.splice(0)) forgetSession(dataDir, pid);
+	});
+
+	/** A config of two agents, Atlas and Birch, in `dataDir`. */
+	const twoAgents = (dataDir: string, folders: Readonly<Record<"Atlas" | "Birch", string>>) =>
+		[`data_dir = ${JSON.stringify(dataDir)}`, ...Object.entries(folders).map(([name, folder]) => `\n[agents.${name}]\nfolder = ${JSON.stringify(folder)}\nmodel = "faux-agent/faux-1"\nthinking = "off"\ncompactor_model = "faux-compactor/faux-1"\ncompactor_thinking = "off"`)].join("\n");
+
+	/**
+	 * The program, run detached (its own session, its parent gone: no Grok above it): it holds the live session's
+	 * events.jsonl open for writing and writes nothing to it, runs Orrery's session-start hook for that session as its own
+	 * child, then, once told, the hooks of the person's turn with the person's words. It stays alive after.
+	 */
+	const PROGRAM = `
+const { spawnSync } = require("node:child_process");
+const { existsSync, openSync, renameSync, writeFileSync } = require("node:fs");
+const { cmd, args, events, session, words, reply, dir } = JSON.parse(process.argv[1]);
+openSync(events, "a");
+const hook = (event, input) => {
+	const run = spawnSync(cmd, [...args, "grok-hook", event], { input: JSON.stringify({ hookEventName: event, sessionId: session, ...input }), encoding: "utf8", timeout: 20000 });
+	return { status: run.status, stdout: run.stdout, stderr: run.stderr };
+};
+const said = (name, value) => { writeFileSync(dir + "/" + name + ".part", JSON.stringify(value)); renameSync(dir + "/" + name + ".part", dir + "/" + name); };
+said("start.json", hook("session-start", { source: "new" }));
+while (!existsSync(dir + "/go")) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+said("turn.json", [hook("user-prompt-submit", { prompt: words, promptId: "p-1" }), hook("stop", { lastAssistantMessage: reply, promptId: "p-1", reason: "end_turn" })]);
+setInterval(() => {}, 60000);
+`;
+	/** Starts PROGRAM from a process that exits at once, so its parent is gone (setsid and a double fork: a detach). */
+	const LAUNCH = `const child = require("node:child_process").spawn(process.execPath, ["-e", process.argv[1], process.argv[2]], { detached: true, stdio: "ignore" }); process.stdout.write(String(child.pid)); child.unref();`;
+
+	/** Waits until `file` is there (at most 20 s), and reads it as JSON. */
+	const answer = async <T>(file: string): Promise<T> => {
+		for (const deadline = Date.now() + 20_000; !existsSync(file); await new Promise((done) => setTimeout(done, 20))) {
+			if (Date.now() > deadline) throw new Error(`${file} never came`);
+		}
+		return JSON.parse(readFileSync(file, "utf8")) as T;
+	};
+
+	it.skipIf(process.platform !== "linux")(
+		"it holds Atlas's live session open and runs session-start as Birch with a fresh token and a config of its own that links Birch to Birch's real folder: refused, nothing claimed, recorded or spooled for Birch, and the person's words it sends after never reach Birch's memory",
+		async () => {
+			const t = testAgent();
+			// The person's Orrery: Atlas and Birch, their data in data/ (the real folder, here a scratch one).
+			const data = join(t.dir, "data");
+			const home = join(t.dir, "home");
+			const folders = { Atlas: join(t.dir, "ws-atlas"), Birch: join(t.dir, "ws-birch") };
+			for (const dir of [...Object.values(folders), join(data, "agents", "Atlas"), join(data, "agents", "Birch"), home]) mkdirSync(dir, { recursive: true });
+			writeFileSync(t.configPath, twoAgents(data, folders));
+			// The program's own config, /tmp/c.toml's kind: its data folder (/tmp/d's) links Birch to Birch's real folder.
+			const evil = join(t.dir, "d");
+			mkdirSync(join(evil, "agents"), { recursive: true });
+			symlinkSync(join(data, "agents", "Birch"), join(evil, "agents", "Birch"));
+			const evilConfig = join(t.dir, "c.toml");
+			writeFileSync(evilConfig, twoAgents(evil, folders));
+			// Atlas's live Grok session, in the home's .grok under Atlas's folder.
+			const session = randomUUID();
+			const sessionDir = join(home, ".grok", "sessions", grokFolder(folders.Atlas), session);
+			mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
+			writeFileSync(join(sessionDir, "summary.json"), JSON.stringify({ info: { id: session, cwd: folders.Atlas }, agent_id: "ag1.x", num_messages: 0 }));
+			const events = join(sessionDir, "events.jsonl");
+			writeFileSync(events, `${JSON.stringify({ type: "mcp_config_resolved", servers: [] })}\n`);
+			writeFileSync(join(sessionDir, "updates.jsonl"), "");
+			// Atlas's Grok: a live process that has the session's events.jsonl open for writing, recorded as the session's host
+			// as its own session start leaves it.
+			const fd = openSync(events, "a");
+			const grok = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: [fd, "ignore", "ignore"] });
+			closeSync(fd);
+			const atlasGrok = grok.pid as number;
+			pids.push(atlasGrok);
+			for (const deadline = Date.now() + 5_000; !(processArgv(atlasGrok)?.join(" ").includes("setTimeout") ?? false); await new Promise((done) => setTimeout(done, 5))) {
+				if (Date.now() > deadline) throw new Error("Atlas's Grok never started");
+			}
+			expect(recordSession(data, { agent: "Atlas", tool: "grok", pid: atlasGrok, grokSession: session, config: t.configPath })).toBe(true);
+			hosted.push({ dataDir: data, pid: atlasGrok });
+			// The program, started from Atlas's shell (its folder) with ORRERY_AGENT=Birch, a fresh token and its own config.
+			const out = join(t.dir, "out");
+			mkdirSync(out);
+			const c = cliCommand([]);
+			const words = "The plan for the launch, in the person's words.";
+			const reply = "Noted, the launch plan.";
+			const env = cleanEnv({ HOME: home, ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: newToken(), ORRERY_CONFIG: evilConfig });
+			const launched = spawnSync(process.execPath, ["-e", LAUNCH, PROGRAM, JSON.stringify({ cmd: c.cmd, args: c.args, events, session, words, reply, dir: out })], { cwd: folders.Atlas, env, encoding: "utf8" });
+			const program = Number(launched.stdout);
+			expect(Number.isInteger(program) && program > 1, launched.stderr).toBe(true);
+			pids.push(program);
+			const start = await answer<{ status: number; stdout: string; stderr: string }>(join(out, "start.json"));
+			// The person types in Atlas's Grok, which writes the turn into its log; the program then sends the turn's hooks.
+			appendFileSync(join(sessionDir, "updates.jsonl"), grokLog.turn(session, "p-1", words, reply, 0).map((line) => `${line}\n`).join(""));
+			writeFileSync(join(out, "go"), "");
+			const turn = await answer<{ status: number; stdout: string; stderr: string }[]>(join(out, "turn.json"));
+			const birch = join(data, "agents", "Birch");
+			// A recorder of Birch's that started records what its log confirms: waited for, so its words show here.
+			if (existsSync(join(birch, "claude", "holder.json"))) {
+				for (const deadline = Date.now() + 10_000; Date.now() < deadline && (existsSync(join(birch, "memory.sqlite")) ? messages({ dir: birch } as AgentConfig) : []).length < 2; ) await new Promise((done) => setTimeout(done, 50));
+			}
+			const atlasSpool = pendingEvents(join(data, "agents", "Atlas"), session).map((event) => readEvent(event.path)?.kind);
+			expect({
+				start,
+				turn,
+				birch: {
+					claims: existsSync(join(birch, "claims")) ? readdirSync(join(birch, "claims")) : [],
+					spool: listSessions(birch),
+					memory: existsSync(join(birch, "memory.sqlite")) ? messages({ dir: birch } as AgentConfig) : [],
+				},
+				programHosts: existsSync(join(evil, "session-hosts")) ? readdirSync(join(evil, "session-hosts")) : [],
+				atlasHost: liveSession(data, atlasGrok),
+				atlasSpool,
+			}).toEqual({
+				start: { status: 0, stdout: JSON.stringify({ systemMessage: `Orrery: can't confirm this is this Grok's own session (Grok process ${atlasGrok} already hosts it), so this session isn't recorded.` }), stderr: "" },
+				turn: [
+					{ status: 0, stdout: "", stderr: "" },
+					{ status: 0, stdout: "", stderr: "" },
+				],
+				birch: { claims: [], spool: [], memory: [] },
+				programHosts: [],
+				atlasHost: expect.objectContaining({ agent: "Atlas", grokSession: session }),
+				// The program has Atlas's session open for writing too: Atlas's recorder confirms nothing more while it lives.
+				atlasSpool: ["grok-shared"],
+			});
+		},
+		60_000,
+	);
 });

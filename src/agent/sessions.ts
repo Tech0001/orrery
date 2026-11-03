@@ -1141,7 +1141,7 @@ export function toolSession(env: NodeJS.ProcessEnv, deps: SessionDeps & { readon
  * that hold records (judgedFolders), as insideSession reads them; a stale record found is taken down.
  */
 export function recordedCodexIds(dataDirs: readonly string[], deps: SessionDeps = {}): ReadonlySet<string> {
-	return new Set(codexRecords(dataDirs, deps).map((found) => found.session));
+	return new Set(hostRecords(dataDirs, "codexSession", deps).map((found) => found.session));
 }
 
 /**
@@ -1151,25 +1151,51 @@ export function recordedCodexIds(dataDirs: readonly string[], deps: SessionDeps 
  * and Stop). A Codex's hooks take no session another process hosts (src/codex/hooks.ts).
  */
 export function codexSessionHosts(dataDirs: readonly string[], session: string, deps: SessionDeps = {}): number[] {
-	return codexRecords(dataDirs, deps, session).map((found) => found.pid);
+	return hostRecords(dataDirs, "codexSession", deps, session).map((found) => found.pid);
+}
+
+/** A live or unsure record that names a Grok session (grokSessionHosts). */
+export interface GrokSessionHost {
+	/** The process it names. */
+	readonly pid: number;
+	/** The agent whose session it is. */
+	readonly agent: string;
+	/** The folder it was found in: the data folder of the memory it opens, whose agents/<agent> is that agent's folder. */
+	readonly dataDir: string;
+	/** Whether it is live; else unsure (module doc): its process can't be judged from here. */
+	readonly live: boolean;
+}
+
+/**
+ * The live or unsure records of processes other than `except` in `dataDirs`, or in a folder above one that holds
+ * records, that name Grok session `session`, read as codexSessionHosts reads Codex's: a record that names another
+ * session, or `except`'s own, is not judged, and a stale record found among the rest is taken down. A Grok's hooks take
+ * no session another process hosts, and mark it for the recorder of another Grok that has it open (src/grok/hooks.ts).
+ */
+export function grokSessionHosts(dataDirs: readonly string[], session: string, except: number, deps: SessionDeps = {}): GrokSessionHost[] {
+	return hostRecords(dataDirs, "grokSession", deps, session, except).map(({ pid, agent, dataDir, live }) => ({ pid, agent, dataDir, live }));
 }
 
 /**
  * Each live or unsure record in `dataDirs` and the folders above them that hold records (judgedFolders) that names a
- * Codex session, with its pid; with `only`, just those that name that session, and no other is judged.
+ * session in `field` (a Codex session, or a Grok one), with its pid, that session, its agent, the folder it is in and
+ * whether it is live; with `only`, just those that name that session, and no other is judged; `except`'s record is
+ * passed over unread.
  */
-function codexRecords(dataDirs: readonly string[], deps: SessionDeps, only?: string): { readonly pid: number; readonly session: string }[] {
-	const found: { readonly pid: number; readonly session: string }[] = [];
+function hostRecords(dataDirs: readonly string[], field: "codexSession" | "grokSession", deps: SessionDeps, only?: string, except?: number): (GrokSessionHost & { readonly session: string })[] {
+	const found: (GrokSessionHost & { readonly session: string })[] = [];
 	for (const dataDir of judgedFolders(dataDirs)) {
 		for (const pid of recordedPids(dataDir)) {
+			if (pid === except) continue;
 			if (only !== undefined) {
 				// Judged below, read again, only when it names `only`: a record that doesn't is none of its hosts either way.
 				const read = readRecord(fileOf(dataDir, pid), pid);
-				if (typeof read === "string" || read.parsed?.record.codexSession !== only) continue;
+				if (typeof read === "string" || read.parsed?.record[field] !== only) continue;
 			}
 			const standing = judged(dataDir, pid, deps);
-			const session = standing.kind === "live" || standing.kind === "unsure" ? standing.record?.codexSession : undefined;
-			if (session !== undefined && (only === undefined || session === only)) found.push({ pid, session });
+			const record = standing.kind === "live" || standing.kind === "unsure" ? standing.record : undefined;
+			const session = record?.[field];
+			if (record !== undefined && session !== undefined && (only === undefined || session === only)) found.push({ pid, session, agent: record.agent, dataDir, live: standing.kind === "live" });
 		}
 	}
 	return found;

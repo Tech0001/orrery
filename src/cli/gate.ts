@@ -117,8 +117,8 @@ export interface GateDeps {
 	readonly parent?: number;
 	/** Codex's process, for its MCP server (default codexPid from the parent); undefined: none (an orphaned shell). */
 	readonly codexPid?: () => number | undefined;
-	/** Grok's process, for its MCP server (`mcp --tool grok`; default grokPid from the parent). */
-	readonly grokPid?: () => number;
+	/** Grok's process, for its MCP server (`mcp --tool grok`; default grokPid from the parent); undefined: none. */
+	readonly grokPid?: () => number | undefined;
 	/** How processes are read (src/agent/sessions.ts). */
 	readonly sessions?: SessionDeps;
 	/** The folder the command runs in (default process.cwd()): browse without --out and import --dry-run write there. */

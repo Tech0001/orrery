@@ -14,6 +14,7 @@ import {
 	ancestors,
 	codexSessionHosts,
 	forgetSession,
+	grokSessionHosts,
 	HOST_ENV,
 	type Inside,
 	insideSession,
@@ -279,6 +280,48 @@ describe("codexSessionHosts", () => {
 		expect(existsSync(hostFile(dir, 32))).toBe(true);
 		expect([...recordedCodexIds([dir], darwin(table))]).toEqual(["019a-atlas"]);
 		expect(existsSync(hostFile(dir, 32))).toBe(false);
+	});
+});
+
+describe("grokSessionHosts", () => {
+	it("finds the records that name a Grok session, with their agent and folder, judging only those (a ps each on macOS), the asker's own passed over; a Codex session of the same id is none of them", () => {
+		const dir = temp();
+		const table: Table = { ...chain(), 32: { ppid: 1, start: "320" }, 33: { ppid: 1, start: "330" }, 34: { ppid: 1, start: "340" } };
+		const records = [
+			{ agent: "Atlas", tool: "grok", pid: 30, grokSession: "019a-atlas" },
+			{ agent: "Birch", tool: "grok", pid: 32, grokSession: "019b-birch" },
+			{ agent: "Cedar", tool: "grok", pid: 33, grokSession: "019a-atlas" },
+			{ agent: "Birch", tool: "codex", pid: 34, codexSession: "019a-atlas" },
+		] as const;
+		for (const record of records) expect(recordSession(dir, record, darwin(table))).toBe(true);
+		const mac = darwin(table);
+		const alive: number[] = [];
+		const found = grokSessionHosts([dir], "019a-atlas", 0, { ...mac, alive: (pid: number) => (alive.push(pid), table[pid] !== undefined) });
+		expect(found.sort((a, b) => a.pid - b.pid)).toEqual([
+			{ pid: 30, agent: "Atlas", dataDir: dir, live: true },
+			{ pid: 33, agent: "Cedar", dataDir: dir, live: true },
+		]);
+		expect({ alive: alive.sort(), ps: mac.calls.map((args) => args.join(" ")).sort() }).toEqual({ alive: [30, 33], ps: ["-o lstart= -p 30", "-o lstart= -p 33"] });
+		// Asked by Grok 30 about its own session: its record isn't even judged.
+		const own = darwin(table);
+		expect(grokSessionHosts([dir], "019a-atlas", 30, own).map((host) => host.pid)).toEqual([33]);
+		expect(own.calls.map((args) => args.join(" "))).toEqual(["-o lstart= -p 33"]);
+		expect(codexSessionHosts([dir], "019a-atlas", darwin(table))).toEqual([34]);
+		// A record whose process is gone is stale, taken down, and hosts nothing.
+		delete table[33];
+		expect(grokSessionHosts([dir], "019a-atlas", 0, darwin(table)).map((host) => host.pid)).toEqual([30]);
+		expect(existsSync(hostFile(dir, 33))).toBe(false);
+	});
+
+	it.skipIf(process.platform !== "linux")("on Linux, a record of another pid namespace is unsure, kept, and still hosts the session; one found in a folder above the data folder names that folder", () => {
+		const root = temp();
+		const inner = join(root, "inner");
+		mkdirSync(join(root, "session-hosts"), { recursive: true, mode: 0o700 });
+		mkdirSync(inner);
+		const foreign = { agent: "Atlas", tool: "grok", pid: 2_000_000_000, start: "1", grokSession: "019a-atlas", ns: "pid:[4026532999]", boot: "another" };
+		writeFileSync(hostFile(root, foreign.pid), JSON.stringify(foreign), { mode: 0o600 });
+		expect(grokSessionHosts([inner], "019a-atlas", process.pid)).toEqual([{ pid: foreign.pid, agent: "Atlas", dataDir: root, live: false }]);
+		expect(existsSync(hostFile(root, foreign.pid))).toBe(true);
 	});
 });
 

@@ -3,7 +3,8 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ProcessInfo } from "../../src/agent/process.ts";
-import { GROK_LEADER_REFUSAL, grokHostRefusal, grokPid, isGrokLeader } from "../../src/grok/host.ts";
+import { codexPid } from "../../src/codex/host.ts";
+import { GROK_LEADER_REFUSAL, grokHostRefusal, grokPid, hostIsGrok, isGrokLeader } from "../../src/grok/host.ts";
 import { cleanupDirs, testAgent } from "../claude/support.ts";
 
 afterEach(cleanupDirs);
@@ -26,7 +27,21 @@ describe("grokPid", () => {
 		expect(grokPid(40, info)).toBe(30);
 		expect(grokPid(50, info)).toBe(30);
 		expect(grokPid(60, info)).toBe(60);
+		// A process that cannot be read stays as it is.
 		expect(grokPid(99, info)).toBe(99);
+	});
+
+	it("is none for a shell with no parent of its own (orphaned: its parent init, or 0 at a pid namespace's top), wherever in the walk, as Codex's is; a program that is no shell stays as it is", () => {
+		expect(grokPid(7, () => ({ ppid: 1, name: "bash" }))).toBeUndefined();
+		expect(grokPid(7, () => ({ ppid: 0, name: "sh" }))).toBeUndefined();
+		const tree: Record<number, ProcessInfo> = { 30: { ppid: 20, name: "bash" }, 20: { ppid: 1, name: "zsh" }, 40: { ppid: 1, name: "node" } };
+		expect(grokPid(30, (pid) => tree[pid])).toBeUndefined();
+		expect(codexPid(30, (pid) => tree[pid])).toBeUndefined();
+		// A detached program (no shell) is taken for the host, and judged by its own start environment and open files.
+		expect(grokPid(40, (pid) => tree[pid])).toBe(40);
+		// No Grok above an orphaned shell, whatever program it runs.
+		expect(hostIsGrok(30, (pid) => tree[pid], () => "/opt/grok/bin/grok")).toBe(false);
+		expect(hostIsGrok(40, (pid) => tree[pid], () => "/opt/grok/bin/grok")).toBe(true);
 	});
 
 	it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("finds the real process above a shell that runs the hook", () => {

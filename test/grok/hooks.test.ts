@@ -759,7 +759,10 @@ describe("a second Grok that opens a session another Grok records (grok -r <its 
 		const second = await secondGrok(join(homeOf(t).dir(id("s1")), "events.jsonl"));
 		living.add(second);
 		const theirs: GrokHookContext = { ...c, grokPid: second, grokParent: second, startHolder: () => { throw new Error("no holder may start"); } };
-		expect(await runGrokHook("session-start", input({ source: "load" }), theirs)).toBe(JSON.stringify({ systemMessage: "Orrery: started inside Test's session (Grok), so this one opens no memory and records nothing." }));
+		// This Grok hosts the session: the second is refused before anything is decided (named as the one that hosts it).
+		expect(await runGrokHook("session-start", input({ source: "load" }), theirs)).toBe(JSON.stringify({ systemMessage: notOwn(`Grok process ${GROK} already hosts it`) }));
+		expect(liveSession(t.config.dataDir, second)).toBeUndefined();
+		expect(existsSync(join(t.config.dataDir, "grok-processes", `${second}.json`))).toBe(false);
 		// The outer recorder takes the mark and pauses the session.
 		await waitUntil(() => readMode(t.agent.dir, id("s1"))?.reason === GROK_SHARED, 10_000);
 		expect(readMode(t.agent.dir, id("s1"))).toMatchObject({ mode: "read-only", reason: GROK_SHARED, claudePid: GROK });
@@ -822,7 +825,7 @@ describe("a second Grok that opens a session another Grok records (grok -r <its 
 		expect(kinds(t, "s1")).toEqual(["grok-log", "grok-shared"]);
 	});
 
-	it("an agent's Grok that opens a session another live Grok records marks it, records nothing of it and says why", async () => {
+	it("an agent's Grok that opens a session another live Grok records marks it, and is refused, naming that Grok, before it decides, claims or records anything", async () => {
 		const t = testAgent();
 		// The first Grok: another live process that has session s1 open for writing and records it as Test's.
 		homeOf(t).begin(id("s1"));
@@ -831,10 +834,34 @@ describe("a second Grok that opens a session another Grok records (grok -r <its 
 		dataDirs.push(t.config.dataDir);
 		const c = ctx(t, { startHolder: () => { throw new Error("no holder may start"); } });
 		// This Grok, opened as Test from the person's terminal, resumes s1 (this process has its events.jsonl open too).
-		expect(await run("session-start", input({ source: "load" }), c)).toEqual({ systemMessage: "Orrery: another Grok has this session open and records it, so this one isn't recorded." });
+		expect(await run("session-start", input({ source: "load" }), c)).toEqual({ systemMessage: notOwn(`Grok process ${first} already hosts it`) });
 		expect(spooled(t, "s1")).toEqual([{ kind: "grok-shared", at: 0, claudePid: GROK, start: expect.any(String) }]);
 		expect(liveSession(t.config.dataDir, GROK)).toBeUndefined();
+		expect(claimedBy(t.agent.dir, c.env.ORRERY_AGENT_TOKEN as string)).toBeUndefined();
+		expect(existsSync(join(t.config.dataDir, "grok-processes", `${GROK}.json`))).toBe(false);
 		forgetSession(t.config.dataDir, first);
+	});
+
+	it.skipIf(process.platform !== "linux")("a record of another pid namespace that names the session (unsure: its Grok can't be judged from here) is marked as a second Grok's would be, and refuses the session", async () => {
+		const t = testAgent();
+		homeOf(t).begin(id("s1"));
+		// A Grok of another pid namespace (a sandboxed editor's terminal, say) recorded s1 as Test's: its pid is no process
+		// of this namespace, so neither its life nor its open files can be read from here.
+		const foreign = 2_000_000_000;
+		mkdirSync(join(t.config.dataDir, "session-hosts"), { recursive: true, mode: 0o700 });
+		writeFileSync(join(t.config.dataDir, "session-hosts", `${foreign}.json`), JSON.stringify({ agent: "Test", tool: "grok", pid: foreign, start: "1", grokSession: id("s1"), ns: "pid:[4026532999]", boot: "another-boot" }), { mode: 0o600 });
+		const c = ctx(t, { startHolder: () => { throw new Error("no holder may start"); } });
+		// A plain grok resuming it (which only marks: markShared) marks it.
+		const plainEnv = { GROK_HOME: homeOf(t).home };
+		await run("session-start", input({ source: "load" }), { ...c, env: plainEnv, envOf: grokStarted(plainEnv, () => ({ GROK_HOME: homeOf(t).home })) });
+		expect(spooled(t, "s1")).toEqual([{ kind: "grok-shared", at: 0, claudePid: GROK, start: expect.any(String) }]);
+		// An agent's Grok resuming it marks it too, and is refused before anything is decided, claimed or recorded.
+		expect(await run("session-start", input({ source: "load" }), c)).toEqual({ systemMessage: notOwn(`Grok process ${foreign} already hosts it`) });
+		expect(spooled(t, "s1").map((event) => event.kind)).toEqual(["grok-shared", "grok-shared"]);
+		expect(liveSession(t.config.dataDir, GROK)).toBeUndefined();
+		expect(claimedBy(t.agent.dir, c.env.ORRERY_AGENT_TOKEN as string)).toBeUndefined();
+		// The record is kept: it may be a real session's.
+		expect(existsSync(join(t.config.dataDir, "session-hosts", `${foreign}.json`))).toBe(true);
 	});
 
 	it("marks nothing for a second process that has another file of the same session id open (grok -s <id> in another folder), or the session's file open only to read it", async () => {

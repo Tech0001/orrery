@@ -96,6 +96,8 @@ function rowOf(stdin: string, ctx: GrokStatusContext): string | undefined {
 	// A plain grok: no agent's row.
 	if ((ctx.env[AGENT_ENV]?.trim() ?? "") === "") return undefined;
 	const pid = ctx.grokPid ?? grokPid();
+	// A shell with no parent of its own runs no Grok's row (src/grok/host.ts).
+	if (pid === undefined) return undefined;
 	// A leader hosts no agent's session; a command line that can't be read can't tell, so nothing.
 	const refused = grokHostRefusal(pid, ctx.argvOf);
 	if (refused !== undefined) return refused === GROK_LEADER_REFUSAL ? `Orrery · not recording: ${LEADER}` : undefined;

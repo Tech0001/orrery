@@ -535,10 +535,12 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 	}
 	// Orrery's own server for Grok, started by Grok's shared leader (leader mode), which starts every session's with its
 	// first client's environment: one session's agent can't be told from another's, so it serves nothing and decides
-	// nothing (src/grok/host.ts grokHostRefusal). Its client logs stderr.
+	// nothing (src/grok/host.ts grokHostRefusal). Nor does one a shell with no parent of its own started: no Grok did
+	// (grokPid). Its client logs stderr.
 	if (command === "mcp" && values.tool === "grok") {
-		const { grokHostNotice, grokHostRefusal, grokPid } = await import("../grok/host.ts");
-		const refused = grokHostRefusal(grokPid());
+		const { grokHostNotice, grokHostRefusal, grokPid, NO_GROK } = await import("../grok/host.ts");
+		const pid = grokPid();
+		const refused = pid === undefined ? NO_GROK : grokHostRefusal(pid);
 		if (refused !== undefined) {
 			process.stderr.write(`${grokHostNotice(refused)}\n`);
 			const { runMcp } = await import("../claude/mcp.ts");
@@ -890,11 +892,12 @@ async function mcpServer(configPath: string | undefined, tool: string | undefine
 			// Grok's: whose it is comes from the grok process's own start environment, as its hooks take it
 			// (src/grok/hooks.ts); a server whose own names another agent or token is refused. A plain grok (no ORRERY_AGENT
 			// there: Grok's config gives every session's server the launch's, maybe none) decides nothing for its process, as
-			// its hooks don't, and serves no tools.
+			// its hooks don't, and serves no tools. A shell with no parent of its own was started by no Grok: no tools (dispatch
+			// refused it before the gate already).
 			const pid = grokPid();
-			const launched = launchedEnv("grok", process.env, startEnvOf(pid, LAUNCH_VARIABLES));
-			if ("refused" in launched) process.stderr.write(`orrery: mcp serves no agent here: ${launched.refused}.\n`);
-			else if ((launched.env[AGENT_ENV]?.trim() ?? "") !== "") {
+			const launched = pid === undefined ? undefined : launchedEnv("grok", process.env, startEnvOf(pid, LAUNCH_VARIABLES));
+			if (launched !== undefined && "refused" in launched) process.stderr.write(`orrery: mcp serves no agent here: ${launched.refused}.\n`);
+			else if (pid !== undefined && launched !== undefined && (launched.env[AGENT_ENV]?.trim() ?? "") !== "") {
 				const pick = grokAgent(config, { ...asking, env: launched.env, pid });
 				if (pick.kind === "agent" && ours(pick.agent)) tools = agentTools(config, pick.agent);
 			}
@@ -1101,9 +1104,12 @@ async function grokGuardHook(configPath: string | undefined): Promise<number> {
 			return denyCodexCall(guard.grokRefusal(`Orrery's config could not be read (${errorText(error)}), so no call can be checked; nothing was run. Fix the config file.`));
 		}
 		const { grokPid } = await import("../grok/host.ts");
+		const pid = grokPid();
+		// A shell with no parent of its own ran this hook, so no Grok did (src/grok/host.ts): nothing of it is let through.
+		if (pid === undefined) return denyCodexCall(guard.grokRefusal("this hook was run by no Grok (the shell that ran it has no parent); nothing was run"));
 		// The file the config came from, as loadConfig found it: the guard keeps it read-only, wherever it is.
 		const configFile = resolvePath(configPath ?? defaultConfigPath());
-		const refusal = guard.runGrokGuard(stdin, { config, env: process.env, grokPid: grokPid(), grokParent: process.ppid, configFile, deadline: CODEX_GUARD_DEADLINE_MS });
+		const refusal = guard.runGrokGuard(stdin, { config, env: process.env, grokPid: pid, grokParent: process.ppid, configFile, deadline: CODEX_GUARD_DEADLINE_MS });
 		return refusal === undefined ? 0 : denyCodexCall(refusal);
 	} catch (error) {
 		return denyCodexCall(`Orrery guard: this call could not be checked (${errorText(error).replace(/\s*[\r\n]+\s*/g, " ").replace(/\.+$/, "")}); nothing was run`);
@@ -1119,7 +1125,8 @@ async function grokGuardHook(configPath: string | undefined): Promise<number> {
  * --config of its caller's, its own ORRERY_CONFIG or ORRERY_HOME) is refused. A config that cannot be read, or refused,
  * is said at SessionStart in a Grok opened as an agent; anywhere else (a plain grok, or no config at all) they say
  * nothing. Run by Grok's shared leader (leader mode), every event but the guard decides, claims and records nothing
- * (src/grok/hooks.ts runGrokHook); the guard judges there by Orrery's own rules.
+ * (src/grok/hooks.ts runGrokHook); the guard judges there by Orrery's own rules. Run by a shell with no parent of its
+ * own, no Grok ran them (src/grok/host.ts grokPid): they record nothing, and the guard refuses.
  */
 async function grokHook(event: string | undefined, configPath: string | undefined): Promise<number> {
 	if (event === "pre-tool-use") return grokGuardHook(configPath);
@@ -1134,6 +1141,11 @@ async function grokHook(event: string | undefined, configPath: string | undefine
 			import("../agent/process.ts"),
 		]);
 		const pid = grokPid();
+		// A shell with no parent of its own ran this hook, so no Grok did (src/grok/host.ts): nothing is recorded.
+		if (pid === undefined) {
+			if (event === "session-start" && (process.env[AGENT_ENV]?.trim() ?? "") !== "") process.stdout.write(hooks.noGrokNotice());
+			return 0;
+		}
 		// Grok's own start environment, read once: whose session it is, its Orrery config and its folder (src/grok/hooks.ts).
 		const started = startEnvOf(pid, GROK_START_VARIABLES);
 		const named = (process.env[AGENT_ENV]?.trim() ?? "") !== "" || (started?.[AGENT_ENV]?.trim() ?? "") !== "";
@@ -1174,7 +1186,10 @@ async function grokStatusCommand(configPath: string | undefined): Promise<number
 		if ((process.env[AGENT_ENV]?.trim() ?? "") === "") return 0;
 		const config = loadConfig(configPath);
 		const [{ grokStatus }, { grokPid }] = await Promise.all([import("../grok/status.ts"), import("../grok/host.ts")]);
-		const line = grokStatus(stdin, { config, env: process.env, grokPid: grokPid(), grokParent: process.ppid });
+		const pid = grokPid();
+		// A shell with no parent of its own ran it, so no Grok did (src/grok/host.ts): no row.
+		if (pid === undefined) return 0;
+		const line = grokStatus(stdin, { config, env: process.env, grokPid: pid, grokParent: process.ppid });
 		if (line !== "") process.stdout.write(`${line}\n`);
 	} catch {
 		// No row.

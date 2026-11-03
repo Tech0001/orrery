@@ -3,19 +3,26 @@
  * the host of the agent's session, and the process whose end ends the recorder). Grok starts a hook given as a program
  * with arguments directly, so the hook's parent is the `grok` program (seen live: comm `grok`, whose own parent is npm's
  * `node` launcher, which is never reached); a shell that did not exec stands in between, and is passed over, as for
- * Codex (src/codex/host.ts).
+ * Codex (src/codex/host.ts). A shell with no parent of its own (orphaned: its parent is init, or 0 at the top of a pid
+ * namespace) was started by no Grok, and is never taken for one: there is no Grok.
  */
 
 import { basename } from "node:path";
 import { type ProcessInfo, processArgv, processExecutable, processInfo } from "../agent/process.ts";
-import { hostPid } from "../codex/host.ts";
+import { toolPid } from "../codex/host.ts";
 import { LAUNCH_VARIABLES } from "../codex/pick.ts";
 import { GROK_COMMANDS, GROK_VALUE_OPTIONS, isGrokProcess } from "./names.ts";
 
-/** Grok's pid from a process it started (default: this one's parent), passing over shells in between. */
-export function grokPid(start: number = process.ppid, info: (pid: number) => ProcessInfo | undefined = processInfo): number {
-	return hostPid(start, info);
+/**
+ * Grok's pid from a process it started (default: this one's parent), passing over shells in between; undefined when a
+ * shell on the way has no parent of its own (module doc).
+ */
+export function grokPid(start: number = process.ppid, info: (pid: number) => ProcessInfo | undefined = processInfo): number | undefined {
+	return toolPid(start, info);
 }
+
+/** Why Orrery's memory server for Grok serves nothing when grokPid finds no Grok: its shell has no parent. */
+export const NO_GROK = "the shell that started this has no parent, so no Grok started it";
 
 /**
  * Whether the process that started this one (default: its parent), past shells, is Grok's program: the host of a hook or
@@ -25,10 +32,11 @@ export function grokPid(start: number = process.ppid, info: (pid: number) => Pro
  * by the file that host runs (`exeOf`, links followed: src/agent/process.ts processExecutable), never by its name
  * alone: a Claude Code started through a link named grok runs Claude Code's program, and keeps its plugin. A file that
  * can't be read is no Grok's. A copy of another program named like Grok's counts as Grok, as a script the agent writes
- * does.
+ * does. An orphaned shell (grokPid) is no Grok.
  */
 export function hostIsGrok(start: number = process.ppid, info: (pid: number) => ProcessInfo | undefined = processInfo, exeOf: (pid: number) => string | undefined = processExecutable): boolean {
-	const exe = exeOf(hostPid(start, info));
+	const pid = toolPid(start, info);
+	const exe = pid === undefined ? undefined : exeOf(pid);
 	return exe !== undefined && isGrokProcess(basename(exe));
 }
 

@@ -1,11 +1,11 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AgentConfig } from "../../src/agent/config.ts";
+import { type AgentConfig, parseConfig } from "../../src/agent/config.ts";
 import { claimedBy, claimToken, newToken } from "../../src/agent/pick.ts";
-import { processArgv } from "../../src/agent/process.ts";
+import { processAlive, processArgv } from "../../src/agent/process.ts";
 import { forgetSession, liveSession, recordSession, type SessionTool } from "../../src/agent/sessions.ts";
 import { listSessions, pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
 import { codexAgent, grokAgent, grokNested } from "../../src/codex/pick.ts";
@@ -234,11 +234,12 @@ describe("a Grok started from a coding tool's session that is no agent's", () =>
 	});
 });
 
+/** A recorder that answers recording at once, as the holder would. */
+const recording = (agent: AgentConfig, session: string, nonce: string, since: number) => writeMode(agent.dir, session, { mode: "recording", pid: 1, claudePid: process.pid, nonce, since });
+/** What a hook made by the agent's own shell, as `as`, could have changed for `agent`: its claims and its spool. */
+const touched = (dir: string) => ({ claims: existsSync(join(dir, "claims")) ? readdirSync(join(dir, "claims")) : [], spool: listSessions(dir) });
+
 describe("whose a Grok's events are: its own start environment's ORRERY_AGENT and token, never the hook's", () => {
-	/** A recorder that answers recording at once, as the holder would. */
-	const recording = (agent: AgentConfig, session: string, nonce: string, since: number) => writeMode(agent.dir, session, { mode: "recording", pid: 1, claudePid: process.pid, nonce, since });
-	/** What a hook made by the agent's own shell, as `as`, could have changed for `agent`: its claims and its spool. */
-	const touched = (dir: string) => ({ claims: existsSync(join(dir, "claims")) ? readdirSync(join(dir, "claims")) : [], spool: listSessions(dir) });
 	/** The decision this Grok made, as recorded. */
 	const decision = (w: ReturnType<typeof grokWorld>) => {
 		const file = join(w.dataDir, "grok-processes", `${process.pid}.json`);
@@ -329,5 +330,105 @@ describe("whose a Grok's events are: its own start environment's ORRERY_AGENT an
 		expect(codexAgent(w.config, { env: birch, pid: process.pid, takeover: true })).toMatchObject({ kind: "agent", agent: { name: "Birch" } });
 		expect(codexAgent(w.config, { env: { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: fresh }, pid: process.pid, takeover: true })).toEqual({ kind: "refused", notice: other.replace("this Grok", "this Codex") });
 		expect(claimedBy(atlas.dir, fresh)).toBeUndefined();
+	});
+});
+
+describe("a Grok session another process already hosts: no other process takes it", () => {
+	/** SessionStart's refusal of a session that `pid`'s live record names. */
+	const hosted = (pid: number) => JSON.stringify({ systemMessage: `Orrery: can't confirm this is this Grok's own session (Grok process ${pid} already hosts it), so this session isn't recorded.` });
+	/** Session `name`'s events.jsonl in Grok's home, made as Grok makes it, which this test's process doesn't hold open. */
+	const begun = (w: ReturnType<typeof grokWorld>, name: string): string => join(w.grok.begin(id(name), { open: false }), "events.jsonl");
+	/** Atlas, as a process the agent's shell started names it: a fresh token, and Grok's home. */
+	const asAtlas = (w: ReturnType<typeof grokWorld>) => ({ ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: newToken(), GROK_HOME: w.grok.home });
+
+	it("a process the agent's shell started, holding the live session's events.jsonl open for writing, as another agent with a fresh token: no claim, no record, no spool, nor of a prompt it repeats; the first Grok's recorder is told", async () => {
+		const w = grokWorld();
+		const atlas = w.config.agents.get("Atlas") as AgentConfig;
+		const events = begun(w, "s1");
+		// Birch's Grok hosts s1, and holds its events.jsonl open for writing.
+		const birch = await bystander(events);
+		hostRecord(w.dataDir, "Birch", "grok", birch, id("s1"));
+		// The other process: none of Birch's Grok's, holding the same file open for writing, started as Atlas.
+		const fake = await bystander(events);
+		const env = asAtlas(w);
+		const c = hookCtx(w, { env, envOf: startedWith(env), grokPid: fake, grokParent: fake, startHolder: recording });
+		for (const source of ["new", "load"]) expect(await runGrokHook("session-start", input("s1", { source }), c), source).toBe(hosted(birch));
+		expect(await runGrokHook("user-prompt-submit", input("s1", { prompt: "The person's words.", promptId: "p-1" }), c)).toBe("");
+		expect(touched(atlas.dir)).toEqual({ claims: [], spool: [] });
+		expect(liveSession(w.dataDir, fake)).toBeUndefined();
+		expect(liveSession(w.dataDir, birch)).toMatchObject({ agent: "Birch", grokSession: id("s1") });
+		expect(existsSync(join(w.dataDir, "grok-processes", `${fake}.json`))).toBe(false);
+		// It has Birch's session open for writing, as a second Grok would: Birch's recorder confirms nothing more while it
+		// lives.
+		expect(spooled(w.birch.dir, "s1")).toEqual(["grok-shared", "grok-shared"]);
+	});
+
+	it("so does one whose own config's data folder links the agent, or its files, into the real one: the records are found where the agent's data really is", async () => {
+		for (const linked of ["folder", "files"] as const) {
+			const w = grokWorld();
+			const atlas = w.config.agents.get("Atlas") as AgentConfig;
+			mkdirSync(join(atlas.dir, "claude"), { recursive: true });
+			const events = begun(w, "s1");
+			const birch = await bystander(events);
+			hostRecord(w.dataDir, "Birch", "grok", birch, id("s1"));
+			// A config of the shell's own making, whose Atlas is the real Atlas's folder, or a folder of links to its files.
+			const evil = join(w.root, "evil");
+			const own = join(evil, "agents", "Atlas");
+			mkdirSync(join(evil, "agents"), { recursive: true });
+			if (linked === "folder") symlinkSync(atlas.dir, own);
+			else {
+				mkdirSync(own);
+				symlinkSync(join(atlas.dir, "claude"), join(own, "claude"));
+				symlinkSync(join(atlas.dir, "memory.sqlite"), join(own, "memory.sqlite"));
+			}
+			const config = parseConfig(readFileSync(join(w.dataDir, "config.toml"), "utf8").replace(/^data_dir = .*$/m, `data_dir = ${JSON.stringify(evil)}`), w.root);
+			const fake = await bystander(events);
+			const env = asAtlas(w);
+			const c = hookCtx(w, { config, env, envOf: startedWith(env), grokPid: fake, grokParent: fake, startHolder: recording });
+			expect(await runGrokHook("session-start", input("s1", { source: "load" }), c), linked).toBe(hosted(birch));
+			expect(touched(atlas.dir), linked).toEqual({ claims: [], spool: [] });
+			expect(liveSession(evil, fake), linked).toBeUndefined();
+			expect(existsSync(join(evil, "grok-processes")), linked).toBe(false);
+			// The mark goes to Birch's recorder where Birch's record is: the real data folder.
+			expect(spooled(w.birch.dir, "s1"), linked).toEqual(["grok-shared"]);
+		}
+	});
+
+	it("a session whose Grok is gone is free: its stale record goes, and a Grok that resumes it records, and moves on to a new session as ever", async () => {
+		const w = grokWorld();
+		const events = begun(w, "s1");
+		const first = await bystander(events);
+		hostRecord(w.dataDir, "Birch", "grok", first, id("s1"));
+		process.kill(first, "SIGKILL");
+		for (let i = 0; i < 200 && processAlive(first); i++) await new Promise((done) => setTimeout(done, 25));
+		expect(processAlive(first)).toBe(false);
+		// This test's process is Birch's Grok, resuming s1: it holds its events.jsonl open, as Grok does.
+		const held = openSync(events, "a");
+		try {
+			const c = hookCtx(w, { startHolder: recording });
+			recorded.push({ dataDir: w.dataDir, pid: process.pid });
+			const status = async (session: string, source: string) => ((await run("session-start", input(session, { source }), c)) as Answer).systemMessage?.split("\n")[0];
+			expect(await status("s1", "load")).toMatch(/^Orrery · Birch · .* · recording$/);
+			expect(liveSession(w.dataDir, process.pid)).toMatchObject({ agent: "Birch", grokSession: id("s1") });
+			expect(hosts(w.dataDir)).toEqual([`${process.pid}.json`]);
+			// A new session within this Grok (/new, /clear), which no other process hosts.
+			expect(await status("s2", "new")).toMatch(/^Orrery · Birch · .* · recording$/);
+			expect(liveSession(w.dataDir, process.pid)).toMatchObject({ grokSession: id("s2") });
+		} finally {
+			closeSync(held);
+		}
+	});
+
+	it("two Grok processes whose records both name the session (they took it at once): neither spools its prompts or replies", async () => {
+		const w = grokWorld();
+		const c = hookCtx(w, { startHolder: recording });
+		expect(((await run("session-start", input("s1", { source: "new" }), c)) as Answer).systemMessage).toMatch(/· recording$/);
+		recorded.push({ dataDir: w.dataDir, pid: process.pid });
+		await run("user-prompt-submit", input("s1", { prompt: "First.", promptId: "p-1" }), c);
+		expect(spooled(w.birch.dir, "s1")).toEqual(["grok-log", "prompt"]);
+		hostRecord(w.dataDir, "Atlas", "grok", await bystander(), id("s1"));
+		await run("user-prompt-submit", input("s1", { prompt: "Second.", promptId: "p-2" }), c);
+		await run("stop", input("s1", { lastAssistantMessage: "A reply.", promptId: "p-2", reason: "end_turn" }), c);
+		expect(spooled(w.birch.dir, "s1")).toEqual(["grok-log", "prompt"]);
 	});
 });
