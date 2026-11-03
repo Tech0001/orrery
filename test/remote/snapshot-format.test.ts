@@ -53,6 +53,11 @@ reads = ["*"]
 		expect(agentSettings(agent)).toEqual({ tool: "omp", compactorModel: "openai/gpt-5.1-mini", compactorThinking: "low", viewBytes: 64000, nodeBytes: 700, contextBytes: 24000, compactorJobs: 3, compactAt: 180000, reads: ["*"] });
 	});
 
+	it("keeps a tool this Orrery doesn't know (a newer Orrery's) in the settings it saves, for the machines that know it", () => {
+		const agent = parseConfig(`[agents.Vela]\nfolder = "/tmp/vela"\ntool = "loom"\ncompactor_model = "openai/gpt-5.1-mini"\n`, "/tmp/config").agents.get("Vela")!;
+		expect(agentSettings(agent)).toMatchObject({ tool: "loom" });
+	});
+
 	it("reads settings from the newest authenticated FakeStorage snapshot", async () => {
 		const storage = new FakeStorage();
 		const key = createKey();

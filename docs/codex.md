@@ -108,6 +108,12 @@ The instructions travel on Codex's command line, so they show in `ps`, like ever
   a turn of the new session first, and Orrery takes the session only then. A session start for another session with
   no turn of it running is refused (`… Codex moves to a session with a turn of it running, and none is …`), and
   nothing changes.
+- A session is recorded by one Codex process at a time. Any process can hold a rollout open, so a session another
+  process already hosts while it runs (two Codex windows on one session, or a program the agent's shell started) is
+  refused to every other: `Orrery: can't confirm this is this Codex's own session (Codex process <pid> already hosts
+  it), …`. Once that process is gone, the session can be resumed. On Linux, one exception: if Codex ran in a separate
+  process namespace (a sandboxed editor's terminal, say), Orrery can't tell from outside it that the process is gone,
+  so it keeps refusing that session, even after a reboot; start a new one instead.
 - The hooks only drop each event in a spool; a recorder in the background holds the agent for the session, records the
   spool into memory, runs the summaries, and leaves once the session has ended and the summaries are done (at most 10
   minutes). It is the same recorder Claude Code uses.
@@ -262,6 +268,12 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
 - **Under full access, a rollout can be written.** Codex's workspace-write sandbox keeps the shell out of its session
   files; with full access (`--dangerously-bypass-approvals-and-sandbox`, or `danger-full-access`) a program that
   appends to a rollout can fake a turn Orrery then records.
+- **Under full access, a session can be taken first.** With full access, a process the agent starts detached from its
+  session can run Orrery's session-start hook for any Codex session that no other process hosts at that moment: a new
+  one, or an old one you resume later. That process then hosts the session, so when you open or resume it, your Codex
+  is refused in one line that names the process (`Codex process <pid> already hosts it`), and the process can replay
+  the session's turns into another agent's memory. This is the detach limit of [agent sessions](architecture.md#limits),
+  and only an operating-system sandbox would close it.
 - **A process's decision that can't be saved** (which agent this Codex is): resuming inside Codex's own window can then
   decide again in the same process.
 - **`codex queue` adds a turn to a live session.** Any process of yours, the agent's own shell included, can put a
@@ -317,12 +329,23 @@ them wherever Codex's sandbox lets it. Open an agent with `orrery agent <Name> -
 - "can't confirm this is this Codex's own session": the reason follows in brackets. Its rollout isn't there or can't
   be read, isn't your own thread (a spawned agent's), isn't open in this Codex (or the system can't say which files
   Codex has open), or Codex moved to a session with no turn of it running. The session is not recorded; open the agent
-  again with `orrery agent`.
+  again with `orrery agent`. With `Codex process <pid> already hosts it`, another Codex has the session open (in
+  another window, say): quit that one, then resume the session here. If that process is no Codex of yours, something
+  else took the session (see [its limits in Codex](#its-limits-in-codex)).
 - `Orrery: can't tell which agent this Codex is (…), so it opens no memory and records nothing.`: Orrery takes the
   agent from the `ORRERY_AGENT` and token the Codex process was started with, never from the hook's own environment.
-  The reason says which failed: that environment can't be read, or the hook's own names another agent or token
-  (something other than this Codex ran the hook, or changed those variables for it). Quit Codex and open the agent
-  again with `orrery agent <Name> --tool codex`.
+  The reason says which failed: that environment can't be read, the hook's own names another agent or token
+  (something other than this Codex ran the hook, or changed those variables for it), or the shell that ran the hook
+  has no parent (no Codex ran it). Quit Codex and open the agent again with `orrery agent <Name> --tool codex`.
+- `Orrery: can't tell which Orrery config this Codex runs with (…), so it opens no memory and records nothing.`: the
+  hooks use the Orrery config the Codex process was started with (its `ORRERY_CONFIG`, else its `ORRERY_HOME`'s, else
+  the default), never one the hook itself is given. The reason says which failed: that environment can't be read, or
+  the hook would read another config (something other than this Codex ran the hook, or a shell startup file sets
+  `ORRERY_CONFIG` or `ORRERY_HOME` differently for hooks). Quit Codex and open the agent again with
+  `orrery agent <Name> --tool codex`. On macOS, a config or Orrery home whose path has a space in it (`--config
+  ~/"Library/Application Support/orrery/config.toml"`, say) can't be confirmed, because `ps` shows Codex's environment
+  split at spaces; the reason then says `Codex's ORRERY_CONFIG has a space in it` (or `ORRERY_HOME`, or `HOME`). Use a
+  path without spaces, and open the agent again. Linux reads the environment whole.
 - `Orrery: this Codex already decided which agent it is under another ORRERY_AGENT or token, so this session runs
   without memory.`: a Codex process decides once whose it is, when its memory server starts or at its first session
   start, and this session start brings another agent or token than that one. Quit that Codex and open the agent with

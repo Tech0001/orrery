@@ -209,6 +209,16 @@ function claudeCodeRefusal(config: HarnessConfig, agent: AgentConfig, cwd: strin
 }
 
 /**
+ * Why `orrery agent` and the TUI launch `agent` in no tool: its config names a tool this version doesn't know
+ * (AgentConfig.unknownTool: a typo, or one a newer Orrery set), whatever tool is asked for. They say it before anything
+ * runs (a remote's check, a tool's), and launchPlan blocks on it. Undefined for any other agent.
+ */
+export function unknownToolRefusal(agent: { readonly name: string; readonly unknownTool?: string }): string | undefined {
+	if (agent.unknownTool === undefined) return undefined;
+	return `${agent.name} is set up for an unknown tool "${safeText(agent.unknownTool)}": a typo, or set by a newer Orrery. Set its tool (C in the TUI, or orrery agent set ${agent.name} --tool T), or update Orrery (orrery update). Nothing was run.`;
+}
+
+/**
  * What opening `row` runs, where, and what to say or ask first. The tool starts in `options.cwd` (default: the agent's
  * folder, else this process's folder) as the agent: ORRERY_AGENT and a fresh token in its environment.
  */
@@ -228,6 +238,9 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 		env: { [AGENT_ENV]: agent.name, [TOKEN_ENV]: newToken() },
 		agentDir: agent.dir,
 	};
+	// A tool this version doesn't know: `tool` is only a guess, and nothing is launched.
+	const unknown = unknownToolRefusal(agent);
+	if (unknown !== undefined) return { ...base, steps: [], blocked: unknown };
 	if (NOT_THROUGH_ORI.includes(tool) && agent.launcher === "ori") return { ...base, steps: [], blocked: NOT_THROUGH_ORI_TEXT(tool, agent.name) };
 	const ori = agent.launcher === "ori" ? findOnPath("ori", options.env ?? process.env) : undefined;
 	if (agent.launcher === "ori" && ori === undefined) return { ...base, steps: [], blocked: 'Ori isn\'t installed: see docs/ori.md (or set launcher = "direct")' };

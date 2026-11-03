@@ -89,6 +89,17 @@ describe("setAgentKey", () => {
 		expect(() => setAgentKey(roots, "/x", "Beta", "tool", "vim")).toThrow("agents.Beta.tool must be one of pi, claude-code, codex");
 		expect(() => setAgentKey(`${BASE}oops = [\n`, "/x", "Beta", "tool", "pi")).toThrow("config is not valid TOML");
 	});
+
+	it("keeps a tool it doesn't know (a newer Orrery's) through another key's change, replaces it with one it knows, and never writes one", () => {
+		const newer = BASE.replace('folder = "/w/beta"\n', 'folder = "/w/beta"\ntool = "loom"\n');
+		const jobs = setAgentKey(newer, "/x", "Beta", "compactor_jobs", 3);
+		expect(jobs).toContain('tool = "loom"\ncompactor_jobs = 3');
+		expect(parseConfig(jobs, "/x").agents.get("Beta")).toMatchObject({ unknownTool: "loom", compactor: { jobs: 3 } });
+		expect(parseConfig(setAgentKey(newer, "/x", "Beta", "tool", "codex"), "/x").agents.get("Beta")).toMatchObject({ tool: "codex" });
+		expect(() => setAgentKey(newer, "/x", "Alpha", "tool", "loom")).toThrow("agents.Alpha.tool must be one of pi, claude-code, codex, omp, opencode");
+		expect(() => setAgentKey(newer, "/x", "Beta", "tool", "vim")).toThrow("agents.Beta.tool must be one of pi, claude-code, codex, omp, opencode");
+		expect(() => addAgent(newer, "/x", { name: "Gamma", folder: "/w/gamma", tool: "loom" as never, compactorModel: "openai/gpt-6.1-sol", compactorThinking: "low" })).toThrow("agents.Gamma.tool must be one of pi, claude-code, codex, omp, opencode");
+	});
 });
 
 describe("addAgent", () => {

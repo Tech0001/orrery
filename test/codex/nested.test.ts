@@ -1,10 +1,11 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type AgentConfig, parseConfig } from "../../src/agent/config.ts";
 import { claimedBy, claimToken, newToken } from "../../src/agent/pick.ts";
+import { processAlive } from "../../src/agent/process.ts";
 import { forgetSession, liveSession, recordSession, type SessionTool } from "../../src/agent/sessions.ts";
 import { listSessions, pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
 import { type CodexGuardContext, runCodexGuard } from "../../src/codex/guard.ts";
@@ -428,12 +429,13 @@ describe("a Codex session's host record (spec 2026-10-18-agent-permissions §2)"
 	});
 });
 
+/** A recorder that answers recording at once, as the holder would. */
+const recording = (agent: AgentConfig, session: string, nonce: string, since: number) => writeMode(agent.dir, session, { mode: "recording", pid: 1, claudePid: process.pid, nonce, since });
+/** What a hook could have changed for an agent: its claims and its spool. */
+const touched = (dir: string) => ({ claims: existsSync(join(dir, "claims")) ? readdirSync(join(dir, "claims")) : [], spool: listSessions(dir) });
+
 describe("whose a Codex's events are: its own start environment's ORRERY_AGENT and token, never the hook's", () => {
 	const NOT_WHOSE = "Orrery: can't tell which agent this Codex is (ORRERY_AGENT or its token isn't the one this Codex was started with), so it opens no memory and records nothing.";
-	/** A recorder that answers recording at once, as the holder would. */
-	const recording = (agent: AgentConfig, session: string, nonce: string, since: number) => writeMode(agent.dir, session, { mode: "recording", pid: 1, claudePid: process.pid, nonce, since });
-	/** What a hook could have changed for an agent: its claims and its spool. */
-	const touched = (dir: string) => ({ claims: existsSync(join(dir, "claims")) ? readdirSync(join(dir, "claims")) : [], spool: listSessions(dir) });
 
 	it("a SessionStart the agent's own shell makes as another agent, with a fresh token, after Codex's own: claims, records and spools nothing for it, and the host record stays; nor does a prompt it repeats", async () => {
 		const w = codexWorld();
@@ -482,5 +484,151 @@ describe("whose a Codex's events are: its own start environment's ORRERY_AGENT a
 		expect(touched(w.birch.dir)).toEqual({ claims: [], spool: [] });
 		expect(liveSession(w.dataDir, process.pid)).toBeUndefined();
 		expect(existsSync(join(w.dataDir, "codex-processes"))).toBe(false);
+	});
+
+	it("a Codex whose start environment can't be read: its hooks decide, claim, record and spool nothing, and SessionStart says why", async () => {
+		const w = codexWorld();
+		const c = hookCtx(w, { envOf: () => undefined, startHolder: recording });
+		w.codex.begin(id("s1"));
+		w.codex.add(id("s1"), rollout.started("turn-at-start", "user"));
+		const why = "Orrery: can't tell which agent this Codex is (the environment this Codex was started with can't be read), so it opens no memory and records nothing.";
+		expect(await runCodexHook("session-start", input("s1", { source: "startup" }), c)).toBe(JSON.stringify({ systemMessage: why }));
+		expect(await runCodexHook("user-prompt-submit", input("s1", { prompt: "My plan.", turn_id: "t-1" }), c)).toBe("");
+		expect(await runCodexHook("stop", input("s1", { last_assistant_message: "Done.", turn_id: "t-1" }), c)).toBe("");
+		expect(touched(w.birch.dir)).toEqual({ claims: [], spool: [] });
+		expect(liveSession(w.dataDir, process.pid)).toBeUndefined();
+		expect(existsSync(join(w.dataDir, "codex-processes"))).toBe(false);
+	});
+
+	it("the process's decision refuses an asker of the same start under another identity: no claim, no replace", () => {
+		const w = codexWorld();
+		const atlas = w.config.agents.get("Atlas") as AgentConfig;
+		const file = join(w.dataDir, "codex-processes", `${process.pid}.json`);
+		const decision = () => (existsSync(file) ? readFileSync(file, "utf8") : undefined);
+		const birch = { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token };
+		expect(codexAgent(w.config, { env: birch, pid: process.pid, takeover: true })).toMatchObject({ kind: "agent", agent: { name: "Birch" } });
+		const decided = decision();
+		expect(decided).toBeDefined();
+		const fresh = newToken();
+		const other = "Orrery: this Codex already decided which agent it is under another ORRERY_AGENT or token, so this session runs without memory.";
+		for (const env of [{ ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: fresh }, { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: fresh }, {}]) {
+			expect(codexAgent(w.config, { env, pid: process.pid, takeover: true }), JSON.stringify(env)).toEqual({ kind: "refused", notice: other });
+		}
+		expect(claimedBy(atlas.dir, fresh)).toBeUndefined();
+		expect(claimedBy(w.birch.dir, fresh)).toBeUndefined();
+		expect(decision()).toBe(decided);
+		// The decision's own identity still finds its claim.
+		expect(codexAgent(w.config, { env: birch, pid: process.pid, takeover: true })).toMatchObject({ kind: "agent", agent: { name: "Birch" } });
+		expect(claimedBy(w.birch.dir, w.token)).toBe(process.pid);
+	});
+});
+
+describe("a Codex session another process already hosts: no other process takes it", () => {
+	/** SessionStart's refusal of a session that `pid`'s live record names. */
+	const hosted = (pid: number) => JSON.stringify({ systemMessage: `Orrery: can't confirm this is this Codex's own session (Codex process ${pid} already hosts it), so it opens no memory and records nothing.` });
+	/** Session `name`'s rollout, with a turn of it started, which this test's process doesn't hold open. */
+	const begun = (w: ReturnType<typeof codexWorld>, name: string): string => {
+		const path = w.codex.begin(id(name), { open: false });
+		w.codex.add(id(name), rollout.started(`turn-of-${name}`, "user"));
+		return path;
+	};
+	/** Waits until process `pid` (a child of this one) is gone and reaped. */
+	const gone = async (pid: number) => {
+		process.kill(pid, "SIGKILL");
+		for (let i = 0; i < 200 && processAlive(pid); i++) await new Promise((done) => setTimeout(done, 25));
+		expect(processAlive(pid)).toBe(false);
+	};
+
+	it("a process the agent's shell started, holding the live session's rollout open, as another agent with a fresh token: no claim, no record, no spool, nor of a prompt it repeats", async () => {
+		const w = codexWorld();
+		const atlas = w.config.agents.get("Atlas") as AgentConfig;
+		const path = begun(w, "s1");
+		// Birch's Codex hosts s1, and holds its rollout open.
+		const birch = bystander(path);
+		hostRecord(w.dataDir, "Birch", "codex", birch, id("s1"));
+		// The other process: none of Birch's Codex's, holding the same rollout open, started as Atlas.
+		const fake = bystander(path);
+		const env = { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: newToken(), CODEX_HOME: w.codex.home };
+		const c = hookCtx(w, { env, codexPid: fake, codexParent: fake, startHolder: recording });
+		for (const source of ["startup", "resume"]) expect(await runCodexHook("session-start", input("s1", { source }), c)).toBe(hosted(birch));
+		expect(await runCodexHook("user-prompt-submit", input("s1", { prompt: "The person's words.", turn_id: "turn-of-s1" }), c)).toBe("");
+		expect(touched(atlas.dir)).toEqual({ claims: [], spool: [] });
+		expect(liveSession(w.dataDir, fake)).toBeUndefined();
+		expect(liveSession(w.dataDir, birch)).toMatchObject({ agent: "Birch", codexSession: id("s1") });
+		expect(existsSync(join(w.dataDir, "codex-processes", `${fake}.json`))).toBe(false);
+	});
+
+	it("so does one whose own config's data folder links the agent, or its files, into the real one: the record is found where the agent's data really is", async () => {
+		for (const linked of ["folder", "files"] as const) {
+			const w = codexWorld();
+			const atlas = w.config.agents.get("Atlas") as AgentConfig;
+			mkdirSync(join(atlas.dir, "claude"), { recursive: true });
+			const path = begun(w, "s1");
+			const birch = bystander(path);
+			hostRecord(w.dataDir, "Birch", "codex", birch, id("s1"));
+			// A config of the shell's own making, whose Atlas is the real Atlas's folder, or a folder of links to its files.
+			const evil = join(w.root, "evil");
+			const own = join(evil, "agents", "Atlas");
+			mkdirSync(join(evil, "agents"), { recursive: true });
+			if (linked === "folder") symlinkSync(atlas.dir, own);
+			else {
+				mkdirSync(own);
+				symlinkSync(join(atlas.dir, "claude"), join(own, "claude"));
+				symlinkSync(join(atlas.dir, "memory.sqlite"), join(own, "memory.sqlite"));
+			}
+			const config = parseConfig(readFileSync(join(w.dataDir, "config.toml"), "utf8").replace(/^data_dir = .*$/m, `data_dir = ${JSON.stringify(evil)}`), w.root);
+			const fake = bystander(path);
+			const env = { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: newToken(), CODEX_HOME: w.codex.home };
+			const c = hookCtx(w, { config, env, codexPid: fake, codexParent: fake, startHolder: recording });
+			expect(await runCodexHook("session-start", input("s1", { source: "resume" }), c), linked).toBe(hosted(birch));
+			expect(touched(atlas.dir), linked).toEqual({ claims: [], spool: [] });
+			expect(liveSession(evil, fake)).toBeUndefined();
+		}
+	});
+
+	it("a second Codex on a session the first still hosts (the agent opened twice) records nothing and says why; once the first is gone a resume takes the session, its stale record goes, and that Codex's own compaction and resume record as ever", async () => {
+		const w = codexWorld();
+		const path = begun(w, "s1");
+		const first = bystander(path);
+		hostRecord(w.dataDir, "Birch", "codex", first, id("s1"));
+		// This test's process is the second Codex, Birch's with its own launch's token, holding the rollout open too.
+		const fd = openSync(path, "r");
+		try {
+			const c = hookCtx(w, { startHolder: recording, compactWaitMs: 0 });
+			expect(await runCodexHook("session-start", input("s1", { source: "resume" }), c)).toBe(hosted(first));
+			expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+			expect(liveSession(w.dataDir, process.pid)).toBeUndefined();
+			await gone(first);
+			recorded.push({ dataDir: w.dataDir, pid: process.pid });
+			const status = async (session: string, source: string) => ((JSON.parse(await runCodexHook("session-start", input(session, { source }), c)) as Answer).systemMessage ?? "").split("\n")[0];
+			expect(await status("s1", "resume")).toMatch(/^Orrery · Birch · .* · recording$/);
+			expect(liveSession(w.dataDir, process.pid)).toMatchObject({ agent: "Birch", codexSession: id("s1") });
+			expect(hosts(w.dataDir)).toEqual([`${process.pid}.json`]);
+			expect(await status("s1", "compact")).toMatch(/^Orrery · Birch · .* · recording$/);
+			// A resume of another session within this Codex (/resume), which no other process hosts.
+			const other = begun(w, "s2");
+			const held = openSync(other, "r");
+			try {
+				expect(await status("s2", "resume")).toMatch(/^Orrery · Birch · .* · recording$/);
+				expect(liveSession(w.dataDir, process.pid)).toMatchObject({ codexSession: id("s2") });
+			} finally {
+				closeSync(held);
+			}
+		} finally {
+			closeSync(fd);
+		}
+	});
+
+	it("two Codex processes whose records both name the session (they took it at once): neither spools its prompts or replies", async () => {
+		const w = codexWorld();
+		const c = hookCtx(w, { startHolder: recording });
+		expect(((await run("session-start", input("s1", { source: "startup" }), c)) as Answer).systemMessage).toMatch(/· recording$/);
+		recorded.push({ dataDir: w.dataDir, pid: process.pid });
+		await run("user-prompt-submit", input("s1", { prompt: "First.", turn_id: "t-1" }), c);
+		expect(spooled(w.birch.dir, "s1")).toEqual(["rollout", "prompt"]);
+		hostRecord(w.dataDir, "Atlas", "codex", bystander(), id("s1"));
+		await run("user-prompt-submit", input("s1", { prompt: "Second.", turn_id: "t-2" }), c);
+		await run("stop", input("s1", { last_assistant_message: "A reply.", turn_id: "t-2" }), c);
+		expect(spooled(w.birch.dir, "s1")).toEqual(["rollout", "prompt"]);
 	});
 });

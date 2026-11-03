@@ -1096,7 +1096,7 @@ describe("a pi or OMP session whose config cannot be read", () => {
 
 	it.each(["pi", "omp"] as const)("%s reads [guard] protect on its own when the TOML parses but another key is bad, keeping the valid entries", async (host) => {
 		const t = protectWorld();
-		const s = await session(t, `[guard]\nprotect = ["secrets.yml", "vault"]\n\n[agents.Atlas]\nfolder = ${JSON.stringify(t.atlas)}\ntool = "nope"\ncompactor_model = "a/b"\n`, host);
+		const s = await session(t, `[guard]\nprotect = ["secrets.yml", "vault"]\n\n[agents.Atlas]\nfolder = ${JSON.stringify(t.atlas)}\nlauncher = "nope"\ncompactor_model = "a/b"\n`, host);
 		expect(s.notices).toEqual([{ type: "warning", message: expect.stringMatching(/; running without memory$/) }]);
 		expect(await s.tool("read", { path: "secrets.yml" })).toEqual({ block: true, reason: expect.stringMatching(PROTECTED) });
 		expect(await s.tool("read", { path: "vault/token.txt" })).toEqual({ block: true, reason: expect.stringMatching(PROTECTED) });

@@ -47,8 +47,10 @@ export interface AgentSettings {
 }
 
 export function agentSettings(agent: AgentConfig): AgentSettings {
+	// A tool this version doesn't know (a newer Orrery's) travels as it is, for the machines that know it.
+	const tool = agent.tool ?? agent.unknownTool;
 	return {
-		...(agent.tool === undefined ? {} : { tool: agent.tool }),
+		...(tool === undefined ? {} : { tool }),
 		compactorModel: `${agent.compactor.model.provider}/${agent.compactor.model.modelId}`,
 		compactorThinking: agent.compactor.model.thinking,
 		viewBytes: agent.memory.viewBytes,

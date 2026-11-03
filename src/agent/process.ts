@@ -63,8 +63,9 @@ export interface ProcessEnvDeps {
 	readonly read?: (file: string) => string;
 	/**
 	 * macOS: read only the words after the process's own arguments (ps without -E), so no word among them is taken for a
-	 * variable its environment lacks: for a process whose arguments hold text others wrote (Grok's --rules hold the
-	 * agent's memory). Linux's environ holds the environment alone, so it changes nothing there.
+	 * variable its environment lacks: for a process whose arguments hold text others wrote (Codex's -c flags hold the
+	 * agent's instructions, and the person's own arguments follow them; Grok's --rules hold the agent's memory). Linux's
+	 * environ holds the environment alone, so it changes nothing there.
 	 */
 	readonly withoutArgs?: boolean;
 	/**
@@ -75,8 +76,11 @@ export interface ProcessEnvDeps {
 	readonly unambiguous?: boolean;
 }
 
-/** A word of ps's that starts a variable of its own: a name, then "=". */
-const VARIABLE_WORD = /^[A-Za-z_][A-Za-z0-9_]*=/;
+/**
+ * A word of ps's that starts a variable of its own: a name, then "=". Any name an environment may hold, not only a
+ * shell's: an exported bash function's is BASH_FUNC_<name>%%, and one beside ORRERY_AGENT must not make it unreadable.
+ */
+const VARIABLE_WORD = /^[^\s=]+=/;
 
 /** macOS's ps output for `args` in the C locale and no other environment, or undefined when it fails. */
 function psQuiet(args: readonly string[]): string | undefined {
@@ -94,6 +98,16 @@ function psQuiet(args: readonly string[]): string | undefined {
  * never be read from that.
  */
 export function processEnv(pid: number, names: readonly string[], deps: ProcessEnvDeps = {}): Readonly<Record<string, string>> | undefined {
+	const read = processEnvRead(pid, names, deps);
+	return read !== undefined && "env" in read ? read.env : undefined;
+}
+
+/**
+ * processEnv's answer (`env`), or, when it is undefined because a space cut the value of one of `names` (macOS, with
+ * `unambiguous`: a path with a space in it, say), that variable's name (`cut`), so a caller can say why. Undefined for
+ * every other reason.
+ */
+export function processEnvRead(pid: number, names: readonly string[], deps: ProcessEnvDeps = {}): { readonly env: Readonly<Record<string, string>> } | { readonly cut: string } | undefined {
 	if (!Number.isInteger(pid) || pid < 1) return undefined;
 	const platform = deps.platform ?? process.platform;
 	let words: string[];
@@ -120,7 +134,7 @@ export function processEnv(pid: number, names: readonly string[], deps: ProcessE
 				const at = words.flatMap((word, index) => (word.startsWith(`${name}=`) ? [index] : []));
 				if (at.length > 1) return undefined;
 				const next = at.length === 1 ? words[(at[0] as number) + 1] : undefined;
-				if (next !== undefined && !VARIABLE_WORD.test(next)) return undefined;
+				if (next !== undefined && !VARIABLE_WORD.test(next)) return { cut: name };
 			}
 		}
 	} else return undefined;
@@ -130,7 +144,7 @@ export function processEnv(pid: number, names: readonly string[], deps: ProcessE
 		const name = word.slice(0, equals);
 		if (equals > 0 && names.includes(name)) found[name] = word.slice(equals + 1);
 	}
-	return found;
+	return { env: found };
 }
 
 /**

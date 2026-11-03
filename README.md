@@ -289,6 +289,11 @@ orrery install --rollback  # go back to the previous version
 orrery uninstall           # remove the program; memory, config and logins stay
 ```
 
+After a rollback, the older version (0.9.5 or later) still reads a config a newer one wrote. An agent set up for a tool
+it doesn't know (or with a typo in `tool`) is listed with that tool, and `orrery agent` and the TUI refuse to launch it,
+saying the tool is unknown. Its memory stays readable: `orrery run`, `orrery claude-setup` and a tool started in its
+folder still open it, and the guard and every other agent work as usual.
+
 Agents that are open keep their version until they restart. An update says `Restart open agent sessions now: sessions
 left open across the update aren't recorded until they restart.`: a Claude Code or Codex session left open may stop
 being recorded, or be recorded without the new checks, until it restarts (the [Claude

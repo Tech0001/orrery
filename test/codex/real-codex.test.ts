@@ -280,8 +280,14 @@ describe.skipIf(codex === null)("Orrery's Codex launch against the installed Cod
 		});
 		expect(run.status, run.stderr).toBe(0);
 		const input = JSON.parse(run.stdout.slice(run.stdout.indexOf("["))) as { role?: string; content?: { text?: string }[] }[];
-		const developer = input.find((item) => item.role === "developer");
-		expect(developer?.content?.[0]?.text).toBe(instructionsSection("Atlas", readInstructions(agentDir) as NonNullable<ReturnType<typeof readInstructions>>));
+		const section = instructionsSection("Atlas", readInstructions(agentDir) as NonNullable<ReturnType<typeof readInstructions>>);
+		// The developer part that starts with the section's heading: the first developer message's first part in older
+		// Codex; Codex 0.166 puts its own developer items (its tools, its base instructions) before it. It is whole.
+		const heading = `${section.slice(0, section.indexOf("\n"))}\n`;
+		const parts = input.filter((item) => item.role === "developer").flatMap((item) => item.content ?? []);
+		const held = parts.filter((part) => part.text?.startsWith(heading));
+		expect(held).toHaveLength(1);
+		expect(held[0]?.text).toBe(section);
 		// The check ran (this Codex was new to this Orrery home) and is remembered.
 		expect(readCodexCheck({ ...env, ORRERY_HOME: join(home, ".orrery") })).toMatchObject({ codex: version, ok: true });
 		expect(JSON.parse(readFileSync(join(home, ".orrery", "codex-check.json"), "utf8"))).toMatchObject({ codex: version, ok: true });

@@ -26,9 +26,10 @@
  * is refused, and claims and replaces nothing. A process whose start can't be read decides nothing and claims nothing:
  * no memory (fail closed).
  *
- * Whose an event is comes from the host's own start environment (launchedEnv, startEnvOf): a hook or memory server
- * takes ORRERY_AGENT and its token as the Codex (or Grok) process was started with them, never as its own environment
- * has them, which any shell may set; one whose own disagree is refused, and one with none there is no agent's.
+ * Whose an event is comes from the host's own start environment (launchedEnv, startEnvOf): a Codex recording hook, and
+ * Grok's hooks, guard, status row and memory server, take ORRERY_AGENT and its token as the Codex or Grok process was
+ * started with them, never as their own environment has them, which any shell may set; one whose own disagree is
+ * refused, and one with none there is no agent's.
  * A new decision prunes the records of processes that are gone. An agent whose decision can't be recorded stays the
  * agent (its claim of the token is durable) and SessionStart says so.
  * A nested or refused one whose decision can't be recorded claims nothing, and an asker that is no first one only finds
@@ -58,7 +59,7 @@ import { join } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { beingMade, publish, removeStale, stray, temporaryOf } from "../agent/exclusive.ts";
 import { AGENT_ENV, agentNamed, claimToken, refusedNotice, TOKEN_ENV, tokenForm, tokenHeld } from "../agent/pick.ts";
-import { processAlive, processEnv } from "../agent/process.ts";
+import { processAlive, processEnvRead } from "../agent/process.ts";
 import { type PlainDeps, plainNested } from "../agent/plain-nested.ts";
 import { insideSession, liveSession, type PlainFound, plainFields, processStart, recordedPlain, SESSION_TOOLS, type SessionRecord, type SessionTool } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
@@ -114,12 +115,21 @@ export const LAUNCH_VARIABLES: readonly string[] = [AGENT_ENV, TOKEN_ENV];
 
 /**
  * The variables `names` of the environment the host process `pid` was started with (src/agent/process.ts processEnv):
- * Linux's /proc/<pid>/environ; on macOS ps's words after the process's arguments (Grok's --rules hold the agent's
- * memory), and only when they can't be read two ways (a variable standing twice, or a value a space cut). Undefined
- * when it can't be read so.
+ * Linux's /proc/<pid>/environ; on macOS ps's words after the process's arguments (Codex's -c flags hold the agent's
+ * instructions, Grok's --rules its memory), and only when they can't be read two ways (a variable standing twice, or a
+ * value a space cut). Undefined when it can't be read so.
  */
 export function startEnvOf(pid: number, names: readonly string[]): Readonly<Record<string, string>> | undefined {
-	return processEnv(pid, names, { withoutArgs: true, unambiguous: true });
+	const read = startEnvRead(pid, names);
+	return read !== undefined && "env" in read ? read.env : undefined;
+}
+
+/**
+ * startEnvOf's answer (`env`), or the variable whose value a space cut (`cut`, macOS: src/agent/process.ts
+ * processEnvRead) when that is why it can't be read, so a session start can say so.
+ */
+export function startEnvRead(pid: number, names: readonly string[]): { readonly env: Readonly<Record<string, string>> } | { readonly cut: string } | undefined {
+	return processEnvRead(pid, names, { withoutArgs: true, unambiguous: true });
 }
 
 /**

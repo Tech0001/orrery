@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import type { AgentConfig } from "../../src/agent/config.ts";
@@ -11,7 +11,7 @@ import { Holder } from "../../src/claude/holder.ts";
 import { holderLog, sessionDir } from "../../src/claude/paths.ts";
 import { listSessions, pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
 import { readUnconfirmed } from "../../src/claude/transcript.ts";
-import { CODEX_RECORD_EVENTS, type CodexHookContext, runCodexHook } from "../../src/codex/hooks.ts";
+import { CODEX_RECORD_EVENTS, type CodexHookContext, codexOwnConfig, ownConfigNotice, runCodexHook } from "../../src/codex/hooks.ts";
 import { codexAgent } from "../../src/codex/pick.ts";
 import { codexSessionOf } from "../../src/codex/resume.ts";
 import { fauxModels } from "../agent/support.ts";
@@ -601,6 +601,54 @@ describe("a Codex older than 0.162.1 (it doesn't record who started a turn): ref
 		homeOf(t).add(id("s1"), rollout.started("t-1", "exec"));
 		expect(((await forged("session-start", input({ source: "startup" }), ctx(t, { startHolder: answer("recording", started) }))) as Answer).systemMessage).toMatch(/· recording$/);
 		expect(started).toEqual([id("s1")]);
+	});
+});
+
+describe("codexOwnConfig: the hooks, the host record and the holder take the config Codex was started with", () => {
+	it("takes Codex's ORRERY_CONFIG, else its Orrery home's (or the default), and refuses a hook that would read another file", () => {
+		const t = testAgent();
+		const home = join(t.dir, "user-home");
+		mkdirSync(join(home, ".orrery"), { recursive: true });
+		writeFileSync(join(home, ".orrery", "config.toml"), readFileSync(t.configPath, "utf8"));
+		const own = join(home, ".orrery", "config.toml");
+		const other = join(t.dir, "other.toml");
+		writeFileSync(other, readFileSync(t.configPath, "utf8"));
+		const started = { HOME: home, ORRERY_CONFIG: t.configPath };
+		const another = { refused: "this hook would read another Orrery config than the one this Codex was started with" };
+		// Codex's folder, asked only for a relative ORRERY_CONFIG (lsof on macOS): each time it is, counted.
+		let asked = 0;
+		const folder = () => (asked++, t.folder);
+		// Codex's ORRERY_CONFIG: the hook's own, or a link to that file, is the one.
+		expect(codexOwnConfig(undefined, { HOME: home, ORRERY_CONFIG: t.configPath }, started, folder)).toEqual({ path: t.configPath });
+		symlinkSync(t.configPath, join(t.dir, "link.toml"));
+		expect(codexOwnConfig(join(t.dir, "link.toml"), { HOME: home }, started, folder)).toEqual({ path: t.configPath });
+		// Another: a --config of the caller's, its own ORRERY_CONFIG, or its Orrery home's (no ORRERY_CONFIG of its own).
+		expect(codexOwnConfig(other, { HOME: home, ORRERY_CONFIG: t.configPath }, started, folder)).toEqual(another);
+		expect(codexOwnConfig(undefined, { HOME: home, ORRERY_CONFIG: other }, started, folder)).toEqual(another);
+		expect(codexOwnConfig(undefined, { HOME: home }, started, folder)).toEqual(another);
+		// No ORRERY_CONFIG at Codex's start: its HOME's Orrery home, or its ORRERY_HOME's.
+		expect(codexOwnConfig(undefined, { HOME: home }, { HOME: home }, folder)).toEqual({ path: own });
+		expect(codexOwnConfig(undefined, { HOME: home, ORRERY_HOME: join(t.dir, "elsewhere") }, { HOME: home }, folder)).toEqual(another);
+		expect(codexOwnConfig(undefined, { HOME: t.dir, ORRERY_HOME: join(home, ".orrery") }, { HOME: home }, folder)).toEqual({ path: own });
+		expect(asked).toBe(0);
+		// A relative ORRERY_CONFIG of Codex's is read from the folder Codex runs in.
+		expect(codexOwnConfig(t.configPath, {}, { HOME: home, ORRERY_CONFIG: "../data/config.toml" }, folder)).toEqual({ path: join(t.dir, "data", "config.toml") });
+		expect(asked).toBe(1);
+		expect(codexOwnConfig(t.configPath, {}, { HOME: home, ORRERY_CONFIG: "../data/config.toml" }, () => undefined)).toEqual({ refused: "the folder Codex runs in can't be read" });
+		// Codex's environment unread, or saying too little: refused (fail closed).
+		expect(codexOwnConfig(undefined, { HOME: home }, undefined, folder)).toEqual({ refused: "the environment this Codex was started with can't be read" });
+		expect(codexOwnConfig(undefined, { HOME: home }, {}, folder)).toEqual({ refused: "Codex's environment names no HOME" });
+		expect(codexOwnConfig(undefined, { HOME: home }, { HOME: home, ORRERY_HOME: "relative" }, folder)).toEqual({ refused: "Codex's ORRERY_HOME is no absolute path" });
+		expect(codexOwnConfig(undefined, { HOME: home, ORRERY_HOME: "relative" }, { HOME: home }, folder)).toEqual({ refused: "this hook's ORRERY_HOME is no absolute path" });
+		expect(asked).toBe(1);
+		// macOS: a path a space cut (src/agent/process.ts processEnvRead) is said as such, with what to do; another variable isn't.
+		for (const cut of ["ORRERY_CONFIG", "ORRERY_HOME", "HOME"]) {
+			expect(codexOwnConfig(undefined, { HOME: home }, undefined, folder, cut)).toEqual({ refused: `Codex's ${cut} has a space in it, and on macOS Orrery can't confirm a config or home path with one: use a path without spaces` });
+		}
+		expect(codexOwnConfig(undefined, { HOME: home }, undefined, folder, "ORRERY_AGENT")).toEqual({ refused: "the environment this Codex was started with can't be read" });
+		expect(ownConfigNotice(`Codex's ORRERY_CONFIG has a space in it, and on macOS Orrery can't confirm a config or home path with one: use a path without spaces`)).toBe(
+			JSON.stringify({ systemMessage: "Orrery: can't tell which Orrery config this Codex runs with (Codex's ORRERY_CONFIG has a space in it, and on macOS Orrery can't confirm a config or home path with one: use a path without spaces), so it opens no memory and records nothing." }),
+		);
 	});
 });
 

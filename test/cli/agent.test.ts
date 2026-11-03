@@ -99,6 +99,28 @@ function started(out: string): { agent?: string; token?: string; cwd: string; ar
 }
 
 describe("orrery agent", () => {
+	it("an agent whose tool this Orrery doesn't know (a typo, or a newer Orrery set it) is refused before anything runs, whatever --tool says; status lists it, and the other agents open as ever", () => {
+		const s = scene();
+		writeFileSync(s.config, `${readFileSync(s.config, "utf8").replace('tool = "pi"', 'tool = "loom"')}[agents.Birch]\nfolder = ${JSON.stringify(s.elsewhere)}\ntool = "pi"\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+		const refused = 'Atlas is set up for an unknown tool "loom": a typo, or set by a newer Orrery. Set its tool (C in the TUI, or orrery agent set Atlas --tool T), or update Orrery (orrery update). Nothing was run.';
+		for (const args of [[], ["--tool", "pi"]]) {
+			const r = orrery(s.env, s.elsewhere, "agent", "Atlas", "--yes", ...args);
+			expect(r.status, args.join(" ")).toBe(1);
+			expect(r.stderr).toContain(refused);
+		}
+		expect(existsSync(s.out)).toBe(false);
+		expect(existsSync(s.agentDir)).toBe(false);
+		const status = orrery(s.env, s.dir, "status");
+		expect(status.status, status.stderr).toBe(0);
+		expect(status.stdout).toMatch(/^Atlas +closed +loom \(unknown tool\) +no memory yet/m);
+		expect(status.stdout).toMatch(/^Birch +closed +pi /m);
+		const json = JSON.parse(orrery(s.env, s.dir, "status", "--json").stdout) as { agents: { name: string; unknownTool?: string }[] };
+		expect(json.agents.map((agent) => [agent.name, agent.unknownTool])).toEqual([["Atlas", "loom"], ["Birch", undefined]]);
+		const birch = orrery(s.env, s.elsewhere, "agent", "Birch", "--yes");
+		expect(birch.status, birch.stderr).toBe(0);
+		expect(started(s.out).agent).toBe("Birch");
+	});
+
 	it("opens the agent here: its tool starts in this folder with ORRERY_AGENT, a token, and what follows --", () => {
 		const s = scene();
 		const r = orrery(s.env, s.elsewhere, "agent", "atlas", "--yes", "--", "--model", "m", "--yes");

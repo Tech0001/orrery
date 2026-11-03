@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readHolder } from "../../src/agent/handover.ts";
@@ -216,6 +216,42 @@ describe("a Codex session, process by process", () => {
 		codex.exit();
 		await waitUntil(() => readHolder(t.agent.dir) === undefined, 20_000);
 		forgetSession(t.config.dataDir, codex.pid);
+	}, 60_000);
+
+	it("a hook given another Orrery config than its Codex's (--config, ORRERY_CONFIG, ORRERY_HOME) records, claims and spools nothing, even with Codex's own agent and token, and SessionStart says why", async () => {
+		const t = testAgent();
+		const home = homeFor(t.dir);
+		const c1 = codexSession();
+		const env = { ORRERY_CONFIG: t.configPath, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: newToken(), CODEX_HOME: home.home };
+		const codex = fakeCodex(env);
+		await codex.open(home.begin(c1, { open: false }));
+		// Another agent's folder, and a config of the shell's own making whose data folder links its Test there.
+		const victim = join(t.dir, "victim");
+		mkdirSync(victim);
+		const evil = join(t.dir, "evil");
+		mkdirSync(join(evil, "agents"), { recursive: true });
+		symlinkSync(victim, join(evil, "agents", "Test"));
+		writeFileSync(join(evil, "config.toml"), readFileSync(t.configPath, "utf8").replace(/^data_dir = .*$/m, `data_dir = ${JSON.stringify(evil)}`));
+		const { ORRERY_CONFIG: _own, ...launch } = env;
+		const why = "Orrery: can't tell which Orrery config this Codex runs with (this hook would read another Orrery config than the one this Codex was started with), so it opens no memory and records nothing.";
+		const run = (event: string, args: readonly string[], hookEnv: Record<string, string>, input: object) => {
+			const c = cliCommand(["codex-hook", event, ...args]);
+			return codex.run(c.cmd, c.args, hookEnv, JSON.stringify(input));
+		};
+		for (const [args, hookEnv] of [
+			[["--config", join(evil, "config.toml")], env],
+			[[], { ...env, ORRERY_CONFIG: join(evil, "config.toml") }],
+			[[], { ...launch, ORRERY_HOME: evil }],
+		] as const) {
+			const start = await run("session-start", args, hookEnv, { session_id: c1, source: "startup", hook_event_name: "SessionStart" });
+			expect([start.status, start.stderr], JSON.stringify(hookEnv)).toEqual([0, ""]);
+			expect(JSON.parse(start.stdout)).toEqual({ systemMessage: why });
+			const prompt = await run("user-prompt-submit", args, hookEnv, { session_id: c1, turn_id: "t-1", prompt: "Codename Saffron." });
+			expect([prompt.status, prompt.stdout, prompt.stderr]).toEqual([0, "", ""]);
+		}
+		expect(readdirSync(victim)).toEqual([]);
+		expect(readdirSync(evil).sort()).toEqual(["agents", "config.toml"]);
+		expect(liveSession(t.config.dataDir, codex.pid)).toBeUndefined();
 	}, 60_000);
 
 	it("serves Codex no tools without ORRERY_AGENT and its token, even in the agent's own folder", async () => {

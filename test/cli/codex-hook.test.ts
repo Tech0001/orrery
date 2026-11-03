@@ -7,10 +7,17 @@ import { cleanEnv, cleanupDirs, cliCommand, testAgent } from "../claude/support.
 
 afterEach(cleanupDirs);
 
-/** Runs `orrery codex-hook <event>` as Codex does: its input as JSON on stdin (a string as it is). */
+/** A stand-in for Codex: it runs the command its arguments name as its child, with its own stdin, stdout and stderr. */
+const RELAY = "const run = require('node:child_process').spawnSync(process.argv[1], process.argv.slice(2), { stdio: 'inherit' }); process.exit(run.status ?? 1)";
+
+/**
+ * Runs `orrery codex-hook <event>` as Codex does: its input as JSON on stdin (a string as it is), from a Codex stand-in
+ * started with the hook's own environment, as `orrery agent` starts Codex (the hooks read the agent and the config back
+ * from it).
+ */
 function hook(event: string, input: object | string, env: Record<string, string> = {}) {
 	const c = cliCommand(["codex-hook", event]);
-	return spawnSync(c.cmd, c.args, { input: typeof input === "string" ? input : JSON.stringify(input), env: cleanEnv(env), encoding: "utf8", timeout: 20_000, maxBuffer: 8 * 1024 * 1024 });
+	return spawnSync(process.execPath, ["-e", RELAY, c.cmd, ...c.args], { input: typeof input === "string" ? input : JSON.stringify(input), env: cleanEnv(env), encoding: "utf8", timeout: 20_000, maxBuffer: 8 * 1024 * 1024 });
 }
 
 /** Agent Test, its config naming `protected.txt` in [guard] protect, and the environment its Codex gives a hook. */
@@ -37,6 +44,15 @@ describe("orrery codex-hook pre-tool-use (the guard)", () => {
 			const r = hook("pre-tool-use", call(t.folder, tool, input), env);
 			expect([tool, r.status, r.stdout, r.stderr]).toEqual([tool, 0, "", ""]);
 		}
+	});
+
+	it("judges as ever with a config that names a tool this Orrery doesn't know (an agent a newer Orrery set up)", () => {
+		const { t, env } = guarded();
+		writeFileSync(t.configPath, `${readFileSync(t.configPath, "utf8")}\n[agents.Vela]\nfolder = ${JSON.stringify(join(t.dir, "vela"))}\ntool = "loom"\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+		const ok = hook("pre-tool-use", call(t.folder, "Bash", { command: "ls -la && git status" }), env);
+		expect([ok.status, ok.stdout, ok.stderr]).toEqual([0, "", ""]);
+		const shell = hook("pre-tool-use", call(t.folder, "Bash", { command: "cat protected.txt" }), env);
+		expect([shell.status, shell.stderr]).toEqual([2, "Orrery guard: This command touches protected.txt, protected by [guard] protect in Orrery's config"]);
 	});
 
 	it("refuses by exit code 2 with the reason on stderr, no final period, nothing on stdout", () => {
