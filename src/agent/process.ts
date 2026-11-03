@@ -61,7 +61,23 @@ export interface ProcessEnvDeps {
 	readonly ps?: (args: readonly string[]) => string | undefined;
 	/** Linux: a file's text; throws when it can't be read (default readFileSync). */
 	readonly read?: (file: string) => string;
+	/**
+	 * macOS: read only the words after the process's own arguments (ps without -E), so no word among them is taken for a
+	 * variable its environment lacks: for a process whose arguments hold text others wrote (Codex's -c flags hold the
+	 * agent's instructions, and the person's own arguments follow them). Linux's environ holds the environment alone, so it
+	 * changes nothing there.
+	 */
+	readonly withoutArgs?: boolean;
+	/**
+	 * macOS: read the variables asked for only when ps's words can't be read two ways: none of them stands twice, and none
+	 * runs into a word that is no variable of its own (a value holding a space, cut short there); undefined otherwise. For
+	 * a host's start environment, whose variables say whose session it is (src/codex/pick.ts startEnvOf).
+	 */
+	readonly unambiguous?: boolean;
 }
+
+/** A word of ps's that starts a variable of its own: a name, then "=". */
+const VARIABLE_WORD = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /** macOS's ps output for `args` in the C locale and no other environment, or undefined when it fails. */
 function psQuiet(args: readonly string[]): string | undefined {
@@ -72,9 +88,11 @@ function psQuiet(args: readonly string[]): string | undefined {
 /**
  * The values of the variables `names` in the environment process `pid` was started with: Linux's /proc/<pid>/environ;
  * macOS's `ps -E`, by its path, whose words they are (the environment follows the arguments, so the last word naming one
- * is taken; a value holding a space is no value of these). Undefined elsewhere, or when it can't be read; on macOS also
- * when ps shows no environment at all (neither PATH nor HOME): it may withhold another process's, and "started without
- * it" must never be read from that.
+ * is taken; a value holding a space is no value of these; with `withoutArgs`, only the words after the arguments ps
+ * shows without -E, and undefined when its two answers don't line up; with `unambiguous`, undefined when one of `names`
+ * stands twice or its value is cut by a space). Undefined elsewhere, or when it can't be read; on macOS also when ps
+ * shows no environment at all (neither PATH nor HOME): it may withhold another process's, and "started without it" must
+ * never be read from that.
  */
 export function processEnv(pid: number, names: readonly string[], deps: ProcessEnvDeps = {}): Readonly<Record<string, string>> | undefined {
 	if (!Number.isInteger(pid) || pid < 1) return undefined;
@@ -87,10 +105,25 @@ export function processEnv(pid: number, names: readonly string[], deps: ProcessE
 			return undefined;
 		}
 	} else if (platform === "darwin") {
-		const out = (deps.ps ?? psQuiet)(["-wwE", "-o", "command=", "-p", String(pid)]);
+		const ps = deps.ps ?? psQuiet;
+		const out = ps(["-wwE", "-o", "command=", "-p", String(pid)]);
 		if (out === undefined) return undefined;
-		words = out.trim().split(/\s+/);
+		let shown = out.trim();
+		if (deps.withoutArgs === true) {
+			const args = ps(["-ww", "-o", "command=", "-p", String(pid)])?.trim();
+			if (args === undefined || args === "" || !shown.startsWith(args) || /\S/.test(shown.charAt(args.length))) return undefined;
+			shown = shown.slice(args.length).trim();
+		}
+		words = shown.split(/\s+/);
 		if (!words.some((word) => word.startsWith("PATH=") || word.startsWith("HOME="))) return undefined;
+		if (deps.unambiguous === true) {
+			for (const name of names) {
+				const at = words.flatMap((word, index) => (word.startsWith(`${name}=`) ? [index] : []));
+				if (at.length > 1) return undefined;
+				const next = at.length === 1 ? words[(at[0] as number) + 1] : undefined;
+				if (next !== undefined && !VARIABLE_WORD.test(next)) return undefined;
+			}
+		}
 	} else return undefined;
 	const found: Record<string, string> = {};
 	for (const word of words) {

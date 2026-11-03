@@ -318,6 +318,15 @@ them wherever Codex's sandbox lets it. Open an agent with `orrery agent <Name> -
   be read, isn't your own thread (a spawned agent's), isn't open in this Codex (or the system can't say which files
   Codex has open), or Codex moved to a session with no turn of it running. The session is not recorded; open the agent
   again with `orrery agent`.
+- `Orrery: can't tell which agent this Codex is (…), so it opens no memory and records nothing.`: Orrery takes the
+  agent from the `ORRERY_AGENT` and token the Codex process was started with, never from the hook's own environment.
+  The reason says which failed: that environment can't be read, or the hook's own names another agent or token
+  (something other than this Codex ran the hook, or changed those variables for it). Quit Codex and open the agent
+  again with `orrery agent <Name> --tool codex`.
+- `Orrery: this Codex already decided which agent it is under another ORRERY_AGENT or token, so this session runs
+  without memory.`: a Codex process decides once whose it is, when its memory server starts or at its first session
+  start, and this session start brings another agent or token than that one. Quit that Codex and open the agent with
+  `orrery agent <Name> --tool codex`.
 - "doesn't record who started a turn; Orrery needs Codex 0.162.1 or later": update Codex.
 - "unconfirmed messages not recorded" in `orrery status`: prompts or replies the rollout never confirmed, such as
   words that came from outside your own turns.

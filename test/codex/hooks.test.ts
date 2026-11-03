@@ -15,7 +15,7 @@ import { CODEX_RECORD_EVENTS, type CodexHookContext, runCodexHook } from "../../
 import { codexAgent } from "../../src/codex/pick.ts";
 import { codexSessionOf } from "../../src/codex/resume.ts";
 import { fauxModels } from "../agent/support.ts";
-import { cleanupDirs, messages, seed, statusOf, type TestAgent, testAgent, waitUntil } from "../claude/support.ts";
+import { cleanupDirs, messages, seed, startedWith, statusOf, type TestAgent, testAgent, waitUntil } from "../claude/support.ts";
 import { type CodexHome, codexHomeIn, codexSession, rollout } from "./rollout-lines.ts";
 
 const holders: Holder[] = [];
@@ -60,17 +60,22 @@ const homeOf = (t: TestAgent): CodexHome => {
 	return made;
 };
 
-const ctx = (t: TestAgent, extra: Partial<CodexHookContext> = {}, token = tokens.get(t) ?? tokenOf(t)): CodexHookContext => ({
-	config: t.config,
-	env: { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CODEX_HOME: homeOf(t).home },
-	// Never the person's: a CODEX_HOME left out looks here.
-	home: join(t.dir, "home"),
-	codexPid: CODEX,
-	startHolder: () => {},
-	modeWaitMs: 200,
-	alive: (pid) => pid === CODEX,
-	...extra,
-});
+const ctx = (t: TestAgent, extra: Partial<CodexHookContext> = {}, token = tokens.get(t) ?? tokenOf(t)): CodexHookContext => {
+	const env = extra.env ?? { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, CODEX_HOME: homeOf(t).home };
+	return {
+		config: t.config,
+		env,
+		// Never the person's: a CODEX_HOME left out looks here.
+		home: join(t.dir, "home"),
+		codexPid: CODEX,
+		startHolder: () => {},
+		modeWaitMs: 200,
+		alive: (pid) => pid === CODEX,
+		// The Codex was started with the environment its hooks get, as orrery agent starts one.
+		envOf: startedWith(env),
+		...extra,
+	};
+};
 const tokens = new Map<TestAgent, string>();
 const tokenOf = (t: TestAgent) => {
 	const token = newToken();
@@ -299,7 +304,10 @@ describe("the agent of a Codex session: ORRERY_AGENT and its token, never a fold
 		];
 		for (const [env, notice] of cases) {
 			const started: string[] = [];
-			const c = { ...ctx(t, { startHolder: answer("recording", started) }), env };
+			// A Codex started with this environment, whose hooks get it too: a new codex process each, so no earlier one's
+			// decision stands under this test's pid (one of the same start but another identity would refuse it).
+			rmSync(join(t.config.dataDir, "codex-processes"), { recursive: true, force: true });
+			const c = ctx(t, { startHolder: answer("recording", started), env });
 			expect(await run("session-start", input(), c), JSON.stringify(env)).toEqual({ systemMessage: notice });
 			await run("user-prompt-submit", input({ prompt: "Not memory.", turn_id: "t-1" }), c);
 			await run("stop", input({ last_assistant_message: "Not memory either.", turn_id: "t-1" }), c);

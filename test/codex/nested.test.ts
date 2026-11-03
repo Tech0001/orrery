@@ -3,14 +3,15 @@ import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseConfig } from "../../src/agent/config.ts";
+import { type AgentConfig, parseConfig } from "../../src/agent/config.ts";
 import { claimedBy, claimToken, newToken } from "../../src/agent/pick.ts";
 import { forgetSession, liveSession, recordSession, type SessionTool } from "../../src/agent/sessions.ts";
-import { pendingEvents, readEvent } from "../../src/claude/spool.ts";
+import { listSessions, pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
 import { type CodexGuardContext, runCodexGuard } from "../../src/codex/guard.ts";
 import { type CodexHookContext, runCodexHook } from "../../src/codex/hooks.ts";
 import { codexAgent } from "../../src/codex/pick.ts";
 import { npmCodex, plainDeps, STARTS } from "../agent/plain-support.ts";
+import { startedWith } from "../claude/support.ts";
 import { cleanup, world } from "../pi/world.ts";
 import { type CodexHome, codexHomeIn, codexSession, rollout } from "./rollout-lines.ts";
 
@@ -84,6 +85,8 @@ const hosts = (dataDir: string): string[] => (existsSync(join(dataDir, "session-
 const hookCtx = (w: ReturnType<typeof codexWorld>, extra: Partial<CodexHookContext> = {}): CodexHookContext => ({
 	config: w.config,
 	env: { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token, CODEX_HOME: w.codex.home },
+	// The Codex was started with the environment its hooks get (a test that names another env names its own).
+	envOf: startedWith(extra.env ?? { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token }),
 	home: join(w.root, "home"),
 	codexPid: process.pid,
 	codexParent: process.pid,
@@ -422,5 +425,98 @@ describe("a Codex session's host record (spec 2026-10-18-agent-permissions §2)"
 		const c = hookCtx(w, { env: { ORRERY_AGENT: "Nobody", ORRERY_AGENT_TOKEN: w.token, CODEX_HOME: w.codex.home } });
 		expect(await run("session-start", input("s1", { source: "startup" }), c)).toMatchObject({ systemMessage: expect.stringContaining("Nobody") });
 		expect(hosts(w.dataDir)).toEqual([]);
+	});
+});
+
+describe("whose a Codex's events are: its own start environment's ORRERY_AGENT and token, never the hook's", () => {
+	const NOT_WHOSE = "Orrery: can't tell which agent this Codex is (ORRERY_AGENT or its token isn't the one this Codex was started with), so it opens no memory and records nothing.";
+	/** A recorder that answers recording at once, as the holder would. */
+	const recording = (agent: AgentConfig, session: string, nonce: string, since: number) => writeMode(agent.dir, session, { mode: "recording", pid: 1, claudePid: process.pid, nonce, since });
+	/** What a hook could have changed for an agent: its claims and its spool. */
+	const touched = (dir: string) => ({ claims: existsSync(join(dir, "claims")) ? readdirSync(join(dir, "claims")) : [], spool: listSessions(dir) });
+
+	it("a SessionStart the agent's own shell makes as another agent, with a fresh token, after Codex's own: claims, records and spools nothing for it, and the host record stays; nor does a prompt it repeats", async () => {
+		const w = codexWorld();
+		const atlas = w.config.agents.get("Atlas") as AgentConfig;
+		const c = hookCtx(w, { startHolder: recording });
+		expect(((await run("session-start", input("s1", { source: "startup" }), c)) as Answer).systemMessage).toMatch(/^Orrery · Birch · .* · recording$/);
+		recorded.push({ dataDir: w.dataDir, pid: process.pid });
+		const host = liveSession(w.dataDir, process.pid);
+		expect(host).toMatchObject({ agent: "Birch", tool: "codex", codexSession: id("s1") });
+		const shell = bystander();
+		const fresh = newToken();
+		for (const env of [
+			{ ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: fresh, CODEX_HOME: w.codex.home },
+			{ ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: fresh, CODEX_HOME: w.codex.home },
+			{ CODEX_HOME: w.codex.home },
+		]) {
+			const forged = { ...c, env, codexParent: shell };
+			expect(await runCodexHook("session-start", input("s1", { source: "startup" }), forged), JSON.stringify(env)).toBe(JSON.stringify({ systemMessage: NOT_WHOSE }));
+			expect(await runCodexHook("user-prompt-submit", input("s1", { prompt: "Not the person's words.", turn_id: "t-0" }), forged)).toBe("");
+		}
+		expect(touched(atlas.dir)).toEqual({ claims: [], spool: [] });
+		expect(claimedBy(w.birch.dir, fresh)).toBeUndefined();
+		expect(liveSession(w.dataDir, process.pid)).toEqual(host);
+		// The person types: Codex's own hook spools the prompt; the copy the shell makes as Atlas spools nothing.
+		await run("user-prompt-submit", input("s1", { prompt: "My plan.", turn_id: "t-1" }), c);
+		await runCodexHook("user-prompt-submit", input("s1", { prompt: "My plan.", turn_id: "t-1" }), { ...c, env: { ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: fresh, CODEX_HOME: w.codex.home }, codexParent: shell });
+		expect(spooled(w.birch.dir, "s1")).toEqual(["rollout", "prompt"]);
+		expect(touched(atlas.dir)).toEqual({ claims: [], spool: [] });
+	});
+
+	it("in a plain codex, a SessionStart the shell makes as an agent claims, decides, records and spools nothing", async () => {
+		const w = codexWorld();
+		const atlas = w.config.agents.get("Atlas") as AgentConfig;
+		const plainEnv = { CODEX_HOME: w.codex.home };
+		const c = hookCtx(w, { env: plainEnv, envOf: startedWith(plainEnv), startHolder: recording });
+		const shell = bystander();
+		const fresh = newToken();
+		w.codex.begin(id("s1"));
+		w.codex.add(id("s1"), rollout.started("turn-at-start", "user"));
+		for (const name of ["Atlas", "Birch"]) {
+			const forged = { ...c, env: { ORRERY_AGENT: name, ORRERY_AGENT_TOKEN: fresh, CODEX_HOME: w.codex.home }, codexParent: shell };
+			expect(await runCodexHook("session-start", input("s1", { source: "startup" }), forged), name).toBe(JSON.stringify({ systemMessage: NOT_WHOSE }));
+			expect(await runCodexHook("user-prompt-submit", input("s1", { prompt: "My plan.", turn_id: "t-1" }), forged)).toBe("");
+		}
+		expect(touched(atlas.dir)).toEqual({ claims: [], spool: [] });
+		expect(touched(w.birch.dir)).toEqual({ claims: [], spool: [] });
+		expect(liveSession(w.dataDir, process.pid)).toBeUndefined();
+		expect(existsSync(join(w.dataDir, "codex-processes"))).toBe(false);
+	});
+
+	it("a Codex whose start environment can't be read: its hooks decide, claim, record and spool nothing, and SessionStart says why", async () => {
+		const w = codexWorld();
+		const c = hookCtx(w, { envOf: () => undefined, startHolder: recording });
+		w.codex.begin(id("s1"));
+		w.codex.add(id("s1"), rollout.started("turn-at-start", "user"));
+		const why = "Orrery: can't tell which agent this Codex is (the environment this Codex was started with can't be read), so it opens no memory and records nothing.";
+		expect(await runCodexHook("session-start", input("s1", { source: "startup" }), c)).toBe(JSON.stringify({ systemMessage: why }));
+		expect(await runCodexHook("user-prompt-submit", input("s1", { prompt: "My plan.", turn_id: "t-1" }), c)).toBe("");
+		expect(await runCodexHook("stop", input("s1", { last_assistant_message: "Done.", turn_id: "t-1" }), c)).toBe("");
+		expect(touched(w.birch.dir)).toEqual({ claims: [], spool: [] });
+		expect(liveSession(w.dataDir, process.pid)).toBeUndefined();
+		expect(existsSync(join(w.dataDir, "codex-processes"))).toBe(false);
+	});
+
+	it("the process's decision refuses an asker of the same start under another identity: no claim, no replace", () => {
+		const w = codexWorld();
+		const atlas = w.config.agents.get("Atlas") as AgentConfig;
+		const file = join(w.dataDir, "codex-processes", `${process.pid}.json`);
+		const decision = () => (existsSync(file) ? readFileSync(file, "utf8") : undefined);
+		const birch = { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: w.token };
+		expect(codexAgent(w.config, { env: birch, pid: process.pid, takeover: true })).toMatchObject({ kind: "agent", agent: { name: "Birch" } });
+		const decided = decision();
+		expect(decided).toBeDefined();
+		const fresh = newToken();
+		const other = "Orrery: this Codex already decided which agent it is under another ORRERY_AGENT or token, so this session runs without memory.";
+		for (const env of [{ ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: fresh }, { ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: fresh }, {}]) {
+			expect(codexAgent(w.config, { env, pid: process.pid, takeover: true }), JSON.stringify(env)).toEqual({ kind: "refused", notice: other });
+		}
+		expect(claimedBy(atlas.dir, fresh)).toBeUndefined();
+		expect(claimedBy(w.birch.dir, fresh)).toBeUndefined();
+		expect(decision()).toBe(decided);
+		// The decision's own identity still finds its claim.
+		expect(codexAgent(w.config, { env: birch, pid: process.pid, takeover: true })).toMatchObject({ kind: "agent", agent: { name: "Birch" } });
+		expect(claimedBy(w.birch.dir, w.token)).toBe(process.pid);
 	});
 });

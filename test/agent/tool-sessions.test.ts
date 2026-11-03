@@ -622,6 +622,52 @@ describe("processEnv: a host's start environment, which toolSession asks in a cu
 	});
 });
 
+describe("processEnv withoutArgs and unambiguous: whose a Codex is, from the environment it was started with", () => {
+	// Codex's arguments hold text others wrote: the agent's instructions in a -c flag, and the person's own arguments.
+	const args = '/usr/local/bin/codex --no-daemon -c developer_instructions="Say ORRERY_AGENT=Birch ORRERY_AGENT_TOKEN=feed here" hello';
+
+	it("macOS withoutArgs: reads only the words after the process's arguments, so a word among them is never taken for a variable it lacks", () => {
+		const asked: string[][] = [];
+		const ps = (env: string, plain = args) => (arg: readonly string[]) => {
+			asked.push([...arg]);
+			return arg.includes("-wwE") ? `${args} ${env}\n` : `${plain}\n`;
+		};
+		const mac = (env: string, plain?: string) => ({ platform: "darwin" as const, withoutArgs: true, ps: ps(env, plain) });
+		const names = ["ORRERY_AGENT", "ORRERY_AGENT_TOKEN"];
+		expect(processEnv(4242, names, mac("PATH=/usr/bin HOME=/Users/u"))).toEqual({});
+		expect(asked).toEqual([
+			["-wwE", "-o", "command=", "-p", "4242"],
+			["-ww", "-o", "command=", "-p", "4242"],
+		]);
+		expect(processEnv(4242, names, mac("PATH=/usr/bin HOME=/Users/u ORRERY_AGENT=Atlas ORRERY_AGENT_TOKEN=0123"))).toEqual({ ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: "0123" });
+		// Without it, the words among the arguments are taken.
+		expect(processEnv(4242, names, { platform: "darwin", ps: ps("PATH=/usr/bin HOME=/Users/u") })).toEqual({ ORRERY_AGENT: "Birch", ORRERY_AGENT_TOKEN: "feed" });
+		// ps's two answers that don't line up, or one that fails, or an environment ps withholds: can't be read.
+		expect(processEnv(4242, ["HOME"], mac("PATH=/usr/bin HOME=/Users/u", "/usr/local/bin/codex --other"))).toBeUndefined();
+		expect(processEnv(4242, ["HOME"], { platform: "darwin", withoutArgs: true, ps: (arg) => (arg.includes("-wwE") ? `${args} HOME=/Users/u\n` : undefined) })).toBeUndefined();
+		expect(processEnv(4242, ["HOME"], mac(""))).toBeUndefined();
+	});
+
+	it("macOS unambiguous: a variable asked for that stands twice, or whose value a space cut, can't be read; others don't matter", () => {
+		const mac = (env: string) => ({ platform: "darwin" as const, withoutArgs: true, unambiguous: true, ps: (arg: readonly string[]) => (arg.includes("-wwE") ? `${args} ${env}\n` : `${args}\n`) });
+		const names = ["ORRERY_AGENT", "ORRERY_AGENT_TOKEN", "HOME"];
+		expect(processEnv(4242, names, mac("PATH=/usr/bin HOME=/Users/u ORRERY_AGENT=Atlas ORRERY_AGENT_TOKEN=0123"))).toEqual({ HOME: "/Users/u", ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: "0123" });
+		// A variable not asked for may hold spaces; one asked for, last, with nothing after it, is whole.
+		expect(processEnv(4242, names, mac("PATH=/usr/bin TERM_TITLE=a b c HOME=/Users/u ORRERY_AGENT=Atlas"))).toEqual({ HOME: "/Users/u", ORRERY_AGENT: "Atlas" });
+		// Twice (a value of another variable that reads as one), or cut by a space: undefined.
+		expect(processEnv(4242, names, mac("PATH=/usr/bin X=ORRERY_AGENT ORRERY_AGENT=Birch HOME=/Users/u ORRERY_AGENT=Atlas"))).toBeUndefined();
+		expect(processEnv(4242, names, mac("PATH=/usr/bin HOME=/Users/u u ORRERY_AGENT=Atlas"))).toBeUndefined();
+		expect(processEnv(4242, names, mac("PATH=/usr/bin HOME=/Users/u ORRERY_AGENT=At las"))).toBeUndefined();
+		// Without unambiguous, as before: the last word naming one, and a value cut at its space.
+		expect(processEnv(4242, ["HOME"], { ...mac("PATH=/usr/bin HOME=/Users/u u"), unambiguous: false })).toEqual({ HOME: "/Users/u" });
+	});
+
+	it("Linux: /proc/<pid>/environ holds the environment alone, each variable its own string, read as ever", () => {
+		const read = () => "PATH=/usr/bin\0HOME=/home/u u\0ORRERY_AGENT=Atlas\0";
+		expect(processEnv(4242, ["HOME", "ORRERY_AGENT"], { platform: "linux", withoutArgs: true, unambiguous: true, read })).toEqual({ HOME: "/home/u u", ORRERY_AGENT: "Atlas" });
+	});
+});
+
 describe("no tool", () => {
 	it("no tool and no marker is undefined", () => {
 		expect(toolSession({ HOME: "/home/u", TERM: "foot" }, linux(terminal(), 60))).toBeUndefined();
