@@ -111,7 +111,9 @@ The instructions travel on Codex's command line, so they show in `ps`, like ever
 - A session is recorded by one Codex process at a time. Any process can hold a rollout open, so a session another
   process already hosts while it runs (two Codex windows on one session, or a program the agent's shell started) is
   refused to every other: `Orrery: can't confirm this is this Codex's own session (Codex process <pid> already hosts
-  it), …`. Once that process is gone, the session can be resumed.
+  it), …`. Once that process is gone, the session can be resumed. On Linux, one exception: if Codex ran in a separate
+  process namespace (a sandboxed editor's terminal, say), Orrery can't tell from outside it that the process is gone,
+  so it keeps refusing that session; start a new one instead.
 - The hooks only drop each event in a spool; a recorder in the background holds the agent for the session, records the
   spool into memory, runs the summaries, and leaves once the session has ended and the summaries are done (at most 10
   minutes). It is the same recorder Claude Code uses.
