@@ -22,6 +22,13 @@
  * Codex runs a hook through a pipe, so the agent's own shell (or another tool's: Claude Code's Bash inherits a launch's
  * ORRERY_AGENT and token) can run this command with made-up input, and nothing about the caller tells them apart (spec
  * 2026-10-18-agent-permissions §3c). So no event changes what such a call could abuse:
+ * - Whose session it is comes from the Codex process's own start environment (src/codex/pick.ts launchedEnv), never
+ *   from the hook's own: a hook whose own ORRERY_AGENT or token isn't the one Codex was started with (the agent's shell
+ *   naming another agent), or whose Codex's can't be read, decides, claims, records and spools nothing.
+ * - The hooks, the host record and the holder take the Orrery config the Codex process was started with (its
+ *   ORRERY_CONFIG, else its Orrery home's or the default: codexOwnConfig); a hook that would load another (its --config,
+ *   its own ORRERY_CONFIG or ORRERY_HOME: a config of the shell's making, whose data folder links the agent's name to
+ *   another agent's folder) is refused, and SessionStart says why.
  * - SessionStart takes a session only when this Codex holds its rollout open, found by the session's id under Codex's
  *   own folder, and the rollout says it is a person's own thread (not a spawned agent's), before it decides, claims or
  *   records anything: no other process can name a session. A Codex older than 0.162.1 doesn't say who started a turn,
@@ -30,6 +37,14 @@
  *   /fork, `codex resume` and `codex fork` alike), so an earlier session it still holds open can't be named again. One
  *   this Codex's host record already names changes nothing (no record, no resume note, no new rollout place, the
  *   holder kept).
+ * - Any process can hold a rollout open (read-only, too), so no process takes a session another process already hosts:
+ *   one that a live or unsure session record of another process names (src/agent/sessions.ts codexSessionHosts),
+ *   looked for in the config's data folder and where the agent's data really is (its folder, and where the links in it
+ *   lead: a config of the shell's making may link the agent there), with every folder above them that holds records.
+ *   SessionStart refuses it before it decides, claims or records anything, and says which process hosts it; a prompt or
+ *   reply of a session another process hosts too (both took it at once) is spooled by neither. A record whose Codex is
+ *   gone is stale and taken down, so a new Codex resumes the session; the same Codex (a compaction, /clear, /resume) is
+ *   its own host. A second Codex on one session records nothing while the first lives.
  * - UserPromptSubmit and Stop spool only for the session this Codex's host record names, and what they spool is held
  *   until the rollout confirms it, then dropped and counted if it doesn't.
  * - SessionEnd changes nothing: the host record and the process's decision go stale once Codex is gone, and the holder
@@ -39,11 +54,13 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
+import { isAbsolute, join, resolve } from "node:path";
+import { type AgentConfig, defaultConfigPath, type HarnessConfig } from "../agent/config.ts";
 import { holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
+import { AGENT_ENV, agentNamed } from "../agent/pick.ts";
 import type { PlainDeps } from "../agent/plain-nested.ts";
-import { liveSession, nestedNotice, plainFields, recordSession, type SessionRecord } from "../agent/sessions.ts";
+import { agentFiles } from "../agent/real-data.ts";
+import { codexSessionHosts, liveSession, nestedNotice, plainFields, recordSession, type SessionRecord } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { memorySection } from "../agent/view-text.ts";
 import { noticeShownBefore, waitForMode } from "../claude/hooks.ts";
@@ -52,7 +69,7 @@ import { summaryNotice, updateNotice } from "../claude/notices.ts";
 import { holderLog, validSession } from "../claude/paths.ts";
 import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
 import { MemoryStore, MemoryView } from "../memory/index.ts";
-import { codexAgent } from "./pick.ts";
+import { codexAgent, LAUNCH_VARIABLES, launchedEnv, startEnvOf } from "./pick.ts";
 import { codexSessionOf, recordCodexSession } from "./resume.ts";
 import { readCodexCheck } from "./check.ts";
 import { attributesTurns, codexHome, findRollout, holdsOpen, MIN_CODEX, type OpenFile, readerStart, rolloutThread } from "./rollout.ts";
@@ -98,6 +115,11 @@ export interface CodexHookContext {
 	readonly updateNotices?: boolean;
 	/** How a coding tool's session that is no agent's is looked for (src/agent/plain-nested.ts); tests pass their own. */
 	readonly plain?: PlainDeps;
+	/**
+	 * Named variables of the environment a process was started with (default src/codex/pick.ts startEnvOf): whose session
+	 * this is comes from Codex's process's.
+	 */
+	readonly envOf?: (pid: number, names: readonly string[]) => Readonly<Record<string, string>> | undefined;
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -122,8 +144,18 @@ function hostOf(ctx: CodexHookContext, session: string): SessionRecord | undefin
 }
 
 /**
- * A main-thread event of this Codex's agent, in the session its host record names, which its holder does not run
- * read-only: its events are memory.
+ * Another process that hosts Codex session `session` (module doc): the pid of a live or unsure session record, not this
+ * Codex's, that names it, in the config's data folder or where `agent`'s data really is (its folder and the links in
+ * it, src/agent/real-data.ts agentFiles), or a folder above one that holds records. Undefined when there is none.
+ */
+function hostedElsewhere(ctx: CodexHookContext, session: string, agent: AgentConfig | undefined): number | undefined {
+	const dirs = [ctx.config.dataDir, ...(agent === undefined ? [] : [agent.dir, ...agentFiles(agent.dir)])];
+	return codexSessionHosts(dirs, session).find((pid) => pid !== ctx.codexPid);
+}
+
+/**
+ * A main-thread event of this Codex's agent, in the session its host record names, which no other process hosts too and
+ * its holder does not run read-only: its events are memory.
  */
 function recordable(input: CodexHookInput, ctx: CodexHookContext): { readonly agent: AgentConfig; readonly session: string } | undefined {
 	if (input.agent_id !== undefined || !validSession(input.session_id)) return undefined;
@@ -132,6 +164,8 @@ function recordable(input: CodexHookInput, ctx: CodexHookContext): { readonly ag
 	const pick = agentOf(ctx, input.session_id);
 	if (pick.kind !== "agent" || pick.agent.name !== host.agent) return undefined;
 	if (readMode(pick.agent.dir, input.session_id)?.mode === "read-only") return undefined;
+	// Another process's record names the session too (both took it at once): neither records it (module doc).
+	if (hostedElsewhere(ctx, input.session_id, pick.agent) !== undefined) return undefined;
 	return { agent: pick.agent, session: input.session_id };
 }
 
@@ -266,6 +300,10 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 		if (input.source === "compact") return undefined;
 		return { systemMessage: `Orrery: this Codex (${safeText(rollout.old ?? "version unknown")}) doesn't record who started a turn; Orrery needs Codex ${MIN_CODEX} or later, so this session isn't recorded.` };
 	}
+	// A session another process hosts is never this one's (module doc): a second Codex on it, or any process holding its
+	// rollout open.
+	const elsewhere = hostedElsewhere(ctx, session, agentNamed(ctx.config, ctx.env[AGENT_ENV]?.trim() ?? ""));
+	if (elsewhere !== undefined) return refuse(`Codex process ${elsewhere} already hosts it`);
 	// Moving this Codex to another session than its record names: Codex starts that session's turn before SessionStart.
 	const recorded = liveSession(ctx.config.dataDir, ctx.codexPid);
 	if (recorded?.tool === "codex" && recorded.codexSession !== session && !rollout.running) return refuse("Codex moves to a session with a turn of it running, and none is");
@@ -348,6 +386,15 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 /** The hook's stdout for `event` (an empty string: nothing to say). An event it does not record throws. */
 export async function runCodexHook(event: string, stdin: string, ctx: CodexHookContext): Promise<string> {
 	if (!(CODEX_RECORD_EVENTS as readonly string[]).includes(event)) throw new Error(`unknown hook event ${event}; expected one of ${[...CODEX_RECORD_EVENTS, "pre-tool-use"].join(", ")}`);
+	// Whose session it is: ORRERY_AGENT and its token as Codex's process was started with them, never this hook's own
+	// (module doc).
+	const launched = launchedEnv(ctx.env, (ctx.envOf ?? startEnvOf)(ctx.codexPid, LAUNCH_VARIABLES));
+	if ("refused" in launched) return event === "session-start" ? JSON.stringify({ systemMessage: `Orrery: can't tell which agent this Codex is (${safeText(launched.refused)}), so it opens no memory and records nothing.` }) : "";
+	return runOwnHook(event, stdin, { ...ctx, env: launched.env });
+}
+
+/** The hook for `event`, with Codex's own identity in ctx.env (runCodexHook). */
+async function runOwnHook(event: string, stdin: string, ctx: CodexHookContext): Promise<string> {
 	let input: CodexHookInput;
 	try {
 		const parsed = JSON.parse(stdin) as unknown;
@@ -373,6 +420,78 @@ export async function runCodexHook(event: string, stdin: string, ctx: CodexHookC
 			break;
 	}
 	return output === undefined ? "" : JSON.stringify(output);
+}
+
+/**
+ * The variables of the Codex process's start environment a hook reads, at once (module doc): whose session it is, and
+ * the Orrery config it runs with.
+ */
+export const CODEX_START_VARIABLES: readonly string[] = [...LAUNCH_VARIABLES, "ORRERY_CONFIG", "ORRERY_HOME", "HOME"];
+
+/** The variables of CODEX_START_VARIABLES that hold a path: which config Codex runs with. */
+const PATH_VARIABLES: readonly string[] = ["ORRERY_CONFIG", "ORRERY_HOME", "HOME"];
+
+/**
+ * Why a hook can't confirm Codex's config when the path in its start environment's `name` holds a space: macOS's ps shows
+ * that environment as words split at spaces, so where such a value ends can't be told (src/agent/process.ts).
+ */
+const spacedPath = (name: string): string => `Codex's ${name} has a space in it, and on macOS Orrery can't confirm a config or home path with one: use a path without spaces`;
+
+/** `path` as it really is, or as given (absolute) when it can't be resolved: two paths name one file when these match. */
+function fileOf(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return resolve(path);
+	}
+}
+
+/**
+ * The Orrery config of the Codex process, which its hooks, host record and holder take (module doc): the one its start
+ * environment (`started`) names, ORRERY_CONFIG (from the folder it runs in, `cwd`, when relative), else its Orrery
+ * home's, or the default, as defaultConfigPath finds them from its own HOME. Or why a hook can't run with it: that
+ * environment can't be read, or says too little, or the config the hook itself would load (its --config `given`, else
+ * its own ORRERY_CONFIG, Orrery home or default, from `env`) is another file. `cwd` is asked only for a relative
+ * ORRERY_CONFIG: on macOS it runs lsof. `cut`, with `started` undefined: the variable of it whose value a space cut
+ * (src/codex/pick.ts startEnvRead), which is said when it holds a path.
+ */
+export function codexOwnConfig(given: string | undefined, env: NodeJS.ProcessEnv, started: Readonly<Record<string, string>> | undefined, cwd: () => string | undefined, cut?: string): { readonly path: string } | { readonly refused: string } {
+	if (started === undefined) return { refused: cut !== undefined && PATH_VARIABLES.includes(cut) ? spacedPath(cut) : "the environment this Codex was started with can't be read" };
+	let own: string;
+	const set = started.ORRERY_CONFIG;
+	if (set) {
+		if (isAbsolute(set)) own = set;
+		else {
+			const folder = cwd();
+			if (folder === undefined) return { refused: "the folder Codex runs in can't be read" };
+			own = resolve(folder, set);
+		}
+	} else {
+		if (!started.HOME) return { refused: "Codex's environment names no HOME" };
+		try {
+			own = defaultConfigPath({ HOME: started.HOME, ...(started.ORRERY_HOME === undefined ? {} : { ORRERY_HOME: started.ORRERY_HOME }) });
+		} catch {
+			return { refused: "Codex's ORRERY_HOME is no absolute path" };
+		}
+	}
+	let would: string;
+	try {
+		would = given ?? defaultConfigPath(env);
+	} catch {
+		return { refused: "this hook's ORRERY_HOME is no absolute path" };
+	}
+	if (fileOf(would) !== fileOf(own)) return { refused: "this hook would read another Orrery config than the one this Codex was started with" };
+	return { path: own };
+}
+
+/** What SessionStart says when codexOwnConfig refuses: nothing is recorded. */
+export function ownConfigNotice(why: string): string {
+	return JSON.stringify({ systemMessage: `Orrery: can't tell which Orrery config this Codex runs with (${safeText(why)}), so it opens no memory and records nothing.` });
+}
+
+/** What SessionStart says when no Codex ran the hook: the shell that did has no parent (src/codex/host.ts codexPid). */
+export function noCodexNotice(): string {
+	return JSON.stringify({ systemMessage: "Orrery: can't tell which agent this Codex is (the shell that ran this hook has no parent, so no Codex ran it), so it opens no memory and records nothing." });
 }
 
 /** What SessionStart says when Orrery's config cannot be read: the session runs as plain Codex. */

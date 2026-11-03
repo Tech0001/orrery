@@ -15,6 +15,7 @@ The store is local and inspectable; summaries are derived data rather than the o
 
 An agent has a data directory under `data_dir/agents/<Name>/`, a summary model, and optionally a default folder.
 The `tool` setting selects pi, OMP, Claude Code, Codex or OpenCode for launching.
+A tool this version doesn't know (a typo, or one a newer Orrery set) still loads the config: that agent is listed, and `orrery agent` and the TUI refuse to launch it, naming the unknown tool. Its memory is read as ever, and the other ways in still open it (`orrery run <Name>`, `orrery claude-setup <Name>`, a tool started in its folder): the memory is the same whatever the tool. This version never writes such a tool itself.
 The optional `launcher` setting selects direct launch or Ori.
 Those launch choices do not select a different memory database: each tool reaches the same memory through its own
 adapter.
@@ -263,6 +264,9 @@ The hooks and the holder are Claude Code's, generalized to a host process: hooks
 The holder records a prompt or reply only once Codex's rollout of the session confirms it (see [Agent sessions](#prompts-checked-against-the-tools-record)).
 The session-start hook returns the memory section as developer context at the start and after each compaction; Codex keeps its own compaction, since its provider may compact remotely.
 The agent is the one `ORRERY_AGENT` names, with its token; no folder picks it, so a plain `codex` is no agent's session.
+The recording hooks take `ORRERY_AGENT` and its token from the environment the Codex process was started with, never their own, and a session start that can't tell which agent that is, or comes after its process decided under another agent or token, says so in one line and records nothing ([Codex](codex.md#troubleshooting)).
+They take Orrery's config from there too (`ORRERY_CONFIG`, else the Orrery home's or the default), and give that config to the session's host record and recorder; a hook that would read another config records nothing, and its session start says why.
+A session that a live (or unsure) host record of another process already names is taken by no other process: any process can hold a rollout open, so a second Codex on the session, or a program the agent's shell started, records nothing, and its session start names the process that hosts it. A shell with no parent of its own is never taken for Codex.
 Before a Codex or Orrery version it has not seen, the launch asks Codex's app server whether the hooks load, because Codex skips an untrusted hook silently.
 See [Codex](codex.md) for the guard's Codex-specific limits.
 

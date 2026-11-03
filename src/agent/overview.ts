@@ -35,6 +35,12 @@ export interface AgentRow {
 	readonly oriModel?: string;
 	/** False when the config has no `tool` key, so `tool` is a guess from the last status. */
 	readonly toolSet: boolean;
+	/**
+	 * The tool the config names when it is none this version knows (AgentConfig.unknownTool: a typo, or a newer Orrery's):
+	 * `tool` is then a guess, toolSet false, and the launcher and the TUI open the agent in no tool here
+	 * (src/agent/launch.ts unknownToolRefusal).
+	 */
+	readonly unknownTool?: string;
 	readonly state: AgentState;
 	/** The tool that has the agent open, when one does. */
 	readonly openIn?: "pi" | "omp" | "claude-code" | "codex" | "opencode";
@@ -72,6 +78,9 @@ export interface AgentRow {
 export const STATUS_FRESH_MS = 30_000;
 
 export const TOOL_LABELS: Record<AgentTool, string> = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", opencode: "OpenCode" };
+
+/** An agent's tool as said to a person: its label, or a tool this version doesn't know (AgentRow.unknownTool) by its name. */
+export const toolLabel = (row: Pick<AgentRow, "tool" | "unknownTool">): string => (row.unknownTool === undefined ? TOOL_LABELS[row.tool] : `${safeText(row.unknownTool)} (unknown tool)`);
 
 interface MemoryFacts {
 	readonly messages: number;
@@ -215,10 +224,13 @@ function unreadableFields(agent: AgentConfig, reason: string) {
 	};
 }
 
+/** A row's unknownTool, when the agent's config names a tool this version doesn't know. */
+const unknownToolOf = (agent: AgentConfig) => (agent.unknownTool === undefined ? {} : { unknownTool: agent.unknownTool });
+
 /** The row for an agent that threw while being read: closed, its config's facts, and the reason. */
 function unreadableRow(agent: AgentConfig, error: unknown): AgentRow {
 	return {
-		name: agent.name, launcher: agent.launcher ?? "direct", ...(agent.oriModel === undefined ? {} : { oriModel: agent.oriModel }), tool: agent.tool ?? "pi", toolSet: agent.tool !== undefined, state: "closed", ...(agent.folder === undefined ? {} : { folder: agent.folder }), dataDir: agent.dir,
+		name: agent.name, launcher: agent.launcher ?? "direct", ...(agent.oriModel === undefined ? {} : { oriModel: agent.oriModel }), tool: agent.tool ?? "pi", toolSet: agent.tool !== undefined, ...unknownToolOf(agent), state: "closed", ...(agent.folder === undefined ? {} : { folder: agent.folder }), dataDir: agent.dir,
 		summaryContextBytes: agent.compactor.contextBytes ?? COMPACTION_VIEW_BYTES, summaryJobs: agent.compactor.jobs, compactAt: agent.compactAt, reads: agent.reads, instructions: instructionsFacts(agent.dir).state,
 		...unreadableFields(agent, shown(errorText(error))),
 	};
@@ -245,6 +257,7 @@ function agentRow(agent: AgentConfig, now: number, cache: OverviewCache, alive: 
 		...(agent.oriModel === undefined ? {} : { oriModel: agent.oriModel }),
 		tool: agent.tool ?? (status?.model === "codex" ? "codex" : status?.model === "claude-code" || holder !== undefined ? recorderHost : status?.model === "omp" ? "omp" : status?.model === "opencode" ? "opencode" : "pi"),
 		toolSet: agent.tool !== undefined,
+		...unknownToolOf(agent),
 		state,
 		...(openIn === undefined ? {} : { openIn }),
 		...(openIn === undefined || (state !== "open" && state !== "working") || status?.version === undefined ? {} : { runsVersion: status.version }),

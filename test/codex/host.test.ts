@@ -19,9 +19,15 @@ describe("codexPid", () => {
 		expect(codexPid(30, info)).toBe(20);
 		expect(codexPid(40, info)).toBe(20);
 		expect(codexPid(50, info)).toBe(50);
-		// A process that cannot be read, or a shell whose parent is init, stays as it is.
+		// A process that cannot be read stays as it is.
 		expect(codexPid(99, info)).toBe(99);
-		expect(codexPid(7, () => ({ ppid: 1, name: "bash" }))).toBe(7);
+	});
+
+	it("is none for a shell with no parent of its own (orphaned: its parent init, or 0 at a pid namespace's top), wherever in the walk", () => {
+		expect(codexPid(7, () => ({ ppid: 1, name: "bash" }))).toBeUndefined();
+		expect(codexPid(7, () => ({ ppid: 0, name: "sh" }))).toBeUndefined();
+		const tree: Record<number, ProcessInfo> = { 30: { ppid: 20, name: "bash" }, 20: { ppid: 1, name: "zsh" } };
+		expect(codexPid(30, (pid) => tree[pid])).toBeUndefined();
 	});
 
 	it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("finds the real process above a shell that runs the hook, and above none when the shell execs", () => {

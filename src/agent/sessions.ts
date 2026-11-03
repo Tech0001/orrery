@@ -327,21 +327,33 @@ type Standing =
 	| { readonly kind: "live"; readonly record: SessionRecord }
 	| { readonly kind: "unsure"; readonly record?: SessionRecord; readonly foreign: boolean };
 
-/** What the file at `file`, a record of `pid`, stands for (Standing). */
-function standing(file: string, pid: number, deps: SessionDeps): Standing {
+/**
+ * The file at `file` read as a record of `pid`, judging nothing: "none" when it is gone, "unreadable" when it can't be
+ * read as a small regular file (a link or a FIFO in a record's place, say), else what recordOf makes of it (`parsed`
+ * undefined: no record this version reads).
+ */
+function readRecord(file: string, pid: number): "none" | "unreadable" | { readonly parsed: ReturnType<typeof recordOf> } {
 	let text: string;
 	try {
 		text = readPrivate(file, RECORD_MAX);
 	} catch (error) {
-		// A link or a FIFO in a record's place, or a file that can't be read: kept, and judged by nobody.
-		return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "none" } : { kind: "unsure", foreign: true };
+		return (error as NodeJS.ErrnoException).code === "ENOENT" ? "none" : "unreadable";
 	}
-	let parsed: ReturnType<typeof recordOf>;
 	try {
-		parsed = recordOf(JSON.parse(text), pid);
+		return { parsed: recordOf(JSON.parse(text), pid) };
 	} catch {
 		// no JSON: no record this version reads
+		return { parsed: undefined };
 	}
+}
+
+/** What the file at `file`, a record of `pid`, stands for (Standing). */
+function standing(file: string, pid: number, deps: SessionDeps): Standing {
+	const read = readRecord(file, pid);
+	if (read === "none") return { kind: "none" };
+	// A link or a FIFO in a record's place, or a file that can't be read: kept, and judged by nobody.
+	if (read === "unreadable") return { kind: "unsure", foreign: true };
+	const parsed = read.parsed;
 	const record = parsed?.record;
 	if (onLinux(deps)) {
 		// Judged only from the namespace its pid is numbered in (module doc); from anywhere else, kept.
@@ -1125,13 +1137,36 @@ export function toolSession(env: NodeJS.ProcessEnv, deps: SessionDeps & { readon
  * that hold records (judgedFolders), as insideSession reads them; a stale record found is taken down.
  */
 export function recordedCodexIds(dataDirs: readonly string[], deps: SessionDeps = {}): ReadonlySet<string> {
-	const ids = new Set<string>();
+	return new Set(codexRecords(dataDirs, deps).map((found) => found.session));
+}
+
+/**
+ * The processes whose live or unsure record in `dataDirs`, or in a folder above one that holds records, names Codex
+ * session `session`, read as recordedCodexIds reads them; a stale record found among them is taken down. A record that
+ * names another session is read but not judged, so its process isn't asked about (a ps each on macOS, on every prompt
+ * and Stop). A Codex's hooks take no session another process hosts (src/codex/hooks.ts).
+ */
+export function codexSessionHosts(dataDirs: readonly string[], session: string, deps: SessionDeps = {}): number[] {
+	return codexRecords(dataDirs, deps, session).map((found) => found.pid);
+}
+
+/**
+ * Each live or unsure record in `dataDirs` and the folders above them that hold records (judgedFolders) that names a
+ * Codex session, with its pid; with `only`, just those that name that session, and no other is judged.
+ */
+function codexRecords(dataDirs: readonly string[], deps: SessionDeps, only?: string): { readonly pid: number; readonly session: string }[] {
+	const found: { readonly pid: number; readonly session: string }[] = [];
 	for (const dataDir of judgedFolders(dataDirs)) {
 		for (const pid of recordedPids(dataDir)) {
-			const found = judged(dataDir, pid, deps);
-			const id = found.kind === "live" || found.kind === "unsure" ? found.record?.codexSession : undefined;
-			if (id !== undefined) ids.add(id);
+			if (only !== undefined) {
+				// Judged below, read again, only when it names `only`: a record that doesn't is none of its hosts either way.
+				const read = readRecord(fileOf(dataDir, pid), pid);
+				if (typeof read === "string" || read.parsed?.record.codexSession !== only) continue;
+			}
+			const standing = judged(dataDir, pid, deps);
+			const session = standing.kind === "live" || standing.kind === "unsure" ? standing.record?.codexSession : undefined;
+			if (session !== undefined && (only === undefined || session === only)) found.push({ pid, session });
 		}
 	}
-	return ids;
+	return found;
 }

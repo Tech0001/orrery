@@ -11,7 +11,7 @@ import { type HookContext, runHook } from "../../src/claude/hooks.ts";
 import { listSessions, pendingEvents, readMode } from "../../src/claude/spool.ts";
 import { type CodexHookContext, runCodexHook } from "../../src/codex/hooks.ts";
 import { fauxModels } from "../agent/support.ts";
-import { cleanupDirs, messages, spool, type TestAgent, testAgent, waitUntil } from "../claude/support.ts";
+import { cleanupDirs, messages, spool, startedWith, type TestAgent, testAgent, waitUntil } from "../claude/support.ts";
 import { line, transcriptIn } from "../claude/transcript-lines.ts";
 import { codexHomeIn, codexSession, rollout } from "./rollout-lines.ts";
 
@@ -60,9 +60,12 @@ function scene(t: TestAgent) {
 		modeWaitMs: 5000,
 		home: join(t.dir, "home"),
 	});
+	const codexEnv = { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: newToken(), CODEX_HOME: codexHome.home };
 	const codex: CodexHookContext = {
 		config: t.config,
-		env: { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: newToken(), CODEX_HOME: codexHome.home },
+		env: codexEnv,
+		// The Codex was started with the environment its hooks get, as orrery agent starts one.
+		envOf: startedWith(codexEnv),
 		home: join(t.dir, "home"),
 		codexPid: CODEX,
 		startHolder: holderFor(CODEX, "codex"),

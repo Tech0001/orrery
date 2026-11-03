@@ -128,7 +128,7 @@ export function configPaths(config: HarnessConfig): string[] {
  * Any other file there, and one not there yet, is judged with `dir` itself. A hard link can't be told from the file it
  * links.
  */
-function agentFiles(dir: string): string[] {
+export function agentFiles(dir: string): string[] {
 	const links: string[] = [];
 	for (const folder of [dir, join(dir, "claude")]) {
 		try {

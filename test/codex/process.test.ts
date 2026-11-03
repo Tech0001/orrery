@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readHolder } from "../../src/agent/handover.ts";
@@ -46,11 +46,13 @@ process.stdin.setEncoding("utf8").on("data", (chunk) => {
 `;
 
 /**
- * A stand-in for a Codex process: it holds its sessions' rollouts open, as Codex does, and runs Orrery's Codex hooks as
- * its own children (their parent, so their Codex, is it), with the input on stdin. `exit`: Codex exits.
+ * A stand-in for a Codex process, started with `env` (as `orrery agent` starts Codex: its ORRERY_AGENT and token, which
+ * Orrery reads back from the process): it holds its sessions' rollouts open, as Codex does, and runs Orrery's Codex
+ * hooks and any other command as its own children (their parent, so their Codex, is it), with the input on stdin.
+ * `exit`: Codex exits.
  */
-function fakeCodex() {
-	const child = spawn(process.execPath, ["-e", FAKE_CODEX], { env: cleanEnv({}), stdio: ["pipe", "pipe", "ignore"] });
+function fakeCodex(env: Record<string, string> = {}) {
+	const child = spawn(process.execPath, ["-e", FAKE_CODEX], { env: cleanEnv(env), stdio: ["pipe", "pipe", "ignore"] });
 	codexes.push(child);
 	const waiting = new Map<number, (answer: { status: number | null; stdout: string; stderr: string }) => void>();
 	let next = 0;
@@ -77,6 +79,8 @@ function fakeCodex() {
 			const c = cliCommand(["codex-hook", event]);
 			return ask({ cmd: c.cmd, args: c.args, env: cleanEnv(env), input: JSON.stringify(input) });
 		},
+		/** `cmd args` as this Codex's child, with `env` and `input` on stdin. */
+		run: (cmd: string, args: readonly string[], env: Record<string, string>, input: string) => ask({ cmd, args, env: cleanEnv(env), input }),
 		exit: () => child.kill(),
 	};
 }
@@ -115,9 +119,9 @@ describe("a Codex session, process by process", () => {
 		const t = testAgent();
 		const home = homeFor(t.dir);
 		const c1 = codexSession();
-		const codex = fakeCodex();
-		await codex.open(home.begin(c1, { open: false }));
 		const env = { ORRERY_CONFIG: t.configPath, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: newToken(), CODEX_HOME: home.home };
+		const codex = fakeCodex(env);
+		await codex.open(home.begin(c1, { open: false }));
 		const start = await codex.hook("session-start", { session_id: c1, source: "startup", hook_event_name: "SessionStart" }, env);
 		expect([start.status, start.stderr]).toEqual([0, ""]);
 		const answer = JSON.parse(start.stdout) as { systemMessage: string; hookSpecificOutput: { hookEventName: string; additionalContext: string } };
@@ -189,22 +193,65 @@ describe("a Codex session, process by process", () => {
 		seed(t.agent, ["a", "b"]);
 		const home = homeFor(t.dir);
 		const c2 = codexSession();
-		// This test is the Codex: it holds the session's rollout open.
-		home.begin(c2);
 		const env = { ORRERY_CONFIG: t.configPath, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: newToken(), CODEX_HOME: home.home };
-		// SessionStart under a shell claims the token for the shell's parent, this test.
-		const start = hook("session-start", { session_id: c2, source: "startup" }, env, true);
+		// The Codex, started with the launch's variables: it holds the session's rollout open.
+		const codex = fakeCodex(env);
+		await codex.open(home.begin(c2, { open: false }));
+		// SessionStart under a shell claims the token for the shell's parent, the Codex.
+		const c = cliCommand(["codex-hook", "session-start"]);
+		const start = await codex.run("/bin/sh", ["-c", '"$@"; exit $?', "sh", c.cmd, ...c.args], env, JSON.stringify({ session_id: c2, source: "startup" }));
 		// The recorder's notices follow when it has written them; a slow machine may not have yet.
 		expect(JSON.parse(start.stdout).systemMessage).toMatch(/^Orrery · Test · 2 msgs · recording(\n|$)/);
-		expect(readMode(t.agent.dir, c2)?.claudePid).toBe(process.pid);
-		expect(await codexTools(env)).toEqual(["zoom", "date", "search"]);
+		expect(readMode(t.agent.dir, c2)?.claudePid).toBe(codex.pid);
+		// The memory server the Codex starts serves the same agent.
+		const m = cliCommand(["mcp", "--tool", "codex"]);
+		const list = [{ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }, { jsonrpc: "2.0", id: 2, method: "tools/list" }].map((message) => `${JSON.stringify(message)}\n`).join("");
+		const served = await codex.run(m.cmd, m.args, env, list);
+		const reply = served.stdout.trim().split("\n").map((line) => JSON.parse(line) as { id: number; result: { tools: { name: string }[] } }).find((message) => message.id === 2);
+		expect(reply?.result.tools.map((tool) => tool.name)).toEqual(["zoom", "date", "search"]);
 		// Another process with the same variables (a Codex the agent's own shell started) is not the agent.
 		expect(await codexTools(env, { otherCodex: true })).toEqual([]);
-		// This Codex (this test) won't exit: its holder is stopped.
+		// The Codex exits: its holder leaves.
 		await waitUntil(() => readHolder(t.agent.dir) !== undefined, 20_000);
-		process.kill(readHolder(t.agent.dir)?.pid as number, "SIGTERM");
+		codex.exit();
 		await waitUntil(() => readHolder(t.agent.dir) === undefined, 20_000);
-		forgetSession(t.config.dataDir, process.pid);
+		forgetSession(t.config.dataDir, codex.pid);
+	}, 60_000);
+
+	it("a hook given another Orrery config than its Codex's (--config, ORRERY_CONFIG, ORRERY_HOME) records, claims and spools nothing, even with Codex's own agent and token, and SessionStart says why", async () => {
+		const t = testAgent();
+		const home = homeFor(t.dir);
+		const c1 = codexSession();
+		const env = { ORRERY_CONFIG: t.configPath, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: newToken(), CODEX_HOME: home.home };
+		const codex = fakeCodex(env);
+		await codex.open(home.begin(c1, { open: false }));
+		// Another agent's folder, and a config of the shell's own making whose data folder links its Test there.
+		const victim = join(t.dir, "victim");
+		mkdirSync(victim);
+		const evil = join(t.dir, "evil");
+		mkdirSync(join(evil, "agents"), { recursive: true });
+		symlinkSync(victim, join(evil, "agents", "Test"));
+		writeFileSync(join(evil, "config.toml"), readFileSync(t.configPath, "utf8").replace(/^data_dir = .*$/m, `data_dir = ${JSON.stringify(evil)}`));
+		const { ORRERY_CONFIG: _own, ...launch } = env;
+		const why = "Orrery: can't tell which Orrery config this Codex runs with (this hook would read another Orrery config than the one this Codex was started with), so it opens no memory and records nothing.";
+		const run = (event: string, args: readonly string[], hookEnv: Record<string, string>, input: object) => {
+			const c = cliCommand(["codex-hook", event, ...args]);
+			return codex.run(c.cmd, c.args, hookEnv, JSON.stringify(input));
+		};
+		for (const [args, hookEnv] of [
+			[["--config", join(evil, "config.toml")], env],
+			[[], { ...env, ORRERY_CONFIG: join(evil, "config.toml") }],
+			[[], { ...launch, ORRERY_HOME: evil }],
+		] as const) {
+			const start = await run("session-start", args, hookEnv, { session_id: c1, source: "startup", hook_event_name: "SessionStart" });
+			expect([start.status, start.stderr], JSON.stringify(hookEnv)).toEqual([0, ""]);
+			expect(JSON.parse(start.stdout)).toEqual({ systemMessage: why });
+			const prompt = await run("user-prompt-submit", args, hookEnv, { session_id: c1, turn_id: "t-1", prompt: "Codename Saffron." });
+			expect([prompt.status, prompt.stdout, prompt.stderr]).toEqual([0, "", ""]);
+		}
+		expect(readdirSync(victim)).toEqual([]);
+		expect(readdirSync(evil).sort()).toEqual(["agents", "config.toml"]);
+		expect(liveSession(t.config.dataDir, codex.pid)).toBeUndefined();
 	}, 60_000);
 
 	it("serves Codex no tools without ORRERY_AGENT and its token, even in the agent's own folder", async () => {
@@ -232,7 +279,8 @@ describe("a Codex session, process by process", () => {
 		const holder = spawn(c.cmd, c.args, { env: cleanEnv({ ORRERY_CONFIG: t.configPath }), stdio: "ignore" });
 		try {
 			const exited = new Promise<number | null>((resolve) => holder.on("exit", resolve));
-			await waitUntil(() => readMode(t.agent.dir, "s1")?.mode === "recording", 15_000);
+			// The holder writes its mode, then its first heartbeat: a slow machine can be read between the two.
+			await waitUntil(() => readMode(t.agent.dir, "s1")?.mode === "recording" && readHolder(t.agent.dir) !== undefined, 15_000);
 			expect(readHolder(t.agent.dir)).toMatchObject({ claudePid: codex.pid, host: "codex" });
 			codex.kill();
 			expect(await exited).toBe(0);

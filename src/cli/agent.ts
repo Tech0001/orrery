@@ -10,7 +10,7 @@
 import { resolve } from "node:path";
 import { type AgentTool, type ConfigFile, configFileOf, configOf, type ConfigSource, findAgent, readConfigFile } from "../agent/config.ts";
 import { editInstructionsFile, runEditor } from "../agent/editor.ts";
-import { applyFix, checkCodexHooks, checkOpenCodePlugin, exitText, launchLabel, launchPlan, type LaunchPlan, remoteGate, runAgent, runTool, type ToolExit, withoutOrrery } from "../agent/launch.ts";
+import { applyFix, checkCodexHooks, checkOpenCodePlugin, exitText, launchLabel, launchPlan, type LaunchPlan, remoteGate, runAgent, runTool, type ToolExit, unknownToolRefusal, withoutOrrery } from "../agent/launch.ts";
 import { withoutOrreryQuestion, withoutOrrerySaid } from "../agent/load-check.ts";
 import { type AgentRow, agentOverview, OverviewCache, TOOL_LABELS } from "../agent/overview.ts";
 import { checkTools } from "../agent/tools.ts";
@@ -50,6 +50,9 @@ export async function openAgentCommand(
 ): Promise<number> {
 	const config = configOf(deps.config ?? readConfigFile(configPath));
 	const agent = findAgent(config, name);
+	// A tool this version doesn't know (a typo, or a newer Orrery's): refused before anything runs, whatever --tool says.
+	const unknown = unknownToolRefusal(agent);
+	if (unknown !== undefined) throw new Error(unknown);
 	if (options.tool !== undefined && !OPENED_IN.includes(options.tool as AgentTool)) throw new Error(`--tool takes pi, omp, claude-code, codex or opencode (not ${options.tool}).`);
 	const cache = deps.cache ?? new OverviewCache();
 	const row = agentOverview(config, { cache }).find((r) => r.name === agent.name);
