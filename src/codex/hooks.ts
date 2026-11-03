@@ -442,15 +442,20 @@ function fileOf(path: string): string {
  * environment (`started`) names, ORRERY_CONFIG (from the folder it runs in, `cwd`, when relative), else its Orrery
  * home's, or the default, as defaultConfigPath finds them from its own HOME. Or why a hook can't run with it: that
  * environment can't be read, or says too little, or the config the hook itself would load (its --config `given`, else
- * its own ORRERY_CONFIG, Orrery home or default, from `env`) is another file.
+ * its own ORRERY_CONFIG, Orrery home or default, from `env`) is another file. `cwd` is asked only for a relative
+ * ORRERY_CONFIG: on macOS it runs lsof.
  */
-export function codexOwnConfig(given: string | undefined, env: NodeJS.ProcessEnv, started: Readonly<Record<string, string>> | undefined, cwd: string | undefined): { readonly path: string } | { readonly refused: string } {
+export function codexOwnConfig(given: string | undefined, env: NodeJS.ProcessEnv, started: Readonly<Record<string, string>> | undefined, cwd: () => string | undefined): { readonly path: string } | { readonly refused: string } {
 	if (started === undefined) return { refused: "the environment this Codex was started with can't be read" };
 	let own: string;
 	const set = started.ORRERY_CONFIG;
 	if (set) {
-		if (!isAbsolute(set) && cwd === undefined) return { refused: "the folder Codex runs in can't be read" };
-		own = isAbsolute(set) ? set : resolve(cwd as string, set);
+		if (isAbsolute(set)) own = set;
+		else {
+			const folder = cwd();
+			if (folder === undefined) return { refused: "the folder Codex runs in can't be read" };
+			own = resolve(folder, set);
+		}
 	} else {
 		if (!started.HOME) return { refused: "Codex's environment names no HOME" };
 		try {

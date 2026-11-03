@@ -972,8 +972,9 @@ async function codexHook(event: string | undefined, configPath: string | undefin
 		}
 		// Codex's own start environment, read once: whose session it is and its Orrery config (src/codex/hooks.ts).
 		const started = startEnvOf(pid, hooks.CODEX_START_VARIABLES);
-		// The hooks, the host record and the holder take the config Codex was started with; a hook that would read another is refused.
-		const own = hooks.codexOwnConfig(configPath, process.env, started, processCwd(pid));
+		// The hooks, the host record and the holder take the config Codex was started with; a hook that would read another is
+		// refused. Codex's folder is read only for a relative ORRERY_CONFIG (lsof on macOS).
+		const own = hooks.codexOwnConfig(configPath, process.env, started, () => processCwd(pid));
 		if ("refused" in own) {
 			if (event === "session-start") process.stdout.write(hooks.ownConfigNotice(own.refused));
 			return 0;

@@ -615,26 +615,32 @@ describe("codexOwnConfig: the hooks, the host record and the holder take the con
 		writeFileSync(other, readFileSync(t.configPath, "utf8"));
 		const started = { HOME: home, ORRERY_CONFIG: t.configPath };
 		const another = { refused: "this hook would read another Orrery config than the one this Codex was started with" };
+		// Codex's folder, asked only for a relative ORRERY_CONFIG (lsof on macOS): each time it is, counted.
+		let asked = 0;
+		const folder = () => (asked++, t.folder);
 		// Codex's ORRERY_CONFIG: the hook's own, or a link to that file, is the one.
-		expect(codexOwnConfig(undefined, { HOME: home, ORRERY_CONFIG: t.configPath }, started, t.folder)).toEqual({ path: t.configPath });
+		expect(codexOwnConfig(undefined, { HOME: home, ORRERY_CONFIG: t.configPath }, started, folder)).toEqual({ path: t.configPath });
 		symlinkSync(t.configPath, join(t.dir, "link.toml"));
-		expect(codexOwnConfig(join(t.dir, "link.toml"), { HOME: home }, started, t.folder)).toEqual({ path: t.configPath });
+		expect(codexOwnConfig(join(t.dir, "link.toml"), { HOME: home }, started, folder)).toEqual({ path: t.configPath });
 		// Another: a --config of the caller's, its own ORRERY_CONFIG, or its Orrery home's (no ORRERY_CONFIG of its own).
-		expect(codexOwnConfig(other, { HOME: home, ORRERY_CONFIG: t.configPath }, started, t.folder)).toEqual(another);
-		expect(codexOwnConfig(undefined, { HOME: home, ORRERY_CONFIG: other }, started, t.folder)).toEqual(another);
-		expect(codexOwnConfig(undefined, { HOME: home }, started, t.folder)).toEqual(another);
+		expect(codexOwnConfig(other, { HOME: home, ORRERY_CONFIG: t.configPath }, started, folder)).toEqual(another);
+		expect(codexOwnConfig(undefined, { HOME: home, ORRERY_CONFIG: other }, started, folder)).toEqual(another);
+		expect(codexOwnConfig(undefined, { HOME: home }, started, folder)).toEqual(another);
 		// No ORRERY_CONFIG at Codex's start: its HOME's Orrery home, or its ORRERY_HOME's.
-		expect(codexOwnConfig(undefined, { HOME: home }, { HOME: home }, t.folder)).toEqual({ path: own });
-		expect(codexOwnConfig(undefined, { HOME: home, ORRERY_HOME: join(t.dir, "elsewhere") }, { HOME: home }, t.folder)).toEqual(another);
-		expect(codexOwnConfig(undefined, { HOME: t.dir, ORRERY_HOME: join(home, ".orrery") }, { HOME: home }, t.folder)).toEqual({ path: own });
+		expect(codexOwnConfig(undefined, { HOME: home }, { HOME: home }, folder)).toEqual({ path: own });
+		expect(codexOwnConfig(undefined, { HOME: home, ORRERY_HOME: join(t.dir, "elsewhere") }, { HOME: home }, folder)).toEqual(another);
+		expect(codexOwnConfig(undefined, { HOME: t.dir, ORRERY_HOME: join(home, ".orrery") }, { HOME: home }, folder)).toEqual({ path: own });
+		expect(asked).toBe(0);
 		// A relative ORRERY_CONFIG of Codex's is read from the folder Codex runs in.
-		expect(codexOwnConfig(t.configPath, {}, { HOME: home, ORRERY_CONFIG: "../data/config.toml" }, t.folder)).toEqual({ path: join(t.dir, "data", "config.toml") });
-		expect(codexOwnConfig(t.configPath, {}, { HOME: home, ORRERY_CONFIG: "../data/config.toml" }, undefined)).toEqual({ refused: "the folder Codex runs in can't be read" });
+		expect(codexOwnConfig(t.configPath, {}, { HOME: home, ORRERY_CONFIG: "../data/config.toml" }, folder)).toEqual({ path: join(t.dir, "data", "config.toml") });
+		expect(asked).toBe(1);
+		expect(codexOwnConfig(t.configPath, {}, { HOME: home, ORRERY_CONFIG: "../data/config.toml" }, () => undefined)).toEqual({ refused: "the folder Codex runs in can't be read" });
 		// Codex's environment unread, or saying too little: refused (fail closed).
-		expect(codexOwnConfig(undefined, { HOME: home }, undefined, t.folder)).toEqual({ refused: "the environment this Codex was started with can't be read" });
-		expect(codexOwnConfig(undefined, { HOME: home }, {}, t.folder)).toEqual({ refused: "Codex's environment names no HOME" });
-		expect(codexOwnConfig(undefined, { HOME: home }, { HOME: home, ORRERY_HOME: "relative" }, t.folder)).toEqual({ refused: "Codex's ORRERY_HOME is no absolute path" });
-		expect(codexOwnConfig(undefined, { HOME: home, ORRERY_HOME: "relative" }, { HOME: home }, t.folder)).toEqual({ refused: "this hook's ORRERY_HOME is no absolute path" });
+		expect(codexOwnConfig(undefined, { HOME: home }, undefined, folder)).toEqual({ refused: "the environment this Codex was started with can't be read" });
+		expect(codexOwnConfig(undefined, { HOME: home }, {}, folder)).toEqual({ refused: "Codex's environment names no HOME" });
+		expect(codexOwnConfig(undefined, { HOME: home }, { HOME: home, ORRERY_HOME: "relative" }, folder)).toEqual({ refused: "Codex's ORRERY_HOME is no absolute path" });
+		expect(codexOwnConfig(undefined, { HOME: home, ORRERY_HOME: "relative" }, { HOME: home }, folder)).toEqual({ refused: "this hook's ORRERY_HOME is no absolute path" });
+		expect(asked).toBe(1);
 	});
 });
 

@@ -20,6 +20,7 @@ import {
 	liveSession,
 	nestedNotice,
 	processStart,
+	recordedCodexIds,
 	recordedPlain,
 	recordSession,
 	type SessionDeps,
@@ -234,6 +235,42 @@ describe("session records", () => {
 		expect(processStart(process.pid)).toBe(processStart(process.pid));
 		const gone = spawnSync(process.execPath, ["-e", ""]).pid as number;
 		expect(processStart(gone)).toBeUndefined();
+	});
+});
+
+describe("codexSessionHosts", () => {
+	it("judges only the records that name the session asked about: no other record's process is asked about (a ps each on macOS)", () => {
+		const dir = temp();
+		const table: Table = { ...chain(), 32: { ppid: 1, start: "320" }, 33: { ppid: 1, start: "330" } };
+		const records = [
+			{ agent: "Atlas", tool: "codex", pid: 30, codexSession: "019a-atlas" },
+			{ agent: "Birch", tool: "codex", pid: 32, codexSession: "019b-birch" },
+			{ agent: "Cedar", tool: "codex", pid: 33, codexSession: "019a-atlas" },
+			{ agent: "Birch", tool: "pi", pid: 40 },
+		] as const;
+		for (const record of records) expect(recordSession(dir, record, darwin(table))).toBe(true);
+		/** macOS as darwin() fakes it, with each pid whose liveness is asked kept. */
+		const watched = () => {
+			const alive: number[] = [];
+			const mac = darwin(table);
+			return { alive, mac, deps: { ...mac, alive: (pid: number) => (alive.push(pid), table[pid] !== undefined) } };
+		};
+		const asked = (look: ReturnType<typeof watched>) => ({ alive: look.alive.sort(), ps: look.mac.calls.map((args) => args.join(" ")).sort() });
+		let look = watched();
+		expect(codexSessionHosts([dir], "019a-atlas", look.deps).sort()).toEqual([30, 33]);
+		expect(asked(look)).toEqual({ alive: [30, 33], ps: ["-o lstart= -p 30", "-o lstart= -p 33"] });
+		look = watched();
+		expect(codexSessionHosts([dir], "019b-birch", look.deps)).toEqual([32]);
+		expect(asked(look)).toEqual({ alive: [32], ps: ["-o lstart= -p 32"] });
+		look = watched();
+		expect(codexSessionHosts([dir], "019c-none", look.deps)).toEqual([]);
+		expect(asked(look)).toEqual({ alive: [], ps: [] });
+		// A stale record that names another session is left for a look that judges it (recordedCodexIds judges every one).
+		delete table[32];
+		expect(codexSessionHosts([dir], "019a-atlas", watched().deps).sort()).toEqual([30, 33]);
+		expect(existsSync(hostFile(dir, 32))).toBe(true);
+		expect([...recordedCodexIds([dir], darwin(table))]).toEqual(["019a-atlas"]);
+		expect(existsSync(hostFile(dir, 32))).toBe(false);
 	});
 });
 
