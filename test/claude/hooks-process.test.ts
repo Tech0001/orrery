@@ -151,6 +151,15 @@ describe("the hooks as Claude Code runs them", () => {
 		expect(hookCli("pre-tool-use", call, { ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: t.folder }).stdout).toBe("");
 	}, 60_000);
 
+	it("PreToolUse judges as ever with a config that names a tool this Orrery doesn't know (an agent a newer Orrery set up)", () => {
+		const t = testAgent();
+		writeFileSync(t.configPath, `${readFileSync(t.configPath, "utf8")}\n[agents.Vela]\nfolder = ${JSON.stringify(join(t.dir, "vela"))}\ntool = "grok"\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+		const tool = (tool_name: string, tool_input: object) => hookCli("pre-tool-use", { session_id: "s1", cwd: t.folder, tool_name, tool_input }, { ORRERY_CONFIG: t.configPath, CLAUDE_PROJECT_DIR: t.folder });
+		const read = tool("Read", { file_path: join(t.folder, "notes.md") });
+		expect([read.status, read.stdout, read.stderr]).toEqual([0, "", ""]);
+		expect(tool("Write", { file_path: t.configPath, content: "[" }).stdout).toMatch(/"permissionDecision":"deny".*Orrery's config/);
+	}, 60_000);
+
 	it("PreToolUse keeps the config file ORRERY_CONFIG names read-only and named in no command (fix round 2)", () => {
 		const t = testAgent();
 		// The config inside the agent's own folder: only the config rule can refuse a write there.

@@ -11,10 +11,10 @@ import { COMPACT_AT_MIN, findAgent, type HarnessConfig, AGENT_TOOLS, agentNamePr
 import { editInstructionsFile } from "../../agent/editor.ts";
 import { instructionsTemplate, readInstructions } from "../../agent/instructions.ts";
 import { summaryLine } from "../../agent/agent-commands.ts";
-import { exitText, launchLabel, type LaunchPlan, launchPlan, remoteGate, runAgent, withoutOrrery } from "../../agent/launch.ts";
+import { exitText, launchLabel, type LaunchPlan, launchPlan, newerToolRefusal, remoteGate, runAgent, withoutOrrery } from "../../agent/launch.ts";
 import { withoutOrreryQuestion } from "../../agent/load-check.ts";
 import type { CodexGate } from "../../codex/check.ts";
-import { archiveRefusal, type AgentRow, TOOL_LABELS } from "../../agent/overview.ts";
+import { archiveRefusal, type AgentRow, TOOL_LABELS, toolLabel } from "../../agent/overview.ts";
 import { workArea } from "../../agent/pick.ts";
 import { safeText } from "../../agent/source-labels.ts";
 import { switchSummaryModel } from "../../agent/summary-text.ts";
@@ -124,6 +124,9 @@ export function launchAgent(app: App, row: AgentRow | undefined): void {
 	const config = app.config;
 	if (row === undefined || config === undefined) return;
 	app.run(`Launching ${row.name}`, async () => {
+		// A tool this version doesn't know (a newer Orrery's): refused before anything runs, the remote's check included.
+		const newer = newerToolRefusal(row);
+		if (newer !== undefined) throw new Error(newer);
 		const refresh = app.deps.refreshRemote;
 		const gate = await remoteGate(config, row, { overview: (c) => app.deps.overview(c), say: (text) => app.say(text), ...(refresh === undefined ? {} : { refreshRemote: (c: HarnessConfig, name: string) => refresh(c, name) }) });
 		if (!gate.go) throw new Error(gate.text);
@@ -214,7 +217,7 @@ export function editAgent(app: App, row: AgentRow | undefined): void {
 		return;
 	}
 	app.run(`Editing ${row.name}`, async () => {
-		const items = [`Tool: ${TOOL_LABELS[row.tool]}`, `Folder: ${row.folder === undefined ? "none" : safeText(row.folder)}`, `View size: ${kb(row.viewBudget)} KB`, `Summary-call size: ${kb(row.summaryContextBytes)} KB`, `Summary jobs: ${row.summaryJobs}`, `Claude Code compacts at: ${Math.round(row.compactAt / 1000)}K tokens`, `Launcher: ${row.launcher === "ori" ? "Ori" : "Direct"}`, `Ori model: ${safeText(row.oriModel ?? "default")}`, `Reads: ${readsText(row.reads)}`, ...(row.remote !== undefined || (app.config?.remotes.size ?? 0) > 0 ? [`Memory home: ${row.remote ?? "local"}`] : [])];
+		const items = [`Tool: ${toolLabel(row)}`, `Folder: ${row.folder === undefined ? "none" : safeText(row.folder)}`, `View size: ${kb(row.viewBudget)} KB`, `Summary-call size: ${kb(row.summaryContextBytes)} KB`, `Summary jobs: ${row.summaryJobs}`, `Claude Code compacts at: ${Math.round(row.compactAt / 1000)}K tokens`, `Launcher: ${row.launcher === "ori" ? "Ori" : "Direct"}`, `Ori model: ${safeText(row.oriModel ?? "default")}`, `Reads: ${readsText(row.reads)}`, ...(row.remote !== undefined || (app.config?.remotes.size ?? 0) > 0 ? [`Memory home: ${row.remote ?? "local"}`] : [])];
 		const picked = await app.host.open(new SelectModal(`${row.name}: change which setting?`, items));
 		if (picked === undefined) return undefined;
 		let key: EditableKey;

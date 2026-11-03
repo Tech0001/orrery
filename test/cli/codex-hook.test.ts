@@ -46,6 +46,15 @@ describe("orrery codex-hook pre-tool-use (the guard)", () => {
 		}
 	});
 
+	it("judges as ever with a config that names a tool this Orrery doesn't know (an agent a newer Orrery set up)", () => {
+		const { t, env } = guarded();
+		writeFileSync(t.configPath, `${readFileSync(t.configPath, "utf8")}\n[agents.Vela]\nfolder = ${JSON.stringify(join(t.dir, "vela"))}\ntool = "grok"\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+		const ok = hook("pre-tool-use", call(t.folder, "Bash", { command: "ls -la && git status" }), env);
+		expect([ok.status, ok.stdout, ok.stderr]).toEqual([0, "", ""]);
+		const shell = hook("pre-tool-use", call(t.folder, "Bash", { command: "cat protected.txt" }), env);
+		expect([shell.status, shell.stderr]).toEqual([2, "Orrery guard: This command touches protected.txt, protected by [guard] protect in Orrery's config"]);
+	});
+
 	it("refuses by exit code 2 with the reason on stderr, no final period, nothing on stdout", () => {
 		const { t, env } = guarded();
 		const shell = hook("pre-tool-use", call(t.folder, "Bash", { command: "cat protected.txt" }), env);

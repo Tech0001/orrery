@@ -275,8 +275,35 @@ model = "openai/gpt-6.1-sol"
 		expect(parseConfig(`[agents.A]\nfolder = "/w/a"\nmodel = "a/b"\n`, "/x").agents.get("A")?.tool).toBeUndefined();
 	});
 
-	it("refuses an unknown tool, and an agent with neither model nor compactor_model", () => {
-		expect(() => parseConfig(`[agents.A]\nfolder = "/w"\nmodel = "a/b"\ntool = "vim"\n`, "/x")).toThrow("agents.A.tool must be one of pi, claude-code, codex");
+	it("reads a tool it doesn't know (a newer Orrery's) as the agent's unknown tool, never as one it launches; the other agents and settings as ever", () => {
+		// An agent as Orrery 0.10.0 writes one for Grok Build, beside one of this version's tools.
+		const text = `data_dir = "/srv/orrery-data"
+
+[agents.Vela]
+folder = "/home/u/work/vela"
+tool = "grok"
+model = "openai/gpt-6.1-sol"
+compactor_model = "openai/gpt-6.1-sol"
+compactor_thinking = "low"
+
+[agents.Cedar]
+folder = "/home/u/work/cedar"
+tool = "codex"
+compactor_model = "openai/gpt-6.1-sol"
+reads = ["Vela"]
+`;
+		const config = parseConfig(text, "/x");
+		const vela = config.agents.get("Vela");
+		expect(vela?.tool).toBeUndefined();
+		expect(vela?.unknownTool).toBe("grok");
+		expect(vela).toMatchObject({ name: "Vela", folder: "/home/u/work/vela", dir: "/srv/orrery-data/agents/Vela", compactor: { model: { provider: "openai", modelId: "gpt-6.1-sol", thinking: "low" } } });
+		expect(config.agents.get("Cedar")).toMatchObject({ tool: "codex", reads: ["Vela"] });
+		expect(config.agents.get("Cedar")?.unknownTool).toBeUndefined();
+		expect(parseConfig(`[agents.A]\nfolder = "/w"\nmodel = "a/b"\ntool = "vim"\n`, "/x").agents.get("A")).toMatchObject({ unknownTool: "vim" });
+	});
+
+	it("still refuses a tool that is no name, and an agent with neither model nor compactor_model", () => {
+		for (const tool of ['""', "3", '["pi"]']) expect(() => parseConfig(`[agents.A]\nfolder = "/w"\nmodel = "a/b"\ntool = ${tool}\n`, "/x"), tool).toThrow("agents.A.tool must be a non-empty string");
 		expect(() => parseConfig(`[agents.A]\nfolder = "/w"\n`, "/x")).toThrow("agents.A.compactor_model must be a non-empty string");
 	});
 });

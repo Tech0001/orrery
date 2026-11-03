@@ -15,6 +15,7 @@ The store is local and inspectable; summaries are derived data rather than the o
 
 An agent has a data directory under `data_dir/agents/<Name>/`, a summary model, and optionally a default folder.
 The `tool` setting selects pi, OMP, Claude Code, Codex or OpenCode for launching.
+A tool this version doesn't know (one a newer Orrery set) still loads the config: that agent is listed, but opens in no tool here (`orrery agent` and the TUI say it needs a newer Orrery), and this version never writes such a tool itself.
 The optional `launcher` setting selects direct launch or Ori.
 Those launch choices do not select a different memory database: each tool reaches the same memory through its own
 adapter.

@@ -21,6 +21,7 @@ import {
 	type HarnessConfig,
 	parseConfig,
 	type ThinkingLevel,
+	toolProblem,
 	unchangedConfig,
 	userConfigPath,
 } from "./config.ts";
@@ -115,21 +116,25 @@ function withoutEmptyAgents(config: Table): Table {
  * Returns `next` once it parses and differs from `old` by exactly `agents[agent] = table` (or, when `table` gives
  * undefined, by the agent taken out); throws otherwise. When the old text is valid TOML and the new one is not, orrery
  * put the line in the wrong place (inside a multi-line value): that is said as orrery's failure, never as a fault in the
- * user's file.
+ * user's file. A tool this version doesn't know (a newer Orrery's, AgentConfig.unknownTool) is read, but never written:
+ * an edit of another key keeps the agent's, and one that would bring one in is refused.
  */
 function checked(old: string, next: string, configDir: string, agent: string, table: (before: Table | undefined) => Table | undefined, group = "agents"): string {
 	if (!tomlParses(old)) parseConfig(old, configDir); // throws: the file itself is not valid TOML
 	if (!tomlParses(next)) throw new ConfigError("Orrery couldn't place this change safely; the config is unchanged — edit it by hand.");
 	const want = parse(old) as Table;
 	const agents = { ...((want[group] as Table | undefined) ?? {}) };
-	const after = table(agents[agent] as Table | undefined);
+	const before = agents[agent] as Table | undefined;
+	const after = table(before);
 	if (after === undefined) delete agents[agent];
 	else agents[agent] = after;
 	want[group] = agents;
 	if (JSON.stringify(canonical(withoutEmptyAgents(parse(next) as Table))) !== JSON.stringify(canonical(withoutEmptyAgents(want)))) {
 		throw new ConfigError("That edit would change more than intended; the config is left as it was.");
 	}
-	parseConfig(next, configDir); // throws a ConfigError naming a value Orrery refuses
+	const parsed = parseConfig(next, configDir); // throws a ConfigError naming a value Orrery refuses
+	const unknown = group === "agents" ? parsed.agents.get(agent)?.unknownTool : undefined;
+	if (unknown !== undefined && before?.tool !== unknown) throw new ConfigError(toolProblem(`agents.${agent}`));
 	return next;
 }
 

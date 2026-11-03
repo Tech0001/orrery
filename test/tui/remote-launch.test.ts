@@ -67,6 +67,20 @@ async function hold(stale = false) {
 }
 
 describe("L on a remote agent", () => {
+	it("refuses an agent whose tool this Orrery doesn't know (a newer Orrery set it) before its remote is asked, and lists it by that tool", async () => {
+		writeFileSync(path, readFileSync(path, "utf8").replace('tool = "pi"', 'tool = "grok"'));
+		const { app, deps } = setup(); await settle(); app.refresh();
+		expect(screen(app)).toMatch(/Atlas +grok /);
+		let lists = 0; const list = storage.list.bind(storage);
+		storage.list = async () => { lists++; return list(); };
+		keys(app, "L"); await app.idle();
+		expect(lists).toBe(0);
+		expect(deps.launched).toEqual([]); expect(app.host.current).toBeUndefined();
+		expect(screen(app)).toContain("Atlas is set up for grok, a tool this Orrery doesn't know");
+		keys(app, "i");
+		expect(screen(app)).toContain("Atlas · grok (needs a newer Orrery) · ");
+	});
+
 	it("refreshes a cached free agent once and refuses a fresh holder without launching", async () => {
 		let lists = 0; const list = storage.list.bind(storage);
 		storage.list = async () => { lists++; return list(); };

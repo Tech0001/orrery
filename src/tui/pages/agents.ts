@@ -6,7 +6,7 @@
 import { join } from "node:path";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type AgentTool, readBy } from "../../agent/config.ts";
-import { ago, type AgentRow, summaryText, TOOL_LABELS } from "../../agent/overview.ts";
+import { ago, type AgentRow, summaryText, TOOL_LABELS, toolLabel } from "../../agent/overview.ts";
 import { needsRestart } from "../../install/update.ts";
 import { safeText } from "../../agent/source-labels.ts";
 import { localIso } from "../../memory/index.ts";
@@ -79,7 +79,7 @@ function sortAgents(rows: readonly AgentRow[], order: Order): AgentRow[] {
 /** The agents the filter leaves, in the list's order. */
 export function visibleAgents(app: App): AgentRow[] {
 	const words = app.filterText().toLowerCase().split(/\s+/).filter(Boolean);
-	const rows = app.agents.filter((row) => words.every((w) => `${row.name} ${TOOL_LABELS[row.tool]} ${row.launcher ?? "direct"} ${row.state} ${row.remote ?? ""} ${row.heldElsewhere?.machine ?? ""} ${row.folder ?? ""}`.toLowerCase().includes(w)));
+	const rows = app.agents.filter((row) => words.every((w) => `${row.name} ${row.unknownTool ?? TOOL_LABELS[row.tool]} ${row.launcher ?? "direct"} ${row.state} ${row.remote ?? ""} ${row.heldElsewhere?.machine ?? ""} ${row.folder ?? ""}`.toLowerCase().includes(w)));
 	return sortAgents(rows, orderOf(app));
 }
 
@@ -149,7 +149,7 @@ const stateText = (row: AgentRow, installed?: string) => `${remoteState(row, ins
 function cells(row: AgentRow, now: number, withRemotes: boolean, installed?: string): string[] {
 	return [
 		row.name,
-		`${SHORT_TOOL[row.tool]}${row.launcher === "ori" ? " · Ori" : ""}`,
+		`${row.unknownTool === undefined ? SHORT_TOOL[row.tool] : safeText(row.unknownTool)}${row.launcher === "ori" ? " · Ori" : ""}`,
 		stateText(row, installed),
 		row.hasMemory ? String(row.messages) : "—",
 		row.hasMemory ? `${kb(row.viewBytes)}/${kb(row.viewBudget)} KB` : "—",
@@ -202,12 +202,12 @@ function detailLines(app: App, row: AgentRow, width: number): string[] {
 	const usage = pageUsage.get(app)?.get(row.name);
 	const backup = backupText(app, row);
 	return [
-		theme.bold(fit(`${row.name} · ${TOOL_LABELS[row.tool]} · ${stateText(row)}`, width)),
+		theme.bold(fit(`${row.name} · ${toolLabel(row)} · ${stateText(row)}`, width)),
 		"",
 		...field("Folder", row.folder === undefined ? "none (it opens wherever it is opened)" : safeText(row.folder)),
 		...field("Instructions", instructionsField(row)),
 		...field("Data folder", safeText(row.dataDir)),
-		...field("Tool", row.toolSet ? TOOL_LABELS[row.tool] : `${TOOL_LABELS[row.tool]} (guessed: the config has no tool key; set it with C)`),
+		...field("Tool", row.unknownTool !== undefined ? `${safeText(row.unknownTool)}, which this Orrery doesn't know (a newer Orrery set it): update Orrery to open ${row.name} in it, or set another tool with C` : row.toolSet ? TOOL_LABELS[row.tool] : `${TOOL_LABELS[row.tool]} (guessed: the config has no tool key; set it with C)`),
 		...field("Launcher", row.launcher === "ori" ? `Ori${row.oriModel === undefined ? "" : ` (model ${safeText(row.oriModel)})`}` : "Direct"),
 		...(row.remote !== undefined || (app.config?.remotes.size ?? 0) > 0 ? field("Memory home", row.remote ?? "local") : []),
 		...field("Memory", row.hasMemory ? `${row.messages} messages, ${row.summaries} summaries, view ${kb(row.viewBytes)}/${kb(row.viewBudget)} KB` : "no memory yet"),

@@ -15,7 +15,7 @@ import { type AgentConfig, findAgent, type HarnessConfig, parseModelChoice } fro
 import { FileCredentialStore } from "../agent/credentials.ts";
 import { sshTarget } from "../agent/env.ts";
 import { writeBuild } from "../agent/build.ts";
-import { type AgentRow, agentOverview, agentUsage, summaryText, TOOL_LABELS, totalCost, usageCost } from "../agent/overview.ts";
+import { type AgentRow, agentOverview, agentUsage, summaryText, TOOL_LABELS, toolLabel, totalCost, usageCost } from "../agent/overview.ts";
 import { agentCompactorTarget } from "../agent/compactor-target.ts";
 import { createAgentCompactor } from "../agent/agent.ts";
 import { createAgentModels, savedSummaryLoginsOnly } from "../agent/models.ts";
@@ -35,8 +35,11 @@ function readableOnly(config: HarnessConfig, readable: Readable | undefined): Ha
 	return readable === undefined ? config : { ...config, agents: new Map([...config.agents].filter(([, agent]) => readable(agent))) };
 }
 
-/** The tool status names for an agent: the one it is open in while open or working, else the one it is set up for. */
-const shownTool = (row: AgentRow): string => TOOL_LABELS[(row.state === "open" || row.state === "working") && row.openIn !== undefined ? row.openIn : row.tool];
+/**
+ * The tool status names for an agent: the one it is open in while open or working, else the one it is set up for (one
+ * this version doesn't know by its name: toolLabel).
+ */
+const shownTool = (row: AgentRow): string => ((row.state === "open" || row.state === "working") && row.openIn !== undefined ? TOOL_LABELS[row.openIn] : toolLabel(row));
 
 /**
  * `orrery status [<Name>] [--json]`: one line per agent (or the named one): state, tool (the one it is open in, while
