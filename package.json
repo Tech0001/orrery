@@ -43,5 +43,8 @@
     "@types/proper-lockfile": "4.1.4",
     "typescript": "7.0.2",
     "vitest": "4.1.12"
+  },
+  "overrides": {
+    "undici": "$undici"
   }
 }
