@@ -328,9 +328,10 @@ that holds that memory, `<data>/session-hosts/<pid>.json` (0600 in a 0700 folder
 start time, on Linux its pid namespace and the boot's id, the config file it loaded, and for Codex the session's id. pi,
 OMP, OpenCode's server, `orrery run`, Claude Code (the desktop app and folder agents set up with `claude-setup`
 included) and Codex all record. A record goes when its session closes; one whose process is gone, or started at
-another time (a reused pid), is stale and cleaned up by the next look. A record made in another pid namespace, or one
-that can't be read, is kept, never taken for a dead session: it is no session to the walk below, but a marker that
-points at it means a session whose agent is unknown.
+another time (a reused pid), is stale and cleaned up by the next look, and so is one made before the last boot (Linux),
+in whatever pid namespace. A record made in another pid namespace during this boot, or one that can't be read, is kept,
+never taken for a dead session: it is no session to the walk below, but a marker that points at it means a session
+whose agent is unknown.
 
 A command is inside an agent's session when one of its ancestor processes is recorded, live, in a data folder it is
 judged by: Linux walks `/proc`, macOS takes one `ps` snapshot, and the nearest recorded ancestor wins. Its record names

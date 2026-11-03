@@ -12,6 +12,7 @@ import { bootId, pidNamespace, processStartedAt } from "../../src/agent/process.
 import {
 	ALLOWED_INSIDE,
 	ancestors,
+	codexSessionHosts,
 	forgetSession,
 	HOST_ENV,
 	type Inside,
@@ -640,6 +641,24 @@ describe("pid namespaces (Linux)", () => {
 			expect(liveSession(config.dataDir, 77, linux(table))).toMatchObject({ agent: "Atlas" });
 		});
 	}
+
+	it("a record of another boot is dead read from any namespace, so after a reboot it hosts no Codex session (a sandboxed editor's Codex, say); in its own boot it is kept", () => {
+		const { config } = world();
+		const dir = config.dataDir;
+		const table = tools();
+		const record = { agent: "Birch", tool: "codex", pid: 88, codexSession: "019a-thread" } as const;
+		const rebooted = (deps: SessionDeps): SessionDeps => ({ ...deps, boot: () => "1c1c1c1c-boot" });
+		const blind: SessionDeps = { ...linux(table, 50), ns: (pid) => (pid === "self" ? undefined : NS) };
+		for (const reader of [elsewhere(table, "kept", 50), elsewhere(table, "remounted", 50), blind]) {
+			expect(recordSession(dir, record, linux(table))).toBe(true);
+			// In its own boot, read from another namespace (or where this one's can't be read): unsure, kept, still the host.
+			expect(codexSessionHosts([dir], "019a-thread", reader)).toEqual([88]);
+			expect(existsSync(hostFile(dir, 88))).toBe(true);
+			// After a reboot: stale whatever the namespace, and taken down, so the session can be resumed.
+			expect(codexSessionHosts([dir], "019a-thread", rebooted(reader))).toEqual([]);
+			expect(existsSync(hostFile(dir, 88))).toBe(false);
+		}
+	});
 
 	it("a claim numbered in another pid namespace proves nothing, and to a tool asking about itself is no launch of its own", () => {
 		const { config } = world();

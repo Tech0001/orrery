@@ -15,13 +15,15 @@
  * container's or a sandbox's shell) kill(0) finds it gone and /proc shows another process, or none. So a Linux record
  * holds that namespace (`ns`, the host's /proc/<pid>/ns/pid, which must be the recorder's own) and the boot's id
  * (`boot`: the first namespace's id is the same at every boot), and is judged only from that namespace, in that boot.
+ * The boot's id is the kernel's, alike in every namespace, so a record of another boot is dead read from anywhere.
  *
  * A record is live while its process lives and started when the record says; stale when its process is gone, started at
- * another time, or (Linux) belonged to another boot. The look that finds a stale record takes it down exclusively
- * (removeStale, src/agent/exclusive.ts), so a fresh record that took the name meanwhile stays, and each new record takes
- * out the dead ones beside it. Any other record is unsure, kept, and never taken down: one read from another pid
- * namespace (or where the namespace can't be read), one of a live process whose start can't be read, a file that is no
- * record this version reads while its process lives (or, on Linux, at all), and one that can't be read (a link, a FIFO).
+ * another time, or (Linux) belonged to another boot, whatever namespace it was made in. The look that finds a stale
+ * record takes it down exclusively (removeStale, src/agent/exclusive.ts), so a fresh record that took the name meanwhile
+ * stays, and each new record takes out the dead ones beside it. Any other record is unsure, kept, and never taken down:
+ * one read in its own boot from another pid namespace (or where the namespace can't be read), one of a live process
+ * whose start can't be read, a file that is no record this version reads while its process lives (or, on Linux, at
+ * all), and one that can't be read (a link, a FIFO).
  * An unsure record is no session to the ancestry: its pid may name another process here, the user's own terminal among
  * others, and that is never refused. A marker pointing at one is a session whose identity is unknown (fail closed).
  *
@@ -317,9 +319,9 @@ function recordOf(value: unknown, pid: number): { readonly record: SessionRecord
 }
 
 /**
- * What a record file stands for, to this process (module doc). An unsure one may hold a record (one read from another
- * pid namespace, or of a live process whose start can't be read); `foreign` when it isn't known to be numbered in this
- * process's pid namespace, so its pid may name another process here.
+ * What a record file stands for, to this process (module doc). An unsure one may hold a record (one of this boot read
+ * from another pid namespace, or of a live process whose start can't be read); `foreign` when it isn't known to be
+ * numbered in this process's pid namespace, so its pid may name another process here.
  */
 type Standing =
 	| { readonly kind: "none" }
@@ -344,12 +346,13 @@ function standing(file: string, pid: number, deps: SessionDeps): Standing {
 	}
 	const record = parsed?.record;
 	if (onLinux(deps)) {
-		// Judged only from the namespace its pid is numbered in (module doc); from anywhere else, kept.
+		// A record of another boot is dead from any namespace: the boot's id is the kernel's, alike in every one (module doc).
+		const boot = (deps.boot ?? bootId)();
+		if (boot !== undefined && record?.boot !== undefined && record.boot !== boot) return { kind: "stale" };
+		// Else judged only from the namespace its pid is numbered in (module doc); from anywhere else, kept.
 		const here = namespaceOf(deps, "self");
 		if (record?.ns === undefined || here === undefined || record.ns !== here) return { kind: "unsure", record, foreign: true };
-		const boot = (deps.boot ?? bootId)();
 		if (boot === undefined || record.boot === undefined) return { kind: "unsure", record, foreign: false };
-		if (record.boot !== boot) return { kind: "stale" };
 	}
 	if (!(deps.alive ?? processAlive)(pid)) return { kind: "stale" };
 	if (record === undefined) return { kind: "unsure", foreign: false };
