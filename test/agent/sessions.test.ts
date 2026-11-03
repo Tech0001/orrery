@@ -664,7 +664,9 @@ describe("pid namespaces (Linux)", () => {
 			for (const record of records) expect(recordSession(config.dataDir, record, linux(table))).toBe(true);
 			const kept = () => records.every((record) => existsSync(hostFile(config.dataDir, record.pid)));
 			const blind = { ...elsewhere(table, procfs, 50), ns: (pid: number | "self") => (pid === "self" ? undefined : NS) };
-			for (const deps of [elsewhere(table, procfs, 50), blind]) {
+			// One that reads another boot id (another kernel's view of the folder, or a faked id) proves no record dead either.
+			const rebooted = { ...elsewhere(table, procfs, 50), boot: () => "1c1c1c1c-boot" };
+			for (const deps of [elsewhere(table, procfs, 50), blind, rebooted]) {
 				for (const record of records) expect(liveSession(config.dataDir, record.pid, deps)).toBeUndefined();
 				expect(insideSession([config.dataDir], {}, config, deps)).toBeUndefined();
 				expect(insideSession([config.dataDir], { CLAUDE_PID: "77" }, config, deps)).toEqual({ agent: undefined, tool: "claude-code", via: "marker", dataDir: config.dataDir });
@@ -673,6 +675,8 @@ describe("pid namespaces (Linux)", () => {
 				// A new record made there doesn't take them out either (nor is made: its host isn't numbered here).
 				expect(recordSession(config.dataDir, { agent: "Birch", tool: "pi", pid: 60 }, deps)).toBe(false);
 				expect(kept()).toBe(true);
+				// Still Codex's session's host, so no other process takes that session from here.
+				expect(codexSessionHosts([config.dataDir], "019a-thread", deps)).toEqual([88]);
 			}
 			// Back in their own namespace they are live.
 			expect(liveSession(config.dataDir, 77, linux(table))).toMatchObject({ agent: "Atlas" });

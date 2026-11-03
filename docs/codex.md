@@ -113,7 +113,7 @@ The instructions travel on Codex's command line, so they show in `ps`, like ever
   refused to every other: `Orrery: can't confirm this is this Codex's own session (Codex process <pid> already hosts
   it), …`. Once that process is gone, the session can be resumed. On Linux, one exception: if Codex ran in a separate
   process namespace (a sandboxed editor's terminal, say), Orrery can't tell from outside it that the process is gone,
-  so it keeps refusing that session; start a new one instead.
+  so it keeps refusing that session, even after a reboot; start a new one instead.
 - The hooks only drop each event in a spool; a recorder in the background holds the agent for the session, records the
   spool into memory, runs the summaries, and leaves once the session has ended and the summaries are done (at most 10
   minutes). It is the same recorder Claude Code uses.
@@ -343,7 +343,7 @@ them wherever Codex's sandbox lets it. Open an agent with `orrery agent <Name> -
   the hook would read another config (something other than this Codex ran the hook, or a shell startup file sets
   `ORRERY_CONFIG` or `ORRERY_HOME` differently for hooks). Quit Codex and open the agent again with
   `orrery agent <Name> --tool codex`. On macOS, a config or Orrery home whose path has a space in it (`--config
-  "~/Library/Application Support/orrery/config.toml"`, say) can't be confirmed, because `ps` shows Codex's environment
+  ~/"Library/Application Support/orrery/config.toml"`, say) can't be confirmed, because `ps` shows Codex's environment
   split at spaces; the reason then says `Codex's ORRERY_CONFIG has a space in it` (or `ORRERY_HOME`, or `HOME`). Use a
   path without spaces, and open the agent again. Linux reads the environment whole.
 - `Orrery: this Codex already decided which agent it is under another ORRERY_AGENT or token, so this session runs
