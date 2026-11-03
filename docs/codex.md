@@ -334,7 +334,10 @@ them wherever Codex's sandbox lets it. Open an agent with `orrery agent <Name> -
   the default), never one the hook itself is given. The reason says which failed: that environment can't be read, or
   the hook would read another config (something other than this Codex ran the hook, or a shell startup file sets
   `ORRERY_CONFIG` or `ORRERY_HOME` differently for hooks). Quit Codex and open the agent again with
-  `orrery agent <Name> --tool codex`.
+  `orrery agent <Name> --tool codex`. On macOS, a config or Orrery home whose path has a space in it (`--config
+  "~/Library/Application Support/orrery/config.toml"`, say) can't be confirmed, because `ps` shows Codex's environment
+  split at spaces; the reason then says `Codex's ORRERY_CONFIG has a space in it` (or `ORRERY_HOME`, or `HOME`). Use a
+  path without spaces, and open the agent again. Linux reads the environment whole.
 - `Orrery: this Codex already decided which agent it is under another ORRERY_AGENT or token, so this session runs
   without memory.`: a Codex process decides once whose it is, when its memory server starts or at its first session
   start, and this session start brings another agent or token than that one. Quit that Codex and open the agent with

@@ -98,6 +98,16 @@ function psQuiet(args: readonly string[]): string | undefined {
  * never be read from that.
  */
 export function processEnv(pid: number, names: readonly string[], deps: ProcessEnvDeps = {}): Readonly<Record<string, string>> | undefined {
+	const read = processEnvRead(pid, names, deps);
+	return read !== undefined && "env" in read ? read.env : undefined;
+}
+
+/**
+ * processEnv's answer (`env`), or, when it is undefined because a space cut the value of one of `names` (macOS, with
+ * `unambiguous`: a path with a space in it, say), that variable's name (`cut`), so a caller can say why. Undefined for
+ * every other reason.
+ */
+export function processEnvRead(pid: number, names: readonly string[], deps: ProcessEnvDeps = {}): { readonly env: Readonly<Record<string, string>> } | { readonly cut: string } | undefined {
 	if (!Number.isInteger(pid) || pid < 1) return undefined;
 	const platform = deps.platform ?? process.platform;
 	let words: string[];
@@ -124,7 +134,7 @@ export function processEnv(pid: number, names: readonly string[], deps: ProcessE
 				const at = words.flatMap((word, index) => (word.startsWith(`${name}=`) ? [index] : []));
 				if (at.length > 1) return undefined;
 				const next = at.length === 1 ? words[(at[0] as number) + 1] : undefined;
-				if (next !== undefined && !VARIABLE_WORD.test(next)) return undefined;
+				if (next !== undefined && !VARIABLE_WORD.test(next)) return { cut: name };
 			}
 		}
 	} else return undefined;
@@ -134,7 +144,7 @@ export function processEnv(pid: number, names: readonly string[], deps: ProcessE
 		const name = word.slice(0, equals);
 		if (equals > 0 && names.includes(name)) found[name] = word.slice(equals + 1);
 	}
-	return found;
+	return { env: found };
 }
 
 /**

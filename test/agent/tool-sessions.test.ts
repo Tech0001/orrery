@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { processEnv } from "../../src/agent/process.ts";
+import { processEnv, processEnvRead } from "../../src/agent/process.ts";
 import {
 	CODING_TOOLS,
 	recordedCodexIds,
@@ -660,6 +660,23 @@ describe("processEnv withoutArgs and unambiguous: whose a Codex is, from the env
 		expect(processEnv(4242, names, mac("PATH=/usr/bin HOME=/Users/u ORRERY_AGENT=At las"))).toBeUndefined();
 		// Without unambiguous, as before: the last word naming one, and a value cut at its space.
 		expect(processEnv(4242, ["HOME"], { ...mac("PATH=/usr/bin HOME=/Users/u u"), unambiguous: false })).toEqual({ HOME: "/Users/u" });
+	});
+
+	it("macOS unambiguous: processEnvRead names the variable a space cut (a config path with a space in it, say), and only for that", () => {
+		const mac = (env: string) => ({ platform: "darwin" as const, withoutArgs: true, unambiguous: true, ps: (arg: readonly string[]) => (arg.includes("-wwE") ? `${args} ${env}\n` : `${args}\n`) });
+		const names = ["ORRERY_AGENT", "ORRERY_AGENT_TOKEN", "ORRERY_CONFIG", "ORRERY_HOME", "HOME"];
+		const spaced = "ORRERY_CONFIG=/Users/u/Library/Application Support/orrery/config.toml";
+		expect(processEnvRead(4242, names, mac(`PATH=/usr/bin HOME=/Users/u ${spaced} ORRERY_AGENT=Atlas`))).toEqual({ cut: "ORRERY_CONFIG" });
+		expect(processEnvRead(4242, names, mac(`PATH=/usr/bin HOME=/Users/u ORRERY_AGENT=Atlas ${spaced}`))).toEqual({ cut: "ORRERY_CONFIG" });
+		expect(processEnvRead(4242, names, mac("PATH=/usr/bin ORRERY_HOME=/Users/u/My Orrery HOME=/Users/u"))).toEqual({ cut: "ORRERY_HOME" });
+		expect(processEnv(4242, names, mac(`PATH=/usr/bin HOME=/Users/u ${spaced}`))).toBeUndefined();
+		// Whole, it is the environment; twice, or unreadable, nothing says why.
+		expect(processEnvRead(4242, names, mac("PATH=/usr/bin HOME=/Users/u ORRERY_CONFIG=/Users/u/orrery.toml"))).toEqual({ env: { HOME: "/Users/u", ORRERY_CONFIG: "/Users/u/orrery.toml" } });
+		expect(processEnvRead(4242, names, mac("PATH=/usr/bin X=a HOME=/x HOME=/Users/u"))).toBeUndefined();
+		expect(processEnvRead(4242, names, { platform: "darwin", withoutArgs: true, unambiguous: true, ps: () => undefined })).toBeUndefined();
+		// Linux's environ is read whole, spaces and all.
+		const read = () => "PATH=/usr/bin\0HOME=/home/u\0ORRERY_CONFIG=/home/u/My Files/config.toml\0";
+		expect(processEnvRead(4242, names, { platform: "linux", withoutArgs: true, unambiguous: true, read })).toEqual({ env: { HOME: "/home/u", ORRERY_CONFIG: "/home/u/My Files/config.toml" } });
 	});
 
 	it("macOS unambiguous: any word with a name and then = starts a variable of its own, an exported bash function's or a dotted name's among them", () => {

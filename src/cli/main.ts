@@ -957,7 +957,7 @@ async function codexHook(event: string | undefined, configPath: string | undefin
 	if (event === "pre-tool-use") return codexGuardHook(configPath);
 	try {
 		const stdin = (await readStdin(Number.POSITIVE_INFINITY)) ?? "";
-		const [hooks, { codexPid }, { spawnHolder }, { startEnvOf }, { processCwd }] = await Promise.all([
+		const [hooks, { codexPid }, { spawnHolder }, { startEnvRead }, { processCwd }] = await Promise.all([
 			import("../codex/hooks.ts"),
 			import("../codex/host.ts"),
 			import("../claude/hooks.ts"),
@@ -971,10 +971,11 @@ async function codexHook(event: string | undefined, configPath: string | undefin
 			return 0;
 		}
 		// Codex's own start environment, read once: whose session it is and its Orrery config (src/codex/hooks.ts).
-		const started = startEnvOf(pid, hooks.CODEX_START_VARIABLES);
+		const read = startEnvRead(pid, hooks.CODEX_START_VARIABLES);
+		const started = read !== undefined && "env" in read ? read.env : undefined;
 		// The hooks, the host record and the holder take the config Codex was started with; a hook that would read another is
 		// refused. Codex's folder is read only for a relative ORRERY_CONFIG (lsof on macOS).
-		const own = hooks.codexOwnConfig(configPath, process.env, started, () => processCwd(pid));
+		const own = hooks.codexOwnConfig(configPath, process.env, started, () => processCwd(pid), read !== undefined && "cut" in read ? read.cut : undefined);
 		if ("refused" in own) {
 			if (event === "session-start") process.stdout.write(hooks.ownConfigNotice(own.refused));
 			return 0;

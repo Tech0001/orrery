@@ -52,7 +52,7 @@ import { join } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { beingMade, publish, removeStale, stray, temporaryOf } from "../agent/exclusive.ts";
 import { AGENT_ENV, agentNamed, claimToken, refusedNotice, TOKEN_ENV, tokenForm, tokenHeld } from "../agent/pick.ts";
-import { processAlive, processEnv } from "../agent/process.ts";
+import { processAlive, processEnvRead } from "../agent/process.ts";
 import { type PlainDeps, plainNested } from "../agent/plain-nested.ts";
 import { insideSession, liveSession, type PlainFound, plainFields, processStart, recordedPlain, SESSION_TOOLS, type SessionTool } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
@@ -101,7 +101,16 @@ export const LAUNCH_VARIABLES: readonly string[] = [AGENT_ENV, TOKEN_ENV];
  * Undefined when it can't be read so.
  */
 export function startEnvOf(pid: number, names: readonly string[]): Readonly<Record<string, string>> | undefined {
-	return processEnv(pid, names, { withoutArgs: true, unambiguous: true });
+	const read = startEnvRead(pid, names);
+	return read !== undefined && "env" in read ? read.env : undefined;
+}
+
+/**
+ * startEnvOf's answer (`env`), or the variable whose value a space cut (`cut`, macOS: src/agent/process.ts
+ * processEnvRead) when that is why it can't be read, so a session start can say so.
+ */
+export function startEnvRead(pid: number, names: readonly string[]): { readonly env: Readonly<Record<string, string>> } | { readonly cut: string } | undefined {
+	return processEnvRead(pid, names, { withoutArgs: true, unambiguous: true });
 }
 
 /**

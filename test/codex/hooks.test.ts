@@ -11,7 +11,7 @@ import { Holder } from "../../src/claude/holder.ts";
 import { holderLog, sessionDir } from "../../src/claude/paths.ts";
 import { listSessions, pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
 import { readUnconfirmed } from "../../src/claude/transcript.ts";
-import { CODEX_RECORD_EVENTS, type CodexHookContext, codexOwnConfig, runCodexHook } from "../../src/codex/hooks.ts";
+import { CODEX_RECORD_EVENTS, type CodexHookContext, codexOwnConfig, ownConfigNotice, runCodexHook } from "../../src/codex/hooks.ts";
 import { codexAgent } from "../../src/codex/pick.ts";
 import { codexSessionOf } from "../../src/codex/resume.ts";
 import { fauxModels } from "../agent/support.ts";
@@ -641,6 +641,14 @@ describe("codexOwnConfig: the hooks, the host record and the holder take the con
 		expect(codexOwnConfig(undefined, { HOME: home }, { HOME: home, ORRERY_HOME: "relative" }, folder)).toEqual({ refused: "Codex's ORRERY_HOME is no absolute path" });
 		expect(codexOwnConfig(undefined, { HOME: home, ORRERY_HOME: "relative" }, { HOME: home }, folder)).toEqual({ refused: "this hook's ORRERY_HOME is no absolute path" });
 		expect(asked).toBe(1);
+		// macOS: a path a space cut (src/agent/process.ts processEnvRead) is said as such, with what to do; another variable isn't.
+		for (const cut of ["ORRERY_CONFIG", "ORRERY_HOME", "HOME"]) {
+			expect(codexOwnConfig(undefined, { HOME: home }, undefined, folder, cut)).toEqual({ refused: `Codex's ${cut} has a space in it, and on macOS Orrery can't confirm a config or home path with one: use a path without spaces` });
+		}
+		expect(codexOwnConfig(undefined, { HOME: home }, undefined, folder, "ORRERY_AGENT")).toEqual({ refused: "the environment this Codex was started with can't be read" });
+		expect(ownConfigNotice(`Codex's ORRERY_CONFIG has a space in it, and on macOS Orrery can't confirm a config or home path with one: use a path without spaces`)).toBe(
+			JSON.stringify({ systemMessage: "Orrery: can't tell which Orrery config this Codex runs with (Codex's ORRERY_CONFIG has a space in it, and on macOS Orrery can't confirm a config or home path with one: use a path without spaces), so it opens no memory and records nothing." }),
+		);
 	});
 });
 

@@ -428,6 +428,15 @@ async function runOwnHook(event: string, stdin: string, ctx: CodexHookContext): 
  */
 export const CODEX_START_VARIABLES: readonly string[] = [...LAUNCH_VARIABLES, "ORRERY_CONFIG", "ORRERY_HOME", "HOME"];
 
+/** The variables of CODEX_START_VARIABLES that hold a path: which config Codex runs with. */
+const PATH_VARIABLES: readonly string[] = ["ORRERY_CONFIG", "ORRERY_HOME", "HOME"];
+
+/**
+ * Why a hook can't confirm Codex's config when the path in its start environment's `name` holds a space: macOS's ps shows
+ * that environment as words split at spaces, so where such a value ends can't be told (src/agent/process.ts).
+ */
+const spacedPath = (name: string): string => `Codex's ${name} has a space in it, and on macOS Orrery can't confirm a config or home path with one: use a path without spaces`;
+
 /** `path` as it really is, or as given (absolute) when it can't be resolved: two paths name one file when these match. */
 function fileOf(path: string): string {
 	try {
@@ -443,10 +452,11 @@ function fileOf(path: string): string {
  * home's, or the default, as defaultConfigPath finds them from its own HOME. Or why a hook can't run with it: that
  * environment can't be read, or says too little, or the config the hook itself would load (its --config `given`, else
  * its own ORRERY_CONFIG, Orrery home or default, from `env`) is another file. `cwd` is asked only for a relative
- * ORRERY_CONFIG: on macOS it runs lsof.
+ * ORRERY_CONFIG: on macOS it runs lsof. `cut`, with `started` undefined: the variable of it whose value a space cut
+ * (src/codex/pick.ts startEnvRead), which is said when it holds a path.
  */
-export function codexOwnConfig(given: string | undefined, env: NodeJS.ProcessEnv, started: Readonly<Record<string, string>> | undefined, cwd: () => string | undefined): { readonly path: string } | { readonly refused: string } {
-	if (started === undefined) return { refused: "the environment this Codex was started with can't be read" };
+export function codexOwnConfig(given: string | undefined, env: NodeJS.ProcessEnv, started: Readonly<Record<string, string>> | undefined, cwd: () => string | undefined, cut?: string): { readonly path: string } | { readonly refused: string } {
+	if (started === undefined) return { refused: cut !== undefined && PATH_VARIABLES.includes(cut) ? spacedPath(cut) : "the environment this Codex was started with can't be read" };
 	let own: string;
 	const set = started.ORRERY_CONFIG;
 	if (set) {
