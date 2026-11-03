@@ -265,8 +265,13 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
   any `orrery` command there, and reads of other agents may work.
 - **Under full access, a rollout can be written.** Codex's workspace-write sandbox keeps the shell out of its session
   files; with full access (`--dangerously-bypass-approvals-and-sandbox`, or `danger-full-access`) a program that
-  appends to a rollout can fake a turn Orrery then records, and one that runs Orrery's session-start hook for a new
-  session before Codex's own hook does takes that session (Codex's own start then names that process).
+  appends to a rollout can fake a turn Orrery then records.
+- **Under full access, a session can be taken first.** With full access, a process the agent starts detached from its
+  session can run Orrery's session-start hook for any Codex session that no other process hosts at that moment: a new
+  one, or an old one you resume later. That process then hosts the session, so when you open or resume it, your Codex
+  is refused in one line that names the process (`Codex process <pid> already hosts it`), and the process can replay
+  the session's turns into another agent's memory. This is the detach limit of [agent sessions](architecture.md#limits),
+  and only an operating-system sandbox would close it.
 - **A process's decision that can't be saved** (which agent this Codex is): resuming inside Codex's own window can then
   decide again in the same process.
 - **`codex queue` adds a turn to a live session.** Any process of yours, the agent's own shell included, can put a
@@ -323,7 +328,8 @@ them wherever Codex's sandbox lets it. Open an agent with `orrery agent <Name> -
   be read, isn't your own thread (a spawned agent's), isn't open in this Codex (or the system can't say which files
   Codex has open), or Codex moved to a session with no turn of it running. The session is not recorded; open the agent
   again with `orrery agent`. With `Codex process <pid> already hosts it`, another Codex has the session open (in
-  another window, say): quit that one, then resume the session here.
+  another window, say): quit that one, then resume the session here. If that process is no Codex of yours, something
+  else took the session (see [its limits in Codex](#its-limits-in-codex)).
 - `Orrery: can't tell which agent this Codex is (…), so it opens no memory and records nothing.`: Orrery takes the
   agent from the `ORRERY_AGENT` and token the Codex process was started with, never from the hook's own environment.
   The reason says which failed: that environment can't be read, the hook's own names another agent or token
