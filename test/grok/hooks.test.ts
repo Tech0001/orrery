@@ -14,7 +14,7 @@ import { sessionDir } from "../../src/claude/paths.ts";
 import { listSessions, pendingEvents, readEvent, readMode, spoolEvent, writeMode } from "../../src/claude/spool.ts";
 import { readUnconfirmed } from "../../src/claude/transcript.ts";
 import { LAUNCH_VARIABLES } from "../../src/codex/pick.ts";
-import { GROK_HOOK_EVENTS, type GrokHookContext, grokOwnConfig, runGrokHook } from "../../src/grok/hooks.ts";
+import { GROK_HOOK_EVENTS, type GrokHookContext, grokOwnConfig, ownConfigNotice, runGrokHook } from "../../src/grok/hooks.ts";
 import { GROK_SHARED, grokFolder } from "../../src/grok/log.ts";
 import { grokStatus } from "../../src/grok/status.ts";
 import { fauxModels } from "../agent/support.ts";
@@ -904,25 +904,40 @@ describe("grokOwnConfig: the host record and the holder take the config Grok was
 		writeFileSync(other, readFileSync(t.configPath, "utf8"));
 		const started = { HOME: home, ORRERY_CONFIG: t.configPath };
 		const another = { refused: "this hook would read another Orrery config than the one this Grok was started with" };
+		// Grok's folder, asked only for a relative ORRERY_CONFIG (lsof on macOS): each time it is, counted.
+		let asked = 0;
+		const folder = () => (asked++, t.folder);
 		// Grok's ORRERY_CONFIG: the hook's own, or a link to that file, is the one.
-		expect(grokOwnConfig(undefined, { HOME: home, ORRERY_CONFIG: t.configPath }, started, t.folder)).toEqual({ path: t.configPath });
+		expect(grokOwnConfig(undefined, { HOME: home, ORRERY_CONFIG: t.configPath }, started, folder)).toEqual({ path: t.configPath });
 		symlinkSync(t.configPath, join(t.dir, "link.toml"));
-		expect(grokOwnConfig(join(t.dir, "link.toml"), { HOME: home }, started, t.folder)).toEqual({ path: t.configPath });
+		expect(grokOwnConfig(join(t.dir, "link.toml"), { HOME: home }, started, folder)).toEqual({ path: t.configPath });
 		// Another: a --config of the caller's, its own ORRERY_CONFIG, or its Orrery home's (no ORRERY_CONFIG of its own).
-		expect(grokOwnConfig(other, { HOME: home, ORRERY_CONFIG: t.configPath }, started, t.folder)).toEqual(another);
-		expect(grokOwnConfig(undefined, { HOME: home, ORRERY_CONFIG: other }, started, t.folder)).toEqual(another);
-		expect(grokOwnConfig(undefined, { HOME: home }, started, t.folder)).toEqual(another);
+		expect(grokOwnConfig(other, { HOME: home, ORRERY_CONFIG: t.configPath }, started, folder)).toEqual(another);
+		expect(grokOwnConfig(undefined, { HOME: home, ORRERY_CONFIG: other }, started, folder)).toEqual(another);
+		expect(grokOwnConfig(undefined, { HOME: home }, started, folder)).toEqual(another);
 		// No ORRERY_CONFIG at Grok's start: its HOME's Orrery home, or its ORRERY_HOME's.
-		expect(grokOwnConfig(undefined, { HOME: home }, { HOME: home }, t.folder)).toEqual({ path: own });
-		expect(grokOwnConfig(undefined, { HOME: home, ORRERY_HOME: join(t.dir, "elsewhere") }, { HOME: home }, t.folder)).toEqual(another);
-		expect(grokOwnConfig(undefined, { HOME: t.dir, ORRERY_HOME: join(home, ".orrery") }, { HOME: home }, t.folder)).toEqual({ path: own });
+		expect(grokOwnConfig(undefined, { HOME: home }, { HOME: home }, folder)).toEqual({ path: own });
+		expect(grokOwnConfig(undefined, { HOME: home, ORRERY_HOME: join(t.dir, "elsewhere") }, { HOME: home }, folder)).toEqual(another);
+		expect(grokOwnConfig(undefined, { HOME: t.dir, ORRERY_HOME: join(home, ".orrery") }, { HOME: home }, folder)).toEqual({ path: own });
+		expect(asked).toBe(0);
 		// A relative ORRERY_CONFIG of Grok's is read from the folder Grok runs in.
-		expect(grokOwnConfig(t.configPath, {}, { HOME: home, ORRERY_CONFIG: "../data/config.toml" }, t.folder)).toEqual({ path: join(t.dir, "data", "config.toml") });
-		expect(grokOwnConfig(t.configPath, {}, { HOME: home, ORRERY_CONFIG: "../data/config.toml" }, undefined)).toEqual({ refused: "the folder Grok runs in can't be read" });
+		expect(grokOwnConfig(t.configPath, {}, { HOME: home, ORRERY_CONFIG: "../data/config.toml" }, folder)).toEqual({ path: join(t.dir, "data", "config.toml") });
+		expect(asked).toBe(1);
+		expect(grokOwnConfig(t.configPath, {}, { HOME: home, ORRERY_CONFIG: "../data/config.toml" }, () => undefined)).toEqual({ refused: "the folder Grok runs in can't be read" });
 		// Grok's environment unread, or saying too little: refused (fail closed).
-		expect(grokOwnConfig(undefined, { HOME: home }, undefined, t.folder)).toEqual({ refused: "the environment this Grok was started with can't be read" });
-		expect(grokOwnConfig(undefined, { HOME: home }, {}, t.folder)).toEqual({ refused: "Grok's environment names no HOME" });
-		expect(grokOwnConfig(undefined, { HOME: home }, { HOME: home, ORRERY_HOME: "relative" }, t.folder)).toEqual({ refused: "Grok's ORRERY_HOME is no absolute path" });
-		expect(grokOwnConfig(undefined, { HOME: home, ORRERY_HOME: "relative" }, { HOME: home }, t.folder)).toEqual({ refused: "this hook's ORRERY_HOME is no absolute path" });
+		expect(grokOwnConfig(undefined, { HOME: home }, undefined, folder)).toEqual({ refused: "the environment this Grok was started with can't be read" });
+		expect(grokOwnConfig(undefined, { HOME: home }, {}, folder)).toEqual({ refused: "Grok's environment names no HOME" });
+		expect(grokOwnConfig(undefined, { HOME: home }, { HOME: home, ORRERY_HOME: "relative" }, folder)).toEqual({ refused: "Grok's ORRERY_HOME is no absolute path" });
+		expect(grokOwnConfig(undefined, { HOME: home, ORRERY_HOME: "relative" }, { HOME: home }, folder)).toEqual({ refused: "this hook's ORRERY_HOME is no absolute path" });
+		expect(asked).toBe(1);
+		// macOS: a path a space cut (src/agent/process.ts processEnvRead) is said as such, with what to do; another
+		// variable isn't.
+		for (const cut of ["ORRERY_CONFIG", "ORRERY_HOME", "GROK_HOME", "HOME"]) {
+			expect(grokOwnConfig(undefined, { HOME: home }, undefined, folder, cut)).toEqual({ refused: `Grok's ${cut} has a space in it, and on macOS Orrery can't confirm a config or home path with one: use a path without spaces` });
+		}
+		expect(grokOwnConfig(undefined, { HOME: home }, undefined, folder, "ORRERY_AGENT")).toEqual({ refused: "the environment this Grok was started with can't be read" });
+		expect(ownConfigNotice("Grok's GROK_HOME has a space in it, and on macOS Orrery can't confirm a config or home path with one: use a path without spaces")).toBe(
+			JSON.stringify({ systemMessage: "Orrery: can't tell which Orrery config this Grok runs with (Grok's GROK_HOME has a space in it, and on macOS Orrery can't confirm a config or home path with one: use a path without spaces), so this session isn't recorded." }),
+		);
 	});
 });

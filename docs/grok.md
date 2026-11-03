@@ -504,7 +504,10 @@ and keeps that agent's rules in its guard (both agents' rules, in another agent'
   `HOME`). The reason says why that can't be told: Grok's start environment or folder can't be read, it names no
   `HOME`, an `ORRERY_HOME` there or the hook's own is no absolute path, or the hook would read another config than
   that one (`ORRERY_CONFIG` or `ORRERY_HOME` changed after Grok started). Open the agent again with `orrery agent
-  <Name> --tool grok`, with the same `ORRERY_HOME` and `ORRERY_CONFIG` throughout.
+  <Name> --tool grok`, with the same `ORRERY_HOME` and `ORRERY_CONFIG` throughout. On macOS, a config, Orrery home or
+  Grok folder whose path has a space in it can't be confirmed, because `ps` shows Grok's environment split at spaces;
+  the reason then says `Grok's ORRERY_CONFIG has a space in it` (or `ORRERY_HOME`, `GROK_HOME`, or `HOME`). Use a path
+  without spaces, and open the agent again. Linux reads the environment whole.
 - `Orrery: this Grok already decided which agent it is under another ORRERY_AGENT or token, so this session runs
   without memory.`: a Grok process decides once whose it is, when its memory server starts or at its first session
   start, and this session start brings another agent or token than that one. Quit that Grok and open the agent with
@@ -594,8 +597,8 @@ Grok keeps its usual files in its folder: its sessions (Orrery reads a session's
 - **macOS is not yet verified.** There Orrery asks `lsof` which files Grok holds open, and `ps` for its environment; if
   either can't say, the session start says so and records nothing. `ps` joins the environment with spaces, so a value
   holding one can't be read for sure: when `HOME`, `GROK_HOME`, `ORRERY_HOME` or `ORRERY_CONFIG` holds a space (or one
-  of them stands twice), Grok's sessions there aren't recorded, and the session start and the status row say it can't
-  tell (fail closed).
+  of them stands twice), Grok's sessions there aren't recorded (fail closed): the session start names the variable with
+  a space in it, and the status row says it can't tell.
   Each hook, status row run and guard call asks `ps` twice there.
 
 For the architecture of hooks and confirmation across tools, see [the architecture guide](architecture.md).

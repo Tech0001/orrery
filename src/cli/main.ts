@@ -1132,7 +1132,7 @@ async function grokHook(event: string | undefined, configPath: string | undefine
 	if (event === "pre-tool-use") return grokGuardHook(configPath);
 	try {
 		const stdin = (await readStdin(Number.POSITIVE_INFINITY)) ?? "";
-		const [hooks, { GROK_START_VARIABLES, grokPid }, { spawnHolder }, { startEnvOf }, { AGENT_ENV }, { processCwd }] = await Promise.all([
+		const [hooks, { GROK_START_VARIABLES, grokPid }, { spawnHolder }, { startEnvRead }, { AGENT_ENV }, { processCwd }] = await Promise.all([
 			import("../grok/hooks.ts"),
 			import("../grok/host.ts"),
 			import("../claude/hooks.ts"),
@@ -1147,10 +1147,12 @@ async function grokHook(event: string | undefined, configPath: string | undefine
 			return 0;
 		}
 		// Grok's own start environment, read once: whose session it is, its Orrery config and its folder (src/grok/hooks.ts).
-		const started = startEnvOf(pid, GROK_START_VARIABLES);
+		const read = startEnvRead(pid, GROK_START_VARIABLES);
+		const started = read !== undefined && "env" in read ? read.env : undefined;
 		const named = (process.env[AGENT_ENV]?.trim() ?? "") !== "" || (started?.[AGENT_ENV]?.trim() ?? "") !== "";
 		// The host record and the holder take the config Grok was started with; a hook that would read another is refused.
-		const own = hooks.grokOwnConfig(configPath, process.env, started, processCwd(pid));
+		// Grok's folder is read only for a relative ORRERY_CONFIG (lsof on macOS).
+		const own = hooks.grokOwnConfig(configPath, process.env, started, () => processCwd(pid), read !== undefined && "cut" in read ? read.cut : undefined);
 		if ("refused" in own) {
 			if (event === "session-start" && named) process.stdout.write(hooks.ownConfigNotice(own.refused));
 			return 0;
