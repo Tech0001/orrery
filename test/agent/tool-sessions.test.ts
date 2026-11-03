@@ -662,6 +662,17 @@ describe("processEnv withoutArgs and unambiguous: whose a Codex is, from the env
 		expect(processEnv(4242, ["HOME"], { ...mac("PATH=/usr/bin HOME=/Users/u u"), unambiguous: false })).toEqual({ HOME: "/Users/u" });
 	});
 
+	it("macOS unambiguous: any word with a name and then = starts a variable of its own, an exported bash function's or a dotted name's among them", () => {
+		const mac = (env: string) => ({ platform: "darwin" as const, withoutArgs: true, unambiguous: true, ps: (arg: readonly string[]) => (arg.includes("-wwE") ? `${args} ${env}\n` : `${args}\n`) });
+		const names = ["ORRERY_AGENT", "ORRERY_AGENT_TOKEN", "HOME"];
+		const whole = { HOME: "/Users/u", ORRERY_AGENT: "Atlas", ORRERY_AGENT_TOKEN: "0123" };
+		expect(processEnv(4242, names, mac("PATH=/usr/bin HOME=/Users/u ORRERY_AGENT=Atlas BASH_FUNC_f%%=() {  echo hi; } ORRERY_AGENT_TOKEN=0123 BASH_FUNC_g%%=() {  :; }"))).toEqual(whole);
+		expect(processEnv(4242, names, mac("PATH=/usr/bin HOME=/Users/u a.b=1 ORRERY_AGENT=Atlas 1st-x=2 ORRERY_AGENT_TOKEN=0123"))).toEqual(whole);
+		// A word with no name before its =, or none at all, is still a value cut by a space.
+		expect(processEnv(4242, names, mac("PATH=/usr/bin HOME=/Users/u ORRERY_AGENT=Atlas =x ORRERY_AGENT_TOKEN=0123"))).toBeUndefined();
+		expect(processEnv(4242, names, mac("PATH=/usr/bin HOME=/Users/u ORRERY_AGENT=Atlas {"))).toBeUndefined();
+	});
+
 	it("Linux: /proc/<pid>/environ holds the environment alone, each variable its own string, read as ever", () => {
 		const read = () => "PATH=/usr/bin\0HOME=/home/u u\0ORRERY_AGENT=Atlas\0";
 		expect(processEnv(4242, ["HOME", "ORRERY_AGENT"], { platform: "linux", withoutArgs: true, unambiguous: true, read })).toEqual({ HOME: "/home/u u", ORRERY_AGENT: "Atlas" });

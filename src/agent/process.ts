@@ -76,8 +76,11 @@ export interface ProcessEnvDeps {
 	readonly unambiguous?: boolean;
 }
 
-/** A word of ps's that starts a variable of its own: a name, then "=". */
-const VARIABLE_WORD = /^[A-Za-z_][A-Za-z0-9_]*=/;
+/**
+ * A word of ps's that starts a variable of its own: a name, then "=". Any name an environment may hold, not only a
+ * shell's: an exported bash function's is BASH_FUNC_<name>%%, and one beside ORRERY_AGENT must not make it unreadable.
+ */
+const VARIABLE_WORD = /^[^\s=]+=/;
 
 /** macOS's ps output for `args` in the C locale and no other environment, or undefined when it fails. */
 function psQuiet(args: readonly string[]): string | undefined {
