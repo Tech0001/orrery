@@ -834,9 +834,11 @@ async function mcpServer(configPath: string | undefined, tool: string | undefine
 	const ours = (agent: AgentConfig) => (inside === undefined || agent.name === inside.agent) && (hostAgent === undefined || agent.name === hostAgent);
 	if (config !== undefined && tool === "codex") {
 		const [{ codexAgent }, { codexPid }] = await Promise.all([import("../codex/pick.ts"), import("../codex/host.ts")]);
-		// Codex starts its servers itself: codexPid() is this server's parent, unless it passed over one by its name.
-		const pick = codexAgent(config, { env: process.env, pid: codexPid(), parent: process.ppid, takeover: true });
-		if (pick.kind === "agent" && ours(pick.agent)) tools = agentTools(config, pick.agent);
+		// Codex starts its servers itself: codexPid() is this server's parent, unless it passed over one by its name. A
+		// shell with no parent of its own was started by no Codex: no tools.
+		const pid = codexPid();
+		const pick = pid === undefined ? undefined : codexAgent(config, { env: process.env, pid, parent: process.ppid, takeover: true });
+		if (pick?.kind === "agent" && ours(pick.agent)) tools = agentTools(config, pick.agent);
 	} else if (config !== undefined) {
 		const [{ claudeSession, markedUnconfirmed }, { liveSession }] = await Promise.all([import("../claude/pick.ts"), import("../agent/sessions.ts")]);
 		const decided = inside !== undefined && liveSession(config.dataDir, process.ppid) !== undefined;
@@ -930,9 +932,12 @@ async function codexGuardHook(configPath: string | undefined): Promise<number> {
 			return denyCodexCall(guard.codexRefusal(`Orrery's config could not be read (${errorText(error)}), so no call can be checked; nothing was run. Fix the config file.`));
 		}
 		const { codexPid } = await import("../codex/host.ts");
+		const pid = codexPid();
+		// A shell with no parent of its own ran this hook, so no Codex did (src/codex/host.ts): nothing of it is let through.
+		if (pid === undefined) return denyCodexCall(guard.codexRefusal("this hook was run by no Codex (the shell that ran it has no parent); nothing was run"));
 		// The file the config came from, as loadConfig found it: the guard keeps it read-only, wherever it is.
 		const configFile = resolvePath(configPath ?? defaultConfigPath());
-		const refusal = guard.runCodexGuard(stdin, { config, env: process.env, codexPid: codexPid(), codexParent: process.ppid, configFile, deadline: CODEX_GUARD_DEADLINE_MS });
+		const refusal = guard.runCodexGuard(stdin, { config, env: process.env, codexPid: pid, codexParent: process.ppid, configFile, deadline: CODEX_GUARD_DEADLINE_MS });
 		return refusal === undefined ? 0 : denyCodexCall(refusal);
 	} catch (error) {
 		return denyCodexCall(`Orrery guard: this call could not be checked (${errorText(error).replace(/\.+$/, "")}); nothing was run`);
@@ -960,6 +965,11 @@ async function codexHook(event: string | undefined, configPath: string | undefin
 			import("../agent/process.ts"),
 		]);
 		const pid = codexPid();
+		// A shell with no parent of its own ran this hook, so no Codex did (src/codex/host.ts): nothing is recorded.
+		if (pid === undefined) {
+			if (event === "session-start") process.stdout.write(hooks.noCodexNotice());
+			return 0;
+		}
 		// Codex's own start environment, read once: whose session it is and its Orrery config (src/codex/hooks.ts).
 		const started = startEnvOf(pid, hooks.CODEX_START_VARIABLES);
 		// The hooks, the host record and the holder take the config Codex was started with; a hook that would read another is refused.

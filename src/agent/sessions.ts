@@ -1125,13 +1125,27 @@ export function toolSession(env: NodeJS.ProcessEnv, deps: SessionDeps & { readon
  * that hold records (judgedFolders), as insideSession reads them; a stale record found is taken down.
  */
 export function recordedCodexIds(dataDirs: readonly string[], deps: SessionDeps = {}): ReadonlySet<string> {
-	const ids = new Set<string>();
+	return new Set(codexRecords(dataDirs, deps).map((found) => found.session));
+}
+
+/**
+ * The processes whose live or unsure record in `dataDirs`, or in a folder above one that holds records, names Codex
+ * session `session`, read as recordedCodexIds reads them; a stale record found is taken down. A Codex's hooks take no
+ * session another process hosts (src/codex/hooks.ts).
+ */
+export function codexSessionHosts(dataDirs: readonly string[], session: string, deps: SessionDeps = {}): number[] {
+	return codexRecords(dataDirs, deps).flatMap((found) => (found.session === session ? [found.pid] : []));
+}
+
+/** Each live or unsure record in `dataDirs` and the folders above them that hold records (judgedFolders) that names a Codex session, with its pid. */
+function codexRecords(dataDirs: readonly string[], deps: SessionDeps): { readonly pid: number; readonly session: string }[] {
+	const found: { readonly pid: number; readonly session: string }[] = [];
 	for (const dataDir of judgedFolders(dataDirs)) {
 		for (const pid of recordedPids(dataDir)) {
-			const found = judged(dataDir, pid, deps);
-			const id = found.kind === "live" || found.kind === "unsure" ? found.record?.codexSession : undefined;
-			if (id !== undefined) ids.add(id);
+			const standing = judged(dataDir, pid, deps);
+			const session = standing.kind === "live" || standing.kind === "unsure" ? standing.record?.codexSession : undefined;
+			if (session !== undefined) found.push({ pid, session });
 		}
 	}
-	return ids;
+	return found;
 }

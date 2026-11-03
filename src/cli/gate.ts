@@ -114,8 +114,8 @@ export interface GateDeps {
 	readonly liveSession?: typeof liveSession;
 	/** This process's parent (default process.ppid): the tool that started an MCP server or the mod's view. */
 	readonly parent?: number;
-	/** Codex's process, for its MCP server (default codexPid from the parent). */
-	readonly codexPid?: () => number;
+	/** Codex's process, for its MCP server (default codexPid from the parent); undefined: none (an orphaned shell). */
+	readonly codexPid?: () => number | undefined;
 	/** How processes are read (src/agent/sessions.ts). */
 	readonly sessions?: SessionDeps;
 	/** The folder the command runs in (default process.cwd()): browse without --out and import --dry-run write there. */
