@@ -25,6 +25,10 @@
  * - Whose session it is comes from the Codex process's own start environment (src/codex/pick.ts launchedEnv), never
  *   from the hook's own: a hook whose own ORRERY_AGENT or token isn't the one Codex was started with (the agent's shell
  *   naming another agent), or whose Codex's can't be read, decides, claims, records and spools nothing.
+ * - The hooks, the host record and the holder take the Orrery config the Codex process was started with (its
+ *   ORRERY_CONFIG, else its Orrery home's or the default: codexOwnConfig); a hook that would load another (its --config,
+ *   its own ORRERY_CONFIG or ORRERY_HOME: a config of the shell's making, whose data folder links the agent's name to
+ *   another agent's folder) is refused, and SessionStart says why.
  * - SessionStart takes a session only when this Codex holds its rollout open, found by the session's id under Codex's
  *   own folder, and the rollout says it is a person's own thread (not a spawned agent's), before it decides, claims or
  *   records anything: no other process can name a session. A Codex older than 0.162.1 doesn't say who started a turn,
@@ -42,8 +46,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
+import { isAbsolute, join, resolve } from "node:path";
+import { type AgentConfig, defaultConfigPath, type HarnessConfig } from "../agent/config.ts";
 import { holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
 import type { PlainDeps } from "../agent/plain-nested.ts";
 import { liveSession, nestedNotice, plainFields, recordSession, type SessionRecord } from "../agent/sessions.ts";
@@ -390,6 +394,58 @@ async function runOwnHook(event: string, stdin: string, ctx: CodexHookContext): 
 			break;
 	}
 	return output === undefined ? "" : JSON.stringify(output);
+}
+
+/**
+ * The variables of the Codex process's start environment a hook reads, at once (module doc): whose session it is, and
+ * the Orrery config it runs with.
+ */
+export const CODEX_START_VARIABLES: readonly string[] = [...LAUNCH_VARIABLES, "ORRERY_CONFIG", "ORRERY_HOME", "HOME"];
+
+/** `path` as it really is, or as given (absolute) when it can't be resolved: two paths name one file when these match. */
+function fileOf(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return resolve(path);
+	}
+}
+
+/**
+ * The Orrery config of the Codex process, which its hooks, host record and holder take (module doc): the one its start
+ * environment (`started`) names, ORRERY_CONFIG (from the folder it runs in, `cwd`, when relative), else its Orrery
+ * home's, or the default, as defaultConfigPath finds them from its own HOME. Or why a hook can't run with it: that
+ * environment can't be read, or says too little, or the config the hook itself would load (its --config `given`, else
+ * its own ORRERY_CONFIG, Orrery home or default, from `env`) is another file.
+ */
+export function codexOwnConfig(given: string | undefined, env: NodeJS.ProcessEnv, started: Readonly<Record<string, string>> | undefined, cwd: string | undefined): { readonly path: string } | { readonly refused: string } {
+	if (started === undefined) return { refused: "the environment this Codex was started with can't be read" };
+	let own: string;
+	const set = started.ORRERY_CONFIG;
+	if (set) {
+		if (!isAbsolute(set) && cwd === undefined) return { refused: "the folder Codex runs in can't be read" };
+		own = isAbsolute(set) ? set : resolve(cwd as string, set);
+	} else {
+		if (!started.HOME) return { refused: "Codex's environment names no HOME" };
+		try {
+			own = defaultConfigPath({ HOME: started.HOME, ...(started.ORRERY_HOME === undefined ? {} : { ORRERY_HOME: started.ORRERY_HOME }) });
+		} catch {
+			return { refused: "Codex's ORRERY_HOME is no absolute path" };
+		}
+	}
+	let would: string;
+	try {
+		would = given ?? defaultConfigPath(env);
+	} catch {
+		return { refused: "this hook's ORRERY_HOME is no absolute path" };
+	}
+	if (fileOf(would) !== fileOf(own)) return { refused: "this hook would read another Orrery config than the one this Codex was started with" };
+	return { path: own };
+}
+
+/** What SessionStart says when codexOwnConfig refuses: nothing is recorded. */
+export function ownConfigNotice(why: string): string {
+	return JSON.stringify({ systemMessage: `Orrery: can't tell which Orrery config this Codex runs with (${safeText(why)}), so it opens no memory and records nothing.` });
 }
 
 /** What SessionStart says when Orrery's config cannot be read: the session runs as plain Codex. */

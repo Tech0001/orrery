@@ -7,10 +7,17 @@ import { cleanEnv, cleanupDirs, cliCommand, testAgent } from "../claude/support.
 
 afterEach(cleanupDirs);
 
-/** Runs `orrery codex-hook <event>` as Codex does: its input as JSON on stdin (a string as it is). */
+/** A stand-in for Codex: it runs the command its arguments name as its child, with its own stdin, stdout and stderr. */
+const RELAY = "const run = require('node:child_process').spawnSync(process.argv[1], process.argv.slice(2), { stdio: 'inherit' }); process.exit(run.status ?? 1)";
+
+/**
+ * Runs `orrery codex-hook <event>` as Codex does: its input as JSON on stdin (a string as it is), from a Codex stand-in
+ * started with the hook's own environment, as `orrery agent` starts Codex (the hooks read the agent and the config back
+ * from it).
+ */
 function hook(event: string, input: object | string, env: Record<string, string> = {}) {
 	const c = cliCommand(["codex-hook", event]);
-	return spawnSync(c.cmd, c.args, { input: typeof input === "string" ? input : JSON.stringify(input), env: cleanEnv(env), encoding: "utf8", timeout: 20_000, maxBuffer: 8 * 1024 * 1024 });
+	return spawnSync(process.execPath, ["-e", RELAY, c.cmd, ...c.args], { input: typeof input === "string" ? input : JSON.stringify(input), env: cleanEnv(env), encoding: "utf8", timeout: 20_000, maxBuffer: 8 * 1024 * 1024 });
 }
 
 /** Agent Test, its config naming `protected.txt` in [guard] protect, and the environment its Codex gives a hook. */

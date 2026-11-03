@@ -323,6 +323,12 @@ them wherever Codex's sandbox lets it. Open an agent with `orrery agent <Name> -
   The reason says which failed: that environment can't be read, or the hook's own names another agent or token
   (something other than this Codex ran the hook, or changed those variables for it). Quit Codex and open the agent
   again with `orrery agent <Name> --tool codex`.
+- `Orrery: can't tell which Orrery config this Codex runs with (…), so it opens no memory and records nothing.`: the
+  hooks use the Orrery config the Codex process was started with (its `ORRERY_CONFIG`, else its `ORRERY_HOME`'s, else
+  the default), never one the hook itself is given. The reason says which failed: that environment can't be read, or
+  the hook would read another config (something other than this Codex ran the hook, or a shell startup file sets
+  `ORRERY_CONFIG` or `ORRERY_HOME` differently for hooks). Quit Codex and open the agent again with
+  `orrery agent <Name> --tool codex`.
 - `Orrery: this Codex already decided which agent it is under another ORRERY_AGENT or token, so this session runs
   without memory.`: a Codex process decides once whose it is, when its memory server starts or at its first session
   start, and this session start brings another agent or token than that one. Quit that Codex and open the agent with

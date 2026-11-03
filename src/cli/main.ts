@@ -943,24 +943,40 @@ async function codexGuardHook(configPath: string | undefined): Promise<number> {
  * `orrery codex-hook <event>`: the hooks `orrery agent --tool codex` gives Codex (src/codex/launch.ts). pre-tool-use is
  * the guard (codexGuardHook). The others record (src/codex/hooks.ts) and never fail the session: exit 0 (a 2 would block
  * the prompt, or keep a turn going), only their JSON answer on stdout, and an error in one stderr line, never with
- * message contents. A config that cannot be read is said at SessionStart; the session then runs as plain Codex.
+ * message contents. They run with the Orrery config the Codex process was started with (its ORRERY_CONFIG, else its
+ * Orrery home's or the default: src/codex/hooks.ts codexOwnConfig), which the holder is given too; one the hook would
+ * read otherwise (a --config of its caller's, its own ORRERY_CONFIG or ORRERY_HOME) is refused. A config that cannot be
+ * read, or refused, is said at SessionStart; the session then runs as plain Codex.
  */
 async function codexHook(event: string | undefined, configPath: string | undefined): Promise<number> {
 	if (event === "pre-tool-use") return codexGuardHook(configPath);
 	try {
 		const stdin = (await readStdin(Number.POSITIVE_INFINITY)) ?? "";
-		const hooks = await import("../codex/hooks.ts");
+		const [hooks, { codexPid }, { spawnHolder }, { startEnvOf }, { processCwd }] = await Promise.all([
+			import("../codex/hooks.ts"),
+			import("../codex/host.ts"),
+			import("../claude/hooks.ts"),
+			import("../codex/pick.ts"),
+			import("../agent/process.ts"),
+		]);
+		const pid = codexPid();
+		// Codex's own start environment, read once: whose session it is and its Orrery config (src/codex/hooks.ts).
+		const started = startEnvOf(pid, hooks.CODEX_START_VARIABLES);
+		// The hooks, the host record and the holder take the config Codex was started with; a hook that would read another is refused.
+		const own = hooks.codexOwnConfig(configPath, process.env, started, processCwd(pid));
+		if ("refused" in own) {
+			if (event === "session-start") process.stdout.write(hooks.ownConfigNotice(own.refused));
+			return 0;
+		}
 		let config: HarnessConfig;
 		try {
-			config = loadConfig(configPath);
+			config = loadConfig(own.path);
 		} catch (error) {
 			if (event === "session-start") process.stdout.write(hooks.configNotice(errorText(error)));
 			return 0;
 		}
-		const [{ codexPid }, { spawnHolder }] = await Promise.all([import("../codex/host.ts"), import("../claude/hooks.ts")]);
-		const pid = codexPid();
-		const startHolder = (agent: AgentConfig, session: string, nonce: string, since: number) => spawnHolder(agent, session, nonce, pid, since, configPath, "codex");
-		process.stdout.write(await hooks.runCodexHook(event ?? "", stdin, { config, env: process.env, codexPid: pid, codexParent: process.ppid, startHolder, updateNotices: true }));
+		const startHolder = (agent: AgentConfig, session: string, nonce: string, since: number) => spawnHolder(agent, session, nonce, pid, since, own.path, "codex");
+		process.stdout.write(await hooks.runCodexHook(event ?? "", stdin, { config, env: process.env, codexPid: pid, codexParent: process.ppid, startHolder, updateNotices: true, envOf: () => started }));
 	} catch (error) {
 		process.stderr.write(`Orrery: ${event ?? "codex-hook"}: ${errorText(error)}\n`);
 	}
