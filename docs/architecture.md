@@ -339,10 +339,8 @@ session's id. pi, OMP, OpenCode's server, `orrery run`, Claude Code (the desktop
 `claude-setup` included), Codex and Grok all record. A record goes when its session closes; one whose process is
 gone, or started at another time (a reused pid), is stale and cleaned up by the next look. A record made in another
 pid namespace, or one that can't be read, is kept, never taken for a dead session: it is no session to the walk
-below, but a marker that points at it means a session whose agent is unknown. A new record never replaces one under
-its pid that may be another process's (made in another pid namespace, one that can't be read, one that holds no
-record): that session isn't recorded instead, and a Codex or Grok session start names the file. Only a stale record, or
-the process's own live one, is replaced, and a session that closes takes down only its own.
+below, but a marker that points at it means a session whose agent is unknown. A new record replaces whatever is
+under its pid, and a session that closes takes down only its own live record.
 
 A command is inside an agent's session when one of its ancestor processes is recorded, live, in a data folder it is
 judged by: Linux walks `/proc`, macOS takes one `ps` snapshot, and the nearest recorded ancestor wins. Its record names
@@ -596,14 +594,19 @@ command it was told to run.
   it can't list as holding no records: a shell that clears its markers and makes that folder unlistable is judged as
   the coding tool's session that is no agent's ([Sessions that are no agent's](#sessions-that-are-no-agents)), whose
   rules are stricter than its agent's.
-- A program that makes its own user and mount namespaces (`unshare -Urm`, say) can show Orrery a different boot id,
-  start times or `/proc` (a bind mount over `/proc/sys/kernel/random/boot_id`, or over a process's `stat`). Any
-  Orrery command it runs there then judges live host records stale, of any tool, in the folders that command looks
-  in, and takes them down. The program can use that to take a live session and replay its turns into another agent's
-  memory, and the person's own recording of it stops without a word. In a pid namespace of its own, it can also take
-  down or replace the saved decisions of which agent each Codex or Grok process is (`codex-processes/`,
-  `grok-processes/`), so a process Orrery kept without memory may decide again at its next start or resume. Orrery
+- A program that makes its own Linux namespaces (`unshare -U` with a pid or mount namespace, say) can make Orrery
+  misjudge which process hosts a session. It can show Orrery a different boot id, start times or `/proc` (a bind mount
+  over `/proc/sys/kernel/random/boot_id`, or over a process's `stat`), take a live tool's pid number in its own pid
+  namespace, and replace or take down host records, process decisions (`codex-processes/`, `grok-processes/`,
+  `claude-processes/`) and Grok's shared marks, of any tool. Taking one down needs no matching pid number: a host
+  record looks stale under a faked boot id or start time, and a decision made in a pid namespace of its own takes down
+  every other decision of its tool whose process it can't see from there. Replacing one needs the pid number of the
+  process it belongs to (and, for a decision, another start time). The program can then take a live session and
+  replay its turns into another agent's memory, and the person's own recording of it stops without a word. Orrery
   doesn't defend against that; an operating-system sandbox would.
+- A Codex, Grok or Claude Code in a sandboxed editor's terminal or a container that shares the data folder can't see
+  the processes of its tool outside it, nor they it. Without meaning to, each takes down the other's decisions at its
+  first start, so a process Orrery kept without memory may decide again at its next start or resume.
 - A tool's `!` passthrough is the agent's shell: a command the person types there is refused like the agent's.
 - `orrery compactor` for the session's own agent runs inside it, by design (so `/orrery:compactor` works): an agent can
   switch its own summary model among the providers, sign-ins and keys already saved in the config. It can add no
