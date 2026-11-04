@@ -600,8 +600,10 @@ command it was told to run.
   start times or `/proc` (a bind mount over `/proc/sys/kernel/random/boot_id`, or over a process's `stat`). Any
   Orrery command it runs there then judges live host records stale, of any tool, in the folders that command looks
   in, and takes them down. The program can use that to take a live session and replay its turns into another agent's
-  memory, and the person's own recording of it stops without a word. Orrery doesn't defend against that; an
-  operating-system sandbox would.
+  memory, and the person's own recording of it stops without a word. In a pid namespace of its own, it can also take
+  down or replace the saved decisions of which agent each Codex or Grok process is (`codex-processes/`,
+  `grok-processes/`), so a process Orrery kept without memory may decide again at its next start or resume. Orrery
+  doesn't defend against that; an operating-system sandbox would.
 - A tool's `!` passthrough is the agent's shell: a command the person types there is refused like the agent's.
 - `orrery compactor` for the session's own agent runs inside it, by design (so `/orrery:compactor` works): an agent can
   switch its own summary model among the providers, sign-ins and keys already saved in the config. It can add no

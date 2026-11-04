@@ -284,7 +284,9 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
   show Orrery a different boot id, start times or `/proc`. Any Orrery command it runs there then judges live host
   records stale, of any tool, in the folders that command looks in, and takes them down. The program can use that to
   take a live session and replay its turns into another agent's memory, and your own recording of it stops without a
-  word. Orrery doesn't defend against that; an operating-system sandbox would.
+  word. In a pid namespace of its own, it can also take down or replace the saved decisions of which agent each Codex
+  process is (`codex-processes/`), so a Codex that Orrery kept without memory may decide again at its next start or
+  resume. Orrery doesn't defend against that; an operating-system sandbox would.
 - **A process's decision that can't be saved** (which agent this Codex is): resuming inside Codex's own window can then
   decide again in the same process.
 - **`codex queue` adds a turn to a live session.** Any process of yours, the agent's own shell included, can put a
