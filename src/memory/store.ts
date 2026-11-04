@@ -166,6 +166,20 @@ export class MemoryStore {
 		return new MemoryStore(path, undefined);
 	}
 
+	/**
+	 * The number of messages in an existing store, read without the writer lock and without loading the store (Grok's
+	 * status row runs several times a second).
+	 */
+	static messageCount(path: string): number {
+		if (!existsSync(path)) throw new StoreError(`No memory store at ${path}`);
+		const db = openDatabase(path, { readOnly: true });
+		try {
+			return Number((db.prepare("SELECT COUNT(*) AS n FROM main").get() as { n: number | bigint }).n);
+		} finally {
+			db.close();
+		}
+	}
+
 	private constructor(path: string, lock: (() => void) | undefined) {
 		this.path = path;
 		this.#lock = lock;

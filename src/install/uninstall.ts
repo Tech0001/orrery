@@ -1,8 +1,9 @@
 /**
- * orrery uninstall [--purge] (spec 2026-10-13-orrery-releases-design §5): unwires pi, OMP and Claude Code, and removes
- * the command link, the Linux backup service and app/. Only what is provably Orrery's own is touched: an extension file
- * that is exactly Orrery's one line naming an entry under this home's app/, a command link, plugin or backup unit that
- * names this home's app/, and in app/ only what installs put there. Agents' memory, config and logins stay. --purge
+ * orrery uninstall [--purge] (spec 2026-10-13-orrery-releases-design §5): unwires pi, OMP, Claude Code and Grok, and
+ * removes the command link, the Linux backup service and app/. Only what is provably Orrery's own is touched: an extension
+ * file that is exactly Orrery's one line naming an entry under this home's app/, a command link, plugin or backup unit
+ * that names this home's app/, Grok's hook file and config tables as Orrery wrote them for it, and in app/ only what
+ * installs put there. Agents' memory, config and logins stay. --purge
  * asks first and then also deletes the whole home, only when the person types delete and the folder is a real Orrery
  * home that does not hold their home folder.
  */
@@ -12,7 +13,8 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { realTarget } from "../agent/guard-paths.ts";
 import { orreryHome, passwordHome } from "../agent/home.ts";
-import { findOnPath, ompExtensionFile, orreryPlugin, piExtensionFile, type RunResult, type Runner } from "../agent/tools.ts";
+import { findOnPath, ompExtensionFile, orreryPlugin, piExtensionFile, rewriteKeepingCopy, type RunResult, type Runner } from "../agent/tools.ts";
+import { grokFiles, grokHookTarget, removeGrokConfig } from "../grok/install.ts";
 import { dropVersion, envRunner, holdInstallLock, isLeftover, agentVersions, removeVersion } from "./install.ts";
 import { ENTRY_TAILS, inApp, oneLineTarget, VERSION_NAME } from "./layout.ts";
 
@@ -101,6 +103,80 @@ function unwireClaude(report: Report, env: NodeJS.ProcessEnv, app: string, run: 
 		}
 		report.lines.push(`Claude Code: claude ${args.join(" ")}`);
 	}
+}
+
+/**
+ * Removes Orrery's Grok wiring of this home's app/ (src/grok/install.ts): Grok's hook file when it is exactly Orrery's
+ * and runs a command under app/, and the config tables that still read as Orrery wrote them for app/current's command
+ * (removeGrokConfig), after a copy of the config; everything else in it stays. Uninstall runs it, and so do setup and
+ * update when app/current is a version without Grok's hooks (an older Orrery answers grok-hook with an error, which
+ * blocks every prompt). Its lines start with "Grok: "; `ok` is false when something of Orrery's may be left, `changed`
+ * true when something was removed.
+ */
+export function unwireGrok(env: NodeJS.ProcessEnv, app: string): { lines: string[]; ok: boolean; changed: boolean } {
+	const report: Report & { changed: boolean } = { lines: [], ok: true, changed: false };
+	const { hooks, config } = grokFiles(env);
+	let text: string | undefined;
+	try {
+		if (lstatSync(hooks).isFile()) text = readFileSync(hooks, "utf8");
+		else report.lines.push(`Grok: left ${hooks} as it is (not a plain file, so not Orrery's)`);
+	} catch (error) {
+		if (code(error) === "ENOENT") report.lines.push(`Grok: no Orrery hooks (${hooks} is not there)`);
+		else {
+			report.lines.push(`Grok: could not read ${hooks}: ${errorText(error)}`);
+			report.ok = false;
+		}
+	}
+	const target = text === undefined ? undefined : grokHookTarget(text);
+	if (text !== undefined && target === undefined) report.lines.push(`Grok: left ${hooks} as it is (not Orrery's hook file)`);
+	else if (target !== undefined && !inApp(app, target, ENTRY_TAILS.cli)) report.lines.push(`Grok: left ${hooks} as it is (it runs ${target}, not this install)`);
+	else if (target !== undefined) {
+		try {
+			rmSync(hooks);
+			report.lines.push(`Grok: removed ${hooks}`);
+			report.changed = true;
+		} catch (error) {
+			report.lines.push(`Grok: could not remove ${hooks}: ${errorText(error)}`);
+			report.ok = false;
+		}
+	}
+	let before: string;
+	try {
+		before = readFileSync(config, "utf8");
+	} catch (error) {
+		if (code(error) === "ENOENT") return report;
+		report.lines.push(`Grok: could not read ${config}: ${errorText(error)}`);
+		report.ok = false;
+		return report;
+	}
+	let next = before;
+	const removed: string[] = [];
+	let kept: string[] = [];
+	try {
+		// Orrery writes app/current's command, of either install shape.
+		for (const tail of ENTRY_TAILS.cli) {
+			const pass = removeGrokConfig(next, join(app, "current", tail));
+			next = pass.next;
+			removed.push(...pass.removed);
+			kept = pass.kept;
+		}
+	} catch (error) {
+		report.lines.push(`Grok: left ${config} as it is (it can't be read as TOML: ${errorText(error)})`);
+		report.ok = false;
+		return report;
+	}
+	if (removed.length > 0) {
+		try {
+			const copy = rewriteKeepingCopy(config, next);
+			report.lines.push(`Grok: removed ${removed.map((name) => `[${name}]`).join(" and ")} from ${config} (its copy from before: ${copy})`);
+			report.changed = true;
+		} catch (error) {
+			report.lines.push(`Grok: could not change ${config}: ${errorText(error)}`);
+			report.ok = false;
+		}
+	}
+	for (const name of kept) report.lines.push(`Grok: left [${name}] in ${config} as it is (not as Orrery wrote it for this install)`);
+	return report;
 }
 
 /** The script a unit's ExecStart value runs: %h is the user's home; a quoted value is read as setup writes it. */
@@ -357,6 +433,9 @@ export async function uninstall(options: { env: NodeJS.ProcessEnv; purge: boolea
 			unwireExtension(report, "OMP", omp, app);
 		}
 		unwireClaude(report, env, app, run);
+		const grok = unwireGrok(env, app);
+		report.lines.push(...grok.lines);
+		if (!grok.ok) report.ok = false;
 		unwireBackup(report, env, userHome, app, run);
 		unlinkCommand(report, userHome, app);
 		removeApp(report, app, release);

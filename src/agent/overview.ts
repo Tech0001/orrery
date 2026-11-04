@@ -14,7 +14,7 @@ import { backupFinder } from "./backup.ts";
 import { type BuildState, buildRunning, readBuild } from "./build.ts";
 import { COMPACTOR_MODEL_KEY, storedChoice } from "./choices.ts";
 import { type HarnessConfig, type AgentConfig, type AgentLauncher, type AgentTool, type ModelChoice, THINKING_LEVELS, type ThinkingLevel } from "./config.ts";
-import { holderFresh, readHolder } from "./handover.ts";
+import { holderFresh, holderHost, readHolder } from "./handover.ts";
 import { instructionsFacts, type InstructionsState } from "./instructions.ts";
 import { processAlive } from "./process.ts";
 import { safeText } from "./source-labels.ts";
@@ -43,7 +43,7 @@ export interface AgentRow {
 	readonly unknownTool?: string;
 	readonly state: AgentState;
 	/** The tool that has the agent open, when one does. */
-	readonly openIn?: "pi" | "omp" | "claude-code" | "codex" | "opencode";
+	readonly openIn?: "pi" | "omp" | "claude-code" | "codex" | "opencode" | "grok";
 	/** The agent's default folder; absent: it opens wherever it is opened. */
 	readonly folder?: string;
 	readonly dataDir: string;
@@ -77,7 +77,7 @@ export interface AgentRow {
 /** A pi status older than this belongs to a pi that is gone: pi rewrites it every 5 s. */
 export const STATUS_FRESH_MS = 30_000;
 
-export const TOOL_LABELS: Record<AgentTool, string> = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", opencode: "OpenCode" };
+export const TOOL_LABELS: Record<AgentTool, string> = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", opencode: "OpenCode", grok: "Grok" };
 
 /** An agent's tool as said to a person: its label, or a tool this version doesn't know (AgentRow.unknownTool) by its name. */
 export const toolLabel = (row: Pick<AgentRow, "tool" | "unknownTool">): string => (row.unknownTool === undefined ? TOOL_LABELS[row.tool] : `${safeText(row.unknownTool)} (unknown tool)`);
@@ -240,14 +240,14 @@ function agentRow(agent: AgentConfig, now: number, cache: OverviewCache, alive: 
 	const status = readStatus(agent.dir);
 	const holder = readHolder(agent.dir);
 	let state: AgentState = "closed";
-	let openIn: "pi" | "omp" | "claude-code" | "codex" | "opencode" | undefined;
-	// A recorder's host: Codex when its holder.json says so (status.json's model names it too), else Claude Code.
-	const recorderHost = holder?.host === "codex" ? "codex" : "claude-code";
+	let openIn: "pi" | "omp" | "claude-code" | "codex" | "opencode" | "grok" | undefined;
+	// A recorder's host: Codex or Grok when its holder.json says so (status.json's model names it too), else Claude Code.
+	const recorderHost = holder === undefined ? "claude-code" : holderHost(holder);
 	if (holderFresh(holder, now)) {
 		openIn = recorderHost;
 		state = holder.state === "finishing" ? "finishing" : status?.busy === true && status.model === recorderHost ? "working" : "open";
 	} else if (status !== undefined && status.open !== false && alive(status.pid) && now - Date.parse(status.updatedAt) < STATUS_FRESH_MS) {
-		openIn = status.model === "claude-code" || status.model === "codex" || status.model === "opencode" ? status.model : status.model === "omp" ? "omp" : "pi";
+		openIn = status.model === "claude-code" || status.model === "codex" || status.model === "opencode" || status.model === "grok" ? status.model : status.model === "omp" ? "omp" : "pi";
 		state = status.busy ? "working" : "open";
 	}
 	const instructions = instructionsFacts(agent.dir);
@@ -255,7 +255,7 @@ function agentRow(agent: AgentConfig, now: number, cache: OverviewCache, alive: 
 		name: agent.name,
 		launcher: agent.launcher ?? "direct",
 		...(agent.oriModel === undefined ? {} : { oriModel: agent.oriModel }),
-		tool: agent.tool ?? (status?.model === "codex" ? "codex" : status?.model === "claude-code" || holder !== undefined ? recorderHost : status?.model === "omp" ? "omp" : status?.model === "opencode" ? "opencode" : "pi"),
+		tool: agent.tool ?? (status?.model === "codex" ? "codex" : status?.model === "claude-code" || holder !== undefined ? recorderHost : status?.model === "omp" ? "omp" : status?.model === "opencode" ? "opencode" : status?.model === "grok" ? "grok" : "pi"),
 		toolSet: agent.tool !== undefined,
 		...unknownToolOf(agent),
 		state,

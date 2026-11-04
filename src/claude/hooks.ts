@@ -46,8 +46,6 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { type HarnessConfig, type AgentConfig, agentForCwd } from "../agent/config.ts";
-import { agentViews, GuardCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials } from "../agent/guard-paths.ts";
-import { orreryHome } from "../agent/home.ts";
 import { cutNotice, readInstructions } from "../agent/instructions.ts";
 import { nestedRules, type WriteRules } from "../agent/nested-rules.ts";
 import { opensHere, type PlainDeps } from "../agent/plain-nested.ts";
@@ -57,8 +55,9 @@ import { processAlive } from "../agent/process.ts";
 import { liveSession, processStart } from "../agent/sessions.ts";
 import { selfCommand } from "../agent/running.ts";
 import { safeText } from "../agent/source-labels.ts";
+import { NOT_RECORDED, type StatusState, statusText } from "../agent/status-text.ts";
 import { type HolderHost, holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
-import { claudeGuard, claudeStateRoots, movedConfigDirCredentials } from "./guard.ts";
+import { agentGuardOptions, claudeGuard, claudeStateRoots, plainGuardOptions } from "./guard.ts";
 import { summaryNotice, updateNotice } from "./notices.ts";
 import { holderLog, samePath, validSession } from "./paths.ts";
 import { type CallerCheck, checkCaller, type StdinPeer, stdinPeer, unsupportedCause } from "./peer.ts";
@@ -493,7 +492,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	if (liveSession(ctx.config.dataDir, ctx.claudePid) === undefined && processAlive(ctx.claudePid)) {
 		warnings.push(`Orrery: this session could not be recorded as ${agent.name}'s, so tools and commands started from it are not known as ${agent.name}'s.`);
 	}
-	let state = "recording";
+	let state: StatusState = "recording";
 	// Where the session's prompts are confirmed (src/claude/transcript.ts), or why they can't be. Subagents' events are
 	// not memory.
 	const confirm = input.agent_id === undefined ? confirmable(input, ctx) : undefined;
@@ -522,7 +521,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	if (unconfirmable !== undefined && !keep) {
 		// Its prompts can't be confirmed: none of it is recorded, whatever comes later.
 		markNotConfirmable(agent, session, ctx, unconfirmable.notice);
-		state = "read-only: this session is not recorded";
+		state = NOT_RECORDED;
 	} else {
 		let mode: SessionMode | undefined;
 		if (recordingHere) mode = readMode(agent.dir, session);
@@ -537,7 +536,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 			state = "not recording yet";
 			warnings.push(`Orrery: ${agent.name}'s recorder did not answer in time; see ${holderLog(agent.dir)}.`);
 		} else if (mode.mode === "read-only") {
-			state = "read-only: this session is not recorded";
+			state = NOT_RECORDED;
 			if (genericHeld) warnings.push(`Orrery: ${agent.name} is ${openElsewhere(agent.dir, "claude-code")}; this session reads memory but is not recorded.`);
 		}
 		// A recording recorder's notices (memory kept aside, unsaved turns kept) are said once per recorder start, not
@@ -571,7 +570,7 @@ export async function sessionStart(input: HookInput, ctx: HookContext): Promise<
 	}
 	// For the user only (systemMessage), never the model's context; this also records the session's key.
 	const summaries = notice(input, ctx) as { systemMessage?: string } | undefined;
-	const status = `Orrery · ${agent.name} · ${messages === undefined ? "no memory yet" : `${messages} msgs`} · ${state}${mod ? " · memory from the Orrery mod" : ""}`;
+	const status = statusText({ name: agent.name, count: messages, state, extra: mod ? ["memory from the Orrery mod"] : [] });
 	const shown = [...warnings, ...(summaries?.systemMessage ? [summaries.systemMessage] : [])];
 	return {
 		// With no memory yet the mod adds no section by design, so there is nothing for the model to look for.
@@ -612,52 +611,18 @@ export function preToolUse(input: HookInput, ctx: HookContext): object | undefin
 		const toolInput = typeof input.tool_input === "object" && input.tool_input !== null ? (input.tool_input as Record<string, unknown>) : {};
 		const home = ctx.home ?? homedir();
 		const cwd = typeof input.cwd === "string" ? input.cwd : projectDir;
-		const configFile = ctx.configFile === undefined ? {} : { configFile: ctx.configFile };
 		if (plainHere(pick, ctx.config, projectDir)) {
-			// One guard call: the rules every path it names is judged by are worked out once (guard-paths.ts GuardCall).
-			// Orrery's credentials file alone: the tools' own logins are no files of Orrery's. Every agent's view is
-			// another's: the session reads no agent's memory. The Orrery home the environment names, for its program.
-			reason = claudeGuard(input.tool_name, toolInput, {
-				call: new GuardCall(),
-				orreryOnly: true,
-				folder: projectDir,
-				allowedRoots: [],
-				cwd,
-				credentials: [ctx.config.credentialsPath],
-				orreryData: ctx.config.dataDir,
-				home,
-				...agentViews(ctx.config),
-				...configFile,
-				...namedHome({ ...ctx.env, HOME: home }),
-			});
+			reason = claudeGuard(input.tool_name, toolInput, plainGuardOptions(ctx.config, ctx.env, home, projectDir, cwd, ctx.configFile));
 		} else {
+			// The session's write rules, and Claude Code's own state (claudeStateRoots).
 			const rules = writeRules(pick, ctx.config, projectDir);
-			reason = claudeGuard(input.tool_name, toolInput, {
-				call: new GuardCall(),
-				folder: rules.workArea,
-				allowedRoots: [...rules.allowedRoots, ...claudeStateRoots(projectDir, home, ctx.env)],
-				cwd,
-				credentials: [ctx.config.credentialsPath, ...movedAgentDirCredentials(ctx.env, home), ...movedConfigDirCredentials(ctx.env), ...ompCredentials(ctx.env, home), ...openCodeCredentials(ctx.env, home)],
-				orreryData: ctx.config.dataDir,
-				home,
-				protect: ctx.config.guard.protect,
-				...agentViews(ctx.config, pick.kind === "agent" ? pick.agent : undefined),
-				...configFile,
-			});
+			const options = agentGuardOptions(ctx.config, ctx.env, home, cwd, rules, pick.kind === "agent" ? pick.agent : undefined, ctx.configFile);
+			reason = claudeGuard(input.tool_name, toolInput, { ...options, allowedRoots: [...rules.allowedRoots, ...claudeStateRoots(projectDir, home, ctx.env)] });
 		}
 	} catch (error) {
 		reason = `this call could not be checked (${errorText(error)}).`;
 	}
 	return reason === undefined ? undefined : deny(reason);
-}
-
-/** The Orrery home `env` names (orreryHome), for the guard of a session that is no agent's; none when it can't be read. */
-function namedHome(env: NodeJS.ProcessEnv): { readonly orreryHome?: string } {
-	try {
-		return { orreryHome: orreryHome(env) };
-	} catch {
-		return {}; // a relative ORRERY_HOME: no folder beside a config counts as Orrery's home
-	}
 }
 
 /**
@@ -728,17 +693,17 @@ export async function runHook(event: string, stdin: string | undefined, ctx: Hoo
 
 /**
  * `orrery holder`'s arguments for a session of `host`'s process `hostPid`: Claude Code's with --claude-pid, as always;
- * Codex's with --host-pid and --tool codex.
+ * Codex's or Grok's with --host-pid and --tool codex or grok.
  */
 export function holderArgs(agent: AgentConfig, session: string, nonce: string, hostPid: number, since: number, configPath?: string, host: HolderHost = "claude-code"): string[] {
-	const owner = host === "codex" ? ["--host-pid", String(hostPid), "--tool", "codex"] : ["--claude-pid", String(hostPid)];
+	const owner = host === "claude-code" ? ["--claude-pid", String(hostPid)] : ["--host-pid", String(hostPid), "--tool", host];
 	const args = ["holder", agent.name, "--session", session, ...owner, "--nonce", nonce, "--since", String(since)];
 	if (configPath !== undefined) args.push("--config", configPath);
 	return args;
 }
 
 /**
- * Starts `orrery holder` detached, so it outlives this hook and its host, Claude Code or Codex (Phase 0, finding 4).
+ * Starts `orrery holder` detached, so it outlives this hook and its host, Claude Code, Codex or Grok (Phase 0, finding 4).
  * `since` is when SessionStart ran: a run that turns read-only drops this session's events from then on.
  */
 export function spawnHolder(agent: AgentConfig, session: string, nonce: string, claudePid: number, since: number, configPath?: string, host: HolderHost = "claude-code"): void {

@@ -9,11 +9,11 @@
  * answer is an Inside with `plain`, the tool it was started from:
  * - toolSession (src/agent/sessions.ts) about the tool's host process's ancestors, never the host itself, with the host
  *   as its own tool (`own`): its own launcher right above it, by the shape the tool starts it in, is passed over (npm's
- *   Codex launcher above Codex's binary, OpenCode's --standalone TUI above its `serve --stdio` server, the Claude Code
- *   desktop app's disclaimer); any other process of its tool above it is an outer session. Its own tool's markers count
- *   only where the host was started with them, never under the desktop app's wrapper: in a cut walk any of them, and on
- *   Linux in a whole walk too CLAUDECODE, PI_CODING_AGENT or CODEX_THREAD_ID (a same-tool start detached or in the
- *   background; toolSession). `orrery run` is no coding tool: every tool's markers count for it. A Codex id a live
+ *   Codex or Grok launcher above the tool's binary, OpenCode's --standalone TUI above its `serve --stdio` server, the
+ *   Claude Code desktop app's disclaimer); any other process of its tool above it is an outer session. Its own tool's
+ *   markers count only where the host was started with them, never under the desktop app's wrapper: in a cut walk any
+ *   of them, and on Linux in a whole walk too CLAUDECODE, PI_CODING_AGENT or CODEX_THREAD_ID (a same-tool start detached
+ *   or in the background; toolSession). `orrery run` is no coding tool: every tool's markers count for it. A Codex id a live
  *   record names is an agent's Codex session, no marker.
  * - Only where the tool's config touches the user's real Orrery data (src/agent/real-data.ts, configPaths): a scratch
  *   home holds no agent's memory to protect, and tests run tools against scratch homes from inside coding tools.
@@ -42,7 +42,7 @@ export interface PlainDeps {
 }
 
 /** Each session tool as toolSession names a coding tool: `orrery run` is none. */
-const OWN: Readonly<Record<SessionTool, string | undefined>> = { "claude-code": "claude", codex: "codex", opencode: "opencode", pi: "pi", omp: "omp", run: undefined };
+const OWN: Readonly<Record<SessionTool, string | undefined>> = { "claude-code": "claude", codex: "codex", opencode: "opencode", grok: "grok", pi: "pi", omp: "omp", run: undefined };
 
 /** The markers that hold a Codex session's id (src/agent/sessions.ts TOOL_MARKERS). */
 const CODEX_IDS = ["CODEX_THREAD_ID", "CODEX_SESSION_ID"] as const;

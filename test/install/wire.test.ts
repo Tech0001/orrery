@@ -3,8 +3,10 @@ import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { pathAdvice, terminalConfirm } from "../../src/install/ask.ts";
 import { leftWarning, wire, wireReport } from "../../src/install/wire.ts";
+import { parse } from "smol-toml";
 import { ompExtensionFile, ompExtensionText, piExtensionFile, piExtensionText } from "../../src/agent/tools.ts";
-import { addVersion, cleanupScratch, fakeRun, installedScratch, pointCurrent, tempDir, VERSION, writePiExtension } from "./support.ts";
+import { grokHookFile, grokStatusCommand } from "../../src/grok/install.ts";
+import { addVersion, cleanupScratch, fakeRun, grokScratch, installedScratch, pointCurrent, tempDir, VERSION, writePiExtension } from "./support.ts";
 
 afterEach(cleanupScratch);
 
@@ -388,5 +390,44 @@ describe("what wiring leaves behind", () => {
 		expect(both.left).toEqual([]);
 		expect(both.unchecked).toEqual([]);
 		expect(both.lines.join("\n")).toMatch(/OMP/);
+	});
+});
+
+describe("Grok", () => {
+	it("wires Grok, once asked, when grok is on PATH or Grok's folder is there: the hook file and both config entries", async () => {
+		for (const found of ["on PATH", "folder"] as const) {
+			const t = grokScratch({ grokHome: found === "folder", ...(found === "on PATH" ? { tools: { grok: 'echo "grok 1.0.70 (f50904eaee6c) [stable]"' } } : {}) });
+			const hooks = join(t.grok, "hooks", "orrery.json");
+			const config = join(t.grok, "config.toml");
+			const orrery = join(t.current, "bin", "orrery");
+			const asked: string[] = [];
+			const { lines, left } = await wireReport(t.env, { run: fakeRun, confirm: async (what) => (asked.push(what), true) });
+			expect(notClaude(asked), found).toEqual([`Connect Orrery to Grok? (writes ${hooks}, adds Orrery's status row and memory tools to ${config})`]);
+			expect(readFileSync(hooks, "utf8")).toBe(grokHookFile(orrery));
+			expect(parse(readFileSync(config, "utf8"))).toEqual({
+				ui: { status_line: { type: "command", command: grokStatusCommand(orrery) } },
+				mcp_servers: { orrery: { command: orrery, args: ["mcp", "--tool", "grok"], env: { ORRERY_AGENT: "${ORRERY_AGENT:-}", ORRERY_AGENT_TOKEN: "${ORRERY_AGENT_TOKEN:-}" } } },
+			});
+			expect(lines).toContain(`Grok: wrote ${hooks}`);
+			expect(left).toEqual([]);
+			// A Grok folder made for the files is private, as Grok makes its own.
+			if (found === "on PATH") expect([statSync(t.grok).mode & 0o777, statSync(config).mode & 0o777]).toEqual([0o700, 0o600]);
+		}
+	});
+
+	it("says Grok is not found on PATH and wires nothing when neither grok nor Grok's folder is there", async () => {
+		const t = grokScratch({ grokHome: false });
+		const { lines, left } = await wireReport(t.env, { run: fakeRun, confirm: connectOnly("Claude Code") });
+		expect(lines).toContain("Grok: not found on PATH; not wired");
+		expect(left).toEqual([]);
+		expect(existsSync(t.grok)).toBe(false);
+	});
+
+	it("leaves Grok unconnected when the connection is declined, and lists it", async () => {
+		const t = grokScratch();
+		const { lines, left } = await wireReport(t.env, { run: fakeRun, confirm: async (what) => !what.startsWith("Connect Orrery to Grok? (") });
+		expect(lines).toContain("Grok: not connected");
+		expect(left).toEqual(["Grok (not connected)"]);
+		expect(readdirSync(t.grok)).toEqual([]);
 	});
 });

@@ -2,7 +2,7 @@
 
 import { execFileSync, type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll } from "vitest";
 import { gitEnv } from "../../src/claude/git.ts";
@@ -96,13 +96,14 @@ export function messages(agent: AgentConfig): string[] {
 }
 
 type Spooled =
-	| { kind: "prompt"; text: string; promptId?: string; host?: "codex"; turnId?: string }
-	| { kind: "reply"; text: string; host?: "codex"; turnId?: string }
+	| { kind: "prompt"; text: string; promptId?: string; host?: "codex" | "grok"; turnId?: string }
+	| { kind: "reply"; text: string; host?: "codex" | "grok"; turnId?: string; promptId?: string }
 	| { kind: "command" }
 	| { kind: "end"; reason?: string }
 	| { kind: "compactor"; args: string }
 	| { kind: "transcript"; path: string; projects: string; offset: number }
-	| { kind: "rollout"; path: string; home: string; offset: number; file?: string };
+	| { kind: "rollout"; path: string; home: string; offset: number; file?: string }
+	| { kind: "grok-log"; path: string; home: string; offset: number; file?: string };
 let clock = 0;
 
 /**
@@ -162,8 +163,64 @@ function scratchHome(): string {
 	return childHome;
 }
 
+let grokFolder: string | undefined;
+
+/**
+ * `cmd args` as a child of a stand-in for Grok Build: a copy of /bin/sh named grok (one per test file), so the system
+ * names that parent grok, as it names Grok's own program, and the child's host is a Grok. The copy runs the command and
+ * waits for it, so it stays the parent. Returns what to spawn.
+ */
+export function grokLaunch(cmd: string, args: readonly string[]): [string, string[]] {
+	if (grokFolder === undefined || !existsSync(grokFolder)) {
+		grokFolder = tempDir("orrery-grok-program-");
+		copyFileSync("/bin/sh", join(grokFolder, "grok"));
+		chmodSync(join(grokFolder, "grok"), 0o755);
+	}
+	return [join(grokFolder, "grok"), ["-c", '"$@"; exit $?', "grok", cmd, ...args]];
+}
+
+let leaderFolder: string | undefined;
+
+/**
+ * The folder to start grokLeaderLaunch's and grokWorkerLaunch's commands in: it holds the scripts `agent` and `worker`,
+ * which node runs from there as `node agent leader …` and `node worker … start …`, so that process's command line is
+ * Grok's shared leader's (`<grok> agent leader …`, leader mode; `<grok> worker start`, one run in its own process).
+ */
+export function grokLeaderFolder(): string {
+	if (leaderFolder === undefined || !existsSync(leaderFolder)) {
+		leaderFolder = tempDir("orrery-grok-leader-");
+		// Runs the command its last argument names, as its child, with the leader's stdin, stdout and stderr; exits as it does.
+		const script = `import("node:child_process").then(({ spawn }) => {\n\tconst [cmd, ...args] = JSON.parse(process.argv[process.argv.length - 1]);\n\tspawn(cmd, args, { stdio: "inherit" }).on("exit", (code) => process.exit(code ?? 1));\n});\n`;
+		for (const name of ["agent", "worker"]) writeFileSync(join(leaderFolder, name), script);
+	}
+	return leaderFolder;
+}
+
+/**
+ * `cmd args` as a child of a stand-in for Grok's shared leader (leader mode: Grok 1.0.70 starts it as `<grok binary>
+ * agent leader --no-exit-on-disconnect …`), which runs every session's hooks and MCP servers. Spawn it in
+ * grokLeaderFolder(). Returns what to spawn.
+ */
+export function grokLeaderLaunch(cmd: string, args: readonly string[]): [string, string[]] {
+	grokLeaderFolder();
+	return [process.execPath, ["agent", "leader", "--no-exit-on-disconnect", JSON.stringify([cmd, ...args])]];
+}
+
+/**
+ * The same as grokLeaderLaunch's, under `grok worker start`, which runs Grok's shared leader in its own process
+ * (1.0.70's help).
+ */
+export function grokWorkerLaunch(cmd: string, args: readonly string[]): [string, string[]] {
+	grokLeaderFolder();
+	return [process.execPath, ["worker", "--name", "w", "start", JSON.stringify([cmd, ...args])]];
+}
+
 // Imported at the top of a test file, this hook is that file's.
 afterAll(() => {
+	if (grokFolder !== undefined) rmSync(grokFolder, { recursive: true, force: true });
+	grokFolder = undefined;
+	if (leaderFolder !== undefined) rmSync(leaderFolder, { recursive: true, force: true });
+	leaderFolder = undefined;
 	if (childHome !== undefined) rmSync(childHome, { recursive: true, force: true });
 	childHome = undefined;
 	if (transcriptsRoot !== undefined) rmSync(transcriptsRoot, { recursive: true, force: true });
@@ -181,8 +238,8 @@ export function cleanEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
 }
 
 /**
- * A Codex process's start environment, as src/codex/pick.ts startEnvOf reads one: the variables asked for that `env`
- * sets. For a hook context whose Codex was started with `env`, as `orrery agent` starts one.
+ * A host process's start environment, as src/codex/pick.ts startEnvOf reads one: the variables asked for that `env`
+ * sets. For a hook context whose host (a Codex or a Grok) was started with `env`, as `orrery agent` starts one.
  */
 export function startedWith(env: Readonly<Record<string, string | undefined>>): (pid: number, names: readonly string[]) => Readonly<Record<string, string>> {
 	return (_pid, names) => Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, env[name] as string]])));

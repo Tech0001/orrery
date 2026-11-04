@@ -24,7 +24,7 @@ afterEach(() => {
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-const tool = (id: ToolCheck["id"], fields: Partial<ToolCheck> = {}): ToolCheck => ({ id, label: { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", opencode: "OpenCode", ori: "Ori", wrangler: "wrangler" }[id], path: `/bin/${id}`, version: id === "codex" ? "codex-cli 0.162.1" : id === "opencode" ? "opencode v2.0.30" : "1", wiring: id === "codex" || id === "opencode" ? "memory" : "installed", detail: "", ...fields });
+const tool = (id: ToolCheck["id"], fields: Partial<ToolCheck> = {}): ToolCheck => ({ id, label: { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", opencode: "OpenCode", grok: "Grok", ori: "Ori", wrangler: "wrangler" }[id], path: `/bin/${id}`, version: id === "codex" ? "codex-cli 0.162.1" : id === "opencode" ? "opencode v2.0.30" : "1", wiring: id === "codex" || id === "opencode" || id === "grok" ? "memory" : "installed", detail: "", ...fields });
 
 /** Summary sources with an Anthropic key saved, in a temp folder (offline: listing models makes no call). */
 async function anthropicSources() {
@@ -235,6 +235,36 @@ describe("L launch", () => {
 		await answer(none, "Open Alpha where?", DOWN, ENTER);
 		await none.idle();
 		expect(screen(none)).toContain("pi is not on PATH");
+	});
+
+	it("asks to connect Orrery to Grok before a Grok launch: no launches nothing and changes nothing, yes connects it, then opens Grok", async () => {
+		// Grok's folder for this test alone: empty, so Orrery's side of Grok is missing there.
+		const grok = tempDir("orrery-tui-grok-");
+		dirs.push(grok);
+		vi.stubEnv("GROK_HOME", grok);
+		const fixes: string[] = [];
+		const plans: LaunchPlan[] = [];
+		const deps = fakeDeps(
+			{ tools: () => [tool("pi"), tool("grok", { wiring: "missing", detail: `no ${join(grok, "hooks", "orrery.json")}; tested with Grok 1.0.70` })], applyFix: (fix) => (fixes.push(fix), "fixed"), launch: async (plan) => (plans.push(plan), { code: 0, signal: null }) },
+			[row({ name: "Alpha", tool: "grok", folder: "/" })],
+		);
+		const app = makeApp(deps, [agentsPage]);
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "Connect Orrery to Grok now?", "n");
+		await app.idle();
+		expect([fixes, plans]).toEqual([[], []]);
+		expect(screen(app)).toContain("Not launched.");
+		expect(readdirSync(grok)).toEqual([]);
+		keys(app, "L");
+		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "Orrery's hooks for Grok are not installed, so this session won't record", "y");
+		await answer(app, "Done", ENTER);
+		await app.idle();
+		expect(fixes).toEqual(["install-grok"]);
+		expect(plans).toHaveLength(1);
+		expect(plans[0]).toMatchObject({ tool: "grok", command: "/bin/grok", env: { ORRERY_AGENT: "Alpha" } });
+		expect(screen(app)).toContain("Back from Grok (Alpha).");
 	});
 });
 

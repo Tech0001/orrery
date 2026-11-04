@@ -1,11 +1,11 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type AgentConfig, parseConfig } from "../../src/agent/config.ts";
 import { claimedBy, claimToken, newToken } from "../../src/agent/pick.ts";
-import { processAlive } from "../../src/agent/process.ts";
+import { pidNamespace, processAlive } from "../../src/agent/process.ts";
 import { forgetSession, liveSession, recordSession, type SessionTool } from "../../src/agent/sessions.ts";
 import { listSessions, pendingEvents, readEvent, writeMode } from "../../src/claude/spool.ts";
 import { type CodexGuardContext, runCodexGuard } from "../../src/codex/guard.ts";
@@ -629,6 +629,94 @@ describe("a Codex session another process already hosts: no other process takes 
 		hostRecord(w.dataDir, "Atlas", "codex", bystander(), id("s1"));
 		await run("user-prompt-submit", input("s1", { prompt: "Second.", turn_id: "t-2" }), c);
 		await run("stop", input("s1", { last_assistant_message: "A reply.", turn_id: "t-2" }), c);
+		expect(spooled(w.birch.dir, "s1")).toEqual(["rollout", "prompt"]);
+	});
+
+	it.skipIf(process.platform !== "linux")("a record made in another pid namespace under this Codex's own pid number (a program in a pid namespace of its own, numbered there as this Codex is here) is no record of this Codex's: it refuses the session, and a prompt of a session this Codex records that such a record names too is spooled no more", async () => {
+		const w = codexWorld();
+		/** A record of `session` as Birch's, made in another pid namespace by a process numbered there as this Codex is here. */
+		const numberedAsThisCodex = (dataDir: string, session: string) => {
+			mkdirSync(join(dataDir, "session-hosts"), { recursive: true, mode: 0o700 });
+			writeFileSync(join(dataDir, "session-hosts", `${process.pid}.json`), JSON.stringify({ agent: "Birch", tool: "codex", pid: process.pid, start: "1", codexSession: id(session), ns: "pid:[4026532999]", boot: "another-boot" }), { mode: 0o600 });
+		};
+		numberedAsThisCodex(w.dataDir, "s1");
+		recorded.push({ dataDir: w.dataDir, pid: process.pid });
+		const c = hookCtx(w, { startHolder: recording });
+		expect(await run("session-start", input("s1", { source: "startup" }), c)).toEqual({ systemMessage: `Orrery: can't confirm this is this Codex's own session (Codex process ${process.pid} already hosts it), so it opens no memory and records nothing.` });
+		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+		expect(liveSession(w.dataDir, process.pid)).toBeUndefined();
+		// The record is kept as it was (it may be a real session's), never taken for this Codex's own.
+		expect(JSON.parse(readFileSync(join(w.dataDir, "session-hosts", `${process.pid}.json`), "utf8"))).toMatchObject({ ns: "pid:[4026532999]", codexSession: id("s1") });
+		// Gone (removed: no look here takes it down, nor forgets it): this Codex records a session of its own. Then a record of
+		// that session made in another pid namespace under this Codex's number turns up in a data folder above this one:
+		// neither records it.
+		forgetSession(w.dataDir, process.pid);
+		expect(existsSync(join(w.dataDir, "session-hosts", `${process.pid}.json`))).toBe(true);
+		rmSync(join(w.dataDir, "session-hosts", `${process.pid}.json`));
+		expect(((await run("session-start", input("s2", { source: "startup" }), c)) as Answer).systemMessage).toMatch(/· recording$/);
+		await run("user-prompt-submit", input("s2", { prompt: "First.", turn_id: "t-1" }), c);
+		expect(spooled(w.birch.dir, "s2")).toEqual(["rollout", "prompt"]);
+		numberedAsThisCodex(w.root, "s2");
+		await run("user-prompt-submit", input("s2", { prompt: "Second.", turn_id: "t-2" }), c);
+		await run("stop", input("s2", { last_assistant_message: "A reply.", turn_id: "t-2" }), c);
+		expect(spooled(w.birch.dir, "s2")).toEqual(["rollout", "prompt"]);
+	});
+
+	it.skipIf(process.platform !== "linux")("a record made in another pid namespace under this Codex's own pid number that names another session (left by a Codex in a container or a sandboxed editor that shares the data folder) blocks no other session: a new one records, and its record replaces that one", async () => {
+		const w = codexWorld();
+		const file = join(w.dataDir, "session-hosts", `${process.pid}.json`);
+		mkdirSync(join(w.dataDir, "session-hosts"), { recursive: true, mode: 0o700 });
+		writeFileSync(file, `${JSON.stringify({ agent: "Birch", tool: "codex", pid: process.pid, start: "1", codexSession: id("s1"), ns: "pid:[4026532999]", boot: "another-boot" })}\n`, { mode: 0o600 });
+		recorded.push({ dataDir: w.dataDir, pid: process.pid });
+		const c = hookCtx(w, { startHolder: recording });
+		expect(((await run("session-start", input("s2", { source: "startup" }), c)) as Answer).systemMessage).toMatch(/· recording$/);
+		expect(liveSession(w.dataDir, process.pid)).toMatchObject({ agent: "Birch", tool: "codex", pid: process.pid, codexSession: id("s2"), ns: pidNamespace("self") });
+		expect(claimedBy(w.birch.dir, w.token)).toBe(process.pid);
+		await run("user-prompt-submit", input("s2", { prompt: "First.", turn_id: "t-1" }), c);
+		expect(spooled(w.birch.dir, "s2")).toEqual(["rollout", "prompt"]);
+	});
+});
+
+describe("session records that can't be read may name the session: no Codex takes it (fail closed)", () => {
+	const refused = (why: string) => ({ systemMessage: `Orrery: can't confirm this is this Codex's own session (${why}), so it opens no memory and records nothing.` });
+	/** Runs `look` with `path`'s mode `mode`, then puts 0700 back. */
+	const withMode = async <T>(path: string, mode: number, look: () => Promise<T>): Promise<T> => {
+		chmodSync(path, mode);
+		try {
+			return await look();
+		} finally {
+			chmodSync(path, 0o700);
+		}
+	};
+
+	it.skipIf(process.getuid?.() === 0)("a records folder that can't be listed, or a record file that can't be read, refuses the session, saying which, before anything is decided, claimed or recorded; once they can, it records; while a records folder above the data folder can't be listed, a prompt of it is spooled no more", async () => {
+		const w = codexWorld();
+		const folder = join(w.dataDir, "session-hosts");
+		mkdirSync(folder, { recursive: true, mode: 0o700 });
+		const c = hookCtx(w, { startHolder: recording });
+		expect(await withMode(folder, 0, () => run("session-start", input("s1", { source: "startup" }), c))).toEqual(refused(`the session records in ${folder} can't be read`));
+		// Named after a live process (this test's parent), so that no system takes it for stale.
+		const file = join(folder, `${process.ppid}.json`);
+		symlinkSync(join(w.root, "elsewhere.json"), file);
+		expect(await run("session-start", input("s1", { source: "startup" }), c)).toEqual(refused(`the session record ${file} can't be read`));
+		rmSync(file);
+		writeFileSync(file, "{ cut short", { mode: 0o600 });
+		expect(await run("session-start", input("s1", { source: "startup" }), c)).toEqual(refused(`the session record ${file} isn't a session record Orrery can read`));
+		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+		expect(liveSession(w.dataDir, process.pid)).toBeUndefined();
+		expect(touched(w.birch.dir)).toEqual({ claims: [], spool: [] });
+		// Gone: the session records.
+		rmSync(file);
+		recorded.push({ dataDir: w.dataDir, pid: process.pid });
+		expect(((await run("session-start", input("s1", { source: "startup" }), c)) as Answer).systemMessage).toMatch(/· recording$/);
+		await run("user-prompt-submit", input("s1", { prompt: "First.", turn_id: "t-1" }), c);
+		expect(spooled(w.birch.dir, "s1")).toEqual(["rollout", "prompt"]);
+		const above = join(w.root, "session-hosts");
+		mkdirSync(above, { mode: 0o700 });
+		await withMode(above, 0, async () => {
+			await run("user-prompt-submit", input("s1", { prompt: "Second.", turn_id: "t-2" }), c);
+			await run("stop", input("s1", { last_assistant_message: "A reply.", turn_id: "t-2" }), c);
+		});
 		expect(spooled(w.birch.dir, "s1")).toEqual(["rollout", "prompt"]);
 	});
 });

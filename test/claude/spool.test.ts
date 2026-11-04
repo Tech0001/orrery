@@ -43,6 +43,28 @@ describe("the spool", () => {
 		expect(pendingEvents(t.agent.dir, "s1").length).toBe(2);
 	});
 
+	it("reads back Grok's prompts and replies with their promptId, and the place of Grok's session log", () => {
+		const t = testAgent();
+		const dir = sessionDir(t.agent.dir, "s1");
+		const prompt = spoolEvent(t.agent.dir, "s1", { kind: "prompt", at: 1, claudePid: 7, text: "Hello.", host: "grok", promptId: "p-1" });
+		const reply = spoolEvent(t.agent.dir, "s1", { kind: "reply", at: 2, claudePid: 7, text: "Hi.", host: "grok", promptId: "p-1" });
+		const log = spoolEvent(t.agent.dir, "s1", { kind: "grok-log", at: 3, claudePid: 7, path: "/h/.grok/sessions/%2Fw/s1/updates.jsonl", home: "/h/.grok", offset: 10, file: "1:2" });
+		expect(readEvent(join(dir, prompt))).toEqual({ kind: "prompt", at: 1, claudePid: 7, text: "Hello.", host: "grok", promptId: "p-1" });
+		expect(readEvent(join(dir, reply))).toEqual({ kind: "reply", at: 2, claudePid: 7, text: "Hi.", host: "grok", promptId: "p-1" });
+		expect(readEvent(join(dir, log))).toEqual({ kind: "grok-log", at: 3, claudePid: 7, path: "/h/.grok/sessions/%2Fw/s1/updates.jsonl", home: "/h/.grok", offset: 10, file: "1:2" });
+		expect(log).toMatch(/-grok-log\.json$/);
+		// Malformed: another host, a promptId that is no string, a log place with no offset.
+		const bad = join(dir, eventName(4, "reply"));
+		for (const text of [
+			'{"kind":"reply","at":4,"claudePid":7,"text":"x","host":"other"}',
+			'{"kind":"reply","at":4,"claudePid":7,"text":"x","host":"grok","promptId":5}',
+			'{"kind":"grok-log","at":4,"claudePid":7,"path":"/x","home":"/h"}',
+		]) {
+			writeFileSync(bad, text);
+			expect(readEvent(bad), text).toBeUndefined();
+		}
+	});
+
 	it("keeps the mode a session's holder chose, and drops only what came after a turn to read-only", () => {
 		const t = testAgent();
 		spoolEvent(t.agent.dir, "s1", { kind: "prompt", at: 100, claudePid: 1, text: "while recording" });

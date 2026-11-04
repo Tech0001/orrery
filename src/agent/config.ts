@@ -15,7 +15,7 @@ export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhig
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 /** The tools an agent is launched in (the `tool` key). */
-export const AGENT_TOOLS = ["pi", "claude-code", "codex", "omp", "opencode"] as const;
+export const AGENT_TOOLS = ["pi", "claude-code", "codex", "omp", "opencode", "grok"] as const;
 export type AgentLauncher = "direct" | "ori";
 export type AgentTool = (typeof AGENT_TOOLS)[number];
 
@@ -78,9 +78,9 @@ export interface AgentConfig {
 	/** The tool the agent is launched in; undefined when the config does not say (the TUI then guesses). */
 	readonly tool?: AgentTool;
 	/**
-	 * The tool the config names when it is none this version knows (a typo, or one a newer Orrery set, such as "grok");
-	 * `tool` is then undefined. The agent loads, so the config does, but `orrery agent` and the TUI launch it in no tool
-	 * here (src/agent/launch.ts unknownToolRefusal), and nothing launches a name kept only here.
+	 * The tool the config names when it is none this version knows (a typo, or one a newer Orrery set); `tool` is then
+	 * undefined. The agent loads, so the config does, but `orrery agent` and the TUI launch it in no tool here
+	 * (src/agent/launch.ts unknownToolRefusal), and nothing launches a name kept only here.
 	 */
 	readonly unknownTool?: string;
 	/** Absent in older callers means direct. Parsed configs always supply the default. */

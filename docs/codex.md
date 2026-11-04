@@ -110,10 +110,12 @@ The instructions travel on Codex's command line, so they show in `ps`, like ever
   nothing changes.
 - A session is recorded by one Codex process at a time. Any process can hold a rollout open, so a session another
   process already hosts while it runs (two Codex windows on one session, or a program the agent's shell started) is
-  refused to every other: `Orrery: can't confirm this is this Codex's own session (Codex process <pid> already hosts
-  it), …`. Once that process is gone, the session can be resumed. On Linux, one exception: if Codex ran in a separate
-  process namespace (a sandboxed editor's terminal, say), Orrery can't tell from outside it that the process is gone,
-  so it keeps refusing that session, even after a reboot; start a new one instead.
+  refused to every other whose hooks find that process's record, in their config's data folder or where their agent's
+  data really is: `Orrery: can't confirm this is this Codex's own session (Codex process <pid> already hosts it), …`.
+  Once that process is gone, the session can be resumed. On Linux, one exception: if Codex ran in a separate process
+  namespace (a sandboxed editor's terminal, say), Orrery can't tell from outside it that the process is gone, so it
+  keeps refusing that session, even after a reboot; start a new one instead. Session records that can't be read may
+  name the session, so they refuse it too, and the line says which (`the session records in <folder> can't be read`).
 - The hooks only drop each event in a spool; a recorder in the background holds the agent for the session, records the
   spool into memory, runs the summaries, and leaves once the session has ended and the summaries are done (at most 10
   minutes). It is the same recorder Claude Code uses.
@@ -270,10 +272,25 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
   appends to a rollout can fake a turn Orrery then records.
 - **Under full access, a session can be taken first.** With full access, a process the agent starts detached from its
   session can run Orrery's session-start hook for any Codex session that no other process hosts at that moment: a new
-  one, or an old one you resume later. That process then hosts the session, so when you open or resume it, your Codex
-  is refused in one line that names the process (`Codex process <pid> already hosts it`), and the process can replay
-  the session's turns into another agent's memory. This is the detach limit of [agent sessions](architecture.md#limits),
-  and only an operating-system sandbox would close it.
+  one, or an old one you resume later. That process then hosts the session, and can replay its turns into another
+  agent's memory while no Codex of yours records the session. If it keeps its record in your data folder, your Codex
+  is refused when you open or resume the session, in one line that names the process (`Codex process <pid> already
+  hosts it`); one that keeps its record in a data folder of its own goes unseen, and your Codex records the session
+  too, which stops the replay. This is the detach limit of [agent sessions](architecture.md#limits), and only an
+  operating-system sandbox would close it.
+- **A program with Linux namespaces of its own.** A program that makes its own Linux namespaces (`unshare -U` with a
+  pid or mount namespace, say) can make Orrery misjudge which process hosts a session. It can show Orrery a different
+  boot id, start times or `/proc`, take a live tool's pid number in its own pid namespace, and replace or take down
+  host records, process decisions (`codex-processes/`, `grok-processes/`, `claude-processes/`) and Grok's shared marks,
+  of any tool. Taking one down needs no matching pid number: a host record looks stale under a faked boot id or start
+  time, and a decision made in a pid namespace of its own takes down every other decision of its tool whose process
+  it can't see from there. Replacing one needs the pid number of the process it belongs to (and, for a decision,
+  another start time). The program can then take a live session and replay its turns into another agent's memory, and
+  your own recording of it stops without a word. Orrery doesn't defend against that; an operating-system sandbox
+  would.
+- **A Codex in a sandboxed editor or a container** that shares your data folder can't see the Codex processes outside
+  it, nor they it. Without meaning to, each takes down the other's decisions at its first start, so a Codex that
+  Orrery kept without memory may decide again at its next start or resume.
 - **A process's decision that can't be saved** (which agent this Codex is): resuming inside Codex's own window can then
   decide again in the same process.
 - **`codex queue` adds a turn to a live session.** Any process of yours, the agent's own shell included, can put a
@@ -331,7 +348,14 @@ them wherever Codex's sandbox lets it. Open an agent with `orrery agent <Name> -
   Codex has open), or Codex moved to a session with no turn of it running. The session is not recorded; open the agent
   again with `orrery agent`. With `Codex process <pid> already hosts it`, another Codex has the session open (in
   another window, say): quit that one, then resume the session here. If that process is no Codex of yours, something
-  else took the session (see [its limits in Codex](#its-limits-in-codex)).
+  else took the session (see [its limits in Codex](#its-limits-in-codex)). If no process has that pid here, or that pid
+  is this Codex's own, the session's host runs in another process namespace (a sandboxed editor's terminal, say),
+  where Orrery can't tell whether it still runs: start a new session. With the others Orrery can't tell which process
+  hosts the session. `the session records in <folder> can't be read`: that folder, or one on the way to it, can't be
+  listed or searched, so `chmod 700` it; if a file, or a link to one, is in the folder's place, `chmod` doesn't help:
+  remove it. `the session record <file> can't be read`: `chmod 600` it if it is a file of yours; a link, a FIFO or
+  another user's file is never read, so remove it. `the session record <file> isn't a session record Orrery can read`:
+  remove it. Then resume the session.
 - `Orrery: can't tell which agent this Codex is (…), so it opens no memory and records nothing.`: Orrery takes the
   agent from the `ORRERY_AGENT` and token the Codex process was started with, never from the hook's own environment.
   The reason says which failed: that environment can't be read, the hook's own names another agent or token

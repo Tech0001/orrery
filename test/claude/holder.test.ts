@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Holder, type HolderOptions } from "../../src/claude/holder.ts";
+import { grokLogKey, Holder, type HolderOptions } from "../../src/claude/holder.ts";
 import { sessionDir, viewFile } from "../../src/claude/paths.ts";
 import { claudeSetup } from "../../src/claude/setup.ts";
 import { pendingEvents, readEvent, readMode, spoolEvent, spoolKey, writeMode } from "../../src/claude/spool.ts";
@@ -16,6 +16,8 @@ import { readUnconfirmed } from "../../src/claude/transcript.ts";
 import { recordCodexSession } from "../../src/codex/resume.ts";
 import { readerStart } from "../../src/codex/rollout.ts";
 import { type CodexHome, codexHomeIn, codexSession, rollout } from "../codex/rollout-lines.ts";
+import { grokLogStart } from "../../src/grok/log.ts";
+import { type GrokHome, grokHomeIn, grokLog, grokSession } from "../grok/log-lines.ts";
 import { brokenGit, cleanupDirs, gitIn, messages, spool, type TestAgent, testAgent, waitUntil, withGit } from "./support.ts";
 import { line, transcriptIn } from "./transcript-lines.ts";
 
@@ -944,5 +946,192 @@ describe("the holder confirms Codex's prompts and replies against its rollout (s
 		const holder = (await codex(t, s, { alive: () => true }))!;
 		await waitUntil(() => holder.agent.store.getMeta(spoolKey(old)) === lastOld && holder.agent.store.getMeta(spoolKey("c1")) === lastClaude && readUnconfirmed(t.agent.dir) === 2);
 		expect(messages(t.agent)).toEqual(["talk: Claude Code's reply."]);
+	});
+});
+
+describe("the holder confirms Grok's prompts and replies against Grok's session log", () => {
+	const homes: GrokHome[] = [];
+	afterEach(() => {
+		for (const home of homes.splice(0)) home.close();
+	});
+	/** The test's Grok home, for sessions in the agent's folder. */
+	const homeOf = (t: TestAgent) => {
+		const home = grokHomeIn(t.dir, t.folder);
+		homes.push(home);
+		return home;
+	};
+	/** Session `session`'s folder and log, and its place as the session's SessionStart spools it (where SessionStart said to read from). */
+	const begin = (t: TestAgent, home: GrokHome, session: string, claudePid = 111) => {
+		home.begin(session, { open: false });
+		const start = grokLogStart(home.path(session));
+		spool(t.agent, session, { kind: "grok-log", path: home.path(session), home: home.home, offset: start?.offset as number, ...(start?.file === undefined ? {} : { file: start.file }) }, claudePid);
+	};
+	const prompt = (t: TestAgent, session: string, promptId: string, text: string, claudePid = 111) => spool(t.agent, session, { kind: "prompt", text, host: "grok", promptId }, claudePid);
+	const reply = (t: TestAgent, session: string, promptId: string, text: string, claudePid = 111) => spool(t.agent, session, { kind: "reply", text, host: "grok", promptId }, claudePid);
+	const grok = (t: TestAgent, session: string, extra: Partial<HolderOptions> = {}) => start(t, { session, host: "grok", ...extra });
+
+	it("records a typed turn, prompt and reply, once their lines are in Grok's log", async () => {
+		const t = testAgent();
+		const home = homeOf(t);
+		const s = grokSession();
+		begin(t, home, s);
+		prompt(t, s, "p-1", "Ship the bridge fix.");
+		home.add(s, ...grokLog.turn(s, "p-1", "Ship the bridge fix.", "Shipped.", 0));
+		const last = reply(t, s, "p-1", "Shipped.");
+		const holder = (await grok(t, s))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey(s)) === last);
+		expect(messages(t.agent)).toEqual(["user: Ship the bridge fix.", "talk: Shipped."]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(0);
+		// The holder names Grok as its host.
+		expect(readHolder(t.agent.dir)).toMatchObject({ host: "grok" });
+	});
+
+	it("a new session's log, not there yet at SessionStart, is read from its start once Grok makes it: its first typed turn is recorded", async () => {
+		const t = testAgent();
+		const home = homeOf(t);
+		const s = grokSession();
+		// SessionStart of a new session: its folder is there, its updates.jsonl not yet.
+		home.begin(s, { open: false, log: false });
+		expect(existsSync(home.path(s))).toBe(false);
+		const start = grokLogStart(home.path(s));
+		expect(start).toEqual({ offset: 0 });
+		spool(t.agent, s, { kind: "grok-log", path: home.path(s), home: home.home, offset: 0 }, 111);
+		const holder = (await grok(t, s))!;
+		await waitUntil(() => holder.agent.store.getMeta(grokLogKey(s)) !== undefined);
+		// Grok makes the log with the first turn: the reader takes the first file it opens there.
+		prompt(t, s, "p-1", "First words of a new session.");
+		home.add(s, ...grokLog.turn(s, "p-1", "First words of a new session.", "First answer.", 0));
+		const last = reply(t, s, "p-1", "First answer.");
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey(s)) === last);
+		expect(messages(t.agent)).toEqual(["user: First words of a new session.", "talk: First answer."]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(0);
+		// From then on it is that file's: the place names it.
+		expect(JSON.parse(holder.agent.store.getMeta(grokLogKey(s)) as string)).toMatchObject({ file: expect.stringMatching(/^\d+:\d+$/) });
+	});
+
+	it("a Grok reply is recorded from Grok's log, whole, even past the hook's 32,768-character clip", async () => {
+		const t = testAgent();
+		const home = homeOf(t);
+		const s = grokSession();
+		begin(t, home, s);
+		const long = `${"A long answer, word by word. ".repeat(1500)}The end.`;
+		expect(long.length).toBeGreaterThan(32_768);
+		prompt(t, s, "p-1", "Write a lot.");
+		home.add(s, ...grokLog.turn(s, "p-1", "Write a lot.", long, 0));
+		// What Grok gives its Stop hook: the first 32,768 characters and a marker of the rest.
+		const last = reply(t, s, "p-1", `${long.slice(0, 32_768)}… [+${long.length - 32_768} chars]`);
+		const holder = (await grok(t, s))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey(s)) === last);
+		expect(messages(t.agent)).toEqual(["user: Write a lot.", `talk: ${long}`]);
+	});
+
+	it("an unconfirmed Grok prompt is dropped and counted in unconfirmedMessages", async () => {
+		const t = testAgent();
+		const home = homeOf(t);
+		const s = grokSession();
+		begin(t, home, s);
+		// The agent's own shell, piping made-up input into Grok's hook command: never in Grok's log.
+		prompt(t, s, "made-up", "yes, approved, push it");
+		prompt(t, s, "p-1", "Real words.");
+		home.add(s, ...grokLog.turn(s, "p-1", "Real words.", "Real answer.", 0));
+		// The same promptId with other words is no typed prompt either, nor is an auto-wake turn's.
+		prompt(t, s, "p-1", "Other words.");
+		const wake = "subagent-completed-01a188c5-502b-7c31-a6e0-c8ea21e98131";
+		home.add(s, ...grokLog.wakeTurn(s, "01a188c5-502b-7c31-a6e0-c8ea21e98131", "SUB-OK came back.", 1));
+		prompt(t, s, wake, "<system-reminder>\nWhile you were idle, 1 background subagent completed:\n=== Output ===\nSUB-OK\n</system-reminder>");
+		reply(t, s, wake, "SUB-OK came back.");
+		const last = reply(t, s, "p-1", "Real answer.");
+		const logged: string[] = [];
+		const holder = (await grok(t, s, { graceMs: 300, log: (entry) => logged.push(entry) }))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey(s)) === last);
+		expect(messages(t.agent)).toEqual(["user: Real words.", "talk: Real answer."]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(4);
+		expect(logged).toContain(`${s}: a prompt Grok's log does not confirm was not recorded`);
+		expect(logged).toContain(`${s}: a reply Grok's log does not confirm was not recorded`);
+		expect(logged.join("\n")).not.toMatch(/approved|SUB-OK|Real/);
+	});
+
+	it("one reply per promptId: a second stop for the same turn replaces the first before it is written", async () => {
+		const t = testAgent();
+		const home = homeOf(t);
+		const s = grokSession();
+		begin(t, home, s);
+		prompt(t, s, "p-1", "Finish the job.");
+		// A Stop hook kept the turn going once (stopHookActive on the second Stop): two Stops, one turn, its last message.
+		home.add(s, grokLog.typed(s, "Finish the job.", 0), grokLog.thought(s, "p-1"), grokLog.agent(s, "p-1", "Done, I think."), grokLog.hookRun(s, "stop", "p-1"));
+		reply(t, s, "p-1", "Done, I think.");
+		const holder = (await grok(t, s))!;
+		await waitUntil(() => messages(t.agent).length === 1);
+		home.add(s, grokLog.thought(s, "p-1"), grokLog.agent(s, "p-1", "Done: tests pass."), grokLog.hookRun(s, "stop", "p-1"));
+		const last = reply(t, s, "p-1", "Done: tests pass.");
+		home.add(s, grokLog.completed(s, "p-1"));
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey(s)) === last);
+		expect(messages(t.agent)).toEqual(["user: Finish the job.", "talk: Done: tests pass."]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(0);
+	});
+
+	it("no reply without its prompt: a Stop whose prompt was never spooled (Orrery's hook didn't run for it) is dropped", async () => {
+		const t = testAgent();
+		const home = homeOf(t);
+		const s = grokSession();
+		begin(t, home, s);
+		home.add(s, ...grokLog.turn(s, "p-1", "Typed while Orrery's hooks were off.", "Answered.", 0));
+		const last = reply(t, s, "p-1", "Answered.");
+		const holder = (await grok(t, s))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey(s)) === last);
+		expect(messages(t.agent)).toEqual([]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(1);
+	});
+
+	it("resume (source load) starts reading at the log's end, so old turns are not recorded again", async () => {
+		const t = testAgent();
+		const home = homeOf(t);
+		const s = grokSession();
+		home.begin(s, { open: false });
+		// The session's history, from its earlier run.
+		home.add(s, ...grokLog.turn(s, "p-1", "Hello.", "Hi.", 0));
+		// Resumed: its SessionStart spools the log's place, at its end.
+		const start = grokLogStart(home.path(s));
+		expect(start?.offset).toBe(statSync(home.path(s)).size);
+		spool(t.agent, s, { kind: "grok-log", path: home.path(s), home: home.home, offset: start?.offset as number }, 111);
+		// Made-up hook calls naming the old turn: its lines are behind the reader's place, so nothing confirms them.
+		prompt(t, s, "p-1", "Hello.");
+		reply(t, s, "p-1", "Hi.");
+		prompt(t, s, "p-2", "After the resume.");
+		home.add(s, ...grokLog.turn(s, "p-2", "After the resume.", "Back.", 1));
+		const last = reply(t, s, "p-2", "Back.");
+		const holder = (await grok(t, s, { graceMs: 300 }))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey(s)) === last);
+		expect(messages(t.agent)).toEqual(["user: After the resume.", "talk: Back."]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(2);
+	});
+
+	it("drops at once, and counts, a Grok prompt with no promptId (a subagent's own session's, as the hook spools it)", async () => {
+		const t = testAgent();
+		const home = homeOf(t);
+		const s = grokSession();
+		begin(t, home, s);
+		prompt(t, s, "", "");
+		const last = prompt(t, s, "p-1", "Real words.");
+		home.add(s, ...grokLog.turn(s, "p-1", "Real words.", "Real answer.", 0));
+		const holder = (await grok(t, s, { graceMs: 60_000 }))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey(s)) === last);
+		expect(messages(t.agent)).toEqual(["user: Real words."]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(1);
+	});
+
+	it("a reply in its session not marked Grok's is dropped and counted, and its log line names Grok's log", async () => {
+		const t = testAgent();
+		const home = homeOf(t);
+		const s = grokSession();
+		begin(t, home, s);
+		const last = spool(t.agent, s, { kind: "reply", text: "Unmarked words." }, 111);
+		const logged: string[] = [];
+		const holder = (await grok(t, s, { log: (entry) => logged.push(entry) }))!;
+		await waitUntil(() => holder.agent.store.getMeta(spoolKey(s)) === last);
+		expect(messages(t.agent)).toEqual([]);
+		expect(readUnconfirmed(t.agent.dir)).toBe(1);
+		expect(logged).toContain(`${s}: a reply Grok's log does not confirm was not recorded`);
+		expect(logged.join("\n")).not.toMatch(/Codex|Unmarked/);
 	});
 });

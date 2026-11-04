@@ -41,6 +41,9 @@ const HOME_FILES = [
 	".huggingface/token",
 	".password-store/mail.gpg",
 	".config/op/config",
+	// Grok Build's login, and its session records (each session's system prompt holds an agent's memory).
+	".grok/auth.json",
+	".grok/sessions/%2Fhome%2Fu%2Fws/01a1/updates.jsonl",
 ];
 
 /**
@@ -308,10 +311,31 @@ describe("credential files and folders under home, built in", () => {
 			"cat ~/.huggingface/token",
 			"ls ~/.password-store",
 			"cat ~/.config/op/config",
+			"cat ~/.grok/auth.json",
+			"ls ~/.grok/sessions",
+			"grep -r codename $HOME/.grok/sessions/",
 		]) {
 			expect([command, bash(t, command)]).toEqual([command, COMMAND]);
 			expect([command, claude(t, "Bash", { command })]).toEqual([command, COMMAND]);
 		}
+	});
+
+	it("keeps Grok Build's login and session records from every read, a search over Grok's folder among them, and leaves its docs readable", () => {
+		const t = world();
+		for (const file of ["docs/user-guide/10-hooks.md", "config.toml"]) {
+			mkdirSync(dirname(join(t.home, ".grok", file)), { recursive: true });
+			writeFileSync(join(t.home, ".grok", file), "x");
+		}
+		for (const root of ["~/.grok", "~/.grok/sessions"]) {
+			expect([root, pi(t, "grep", { pattern: "x", path: root })]).toEqual([root, expect.stringMatching(/narrower folder|sensitive/)]);
+			expect([root, omp(t, "grep", { pattern: "x", path: root })]).toEqual([root, expect.stringMatching(/narrower folder|sensitive/)]);
+			expect([root, claude(t, "Grep", { pattern: "x", path: root })]).toEqual([root, expect.stringMatching(/narrower folder|sensitive/)]);
+		}
+		for (const path of ["~/.grok/docs/user-guide/10-hooks.md", "~/.grok/config.toml"]) {
+			expect([path, pi(t, "read", { path })]).toEqual([path, undefined]);
+			expect([path, claude(t, "Read", { file_path: path })]).toEqual([path, undefined]);
+		}
+		expect(claude(t, "Grep", { pattern: "x", path: "~/.grok/docs" })).toBeUndefined();
 	});
 
 	it("allows the tools' own commands and a project's own files of those names", () => {

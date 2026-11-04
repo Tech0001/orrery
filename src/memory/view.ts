@@ -161,10 +161,12 @@ export class MemoryView {
 		this.changes.notify();
 	}
 
-	render(options: { ids?: boolean; end?: number } = {}): string {
+	/** The lines in `<chat>` tags: `start`, `end` leave out the lines that begin before message `start` or end after `end`. */
+	render(options: { ids?: boolean; start?: number; end?: number } = {}): string {
 		const ids = options.ids ?? true;
 		const lines: string[] = [];
 		for (const part of this.parts) {
+			if (options.start !== undefined && part.start < options.start) continue;
 			if (options.end !== undefined && part.end > options.end) break;
 			if (!ids && !this.store.hasNode(part)) throw new Error("Compactor context must contain only built summaries");
 			lines.push((ids ? `${part.address}|` : "") + flatten(this.text(part)));

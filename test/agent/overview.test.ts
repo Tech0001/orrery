@@ -44,6 +44,14 @@ describe("agentOverview", () => {
 		expect(b).toMatchObject({ name: "B", tool: "codex", toolSet: true, state: "closed" });
 	});
 
+	it("names Grok for an agent whose tool is grok", () => {
+		const dir = tempDir("orrery-overview-");
+		dirs.push(dir);
+		const config = parseConfig(`data_dir = ${JSON.stringify(join(dir, "data"))}\n[agents.G]\nfolder = "/w/g"\ntool = "grok"\ncompactor_model = "openai/gpt-6.1-sol"\n`, dir);
+		expect(agentOverview(config, { now: NOW, alive })[0]).toMatchObject({ name: "G", tool: "grok", toolSet: true, state: "closed" });
+		expect(TOOL_LABELS.grok).toBe("Grok");
+	});
+
 	it("gives an agent without a folder a row without one", () => {
 		const dir = tempDir("orrery-overview-");
 		dirs.push(dir);

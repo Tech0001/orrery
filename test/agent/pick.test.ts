@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/agent/config.ts";
-import { claimedBy, claimHeld, claimText, claimToken, newToken, pickAgent, refusedNotice, releaseClaim, workArea } from "../../src/agent/pick.ts";
+import { claimedBy, claimHeld, claimMadeAt, claimText, claimToken, newToken, pickAgent, refusedNotice, releaseClaim, workArea } from "../../src/agent/pick.ts";
 import { pidNamespace } from "../../src/agent/process.ts";
 import { processStart } from "../../src/agent/sessions.ts";
 
@@ -277,6 +277,22 @@ describe("pickAgent", () => {
 		expect(claimToken(birch, "../../escape", me)).toBe(false);
 		expect(existsSync(join(birch, "claims"))).toBe(false);
 		expect(newToken()).toMatch(/^[0-9a-f]{32}$/);
+	});
+
+	it("claimMadeAt: when a claim was made, read without writing; none for no claim or no token", () => {
+		const { config } = world();
+		const birch = join(config.dataDir, "agents", "Birch");
+		const token = newToken();
+		expect(claimMadeAt(birch, token)).toBeUndefined();
+		expect(claimToken(birch, token, me)).toBe(true);
+		const file = join(birch, "claims", token);
+		expect(claimMadeAt(birch, token)).toBe(lstatSync(file).mtimeMs);
+		utimesSync(file, 1_800_000_000, 1_800_000_000);
+		expect(claimMadeAt(birch, token)).toBe(1_800_000_000_000);
+		// The owner's own claim again (every later event asks): not made anew.
+		expect(claimToken(birch, token, me)).toBe(true);
+		expect(claimMadeAt(birch, token)).toBe(1_800_000_000_000);
+		expect(claimMadeAt(birch, "../../claims")).toBeUndefined();
 	});
 });
 

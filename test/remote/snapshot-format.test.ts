@@ -54,8 +54,8 @@ reads = ["*"]
 	});
 
 	it("keeps a tool this Orrery doesn't know (a newer Orrery's) in the settings it saves, for the machines that know it", () => {
-		const agent = parseConfig(`[agents.Vela]\nfolder = "/tmp/vela"\ntool = "grok"\ncompactor_model = "openai/gpt-5.1-mini"\n`, "/tmp/config").agents.get("Vela")!;
-		expect(agentSettings(agent)).toMatchObject({ tool: "grok" });
+		const agent = parseConfig(`[agents.Vela]\nfolder = "/tmp/vela"\ntool = "loom"\ncompactor_model = "openai/gpt-5.1-mini"\n`, "/tmp/config").agents.get("Vela")!;
+		expect(agentSettings(agent)).toMatchObject({ tool: "loom" });
 	});
 
 	it("reads settings from the newest authenticated FakeStorage snapshot", async () => {

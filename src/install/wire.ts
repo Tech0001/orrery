@@ -1,10 +1,10 @@
 /**
  * orrery setup, and the end of every install and rollback (spec 2026-10-13-orrery-releases-design §5, §6): the orrery
- * command, the backup service, pi, OMP and Claude Code are pointed at <home>/app/current, never at a version folder, in
- * the shape the version there has (layout.ts). What is already right is left alone; Orrery's own wiring of either shape
- * is moved without asking; a tool with no Orrery wiring yet is connected only after asking, and anything that is not
- * Orrery's own is replaced only after asking, with a copy of it kept beside it. Last, the config in use gets the [guard]
- * example once (guard-preset.ts).
+ * command, the backup service, pi, OMP, Claude Code and Grok are pointed at <home>/app/current, never at a version
+ * folder, in the shape the version there has (layout.ts). What is already right is left alone; Orrery's own wiring of
+ * either shape is moved without asking; a tool with no Orrery wiring yet is connected only after asking, and anything
+ * that is not Orrery's own is replaced only after asking, with a copy of it kept beside it. Last, the config in use
+ * gets the [guard] example once (guard-preset.ts).
  */
 
 import { chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -12,11 +12,14 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { orreryHome } from "../agent/home.ts";
 import { checkTools, findOnPath, setAside, type InstallStep, installSteps, ompExtensionFile, piExtensionFile, runInstall, type Runner, type ToolCheck } from "../agent/tools.ts";
+import { grokFolderThere, grokSupported } from "../grok/install.ts";
 import { type Confirm, pathAdvice } from "./ask.ts";
 import { offerGuardPreset } from "./guard-preset.ts";
 import type { ConfigFile } from "../agent/config.ts";
 import { envRunner } from "./install.ts";
 import { ENTRY_TAILS, endsWithSegments, entries, isOrreryCommand, oneLineTarget } from "./layout.ts";
+import { unwireGrok } from "./uninstall.ts";
+import { installedVersion } from "./update.ts";
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const firstLine = (text: string) => text.split("\n").map((line) => line.trim()).find((line) => line !== "") ?? "";
@@ -121,20 +124,42 @@ function pointBackup(env: NodeJS.ProcessEnv, home: string, run: Runner, left: st
 	return lines;
 }
 
-/** What connecting a tool does, for its question: the file it writes, or the commands it runs. */
-const connectText = (steps: readonly InstallStep[]) => steps.map((step) => (step.kind === "write" ? `writes ${step.path}` : step.describe)).join(", ");
+/** What connecting a tool does, for its question: the file it writes, what it adds to a config, or the commands it runs. */
+const connectText = (steps: readonly InstallStep[]) => steps.map((step) => (step.kind === "write" ? `writes ${step.path}` : step.kind === "edit" ? `adds ${step.what} to ${step.path}` : step.describe)).join(", ");
 
 /**
- * pi, Claude Code and OMP through checkTools and installSteps against app/current: "update available" (Orrery's own
- * wiring of the other shape or an older plugin) runs without asking; "missing" (no Orrery wiring yet) and "other"
- * (another Orrery, or not Orrery's file) only after confirm, and a file that is not Orrery's is set aside first. A
- * missing pi or OMP extension is written only when that tool is on PATH.
+ * Grok's wiring removed when app/current is a version without Grok's hooks (src/grok/install.ts grokSupported): such an
+ * Orrery answers them with an error, which blocks every prompt. Says so, and what went.
+ */
+function unwireOldGrok(env: NodeJS.ProcessEnv, version: string | undefined, left: string[], emit: (line: string) => void): void {
+	const why = version === undefined ? "the installed version can't be read" : `${version} has no Grok support`;
+	const unwired = unwireGrok(env, join(orreryHome(env), "app"));
+	if (!unwired.changed && unwired.ok) {
+		emit(`Grok: ${why}; not wired`);
+		return;
+	}
+	emit(`Grok: ${why}, so Orrery's Grok wiring goes:`);
+	for (const line of unwired.lines) emit(line);
+	if (!unwired.ok) left.push("Grok (Orrery's hooks or config entries could not all be removed)");
+}
+
+/**
+ * pi, Claude Code, OMP and Grok through checkTools and installSteps against app/current: "update available" (Orrery's
+ * own wiring of the other shape or an older plugin) runs without asking; "missing" (no Orrery wiring yet, or Grok's
+ * config without an entry of Orrery's, which the person may have removed) and "other" (another Orrery, or not Orrery's
+ * file) only after confirm, and a file that is not Orrery's is set aside first. A missing pi or OMP extension is written only when that tool is on PATH, and
+ * Grok's when grok is on PATH or Grok's folder is there; a version without Grok's hooks gets Grok's wiring removed.
  */
 async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: Runner; install: Runner }, confirm: Confirm, left: string[], unchecked: string[], emit: (line: string) => void): Promise<void> {
 	const look = () => checkTools({ root: current, env, run: run.probe });
 	let checks = look();
-	for (const id of ["pi", "claude-code", "omp"] as const) {
+	for (const id of ["pi", "claude-code", "omp", "grok"] as const) {
 		const check = checks.find((c) => c.id === id) as ToolCheck;
+		const found = check.path !== undefined || (id === "grok" && grokFolderThere(env));
+		if (id === "grok" && found && !grokSupported(installedVersion(env))) {
+			unwireOldGrok(env, installedVersion(env), left, emit);
+			continue;
+		}
 		const steps = installSteps(check, current, env);
 		if (steps.length === 0) {
 			// "unknown" is a tool Orrery could not check; "other" with nothing to run is blocked (shared folder), only info.
@@ -142,7 +167,7 @@ async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: 
 			emit(`${check.label}: ${check.wiring === "installed" ? `already wired (${check.detail})` : check.detail}`);
 			continue;
 		}
-		if (check.wiring === "missing" && check.path === undefined) {
+		if (check.wiring === "missing" && !found) {
 			emit(`${check.label}: not found on PATH; not wired`);
 			continue;
 		}
@@ -160,7 +185,7 @@ async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: 
 		for (const line of result.output.split("\n").filter((line) => line.trim() !== "")) emit(`${check.label}: ${line}`);
 		if (!result.ok) {
 			left.push(`${check.label} (${result.problem ?? "the install failed"})`);
-			emit(`${check.label}: not wired; orrery tools install ${id} tries again`);
+			emit(`${check.label}: not wired; ${id === "grok" ? "orrery setup" : `orrery tools install ${id}`} tries again`);
 		}
 		// pi and OMP may share one extensions folder: OMP is judged after pi's file is written.
 		checks = look();

@@ -57,9 +57,10 @@ async function runFix(app: App, fix: () => string): Promise<boolean> {
 }
 
 /**
- * After an agent is added: the fixes a launch would ask for (folder, pi extension, Claude Code plugin and memory import),
- * each after a yes. A Claude Code agent with no folder opens only through the Orrery mod: when that alone stops it, the
- * switch to the mod is offered first. Any other block is said when the agent is opened.
+ * After an agent is added: the fixes a launch would ask for (folder, pi extension, Claude Code plugin, Grok's
+ * connection and memory import), each after a yes. A Claude Code agent with no folder opens only through the Orrery
+ * mod: when that alone stops it, the switch to the mod is offered first. Any other block is said when the agent is
+ * opened.
  */
 export async function wireAgent(app: App, name: string): Promise<void> {
 	app.refresh();

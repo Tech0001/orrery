@@ -15,7 +15,7 @@ import { sessionDir, sessionsDir, validSession } from "./paths.ts";
 
 /**
  * One hook event: the user's prompt, the turn's final reply, one of orrery's own commands (text-less: its reply
- * stays out of memory), the session's end, a summary model switch, or the session's transcript or rollout.
+ * stays out of memory), the session's end, a summary model switch, or the session's transcript, rollout or Grok log.
  * - A Claude Code prompt carries the hook's `promptId` ("" when the hook got none): the holder records it only once
  *   Claude Code's transcript confirms it (src/claude/transcript.ts); one without a promptId never is.
  * - Codex's hook marks its prompts and replies `host: "codex"`, with the hook's `turnId` ("" when it got none): the
@@ -24,15 +24,25 @@ import { sessionDir, sessionsDir, validSession } from "./paths.ts";
  *   Claude Code's projects folder, and its size then, where the session's prompts are looked for.
  * - `rollout`: Codex's SessionStart's, once Codex was seen holding it open: the session's rollout under Codex's folder
  *   (`home`), both as they really are, the file Codex holds ("device:inode"), and where to read it from.
+ * - Grok's hook marks its prompts and replies `host: "grok"`, with the hook's `promptId` ("" when it got none, and for a
+ *   subagent's own session's prompt, spooled with no words so the holder drops and counts it): the holder records each
+ *   only once Grok's session log confirms it (src/grok/log.ts), and records the log's words.
+ * - `grok-log`: Grok's SessionStart's, once Grok was seen holding the session open: the session's log under Grok's folder
+ *   (`home`), both as they really are, the file it is ("device:inode", when Grok had made it), and where to read it from.
+ * - `grok-shared`: another Grok's SessionStart's, for a session a live Grok records, which that other Grok
+ *   (`claudePid`, started at `start`) has open too (src/grok/hooks.ts): its log is no proof of the recording Grok's
+ *   turns any more, so the holder confirms nothing more of it while that Grok lives.
  */
 export type SpoolEvent =
-	| { readonly kind: "prompt"; readonly at: number; readonly claudePid: number; readonly text: string; readonly promptId?: string; readonly host?: "codex"; readonly turnId?: string }
-	| { readonly kind: "reply"; readonly at: number; readonly claudePid: number; readonly text: string; readonly host?: "codex"; readonly turnId?: string }
+	| { readonly kind: "prompt"; readonly at: number; readonly claudePid: number; readonly text: string; readonly promptId?: string; readonly host?: "codex" | "grok"; readonly turnId?: string }
+	| { readonly kind: "reply"; readonly at: number; readonly claudePid: number; readonly text: string; readonly host?: "codex" | "grok"; readonly turnId?: string; readonly promptId?: string }
 	| { readonly kind: "command"; readonly at: number; readonly claudePid: number }
 	| { readonly kind: "end"; readonly at: number; readonly claudePid: number; readonly reason?: string }
 	| { readonly kind: "compactor"; readonly at: number; readonly claudePid: number; readonly args: string }
 	| { readonly kind: "transcript"; readonly at: number; readonly claudePid: number; readonly path: string; readonly projects: string; readonly offset: number }
-	| { readonly kind: "rollout"; readonly at: number; readonly claudePid: number; readonly path: string; readonly home: string; readonly offset: number; readonly file?: string };
+	| { readonly kind: "rollout"; readonly at: number; readonly claudePid: number; readonly path: string; readonly home: string; readonly offset: number; readonly file?: string }
+	| { readonly kind: "grok-log"; readonly at: number; readonly claudePid: number; readonly path: string; readonly home: string; readonly offset: number; readonly file?: string }
+	| { readonly kind: "grok-shared"; readonly at: number; readonly claudePid: number; readonly start?: string };
 
 /**
  * What a session's holder chose, from `since` (its start) on. `nonce` comes from SessionStart, so the hook knows this
@@ -58,7 +68,7 @@ export interface Pending {
 	readonly at: number;
 }
 
-const EVENT_NAME = /^(\d{15})-\d{10}-\d{6}-(prompt|reply|command|end|compactor|transcript|rollout)\.json$/;
+const EVENT_NAME = /^(\d{15})-\d{10}-\d{6}-(prompt|reply|command|end|compactor|transcript|rollout|grok-log|grok-shared)\.json$/;
 const MODE = "mode.json";
 /** From here on a local date can have a five-digit year, which memory refuses: such an event would never go in. */
 const LAST_AT = Date.UTC(9999, 11, 31);
@@ -91,17 +101,16 @@ export function readEvent(path: string): SpoolEvent | undefined {
 	}
 	if (typeof value !== "object" || value === null || typeof value.claudePid !== "number") return undefined;
 	if (typeof value.at !== "number" || !(value.at >= 0 && value.at < LAST_AT)) return undefined;
-	const codex = (value.host === undefined || value.host === "codex") && (value.turnId === undefined || typeof value.turnId === "string");
-	if (value.kind === "prompt" && typeof value.text === "string" && (value.promptId === undefined || typeof value.promptId === "string") && codex) {
-		return value as unknown as SpoolEvent;
-	}
-	if (value.kind === "reply" && typeof value.text === "string" && codex) return value as unknown as SpoolEvent;
+	const hosted = (value.host === undefined || value.host === "codex" || value.host === "grok") && (value.turnId === undefined || typeof value.turnId === "string");
+	const said = typeof value.text === "string" && (value.promptId === undefined || typeof value.promptId === "string") && hosted;
+	if ((value.kind === "prompt" || value.kind === "reply") && said) return value as unknown as SpoolEvent;
 	const offset = Number.isSafeInteger(value.offset) && (value.offset as number) >= 0;
 	if (value.kind === "transcript" && typeof value.path === "string" && typeof value.projects === "string" && offset) return value as unknown as SpoolEvent;
-	if (value.kind === "rollout" && typeof value.path === "string" && typeof value.home === "string" && offset && (value.file === undefined || typeof value.file === "string")) {
+	if ((value.kind === "rollout" || value.kind === "grok-log") && typeof value.path === "string" && typeof value.home === "string" && offset && (value.file === undefined || typeof value.file === "string")) {
 		return value as unknown as SpoolEvent;
 	}
 	if (value.kind === "command") return { kind: "command", at: value.at, claudePid: value.claudePid };
+	if (value.kind === "grok-shared" && (value.start === undefined || typeof value.start === "string")) return value as unknown as SpoolEvent;
 	if (value.kind === "end" || (value.kind === "compactor" && typeof value.args === "string")) return value as unknown as SpoolEvent;
 	return undefined;
 }

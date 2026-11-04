@@ -23,8 +23,8 @@ type MemoryAgentOptions = { agent: AgentConfig; models: ModelSource; report(mess
 /** Another writer already holds the agent's store. */
 export class AgentHeld extends Error {
 	constructor(agent: string, host: Host = "pi") {
-		// In OMP and OpenCode the holder may be any tool; pi keeps its words.
-		const label = host === "omp" ? "OMP" : host === "opencode" ? "OpenCode" : undefined;
+		// In OMP, OpenCode and Grok the holder may be any tool; pi keeps its words.
+		const label = host === "omp" ? "OMP" : host === "opencode" ? "OpenCode" : host === "grok" ? "Grok" : undefined;
 		super(label !== undefined ? `${agent} is already open in another session; this ${label} runs without memory.` : `${agent} is already open in another pi; this one runs without memory.`);
 		this.name = "AgentHeld";
 	}

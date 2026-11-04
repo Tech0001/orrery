@@ -22,7 +22,7 @@ const GROUPS: readonly Group[] = [
 	{
 		title: "Agents",
 		short: [
-			["agent <Name>", "open it in this folder (--tool pi|omp|claude-code|codex|opencode)"],
+			["agent <Name>", "open it in this folder (--tool pi|omp|claude-code|codex|opencode|grok)"],
 			["agent add <Name>", "add an agent"],
 			["agent edit <Name>", "edit its instructions"],
 			["agent set <Name> …", "change a setting"],
@@ -32,11 +32,11 @@ const GROUPS: readonly Group[] = [
 		],
 		detail: [
 			[
-				"agent <Name> [--tool pi|omp|claude-code|codex|opencode] [--yes] [-- <tool arguments>]",
-				"open the agent here: its tool starts in this folder with its instructions and memory (--tool: another tool this time; --yes: answers its questions yes; what follows -- goes to the tool). Codex gets Orrery's hooks, memory tools and instructions on its command line, after a check that the hooks load in that Codex; OpenCode gets Orrery's plugin for this launch (opencode --standalone, nothing written to OpenCode's config), after a check that it loads in that OpenCode; only a person at a terminal can start either without them",
+				"agent <Name> [--tool pi|omp|claude-code|codex|opencode|grok] [--yes] [-- <tool arguments>]",
+				"open the agent here: its tool starts in this folder with its instructions and memory (--tool: another tool this time; --yes: answers its questions yes; what follows -- goes to the tool). Codex gets Orrery's hooks, memory tools and instructions on its command line, after a check that the hooks load in that Codex; OpenCode gets Orrery's plugin for this launch (opencode --standalone, nothing written to OpenCode's config), after a check that it loads in that OpenCode, and only a person at a terminal can start either without them; Grok gets the agent's memory and instructions as --rules (with --no-leader), and Orrery's hooks, status row and memory tools from Grok's own folder, which setup connects once (or the launch, after asking, when Orrery isn't connected there)",
 			],
 			[
-				"agent add <Name> --folder DIR --tool pi|omp|claude-code|codex|opencode --summary provider/id [--thinking L] [--reads all|none|A,B]",
+				"agent add <Name> --folder DIR --tool pi|omp|claude-code|codex|opencode|grok --summary provider/id [--thinking L] [--reads all|none|A,B]",
 				"add an agent to the config (the TUI's N); --thinking is the summary model's thinking level (default low); --reads: the other agents it may read through the memory tools (default none)",
 			],
 			["agent edit <Name>", "open the agent's instructions in $EDITOR (else nano, else vi); needs a terminal"],
@@ -132,7 +132,7 @@ const GROUPS: readonly Group[] = [
 		],
 		detail: [
 			["update [--check] [--version V] [--yes]", "install the newest release (or V); --check only says whether one is out; --yes answers setup's questions yes"],
-			["tools [--json]", "pi, Claude Code, Codex, OMP, OpenCode and Ori: found, version, Orrery's side installed (Codex's and OpenCode's come with each launch)"],
+			["tools [--json]", "pi, Claude Code, Codex, OMP, OpenCode, Grok and Ori: found, version, Orrery's side installed (Codex's and OpenCode's come with each launch)"],
 			["tools install <pi|claude-code|omp> [--yes]", "install or update Orrery's side of a tool (shows what it does first)"],
 			[
 				"claude-setup <Name> [--mod]",
@@ -140,13 +140,13 @@ const GROUPS: readonly Group[] = [
 			],
 			[
 				"setup [--yes]",
-				"wire the orrery command, pi, OMP, Claude Code and the backup service to the installed version; asks on the terminal before connecting a tool or replacing anything that is not Orrery's (--yes: answers yes)",
+				"wire the orrery command, pi, OMP, Claude Code, Grok and the backup service to the installed version; asks on the terminal before connecting a tool or replacing anything that is not Orrery's (--yes: answers yes)",
 			],
 			["install --from DIR [--yes]", "install an unpacked release folder, then run setup (install.sh and orrery update run this)"],
 			["install --rollback [--yes] | --list", "switch back to the previous installed version and run setup, or list versions and which agents run them"],
 			[
 				"uninstall [--purge]",
-				"unwire pi, OMP and Claude Code, remove the command, the backup service and the installed versions; agents' memory, config and logins stay (--purge: delete them too, after typing delete)",
+				"unwire pi, OMP, Claude Code and Grok, remove the command, the backup service and the installed versions; agents' memory, config and logins stay (--purge: delete them too, after typing delete)",
 			],
 			["version, --version, -v", "the running version (a checkout's also names its folder)"],
 		],
@@ -160,14 +160,18 @@ const GROUPS: readonly Group[] = [
 				"record a Claude Code session into the agent (the plugin's SessionStart hook starts it; --since is when SessionStart ran, in ms since the epoch)",
 			],
 			["holder <Name> --session ID --host-pid PID --tool codex [--nonce N] [--since MS]", "record a Codex session into the agent (Orrery's SessionStart hook in Codex starts it)"],
+			["holder <Name> --session ID --host-pid PID --tool grok [--nonce N] [--since MS]", "record a Grok Build session into the agent (Orrery's SessionStart hook in Grok starts it)"],
 			[
 				"claude-mod view [--cwd DIR] [--session ID] [--agent NAME [--agent-token T]] [--wait-ms N [--spool-only]]",
 				"the Orrery mod's call: the session's agent's memory section as JSON (--agent: the ORRERY_AGENT Claude Code has; --wait-ms: up to 120000; --spool-only waits for the session's spool alone, not for summaries)",
 			],
 			["mcp", "the Claude Code plugin's MCP server: memory tools for the session's agent (ORRERY_AGENT's, else the project folder's)"],
 			["mcp --tool codex", "the MCP server orrery agent gives Codex: memory tools for ORRERY_AGENT's agent, with its token"],
+			["mcp --tool grok", "the MCP server orrery install gives Grok Build: memory tools for ORRERY_AGENT's agent, with its token"],
 			["claude-hook <event>", "a Claude Code plugin hook (session-start, user-prompt-submit, stop, session-end, pre-tool-use)"],
 			["codex-hook <event>", "a hook orrery agent gives Codex (session-start, user-prompt-submit, stop, session-end, pre-tool-use)"],
+			["grok-hook <event>", "a hook Orrery gives Grok Build (session-start, user-prompt-submit, pre-tool-use, stop, stop-cancelled, session-end)"],
+			["grok-status", "Grok Build's status row, which Orrery's install gives it: the session's agent, its message count and whether it is recorded (Grok's status JSON on stdin)"],
 		],
 	},
 ];

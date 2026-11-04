@@ -75,6 +75,23 @@ describe("the Tools page", () => {
 		expect(screen(app)).toContain("Nothing to install: Orrery's plugin comes with each launch.");
 	});
 
+	it("Grok: I installs Orrery's hook file and config entries, as setup does, after asking", async () => {
+		const grok: ToolCheck = { id: "grok", label: "Grok", path: "/bin/grok", version: "grok 1.0.70 (f50904eaee6c) [stable]", wiring: "missing", detail: "no /h/.grok/hooks/orrery.json; tested with Grok 1.0.70" };
+		const ran: InstallStep[][] = [];
+		const steps: InstallStep[] = [
+			{ kind: "write", path: "/h/.grok/hooks/orrery.json", text: "{}", describe: "write /h/.grok/hooks/orrery.json (Orrery's hooks for every Grok session)" },
+			{ kind: "edit", path: "/h/.grok/config.toml", what: "Orrery's status row and memory tools", edit: (text) => ({ next: text, said: [] }), describe: "add Orrery's status row and memory tools to /h/.grok/config.toml unless it has its own (a copy of it first)" },
+		];
+		const app = makeApp(fakeDeps({ tools: () => [grok], installSteps: () => steps, install: (s) => (ran.push([...s]), { ok: true, output: "wrote /h/.grok/hooks/orrery.json\n" }) }), [toolsPage]);
+		expect(screen(app)).toMatch(/Grok\s+\/bin\/grok\s+1\.0\.70\s+missing/);
+		keys(app, "I");
+		await answer(app, "add Orrery's status row and memory tools", "y");
+		await answer(app, "Grok", ENTER);
+		await app.idle();
+		expect(ran).toEqual([steps]);
+		expect(screen(app)).toContain("Done.");
+	});
+
 	it("I on the Orrery row says how Orrery updates: orrery update for a release, commit then npm run install-local from a checkout", async () => {
 		for (const [running, said] of [
 			["0.6.1", "Orrery updates with orrery update."],

@@ -112,6 +112,20 @@ first chat was deleted.
   agent and changes nothing, and the guard keeps Orrery's own rules.
 - Claude Code on the web runs in the cloud and can't reach the memory on your machine.
 
+### In Grok Build
+
+Grok Build loads Claude Code's plugins, this one among them, through its Claude Code compatibility, and runs its hooks
+and its `orrery` memory server. Orrery's own Grok hooks record Grok's sessions ([Grok](grok.md)), so under Grok this
+plugin stands down, judged by the process that runs its hook (Grok's program), never by a variable:
+
+- its recording hooks (session start, prompt, stop, session end) read their input and do nothing;
+- its memory server serves no tools, so a Grok session has one set, from Orrery's own `orrery` server;
+- its guard stands down only while Grok runs Orrery's own guard for this install: Orrery's Grok hook file is there and
+  its guard hook is not switched off in Grok's `/hooks` tab. Otherwise, or when that can't be read, it guards as in
+  Claude Code.
+
+A Claude Code started from a Grok session's shell is its own hooks' host, so its plugin works as anywhere else.
+
 ## The file setup
 
 An agent needs no setup: the Orrery mod brings its memory into Claude Code 2.1.287 or newer, in any folder. The file
@@ -151,7 +165,7 @@ only the Orrery mod brings them.
 
 Moving an agent over (the spec's section 6):
 
-1. close it in pi, OMP, Codex or OpenCode;
+1. close it in pi, OMP, Codex, OpenCode or Grok;
 2. `orrery agent <Name> --tool claude-code`, or `cd <agent folder> && claude`.
 
 The agent can go back to pi later.
@@ -346,8 +360,8 @@ started with), the server writes one line to stderr, `orrery: mcp serves no agen
 
 An agent records in one place at a time.
 
-- Claude Code on an agent that pi, OMP, Codex, OpenCode or another Claude Code session holds runs read-only, and says
-  which. It still loads the view and has the memory tools, but nothing it says is recorded.
+- Claude Code on an agent that pi, OMP, Codex, OpenCode, Grok or another Claude Code session holds runs read-only, and
+  says which. It still loads the view and has the memory tools, but nothing it says is recorded.
 - While pi holds the agent, a Claude Code session is read-only. While a Claude Code session records, pi runs without
   memory and warns that the agent is open in Claude Code (a second pi's warning says "already open in another pi").
 - After a session ends, its recorder finishes the summaries for up to 10 minutes. A new session, or pi, opened meanwhile
@@ -374,8 +388,10 @@ runs too, with Orrery's own rules only:
   `installed_plugins.json`, or under `$CLAUDE_CONFIG_DIR`), and pi's and OMP's extensions folders: read, never
   written, and not named in a Bash command.
 - Every agent's memory view (`.orrery/view.md`), by its path or a symbolic link to it.
-- Claude Code's and Codex's session records: Read, Grep and Glob may read them, no tool writes them, and a Bash command
-  that names their folders is refused.
+- Claude Code's, Codex's and Grok's session records: Read, Grep and Glob may read them, no tool writes them, and a Bash
+  command that names their folders is refused.
+- Grok's folder (`~/.grok`), but the parts Grok's own features write (its memory, skills, workflows and the like): read,
+  never written, and not named in a Bash command ([Grok](grok.md#the-guard)).
 - A Bash command that runs or names an `orrery` command other than `help`, `--version`, `status` and `usage`, or the
   hook plumbing: `orrery browse can't run from a session that is no agent's: it can't read or change Orrery's memory or
   settings (only orrery help, status, usage and --version run there). Run it in your own terminal or the TUI. …`
@@ -387,9 +403,10 @@ Nothing else: writes go wherever Claude Code's own permissions let them, and `.e
 own among them), OpenCode's config, skills and `[guard] protect` are not checked there. A session that is no agent's
 works with its own project's files as it did before.
 
-Shell text that runs Orrery's hook plumbing is refused too: the hook commands (`claude-hook`, `codex-hook`) named
-anywhere, or Orrery's program with the word `holder`. An agent that ran a hook by hand could feed it made-up input and
-put words in your mouth in its own memory. The cost: a Bash command that only names them is refused as well, such as
+Shell text that runs Orrery's hook plumbing is refused too: the hook commands (`claude-hook`, `codex-hook`,
+`grok-hook`) named anywhere, or Orrery's program with the word `holder`. An agent that ran a hook by hand could feed it
+made-up input and put words in your mouth in its own memory. The cost: a Bash command that only names them is refused
+as well, such as
 `grep -r claude-hook src/` or a `git commit -m` whose message names one; the Grep tool's pattern is not read this way.
 A name built at run time still gets through.
 
@@ -496,8 +513,8 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
 ## Troubleshooting
 
 - "did not answer": read `holder.log`.
-- "read-only": the agent is open in the tool the notice names (pi, OMP, Codex, OpenCode or another Claude Code session).
-  `orrery status` shows it.
+- "read-only": the agent is open in the tool the notice names (pi, OMP, Codex, OpenCode, Grok or another Claude Code
+  session). `orrery status` shows it.
 - "open outside its folder, where only the Orrery mod brings its memory": run `orrery claude-setup <Name> --mod`, then
   start a new session.
 - No view: run `orrery claude-setup <Name>`, and start Claude Code at the root of the agent's folder.

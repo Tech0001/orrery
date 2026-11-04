@@ -3,6 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ConfigError, findAgent, agentForCwd, agentNameProblem, parseConfig, parseModelChoice, RESERVED_NAMES } from "../../src/agent/config.ts";
+import { setAgentKey } from "../../src/agent/config-edit.ts";
 import { unknownToolRefusal } from "../../src/agent/launch.ts";
 
 const FULL = `
@@ -276,13 +277,22 @@ model = "openai/gpt-6.1-sol"
 		expect(parseConfig(`[agents.A]\nfolder = "/w/a"\nmodel = "a/b"\n`, "/x").agents.get("A")?.tool).toBeUndefined();
 	});
 
+	it("takes grok as an agent's tool, and lists it in the refusal of an unknown one", () => {
+		const config = parseConfig(`[agents.A]\nfolder = "/w/a"\ntool = "grok"\ncompactor_model = "openai/gpt-6.1-sol"\n`, "/x");
+		expect(config.agents.get("A")?.tool).toBe("grok");
+		expect(config.agents.get("A")?.unknownTool).toBeUndefined();
+		// A made-up tool is still unknown: it loads as the agent's unknown tool, and a write of it is refused with the list.
+		expect(parseConfig(`[agents.A]\nfolder = "/w"\nmodel = "a/b"\ntool = "vim"\n`, "/x").agents.get("A")).toMatchObject({ unknownTool: "vim" });
+		expect(() => setAgentKey(`[agents.A]\nfolder = "/w"\nmodel = "a/b"\n`, "/x", "A", "tool", "vim")).toThrow("pi, claude-code, codex, omp, opencode, grok");
+	});
+
 	it("reads a tool it doesn't know (a newer Orrery's, or a typo) as the agent's unknown tool, never as one it launches; the other agents and settings as ever", () => {
-		// An agent as Orrery 0.10.0 writes one for Grok Build, beside one of this version's tools.
+		// An agent as a newer Orrery would write one for a tool this version doesn't know, beside one of this version's tools.
 		const text = `data_dir = "/srv/orrery-data"
 
 [agents.Vela]
 folder = "/home/u/work/vela"
-tool = "grok"
+tool = "loom"
 model = "openai/gpt-6.1-sol"
 compactor_model = "openai/gpt-6.1-sol"
 compactor_thinking = "low"
@@ -296,7 +306,7 @@ reads = ["Vela"]
 		const config = parseConfig(text, "/x");
 		const vela = config.agents.get("Vela");
 		expect(vela?.tool).toBeUndefined();
-		expect(vela?.unknownTool).toBe("grok");
+		expect(vela?.unknownTool).toBe("loom");
 		expect(vela).toMatchObject({ name: "Vela", folder: "/home/u/work/vela", dir: "/srv/orrery-data/agents/Vela", compactor: { model: { provider: "openai", modelId: "gpt-6.1-sol", thinking: "low" } } });
 		expect(config.agents.get("Cedar")).toMatchObject({ tool: "codex", reads: ["Vela"] });
 		expect(config.agents.get("Cedar")?.unknownTool).toBeUndefined();

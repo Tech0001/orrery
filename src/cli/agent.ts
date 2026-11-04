@@ -1,5 +1,5 @@
 /**
- * `orrery agent <Name> [--tool pi|omp|claude-code|codex|opencode] [--yes] [-- <tool arguments>]` opens an agent in this
+ * `orrery agent <Name> [--tool pi|omp|claude-code|codex|opencode|grok] [--yes] [-- <tool arguments>]` opens an agent in this
  * folder, and `orrery agent edit <Name>` opens its instructions in $EDITOR (spec 2026-10-13-orrery-agents-design §4,
  * §5). The checks are the TUI's (src/agent/launch.ts): the tool is installed and wired, the agent is not open on another
  * machine or is taken over, Claude Code opens outside the agent's folder only through the Orrery mod, and Orrery's hooks
@@ -30,7 +30,7 @@ export interface AgentIo {
 }
 
 /** The tools an agent opens in. */
-const OPENED_IN: readonly AgentTool[] = ["pi", "omp", "claude-code", "codex", "opencode"];
+const OPENED_IN: readonly AgentTool[] = ["pi", "omp", "claude-code", "codex", "opencode", "grok"];
 
 export async function openAgentCommand(
 	configPath: string | undefined,
@@ -53,7 +53,7 @@ export async function openAgentCommand(
 	// A tool this version doesn't know (a typo, or a newer Orrery's): refused before anything runs, whatever --tool says.
 	const unknown = unknownToolRefusal(agent);
 	if (unknown !== undefined) throw new Error(unknown);
-	if (options.tool !== undefined && !OPENED_IN.includes(options.tool as AgentTool)) throw new Error(`--tool takes pi, omp, claude-code, codex or opencode (not ${options.tool}).`);
+	if (options.tool !== undefined && !OPENED_IN.includes(options.tool as AgentTool)) throw new Error(`--tool takes pi, omp, claude-code, codex, opencode or grok (not ${options.tool}).`);
 	const cache = deps.cache ?? new OverviewCache();
 	const row = agentOverview(config, { cache }).find((r) => r.name === agent.name);
 	if (row === undefined) throw new Error(`No agent named ${agent.name}.`);

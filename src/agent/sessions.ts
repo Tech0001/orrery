@@ -5,10 +5,11 @@
  *
  * Session records. A tool session that opens an agent's memory records its host process in the data folder that holds
  * that memory, and forgets it when the session closes: <data>/session-hosts/<pid>.json, holding
- * {"agent","tool","pid","start"}, for Codex "codexSession", on Linux "ns" and "boot", and "config", the config file the
- * host loaded (HarnessConfig.file), with "configReal", its real path then, when it loaded one; 0600 in a 0700 folder,
- * written whole (src/agent/private-file.ts), and read only as a small regular file of this user's, never through a
- * link. The CLI takes that config, and no other, for a command run inside the session (src/cli/gate.ts).
+ * {"agent","tool","pid","start"}, for Codex "codexSession", for Grok "grokSession", on Linux "ns" and "boot", and
+ * "config", the config file the host loaded (HarnessConfig.file), with "configReal", its real path then, when it loaded
+ * one; 0600 in a 0700 folder, written whole (src/agent/private-file.ts), and read only as a small regular file of this
+ * user's, never through a link. The CLI takes that config, and no other, for a command run inside the session
+ * (src/cli/gate.ts).
  * `start` is when the process started, so a reused pid is no session: Linux's /proc/<pid>/stat field 22 (clock ticks
  * since boot), macOS's `ps -o lstart=` (to the second, asked in UTC and the C locale so every process spells it alike).
  * On Linux a pid means a process only in the pid namespace it is numbered in: from another one (`unshare -p`, a
@@ -19,9 +20,11 @@
  * A record is live while its process lives and started when the record says; stale when its process is gone, started at
  * another time, or (Linux) belonged to another boot. The look that finds a stale record takes it down exclusively
  * (removeStale, src/agent/exclusive.ts), so a fresh record that took the name meanwhile stays, and each new record takes
- * out the dead ones beside it. Any other record is unsure, kept, and never taken down: one read from another pid
- * namespace (or where the namespace can't be read), one of a live process whose start can't be read, a file that is no
- * record this version reads while its process lives (or, on Linux, at all), and one that can't be read (a link, a FIFO).
+ * out the dead ones beside it. Any other record is unsure, kept, and never taken down by a look: one read from another
+ * pid namespace (or where the namespace can't be read), one of a live process whose start can't be read, a file that is
+ * no record this version reads while its process lives (or, on Linux, at all), and one that can't be read (a link, a
+ * FIFO). A new record under its pid replaces it (recordSession: here, that pid is the process recorded), and a session
+ * that closes takes down only its own live record (forgetSession).
  * An unsure record is no session to the ancestry: its pid may name another process here, the user's own terminal among
  * others, and that is never refused. A marker pointing at one is a session whose identity is unknown (fail closed).
  *
@@ -80,17 +83,19 @@
  *   somewhere above, not the nearest. A Codex id that a record names is an agent's Codex session, no marker.
  * A tool session is no agent's: the caller asks only when insideSession finds none. A tool's integration asks about its
  * own host process (`own`, src/agent/plain-nested.ts): its own launcher right above it, by the shape the tool starts it in
- * (npm's Codex launcher, OpenCode's TUI, the Claude Code desktop app), is passed over, and its own tool's markers count
- * only as far as what it was started with shows (toolSession).
+ * (npm's Codex and Grok launchers, OpenCode's TUI, the Claude Code desktop app), is passed over, and its own tool's
+ * markers count only as far as what it was started with shows (toolSession).
  *
  * Nothing here throws: a record that can't be written makes recordSession false, for its caller to say so, and a
- * folder or file that can't be read holds no session.
+ * folder or file that can't be read holds no session, but to the host check (codexSessionHosts, grokSessionHosts): there
+ * it may host the session asked about (fail closed).
  * Imports Node built-ins and relative modules only, for pi and OMP, which load this file; through pick.ts that is also
  * config.ts, and with it smol-toml and the memory module, which pi and OMP load already.
  */
 
-import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { isGrokProcess } from "../grok/names.ts";
 import { namesOrreryPlugin } from "../install/layout.ts";
 import { readPluginOptions } from "../opencode/options.ts";
 import { launchTokenFile, readTokenFile } from "../opencode/token-file.ts";
@@ -98,7 +103,7 @@ import type { AgentConfig, HarnessConfig } from "./config.ts";
 import { removeStale, stray } from "./exclusive.ts";
 import { AGENT_ENV, agentNamed, claimHeld, reused, TOKEN_ENV } from "./pick.ts";
 import { readPrivate, writePrivate } from "./private-file.ts";
-import { bootId, pidNamespace, processAlive, processEnv, processStart, procStat, psOutput, readProcStat } from "./process.ts";
+import { bootId, pidNamespace, processAlive, processArgv, processEnv, processStart, procStat, psOutput, readProcStat } from "./process.ts";
 import { safeText } from "./source-labels.ts";
 
 export { ALLOWED_INSIDE } from "./inside-commands.ts";
@@ -113,10 +118,10 @@ export { processStart };
 export const HOST_ENV = "ORRERY_HOST";
 
 /** The tool a session runs in: `run` is `orrery run`. */
-export type SessionTool = "pi" | "omp" | "claude-code" | "codex" | "opencode" | "run";
+export type SessionTool = "pi" | "omp" | "claude-code" | "codex" | "opencode" | "grok" | "run";
 
 /** Each tool as a notice (and the CLI's refusal, src/cli/gate.ts) names it. */
-export const TOOL_NAMES: Readonly<Record<SessionTool, string>> = { pi: "pi", omp: "OMP", "claude-code": "Claude Code", codex: "Codex", opencode: "OpenCode", run: "orrery run" };
+export const TOOL_NAMES: Readonly<Record<SessionTool, string>> = { pi: "pi", omp: "OMP", "claude-code": "Claude Code", codex: "Codex", opencode: "OpenCode", grok: "Grok", run: "orrery run" };
 /** Every SessionTool, for reading one from a record (here, and the Claude Code and Codex decisions). */
 export const SESSION_TOOLS: ReadonlySet<string> = new Set(Object.keys(TOOL_NAMES));
 
@@ -129,6 +134,8 @@ export interface SessionRecord {
 	readonly start: string;
 	/** A Codex session's id, which Codex hands its shell as CODEX_THREAD_ID (or CODEX_SESSION_ID). */
 	readonly codexSession?: string;
+	/** A Grok session's id: the session its SessionStart took as this Grok's own (src/grok/hooks.ts). */
+	readonly grokSession?: string;
 	/** Linux: the pid namespace `pid` is numbered in ("pid:[4026531836]"). */
 	readonly ns?: string;
 	/** Linux: the boot's id. */
@@ -292,16 +299,16 @@ function walkTo(from: number, parentOf: (pid: number) => number | undefined): { 
 
 /**
  * `value` as the record of `pid`, or undefined when it is none: its agent, tool, pid or start can't be read.
- * - `doubtful` when its codexSession, ns or boot is there but no non-empty string: the record is judged unsure (module
- *   doc: fail closed), never taken for none, and those fields are left out.
+ * - `doubtful` when its codexSession, grokSession, ns or boot is there but no non-empty string: the record is judged
+ *   unsure (module doc: fail closed), never taken for none, and those fields are left out.
  * - A config without its real path, or either not an absolute path, is left out: only the config is untrusted, and the
  *   CLI takes the data folder's own (src/cli/gate.ts).
  */
 function recordOf(value: unknown, pid: number): { readonly record: SessionRecord; readonly doubtful: boolean } | undefined {
-	const { agent, tool, pid: own, start, codexSession, ns, boot, config, configReal } = (value ?? {}) as Record<string, unknown>;
+	const { agent, tool, pid: own, start, codexSession, grokSession, ns, boot, config, configReal } = (value ?? {}) as Record<string, unknown>;
 	if (typeof agent !== "string" || agent === "" || typeof tool !== "string" || !SESSION_TOOLS.has(tool) || own !== pid || typeof start !== "string" || start === "") return undefined;
 	const text = (field: unknown): field is string => typeof field === "string" && field !== "";
-	const doubtful = [codexSession, ns, boot].some((field) => field !== undefined && !text(field));
+	const doubtful = [codexSession, grokSession, ns, boot].some((field) => field !== undefined && !text(field));
 	const configured = text(config) && text(configReal) && isAbsolute(config) && isAbsolute(configReal);
 	const record: SessionRecord = {
 		agent,
@@ -309,6 +316,7 @@ function recordOf(value: unknown, pid: number): { readonly record: SessionRecord
 		pid,
 		start,
 		...(text(codexSession) ? { codexSession } : {}),
+		...(text(grokSession) ? { grokSession } : {}),
 		...(text(ns) ? { ns } : {}),
 		...(text(boot) ? { boot } : {}),
 		...(configured ? { config, configReal } : {}),
@@ -330,21 +338,23 @@ type Standing =
 /**
  * The file at `file` read as a record of `pid`, judging nothing: "none" when it is gone, "unreadable" when it can't be
  * read as a small regular file (a link or a FIFO in a record's place, say), else what recordOf makes of it (`parsed`
- * undefined: no record this version reads).
+ * undefined: no record this version reads), and the JSON it holds (`json`; none when it holds none).
  */
-function readRecord(file: string, pid: number): "none" | "unreadable" | { readonly parsed: ReturnType<typeof recordOf> } {
+function readRecord(file: string, pid: number): "none" | "unreadable" | { readonly parsed: ReturnType<typeof recordOf>; readonly json?: unknown } {
 	let text: string;
 	try {
 		text = readPrivate(file, RECORD_MAX);
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "ENOENT" ? "none" : "unreadable";
 	}
+	let json: unknown;
 	try {
-		return { parsed: recordOf(JSON.parse(text), pid) };
+		json = JSON.parse(text);
 	} catch {
 		// no JSON: no record this version reads
 		return { parsed: undefined };
 	}
+	return { parsed: recordOf(json, pid), json };
 }
 
 /** What the file at `file`, a record of `pid`, stands for (Standing). */
@@ -399,12 +409,38 @@ export function liveSession(dataDir: string, pid: number, deps: SessionDeps = {}
 	return found.kind === "live" ? found.record : undefined;
 }
 
-/** The pids `dataDir` holds records for (none when its folder can't be read). */
+/** Every live session `dataDir` holds a record of (liveSession), oldest pid first; a stale one found goes. */
+export function liveSessions(dataDir: string, deps: SessionDeps = {}): SessionRecord[] {
+	return [...recordedPids(dataDir)].sort((a, b) => a - b).flatMap((pid) => liveSession(dataDir, pid, deps) ?? []);
+}
+
+/** The pids `dataDir` holds records for (none when its folder can't be read: listedPids for the host check's answer). */
 function recordedPids(dataDir: string): Set<number> {
+	const pids = listedPids(dataDir);
+	return pids === "unreadable" ? new Set() : pids;
+}
+
+/**
+ * The pids `dataDir` holds records for: none when it has no records folder, "unreadable" when it has one (or something
+ * in its place) that can't be listed, or its own folder can't be searched (EACCES: such a folder may hide records). A
+ * data folder given as a link to a file (one of an agent's links, src/agent/real-data.ts agentFiles) has no records
+ * folder, nor has a path that runs into a loop of links (ELOOP: a loop holds no files).
+ */
+function listedPids(dataDir: string): Set<number> | "unreadable" {
+	const folder = folderOf(dataDir);
 	try {
-		return new Set(readdirSync(folderOf(dataDir)).map(pidNamed).filter((pid) => pid !== undefined));
-	} catch {
-		return new Set();
+		return new Set(readdirSync(folder).map(pidNamed).filter((pid) => pid !== undefined));
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ELOOP") return new Set();
+		if (code === "ENOTDIR") {
+			try {
+				lstatSync(folder);
+			} catch (again) {
+				if (["ENOENT", "ENOTDIR"].includes((again as NodeJS.ErrnoException).code ?? "")) return new Set();
+			}
+		}
+		return "unreadable";
 	}
 }
 
@@ -434,8 +470,9 @@ function pruneSessions(dataDir: string, keep: number, deps: SessionDeps): void {
  * Records that process `record.pid` hosts a session of `record.agent`'s memory in `dataDir`, with the process's start
  * time, and on Linux its pid namespace and the boot. False when it can't: the start can't be read, the record is no
  * record, the host is in another pid namespace than this process (its pid wouldn't be the one a reader here sees), or
- * nothing can be written there. A config is kept with its real path now (configReal); one whose path can't be resolved
- * is recorded as none.
+ * nothing can be written there. Whatever is under its pid already is replaced, a record made in another pid namespace
+ * included: here that pid is this process. A config is kept with its real path now (configReal); one whose path can't
+ * be resolved is recorded as none.
  */
 export function recordSession(dataDir: string, record: Omit<SessionRecord, "start" | "ns" | "boot" | "configReal">, deps: SessionDeps = {}): boolean {
 	const start = processStart(record.pid, deps);
@@ -468,11 +505,17 @@ export function recordSession(dataDir: string, record: Omit<SessionRecord, "star
 	}
 }
 
-/** Removes process `pid`'s record from `dataDir`, when its session closes. */
-export function forgetSession(dataDir: string, pid: number): void {
+/**
+ * Removes process `pid`'s record from `dataDir`, when its session closes: only its own live one (the same process,
+ * judged from here), taken down exclusively, so a record that isn't its own (another pid namespace's, one that can't be
+ * read) stays, and so does one that took the name meanwhile.
+ */
+export function forgetSession(dataDir: string, pid: number, deps: SessionDeps = {}): void {
 	if (!positive(pid)) return;
+	const file = fileOf(dataDir, pid);
+	if (standing(file, pid, deps).kind !== "live") return;
 	try {
-		rmSync(fileOf(dataDir, pid), { force: true });
+		removeStale(file, (moved) => ["live", "none"].includes(standing(moved, pid, deps).kind));
 	} catch {
 		// left: once the process is gone, the next look takes it as stale
 	}
@@ -742,7 +785,7 @@ function launchToken(file: string, env: NodeJS.ProcessEnv): string | undefined {
 }
 
 /** The coding tools, by the exact names of their programs (module doc, Tool sessions). */
-export const CODING_TOOLS: ReadonlySet<string> = new Set(["claude", "codex", "opencode", "pi", "omp", "gemini", "qwen", "cursor-agent", "aider", "goose", "amp", "crush", "droid", "copilot"]);
+export const CODING_TOOLS: ReadonlySet<string> = new Set(["claude", "codex", "opencode", "grok", "pi", "omp", "gemini", "qwen", "cursor-agent", "aider", "goose", "amp", "crush", "droid", "copilot"]);
 
 /**
  * Each tool id (a CODING_TOOLS name, or a TOOL_MARKERS tool) as a refusal names it: "this is a Claude Code session …".
@@ -752,6 +795,7 @@ export const TOOL_SESSION_NAMES: Readonly<Partial<Record<string, string>>> = {
 	claude: "Claude Code",
 	codex: "Codex",
 	opencode: "OpenCode",
+	grok: "Grok",
 	pi: "pi",
 	omp: "OMP",
 	gemini: "Gemini",
@@ -940,6 +984,9 @@ const SCRIPT_SUFFIX = /\.(?:exe|js|mjs|cjs|py)$/;
 /** `path`'s file name without `suffix`. */
 const programOf = (path: string, suffix: RegExp = PROGRAM_SUFFIX): string => basename(path).replace(suffix, "");
 
+/** The coding tool a program name is (CODING_TOOLS, and Grok's names: isGrokProcess), or undefined. */
+const codingTool = (program: string): string | undefined => (isGrokProcess(program) ? "grok" : CODING_TOOLS.has(program) ? program : undefined);
+
 /** A coding tool's session that a process was started from (toolSession). */
 export interface ToolSession {
 	/** The tool's id: a CODING_TOOLS name, or a TOOL_MARKERS tool (TOOL_SESSION_NAMES names each). */
@@ -966,13 +1013,15 @@ interface ToolProcess {
 function toolOfArgv(argv: readonly string[], spaced: boolean): ToolProcess | undefined {
 	const first = argv[0] ?? "";
 	const program = programOf(first);
-	if (CODING_TOOLS.has(program) && (spaced || !/\s/.test(first))) return { tool: program, script: false };
+	const own = codingTool(program);
+	if (own !== undefined && (spaced || !/\s/.test(first))) return { tool: own, script: false };
 	const kind = interpreterOf(program);
 	const args = argv.slice(1);
 	const found = kind === undefined ? undefined : scriptOf(kind, args);
 	if (found === undefined) return undefined;
 	const name = "module" in found ? found.module : programOf(spaced ? spacedScript(args, found.at) : (args[found.at] as string), SCRIPT_SUFFIX);
-	return CODING_TOOLS.has(name) ? { tool: name, script: true } : undefined;
+	const script = codingTool(name);
+	return script === undefined ? undefined : { tool: script, script: true };
 }
 
 /**
@@ -984,42 +1033,18 @@ function toolOf(pid: number, seen: Processes, cmdline: (pid: number) => readonly
 	const name = seen.nameOf(pid);
 	if (name !== undefined) {
 		const program = programOf(name);
-		if (CODING_TOOLS.has(program)) return { tool: program, script: false };
+		const own = codingTool(program);
+		if (own !== undefined) return { tool: own, script: false };
 		if (!linux && interpreterOf(program) === undefined) return undefined;
 	}
 	const argv = cmdline(pid);
 	return argv === undefined ? undefined : toolOfArgv(argv, !linux);
 }
 
-/** This system's way to read a process's argv (SessionDeps.cmdline); macOS's takes argv[0] from `seen`'s snapshot. */
+/** This system's way to read a process's argv (SessionDeps.cmdline, processArgv); macOS's takes argv[0] from `seen`'s snapshot. */
 function argvReader(deps: SessionDeps, seen: Processes): (pid: number) => readonly string[] | undefined {
-	if (onLinux(deps)) {
-		return (pid) => {
-			try {
-				const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
-				if (argv.at(-1) === "") argv.pop();
-				return argv.length > 0 ? argv : undefined;
-			} catch {
-				return undefined;
-			}
-		};
-	}
-	if (onMac(deps)) {
-		return (pid) => {
-			const args = (deps.ps ?? psOutput)(["-ww", "-o", "args=", "-p", String(pid)])?.trim();
-			if (args === undefined || args === "") return undefined;
-			// ps joins argv with spaces; argv[0], comm, may hold some itself.
-			const first = seen.nameOf(pid);
-			if (first !== undefined && args.startsWith(first) && (args.length === first.length || /\s/.test(args.charAt(first.length)))) {
-				return [first, ...args.slice(first.length).split(/\s+/).filter((arg) => arg !== "")];
-			}
-			// Args that don't start with comm (comm the program's short name, say): argv[0] ends at the first word with
-			// comm's file name, else at the first space.
-			const words = args.split(/\s+/);
-			const end = first === undefined ? -1 : words.findIndex((word) => basename(word) === basename(first));
-			return end > 0 ? [words.slice(0, end + 1).join(" "), ...words.slice(end + 1)] : words;
-		};
-	}
+	if (onLinux(deps)) return (pid) => processArgv(pid, { platform: "linux" });
+	if (onMac(deps)) return (pid) => processArgv(pid, { platform: "darwin", ...(deps.ps === undefined ? {} : { ps: deps.ps }), comm: (of) => seen.nameOf(of) });
 	return () => undefined;
 }
 
@@ -1032,6 +1057,16 @@ const INIT_PID_NAMESPACE = "pid:[4026531836]";
  */
 const NPM_CODEX_BINARY = /[\\/]vendor[\\/][^\\/]+[\\/](?:bin|codex)[\\/]codex(?:\.exe)?$/;
 
+/**
+ * The tools an npm launcher starts, each with the test of its binary's path (argv[0]): Codex's (NPM_CODEX_BINARY), and
+ * Grok Build's, which its launcher (`bin/grok`, run by node, read in @xai-official/grok 1.0.70) starts from Grok's home
+ * (`~/.grok/bin/grok`) or its platform package, named as Grok's program is (isGrokProcess).
+ */
+const NPM_BINARIES: Readonly<Record<"codex" | "grok", (path: string) => boolean>> = {
+	codex: (path) => NPM_CODEX_BINARY.test(path),
+	grok: (path) => isGrokProcess(programOf(path)),
+};
+
 /** The Claude Code desktop app's processes right above its session's `claude`: claude ← disclaimer ← claude-desktop. */
 const CLAUDE_DESKTOP: ReadonlySet<string> = new Set(["disclaimer", "claude-desktop"]);
 
@@ -1042,8 +1077,9 @@ const endsWith = (argv: readonly string[], tail: readonly string[]): boolean => 
  * Whether `parent`, right above `host` (a process of the tool `own`), is that tool's own launcher, by the shape the tool
  * starts it in (each shape the tool's own, never its name alone), and whether it also vouches for the host's own tool's
  * variables in a walk cut short (`markers`):
- * - Codex: npm's launcher, an interpreter running Codex's script (`node …/codex.js`), above the package's binary
- *   (NPM_CODEX_BINARY), which it runs with its own arguments. No outer session; its variables vouch for nothing.
+ * - Codex and Grok: npm's launcher, an interpreter running the tool's script (`node …/codex.js`, `node …/grok/bin/grok`),
+ *   above the tool's binary (NPM_BINARIES), which it runs with its own arguments. No outer session; its variables vouch
+ *   for nothing.
  * - OpenCode: its TUI (or `run`) with --standalone, above the private server it starts as `opencode serve --stdio`. No
  *   outer session; its variables vouch for nothing.
  * - Claude Code: the desktop app's `disclaimer` wrapper, or the app itself (CLAUDE_DESKTOP). No Claude Code, so never an
@@ -1052,11 +1088,12 @@ const endsWith = (argv: readonly string[], tail: readonly string[]): boolean => 
  */
 function ownLauncher(own: string, host: number, parent: number, found: ToolProcess | undefined, seen: Processes, cmdline: (pid: number) => readonly string[] | undefined): { readonly markers: boolean } | undefined {
 	switch (own) {
-		case "codex": {
-			if (found?.tool !== "codex" || !found.script) return undefined;
+		case "codex":
+		case "grok": {
+			if (found?.tool !== own || !found.script) return undefined;
 			const binary = cmdline(host);
 			const launcher = cmdline(parent);
-			return binary !== undefined && launcher !== undefined && NPM_CODEX_BINARY.test(binary[0] ?? "") && endsWith(launcher, binary.slice(1)) ? { markers: false } : undefined;
+			return binary !== undefined && launcher !== undefined && NPM_BINARIES[own](binary[0] ?? "") && endsWith(launcher, binary.slice(1)) ? { markers: false } : undefined;
 		}
 		case "opencode": {
 			if (found?.tool !== "opencode" || found.script) return undefined;
@@ -1080,8 +1117,8 @@ function ownLauncher(own: string, host: number, parent: number, found: ToolProce
  * - Its own launcher right above it (ownLauncher) is passed over. Any other process of its tool above it is an outer
  *   session: right above it (a shell that exec'd it, or a script of the tool above a script of it), or further up.
  * - Its own tool's markers are no evidence under the Claude Code desktop app's wrapper right above it (ownLauncher's
- *   `markers`, a known launcher that gives its `claude` Claude Code's variables; npm's Codex launcher and OpenCode's TUI
- *   are passed over in the walk only). Else they count only when the host was started with them (its start
+ *   `markers`, a known launcher that gives its `claude` Claude Code's variables; npm's Codex and Grok launchers and
+ *   OpenCode's TUI are passed over in the walk only). Else they count only when the host was started with them (its start
  *   environment, deps.startEnv): set by the host itself (pi sets PI_CODING_AGENT, Claude Code CLAUDECODE for its hooks),
  *   they say nothing of a session above.
  *   - A walk cut short (a sandbox's own pid namespace, a parent that can't be read): each one set counts unless the host
@@ -1134,38 +1171,124 @@ export function toolSession(env: NodeJS.ProcessEnv, deps: SessionDeps & { readon
 
 /**
  * The Codex sessions (SessionRecord.codexSession) of every live or unsure record in `dataDirs` and the folders above them
- * that hold records (judgedFolders), as insideSession reads them; a stale record found is taken down.
+ * that hold records (judgedFolders), as insideSession reads them; a stale record found is taken down. What can't be read
+ * holds none: a Codex id no record is known to name stays a marker of a Codex session that is no agent's (toolSession).
  */
 export function recordedCodexIds(dataDirs: readonly string[], deps: SessionDeps = {}): ReadonlySet<string> {
-	return new Set(codexRecords(dataDirs, deps).map((found) => found.session));
+	return new Set(hostRecords(dataDirs, "codexSession", deps).flatMap((found) => (found.session === undefined ? [] : [found.session])));
 }
 
 /**
- * The processes whose live or unsure record in `dataDirs`, or in a folder above one that holds records, names Codex
- * session `session`, read as recordedCodexIds reads them; a stale record found among them is taken down. A record that
- * names another session is read but not judged, so its process isn't asked about (a ps each on macOS, on every prompt
- * and Stop). A Codex's hooks take no session another process hosts (src/codex/hooks.ts).
+ * What may host a session besides the process asking (codexSessionHosts, grokSessionHosts): a live or unsure record of
+ * another process that names it, or a records folder or record file that can't be read, which may name it (fail closed).
  */
-export function codexSessionHosts(dataDirs: readonly string[], session: string, deps: SessionDeps = {}): number[] {
-	return codexRecords(dataDirs, deps, session).map((found) => found.pid);
+export interface SessionHost {
+	/** The process the record names (for a record file that can't be read, its file's name); none for a records folder. */
+	readonly pid?: number;
+	/** The agent whose session it is; none for what can't be read. */
+	readonly agent?: string;
+	/** The folder it was found in: the data folder of the memory it opens, whose agents/<agent> is that agent's folder. */
+	readonly dataDir: string;
+	/** Whether it is live; else unsure (module doc): its process can't be judged from here. */
+	readonly live: boolean;
+	/** What can't be read, a records folder or a record file: its path. */
+	readonly unreadable?: string;
+	/** With `unreadable` a record file: one that could be read, but holds no session record this version reads. */
+	readonly readable?: boolean;
+}
+
+/**
+ * Why a session that `host` hosts (codexSessionHosts, grokSessionHosts) is not this one's, as a refusal says it: "Codex
+ * process <pid> already hosts it", or what can't be read. `tool` names the asker's tool (TOOL_NAMES).
+ */
+export function hostReason(host: SessionHost, tool: string): string {
+	if (host.unreadable === undefined) return `${tool} process ${host.pid} already hosts it`;
+	if (host.pid === undefined) return `the session records in ${host.unreadable} can't be read`;
+	return host.readable === true ? `the session record ${host.unreadable} isn't a session record Orrery can read` : `the session record ${host.unreadable} can't be read`;
+}
+
+/**
+ * What may host Codex session `session` besides `except` (the asker), in `dataDirs` or a folder above one that holds
+ * records, read as recordedCodexIds reads them; a stale record found among them is taken down. A record that names
+ * another session is read but not judged, so its process isn't asked about (a ps each on macOS, on every prompt and
+ * Stop); nor is `except`'s own (on Linux only one made in this process's pid namespace). What can't be read counts
+ * (hostRecords). A Codex's hooks take no session another process hosts (src/codex/hooks.ts).
+ */
+export function codexSessionHosts(dataDirs: readonly string[], session: string, deps: SessionDeps = {}, except?: number): SessionHost[] {
+	return hostRecords(dataDirs, "codexSession", deps, session, except).map(hostOnly);
+}
+
+/**
+ * What may host Grok session `session` besides `except` (the asker), read as codexSessionHosts reads Codex's. A Grok's
+ * hooks take no session another process hosts, and mark it for the recorder of another Grok that has it open
+ * (src/grok/hooks.ts).
+ */
+export function grokSessionHosts(dataDirs: readonly string[], session: string, except: number, deps: SessionDeps = {}): SessionHost[] {
+	return hostRecords(dataDirs, "grokSession", deps, session, except).map(hostOnly);
+}
+
+/** A host as hostRecords found it, without the session it names (the one asked about). */
+const hostOnly = ({ session: _session, ...host }: SessionHost & { readonly session?: string }): SessionHost => host;
+
+/**
+ * Whether the record file read as `read` may name session `only` in `field`, so that it is judged (hostRecords): one that
+ * can't be read may, as may one that holds no JSON object, or whose `field` can't be read as an id; one whose `field` is
+ * another session's id, or that has none (another tool's record), doesn't.
+ */
+function mayName(read: ReturnType<typeof readRecord>, field: "codexSession" | "grokSession", only: string): boolean {
+	if (read === "none") return false;
+	if (read === "unreadable") return true;
+	const json = read.json;
+	if (typeof json !== "object" || json === null || Array.isArray(json)) return true;
+	const id = (json as Record<string, unknown>)[field];
+	return id === only || (id !== undefined && typeof id !== "string");
 }
 
 /**
  * Each live or unsure record in `dataDirs` and the folders above them that hold records (judgedFolders) that names a
- * Codex session, with its pid; with `only`, just those that name that session, and no other is judged.
+ * session in `field` (a Codex session, or a Grok one), with its pid, that session, its agent, the folder it is in and
+ * whether it is live.
+ * With `only`, what may host that session (SessionHost), and no record that names another is judged: each record that
+ * names it and, failing closed, what can't be read, with its path as `unreadable`: a records folder that is there but
+ * can't be listed (listedPids), and a record file that may name it (mayName) and is judged unsure with no record that
+ * names a session (it can't be read, holds no record this version reads, or its id can't be read). A file that is no
+ * record is still stale where its process is gone (macOS: standing), and goes.
+ * `except`'s record (the asker's own) is passed over: on macOS unread, so its process isn't asked about; on Linux only
+ * when it was made in this process's pid namespace (as one judged live always was). A pid names a process only in the
+ * namespace it is numbered in (module doc): a record made in another under `except`'s number (a program in a pid
+ * namespace of its own, numbered there as a real host is here) is another process's, and counts as any other does.
  */
-function codexRecords(dataDirs: readonly string[], deps: SessionDeps, only?: string): { readonly pid: number; readonly session: string }[] {
-	const found: { readonly pid: number; readonly session: string }[] = [];
+function hostRecords(dataDirs: readonly string[], field: "codexSession" | "grokSession", deps: SessionDeps, only?: string, except?: number): (SessionHost & { readonly session?: string })[] {
+	const found: (SessionHost & { readonly session?: string })[] = [];
+	const linux = onLinux(deps);
+	// This process's pid namespace, read once, and only when `except`'s record is there.
+	let here: { readonly ns: string | undefined } | undefined;
+	const madeHere = (read: ReturnType<typeof readRecord>): boolean => {
+		here ??= { ns: namespaceOf(deps, "self") };
+		return typeof read !== "string" && here.ns !== undefined && read.parsed?.record.ns === here.ns;
+	};
 	for (const dataDir of judgedFolders(dataDirs)) {
-		for (const pid of recordedPids(dataDir)) {
-			if (only !== undefined) {
-				// Judged below, read again, only when it names `only`: a record that doesn't is none of its hosts either way.
-				const read = readRecord(fileOf(dataDir, pid), pid);
-				if (typeof read === "string" || read.parsed?.record.codexSession !== only) continue;
-			}
+		const pids = listedPids(dataDir);
+		if (pids === "unreadable") {
+			// It may hold a record of the session asked about; of every session's, it holds no id anyone could name.
+			if (only !== undefined) found.push({ dataDir, live: false, unreadable: folderOf(dataDir) });
+			continue;
+		}
+		for (const pid of pids) {
+			const own = pid === except;
+			if (own && !linux) continue;
+			// Read before it is judged when it may be the asker's own, or to see that it may name `only` (one that doesn't is
+			// none of its hosts either way, and isn't judged).
+			const read = own || only !== undefined ? readRecord(fileOf(dataDir, pid), pid) : undefined;
+			if (own && read !== undefined && madeHere(read)) continue;
+			if (only !== undefined && (read === undefined || !mayName(read, field, only))) continue;
 			const standing = judged(dataDir, pid, deps);
-			const session = standing.kind === "live" || standing.kind === "unsure" ? standing.record?.codexSession : undefined;
-			if (session !== undefined && (only === undefined || session === only)) found.push({ pid, session });
+			const record = standing.kind === "live" || standing.kind === "unsure" ? standing.record : undefined;
+			const session = record?.[field];
+			if (record !== undefined && session !== undefined && (only === undefined || session === only)) found.push({ pid, session, agent: record.agent, dataDir, live: standing.kind === "live" });
+			else if (only !== undefined && standing.kind === "unsure" && session === undefined) {
+				found.push({ pid, dataDir, live: false, unreadable: fileOf(dataDir, pid), ...(read !== undefined && read !== "unreadable" ? { readable: true } : {}) });
+			}
 		}
 	}
 	return found;

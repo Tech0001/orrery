@@ -4,12 +4,17 @@ import { afterEach, describe, expect, it } from "vitest";
 import { agentMode, writeSetupMarker } from "../../src/claude/view-file.ts";
 import { parseConfig } from "../../src/agent/config.ts";
 import { applyFix, checkCodexHooks, checkOpenCodePlugin, exitText, launchLabel, launchPlan, runAgent, runTool, withoutOrrery } from "../../src/agent/launch.ts";
-import { cutNotice, writeInstructions } from "../../src/agent/instructions.ts";
+import { cutNotice, instructionsSection, readInstructions, writeInstructions } from "../../src/agent/instructions.ts";
 import { codexLaunch } from "../../src/codex/launch.ts";
+import { addGrokConfig, grokHookFile } from "../../src/grok/install.ts";
+import { GROK_ARG_MAX } from "../../src/grok/launch.ts";
+import { entries } from "../../src/install/layout.ts";
+import { grokLeftOut, memorySection } from "../../src/agent/view-text.ts";
 import { claimToken } from "../../src/agent/pick.ts";
 import { agentOverview } from "../../src/agent/overview.ts";
-import { checkTools, ompExtensionFile, orreryRoot, piExtensionFile } from "../../src/agent/tools.ts";
-import { tempDir } from "./support.ts";
+import { MemoryStore, MemoryView, Part } from "../../src/memory/index.ts";
+import { checkTools, installSteps, ompExtensionFile, orreryRoot, piExtensionFile, type ToolCheck } from "../../src/agent/tools.ts";
+import { fillMemory, tempDir } from "./support.ts";
 import { fakeOpenCode } from "../opencode/fake-opencode.ts";
 
 const dirs: string[] = [];
@@ -25,7 +30,7 @@ function setup(tool: string, folder?: string, extra = "") {
 	const bin = join(dir, "bin");
 	mkdirSync(bin);
 	const out = join(dir, "out.txt");
-	for (const name of ["pi", "claude", "codex", "omp", "ori", "opencode"]) {
+	for (const name of ["pi", "claude", "codex", "omp", "ori", "opencode", "grok"]) {
 		writeFileSync(join(bin, name), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.0; exit 0; fi\nif [ "$1" = "plugin" ]; then echo '[]'; exit 0; fi\npwd > ${JSON.stringify(out)}\nexit 3\n`);
 		chmodSync(join(bin, name), 0o755);
 	}
@@ -184,6 +189,504 @@ describe("launchPlan and runTool", () => {
 		const codex = setup("codex");
 		const open = { ...codex.row, state: "open" as const, openIn: "omp" as const };
 		expect(launchPlan(codex.config, open, codex.tools).steps[0]).toEqual({ text: "A is already open in OMP. A second session won't record. Launch anyway?", confirm: true, asAgent: true });
+	});
+});
+
+describe("opening an agent in Grok", () => {
+	/** Grok's folder in setup's scratch home, its hook file and config. */
+	const grokFolder = (env: { HOME: string }) => ({ hooks: join(env.HOME, ".grok", "hooks", "orrery.json"), config: join(env.HOME, ".grok", "config.toml"), disabled: join(env.HOME, ".grok", "disabled-hooks") });
+	/** Writes Grok's hook file and config in setup's scratch home: `hooks` the Orrery the hook file runs, `config` the config's text. */
+	function grokFiles(env: { HOME: string }, hooks: string | undefined, config: string) {
+		const files = grokFolder(env);
+		mkdirSync(dirname(files.hooks), { recursive: true });
+		if (hooks !== undefined) writeFileSync(files.hooks, grokHookFile(hooks));
+		writeFileSync(files.config, config);
+	}
+	/** This checkout's Orrery command, which the launch's wiring check (root orreryRoot()) wants Grok's hooks to run. */
+	const own = () => entries(orreryRoot()).cli;
+
+	/** setup(), with Orrery connected to Grok in the scratch home's Grok folder as setup connects it, and the tools checked again. */
+	function connected(...args: Parameters<typeof setup>) {
+		const s = setup(...args);
+		grokFiles(s.env, own(), addGrokConfig("", own()).next);
+		const tools = checkTools({ root: orreryRoot(), env: s.env });
+		expect(tools.find((t) => t.id === "grok")?.wiring).toBe("installed");
+		return { ...s, tools };
+	}
+
+	/** The connect question for `why`, listing `steps`. */
+	const connect = (why: string, steps: readonly string[]) => `${why}. Connecting Orrery to Grok will:\n${steps.map((step) => `  ${step}`).join("\n")}\nConnect Orrery to Grok now?`;
+
+	it("asks to connect Orrery to Grok when its hooks aren't installed, with setup's steps; a yes connects it as setup does, and the next launch asks nothing", () => {
+		const { config, row, tools, env } = setup("grok");
+		const { hooks, config: grokConfig } = grokFolder(env);
+		const options = { root: orreryRoot(), env };
+		const plan = launchPlan(config, row, tools, options);
+		expect(plan.blocked).toBeUndefined();
+		expect(plan.steps).toEqual([
+			{
+				text: connect("Orrery's hooks for Grok are not installed, so this session won't record", [`write ${hooks} (Orrery's hooks for every Grok session)`, `add Orrery's status row and memory tools to ${grokConfig} unless it has its own (a copy of it first)`]),
+				confirm: true,
+				fix: "install-grok",
+			},
+		]);
+		// The steps are setup's own (src/agent/tools.ts installSteps).
+		const grok = tools.find((t) => t.id === "grok") as ToolCheck;
+		expect(plan.steps[0]?.text).toContain(installSteps(grok, orreryRoot(), env).map((step) => `  ${step.describe}`).join("\n"));
+		// The launch's command line is as it is once connected.
+		expect(plan.args).toEqual(["--no-leader"]);
+		// A yes: the hook file and both config entries, as setup writes them.
+		const done = applyFix("install-grok", config, row, tools, options);
+		expect(done).toContain(`wrote ${hooks}`);
+		expect(readFileSync(hooks, "utf8")).toBe(grokHookFile(own()));
+		expect(readFileSync(grokConfig, "utf8")).toBe(addGrokConfig("", own()).next);
+		const after = checkTools({ root: orreryRoot(), env });
+		expect(after.find((t) => t.id === "grok")?.wiring).toBe("installed");
+		expect(launchPlan(config, row, after, options).steps).toEqual([]);
+	});
+
+	it("says, without asking, which config entry of Orrery's Grok's config lacks when Grok runs this Orrery's hooks, and opens Grok", () => {
+		const { config, row, env } = setup("grok");
+		const { config: grokConfig, disabled } = grokFolder(env);
+		const options = { root: orreryRoot(), env };
+		const full = addGrokConfig("", own()).next;
+		const status = full.slice(0, full.indexOf("[mcp_servers.orrery]"));
+		const server = full.slice(full.indexOf("[mcp_servers.orrery]"));
+		/** The launch with Orrery's own hook file and `text` as Grok's config: its wiring is "missing", for a config entry alone. */
+		const open = (text: string) => {
+			grokFiles(env, own(), text);
+			const tools = checkTools(options);
+			expect(tools.find((t) => t.id === "grok")?.wiring).toBe("missing");
+			return launchPlan(config, row, tools, options);
+		};
+		// The memory tools removed (the session still records, with Orrery's guard): said, and Grok opens.
+		const noServer = open(status);
+		expect(noServer.steps).toEqual([{ text: "Grok's config has no [mcp_servers.orrery], so this session has no Orrery memory tools; orrery setup adds it back.", confirm: false }]);
+		expect(noServer).toMatchObject({ command: join(env.PATH, "grok"), args: ["--no-leader"] });
+		expect(noServer.blocked).toBeUndefined();
+		// The status row removed, on purpose say: said at every launch, never asked.
+		expect(open(server).steps).toEqual([{ text: "Grok's config has no [ui.status_line], so this session shows no Orrery status row; orrery setup adds it back.", confirm: false }]);
+		expect(open("").steps).toEqual([{ text: "Grok's config has no [ui.status_line] or [mcp_servers.orrery], so this session has no Orrery status row or memory tools; orrery setup adds them back.", confirm: false }]);
+		// The launch changes nothing in Grok's config.
+		expect(readFileSync(grokConfig, "utf8")).toBe("");
+		// Orrery's hooks switched off in Grok's /hooks as well: both are said.
+		writeFileSync(disabled, "global/orrery:pre_tool_use[0].hooks[0]\n");
+		expect(open(status).steps).toEqual([
+			{ text: "Grok's config has no [mcp_servers.orrery], so this session has no Orrery memory tools; orrery setup adds it back.", confirm: false },
+			{ text: "Orrery's guard is switched off in Grok's /hooks, so it checks none of this session's tool calls: switch it on there.", confirm: false },
+		]);
+	});
+
+	it("asks to connect Orrery to Grok when Grok runs Orrery's hooks of the other install shape, or another hook file", () => {
+		const { config, row, env } = setup("grok");
+		const { hooks } = grokFolder(env);
+		const options = { root: orreryRoot(), env };
+		const replace = (now: string) => `replace ${hooks} (now ${now}) with Orrery's hooks for every Grok session`;
+		const check = () => checkTools({ root: orreryRoot(), env });
+		// This checkout's other shape (a release's bin/orrery), the config entries there.
+		const shape = join(orreryRoot(), "bin", "orrery");
+		grokFiles(env, shape, addGrokConfig("", own()).next);
+		expect(check().find((t) => t.id === "grok")?.wiring).toBe("update available");
+		expect(launchPlan(config, row, check(), options).steps).toEqual([{ text: connect("Orrery's hooks for Grok name the other install shape's entry, so this session won't record", [replace(`runs ${shape}`)]), confirm: true, fix: "install-grok" }]);
+		// The same, with a config entry of Orrery's missing too ("missing"): asked, since the hook file isn't this install's.
+		grokFiles(env, shape, "");
+		expect(check().find((t) => t.id === "grok")).toMatchObject({ wiring: "missing", now: `runs ${shape}` });
+		expect(launchPlan(config, row, check(), options).steps).toEqual([
+			{ text: connect("Orrery's hooks for Grok name the other install shape's entry, so this session won't record", [replace(`runs ${shape}`), `add Orrery's status row and memory tools to ${grokFolder(env).config} unless it has its own (a copy of it first)`]), confirm: true, fix: "install-grok" },
+		]);
+		// Another Orrery's hooks: that Orrery may record the session, or may not.
+		grokFiles(env, "/opt/other/bin/orrery", addGrokConfig("", own()).next);
+		expect(check().find((t) => t.id === "grok")?.wiring).toBe("other");
+		const other = launchPlan(config, row, check(), options);
+		expect(other.steps).toEqual([{ text: connect("Grok doesn't run this Orrery's hooks, so this session may not record", [replace("runs /opt/other/bin/orrery")]), confirm: true, fix: "install-grok" }]);
+		// A hook file that isn't Orrery's: set aside first, as setup does.
+		writeFileSync(hooks, '{"hooks":{}}\n');
+		expect(launchPlan(config, row, check(), options).steps[0]?.text).toBe(connect("Grok doesn't run this Orrery's hooks, so this session may not record", [replace("not Orrery's hook file")]));
+		applyFix("install-grok", config, row, check(), options);
+		expect(readFileSync(hooks, "utf8")).toBe(grokHookFile(own()));
+		expect(readdirSync(dirname(hooks)).filter((name) => name.startsWith("orrery.json.before-orrery-"))).toHaveLength(1);
+		expect(launchPlan(config, row, check(), options).steps).toEqual([]);
+	});
+
+	it("says, without asking, when Orrery can't read Grok's wiring, and opens Grok", () => {
+		const { config, row, tools, env } = setup("grok");
+		const unknown = tools.map((t) => (t.id === "grok" ? { ...t, wiring: "unknown" as const, detail: `cannot read ${grokFolder(env).hooks}; tested with Grok 1.0.70` } : t));
+		const plan = launchPlan(config, row, unknown, { root: orreryRoot(), env });
+		expect(plan.blocked).toBeUndefined();
+		expect(plan.steps).toEqual([{ text: "Orrery can't tell whether Grok runs its hooks, so this session may not record; orrery tools says why.", confirm: false }]);
+		expect(plan.command).toBe(join(env.PATH, "grok"));
+	});
+
+	it("says when Grok's /hooks tab switched Orrery's hooks off, or can't be read, after the question that connects Orrery and after the word that the wiring can't be read", () => {
+		const { config, row, tools, env } = setup("grok");
+		const { hooks, config: grokConfig, disabled } = grokFolder(env);
+		const options = { root: orreryRoot(), env };
+		const guardOff = { text: "Orrery's guard is switched off in Grok's /hooks, so it checks none of this session's tool calls: switch it on there.", confirm: false };
+		const unknownText = { text: "Orrery can't tell whether Grok runs its hooks, so this session may not record; orrery tools says why.", confirm: false };
+		// Orrery's hooks were switched off in /hooks, then its hook file went (a rollback, say): connecting again asks, and
+		// says what the switch will still do.
+		mkdirSync(dirname(disabled), { recursive: true });
+		writeFileSync(disabled, "global/orrery:pre_tool_use[0].hooks[0]\n");
+		const plan = launchPlan(config, row, tools, options);
+		expect(plan.steps).toEqual([
+			{
+				text: connect("Orrery's hooks for Grok are not installed, so this session won't record", [`write ${hooks} (Orrery's hooks for every Grok session)`, `add Orrery's status row and memory tools to ${grokConfig} unless it has its own (a copy of it first)`]),
+				confirm: true,
+				fix: "install-grok",
+			},
+			guardOff,
+		]);
+		// The wiring can't be read: the same word after it.
+		const unknown = tools.map((t) => (t.id === "grok" ? { ...t, wiring: "unknown" as const, detail: `cannot read ${hooks}` } : t));
+		expect(launchPlan(config, row, unknown, options).steps).toEqual([unknownText, guardOff]);
+		// The recording hooks too, then a /hooks file that can't be read: said so on both paths.
+		writeFileSync(disabled, "global/orrery:session_start[0].hooks[0]\nglobal/orrery:pre_tool_use[0].hooks[0]\n");
+		expect(launchPlan(config, row, unknown, options).steps[1]?.text).toMatch(/^Orrery's recording hooks and its guard are switched off in Grok's \/hooks/);
+		rmSync(disabled);
+		mkdirSync(disabled);
+		const unread = { text: `Orrery couldn't read Grok's /hooks settings (${disabled}), so it can't tell whether its hooks are switched off there; if Grok loads Orrery's Claude Code plugin, that plugin's guard keeps checking this session's tool calls.`, confirm: false };
+		expect(launchPlan(config, row, tools, options).steps.slice(1)).toEqual([unread]);
+		expect(launchPlan(config, row, unknown, options).steps).toEqual([unknownText, unread]);
+		// Nothing switched off: the question alone, or the word alone.
+		rmSync(disabled, { recursive: true });
+		expect(launchPlan(config, row, tools, options).steps.map((step) => step.fix)).toEqual(["install-grok"]);
+		expect(launchPlan(config, row, unknown, options).steps).toEqual([unknownText]);
+	});
+
+	it("refuses a Grok agent whose launcher is Ori, as OpenCode's: a Grok session through Ori has not been checked", () => {
+		const { config, row, env } = setup("grok", undefined, 'launcher = "ori"\n');
+		const tools = checkTools({ root: orreryRoot(), env });
+		const plan = launchPlan(config, row, tools, { root: orreryRoot(), env });
+		expect(plan.blocked).toBe('Orrery doesn\'t open Grok through Ori yet: open A with launcher = "direct" (orrery agent set A launcher direct), or in another tool.');
+		expect(plan.steps).toEqual([]);
+		expect(plan.command).toBeUndefined();
+		// The same agent opened directly, or in another tool through Ori, is not refused.
+		expect(launchPlan(config, row, tools, { root: orreryRoot(), env, tool: "pi" }).blocked).toBeUndefined();
+		const direct = setup("grok", undefined, 'launcher = "direct"\n');
+		expect(launchPlan(direct.config, direct.row, direct.tools, { root: orreryRoot(), env: direct.env }).blocked).toBeUndefined();
+	});
+
+	it("says which of Orrery's hooks Grok's /hooks tab has switched off, and how to switch them on, then opens Grok", () => {
+		const { config, row, tools, env } = connected("grok");
+		const { disabled } = grokFolder(env);
+		const open = () => launchPlan(config, row, tools, { root: orreryRoot(), env });
+		// Others' hooks, or a project's hook of Orrery's name: nothing to say.
+		writeFileSync(disabled, "project/orrery:pre_tool_use[0].hooks[0]\nglobal/other:session_start[0].hooks[0]\n");
+		expect(open().steps).toEqual([]);
+		writeFileSync(disabled, "global/orrery:stop[0].hooks[0]\n");
+		expect(open().steps).toEqual([{ text: "Orrery's recording hooks are switched off in Grok's /hooks, so this session won't be fully recorded: switch them on there, then start a new session (/new).", confirm: false }]);
+		writeFileSync(disabled, "global/orrery:pre_tool_use[0].hooks[0]\n");
+		expect(open().steps).toEqual([{ text: "Orrery's guard is switched off in Grok's /hooks, so it checks none of this session's tool calls: switch it on there.", confirm: false }]);
+		writeFileSync(disabled, "global/orrery:session_start[0].hooks[0]\nglobal/orrery:pre_tool_use[0].hooks[0]\n");
+		const both = open();
+		expect(both.steps).toEqual([{ text: "Orrery's recording hooks and its guard are switched off in Grok's /hooks, so this session won't be fully recorded and the guard checks none of its tool calls: switch them on there, then start a new session (/new).", confirm: false }]);
+		expect(both).toMatchObject({ command: join(env.PATH, "grok"), args: ["--no-leader"] });
+	});
+
+	it("says when Grok's config switches Orrery's memory tools off (grok mcp disable: enabled = false, or disabled_mcp_servers), and how they go back on, then opens Grok", () => {
+		const { config, row, env } = connected("grok");
+		const { config: grokConfig } = grokFolder(env);
+		const options = { root: orreryRoot(), env };
+		const off = { text: "Orrery's memory tools are switched off in Grok's config, so its sessions get no zoom, date or search; grok mcp enable orrery, run in your own terminal, switches them back on.", confirm: false };
+		const full = addGrokConfig("", own()).next;
+		const open = (text: string) => {
+			writeFileSync(grokConfig, text);
+			const tools = checkTools(options);
+			return { plan: launchPlan(config, row, tools, options), grok: tools.find((t) => t.id === "grok") as ToolCheck };
+		};
+		// What `grok mcp disable orrery` writes: Orrery's table's own switch, and the list.
+		const disabled = open(`disabled_mcp_servers = ["orrery"]\n\n${full.replace('args = ["mcp", "--tool", "grok"]', 'args = ["mcp", "--tool", "grok"]\nenabled = false')}`);
+		expect(disabled.plan.steps).toEqual([off]);
+		expect(disabled.plan).toMatchObject({ command: join(env.PATH, "grok"), args: ["--no-leader"] });
+		expect(disabled.grok).toMatchObject({ wiring: "installed", detail: expect.stringContaining(off.text) });
+		// Either alone says so too.
+		expect(open(`disabled_mcp_servers = ["github", "orrery"]\n\n${full}`).plan.steps).toEqual([off]);
+		expect(open(full.replace('args = ["mcp", "--tool", "grok"]', 'args = ["mcp", "--tool", "grok"]\nenabled = false')).plan.steps).toEqual([off]);
+		// Switched on, or another server switched off: nothing to say.
+		expect(open(full.replace('args = ["mcp", "--tool", "grok"]', 'args = ["mcp", "--tool", "grok"]\nenabled = true')).plan.steps).toEqual([]);
+		const others = open(`disabled_mcp_servers = ["github"]\n\n${full}`);
+		expect(others.plan.steps).toEqual([]);
+		expect(others.grok.detail).not.toContain("switched off");
+	});
+
+	it("says Grok's config switches Orrery's memory tools off after the question that connects Orrery, and after the word that the wiring can't be read: connecting keeps that switch", () => {
+		const { config, row, env } = setup("grok");
+		const options = { root: orreryRoot(), env };
+		const off = { text: "Orrery's memory tools are switched off in Grok's config, so its sessions get no zoom, date or search; grok mcp enable orrery, run in your own terminal, switches them back on.", confirm: false };
+		const unknownText = { text: "Orrery can't tell whether Grok runs its hooks, so this session may not record; orrery tools says why.", confirm: false };
+		// The memory tools switched off (grok mcp disable orrery), then Orrery's hook file gone: connecting asks, then
+		// says so.
+		grokFiles(env, undefined, `disabled_mcp_servers = ["orrery"]\n\n${addGrokConfig("", own()).next}`);
+		const tools = checkTools(options);
+		expect(tools.find((t) => t.id === "grok")?.wiring).toBe("missing");
+		const plan = launchPlan(config, row, tools, options);
+		expect(plan.steps.map((step) => step.fix)).toEqual(["install-grok", undefined]);
+		expect(plan.steps[0]?.text).toMatch(/^Orrery's hooks for Grok are not installed, so this session won't record\. Connecting Orrery to Grok will:/);
+		expect(plan.steps[1]).toEqual(off);
+		// The wiring can't be read: the same word after it.
+		const unknown = tools.map((t) => (t.id === "grok" ? { ...t, wiring: "unknown" as const, detail: `cannot read ${grokFolder(env).hooks}` } : t));
+		expect(launchPlan(config, row, unknown, options).steps).toEqual([unknownText, off]);
+		// A yes connects Orrery and leaves Grok's switch as it is: the next launch says it alone.
+		applyFix("install-grok", config, row, tools, options);
+		const after = checkTools(options);
+		expect(after.find((t) => t.id === "grok")?.wiring).toBe("installed");
+		expect(launchPlan(config, row, after, options).steps).toEqual([off]);
+	});
+
+	it("says it couldn't read Grok's /hooks settings when the disabled-hooks file can't be read, not that the guard is off, then opens Grok", () => {
+		const { config, row, tools, env } = connected("grok");
+		const { disabled } = grokFolder(env);
+		const open = () => launchPlan(config, row, tools, { root: orreryRoot(), env });
+		const unread = [{ text: `Orrery couldn't read Grok's /hooks settings (${disabled}), so it can't tell whether its hooks are switched off there; if Grok loads Orrery's Claude Code plugin, that plugin's guard keeps checking this session's tool calls.`, confirm: false }];
+		// A file there that can't be read (skipped as root, who reads it anyway).
+		if (process.getuid?.() !== 0) {
+			writeFileSync(disabled, "global/orrery:pre_tool_use[0].hooks[0]\n");
+			chmodSync(disabled, 0o000);
+			try {
+				expect(open().steps).toEqual(unread);
+			} finally {
+				chmodSync(disabled, 0o600);
+			}
+			rmSync(disabled);
+		}
+		// Not a file: the same.
+		mkdirSync(disabled);
+		const plan = open();
+		expect(plan.steps).toEqual(unread);
+		expect(plan).toMatchObject({ command: join(env.PATH, "grok"), args: ["--no-leader"] });
+	});
+
+	/** A fake grok that writes down what it was started with: the agent, the token, the folder and each argument on its own line. */
+	function fakeGrok(out: string, bin: string) {
+		writeFileSync(join(bin, "grok"), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "grok 1.0.70 (abc) [stable]"; exit 0; fi\n{ printf '%s\\n' "$ORRERY_AGENT" "$ORRERY_AGENT_TOKEN" "$(pwd)"; for a in "$@"; do printf '%s\\n' "$a"; done; } > ${JSON.stringify(out)}\n`, { mode: 0o755 });
+	}
+
+	it("tool grok opens grok with ORRERY_AGENT and a fresh token, in the current folder", async () => {
+		const { config, row, tools, env, out } = connected("grok");
+		fakeGrok(out, join(dirname(out), "bin"));
+		const here = tempDir("orrery-launch-grok-here-");
+		dirs.push(here);
+		writeInstructions(config.agents.get("A")!.dir, "Keep notes.\n");
+		const plan = launchPlan(config, row, checkTools({ root: orreryRoot(), env }), { env, cwd: here, args: ["--resume", "abc"] });
+		expect(plan).toMatchObject({ tool: "grok", command: join(env.PATH, "grok"), cwd: here, steps: [{ text: resumedNotice, confirm: false }] });
+		expect(plan.blocked).toBeUndefined();
+		// Orrery's flags first: --no-leader (Grok's leader mode would run every session's hooks in one shared process), then --rules.
+		expect(plan.args.slice(0, 2)).toEqual(["--no-leader", "--rules"]);
+		expect(plan.args[2]).toContain("# Agent: A");
+		expect(plan.args.slice(3)).toEqual(["--resume", "abc"]);
+		const token = plan.env.ORRERY_AGENT_TOKEN as string;
+		expect(token).toMatch(/^[0-9a-f]{32}$/);
+		// What Grok's hooks do at its start: claim the token.
+		expect(claimToken(plan.agentDir, token, 999_999)).toBe(true);
+		expect(await runAgent(plan, (p) => runTool(p, { env }))).toEqual({ code: 0, signal: null, claimedBy: 999_999 });
+		const [agent, seen, cwd, leader, flag, ...rest] = readFileSync(out, "utf8").split("\n");
+		expect([agent, seen, realpathSync(cwd as string), leader, flag]).toEqual(["A", token, realpathSync(here), "--no-leader", "--rules"]);
+		expect(rest.slice(0, 2)).toEqual(["# Agent: A", ""]);
+		expect(rest.slice(-3, -1)).toEqual(["--resume", "abc"]);
+		expect(readdirSync(join(plan.agentDir, "claims"))).toEqual([]);
+	});
+
+	/** What the person is told when Grok resumes a session, whose memory section is its first launch's. */
+	const resumedNotice = "Orrery: a resumed Grok session keeps A's memory as it was at that session's first launch; newer memory is reachable with the zoom and search tools. Start a new session for a fresh view.";
+
+	it("says a resumed session keeps its first launch's memory (Grok doesn't take --rules again on a resume), for each way of resuming", () => {
+		const { config, row, tools, env } = connected("grok");
+		writeInstructions(config.agents.get("A")!.dir, "Keep notes.\n");
+		for (const args of [["--resume", "abc"], ["--resume"], ["--resume=abc"], ["-r", "abc"], ["--continue"], ["-c"], ["-p", "hi", "-c"]]) {
+			const plan = launchPlan(config, row, tools, { env, args });
+			expect(plan.steps, args.join(" ")).toEqual([{ text: resumedNotice, confirm: false }]);
+			expect(plan.args.slice(-args.length)).toEqual(args);
+		}
+		for (const args of [[], ["-p", "hi"], ["--", "-c"], ["--resumex"], ["-cx"]]) expect(launchPlan(config, row, tools, { env, args }).steps, args.join(" ")).toEqual([]);
+	});
+
+	it("--tool grok overrides an agent's tool for this launch only", () => {
+		const { config, row, tools, env } = connected("codex");
+		const plan = launchPlan(config, row, tools, { env, tool: "grok", args: ["-x"] });
+		expect(plan).toMatchObject({ tool: "grok", command: join(env.PATH, "grok") });
+		expect(plan.codex).toBeUndefined();
+		expect(plan.args).toEqual(["--no-leader", "-x"]);
+		// The agent's own tool is untouched.
+		expect(launchPlan(config, row, tools, { env })).toMatchObject({ tool: "codex" });
+	});
+
+	it("gives the memory section of the agent's store, in Grok's words, with the instructions after it", () => {
+		const { config, row, tools, env } = connected("grok");
+		const agentDir = config.agents.get("A")!.dir;
+		mkdirSync(agentDir, { recursive: true });
+		const store = MemoryStore.open(join(agentDir, "memory.sqlite"));
+		new MemoryView(store).append("user", "remember the Cedar plan");
+		store.saveNode(new Part(0, 0), "user: remember the Cedar plan");
+		store.close();
+		writeInstructions(agentDir, "Keep notes.\n");
+		const plan = launchPlan(config, row, tools, { env });
+		const rules = plan.args[2] as string;
+		expect(plan.args.slice(0, 2)).toEqual(["--no-leader", "--rules"]);
+		expect(rules.startsWith("# Memory")).toBe(true);
+		expect(rules).toContain("look for the zoom, date and search tools");
+		expect(rules).toContain("remember the Cedar plan");
+		expect(rules).not.toContain("read-only");
+		expect(rules.indexOf("# Agent: A")).toBeGreaterThan(rules.indexOf("remember the Cedar plan"));
+		// Open in another session: asked first, and the section says this one records nothing.
+		const open = { ...row, state: "open" as const, openIn: "omp" as const };
+		const second = launchPlan(config, open, tools, { env });
+		expect(second.steps).toEqual([{ text: "A is already open in OMP. A second session won't record. Launch anyway?", confirm: true, asAgent: true }]);
+		expect(second.args[2]).toContain("This session is read-only, though: another session has the agent");
+	});
+
+	it("opens with no memory yet and no instructions: nothing added, only the person's arguments", () => {
+		const { config, row, tools, env } = connected("grok");
+		expect(launchPlan(config, row, tools, { env, args: ["-p", "hi"] }).args).toEqual(["--no-leader", "-p", "hi"]);
+	});
+
+	/** What the person is told when the session starts with the memory's newest lines, from line `from`. */
+	const newestNotice = (from: string) => `Orrery: A's memory is too large for Grok's command line, so this session starts with its newest lines, from line ${from}; older lines are left out, and the zoom and search tools reach them.`;
+
+	it("keeps every argument within Grok's limit for a large memory of multi-byte text: the instructions whole, the memory's newest lines", () => {
+		const { config, row, tools, env } = connected("grok", undefined, "[agents.A.memory]\nview_bytes = 125000\n");
+		const agentDir = config.agents.get("A")!.dir;
+		mkdirSync(agentDir, { recursive: true });
+		const store = MemoryStore.open(join(agentDir, "memory.sqlite"));
+		const view = new MemoryView(store, 125_000);
+		for (let i = 0; i < 30; i++) {
+			view.append("user", `${i} ${"\u20ac".repeat(1400)}`);
+			store.saveNode(new Part(0, i), `user: ${i} ${"\u20ac".repeat(1400)}`);
+		}
+		store.close();
+		// Over 32 KB: cut there, as for every tool.
+		writeInstructions(agentDir, "Instruction line with \u00e9 and more words.\n".repeat(850));
+		const plan = launchPlan(config, row, tools, { env });
+		expect(plan.args).toHaveLength(3);
+		const rules = plan.args[2] as string;
+		expect(Buffer.byteLength(rules)).toBeLessThanOrEqual(GROK_ARG_MAX);
+		// The instructions whole, at the 32 KB every tool gets; the memory's newest lines before them.
+		expect(rules.endsWith(`|user: 29 ${"\u20ac".repeat(1400)}\n</chat>\n\n${instructionsSection("A", readInstructions(agentDir)!)}`)).toBe(true);
+		const from = /\nThe view below starts at line (\d+\+1):/.exec(rules)?.[1] as string;
+		expect(rules).toContain(`\n\n${grokLeftOut(from)}\n<chat>\n${from}|user: ${Number.parseInt(from, 10)} \u20ac`);
+		expect(plan.steps.map((step) => step.text)).toEqual([newestNotice(from), cutNotice("A")]);
+	});
+
+	/** Short lines of multi-byte text, about 100 bytes each. */
+	const line = (i: number) => `${i} ${"\u20ac".repeat(30)}`;
+	const savedView = (agentDir: string) => {
+		const store = MemoryStore.openReadOnly(join(agentDir, "memory.sqlite"));
+		try {
+			return store.savedView();
+		} finally {
+			store.close();
+		}
+	};
+
+	it("starts at the default view_bytes with short multi-byte lines near the ceiling: a smaller view, whole on the command line, said first", async () => {
+		const { config, row, tools, env, out } = connected("grok");
+		fakeGrok(out, join(dirname(out), "bin"));
+		const agentDir = config.agents.get("A")!.dir;
+		expect(config.agents.get("A")!.memory.viewBytes).toBe(128_000);
+		mkdirSync(agentDir, { recursive: true });
+		// About 127 KB of lines, under the ceiling, as a summarizer that kept up leaves them; rendered, over Grok's limit.
+		fillMemory(join(agentDir, "memory.sqlite"), 1250, line, true);
+		writeInstructions(agentDir, "Keep notes.\n");
+		const before = savedView(agentDir);
+		const plan = launchPlan(config, row, checkTools({ root: orreryRoot(), env }), { env });
+		expect(plan.blocked).toBeUndefined();
+		expect(plan.steps).toEqual([{ text: "Orrery: A's memory view is too large for Grok's command line, so this session starts with a smaller view of it.", confirm: false }]);
+		const rules = plan.args[2] as string;
+		expect(plan.args.slice(0, 2)).toEqual(["--no-leader", "--rules"]);
+		expect(Buffer.byteLength(rules)).toBeLessThanOrEqual(GROK_ARG_MAX);
+		expect(rules.startsWith("# Memory\n\n")).toBe(true);
+		expect(rules).toContain(`|user: ${line(1249)}\n</chat>\n\n# Agent: A\n\nKeep notes.`);
+		// Read, never written: the agent's saved view is as it was.
+		expect(savedView(agentDir)).toBe(before);
+		// Grok starts with it.
+		const token = plan.env.ORRERY_AGENT_TOKEN as string;
+		expect(claimToken(plan.agentDir, token, 999_999)).toBe(true);
+		expect(await runAgent(plan, (p) => runTool(p, { env }))).toEqual({ code: 0, signal: null, claimedBy: 999_999 });
+		expect(readFileSync(out, "utf8")).toContain(`${rules}\n`);
+	});
+
+	it("gives the instructions their room first: 32 KB of them go in whole beside a smaller view near the ceiling", () => {
+		const { config, row, tools, env } = connected("grok");
+		const agentDir = config.agents.get("A")!.dir;
+		mkdirSync(agentDir, { recursive: true });
+		fillMemory(join(agentDir, "memory.sqlite"), 1250, line, true);
+		// 32,759 bytes: under 32 KB, so whole for every tool.
+		const text = "Instruction line with \u00e9 and more words.\n".repeat(799);
+		writeInstructions(agentDir, text);
+		const plan = launchPlan(config, row, tools, { env });
+		const rules = plan.args[2] as string;
+		expect(Buffer.byteLength(rules)).toBeLessThanOrEqual(GROK_ARG_MAX);
+		expect(rules.startsWith("# Memory\n\n")).toBe(true);
+		expect(rules).toContain("summary of 0+");
+		expect(rules).not.toContain("are left out");
+		expect(rules.endsWith(`|user: ${line(1249)}\n</chat>\n\n# Agent: A\n\n${text.trimEnd()}`)).toBe(true);
+		expect(plan.steps).toEqual([{ text: "Orrery: A's memory view is too large for Grok's command line, so this session starts with a smaller view of it.", confirm: false }]);
+	});
+
+	it("starts with the memory's newest lines, saying so to the model and the person, when no smaller view fits for want of summaries", () => {
+		const { config, row, tools, env } = connected("grok");
+		const agentDir = config.agents.get("A")!.dir;
+		mkdirSync(agentDir, { recursive: true });
+		// Summaries stalled: about 127 KB of short lines kept word for word, none merged.
+		fillMemory(join(agentDir, "memory.sqlite"), 1250, line, false);
+		writeInstructions(agentDir, "Keep notes.\n");
+		const before = savedView(agentDir);
+		const plan = launchPlan(config, row, tools, { env });
+		expect(plan.blocked).toBeUndefined();
+		const rules = plan.args[2] as string;
+		expect(plan.args).toEqual(["--no-leader", "--rules", rules]);
+		expect(Buffer.byteLength(rules)).toBeLessThanOrEqual(GROK_ARG_MAX);
+		// The normal section: Grok's words and its tool pointer.
+		expect(rules.startsWith("# Memory\n\n")).toBe(true);
+		expect(rules).toContain("look for the zoom, date and search tools");
+		// The right first line: the oldest from which the section still fits beside the instructions (one by one here).
+		const instructions = "\n\n# Agent: A\n\nKeep notes.";
+		const store = MemoryStore.openReadOnly(join(agentDir, "memory.sqlite"));
+		try {
+			const view = new MemoryView(store, 128_000);
+			const k = view.parts.findIndex((part, at) => at > 0 && Buffer.byteLength(memorySection(view, "grok", { from: part }) + instructions) <= GROK_ARG_MAX);
+			expect(k).toBeGreaterThan(0);
+			const from = view.parts[k]!.address;
+			expect(from).toBe(`${k}+1`);
+			expect(rules).toContain(`\n\n${grokLeftOut(from)}\n<chat>\n${from}|user: ${line(k)}\n`);
+			expect(rules).not.toContain(`\n${k - 1}+1|`);
+			expect(rules).toBe(`${memorySection(view, "grok", { from: view.parts[k] })}${instructions}`);
+			expect(plan.steps).toEqual([{ text: newestNotice(from), confirm: false }]);
+		} finally {
+			store.close();
+		}
+		expect(rules.endsWith(`|user: ${line(1249)}\n</chat>${instructions}`)).toBe(true);
+		expect(savedView(agentDir)).toBe(before);
+	});
+
+	it("starts without the memory, saying so, when not even its newest line fits", () => {
+		const { config, row, tools, env } = connected("grok");
+		const agentDir = config.agents.get("A")!.dir;
+		mkdirSync(agentDir, { recursive: true });
+		fillMemory(join(agentDir, "memory.sqlite"), 2, (i) => (i === 1 ? "x".repeat(140_000) : "hello"), false);
+		writeInstructions(agentDir, "Keep notes.\n");
+		const plan = launchPlan(config, row, tools, { env });
+		expect(plan.args).toEqual(["--no-leader", "--rules", "# Agent: A\n\nKeep notes."]);
+		expect(plan.steps).toEqual([{ text: "Orrery: A's memory doesn't fit on Grok's command line, not even its newest line, so this session starts without it.", confirm: false }]);
+	});
+
+	it("refuses the person's own --rules beside Orrery's, which Grok would refuse as a second one, naming what Orrery passes", () => {
+		const { config, row, tools, env } = connected("grok");
+		const agentDir = config.agents.get("A")!.dir;
+		writeInstructions(agentDir, "Keep notes.\n");
+		const plan = launchPlan(config, row, tools, { env, args: ["--rules", "be brief"] });
+		expect(plan).toMatchObject({ steps: [], blocked: "Orrery gives Grok A's instructions as its --rules, which Grok takes once: put your rules in A's instructions.md, or open A without them." });
+		fillMemory(join(agentDir, "memory.sqlite"), 1, () => "hello", false);
+		expect(launchPlan(config, row, tools, { env, args: ["--rules=be brief"] }).blocked).toBe("Orrery gives Grok A's memory and instructions as its --rules, which Grok takes once: put your rules in A's instructions.md, or open A without them.");
+	});
+
+	it("refuses the person's own --leader (or Grok's `agent leader`): Orrery opens Grok with --no-leader", () => {
+		const { config, row, tools, env } = connected("grok");
+		const refusal = "Orrery opens Grok with --no-leader: in leader mode Grok runs every session's hooks and memory tools in one shared process, where one agent's session can't be told from another's. Open A without --leader.";
+		for (const args of [["--leader"], ["-c", "--leader"]]) expect(launchPlan(config, row, tools, { env, args }), args.join(" ")).toMatchObject({ steps: [], blocked: refusal });
+		// Grok's own leader command is named as the command it is.
+		expect(launchPlan(config, row, tools, { env, args: ["agent", "leader"] })).toMatchObject({ steps: [], blocked: refusal.replace("--leader.", "Grok's agent leader command.") });
+		// The person's own --no-leader is given once (Grok refuses it twice).
+		expect(launchPlan(config, row, tools, { env, args: ["--no-leader", "-p", "hi"] }).args).toEqual(["--no-leader", "-p", "hi"]);
 	});
 });
 

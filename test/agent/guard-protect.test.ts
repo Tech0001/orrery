@@ -12,6 +12,7 @@ import { checkToolCall, OPENCODE_COMMAND, OPENCODE_READ_ONLY, openCodeLoads, ope
 import { claudeGuard } from "../../src/claude/guard.ts";
 import { runHook } from "../../src/claude/hooks.ts";
 import { codexGuard } from "../../src/codex/guard.ts";
+import { grokGuard } from "../../src/grok/guard.ts";
 import { openCodeGuard, openCodePermission, openCodeToolPath } from "../../src/opencode/guard.ts";
 import { createOrrery } from "../../src/pi/index.ts";
 import { fakeOmp, ompCleanup, ompOrrery, track } from "../omp/world.ts";
@@ -56,7 +57,8 @@ function protectWorld() {
 	writeFileSync(join(home, "finance", "q3.csv"), "q3");
 	writeFileSync(join(home, "finance-old", "x.csv"), "old");
 	writeFileSync(join(home, "financial.txt"), "x");
-	for (const file of [".npmrc", ".config/gcloud/adc.json", ".azure/tokens.json"]) writeFileSync(join(home, file), "x");
+	mkdirSync(join(home, ".grok", "sessions", "%2Fws", "01a1"), { recursive: true });
+	for (const file of [".npmrc", ".config/gcloud/adc.json", ".azure/tokens.json", ".grok/auth.json", ".grok/sessions/%2Fws/01a1/updates.jsonl"]) writeFileSync(join(home, file), "x");
 	writeFileSync(join(keys, "prod.pem"), "key");
 	writeFileSync(join(keys, "dev.pem"), "key");
 	for (const file of [
@@ -719,6 +721,13 @@ describe("[guard] protect and .env: one table through every gate", () => {
 			{ name: "a release channel's OpenCode database", refused: true, path: join(t.home, ".local", "share", "opencode", "opencode-beta.db"), command: `cat ${join(t.home, ".local", "share", "opencode", "opencode-beta.db")}` },
 			{ name: "OpenCode's database where XDG_DATA_HOME puts it", refused: true, path: join(t.root, "xdg-data", "opencode", "opencode.db"), command: `cat ${join(t.root, "xdg-data", "opencode", "opencode.db")}` },
 			{ name: "a project's own opencode folder", refused: false, path: join(t.atlas, "src", "a.ts"), command: "ls src/opencode && cat opencode-notes.db.md" },
+			// Grok Build's login and session records (the records hold each session's system prompt: an agent's memory).
+			{ name: "Grok's login", refused: true, path: join(t.home, ".grok", "auth.json"), command: `cat ${join(t.home, ".grok", "auth.json")}` },
+			{ name: "Grok's login from ~", refused: true, home: true, path: "~/.grok/auth.json", command: "cp ~/.grok/auth.json /tmp/x" },
+			{ name: "Grok's session records", refused: true, path: join(t.home, ".grok", "sessions", "%2Fws", "01a1", "updates.jsonl"), command: `cat ${join(t.home, ".grok", "sessions", "%2Fws", "01a1", "updates.jsonl")}` },
+			{ name: "Grok's session records from ~", refused: true, home: true, path: "~/.grok/sessions/%2Fws/01a1/updates.jsonl", command: "grep -r codename ~/.grok/sessions" },
+			{ name: "a shell in Grok's session records", refused: true, cwd: join(t.home, ".grok", "sessions") },
+			{ name: "a project's own grok notes", refused: false, path: join(t.atlas, "src", "a.ts"), command: "cat src/grok-sessions.md && ls .grok-old" },
 			// Orrery's hook plumbing, which only its hooks run (a hook run by hand could put made-up words in the agent's memory).
 			{ name: "a hook run by hand", refused: true, command: "echo '{}' | orrery codex-hook user-prompt-submit" },
 			{ name: "Claude Code's hook run by hand", refused: true, command: "orrery claude-hook stop < x.json" },
@@ -850,6 +859,42 @@ describe("[guard] protect and .env: one table through every gate", () => {
 	};
 
 	/**
+	 * Grok Build (src/grok/guard.ts): its file tools (read_file, write, search_replace, hashline_edit, grep, list_dir), the
+	 * codex toolset's apply_patch, an MCP call as PreToolUse shows it (its qualified name and use_tool's envelope), its
+	 * shell and monitor, an MCP shell, a subagent's and an MCP shell's cwd, and grep's glob.
+	 */
+	const grok: Gate = async (t, c) => {
+		const out: (string | undefined)[] = [];
+		const call = (tool: string, input: Record<string, unknown>) => out.push(grokGuard(tool, input, t.options, false));
+		if (c.cwd !== undefined) {
+			call("spawn_subagent", { prompt: "Look around", description: "x", cwd: c.cwd });
+			call("box__run", { tool_name: "box__run", tool_input: { command: "ls", cwd: c.cwd } });
+		}
+		if (c.path !== undefined) {
+			call("read_file", { target_file: c.path, offset: 1, limit: 10 });
+			call("grep", { pattern: "x", path: c.path });
+			call("list_dir", { target_directory: c.path });
+			call("fs__read_file", { tool_name: "fs__read_file", tool_input: { path: c.path } });
+			if (c.refused) {
+				call("write", { file_path: c.path, content: "x" });
+				call("search_replace", { file_path: c.path, old_string: "a", new_string: "b", replace_all: false });
+				call("hashline_edit", { file_path: c.path, edits: [] });
+				call("apply_patch", { input: `*** Begin Patch\n*** Add File: ${c.path}\n+x\n*** End Patch` });
+			}
+		}
+		if (c.command !== undefined) {
+			call("run_terminal_command", { command: c.command, description: "x" });
+			call("monitor", { command: c.command, description: "x", timeout_ms: 1000 });
+			call("box__run", { tool_name: "box__run", tool_input: { input: c.command } });
+		}
+		if (c.glob !== undefined) {
+			call("grep", { pattern: "x", glob: c.glob });
+			call("grep", { pattern: "x", path: t.atlas, glob: c.glob });
+		}
+		return out;
+	};
+
+	/**
 	 * orrery run: its pre-check on every call (durablePreCheck), then the file tools' own resolved check
 	 * (checkResolvedPath), as the durable harness runs them, with the scratch home as its home. Its tools still expand "~"
 	 * from the OS's home, so it takes the folder entry by its absolute path and skips the cases that spell the home.
@@ -928,12 +973,12 @@ describe("[guard] protect and .env: one table through every gate", () => {
 		return out;
 	};
 
-	it("gets the same verdict from pi, OMP, Claude Code, Codex, OpenCode and orrery run for every case", async () => {
+	it("gets the same verdict from pi, OMP, Claude Code, Codex, OpenCode, Grok and orrery run for every case", async () => {
 		const t = protectWorld();
 		writeFileSync(join(t.atlas, ".env.dist"), "KEY=");
 		const disagree: string[] = [];
 		for (const c of table(t)) {
-			for (const [gate, judge] of Object.entries({ pi, omp, claude, codex, opencode, durable })) {
+			for (const [gate, judge] of Object.entries({ pi, omp, claude, codex, opencode, grok, durable })) {
 				const verdicts = await judge(t, c);
 				verdicts.forEach((verdict, at) => {
 					if ((verdict !== undefined) !== c.refused) disagree.push(`${gate} #${at} on ${c.name}: ${verdict ?? "allowed"}`);

@@ -2,7 +2,8 @@
  * The agent holder (spec §4 "The agent holder"):
  * `orrery holder <Name> --session <id> --claude-pid <pid> --nonce <n> --since <ms>`, started detached by SessionStart,
  * one per Claude Code session; for a Codex session (spec 2026-10-16-codex-design, "Recorder"), `--host-pid <pid> --tool
- * codex` in place of --claude-pid. Codex's hooks spool into the same folders, so a holder takes in any session's leftovers.
+ * codex` in place of --claude-pid, and for a Grok session `--host-pid <pid> --tool grok` (the grok process). Codex's and
+ * Grok's hooks spool into the same folders, so a holder takes in any session's leftovers.
  * - While it holds the agent's store (the same writer lock pi takes), it ingests the hooks' spool in order, runs the
  *   compactor on orrery's own login, and keeps <folder>/.orrery/view.md current (Claude Code's file mode only).
  * - If pi, or a live session of another host process, holds the agent, it marks its session read-only and exits.
@@ -13,17 +14,27 @@
  *   src/claude/transcript.ts): the user's words are recorded, a peer's report as "[subagent] …", a task notification
  *   not at all. A Codex prompt or reply (marked `host: "codex"`) is held until Codex's rollout confirms it
  *   (src/codex/rollout.ts): the person's turn's words, and replies the agent said in that turn; anything else is
- *   dropped. A held event's session's later events wait behind it, so the order holds. One not confirmed once its own
- *   turn is over (a later event of its session, or its host gone; judged for each event, waiting behind another or not)
- *   and `graceMs` have passed is dropped and counted (unconfirmed.json). Each session's transcript or rollout place is
- *   kept in memory meta, so a holder that starts with an event still held looks for it first, where its predecessor left
- *   off. No prompt, and no Codex reply, is recorded as it comes.
- * It logs lifecycle and errors only, never message contents; its lines name the host (Claude Code or Codex).
+ *   dropped. A Grok prompt or reply (`host: "grok"`) is held until Grok's session log confirms it (src/grok/log.ts),
+ *   and the log's words are recorded: the person's typed prompt, and the final message of a turn whose prompt was
+ *   recorded. One reply per turn: a later Stop of the same turn replaces an earlier one still held. A held event's
+ *   session's later events wait behind it, so the order holds. One not confirmed once its own turn is over (a later event
+ *   of its session, or its host gone; judged for each event, waiting behind another or not) and `graceMs` have passed is
+ *   dropped and counted (unconfirmed.json). Each session's transcript, rollout or log place is kept in memory meta, so a
+ *   holder that starts with an event still held looks for it first, where its predecessor left off. No prompt, and no
+ *   Codex or Grok reply, is recorded as it comes.
+ * - A Grok session that another Grok has open too, or another process that runs Grok's hooks (a `grok-shared` mark:
+ *   src/grok/hooks.ts), confirms nothing more: its log can't tell the recording Grok's turns from the other's. Its log
+ *   place in memory meta names that process instead, so no later holder confirms anything from it while it lives. Its
+ *   own session turns read-only, with the reason its status row and its next SessionStart say (GROK_SHARED), for the
+ *   rest of this holder's run; a holder that starts for it later (it reopened) records it again once that process is
+ *   gone.
+ * It logs lifecycle and errors only, never message contents; its lines name the host (Claude Code, Codex or Grok).
  */
 
 import { appendFileSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { findAgent, type HarnessConfig, type AgentConfig } from "../agent/config.ts";
+import { processStart } from "../agent/process.ts";
 import { clearYield, HOST_LABELS, type HolderHost, holderFresh, openYielding, readHolder, readYield, removeHolder, writeHolder } from "../agent/handover.ts";
 import { compactorCommand } from "../agent/agent-commands.ts";
 import { AgentHeld, MemoryAgent } from "../agent/memory-agent.ts";
@@ -37,6 +48,7 @@ import { remoteFooter, remoteOpenNotice } from "../remote/checkout.ts";
 import { RemoteError, type RemoteStatus, type LockState } from "../remote/types.ts";
 import { codexSessionOf } from "../codex/resume.ts";
 import { type CodexSaid, type CodexVerdict, parseRolloutMark, RolloutReader, rolloutIn } from "../codex/rollout.ts";
+import { GROK_SHARED, type GrokConfirmation, GrokLogReader, type GrokSaid, grokLogIn, parseGrokLogMark, sharedLogLives, sharedLogMark } from "../grok/log.ts";
 import { holderLog, validSession } from "./paths.ts";
 import { dropEventsSince, listSessions, type Pending, pendingEvents, readEvent, readMode, removeSession, type SpoolEvent, spoolKey, writeMode } from "./spool.ts";
 import { addUnconfirmed, parseMark, type PromptVerdict, TranscriptReader, transcriptIn } from "./transcript.ts";
@@ -46,6 +58,8 @@ import { type ViewGate, writeViewFile } from "./view-file.ts";
 export const transcriptKey = (session: string) => `claude.transcript.${session}`;
 /** The meta key holding a Codex session's rollout place (src/codex/rollout.ts RolloutMark). */
 export const rolloutKey = (session: string) => `codex.rollout.${session}`;
+/** The meta key holding a Grok session's log place (src/grok/log.ts GrokLogMark). */
+export const grokLogKey = (session: string) => `grok.log.${session}`;
 
 /** How long a prompt (or a Codex reply) may stay unconfirmed once its turn is over (default for HolderOptions.graceMs). */
 export const PROMPT_GRACE_MS = 30_000;
@@ -56,7 +70,7 @@ export interface HolderOptions {
 	readonly config?: HarnessConfig;
 	readonly agent: AgentConfig;
 	readonly session: string;
-	/** The host's process (Claude Code's, or Codex's): when it is gone, the session has ended. */
+	/** The host's process (Claude Code's, Codex's or Grok's): when it is gone, the session has ended. */
 	readonly claudePid: number;
 	/** Whose session it records (default Claude Code): named in its log, its status file and holder.json. */
 	readonly host?: HolderHost;
@@ -86,10 +100,11 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 const READ_ONLY: Record<HolderHost, string> = {
 	"claude-code": "the agent is open elsewhere (pi, or a session of another Claude Code)",
 	codex: "the agent is open elsewhere (pi, Claude Code, or another Codex session)",
+	grok: "the agent is open elsewhere (pi, Claude Code, Codex, or another Grok session)",
 };
 const YIELDED = "yielded the agent";
 
-/** One Claude Code or Codex session's hold on an agent: the single writer while it runs. */
+/** One Claude Code, Codex or Grok session's hold on an agent: the single writer while it runs. */
 export class Holder {
 	readonly agent: MemoryAgent;
 	readonly session: string;
@@ -108,6 +123,8 @@ export class Holder {
 	readonly #transcripts = new Map<string, TranscriptReader>();
 	/** Each Codex session's rollout, as read so far (loaded from memory meta when first needed). */
 	readonly #rollouts = new Map<string, RolloutReader>();
+	/** Each Grok session's log, as read so far (loaded from memory meta when first needed). */
+	readonly #grokLogs = new Map<string, GrokLogReader>();
 	/** When each held prompt's grace began (its turn was over), by event name. */
 	readonly #graceFrom = new Map<string, number>();
 	/** Whether the last look left a prompt (or a Codex reply) of its own session held. */
@@ -130,6 +147,8 @@ export class Holder {
 	readonly #failing = new Set<string>();
 	/** Sessions whose next reply answers one of orrery's own commands, and stays out of memory (a prompt clears it). */
 	readonly #afterCommand = new Set<string>();
+	/** Its own Grok session is open in another Grok too (module doc): nothing more of it is confirmed in this run. */
+	#shared = false;
 	#timer: ReturnType<typeof setInterval> | undefined;
 	#release: () => void = () => {};
 
@@ -217,8 +236,15 @@ export class Holder {
 			opening = false;
 		}
 		const holder = new Holder(memory, options, startedAt, since);
-		mode(true, notices.length === 0 ? undefined : notices.join("\n"));
-		log(`${session}: recording`);
+		// A Grok session another Grok still has open (module doc): reopened while that Grok lives, it stays paused.
+		holder.#shared = host === "grok" && sharedLogLives(memory.store.getMeta(grokLogKey(session)), holder.#alive, (pid) => processStart(pid));
+		if (holder.#shared) {
+			mode(false, GROK_SHARED);
+			log(`${session}: another process has this session open; recording paused`);
+		} else {
+			mode(true, notices.length === 0 ? undefined : notices.join("\n"));
+			log(`${session}: recording`);
+		}
 		holder.#attempt("the heartbeat", () => holder.#heartbeat());
 		// The timer first: a first tick that already stops the holder clears it, so none is left running.
 		holder.#timer = setInterval(() => holder.tick(), options.tickMs ?? 500);
@@ -328,7 +354,28 @@ export class Holder {
 			const commandReply = parsed?.kind === "reply" && this.#afterCommand.has(event.session);
 			/** What was dropped unconfirmed, for the log (no words). */
 			let unconfirmed: string | undefined;
-			if ((parsed?.kind === "prompt" || parsed?.kind === "reply") && parsed.host === "codex") {
+			if ((parsed?.kind === "prompt" || parsed?.kind === "reply") && parsed.host === "grok") {
+				// Grok's, recorded only as Grok's log confirms it (none without a promptId), in the log's words.
+				const said: GrokSaid = { kind: parsed.kind, promptId: parsed.promptId ?? "", text: parsed.text };
+				const later = events.slice(index + 1);
+				// One reply per turn, the last: a later Stop of the same turn replaces this one before it is written.
+				if (said.kind !== "reply" || said.promptId === "" || !laterReply(event.session, said.promptId, later)) {
+					const { verdict, line, text } = this.#grokVerdict(event, said, parsed.claudePid, later, now);
+					if (verdict === "wait") {
+						held.add(event.session);
+						continue;
+					}
+					this.#graceFrom.delete(event.name);
+					const reader = this.#grokLogs.get(event.session);
+					// A line recorded before (a restarted reader reads a turn it kept again) is not recorded again.
+					if (verdict === "user" && text !== undefined && text.trim() && !commandReply && (line === undefined || reader?.recordedBefore(line) !== true)) {
+						items.push({ kind: parsed.kind === "prompt" ? "user" : "talk", text, date: localIso(new Date(parsed.at)) });
+						if (line !== undefined) reader?.remember(line);
+					}
+					if (verdict !== "user") unconfirmed = `a ${parsed.kind} Grok's log does not confirm`;
+					if (reader !== undefined) meta[grokLogKey(event.session)] = JSON.stringify(reader.mark());
+				}
+			} else if ((parsed?.kind === "prompt" || parsed?.kind === "reply") && parsed.host === "codex") {
 				// Codex's, recorded only as its rollout confirms it (none without a turn id).
 				const said = { kind: parsed.kind, turnId: parsed.turnId ?? "", text: parsed.text };
 				const { verdict, line } = this.#codexVerdict(event, said, parsed.claudePid, events.slice(index + 1), now);
@@ -368,9 +415,21 @@ export class Holder {
 			} else if (parsed?.kind === "rollout") {
 				const reader = this.#startRollout(event.session, parsed);
 				meta[rolloutKey(event.session)] = reader === undefined ? "{}" : JSON.stringify(reader.mark());
+			} else if (parsed?.kind === "grok-log") {
+				const reader = this.#startGrokLog(event.session, parsed);
+				// A log shared with another Grok keeps its place naming that Grok (module doc).
+				if (reader !== "shared") meta[grokLogKey(event.session)] = reader === undefined ? "{}" : JSON.stringify(reader.mark());
+			} else if (parsed?.kind === "grok-shared") {
+				// Another Grok has the session open too (module doc): its log confirms nothing more, here or in a later holder
+				// while that Grok lives. Its prompts and replies from now on are dropped and counted.
+				this.#grokLogs.delete(event.session);
+				meta[grokLogKey(event.session)] = sharedLogMark(parsed.claudePid, parsed.start);
+				if (event.session === this.session) this.#attempt("pausing the session", () => this.#pause(parsed.at));
+				this.#log(`${event.session}: another process (pid ${parsed.claudePid}) has this session open; its log confirms nothing more`);
 			} else if (parsed?.kind === "reply" && this.#codexSession(event.session, parsed.claudePid)) {
-				// A Codex reply with no turn to check (spooled by an Orrery from before the rollout check): never recorded.
-				unconfirmed = "a reply Codex's rollout does not confirm";
+				// A Codex reply with no turn to check (spooled by an Orrery from before the rollout check), or a reply in this
+				// Grok holder's own session that isn't marked Grok's: never recorded. The log line names the tool's record.
+				unconfirmed = event.session === this.session && this.#host === "grok" ? "a reply Grok's log does not confirm" : "a reply Codex's rollout does not confirm";
 			} else if (parsed?.kind === "reply" && parsed.text.trim() && !commandReply) {
 				// Claude Code's: its Stop hook's caller was checked (src/claude/peer.ts).
 				items.push({ kind: "talk", text: parsed.text, date: localIso(new Date(parsed.at)) });
@@ -434,6 +493,20 @@ export class Holder {
 		return { verdict: this.#graceOver(event, host, later, now) ? "unconfirmed" : "wait" };
 	}
 
+	/**
+	 * What a Grok prompt or reply was, by its session's log, the line that said so, and the log's words: "unconfirmed" when
+	 * nothing can confirm it (no log for its session, no promptId) or nothing did by the end of its grace.
+	 */
+	#grokVerdict(event: Pending, said: GrokSaid, host: number, later: readonly Pending[], now: number): Omit<GrokConfirmation, "verdict"> & { verdict: GrokConfirmation["verdict"] | "unconfirmed" } {
+		const reader = this.#grokLog(event.session);
+		if (reader === undefined || said.promptId === "") return { verdict: "unconfirmed" };
+		// While an event of the session waits, what the later ones need is kept, however long.
+		reader.read(now, this.#heldSessions.has(event.session));
+		const confirmed = reader.confirm(said);
+		if (confirmed.verdict !== "wait") return confirmed;
+		return { verdict: this.#graceOver(event, host, later, now) ? "unconfirmed" : "wait" };
+	}
+
 	/** Whether a held event's grace is over (#beginGrace). */
 	#graceOver(event: Pending, host: number, later: readonly Pending[], now: number): boolean {
 		this.#beginGrace(event, later, now, host);
@@ -451,11 +524,12 @@ export class Holder {
 	}
 
 	/**
-	 * Whether `session` is a Codex session, for a reply that doesn't say: this holder's own when it records Codex, one
-	 * with a rollout place, or the session the reply's process noted as Codex's (src/codex/resume.ts).
+	 * Whether `session` is a Codex session, for a reply that doesn't say: this holder's own when it records Codex (or Grok,
+	 * whose replies are never taken unconfirmed either), one with a rollout place, or the session the reply's process noted
+	 * as Codex's (src/codex/resume.ts).
 	 */
 	#codexSession(session: string, pid: number): boolean {
-		if (session === this.session && this.#host === "codex") return true;
+		if (session === this.session && this.#host !== "claude-code") return true;
 		if (this.#rollouts.has(session) || this.agent.store.getMeta(rolloutKey(session)) !== undefined) return true;
 		return codexSessionOf(this.agent.config.dir, pid) === session;
 	}
@@ -483,6 +557,34 @@ export class Holder {
 		if (path === undefined) return undefined;
 		const reader = new RolloutReader({ path, home: event.home, offset: event.offset, ...(event.file === undefined ? {} : { file: event.file }), ...(before === undefined ? {} : { recorded: before }) });
 		this.#rollouts.set(session, reader);
+		return reader;
+	}
+
+	/** A Grok session's log: as read so far, else where memory meta says the last holder left it, else none. */
+	#grokLog(session: string): GrokLogReader | undefined {
+		const known = this.#grokLogs.get(session);
+		if (known !== undefined) return known;
+		const mark = parseGrokLogMark(this.agent.store.getMeta(grokLogKey(session)));
+		if (mark === undefined || grokLogIn(mark.path, mark.home, session) === undefined) return undefined;
+		const reader = new GrokLogReader(mark);
+		this.#grokLogs.set(session, reader);
+		return reader;
+	}
+
+	/**
+	 * A Grok session's log, from its SessionStart: read from where SessionStart said (a resumed session's old turns are
+	 * behind it). What was recorded from the session before is remembered. One that is not that session's under Grok's
+	 * folder is none: the session's prompts and replies are not confirmed. One another Grok has open too ("shared": this
+	 * holder's own, paused in this run, or one whose log place names a Grok that still lives) stays unconfirmed.
+	 */
+	#startGrokLog(session: string, event: Extract<SpoolEvent, { kind: "grok-log" }>): GrokLogReader | undefined | "shared" {
+		if ((session === this.session && this.#shared) || sharedLogLives(this.agent.store.getMeta(grokLogKey(session)), this.#alive, (pid) => processStart(pid))) return "shared";
+		const before = this.#grokLog(session)?.mark().recorded;
+		this.#grokLogs.delete(session);
+		const path = grokLogIn(event.path, event.home, session);
+		if (path === undefined) return undefined;
+		const reader = new GrokLogReader({ path, home: event.home, offset: event.offset, ...(event.file === undefined ? {} : { file: event.file }), ...(before === undefined ? {} : { recorded: before }) });
+		this.#grokLogs.set(session, reader);
 		return reader;
 	}
 
@@ -621,7 +723,7 @@ export class Holder {
 			pid: process.pid,
 			session: this.session,
 			claudePid: this.#claudePid,
-			...(this.#host === "codex" ? { host: "codex" as const } : {}),
+			...(this.#host === "claude-code" ? {} : { host: this.#host }),
 			state: this.#state,
 			startedAt: this.#startedAt,
 			updatedAt: this.#beat,
@@ -631,6 +733,18 @@ export class Holder {
 		this.agent.writeStatus(this.#busy);
 	}
 
+	/**
+	 * Its own session turns read-only (module doc): the mode this holder wrote for it, with GROK_SHARED for the reason
+	 * and, for another holder that takes the session's leftovers, `since` the mark's time.
+	 */
+	#pause(at: number): void {
+		this.#shared = true;
+		const dir = this.agent.config.dir;
+		const mode = readMode(dir, this.session);
+		if (mode === undefined || mode.pid !== process.pid || mode.nonce !== this.#nonce) return;
+		writeMode(dir, this.session, { ...mode, mode: "read-only", reason: GROK_SHARED, since: Math.max(mode.since, at) });
+	}
+
 	#applyCompactor(args: string): void {
 		try {
 			this.#log(`${this.session}: ${compactorCommand(this.agent, args)}`);
@@ -638,6 +752,15 @@ export class Holder {
 			this.#log(`${this.session}: compactor ${args}: ${errorText(error)}`);
 		}
 	}
+}
+
+/** Whether a Grok reply of turn `promptId` comes later in `session` (`later`, oldest first): that one is the turn's last Stop. */
+function laterReply(session: string, promptId: string, later: readonly Pending[]): boolean {
+	return later.some((next) => {
+		if (next.session !== session || !next.name.endsWith("-reply.json")) return false;
+		const event = readEvent(next.path);
+		return event?.kind === "reply" && event.host === "grok" && event.promptId === promptId;
+	});
 }
 
 /** Appends a line to <agent.dir>/claude/holder.log (0600), starting over past 1 MB. Callers never pass message contents. */

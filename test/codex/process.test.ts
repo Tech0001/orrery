@@ -298,7 +298,8 @@ describe("a Codex session, process by process", () => {
 			return spawnSync(c.cmd, c.args, { env: cleanEnv({ ORRERY_CONFIG: t.configPath }), encoding: "utf8", timeout: 30_000 });
 		};
 		expect(run(["--claude-pid", "1", "--tool", "codex"]).stderr).toContain("holder --tool codex needs --host-pid PID.");
-		expect(run(["--host-pid", "1", "--tool", "pi"]).stderr).toContain("holder: --tool takes claude-code or codex (not pi).");
+		expect(run(["--host-pid", "1", "--tool", "pi"]).stderr).toContain("holder: --tool takes claude-code, codex or grok (not pi).");
+		expect(run(["--claude-pid", "1", "--tool", "grok"]).stderr).toContain("holder --tool grok needs --host-pid PID.");
 		expect(run(["--host-pid", "1", "--claude-pid", "1"]).stderr).toContain("holder takes --claude-pid or --host-pid, not both.");
 		expect(run([]).stderr).toContain("holder needs --claude-pid PID (or --host-pid PID).");
 	}, 60_000);

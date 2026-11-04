@@ -7,8 +7,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, readlinkSync } from "node:fs";
-import { basename } from "node:path";
+import { readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { basename, isAbsolute } from "node:path";
 
 /**
  * True when `pid` is a live process (one we may not signal still counts as live). A pid that is no positive integer
@@ -64,8 +64,8 @@ export interface ProcessEnvDeps {
 	/**
 	 * macOS: read only the words after the process's own arguments (ps without -E), so no word among them is taken for a
 	 * variable its environment lacks: for a process whose arguments hold text others wrote (Codex's -c flags hold the
-	 * agent's instructions, and the person's own arguments follow them). Linux's environ holds the environment alone, so it
-	 * changes nothing there.
+	 * agent's instructions, and the person's own arguments follow them; Grok's --rules hold the agent's memory). Linux's
+	 * environ holds the environment alone, so it changes nothing there.
 	 */
 	readonly withoutArgs?: boolean;
 	/**
@@ -263,6 +263,70 @@ export function processStartedAt(pid: number, deps: StartDeps & { readonly bootT
 	if (lstart === null || month < 0) return undefined;
 	const [day, hours, minutes, seconds, year] = lstart.slice(2).map(Number) as [number, number, number, number, number];
 	return Date.UTC(year, month, day, hours, minutes, seconds);
+}
+
+/** How processArgv reads a process's arguments: each defaults to this system's own way (tests give fakes). */
+export interface ArgvDeps {
+	readonly platform?: NodeJS.Platform;
+	/** macOS: ps's output for `args` (default psOutput). */
+	readonly ps?: (args: readonly string[]) => string | undefined;
+	/** macOS: the process's comm, its whole argv[0] (default: ps's `comm=`). */
+	readonly comm?: (pid: number) => string | undefined;
+}
+
+/**
+ * The arguments process `pid` was started with, argv[0] first, or undefined when they can't be read (gone, or no way to
+ * ask here). Linux: /proc/<pid>/cmdline, exactly. macOS: ps's `args=`, which joins them with spaces: argv[0] is comm
+ * (whole, spaces and all) when the line starts with it, else it ends at the first word with comm's file name, else at
+ * the first space; each word after it is one argument, so an argument holding a space comes as several.
+ */
+export function processArgv(pid: number, deps: ArgvDeps = {}): readonly string[] | undefined {
+	if (!Number.isInteger(pid) || pid < 1) return undefined;
+	const platform = deps.platform ?? process.platform;
+	if (platform === "linux") {
+		try {
+			const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+			if (argv.at(-1) === "") argv.pop();
+			return argv.length > 0 ? argv : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+	if (platform !== "darwin") return undefined;
+	const ps = deps.ps ?? psOutput;
+	const args = ps(["-ww", "-o", "args=", "-p", String(pid)])?.trim();
+	if (args === undefined || args === "") return undefined;
+	const first = (deps.comm ?? ((of: number) => ps(["-o", "comm=", "-p", String(of)])?.trim() || undefined))(pid);
+	if (first !== undefined && args.startsWith(first) && (args.length === first.length || /\s/.test(args.charAt(first.length)))) {
+		return [first, ...args.slice(first.length).split(/\s+/).filter((arg) => arg !== "")];
+	}
+	// Args that don't start with comm (comm the program's short name, say): argv[0] ends at the first word with comm's
+	// file name, else at the first space.
+	const words = args.split(/\s+/);
+	const end = first === undefined ? -1 : words.findIndex((word) => basename(word) === basename(first));
+	return end > 0 ? [words.slice(0, end + 1).join(" "), ...words.slice(end + 1)] : words;
+}
+
+/**
+ * The file process `pid` runs, as it really is (links followed), or undefined when it can't be read (gone, or no way to
+ * ask here): Linux's /proc/<pid>/exe, without the " (deleted)" of a file replaced since the process started; macOS's ps
+ * `comm=`, the path it was started by, links followed (a path that isn't absolute is none). Its name tells a program
+ * apart where a process's own name (Linux's comm, macOS's argv[0]) is only what started it called it: a link named grok
+ * to another program runs that program.
+ */
+export function processExecutable(pid: number, deps: Pick<ArgvDeps, "platform" | "ps"> = {}): string | undefined {
+	if (!Number.isInteger(pid) || pid < 1) return undefined;
+	const platform = deps.platform ?? process.platform;
+	try {
+		if (platform === "linux") return readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, "");
+		if (platform === "darwin") {
+			const path = (deps.ps ?? psOutput)(["-o", "comm=", "-p", String(pid)])?.trim();
+			return path !== undefined && isAbsolute(path) ? realpathSync(path) : undefined;
+		}
+	} catch {
+		// unreadable: none
+	}
+	return undefined;
 }
 
 /** A process's parent and name, or undefined when it cannot be read (gone, or no way to ask here). */

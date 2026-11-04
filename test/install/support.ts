@@ -87,6 +87,24 @@ export function addVersion(t: Pick<Scratch, "orreryHome">, name: string, style: 
 	}
 }
 
+/** The first version that answers `orrery grok-hook` (src/grok/install.ts GROK_SINCE). */
+export const GROK_VERSION = "0.10.0";
+
+/**
+ * An installed scratch whose app/current is a binary GROK_VERSION, so setup wires Grok, with a Grok home in the scratch
+ * HOME (`grokHome: false`: none). Grok's folder is never the real one: the scratch env names no GROK_HOME, and its HOME
+ * is the scratch's.
+ */
+export function grokScratch(options: { tools?: Record<string, string>; grokHome?: boolean } = {}): Scratch & { readonly grok: string } {
+	const t = installedScratch({ style: "binary", ...(options.tools === undefined ? {} : { tools: options.tools }) });
+	addVersion(t, GROK_VERSION, "binary");
+	writeFileSync(join(t.orreryHome, "app", GROK_VERSION, "VERSION"), `${GROK_VERSION}\n`);
+	pointCurrent(t, GROK_VERSION);
+	const grok = join(t.home, ".grok");
+	if (options.grokHome !== false) mkdirSync(grok, { recursive: true });
+	return { ...t, grok };
+}
+
 /** Relinks app/current to `name`. */
 export function pointCurrent(t: Pick<Scratch, "current">, name: string): void {
 	rmSync(t.current, { force: true });

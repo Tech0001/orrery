@@ -1,13 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { holdInstallLock, installFrom, makeReadOnly } from "../../src/install/install.ts";
 import { uninstall } from "../../src/install/uninstall.ts";
 import { wire } from "../../src/install/wire.ts";
 import { ompExtensionFile, piExtensionFile } from "../../src/agent/tools.ts";
+import { addGrokConfig, grokHookFile } from "../../src/grok/install.ts";
 import { cliCommand } from "../claude/support.ts";
-import { cleanupScratch, fakeRun, fixtureRelease, installedScratch, type Scratch, scratchPath, type Style, systemCommand, tempDir, VERSION, writePiExtension } from "./support.ts";
+import { cleanupScratch, fakeRun, fixtureRelease, grokScratch, installedScratch, type Scratch, scratchPath, type Style, systemCommand, tempDir, VERSION, writePiExtension } from "./support.ts";
 
 afterEach(cleanupScratch);
 
@@ -143,6 +144,44 @@ describe("uninstall", () => {
 		expect(lines.join("\n")).toMatch(/^pi: left .* as it is \(not Orrery's one-line extension\)/m);
 		expect(lines.join("\n")).toMatch(/^Claude Code: .*left as it is/m);
 		expect(changes(t, before).filter((c) => c[0] === "claude")).toEqual([]);
+	});
+
+	it("removes Grok's hook file and Orrery's entries in Grok's config; the user's other config stays", async () => {
+		const t = grokScratch();
+		const config = join(t.grok, "config.toml");
+		const mine = '[ui]\npermission_mode = "auto"\n\n# my server\n[mcp_servers.mine]\ncommand = "x"\n';
+		writeFileSync(config, mine, { mode: 0o600 });
+		await wire(t.env, { run: fakeRun, confirm: connect });
+		const hooks = join(t.grok, "hooks", "orrery.json");
+		expect(existsSync(hooks)).toBe(true);
+		expect(readFileSync(config, "utf8")).not.toBe(mine);
+		const { lines, ok } = await uninstall({ env: t.env, purge: false, confirmPurge: never, run: fakeRun });
+		expect(ok, lines.join("\n")).toBe(true);
+		expect(gone(hooks)).toBe(true);
+		expect(existsSync(join(t.grok, "hooks"))).toBe(true); // only Orrery's file goes, not Grok's hooks folder
+		expect(readFileSync(config, "utf8")).toBe(mine);
+		expect(statSync(config).mode & 0o777).toBe(0o600);
+		const text = lines.join("\n");
+		expect(text).toContain(`Grok: removed ${hooks}`);
+		expect(text).toMatch(new RegExp(`^Grok: removed \\[ui\\.status_line\\] and \\[mcp_servers\\.orrery\\] from ${config.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(its copy from before: .*\\.before-orrery-.*\\)$`, "m"));
+	});
+
+	it("leaves a Grok hook file and entries that are not this install's, and says so", async () => {
+		const t = grokScratch();
+		const hooks = join(t.grok, "hooks", "orrery.json");
+		const config = join(t.grok, "config.toml");
+		mkdirSync(dirname(hooks), { recursive: true });
+		writeFileSync(hooks, grokHookFile("/elsewhere/app/current/bin/orrery"));
+		const theirs = addGrokConfig("", "/elsewhere/app/current/bin/orrery").next;
+		writeFileSync(config, theirs);
+		const { lines, ok } = await uninstall({ env: t.env, purge: false, confirmPurge: never, run: fakeRun });
+		expect(ok, lines.join("\n")).toBe(true);
+		expect(readFileSync(hooks, "utf8")).toBe(grokHookFile("/elsewhere/app/current/bin/orrery"));
+		expect(readFileSync(config, "utf8")).toBe(theirs);
+		const text = lines.join("\n");
+		expect(text).toContain(`Grok: left ${hooks} as it is (it runs /elsewhere/app/current/bin/orrery, not this install)`);
+		writeFileSync(hooks, '{"hooks":{}}\n');
+		expect((await uninstall({ env: t.env, purge: false, confirmPurge: never, run: fakeRun })).lines).toContain(`Grok: left ${hooks} as it is (not Orrery's hook file)`);
 	});
 
 	it("refuses while an agent is open, names it, and changes nothing", async () => {

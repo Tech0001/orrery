@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, type Message } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { MemoryStore } from "../../src/memory/index.ts";
+import { MemoryStore, MemoryView, Part } from "../../src/memory/index.ts";
 
 export const ctx = BACKGROUND_CONTEXT;
 
@@ -64,4 +64,23 @@ export function seedAtlas(root: string): void {
 		{ kind: "talk", text: "Noted.", date: "2026-02-10T10:01:00.000Z" },
 	]);
 	store.close();
+}
+
+/**
+ * A new memory store at `file` holding `count` user messages, `text(i)` each, with every message's line built as saved
+ * verbatim (`user: <text>`) and, with `summaries`, every summary above them built too, as a summarizer that kept up
+ * leaves it; without, as one that never ran. The saved view is the messages' lines, none merged: a view that has not
+ * passed its ceiling yet.
+ */
+export function fillMemory(file: string, count: number, text: (i: number) => string, summaries: boolean): void {
+	const store = MemoryStore.open(file);
+	try {
+		new MemoryView(store, 2 ** 30).appendBatch(Array.from({ length: count }, (_, i) => ({ kind: "user" as const, text: text(i) })));
+		for (let i = 0; i < count; i++) store.saveNode(new Part(0, i), `user: ${text(i)}`);
+		for (let l = 1; summaries && 2 ** l <= count; l++) {
+			for (let i = 0; (i + 1) * 2 ** l <= count; i++) store.saveNode(new Part(l, i), `summary of ${new Part(l, i).address}`);
+		}
+	} finally {
+		store.close();
+	}
 }

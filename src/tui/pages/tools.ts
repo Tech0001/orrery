@@ -1,7 +1,7 @@
 /**
- * Page 4, Tools (spec §3.4): pi, Claude Code, Codex, OMP and OpenCode (found, version, orrery's side), Wrangler, and
- * Orrery itself. I installs or repairs Orrery extensions. Codex's and OpenCode's sides come with each launch ("memory"),
- * with the last hook or plugin check.
+ * Page 4, Tools (spec §3.4): pi, Claude Code, Codex, OMP, OpenCode and Grok (found, version, orrery's side), Wrangler, and
+ * Orrery itself. I installs or repairs Orrery extensions, and Grok's hook file and config entries. Codex's and OpenCode's
+ * sides come with each launch ("memory"), with the last hook or plugin check.
  */
 
 import { join } from "node:path";

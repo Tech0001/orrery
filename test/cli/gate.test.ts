@@ -799,7 +799,7 @@ describe("a coding tool's session that is no agent's (spec 2026-10-19-no-agent-s
 		];
 		for (const [argv, values, label] of cases) expect(refusal(() => gateCommand(argv[0], argv, values, env, deps)), argv.join(" ") || "TUI").toBe(noAgent(label));
 		// Every command is here but those it may run and the plugins' own.
-		const runs = ["help", "version", "status", "usage", "mcp", "claude-mod", "holder", "claude-hook", "codex-hook"];
+		const runs = ["help", "version", "status", "usage", "mcp", "claude-mod", "holder", "claude-hook", "codex-hook", "grok-hook", "grok-status"];
 		expect(HELP_COMMANDS.filter((command) => !runs.includes(command) && !cases.some(([argv]) => argv[0] === command))).toEqual([]);
 		// Each tool by its name, with its article; an id with no name, by the id.
 		const by = (tool: string) => refusal(() => gateCommand("browse", ["browse", "Atlas"], {}, env, { ...deps, toolSession: finds({ tool, via: "ancestry", pid: 7 }).toolSession }));

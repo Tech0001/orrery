@@ -48,7 +48,7 @@ describe("orrery codex-hook pre-tool-use (the guard)", () => {
 
 	it("judges as ever with a config that names a tool this Orrery doesn't know (an agent a newer Orrery set up)", () => {
 		const { t, env } = guarded();
-		writeFileSync(t.configPath, `${readFileSync(t.configPath, "utf8")}\n[agents.Vela]\nfolder = ${JSON.stringify(join(t.dir, "vela"))}\ntool = "grok"\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+		writeFileSync(t.configPath, `${readFileSync(t.configPath, "utf8")}\n[agents.Vela]\nfolder = ${JSON.stringify(join(t.dir, "vela"))}\ntool = "loom"\ncompactor_model = "openai/gpt-6.1-sol"\n`);
 		const ok = hook("pre-tool-use", call(t.folder, "Bash", { command: "ls -la && git status" }), env);
 		expect([ok.status, ok.stdout, ok.stderr]).toEqual([0, "", ""]);
 		const shell = hook("pre-tool-use", call(t.folder, "Bash", { command: "cat protected.txt" }), env);
@@ -62,7 +62,7 @@ describe("orrery codex-hook pre-tool-use (the guard)", () => {
 		const patched = hook("pre-tool-use", call(t.folder, "apply_patch", { command: patch("*** Update File: protected.txt", "@@", "+edited") }), env);
 		expect([patched.status, patched.stdout, patched.stderr]).toEqual([2, "", "Orrery guard: protected.txt is protected by [guard] protect in Orrery's config"]);
 		const plumbing = hook("pre-tool-use", call(t.folder, "Bash", { command: "echo '{}' | orrery codex-hook user-prompt-submit" }), env);
-		expect([plumbing.status, plumbing.stderr]).toEqual([2, "Orrery guard: This command runs Orrery's hook plumbing (codex-hook, claude-hook, orrery holder), which only Orrery's own hooks run"]);
+		expect([plumbing.status, plumbing.stderr]).toEqual([2, "Orrery guard: This command runs Orrery's hook plumbing (codex-hook, claude-hook, grok-hook, orrery holder), which only Orrery's own hooks run"]);
 	});
 
 	it("refuses what it cannot judge: a config it cannot read, input that is no JSON, input over 1 MB", () => {

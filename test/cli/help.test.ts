@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { HELP_COMMANDS, PLUGIN_COMMANDS, SHORT_WIDTH, shortHelp, WIDTH } from "../../src/cli/help.ts";
+import { allHelp, HELP_COMMANDS, PLUGIN_COMMANDS, SHORT_WIDTH, shortHelp, WIDTH } from "../../src/cli/help.ts";
 import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { systemCommand } from "../install/support.ts";
 import { agentConfigToml, tempDir } from "../agent/support.ts";
@@ -52,6 +52,13 @@ describe("orrery help", () => {
 		expect([...HELP_COMMANDS].sort()).toEqual(DISPATCHED);
 	});
 
+	it("lists grok wherever it lists codex as a tool to pick", () => {
+		const text = `${shortHelp(undefined)}\n${allHelp(undefined)}`;
+		const lists = text.match(/pi\|omp\|claude-code\|codex\|opencode(\|grok)?/g) ?? [];
+		expect(lists.length).toBeGreaterThan(2);
+		expect(lists.filter((list) => !list.endsWith("|grok"))).toEqual([]);
+	});
+
 	it("prints the short page for --help, -h, help and a plain orrery off a terminal: within 80 columns, every command people use, none the plugins run", () => {
 		const env = emptyHome();
 		const page = orrery(env, "--help");
@@ -64,7 +71,7 @@ describe("orrery help", () => {
 		const shown = new Set(lines.flatMap(usageWords));
 		const people = DISPATCHED.filter((command) => !PLUGIN_COMMANDS.includes(command) && !DETAIL_ONLY.includes(command));
 		expect(people.filter((command) => !shown.has(command))).toEqual([]);
-		expect([...PLUGIN_COMMANDS].sort()).toEqual(["claude-hook", "claude-mod", "codex-hook", "holder", "mcp"]);
+		expect([...PLUGIN_COMMANDS].sort()).toEqual(["claude-hook", "claude-mod", "codex-hook", "grok-hook", "grok-status", "holder", "mcp"]);
 		expect(PLUGIN_COMMANDS.filter((command) => new RegExp(`(^|[^\\w-])${command}([^\\w-]|$)`, "m").test(page.stdout))).toEqual([]);
 		expect(page.stdout).toContain("\norrery help <command>       every option for one command\norrery help all             the full list, incl. what the plugins run\n");
 	});

@@ -83,8 +83,8 @@ function splitValue(rest: string): { value: string; tail: string } {
 	return { value: rest.slice(0, end), tail: rest.slice(end) };
 }
 
-/** Sorts object keys at every depth, so two parsed configs compare by content. */
-function canonical(value: unknown): unknown {
+/** Sorts object keys at every depth, so two parsed configs compare by content (Grok's too: src/grok/install.ts). */
+export function canonical(value: unknown): unknown {
 	if (Array.isArray(value)) return value.map(canonical);
 	if (typeof value === "object" && value !== null) {
 		return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical((value as Table)[key])]));

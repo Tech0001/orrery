@@ -19,6 +19,7 @@ import { tempDir } from "../agent/support.ts";
 import { fakeOpenCode } from "../opencode/fake-opencode.ts";
 import { codexHomeIn } from "../codex/rollout-lines.ts";
 import { writeSetupMarker } from "../../src/claude/view-file.ts";
+import { isOrreryHookFile } from "../../src/grok/install.ts";
 
 const SCRIPT = systemCommand("script");
 const hasScript = process.platform === "linux" && SCRIPT !== undefined && spawnSync(SCRIPT, ["--version"]).status === 0;
@@ -100,8 +101,8 @@ function started(out: string): { agent?: string; token?: string; cwd: string; ar
 describe("orrery agent", () => {
 	it("an agent whose tool this Orrery doesn't know (a typo, or a newer Orrery set it) is refused before anything runs, whatever --tool says; status lists it, and the other agents open as ever", () => {
 		const s = scene();
-		writeFileSync(s.config, `${readFileSync(s.config, "utf8").replace('tool = "pi"', 'tool = "grok"')}[agents.Birch]\nfolder = ${JSON.stringify(s.elsewhere)}\ntool = "pi"\ncompactor_model = "openai/gpt-6.1-sol"\n`);
-		const refused = 'Atlas is set up for an unknown tool "grok": a typo, or set by a newer Orrery. Set its tool (C in the TUI, or orrery agent set Atlas --tool T), or update Orrery (orrery update). Nothing was run.';
+		writeFileSync(s.config, `${readFileSync(s.config, "utf8").replace('tool = "pi"', 'tool = "loom"')}[agents.Birch]\nfolder = ${JSON.stringify(s.elsewhere)}\ntool = "pi"\ncompactor_model = "openai/gpt-6.1-sol"\n`);
+		const refused = 'Atlas is set up for an unknown tool "loom": a typo, or set by a newer Orrery. Set its tool (C in the TUI, or orrery agent set Atlas --tool T), or update Orrery (orrery update). Nothing was run.';
 		for (const args of [[], ["--tool", "pi"]]) {
 			const r = orrery(s.env, s.elsewhere, "agent", "Atlas", "--yes", ...args);
 			expect(r.status, args.join(" ")).toBe(1);
@@ -111,10 +112,10 @@ describe("orrery agent", () => {
 		expect(existsSync(s.agentDir)).toBe(false);
 		const status = orrery(s.env, s.dir, "status");
 		expect(status.status, status.stderr).toBe(0);
-		expect(status.stdout).toMatch(/^Atlas +closed +grok \(unknown tool\) +no memory yet/m);
+		expect(status.stdout).toMatch(/^Atlas +closed +loom \(unknown tool\) +no memory yet/m);
 		expect(status.stdout).toMatch(/^Birch +closed +pi /m);
 		const json = JSON.parse(orrery(s.env, s.dir, "status", "--json").stdout) as { agents: { name: string; unknownTool?: string }[] };
-		expect(json.agents.map((agent) => [agent.name, agent.unknownTool])).toEqual([["Atlas", "grok"], ["Birch", undefined]]);
+		expect(json.agents.map((agent) => [agent.name, agent.unknownTool])).toEqual([["Atlas", "loom"], ["Birch", undefined]]);
 		const birch = orrery(s.env, s.elsewhere, "agent", "Birch", "--yes");
 		expect(birch.status, birch.stderr).toBe(0);
 		expect(started(s.out).agent).toBe("Birch");
@@ -177,9 +178,88 @@ describe("orrery agent", () => {
 		expect(readFileSync(s.out, "utf8")).toBe("omp|Atlas\n");
 	});
 
+	/** A fake Grok 1.0.70 in the scene's bin, and the scene's own Grok folder (never the one this test runs beside). */
+	function grokScene() {
+		const s = scene();
+		writeFileSync(join(s.dir, "bin", "grok"), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "grok 1.0.70 (abc) [stable]"; exit 0; fi\nprintf 'grok|%s|%s\\n' "$ORRERY_AGENT" "$*" > ${JSON.stringify(s.out)}\n`, { mode: 0o755 });
+		const grok = join(s.dir, "grok-home");
+		return { ...s, env: { ...s.env, GROK_HOME: grok }, grok, hooks: join(grok, "hooks", "orrery.json") };
+	}
+
+	it("asks to connect Orrery to Grok before a Grok launch: no terminal is a no, and nothing opens or is written; --yes connects it as setup does", () => {
+		const s = grokScene();
+		// No terminal to answer on: the connect question is a no, as pi's install question is.
+		const no = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
+		expect(no.status).toBe(1);
+		expect(no.stdout).toContain("Not opened.");
+		expect(existsSync(s.out)).toBe(false);
+		expect(existsSync(s.grok)).toBe(false);
+		const yes = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok", "--yes");
+		expect(yes.status, yes.stderr).toBe(0);
+		expect(yes.stdout).toContain(`wrote ${s.hooks}`);
+		expect(isOrreryHookFile(readFileSync(s.hooks, "utf8"))).toBe(true);
+		expect(readFileSync(join(s.grok, "config.toml"), "utf8")).toMatch(/\[ui\.status_line\][\s\S]*\[mcp_servers\.orrery\]/);
+		expect(readFileSync(s.out, "utf8")).toBe("grok|Atlas|--no-leader\n");
+		// Connected: the next launch asks nothing, with or without a terminal.
+		rmSync(s.out);
+		const again = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
+		expect(again.status, again.stderr).toBe(0);
+		expect(readFileSync(s.out, "utf8")).toBe("grok|Atlas|--no-leader\n");
+	});
+
+	it.skipIf(!hasScript)("in a terminal, asks to connect Orrery to Grok, listing what it writes; no opens nothing and writes nothing", () => {
+		const s = grokScene();
+		const no = typedInTerminal("n\n", s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
+		expect(no.status).toBe(1);
+		expect(no.stdout).toContain("Orrery's hooks for Grok are not installed, so this session won't record. Connecting Orrery to Grok will:");
+		expect(no.stdout).toContain(`write ${s.hooks} (Orrery's hooks for every Grok session)`);
+		expect(no.stdout).toContain("Connect Orrery to Grok now? (y/n)");
+		expect(no.stdout).toContain("Not opened.");
+		expect(existsSync(s.out)).toBe(false);
+		expect(existsSync(s.grok)).toBe(false);
+	});
+
+	it("says at launch when Orrery's Grok hooks are switched off in Grok's /hooks, and opens Grok", () => {
+		const s = grokScene();
+		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok", "--yes").status).toBe(0);
+		writeFileSync(join(s.grok, "disabled-hooks"), "global/orrery:user_prompt_submit[0].hooks[0]\n");
+		const off = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
+		expect(off.status, off.stderr).toBe(0);
+		expect(off.stdout).toContain("Orrery's recording hooks are switched off in Grok's /hooks, so this session won't be fully recorded: switch them on there, then start a new session (/new).");
+		expect(readFileSync(s.out, "utf8")).toBe("grok|Atlas|--no-leader\n");
+		// A switch file Orrery can't read: said so, not that a hook is off.
+		rmSync(join(s.grok, "disabled-hooks"));
+		mkdirSync(join(s.grok, "disabled-hooks"));
+		rmSync(s.out);
+		const unread = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
+		expect(unread.status, unread.stderr).toBe(0);
+		expect(unread.stdout).toContain(`Orrery couldn't read Grok's /hooks settings (${join(s.grok, "disabled-hooks")}), so it can't tell whether its hooks are switched off there`);
+		expect(unread.stdout).not.toContain("switched off in Grok's /hooks");
+		expect(readFileSync(s.out, "utf8")).toBe("grok|Atlas|--no-leader\n");
+	});
+
+	it("opens Grok without asking when Grok runs this Orrery's hooks and a config entry of Orrery's was removed, and says which", () => {
+		const s = grokScene();
+		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok", "--yes").status).toBe(0);
+		// The person removes Orrery's status row (on purpose, say), keeping its memory tools.
+		const config = join(s.grok, "config.toml");
+		const full = readFileSync(config, "utf8");
+		const kept = full.slice(full.indexOf("[mcp_servers.orrery]"));
+		writeFileSync(config, kept);
+		rmSync(s.out);
+		// No terminal and no --yes: nothing to answer, so it opens.
+		const r = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
+		expect(r.status, r.stderr).toBe(0);
+		expect(r.stdout).toContain("Grok's config has no [ui.status_line], so this session shows no Orrery status row; orrery setup adds it back.");
+		expect(r.stdout).not.toContain("Connect Orrery to Grok now?");
+		expect(readFileSync(s.out, "utf8")).toBe("grok|Atlas|--no-leader\n");
+		// The launch adds nothing back.
+		expect(readFileSync(config, "utf8")).toBe(kept);
+	});
+
 	it("names the tools --tool takes, and the configured agents for an unknown name", () => {
 		const s = scene();
-		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "claude").stderr).toContain("--tool takes pi, omp, claude-code, codex or opencode (not claude).");
+		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "claude").stderr).toContain("--tool takes pi, omp, claude-code, codex, opencode or grok (not claude).");
 		expect(orrery(s.env, s.elsewhere, "agent", "Nobody").stderr).toContain("No agent named Nobody. Configured agents: Atlas");
 	});
 
