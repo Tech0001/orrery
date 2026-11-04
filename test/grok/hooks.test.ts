@@ -892,6 +892,23 @@ describe("a second Grok that opens a session another Grok records (grok -r <its 
 		expect(kinds(t, "s2")).toEqual(["grok-log", "prompt"]);
 	});
 
+	it.skipIf(process.platform !== "linux")("never replaces a record made in another pid namespace under this Grok's own pid number: a session no record names is refused first, naming that record, which stays as it was, and then the session it names is refused too", async () => {
+		const t = testAgent();
+		const file = join(t.config.dataDir, "session-hosts", `${GROK}.json`);
+		mkdirSync(join(t.config.dataDir, "session-hosts"), { recursive: true, mode: 0o700 });
+		const theirs = `${JSON.stringify({ agent: "Test", tool: "grok", pid: GROK, start: "1", grokSession: id("s1"), ns: "pid:[4026532999]", boot: "another-boot" })}\n`;
+		writeFileSync(file, theirs, { mode: 0o600 });
+		const c = ctx(t, { startHolder: answer("recording") });
+		expect(await run("session-start", input({ session: "s2", source: "new" }), c)).toEqual({ systemMessage: notOwn(`the session record ${file}, under this Grok's pid, may be another process's`) });
+		expect(readFileSync(file, "utf8")).toBe(theirs);
+		expect(claimedBy(t.agent.dir, c.env.ORRERY_AGENT_TOKEN as string)).toBeUndefined();
+		expect(existsSync(join(t.config.dataDir, "grok-processes", `${GROK}.json`))).toBe(false);
+		expect(await run("session-start", input({ session: "s1", source: "load" }), c)).toEqual({ systemMessage: notOwn(`Grok process ${GROK} already hosts it`) });
+		expect(readFileSync(file, "utf8")).toBe(theirs);
+		expect(liveSession(t.config.dataDir, GROK)).toBeUndefined();
+		expect(kinds(t, "s2")).toEqual([]);
+	});
+
 	it("marks nothing for a second process that has another file of the same session id open (grok -s <id> in another folder), or the session's file open only to read it", async () => {
 		const t = testAgent();
 		const c = ctx(t, { startHolder: answer("recording") });

@@ -26,6 +26,7 @@ import {
 	recordSession,
 	type SessionDeps,
 	type SessionTool,
+	unsureRecord,
 } from "../../src/agent/sessions.ts";
 import { configContent } from "../../src/opencode/options.ts";
 
@@ -129,6 +130,45 @@ describe("session records", () => {
 		expect(liveSession(dir, process.pid)).toBeUndefined();
 		// Forgetting what is gone is fine.
 		forgetSession(dir, process.pid);
+	});
+
+	it("never replaces a record under the pid that may be another process's (made in another pid namespace, one that can't be read, one that is no record, one with a field that can't be read), and never forgets one; a stale one or the process's own live one is replaced", () => {
+		const dir = temp();
+		const table = chain();
+		// This process and process 30 in another pid namespace than the one the record there was made in (NS).
+		const other: SessionDeps = { ...linux(table), ns: () => "pid:[4026533000]" };
+		mkdirSync(join(dir, "session-hosts"), { recursive: true, mode: 0o700 });
+		const file = hostFile(dir, 30);
+		const put = (text: string) => writeFileSync(file, text, { mode: 0o600 });
+		const theirs = `${JSON.stringify({ agent: "Atlas", tool: "grok", pid: 30, start: "300", grokSession: "019a-atlas", ns: NS, boot: BOOT })}\n`;
+		put(theirs);
+		expect(unsureRecord(dir, 30, other)).toBe(file);
+		expect(recordSession(dir, { agent: "Birch", tool: "grok", pid: 30, grokSession: "019b-birch" }, other)).toBe(false);
+		expect(readFileSync(file, "utf8")).toBe(theirs);
+		forgetSession(dir, 30, other);
+		expect(readFileSync(file, "utf8")).toBe(theirs);
+		// From the namespace it was made in it is process 30's own live record: replaced, and forgotten.
+		expect(unsureRecord(dir, 30, linux(table))).toBeUndefined();
+		expect(recordSession(dir, { agent: "Atlas", tool: "grok", pid: 30, grokSession: "019c-cedar" }, linux(table))).toBe(true);
+		expect(liveSession(dir, 30, linux(table))).toMatchObject({ grokSession: "019c-cedar" });
+		forgetSession(dir, 30, linux(table));
+		expect(existsSync(file)).toBe(false);
+		// One that can't be read (a link), one that is no record, one with a field that can't be read: kept, and refused.
+		symlinkSync(join(dir, "elsewhere.json"), file);
+		for (const make of [() => {}, () => (rmSync(file), put("{ cut short")), () => put(JSON.stringify({ agent: "Atlas", tool: "pi", pid: 30, start: "300", ns: NS, boot: 7 }))]) {
+			make();
+			const before = lstatSync(file).isSymbolicLink() ? "link" : readFileSync(file, "utf8");
+			expect(unsureRecord(dir, 30, linux(table))).toBe(file);
+			expect(recordSession(dir, { agent: "Birch", tool: "pi", pid: 30 }, linux(table))).toBe(false);
+			forgetSession(dir, 30, linux(table));
+			expect(lstatSync(file).isSymbolicLink() ? "link" : readFileSync(file, "utf8")).toBe(before);
+		}
+		// A stale one (its process started at another time, or another boot's) is replaced.
+		for (const stale of [{ start: "299", boot: BOOT }, { start: "300", boot: "another-boot" }]) {
+			put(JSON.stringify({ agent: "Atlas", tool: "pi", pid: 30, ns: NS, ...stale }));
+			expect(recordSession(dir, { agent: "Birch", tool: "pi", pid: 30 }, linux(table))).toBe(true);
+			expect(liveSession(dir, 30, linux(table))).toMatchObject({ agent: "Birch", start: "300" });
+		}
 	});
 
 	it("keeps a Codex session's id", () => {
@@ -507,7 +547,7 @@ describe("insideSession", () => {
 		const table = chain();
 		expect(recordSession(a, { agent: "Atlas", tool: "pi", pid: 30 }, linux(table))).toBe(true);
 		expect(insideSession([a], {}, undefined, linux(table, 50))).toEqual({ agent: "Atlas", tool: "pi", via: "ancestry", dataDir: a });
-		forgetSession(a, 30);
+		forgetSession(a, 30, linux(table));
 		expect(recordSession(b, { agent: "Atlas", tool: "pi", pid: 30 }, linux(table))).toBe(true);
 		expect(insideSession([a], {}, undefined, linux(table, 50))).toBeUndefined();
 	});

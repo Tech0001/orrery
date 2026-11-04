@@ -466,9 +466,10 @@ function pruneSessions(dataDir: string, keep: number, deps: SessionDeps): void {
 /**
  * Records that process `record.pid` hosts a session of `record.agent`'s memory in `dataDir`, with the process's start
  * time, and on Linux its pid namespace and the boot. False when it can't: the start can't be read, the record is no
- * record, the host is in another pid namespace than this process (its pid wouldn't be the one a reader here sees), or
- * nothing can be written there. A config is kept with its real path now (configReal); one whose path can't be resolved
- * is recorded as none.
+ * record, the host is in another pid namespace than this process (its pid wouldn't be the one a reader here sees), the
+ * file already under its pid may be another process's (unsureRecord), or nothing can be written there. A record there
+ * is replaced only when it is stale, or the very process's own live one. A config is kept with its real path now
+ * (configReal); one whose path can't be resolved is recorded as none.
  */
 export function recordSession(dataDir: string, record: Omit<SessionRecord, "start" | "ns" | "boot" | "configReal">, deps: SessionDeps = {}): boolean {
 	const start = processStart(record.pid, deps);
@@ -491,6 +492,9 @@ export function recordSession(dataDir: string, record: Omit<SessionRecord, "star
 	const parsed = recordOf({ ...record, config: undefined, ...configured, start, ...place }, record.pid);
 	if (parsed === undefined || parsed.doubtful) return false;
 	const full = parsed.record;
+	// What is under its pid already: one that may be another process's stays, and this one isn't recorded (a stale one is
+	// taken down here).
+	if (unsureRecord(dataDir, full.pid, deps) !== undefined) return false;
 	pruneSessions(dataDir, full.pid, deps);
 	try {
 		writePrivate(fileOf(dataDir, full.pid), `${JSON.stringify(full)}\n`);
@@ -501,11 +505,27 @@ export function recordSession(dataDir: string, record: Omit<SessionRecord, "star
 	}
 }
 
-/** Removes process `pid`'s record from `dataDir`, when its session closes. */
-export function forgetSession(dataDir: string, pid: number): void {
+/**
+ * The file of `dataDir`'s record under `pid` when it is unsure (module doc), so may be another process's: one made in
+ * another pid namespace (a program numbered there as `pid` is here), one that can't be read, one that is no record this
+ * version reads, or one with a field that can't be read. recordSession replaces none such, and forgetSession removes
+ * none. Undefined when there is none, or it is stale (taken down here) or `pid`'s own live record.
+ */
+export function unsureRecord(dataDir: string, pid: number, deps: SessionDeps = {}): string | undefined {
+	return positive(pid) && judged(dataDir, pid, deps).kind === "unsure" ? fileOf(dataDir, pid) : undefined;
+}
+
+/**
+ * Removes process `pid`'s record from `dataDir`, when its session closes: only its own live one (the same process,
+ * judged from here), taken down exclusively, so a record that isn't its own (another pid namespace's, one that can't be
+ * read) stays, and so does one that took the name meanwhile.
+ */
+export function forgetSession(dataDir: string, pid: number, deps: SessionDeps = {}): void {
 	if (!positive(pid)) return;
+	const file = fileOf(dataDir, pid);
+	if (standing(file, pid, deps).kind !== "live") return;
 	try {
-		rmSync(fileOf(dataDir, pid), { force: true });
+		removeStale(file, (moved) => ["live", "none"].includes(standing(moved, pid, deps).kind));
 	} catch {
 		// left: once the process is gone, the next look takes it as stale
 	}
@@ -1192,6 +1212,14 @@ export interface SessionHost {
 export function hostReason(host: SessionHost, tool: string): string {
 	if (host.unreadable === undefined) return `${tool} process ${host.pid} already hosts it`;
 	return host.pid === undefined ? `the session records in ${host.unreadable} can't be read` : `the session record ${host.unreadable} can't be read`;
+}
+
+/**
+ * Why a session start of `tool` (TOOL_NAMES) can't record its own process when the record file under its pid, `file`,
+ * may be another process's (unsureRecord): recordSession never replaces it.
+ */
+export function takenReason(file: string, tool: string): string {
+	return `the session record ${file}, under this ${tool}'s pid, may be another process's`;
 }
 
 /**

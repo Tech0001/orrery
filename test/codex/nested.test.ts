@@ -647,9 +647,12 @@ describe("a Codex session another process already hosts: no other process takes 
 		expect(liveSession(w.dataDir, process.pid)).toBeUndefined();
 		// The record is kept as it was (it may be a real session's), never taken for this Codex's own.
 		expect(JSON.parse(readFileSync(join(w.dataDir, "session-hosts", `${process.pid}.json`), "utf8"))).toMatchObject({ ns: "pid:[4026532999]", codexSession: id("s1") });
-		// Gone (that program quit): this Codex records a session of its own. Then a record of that session made in another
-		// pid namespace under this Codex's number turns up in a data folder above this one: neither records it.
+		// Gone (removed: no look here takes it down, nor forgets it): this Codex records a session of its own. Then a record of
+		// that session made in another pid namespace under this Codex's number turns up in a data folder above this one:
+		// neither records it.
 		forgetSession(w.dataDir, process.pid);
+		expect(existsSync(join(w.dataDir, "session-hosts", `${process.pid}.json`))).toBe(true);
+		rmSync(join(w.dataDir, "session-hosts", `${process.pid}.json`));
 		expect(((await run("session-start", input("s2", { source: "startup" }), c)) as Answer).systemMessage).toMatch(/· recording$/);
 		await run("user-prompt-submit", input("s2", { prompt: "First.", turn_id: "t-1" }), c);
 		expect(spooled(w.birch.dir, "s2")).toEqual(["rollout", "prompt"]);
@@ -657,6 +660,24 @@ describe("a Codex session another process already hosts: no other process takes 
 		await run("user-prompt-submit", input("s2", { prompt: "Second.", turn_id: "t-2" }), c);
 		await run("stop", input("s2", { last_assistant_message: "A reply.", turn_id: "t-2" }), c);
 		expect(spooled(w.birch.dir, "s2")).toEqual(["rollout", "prompt"]);
+	});
+
+	it.skipIf(process.platform !== "linux")("never replaces a record made in another pid namespace under this Codex's own pid number: a session no record names is refused first, naming that record, which stays as it was, and then the session it names is refused too", async () => {
+		const w = codexWorld();
+		const file = join(w.dataDir, "session-hosts", `${process.pid}.json`);
+		mkdirSync(join(w.dataDir, "session-hosts"), { recursive: true, mode: 0o700 });
+		const theirs = `${JSON.stringify({ agent: "Birch", tool: "codex", pid: process.pid, start: "1", codexSession: id("s1"), ns: "pid:[4026532999]", boot: "another-boot" })}\n`;
+		writeFileSync(file, theirs, { mode: 0o600 });
+		recorded.push({ dataDir: w.dataDir, pid: process.pid });
+		const c = hookCtx(w, { startHolder: recording });
+		expect(await run("session-start", input("s2", { source: "startup" }), c)).toEqual({ systemMessage: `Orrery: can't confirm this is this Codex's own session (the session record ${file}, under this Codex's pid, may be another process's), so it opens no memory and records nothing.` });
+		expect(readFileSync(file, "utf8")).toBe(theirs);
+		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+		expect(existsSync(join(w.dataDir, "codex-processes", `${process.pid}.json`))).toBe(false);
+		expect(await run("session-start", input("s1", { source: "resume" }), c)).toEqual({ systemMessage: `Orrery: can't confirm this is this Codex's own session (Codex process ${process.pid} already hosts it), so it opens no memory and records nothing.` });
+		expect(readFileSync(file, "utf8")).toBe(theirs);
+		expect(liveSession(w.dataDir, process.pid)).toBeUndefined();
+		expect(touched(w.birch.dir)).toEqual({ claims: [], spool: [] });
 	});
 });
 

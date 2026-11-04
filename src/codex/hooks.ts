@@ -64,7 +64,7 @@ import { readMemory } from "../agent/memory-read.ts";
 import { AGENT_ENV, agentNamed } from "../agent/pick.ts";
 import type { PlainDeps } from "../agent/plain-nested.ts";
 import { agentFiles } from "../agent/real-data.ts";
-import { codexSessionHosts, hostReason, liveSession, nestedNotice, plainFields, recordSession, type SessionHost, type SessionRecord } from "../agent/sessions.ts";
+import { codexSessionHosts, hostReason, liveSession, nestedNotice, plainFields, recordSession, type SessionHost, type SessionRecord, takenReason, unsureRecord } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { NOT_RECORDED, type StatusState, statusText } from "../agent/status-text.ts";
 import { noticeShownBefore, waitForMode } from "../claude/hooks.ts";
@@ -298,6 +298,10 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 	// rollout open; nor one whose hosts can't all be read.
 	const elsewhere = hostedElsewhere(ctx, session, agentNamed(ctx.config, ctx.env[AGENT_ENV]?.trim() ?? ""));
 	if (elsewhere !== undefined) return refuse(hostReason(elsewhere, "Codex"));
+	// A record under this Codex's own pid that may be another process's is never replaced (src/agent/sessions.ts
+	// recordSession): refused before anything is decided or claimed.
+	const taken = unsureRecord(ctx.config.dataDir, ctx.codexPid);
+	if (taken !== undefined) return refuse(takenReason(taken, "Codex"));
 	// Moving this Codex to another session than its record names: Codex starts that session's turn before SessionStart.
 	const recorded = liveSession(ctx.config.dataDir, ctx.codexPid);
 	if (recorded?.tool === "codex" && recorded.codexSession !== session && !rollout.running) return refuse("Codex moves to a session with a turn of it running, and none is");
