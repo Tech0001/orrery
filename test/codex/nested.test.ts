@@ -705,7 +705,7 @@ describe("session records that can't be read may name the session: no Codex take
 		expect(await run("session-start", input("s1", { source: "startup" }), c)).toEqual(refused(`the session record ${file} can't be read`));
 		rmSync(file);
 		writeFileSync(file, "{ cut short", { mode: 0o600 });
-		expect(await run("session-start", input("s1", { source: "startup" }), c)).toEqual(refused(`the session record ${file} can't be read`));
+		expect(await run("session-start", input("s1", { source: "startup" }), c)).toEqual(refused(`the session record ${file} isn't a session record Orrery can read`));
 		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
 		expect(liveSession(w.dataDir, process.pid)).toBeUndefined();
 		expect(touched(w.birch.dir)).toEqual({ claims: [], spool: [] });

@@ -420,8 +420,9 @@ function recordedPids(dataDir: string): Set<number> {
 
 /**
  * The pids `dataDir` holds records for: none when it has no records folder, "unreadable" when it has one (or something
- * in its place) that can't be listed, or its own folder can't be searched. A data folder given as a link to a file (one
- * of an agent's links, src/agent/real-data.ts agentFiles) has no records folder.
+ * in its place) that can't be listed, or its own folder can't be searched (EACCES: such a folder may hide records). A
+ * data folder given as a link to a file (one of an agent's links, src/agent/real-data.ts agentFiles) has no records
+ * folder, nor has a path that runs into a loop of links (ELOOP: a loop holds no files).
  */
 function listedPids(dataDir: string): Set<number> | "unreadable" {
 	const folder = folderOf(dataDir);
@@ -429,7 +430,7 @@ function listedPids(dataDir: string): Set<number> | "unreadable" {
 		return new Set(readdirSync(folder).map(pidNamed).filter((pid) => pid !== undefined));
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") return new Set();
+		if (code === "ENOENT" || code === "ELOOP") return new Set();
 		if (code === "ENOTDIR") {
 			try {
 				lstatSync(folder);
@@ -1203,6 +1204,8 @@ export interface SessionHost {
 	readonly live: boolean;
 	/** What can't be read, a records folder or a record file: its path. */
 	readonly unreadable?: string;
+	/** With `unreadable` a record file: one that could be read, but holds no session record this version reads. */
+	readonly readable?: boolean;
 }
 
 /**
@@ -1211,7 +1214,8 @@ export interface SessionHost {
  */
 export function hostReason(host: SessionHost, tool: string): string {
 	if (host.unreadable === undefined) return `${tool} process ${host.pid} already hosts it`;
-	return host.pid === undefined ? `the session records in ${host.unreadable} can't be read` : `the session record ${host.unreadable} can't be read`;
+	if (host.pid === undefined) return `the session records in ${host.unreadable} can't be read`;
+	return host.readable === true ? `the session record ${host.unreadable} isn't a session record Orrery can read` : `the session record ${host.unreadable} can't be read`;
 }
 
 /**
@@ -1301,7 +1305,9 @@ function hostRecords(dataDirs: readonly string[], field: "codexSession" | "grokS
 			const record = standing.kind === "live" || standing.kind === "unsure" ? standing.record : undefined;
 			const session = record?.[field];
 			if (record !== undefined && session !== undefined && (only === undefined || session === only)) found.push({ pid, session, agent: record.agent, dataDir, live: standing.kind === "live" });
-			else if (only !== undefined && standing.kind === "unsure" && session === undefined) found.push({ pid, dataDir, live: false, unreadable: fileOf(dataDir, pid) });
+			else if (only !== undefined && standing.kind === "unsure" && session === undefined) {
+				found.push({ pid, dataDir, live: false, unreadable: fileOf(dataDir, pid), ...(read !== undefined && read !== "unreadable" ? { readable: true } : {}) });
+			}
 		}
 	}
 	return found;

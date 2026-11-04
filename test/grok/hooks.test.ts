@@ -975,7 +975,7 @@ describe("session records that can't be read may name the session: no Grok takes
 		expect(await run("session-start", input({ source: "new" }), c)).toEqual({ systemMessage: notOwn(`the session record ${file} can't be read`) });
 		rmSync(file);
 		writeFileSync(file, "{ cut short", { mode: 0o600 });
-		expect(await run("session-start", input({ source: "new" }), c)).toEqual({ systemMessage: notOwn(`the session record ${file} can't be read`) });
+		expect(await run("session-start", input({ source: "new" }), c)).toEqual({ systemMessage: notOwn(`the session record ${file} isn't a session record Orrery can read`) });
 		expect(claimedBy(t.agent.dir, c.env.ORRERY_AGENT_TOKEN as string)).toBeUndefined();
 		expect(liveSession(t.config.dataDir, GROK)).toBeUndefined();
 		// Kept: it may be a real session's.

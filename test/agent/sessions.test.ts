@@ -447,6 +447,11 @@ describe("the host check fails closed: what can't be read may host the session a
 		writeFileSync(join(root, "memory.sqlite"), "");
 		symlinkSync(join(root, "memory.sqlite"), join(root, "link"));
 		expect(grokSessionHosts([join(root, "missing"), join(root, "link")], "019b-birch", 77, linux(table))).toEqual([]);
+		// Nor through a loop of links (one in an agent's folder, say): a loop holds no records.
+		symlinkSync("loop-b", join(root, "loop-a"));
+		symlinkSync("loop-a", join(root, "loop-b"));
+		expect(grokSessionHosts([join(root, "loop-a")], "019b-birch", 77, linux(table))).toEqual([]);
+		expect(codexSessionHosts([join(root, "loop-a")], "019a-atlas", linux(table), 77)).toEqual([]);
 		// Something else in a records folder's place can't be listed either.
 		const other = join(root, "other");
 		mkdirSync(other);
@@ -468,7 +473,8 @@ describe("the host check fails closed: what can't be read may host the session a
 		record(35, { tool: "pi" });
 		// A link in a record's place: no record is read through one.
 		symlinkSync(hostFile(dir, 34), hostFile(dir, 40));
-		const unsure = (pid: number) => ({ pid, dataDir: dir, live: false, unreadable: hostFile(dir, pid) });
+		// Each but the link could be read: they hold no session record this version reads.
+		const unsure = (pid: number) => ({ pid, dataDir: dir, live: false, unreadable: hostFile(dir, pid), ...(pid === 40 ? {} : { readable: true }) });
 		expect(grokSessionHosts([dir], "019a-atlas", 77, linux(table)).sort(byPid)).toEqual([30, 32, 33, 40].map(unsure));
 		// Codex's check reads them as Codex's: only what holds no JSON, or can't be read, may name a Codex session.
 		expect(codexSessionHosts([dir], "019a-atlas", linux(table), 77).sort(byPid)).toEqual([30, 40].map(unsure));
