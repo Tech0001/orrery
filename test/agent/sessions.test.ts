@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -390,7 +390,8 @@ describe("grokSessionHosts", () => {
 		mkdirSync(inner);
 		const foreign = { agent: "Atlas", tool: "grok", pid: 2_000_000_000, start: "1", grokSession: "019a-atlas", ns: "pid:[4026532999]", boot: "another" };
 		writeFileSync(hostFile(root, foreign.pid), JSON.stringify(foreign), { mode: 0o600 });
-		expect(grokSessionHosts([inner], "019a-atlas", process.pid)).toEqual([{ pid: foreign.pid, agent: "Atlas", dataDir: root, live: false }]);
+		// Found above a folder given, the data folder is named by its real path (a temp folder may be a link).
+		expect(grokSessionHosts([inner], "019a-atlas", process.pid)).toEqual([{ pid: foreign.pid, agent: "Atlas", dataDir: realpathSync(root), live: false }]);
 		expect(existsSync(hostFile(root, foreign.pid))).toBe(true);
 	});
 
@@ -439,11 +440,13 @@ describe("the host check fails closed: what can't be read may host the session a
 		mkdirSync(inner, { recursive: true });
 		const folder = join(dir, "session-hosts");
 		const unreadable = [{ dataDir: dir, live: false, unreadable: folder }];
+		const realDir = realpathSync(dir);
 		withMode(folder, 0, () => {
 			expect(codexSessionHosts([dir], "019a-atlas", linux(table), 77)).toEqual(unreadable);
 			expect(codexSessionHosts([dir], "019c-cedar", darwin(table))).toEqual(unreadable);
 			expect(grokSessionHosts([dir], "019b-birch", 77, linux(table))).toEqual(unreadable);
-			expect(grokSessionHosts([inner], "019b-birch", 77, linux(table))).toEqual(unreadable);
+			// Found above a folder given, the records folder is named by its real path (macOS: /var is /private/var).
+			expect(grokSessionHosts([inner], "019b-birch", 77, linux(table))).toEqual([{ dataDir: realDir, live: false, unreadable: join(realDir, "session-hosts") }]);
 			expect(recordedCodexIds([dir], linux(table)).size).toBe(0);
 		});
 		expect(codexHosts([dir], "019a-atlas", linux(table), 77)).toEqual([30]);

@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type AgentConfig, parseConfig } from "../../src/agent/config.ts";
@@ -420,7 +420,9 @@ describe("a Grok session another process already hosts: no other process takes i
 		} finally {
 			chmodSync(folder, 0o700);
 		}
-		expect(answers).toEqual([JSON.stringify({ systemMessage: `Orrery: can't confirm this is this Grok's own session (the session records in ${folder} can't be read), so this session isn't recorded.` }), ""]);
+		// The hook names the records folder by its real path (macOS: /var is /private/var).
+		const named = join(realpathSync(w.dataDir), "session-hosts");
+		expect(answers).toEqual([JSON.stringify({ systemMessage: `Orrery: can't confirm this is this Grok's own session (the session records in ${named} can't be read), so this session isn't recorded.` }), ""]);
 		expect(touched(atlas.dir)).toEqual({ claims: [], spool: [] });
 		expect(liveSession(evil, fake)).toBeUndefined();
 		expect(liveSession(w.dataDir, birch)).toMatchObject({ agent: "Birch", grokSession: id("s1") });
