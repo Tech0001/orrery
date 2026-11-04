@@ -85,7 +85,8 @@
  * markers count only as far as what it was started with shows (toolSession).
  *
  * Nothing here throws: a record that can't be written makes recordSession false, for its caller to say so, and a
- * folder or file that can't be read holds no session.
+ * folder or file that can't be read holds no session, but to the host check (codexSessionHosts, grokSessionHosts): there
+ * it may host the session asked about (fail closed).
  * Imports Node built-ins and relative modules only, for pi and OMP, which load this file; through pick.ts that is also
  * config.ts, and with it smol-toml and the memory module, which pi and OMP load already.
  */
@@ -335,21 +336,23 @@ type Standing =
 /**
  * The file at `file` read as a record of `pid`, judging nothing: "none" when it is gone, "unreadable" when it can't be
  * read as a small regular file (a link or a FIFO in a record's place, say), else what recordOf makes of it (`parsed`
- * undefined: no record this version reads).
+ * undefined: no record this version reads), and the JSON it holds (`json`; none when it holds none).
  */
-function readRecord(file: string, pid: number): "none" | "unreadable" | { readonly parsed: ReturnType<typeof recordOf> } {
+function readRecord(file: string, pid: number): "none" | "unreadable" | { readonly parsed: ReturnType<typeof recordOf>; readonly json?: unknown } {
 	let text: string;
 	try {
 		text = readPrivate(file, RECORD_MAX);
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "ENOENT" ? "none" : "unreadable";
 	}
+	let json: unknown;
 	try {
-		return { parsed: recordOf(JSON.parse(text), pid) };
+		json = JSON.parse(text);
 	} catch {
 		// no JSON: no record this version reads
 		return { parsed: undefined };
 	}
+	return { parsed: recordOf(json, pid), json };
 }
 
 /** What the file at `file`, a record of `pid`, stands for (Standing). */
@@ -409,12 +412,32 @@ export function liveSessions(dataDir: string, deps: SessionDeps = {}): SessionRe
 	return [...recordedPids(dataDir)].sort((a, b) => a - b).flatMap((pid) => liveSession(dataDir, pid, deps) ?? []);
 }
 
-/** The pids `dataDir` holds records for (none when its folder can't be read). */
+/** The pids `dataDir` holds records for (none when its folder can't be read: listedPids for the host check's answer). */
 function recordedPids(dataDir: string): Set<number> {
+	const pids = listedPids(dataDir);
+	return pids === "unreadable" ? new Set() : pids;
+}
+
+/**
+ * The pids `dataDir` holds records for: none when it has no records folder, "unreadable" when it has one (or something
+ * in its place) that can't be listed, or its own folder can't be searched. A data folder given as a link to a file (one
+ * of an agent's links, src/agent/real-data.ts agentFiles) has no records folder.
+ */
+function listedPids(dataDir: string): Set<number> | "unreadable" {
+	const folder = folderOf(dataDir);
 	try {
-		return new Set(readdirSync(folderOf(dataDir)).map(pidNamed).filter((pid) => pid !== undefined));
-	} catch {
-		return new Set();
+		return new Set(readdirSync(folder).map(pidNamed).filter((pid) => pid !== undefined));
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") return new Set();
+		if (code === "ENOTDIR") {
+			try {
+				lstatSync(folder);
+			} catch (again) {
+				if (["ENOENT", "ENOTDIR"].includes((again as NodeJS.ErrnoException).code ?? "")) return new Set();
+			}
+		}
+		return "unreadable";
 	}
 }
 
@@ -1138,57 +1161,92 @@ export function toolSession(env: NodeJS.ProcessEnv, deps: SessionDeps & { readon
 
 /**
  * The Codex sessions (SessionRecord.codexSession) of every live or unsure record in `dataDirs` and the folders above them
- * that hold records (judgedFolders), as insideSession reads them; a stale record found is taken down.
+ * that hold records (judgedFolders), as insideSession reads them; a stale record found is taken down. What can't be read
+ * holds none: a Codex id no record is known to name stays a marker of a Codex session that is no agent's (toolSession).
  */
 export function recordedCodexIds(dataDirs: readonly string[], deps: SessionDeps = {}): ReadonlySet<string> {
-	return new Set(hostRecords(dataDirs, "codexSession", deps).map((found) => found.session));
+	return new Set(hostRecords(dataDirs, "codexSession", deps).flatMap((found) => (found.session === undefined ? [] : [found.session])));
 }
 
 /**
- * The processes whose live or unsure record in `dataDirs`, or in a folder above one that holds records, names Codex
- * session `session`, read as recordedCodexIds reads them; a stale record found among them is taken down. A record that
- * names another session is read but not judged, so its process isn't asked about (a ps each on macOS, on every prompt
- * and Stop); nor is `except`'s own (the asker's: on Linux only one made in this process's pid namespace, hostRecords).
- * A Codex's hooks take no session another process hosts (src/codex/hooks.ts).
+ * What may host a session besides the process asking (codexSessionHosts, grokSessionHosts): a live or unsure record of
+ * another process that names it, or a records folder or record file that can't be read, which may name it (fail closed).
  */
-export function codexSessionHosts(dataDirs: readonly string[], session: string, deps: SessionDeps = {}, except?: number): number[] {
-	return hostRecords(dataDirs, "codexSession", deps, session, except).map((found) => found.pid);
-}
-
-/** A live or unsure record that names a Grok session (grokSessionHosts). */
-export interface GrokSessionHost {
-	/** The process it names. */
-	readonly pid: number;
-	/** The agent whose session it is. */
-	readonly agent: string;
+export interface SessionHost {
+	/** The process the record names (for a record file that can't be read, its file's name); none for a records folder. */
+	readonly pid?: number;
+	/** The agent whose session it is; none for what can't be read. */
+	readonly agent?: string;
 	/** The folder it was found in: the data folder of the memory it opens, whose agents/<agent> is that agent's folder. */
 	readonly dataDir: string;
 	/** Whether it is live; else unsure (module doc): its process can't be judged from here. */
 	readonly live: boolean;
+	/** What can't be read, a records folder or a record file: its path. */
+	readonly unreadable?: string;
 }
 
 /**
- * The live or unsure records of processes other than `except` in `dataDirs`, or in a folder above one that holds
- * records, that name Grok session `session`, read as codexSessionHosts reads Codex's: a record that names another
- * session, or `except`'s own (on Linux, only one made in this process's pid namespace: hostRecords), is not judged, and
- * a stale record found among the rest is taken down. A Grok's hooks take no session another process hosts, and mark it
- * for the recorder of another Grok that has it open (src/grok/hooks.ts).
+ * Why a session that `host` hosts (codexSessionHosts, grokSessionHosts) is not this one's, as a refusal says it: "Codex
+ * process <pid> already hosts it", or what can't be read. `tool` names the asker's tool (TOOL_NAMES).
  */
-export function grokSessionHosts(dataDirs: readonly string[], session: string, except: number, deps: SessionDeps = {}): GrokSessionHost[] {
-	return hostRecords(dataDirs, "grokSession", deps, session, except).map(({ pid, agent, dataDir, live }) => ({ pid, agent, dataDir, live }));
+export function hostReason(host: SessionHost, tool: string): string {
+	if (host.unreadable === undefined) return `${tool} process ${host.pid} already hosts it`;
+	return host.pid === undefined ? `the session records in ${host.unreadable} can't be read` : `the session record ${host.unreadable} can't be read`;
+}
+
+/**
+ * What may host Codex session `session` besides `except` (the asker), in `dataDirs` or a folder above one that holds
+ * records, read as recordedCodexIds reads them; a stale record found among them is taken down. A record that names
+ * another session is read but not judged, so its process isn't asked about (a ps each on macOS, on every prompt and
+ * Stop); nor is `except`'s own (on Linux only one made in this process's pid namespace). What can't be read counts
+ * (hostRecords). A Codex's hooks take no session another process hosts (src/codex/hooks.ts).
+ */
+export function codexSessionHosts(dataDirs: readonly string[], session: string, deps: SessionDeps = {}, except?: number): SessionHost[] {
+	return hostRecords(dataDirs, "codexSession", deps, session, except).map(hostOnly);
+}
+
+/**
+ * What may host Grok session `session` besides `except` (the asker), read as codexSessionHosts reads Codex's. A Grok's
+ * hooks take no session another process hosts, and mark it for the recorder of another Grok that has it open
+ * (src/grok/hooks.ts).
+ */
+export function grokSessionHosts(dataDirs: readonly string[], session: string, except: number, deps: SessionDeps = {}): SessionHost[] {
+	return hostRecords(dataDirs, "grokSession", deps, session, except).map(hostOnly);
+}
+
+/** A host as hostRecords found it, without the session it names (the one asked about). */
+const hostOnly = ({ session: _session, ...host }: SessionHost & { readonly session?: string }): SessionHost => host;
+
+/**
+ * Whether the record file read as `read` may name session `only` in `field`, so that it is judged (hostRecords): one that
+ * can't be read may, as may one that holds no JSON object, or whose `field` can't be read as an id; one whose `field` is
+ * another session's id, or that has none (another tool's record), doesn't.
+ */
+function mayName(read: ReturnType<typeof readRecord>, field: "codexSession" | "grokSession", only: string): boolean {
+	if (read === "none") return false;
+	if (read === "unreadable") return true;
+	const json = read.json;
+	if (typeof json !== "object" || json === null || Array.isArray(json)) return true;
+	const id = (json as Record<string, unknown>)[field];
+	return id === only || (id !== undefined && typeof id !== "string");
 }
 
 /**
  * Each live or unsure record in `dataDirs` and the folders above them that hold records (judgedFolders) that names a
  * session in `field` (a Codex session, or a Grok one), with its pid, that session, its agent, the folder it is in and
- * whether it is live; with `only`, just those that name that session, and no other is judged.
+ * whether it is live.
+ * With `only`, what may host that session (SessionHost), and no record that names another is judged: each record that
+ * names it and, failing closed, what can't be read, with its path as `unreadable`: a records folder that is there but
+ * can't be listed (listedPids), and a record file that may name it (mayName) and is judged unsure with no record that
+ * names a session (it can't be read, holds no record this version reads, or its id can't be read). A file that is no
+ * record is still stale where its process is gone (macOS: standing), and goes.
  * `except`'s record (the asker's own) is passed over: on macOS unread, so its process isn't asked about; on Linux only
  * when it was made in this process's pid namespace (as one judged live always was). A pid names a process only in the
  * namespace it is numbered in (module doc): a record made in another under `except`'s number (a program in a pid
  * namespace of its own, numbered there as a real host is here) is another process's, and counts as any other does.
  */
-function hostRecords(dataDirs: readonly string[], field: "codexSession" | "grokSession", deps: SessionDeps, only?: string, except?: number): (GrokSessionHost & { readonly session: string })[] {
-	const found: (GrokSessionHost & { readonly session: string })[] = [];
+function hostRecords(dataDirs: readonly string[], field: "codexSession" | "grokSession", deps: SessionDeps, only?: string, except?: number): (SessionHost & { readonly session?: string })[] {
+	const found: (SessionHost & { readonly session?: string })[] = [];
 	const linux = onLinux(deps);
 	// This process's pid namespace, read once, and only when `except`'s record is there.
 	let here: { readonly ns: string | undefined } | undefined;
@@ -1197,18 +1255,25 @@ function hostRecords(dataDirs: readonly string[], field: "codexSession" | "grokS
 		return typeof read !== "string" && here.ns !== undefined && read.parsed?.record.ns === here.ns;
 	};
 	for (const dataDir of judgedFolders(dataDirs)) {
-		for (const pid of recordedPids(dataDir)) {
+		const pids = listedPids(dataDir);
+		if (pids === "unreadable") {
+			// It may hold a record of the session asked about; of every session's, it holds no id anyone could name.
+			if (only !== undefined) found.push({ dataDir, live: false, unreadable: folderOf(dataDir) });
+			continue;
+		}
+		for (const pid of pids) {
 			const own = pid === except;
 			if (own && !linux) continue;
-			// Read before it is judged when it may be the asker's own, or to see that it names `only` (a record that doesn't
-			// is none of its hosts either way, and isn't judged).
+			// Read before it is judged when it may be the asker's own, or to see that it may name `only` (one that doesn't is
+			// none of its hosts either way, and isn't judged).
 			const read = own || only !== undefined ? readRecord(fileOf(dataDir, pid), pid) : undefined;
 			if (own && read !== undefined && madeHere(read)) continue;
-			if (only !== undefined && (read === undefined || typeof read === "string" || read.parsed?.record[field] !== only)) continue;
+			if (only !== undefined && (read === undefined || !mayName(read, field, only))) continue;
 			const standing = judged(dataDir, pid, deps);
 			const record = standing.kind === "live" || standing.kind === "unsure" ? standing.record : undefined;
 			const session = record?.[field];
 			if (record !== undefined && session !== undefined && (only === undefined || session === only)) found.push({ pid, session, agent: record.agent, dataDir, live: standing.kind === "live" });
+			else if (only !== undefined && standing.kind === "unsure" && session === undefined) found.push({ pid, dataDir, live: false, unreadable: fileOf(dataDir, pid) });
 		}
 	}
 	return found;

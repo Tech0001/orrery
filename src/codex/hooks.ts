@@ -41,11 +41,13 @@
  *   one that a live or unsure session record of another process names (src/agent/sessions.ts codexSessionHosts; on
  *   Linux one made in another pid namespace under this Codex's own number is another process's), looked for in the
  *   config's data folder and where the agent's data really is (its folder, and where the links in it lead: a config of
- *   the shell's making may link the agent there), with every folder above them that holds records.
- *   SessionStart refuses it before it decides, claims or records anything, and says which process hosts it; a prompt or
- *   reply of a session another process hosts too (both took it at once) is spooled by neither. A record whose Codex is
- *   gone is stale and taken down, so a new Codex resumes the session; the same Codex (a compaction, /clear, /resume) is
- *   its own host. A second Codex on one session records nothing while the first lives.
+ *   the shell's making may link the agent there), with every folder above them that holds records. A records folder
+ *   there that can't be listed, or a record file that can't be read and may name the session, counts too (fail closed:
+ *   `chmod` hides no record). SessionStart refuses it before it decides, claims or records anything, and says which
+ *   process hosts it, or what can't be read; a prompt or reply of a session another process hosts too (both took it at
+ *   once) is spooled by neither. A record whose Codex is gone is stale and taken down, so a new Codex resumes the
+ *   session; the same Codex (a compaction, /clear, /resume) is its own host. A second Codex on one session records
+ *   nothing while the first lives.
  * - UserPromptSubmit and Stop spool only for the session this Codex's host record names, and what they spool is held
  *   until the rollout confirms it, then dropped and counted if it doesn't.
  * - SessionEnd changes nothing: the host record and the process's decision go stale once Codex is gone, and the holder
@@ -62,7 +64,7 @@ import { readMemory } from "../agent/memory-read.ts";
 import { AGENT_ENV, agentNamed } from "../agent/pick.ts";
 import type { PlainDeps } from "../agent/plain-nested.ts";
 import { agentFiles } from "../agent/real-data.ts";
-import { codexSessionHosts, liveSession, nestedNotice, plainFields, recordSession, type SessionRecord } from "../agent/sessions.ts";
+import { codexSessionHosts, hostReason, liveSession, nestedNotice, plainFields, recordSession, type SessionHost, type SessionRecord } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { NOT_RECORDED, type StatusState, statusText } from "../agent/status-text.ts";
 import { noticeShownBefore, waitForMode } from "../claude/hooks.ts";
@@ -146,12 +148,13 @@ function hostOf(ctx: CodexHookContext, session: string): SessionRecord | undefin
 }
 
 /**
- * Another process that hosts Codex session `session` (module doc): the pid of a live or unsure session record, not this
- * Codex's, that names it, in the config's data folder or where `agent`'s data really is (its folder and the links in
- * it, src/agent/real-data.ts agentFiles), or a folder above one that holds records. On Linux one made in another pid
- * namespace under this Codex's number is another process's (codexSessionHosts). Undefined when there is none.
+ * Another process that hosts Codex session `session` (module doc): a live or unsure session record, not this Codex's,
+ * that names it, in the config's data folder or where `agent`'s data really is (its folder and the links in it,
+ * src/agent/real-data.ts agentFiles), or a folder above one that holds records; or there, a records folder or record
+ * file that can't be read, which may name it. On Linux one made in another pid namespace under this Codex's number is
+ * another process's (codexSessionHosts). Undefined when there is none.
  */
-function hostedElsewhere(ctx: CodexHookContext, session: string, agent: AgentConfig | undefined): number | undefined {
+function hostedElsewhere(ctx: CodexHookContext, session: string, agent: AgentConfig | undefined): SessionHost | undefined {
 	const dirs = [ctx.config.dataDir, ...(agent === undefined ? [] : [agent.dir, ...agentFiles(agent.dir)])];
 	return codexSessionHosts(dirs, session, {}, ctx.codexPid)[0];
 }
@@ -292,9 +295,9 @@ export async function sessionStart(input: CodexHookInput, ctx: CodexHookContext)
 		return { systemMessage: `Orrery: this Codex (${safeText(rollout.old ?? "version unknown")}) doesn't record who started a turn; Orrery needs Codex ${MIN_CODEX} or later, so this session isn't recorded.` };
 	}
 	// A session another process hosts is never this one's (module doc): a second Codex on it, or any process holding its
-	// rollout open.
+	// rollout open; nor one whose hosts can't all be read.
 	const elsewhere = hostedElsewhere(ctx, session, agentNamed(ctx.config, ctx.env[AGENT_ENV]?.trim() ?? ""));
-	if (elsewhere !== undefined) return refuse(`Codex process ${elsewhere} already hosts it`);
+	if (elsewhere !== undefined) return refuse(hostReason(elsewhere, "Codex"));
 	// Moving this Codex to another session than its record names: Codex starts that session's turn before SessionStart.
 	const recorded = liveSession(ctx.config.dataDir, ctx.codexPid);
 	if (recorded?.tool === "codex" && recorded.codexSession !== session && !rollout.running) return refuse("Codex moves to a session with a turn of it running, and none is");

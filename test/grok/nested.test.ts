@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type AgentConfig, parseConfig } from "../../src/agent/config.ts";
@@ -392,6 +392,38 @@ describe("a Grok session another process already hosts: no other process takes i
 			// The mark goes to Birch's recorder where Birch's record is: the real data folder.
 			expect(spooled(w.birch.dir, "s1"), linked).toEqual(["grok-shared"]);
 		}
+	});
+
+	it.skipIf(process.getuid?.() === 0)("so does one that, as it starts, makes the real data folder's records folder one that can't be listed (chmod): records that can't be read may name the session", async () => {
+		const w = grokWorld();
+		const atlas = w.config.agents.get("Atlas") as AgentConfig;
+		mkdirSync(join(atlas.dir, "claude"), { recursive: true });
+		const events = begun(w, "s1");
+		const birch = await bystander(events);
+		hostRecord(w.dataDir, "Birch", "grok", birch, id("s1"));
+		// A config of the shell's own making, whose Atlas is the real Atlas's folder.
+		const evil = join(w.root, "evil");
+		mkdirSync(join(evil, "agents"), { recursive: true });
+		symlinkSync(atlas.dir, join(evil, "agents", "Atlas"));
+		const config = parseConfig(readFileSync(join(w.dataDir, "config.toml"), "utf8").replace(/^data_dir = .*$/m, `data_dir = ${JSON.stringify(evil)}`), w.root);
+		const fake = await bystander(events);
+		const env = asAtlas(w);
+		const c = hookCtx(w, { config, env, envOf: startedWith(env), grokPid: fake, grokParent: fake, startHolder: recording });
+		const folder = join(w.dataDir, "session-hosts");
+		chmodSync(folder, 0);
+		let answers: string[];
+		try {
+			answers = [
+				await runGrokHook("session-start", input("s1", { source: "load" }), c),
+				await runGrokHook("user-prompt-submit", input("s1", { prompt: "The person's words.", promptId: "p-1" }), c),
+			];
+		} finally {
+			chmodSync(folder, 0o700);
+		}
+		expect(answers).toEqual([JSON.stringify({ systemMessage: `Orrery: can't confirm this is this Grok's own session (the session records in ${folder} can't be read), so this session isn't recorded.` }), ""]);
+		expect(touched(atlas.dir)).toEqual({ claims: [], spool: [] });
+		expect(liveSession(evil, fake)).toBeUndefined();
+		expect(liveSession(w.dataDir, birch)).toMatchObject({ agent: "Birch", grokSession: id("s1") });
 	});
 
 	it("a session whose Grok is gone is free: its stale record goes, and a Grok that resumes it records, and moves on to a new session as ever", async () => {

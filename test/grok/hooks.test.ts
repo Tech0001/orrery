@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfig } from "../../src/agent/config.ts";
@@ -906,6 +906,64 @@ describe("a second Grok that opens a session another Grok records (grok -r <its 
 		}
 		expect(kinds(t, "s1")).toEqual(["grok-log"]);
 		expect(readMode(t.agent.dir, id("s1"))?.mode).toBe("recording");
+	});
+});
+
+describe("session records that can't be read may name the session: no Grok takes it (fail closed)", () => {
+	const kinds = (t: TestAgent, session: string) => spooled(t, session).map((event) => event.kind);
+	/** Runs `look` with `path`'s mode `mode`, then puts 0700 back. */
+	const withMode = async <T>(path: string, mode: number, look: () => Promise<T>): Promise<T> => {
+		chmodSync(path, mode);
+		try {
+			return await look();
+		} finally {
+			chmodSync(path, 0o700);
+		}
+	};
+
+	it.skipIf(process.getuid?.() === 0)("a records folder that can't be listed refuses the session, saying which, before anything is decided, claimed or recorded; once it can, the session records; while one above the data folder can't be listed, a prompt of it is spooled no more", async () => {
+		const t = testAgent();
+		homeOf(t).begin(id("s1"));
+		const folder = join(t.config.dataDir, "session-hosts");
+		mkdirSync(folder, { recursive: true, mode: 0o700 });
+		const c = ctx(t, { startHolder: answer("recording") });
+		expect(await withMode(folder, 0, () => run("session-start", input({ source: "new" }), c))).toEqual({ systemMessage: notOwn(`the session records in ${folder} can't be read`) });
+		expect(claimedBy(t.agent.dir, c.env.ORRERY_AGENT_TOKEN as string)).toBeUndefined();
+		expect(listSessions(t.agent.dir)).toEqual([]);
+		expect(readdirSync(folder)).toEqual([]);
+		expect(existsSync(join(t.config.dataDir, "grok-processes"))).toBe(false);
+		// Listed again: the session records.
+		expect(((await run("session-start", input({ source: "load" }), c)) as Answer).systemMessage?.split("\n")[0]).toMatch(/· recording$/);
+		await run("user-prompt-submit", input({ prompt: "First.", promptId: "p-1" }), c);
+		expect(kinds(t, "s1")).toEqual(["grok-log", "prompt"]);
+		// A data folder above this one whose records can't be listed: they may name the session too.
+		const above = join(t.dir, "session-hosts");
+		mkdirSync(above, { mode: 0o700 });
+		await withMode(above, 0, async () => {
+			await run("user-prompt-submit", input({ prompt: "Second.", promptId: "p-2" }), c);
+			await run("stop", input({ lastAssistantMessage: "A reply.", promptId: "p-2", reason: "end_turn" }), c);
+		});
+		expect(kinds(t, "s1")).toEqual(["grok-log", "prompt"]);
+	});
+
+	it("so does a record file that can't be read (a link in its place), or holds no record this version reads, naming the file", async () => {
+		const t = testAgent();
+		homeOf(t).begin(id("s1"));
+		const folder = join(t.config.dataDir, "session-hosts");
+		mkdirSync(folder, { recursive: true, mode: 0o700 });
+		const c = ctx(t, { startHolder: () => { throw new Error("no holder may start"); } });
+		// Named after a live process (this test's parent), so that no system takes it for stale.
+		const file = join(folder, `${process.ppid}.json`);
+		symlinkSync(join(t.dir, "elsewhere.json"), file);
+		expect(await run("session-start", input({ source: "new" }), c)).toEqual({ systemMessage: notOwn(`the session record ${file} can't be read`) });
+		rmSync(file);
+		writeFileSync(file, "{ cut short", { mode: 0o600 });
+		expect(await run("session-start", input({ source: "new" }), c)).toEqual({ systemMessage: notOwn(`the session record ${file} can't be read`) });
+		expect(claimedBy(t.agent.dir, c.env.ORRERY_AGENT_TOKEN as string)).toBeUndefined();
+		expect(liveSession(t.config.dataDir, GROK)).toBeUndefined();
+		// Kept: it may be a real session's.
+		expect(readFileSync(file, "utf8")).toBe("{ cut short");
+		expect(listSessions(t.agent.dir)).toEqual([]);
 	});
 });
 

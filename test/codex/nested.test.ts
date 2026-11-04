@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type AgentConfig, parseConfig } from "../../src/agent/config.ts";
@@ -657,5 +657,49 @@ describe("a Codex session another process already hosts: no other process takes 
 		await run("user-prompt-submit", input("s2", { prompt: "Second.", turn_id: "t-2" }), c);
 		await run("stop", input("s2", { last_assistant_message: "A reply.", turn_id: "t-2" }), c);
 		expect(spooled(w.birch.dir, "s2")).toEqual(["rollout", "prompt"]);
+	});
+});
+
+describe("session records that can't be read may name the session: no Codex takes it (fail closed)", () => {
+	const refused = (why: string) => ({ systemMessage: `Orrery: can't confirm this is this Codex's own session (${why}), so it opens no memory and records nothing.` });
+	/** Runs `look` with `path`'s mode `mode`, then puts 0700 back. */
+	const withMode = async <T>(path: string, mode: number, look: () => Promise<T>): Promise<T> => {
+		chmodSync(path, mode);
+		try {
+			return await look();
+		} finally {
+			chmodSync(path, 0o700);
+		}
+	};
+
+	it.skipIf(process.getuid?.() === 0)("a records folder that can't be listed, or a record file that can't be read, refuses the session, saying which, before anything is decided, claimed or recorded; once they can, it records; while a records folder above the data folder can't be listed, a prompt of it is spooled no more", async () => {
+		const w = codexWorld();
+		const folder = join(w.dataDir, "session-hosts");
+		mkdirSync(folder, { recursive: true, mode: 0o700 });
+		const c = hookCtx(w, { startHolder: recording });
+		expect(await withMode(folder, 0, () => run("session-start", input("s1", { source: "startup" }), c))).toEqual(refused(`the session records in ${folder} can't be read`));
+		// Named after a live process (this test's parent), so that no system takes it for stale.
+		const file = join(folder, `${process.ppid}.json`);
+		symlinkSync(join(w.root, "elsewhere.json"), file);
+		expect(await run("session-start", input("s1", { source: "startup" }), c)).toEqual(refused(`the session record ${file} can't be read`));
+		rmSync(file);
+		writeFileSync(file, "{ cut short", { mode: 0o600 });
+		expect(await run("session-start", input("s1", { source: "startup" }), c)).toEqual(refused(`the session record ${file} can't be read`));
+		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+		expect(liveSession(w.dataDir, process.pid)).toBeUndefined();
+		expect(touched(w.birch.dir)).toEqual({ claims: [], spool: [] });
+		// Gone: the session records.
+		rmSync(file);
+		recorded.push({ dataDir: w.dataDir, pid: process.pid });
+		expect(((await run("session-start", input("s1", { source: "startup" }), c)) as Answer).systemMessage).toMatch(/· recording$/);
+		await run("user-prompt-submit", input("s1", { prompt: "First.", turn_id: "t-1" }), c);
+		expect(spooled(w.birch.dir, "s1")).toEqual(["rollout", "prompt"]);
+		const above = join(w.root, "session-hosts");
+		mkdirSync(above, { mode: 0o700 });
+		await withMode(above, 0, async () => {
+			await run("user-prompt-submit", input("s1", { prompt: "Second.", turn_id: "t-2" }), c);
+			await run("stop", input("s1", { last_assistant_message: "A reply.", turn_id: "t-2" }), c);
+		});
+		expect(spooled(w.birch.dir, "s1")).toEqual(["rollout", "prompt"]);
 	});
 });
