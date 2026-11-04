@@ -45,6 +45,7 @@
     "vitest": "4.1.12"
   },
   "overrides": {
-    "undici": "$undici"
+    "undici": "$undici",
+    "minimatch": "11.0.4"
   }
 }
