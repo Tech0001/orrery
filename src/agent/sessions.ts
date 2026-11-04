@@ -1148,10 +1148,11 @@ export function recordedCodexIds(dataDirs: readonly string[], deps: SessionDeps 
  * The processes whose live or unsure record in `dataDirs`, or in a folder above one that holds records, names Codex
  * session `session`, read as recordedCodexIds reads them; a stale record found among them is taken down. A record that
  * names another session is read but not judged, so its process isn't asked about (a ps each on macOS, on every prompt
- * and Stop). A Codex's hooks take no session another process hosts (src/codex/hooks.ts).
+ * and Stop); nor is `except`'s own (the asker's: on Linux only one made in this process's pid namespace, hostRecords).
+ * A Codex's hooks take no session another process hosts (src/codex/hooks.ts).
  */
-export function codexSessionHosts(dataDirs: readonly string[], session: string, deps: SessionDeps = {}): number[] {
-	return hostRecords(dataDirs, "codexSession", deps, session).map((found) => found.pid);
+export function codexSessionHosts(dataDirs: readonly string[], session: string, deps: SessionDeps = {}, except?: number): number[] {
+	return hostRecords(dataDirs, "codexSession", deps, session, except).map((found) => found.pid);
 }
 
 /** A live or unsure record that names a Grok session (grokSessionHosts). */

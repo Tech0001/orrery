@@ -38,9 +38,10 @@
  *   this Codex's host record already names changes nothing (no record, no resume note, no new rollout place, the
  *   holder kept).
  * - Any process can hold a rollout open (read-only, too), so no process takes a session another process already hosts:
- *   one that a live or unsure session record of another process names (src/agent/sessions.ts codexSessionHosts),
- *   looked for in the config's data folder and where the agent's data really is (its folder, and where the links in it
- *   lead: a config of the shell's making may link the agent there), with every folder above them that holds records.
+ *   one that a live or unsure session record of another process names (src/agent/sessions.ts codexSessionHosts; on
+ *   Linux one made in another pid namespace under this Codex's own number is another process's), looked for in the
+ *   config's data folder and where the agent's data really is (its folder, and where the links in it lead: a config of
+ *   the shell's making may link the agent there), with every folder above them that holds records.
  *   SessionStart refuses it before it decides, claims or records anything, and says which process hosts it; a prompt or
  *   reply of a session another process hosts too (both took it at once) is spooled by neither. A record whose Codex is
  *   gone is stale and taken down, so a new Codex resumes the session; the same Codex (a compaction, /clear, /resume) is
@@ -147,11 +148,12 @@ function hostOf(ctx: CodexHookContext, session: string): SessionRecord | undefin
 /**
  * Another process that hosts Codex session `session` (module doc): the pid of a live or unsure session record, not this
  * Codex's, that names it, in the config's data folder or where `agent`'s data really is (its folder and the links in
- * it, src/agent/real-data.ts agentFiles), or a folder above one that holds records. Undefined when there is none.
+ * it, src/agent/real-data.ts agentFiles), or a folder above one that holds records. On Linux one made in another pid
+ * namespace under this Codex's number is another process's (codexSessionHosts). Undefined when there is none.
  */
 function hostedElsewhere(ctx: CodexHookContext, session: string, agent: AgentConfig | undefined): number | undefined {
 	const dirs = [ctx.config.dataDir, ...(agent === undefined ? [] : [agent.dir, ...agentFiles(agent.dir)])];
-	return codexSessionHosts(dirs, session).find((pid) => pid !== ctx.codexPid);
+	return codexSessionHosts(dirs, session, {}, ctx.codexPid)[0];
 }
 
 /**

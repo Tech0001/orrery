@@ -281,6 +281,28 @@ describe("codexSessionHosts", () => {
 		expect([...recordedCodexIds([dir], darwin(table))]).toEqual(["019a-atlas"]);
 		expect(existsSync(hostFile(dir, 32))).toBe(false);
 	});
+
+	it("passes over the asker's own record: on macOS unread; on Linux only one made in the asker's pid namespace, so one made in another under its number (a program in a pid namespace of its own) hosts the session", () => {
+		const dir = temp();
+		const table: Table = { ...chain(), 33: { ppid: 1, start: "330" } };
+		for (const record of [
+			{ agent: "Atlas", tool: "codex", pid: 30, codexSession: "019a-atlas" },
+			{ agent: "Cedar", tool: "codex", pid: 33, codexSession: "019a-atlas" },
+		] as const) {
+			expect(recordSession(dir, record, darwin(table))).toBe(true);
+		}
+		const mac = darwin(table);
+		expect(codexSessionHosts([dir], "019a-atlas", mac, 30)).toEqual([33]);
+		expect(mac.calls.map((args) => args.join(" "))).toEqual(["-o lstart= -p 33"]);
+		const linuxDir = temp();
+		expect(recordSession(linuxDir, { agent: "Atlas", tool: "codex", pid: 30, codexSession: "019a-atlas" }, linux(table))).toBe(true);
+		expect(codexSessionHosts([linuxDir], "019a-atlas", linux(table), 30)).toEqual([]);
+		for (const procfs of ["kept", "remounted"] as const) expect(codexSessionHosts([linuxDir], "019a-atlas", elsewhere(table, procfs), 30), procfs).toEqual([30]);
+		const foreign = { agent: "Birch", tool: "codex", pid: 40, start: "400", codexSession: "019a-atlas", ns: "pid:[4026532999]", boot: BOOT };
+		writeFileSync(hostFile(linuxDir, 40), JSON.stringify(foreign), { mode: 0o600 });
+		expect(codexSessionHosts([linuxDir], "019a-atlas", linux(table), 40).sort()).toEqual([30, 40]);
+		expect(existsSync(hostFile(linuxDir, 40))).toBe(true);
+	});
 });
 
 describe("grokSessionHosts", () => {

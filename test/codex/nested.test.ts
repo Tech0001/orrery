@@ -631,4 +631,31 @@ describe("a Codex session another process already hosts: no other process takes 
 		await run("stop", input("s1", { last_assistant_message: "A reply.", turn_id: "t-2" }), c);
 		expect(spooled(w.birch.dir, "s1")).toEqual(["rollout", "prompt"]);
 	});
+
+	it.skipIf(process.platform !== "linux")("a record made in another pid namespace under this Codex's own pid number (a program in a pid namespace of its own, numbered there as this Codex is here) is no record of this Codex's: it refuses the session, and a prompt of a session this Codex records that such a record names too is spooled no more", async () => {
+		const w = codexWorld();
+		/** A record of `session` as Birch's, made in another pid namespace by a process numbered there as this Codex is here. */
+		const numberedAsThisCodex = (dataDir: string, session: string) => {
+			mkdirSync(join(dataDir, "session-hosts"), { recursive: true, mode: 0o700 });
+			writeFileSync(join(dataDir, "session-hosts", `${process.pid}.json`), JSON.stringify({ agent: "Birch", tool: "codex", pid: process.pid, start: "1", codexSession: id(session), ns: "pid:[4026532999]", boot: "another-boot" }), { mode: 0o600 });
+		};
+		numberedAsThisCodex(w.dataDir, "s1");
+		recorded.push({ dataDir: w.dataDir, pid: process.pid });
+		const c = hookCtx(w, { startHolder: recording });
+		expect(await run("session-start", input("s1", { source: "startup" }), c)).toEqual({ systemMessage: `Orrery: can't confirm this is this Codex's own session (Codex process ${process.pid} already hosts it), so it opens no memory and records nothing.` });
+		expect(claimedBy(w.birch.dir, w.token)).toBeUndefined();
+		expect(liveSession(w.dataDir, process.pid)).toBeUndefined();
+		// The record is kept as it was (it may be a real session's), never taken for this Codex's own.
+		expect(JSON.parse(readFileSync(join(w.dataDir, "session-hosts", `${process.pid}.json`), "utf8"))).toMatchObject({ ns: "pid:[4026532999]", codexSession: id("s1") });
+		// Gone (that program quit): this Codex records a session of its own. Then a record of that session made in another
+		// pid namespace under this Codex's number turns up in a data folder above this one: neither records it.
+		forgetSession(w.dataDir, process.pid);
+		expect(((await run("session-start", input("s2", { source: "startup" }), c)) as Answer).systemMessage).toMatch(/· recording$/);
+		await run("user-prompt-submit", input("s2", { prompt: "First.", turn_id: "t-1" }), c);
+		expect(spooled(w.birch.dir, "s2")).toEqual(["rollout", "prompt"]);
+		numberedAsThisCodex(w.root, "s2");
+		await run("user-prompt-submit", input("s2", { prompt: "Second.", turn_id: "t-2" }), c);
+		await run("stop", input("s2", { last_assistant_message: "A reply.", turn_id: "t-2" }), c);
+		expect(spooled(w.birch.dir, "s2")).toEqual(["rollout", "prompt"]);
+	});
 });
