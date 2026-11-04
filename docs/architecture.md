@@ -339,7 +339,10 @@ session's id. pi, OMP, OpenCode's server, `orrery run`, Claude Code (the desktop
 `claude-setup` included), Codex and Grok all record. A record goes when its session closes; one whose process is
 gone, or started at another time (a reused pid), is stale and cleaned up by the next look. A record made in another
 pid namespace, or one that can't be read, is kept, never taken for a dead session: it is no session to the walk
-below, but a marker that points at it means a session whose agent is unknown.
+below, but a marker that points at it means a session whose agent is unknown. A new record never replaces one under
+its pid that may be another process's (made in another pid namespace, one that can't be read, one that holds no
+record): that session isn't recorded instead, and a Codex or Grok session start names the file. Only a stale record, or
+the process's own live one, is replaced, and a session that closes takes down only its own.
 
 A command is inside an agent's session when one of its ancestor processes is recorded, live, in a data folder it is
 judged by: Linux walks `/proc`, macOS takes one `ps` snapshot, and the nearest recorded ancestor wins. Its record names
@@ -589,11 +592,16 @@ command it was told to run.
   new process space such as `unshare -p` or bubblewrap), clears or sidesteps the markers (pointing `ORRERY_CONFIG` at a
   scratch config, say), and hides Orrery's name from the guard (a name built at run time, a wildcard-only glob, a
   script file) can still run any `orrery` command. Inside Codex's sandbox, clearing or sidestepping the markers and
-  hiding the name is enough, with no detach, and reads of other agents may work there.
+  hiding the name is enough, with no detach, and reads of other agents may work there. The walk reads a records folder
+  it can't list as holding no records: a shell that clears its markers and makes that folder unlistable is judged as
+  the coding tool's session that is no agent's ([Sessions that are no agent's](#sessions-that-are-no-agents)), whose
+  rules are stricter than its agent's.
 - A program that makes its own user and mount namespaces (`unshare -Urm`, say) can show Orrery a different boot id,
-  start times or `/proc` (a bind mount over `/proc/sys/kernel/random/boot_id`, or over a process's `stat`). It can
-  then have a live Codex or Grok session's host record judged stale and taken down, and take the session itself.
-  Orrery doesn't defend against that; an operating-system sandbox would.
+  start times or `/proc` (a bind mount over `/proc/sys/kernel/random/boot_id`, or over a process's `stat`). Any
+  Orrery command it runs there then judges live host records stale, of any tool, in the folders that command looks
+  in, and takes them down. The program can use that to take a live session and replay its turns into another agent's
+  memory, and the person's own recording of it stops without a word. Orrery doesn't defend against that; an
+  operating-system sandbox would.
 - A tool's `!` passthrough is the agent's shell: a command the person types there is refused like the agent's.
 - `orrery compactor` for the session's own agent runs inside it, by design (so `/orrery:compactor` works): an agent can
   switch its own summary model among the providers, sign-ins and keys already saved in the config. It can add no

@@ -166,7 +166,8 @@ enable orrery`, in your own terminal), and opens the agent; `orrery tools` says 
   separate process namespace (a sandboxed editor's terminal, say), Orrery can't tell from outside it that the process
   is gone, so it keeps refusing that session, even after a reboot; start a new one instead. Session records that
   can't be read may name the session, so they refuse it too, and the line says which (`the session records in <folder>
-  can't be read`).
+  can't be read`). A record under this Grok's own pid made in another process namespace, or one that can't be read,
+  is never replaced: every session this Grok starts is refused, and the line names the file.
 - **A second Grok on the same session.** A Grok that opens a session another Grok records (`grok -r <id>`, which the
   guard refuses in shell text, or one you start yourself) writes its own turns into the same log, so the log can no
   longer tell your typed prompts from the other Grok's. Orrery's hooks run in that Grok too, and its session start marks
@@ -426,8 +427,10 @@ It is a seatbelt, not a sandbox. On top of the limits every tool has (see
   which stops the replay. This is the detach limit of [agent sessions](architecture.md#limits), and only an
   operating-system sandbox would close it.
 - **A faked boot id or start time.** A program that makes its own user and mount namespaces (`unshare -Urm`, say) can
-  show Orrery a different boot id, start times or `/proc`. It can then have a live session's host record judged stale
-  and taken down, and take the session itself. Orrery doesn't defend against that; an operating-system sandbox would.
+  show Orrery a different boot id, start times or `/proc`. Any Orrery command it runs there then judges live host
+  records stale, of any tool, in the folders that command looks in, and takes them down. The program can use that to
+  take a live session and replay its turns into another agent's memory, and your own recording of it stops without a
+  word. Orrery doesn't defend against that; an operating-system sandbox would.
 
 ## A plain Grok
 
@@ -502,9 +505,14 @@ and keeps that agent's rules in its guard (both agents' rules, in another agent'
   the session open (in another window, say): quit that one, then resume the session here. If that process is no Grok
   of yours, something else took the session (see [its limits in Grok](#its-limits-in-grok)). If no process has that
   pid here, the session's host runs in another process namespace (a sandboxed editor's terminal, say), where Orrery
-  can't tell whether it still runs: start a new session. With `the session records in <folder> can't be read` (or `the
-  session record <file> …`), Orrery can't tell which process hosts the session: make it readable again (`chmod 700` a
-  folder, `chmod 600` a record), or remove a file there that holds no record, then resume the session.
+  can't tell whether it still runs: start a new session. If that pid is this Grok's own, or the reason is `the session
+  record <file>, under this Grok's pid, may be another process's`, a process in another process namespace has a record
+  under this Grok's number, which Orrery never replaces or takes down: quit this Grok and start a new session with
+  `orrery agent` (a new Grok has another pid), and remove the file if you know it is no session of yours. With the
+  others Orrery can't tell which process hosts the session. `the session records in <folder> can't be read`: that
+  folder, or one on the way to it, can't be listed or searched; `chmod 700` it. `the session record <file> can't be
+  read`: `chmod 600` it if it is a file of yours; a link, a FIFO or another user's file is never read, so remove it.
+  `the session record <file> isn't a session record Orrery can read`: remove it. Then resume the session.
 - `Orrery: can't tell which agent this Grok is (…), so this session isn't recorded.`: Orrery takes the agent from the
   `ORRERY_AGENT` and token the grok process was started with, never from the hook's own environment. The reason says
   which failed: that environment can't be read (on macOS, see Limits), the hook's own names another agent or token
