@@ -266,7 +266,7 @@ The session-start hook returns the memory section as developer context at the st
 The agent is the one `ORRERY_AGENT` names, with its token; no folder picks it, so a plain `codex` is no agent's session.
 The recording hooks take `ORRERY_AGENT` and its token from the environment the Codex process was started with, never their own, and a session start that can't tell which agent that is, or comes after its process decided under another agent or token, says so in one line and records nothing ([Codex](codex.md#troubleshooting)).
 They take Orrery's config from there too (`ORRERY_CONFIG`, else the Orrery home's or the default), and give that config to the session's host record and recorder; a hook that would read another config records nothing, and its session start says why.
-A session that a live (or unsure) host record of another process already names is taken by no other process: any process can hold a rollout open, so a second Codex on the session, or a program the agent's shell started, records nothing, and its session start names the process that hosts it. A shell with no parent of its own is never taken for Codex.
+A session that a live (or unsure) host record of another process already names is taken by no other process whose hooks find that record (in their config's data folder, or where their agent's data really is): any process can hold a rollout open, so a second Codex on the session, or a program the agent's shell started, records nothing, and its session start names the process that hosts it. On Linux a record made in another pid namespace under the asking Codex's own pid is another process's. Session records there that can't be read (a records folder that can't be listed, a record file that can't be read) may name the session, so they refuse it too, and the session start names them. A shell with no parent of its own is never taken for Codex.
 Before a Codex or Orrery version it has not seen, the launch asks Codex's app server whether the hooks load, because Codex skips an untrusted hook silently.
 See [Codex](codex.md) for the guard's Codex-specific limits.
 
@@ -284,7 +284,7 @@ See [OpenCode](opencode.md) for the details and the guard's OpenCode-specific li
 The hooks and the holder are Codex's, generalized to Grok's process: the hooks spool typed prompts and final replies, and the holder records each only once Grok's session log confirms it (see [Agent sessions](#prompts-checked-against-the-tools-record)).
 The agent is the one `ORRERY_AGENT` names, with its token; the hooks are global, so a plain `grok` runs them as a session that is no agent's, and Grok's leader mode, where one process runs every session's hooks, is refused.
 Codex's and Grok's hooks take `ORRERY_AGENT` and its token, and the Orrery config, from the environment their host process was started with, never their own, and a session start that can't tell which agent or config that is, comes after its process decided under another agent or token, or (Grok) asks for another agent than the one its process hosts, says so in one line and records nothing ([Grok](grok.md#troubleshooting), [Codex](codex.md#troubleshooting)).
-A Grok session that a live (or unsure) host record of another process already names is taken by no other process, as a Codex session is: a second Grok on the session, or a program the agent's shell started holding its `events.jsonl` open, records nothing, and its session start names the process that hosts it. A shell with no parent of its own is never taken for Grok either.
+A Grok session that a live (or unsure) host record of another process already names is taken by no other process whose hooks find that record (in their config's data folder, or where their agent's data really is), as a Codex session is: a second Grok on the session, or a program the agent's shell started holding its `events.jsonl` open, records nothing, and its session start names the process that hosts it. A record made in another pid namespace under the asking Grok's own pid, and session records that can't be read, count as for Codex. A shell with no parent of its own is never taken for Grok either.
 Under Grok the Claude Code plugin's hooks and server stand down, so nothing runs twice.
 See [Grok](grok.md) for folder trust, the status row and the guard's Grok-specific limits.
 
@@ -590,6 +590,10 @@ command it was told to run.
   scratch config, say), and hides Orrery's name from the guard (a name built at run time, a wildcard-only glob, a
   script file) can still run any `orrery` command. Inside Codex's sandbox, clearing or sidestepping the markers and
   hiding the name is enough, with no detach, and reads of other agents may work there.
+- A program that makes its own user and mount namespaces (`unshare -Urm`, say) can show Orrery a different boot id,
+  start times or `/proc` (a bind mount over `/proc/sys/kernel/random/boot_id`, or over a process's `stat`). It can
+  then have a live Codex or Grok session's host record judged stale and taken down, and take the session itself.
+  Orrery doesn't defend against that; an operating-system sandbox would.
 - A tool's `!` passthrough is the agent's shell: a command the person types there is refused like the agent's.
 - `orrery compactor` for the session's own agent runs inside it, by design (so `/orrery:compactor` works): an agent can
   switch its own summary model among the providers, sign-ins and keys already saved in the config. It can add no

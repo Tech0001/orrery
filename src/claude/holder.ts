@@ -22,11 +22,12 @@
  *   dropped and counted (unconfirmed.json). Each session's transcript, rollout or log place is kept in memory meta, so a
  *   holder that starts with an event still held looks for it first, where its predecessor left off. No prompt, and no
  *   Codex or Grok reply, is recorded as it comes.
- * - A Grok session that another Grok has open too (a `grok-shared` mark: src/grok/hooks.ts) confirms nothing more: its
- *   log can't tell the recording Grok's turns from the other's. Its log place in memory meta names that Grok instead,
- *   so no later holder confirms anything from it while that Grok lives. Its own session turns read-only, with the
- *   reason its status row and its next SessionStart say (GROK_SHARED), for the rest of this holder's run; a holder that
- *   starts for it later (it reopened) records it again once that Grok is gone.
+ * - A Grok session that another Grok has open too, or another process that runs Grok's hooks (a `grok-shared` mark:
+ *   src/grok/hooks.ts), confirms nothing more: its log can't tell the recording Grok's turns from the other's. Its log
+ *   place in memory meta names that process instead, so no later holder confirms anything from it while it lives. Its
+ *   own session turns read-only, with the reason its status row and its next SessionStart say (GROK_SHARED), for the
+ *   rest of this holder's run; a holder that starts for it later (it reopened) records it again once that process is
+ *   gone.
  * It logs lifecycle and errors only, never message contents; its lines name the host (Claude Code, Codex or Grok).
  */
 
@@ -239,7 +240,7 @@ export class Holder {
 		holder.#shared = host === "grok" && sharedLogLives(memory.store.getMeta(grokLogKey(session)), holder.#alive, (pid) => processStart(pid));
 		if (holder.#shared) {
 			mode(false, GROK_SHARED);
-			log(`${session}: another Grok has this session open; recording paused`);
+			log(`${session}: another process has this session open; recording paused`);
 		} else {
 			mode(true, notices.length === 0 ? undefined : notices.join("\n"));
 			log(`${session}: recording`);
@@ -424,7 +425,7 @@ export class Holder {
 				this.#grokLogs.delete(event.session);
 				meta[grokLogKey(event.session)] = sharedLogMark(parsed.claudePid, parsed.start);
 				if (event.session === this.session) this.#attempt("pausing the session", () => this.#pause(parsed.at));
-				this.#log(`${event.session}: another Grok (pid ${parsed.claudePid}) has this session open; its log confirms nothing more`);
+				this.#log(`${event.session}: another process (pid ${parsed.claudePid}) has this session open; its log confirms nothing more`);
 			} else if (parsed?.kind === "reply" && this.#codexSession(event.session, parsed.claudePid)) {
 				// A Codex reply with no turn to check (spooled by an Orrery from before the rollout check), or a reply in this
 				// Grok holder's own session that isn't marked Grok's: never recorded. The log line names the tool's record.
