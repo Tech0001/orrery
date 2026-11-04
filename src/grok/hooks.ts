@@ -63,9 +63,10 @@
  *   anything.
  * - Any process can hold a session's events.jsonl open for writing (a program the agent's shell started, detached, as
  *   another agent, with a config of its own), so no process takes a session another process already hosts: one that a
- *   live or unsure session record of another process names (src/agent/sessions.ts grokSessionHosts), looked for in the
- *   config's data folder and where the agent's data really is (its folder, and where the links in it lead: a config of
- *   the shell's making may link the agent there), with every folder above them that holds records. SessionStart refuses
+ *   live or unsure session record of another process names (src/agent/sessions.ts grokSessionHosts; on Linux one made in
+ *   another pid namespace under this Grok's own number is another process's), looked for in the config's data folder
+ *   and where the agent's data really is (its folder, and where the links in it lead: a config of the shell's making may
+ *   link the agent there), with every folder above them that holds records. SessionStart refuses
  *   it after the checks above, before it decides, claims or records anything, and says which process hosts it; a prompt
  *   or reply of a session another process hosts too (both took it at once) is spooled by neither. A record whose Grok
  *   is gone is stale and taken down, so a new Grok resumes the session; the same Grok (/clear, a resume) is its own

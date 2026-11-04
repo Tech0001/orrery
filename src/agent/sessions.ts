@@ -1169,8 +1169,9 @@ export interface GrokSessionHost {
 /**
  * The live or unsure records of processes other than `except` in `dataDirs`, or in a folder above one that holds
  * records, that name Grok session `session`, read as codexSessionHosts reads Codex's: a record that names another
- * session, or `except`'s own, is not judged, and a stale record found among the rest is taken down. A Grok's hooks take
- * no session another process hosts, and mark it for the recorder of another Grok that has it open (src/grok/hooks.ts).
+ * session, or `except`'s own (on Linux, only one made in this process's pid namespace: hostRecords), is not judged, and
+ * a stale record found among the rest is taken down. A Grok's hooks take no session another process hosts, and mark it
+ * for the recorder of another Grok that has it open (src/grok/hooks.ts).
  */
 export function grokSessionHosts(dataDirs: readonly string[], session: string, except: number, deps: SessionDeps = {}): GrokSessionHost[] {
 	return hostRecords(dataDirs, "grokSession", deps, session, except).map(({ pid, agent, dataDir, live }) => ({ pid, agent, dataDir, live }));
@@ -1179,19 +1180,30 @@ export function grokSessionHosts(dataDirs: readonly string[], session: string, e
 /**
  * Each live or unsure record in `dataDirs` and the folders above them that hold records (judgedFolders) that names a
  * session in `field` (a Codex session, or a Grok one), with its pid, that session, its agent, the folder it is in and
- * whether it is live; with `only`, just those that name that session, and no other is judged; `except`'s record is
- * passed over unread.
+ * whether it is live; with `only`, just those that name that session, and no other is judged.
+ * `except`'s record (the asker's own) is passed over: on macOS unread, so its process isn't asked about; on Linux only
+ * when it was made in this process's pid namespace (as one judged live always was). A pid names a process only in the
+ * namespace it is numbered in (module doc): a record made in another under `except`'s number (a program in a pid
+ * namespace of its own, numbered there as a real host is here) is another process's, and counts as any other does.
  */
 function hostRecords(dataDirs: readonly string[], field: "codexSession" | "grokSession", deps: SessionDeps, only?: string, except?: number): (GrokSessionHost & { readonly session: string })[] {
 	const found: (GrokSessionHost & { readonly session: string })[] = [];
+	const linux = onLinux(deps);
+	// This process's pid namespace, read once, and only when `except`'s record is there.
+	let here: { readonly ns: string | undefined } | undefined;
+	const madeHere = (read: ReturnType<typeof readRecord>): boolean => {
+		here ??= { ns: namespaceOf(deps, "self") };
+		return typeof read !== "string" && here.ns !== undefined && read.parsed?.record.ns === here.ns;
+	};
 	for (const dataDir of judgedFolders(dataDirs)) {
 		for (const pid of recordedPids(dataDir)) {
-			if (pid === except) continue;
-			if (only !== undefined) {
-				// Judged below, read again, only when it names `only`: a record that doesn't is none of its hosts either way.
-				const read = readRecord(fileOf(dataDir, pid), pid);
-				if (typeof read === "string" || read.parsed?.record[field] !== only) continue;
-			}
+			const own = pid === except;
+			if (own && !linux) continue;
+			// Read before it is judged when it may be the asker's own, or to see that it names `only` (a record that doesn't
+			// is none of its hosts either way, and isn't judged).
+			const read = own || only !== undefined ? readRecord(fileOf(dataDir, pid), pid) : undefined;
+			if (own && read !== undefined && madeHere(read)) continue;
+			if (only !== undefined && (read === undefined || typeof read === "string" || read.parsed?.record[field] !== only)) continue;
 			const standing = judged(dataDir, pid, deps);
 			const record = standing.kind === "live" || standing.kind === "unsure" ? standing.record : undefined;
 			const session = record?.[field];

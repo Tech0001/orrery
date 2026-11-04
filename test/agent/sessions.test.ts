@@ -323,6 +323,30 @@ describe("grokSessionHosts", () => {
 		expect(grokSessionHosts([inner], "019a-atlas", process.pid)).toEqual([{ pid: foreign.pid, agent: "Atlas", dataDir: root, live: false }]);
 		expect(existsSync(hostFile(root, foreign.pid))).toBe(true);
 	});
+
+	it("on Linux, the asker's own pid passes over only a record made in its own pid namespace: one made in another under that number (a program in a pid namespace of its own, numbered there as the real Grok is here) hosts the session", () => {
+		const dir = temp();
+		const table: Table = { ...chain() };
+		expect(recordSession(dir, { agent: "Atlas", tool: "grok", pid: 30, grokSession: "019a-atlas" }, linux(table))).toBe(true);
+		// Asked by Grok 30 itself, in the namespace its record was made in: its own.
+		expect(grokSessionHosts([dir], "019a-atlas", 30, linux(table))).toEqual([]);
+		// Asked by a process numbered 30 in a pid namespace of its own (/proc kept, or its own mounted): another process's.
+		for (const procfs of ["kept", "remounted"] as const) {
+			expect(grokSessionHosts([dir], "019a-atlas", 30, elsewhere(table, procfs)), procfs).toEqual([{ pid: 30, agent: "Atlas", dataDir: dir, live: false }]);
+		}
+		// Asked where this process's own namespace can't be read: no record is known to be its own.
+		const blind = { ...linux(table), ns: (pid: number | "self") => (pid === "self" ? undefined : NS) };
+		expect(grokSessionHosts([dir], "019a-atlas", 30, blind)).toEqual([{ pid: 30, agent: "Atlas", dataDir: dir, live: false }]);
+		// A record made in another namespace under the number of a Grok of this one, which asks about its session.
+		const foreign = { agent: "Birch", tool: "grok", pid: 40, start: "400", grokSession: "019a-atlas", ns: "pid:[4026532999]", boot: BOOT };
+		writeFileSync(hostFile(dir, 40), JSON.stringify(foreign), { mode: 0o600 });
+		expect(grokSessionHosts([dir], "019a-atlas", 40, linux(table)).sort((a, b) => a.pid - b.pid)).toEqual([
+			{ pid: 30, agent: "Atlas", dataDir: dir, live: true },
+			{ pid: 40, agent: "Birch", dataDir: dir, live: false },
+		]);
+		// Every record is kept: none is stale.
+		expect([30, 40].map((pid) => existsSync(hostFile(dir, pid)))).toEqual([true, true]);
+	});
 });
 
 describe("processStartedAt: when a process started, as a time", () => {

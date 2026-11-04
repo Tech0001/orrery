@@ -864,6 +864,34 @@ describe("a second Grok that opens a session another Grok records (grok -r <its 
 		expect(existsSync(join(t.config.dataDir, "session-hosts", `${foreign}.json`))).toBe(true);
 	});
 
+	it.skipIf(process.platform !== "linux")("a record made in another pid namespace under this Grok's own pid number (a program in a pid namespace of its own, numbered there as this Grok is here) is no record of this Grok's: it refuses the session, and a prompt of a session this Grok records that such a record names too is spooled no more", async () => {
+		const t = testAgent();
+		homeOf(t).begin(id("s1"));
+		/** A record of `session` as Test's, made in another pid namespace by a process numbered there as this Grok is here. */
+		const numberedAsThisGrok = (dataDir: string, session: string) => {
+			mkdirSync(join(dataDir, "session-hosts"), { recursive: true, mode: 0o700 });
+			writeFileSync(join(dataDir, "session-hosts", `${GROK}.json`), JSON.stringify({ agent: "Test", tool: "grok", pid: GROK, start: "1", grokSession: id(session), ns: "pid:[4026532999]", boot: "another-boot" }), { mode: 0o600 });
+		};
+		numberedAsThisGrok(t.config.dataDir, "s1");
+		const c = ctx(t, { startHolder: answer("recording") });
+		expect(await run("session-start", input({ source: "load" }), c)).toEqual({ systemMessage: notOwn(`Grok process ${GROK} already hosts it`) });
+		expect(liveSession(t.config.dataDir, GROK)).toBeUndefined();
+		expect(claimedBy(t.agent.dir, c.env.ORRERY_AGENT_TOKEN as string)).toBeUndefined();
+		// The record is kept as it was (it may be a real session's), never taken for this Grok's own, and its recorder is told.
+		expect(JSON.parse(readFileSync(join(t.config.dataDir, "session-hosts", `${GROK}.json`), "utf8"))).toMatchObject({ ns: "pid:[4026532999]", grokSession: id("s1") });
+		expect(kinds(t, "s1")).toEqual(["grok-shared"]);
+		// Gone (that program quit): this Grok records a session of its own. Then a record of that session made in another
+		// pid namespace under this Grok's number turns up in a data folder above this one: neither records it.
+		rmSync(join(t.config.dataDir, "session-hosts", `${GROK}.json`));
+		expect(((await run("session-start", input({ session: "s2", source: "new" }), c)) as Answer).systemMessage?.split("\n")[0]).toMatch(/· recording$/);
+		await run("user-prompt-submit", input({ session: "s2", prompt: "First.", promptId: "p-1" }), c);
+		expect(kinds(t, "s2")).toEqual(["grok-log", "prompt"]);
+		numberedAsThisGrok(t.dir, "s2");
+		await run("user-prompt-submit", input({ session: "s2", prompt: "Second.", promptId: "p-2" }), c);
+		await run("stop", input({ session: "s2", lastAssistantMessage: "A reply.", promptId: "p-2", reason: "end_turn" }), c);
+		expect(kinds(t, "s2")).toEqual(["grok-log", "prompt"]);
+	});
+
 	it("marks nothing for a second process that has another file of the same session id open (grok -s <id> in another folder), or the session's file open only to read it", async () => {
 		const t = testAgent();
 		const c = ctx(t, { startHolder: answer("recording") });
