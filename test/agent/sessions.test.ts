@@ -26,7 +26,6 @@ import {
 	recordSession,
 	type SessionDeps,
 	type SessionTool,
-	unsureRecord,
 } from "../../src/agent/sessions.ts";
 import { configContent } from "../../src/opencode/options.ts";
 
@@ -132,36 +131,41 @@ describe("session records", () => {
 		forgetSession(dir, process.pid);
 	});
 
-	it("never replaces a record under the pid that may be another process's (made in another pid namespace, one that can't be read, one that is no record, one with a field that can't be read), and never forgets one; a stale one or the process's own live one is replaced", () => {
+	it("replaces whatever is under the process's pid (a record made in another pid namespace, one that can't be read, one that is no record, one with a field that can't be read, a stale one); a closing session forgets only its own live record", () => {
 		const dir = temp();
 		const table = chain();
-		// This process and process 30 in another pid namespace than the one the record there was made in (NS).
+		// This process and process 30 in another pid namespace than the one the record there was made in (NS): a container's,
+		// say, that shares the data folder.
 		const other: SessionDeps = { ...linux(table), ns: () => "pid:[4026533000]" };
 		mkdirSync(join(dir, "session-hosts"), { recursive: true, mode: 0o700 });
 		const file = hostFile(dir, 30);
 		const put = (text: string) => writeFileSync(file, text, { mode: 0o600 });
 		const theirs = `${JSON.stringify({ agent: "Atlas", tool: "grok", pid: 30, start: "300", grokSession: "019a-atlas", ns: NS, boot: BOOT })}\n`;
 		put(theirs);
-		expect(unsureRecord(dir, 30, other)).toBe(file);
-		expect(recordSession(dir, { agent: "Birch", tool: "grok", pid: 30, grokSession: "019b-birch" }, other)).toBe(false);
-		expect(readFileSync(file, "utf8")).toBe(theirs);
+		// Not its own: a closing session here keeps it.
 		forgetSession(dir, 30, other);
 		expect(readFileSync(file, "utf8")).toBe(theirs);
-		// From the namespace it was made in it is process 30's own live record: replaced, and forgotten.
-		expect(unsureRecord(dir, 30, linux(table))).toBeUndefined();
-		expect(recordSession(dir, { agent: "Atlas", tool: "grok", pid: 30, grokSession: "019c-cedar" }, linux(table))).toBe(true);
-		expect(liveSession(dir, 30, linux(table))).toMatchObject({ grokSession: "019c-cedar" });
+		// Here, pid 30 is this process: its record replaces that one, and is forgotten when it closes.
+		expect(recordSession(dir, { agent: "Birch", tool: "grok", pid: 30, grokSession: "019b-birch" }, other)).toBe(true);
+		expect(liveSession(dir, 30, other)).toMatchObject({ agent: "Birch", grokSession: "019b-birch", ns: "pid:[4026533000]" });
+		// From the namespace the first was made in, this one isn't process 30's: kept.
 		forgetSession(dir, 30, linux(table));
+		expect(liveSession(dir, 30, other)).toMatchObject({ agent: "Birch" });
+		forgetSession(dir, 30, other);
 		expect(existsSync(file)).toBe(false);
-		// One that can't be read (a link), one that is no record, one with a field that can't be read: kept, and refused.
-		symlinkSync(join(dir, "elsewhere.json"), file);
-		for (const make of [() => {}, () => (rmSync(file), put("{ cut short")), () => put(JSON.stringify({ agent: "Atlas", tool: "pi", pid: 30, start: "300", ns: NS, boot: 7 }))]) {
+		// One that can't be read (a link), one that is no record, one with a field that can't be read: never forgotten, and
+		// replaced by a new record.
+		const made = [() => symlinkSync(join(dir, "elsewhere.json"), file), () => put("{ cut short"), () => put(JSON.stringify({ agent: "Atlas", tool: "pi", pid: 30, start: "300", ns: NS, boot: 7 }))];
+		for (const make of made) {
 			make();
 			const before = lstatSync(file).isSymbolicLink() ? "link" : readFileSync(file, "utf8");
-			expect(unsureRecord(dir, 30, linux(table))).toBe(file);
-			expect(recordSession(dir, { agent: "Birch", tool: "pi", pid: 30 }, linux(table))).toBe(false);
 			forgetSession(dir, 30, linux(table));
 			expect(lstatSync(file).isSymbolicLink() ? "link" : readFileSync(file, "utf8")).toBe(before);
+			expect(recordSession(dir, { agent: "Birch", tool: "pi", pid: 30 }, linux(table))).toBe(true);
+			expect(lstatSync(file).isFile()).toBe(true);
+			expect(liveSession(dir, 30, linux(table))).toMatchObject({ agent: "Birch", start: "300", ns: NS });
+			forgetSession(dir, 30, linux(table));
+			expect(existsSync(file)).toBe(false);
 		}
 		// A stale one (its process started at another time, or another boot's) is replaced.
 		for (const stale of [{ start: "299", boot: BOOT }, { start: "300", boot: "another-boot" }]) {

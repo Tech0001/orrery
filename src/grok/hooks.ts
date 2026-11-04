@@ -100,7 +100,7 @@ import { AGENT_ENV, agentNamed } from "../agent/pick.ts";
 import type { PlainDeps } from "../agent/plain-nested.ts";
 import { processCwd, processStart } from "../agent/process.ts";
 import { agentFiles } from "../agent/real-data.ts";
-import { grokSessionHosts, hostReason, liveSession, nestedNotice, plainFields, recordSession, type SessionHost, type SessionRecord, takenReason, unsureRecord } from "../agent/sessions.ts";
+import { grokSessionHosts, hostReason, liveSession, nestedNotice, plainFields, recordSession, type SessionHost, type SessionRecord } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { NOT_RECORDED, type StatusState, statusText } from "../agent/status-text.ts";
 import { noticeShownBefore, waitForMode } from "../claude/hooks.ts";
@@ -474,10 +474,6 @@ export async function sessionStart(input: GrokHookInput, ctx: GrokHookContext): 
 	// file open for writing; nor one whose hosts can't all be read.
 	const elsewhere = others[0];
 	if (elsewhere !== undefined) return refuse(hostReason(elsewhere, "Grok"));
-	// A record under this Grok's own pid that may be another process's is never replaced (src/agent/sessions.ts
-	// recordSession): refused before anything is decided or claimed.
-	const taken = unsureRecord(ctx.config.dataDir, ctx.grokPid);
-	if (taken !== undefined) return refuse(takenReason(taken, "Grok"));
 	// A live host record of this Grok's that names another agent stays as it is (module doc): before any claim.
 	const live = liveSession(ctx.config.dataDir, ctx.grokPid);
 	if (live?.tool === "grok" && asked !== undefined && live.agent !== asked.name) {
