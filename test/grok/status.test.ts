@@ -624,6 +624,47 @@ describe("the row says when Grok's settings aren't the ones the person approved"
 		expect(readFileSync(s.cache, "utf8")).toBe(before);
 	});
 
+	it("without the process's folder the row uses the status JSON's cwd; with neither, a record means changed, and that answer isn't cached", () => {
+		const w = world();
+		remember(w.scratch, 5);
+		const s = settings(w);
+		const session = randomUUID();
+		const token = started(w.config, w.scratch, session);
+		const recording = "Orrery · Scratch · 5 msgs · recording";
+		s.approve();
+		const row = (cwd: string | undefined) => grokStatus(payload(session, { cwd }), ctx(w.config, { ...as("Scratch", token), ...s.env }, { cwdOf: () => undefined }));
+		// The JSON's cwd is the session folder: unchanged settings, no suffix.
+		expect(row(s.folder)).toBe(recording);
+		// A project hook file in that folder is seen through it.
+		mkdirSync(join(s.folder, ".grok", "hooks"), { recursive: true });
+		writeFileSync(join(s.folder, ".grok", "hooks", "planted.json"), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "true" }] }] } }));
+		expect(row(s.folder)).toBe(`${recording} · Grok settings changed`);
+		// Neither gives a folder: changed, though what was approved is as it was; nothing cached for it.
+		rmSync(join(s.folder, ".grok"), { recursive: true });
+		expect(row(s.folder)).toBe(recording);
+		const before = readFileSync(s.cache, "utf8");
+		expect(row(undefined)).toBe(`${recording} · Grok settings changed`);
+		expect(readFileSync(s.cache, "utf8")).toBe(before);
+		// The next row with a folder is its own full answer.
+		expect(row(s.folder)).toBe(recording);
+	});
+
+	it("the row checks the folders Grok was started with, not its own environment's", () => {
+		const w = world();
+		remember(w.scratch, 5);
+		const s = settings(w);
+		const session = randomUUID();
+		const token = started(w.config, w.scratch, session);
+		s.approve();
+		s.plant("planted.json");
+		// The row's own GROK_HOME is another, clean folder; Grok was started with the planted one.
+		const own = join(w.dir, "row-own-grok");
+		mkdirSync(join(own, "hooks"), { recursive: true });
+		const env = { ...as("Scratch", token), ...s.env };
+		const row = grokStatus(payload(session), ctx(w.config, { ...env, GROK_HOME: own }, { cwdOf: () => s.folder, envOf: startedWith(env) }));
+		expect(row).toBe("Orrery · Scratch · 5 msgs · recording · Grok settings changed");
+	});
+
 	it("plain grok gets no suffix: no agent, no row, as today", () => {
 		const w = world();
 		const s = settings(w);

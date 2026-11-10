@@ -77,16 +77,19 @@ function recordThere(dataDir: string): boolean {
 
 /**
  * Whether Grok's settings (Grok's folder and HOME as `env` has them, and the session folder `folder()` gives, asked only
- * when there is a record; undefined: the global entries only) aren't the ones approved in `dataDir`'s record: a full check
+ * when there is a record; undefined: changed, uncached) aren't the ones approved in `dataDir`'s record: a full check
  * changed state of any kind (module doc). Errors of the cache's are a miss, and a cache that can't be written leaves the
  * answer as it is.
  */
 export function grokSettingsChanged(dataDir: string, env: NodeJS.ProcessEnv, folder: () => string | undefined): boolean {
 	if (!recordThere(dataDir)) return false;
 	const project = folder();
+	// No session folder to compare project settings in: the row would rather say changed wrongly than miss a change. No
+	// answer is kept for it.
+	if (project === undefined) return true;
 	const home = env.HOME || homedir();
 	const grok = realish(grokHome(env, home));
-	const at = project === undefined ? undefined : realish(resolve(project));
+	const at = realish(resolve(project));
 	const path = join(dataDir, CACHE);
 	const entries = readEntries(path);
 	const cached = entries.find((entry) => entry.grok === grok && entry.folder === at);
@@ -95,7 +98,7 @@ export function grokSettingsChanged(dataDir: string, env: NodeJS.ProcessEnv, fol
 	const sources = grokSettingsSources(env, project);
 	const stamp = stampOf(dataDir, home, sources);
 	const changed = checkGrokSettings(dataDir, env, project).state === "changed";
-	const entry: RowEntry = { grok, ...(at === undefined ? {} : { folder: at }), stamp, sources, changed };
+	const entry: RowEntry = { grok, folder: at, stamp, sources, changed };
 	const kept = entries.filter((one) => one.grok !== grok || one.folder !== at);
 	try {
 		writePrivate(path, `${JSON.stringify({ version: 1, entries: [...kept, entry].slice(-MOST_ENTRIES) })}\n`);

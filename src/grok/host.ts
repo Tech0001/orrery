@@ -134,6 +134,20 @@ export function grokHostNotice(why: string): string {
 export const GROK_FOLDER_VARIABLES: readonly string[] = ["GROK_HOME", "HOME"];
 
 /**
+ * `env` with the folder variables as the grok process was started with them (`started`, set or not): the folders Grok
+ * loaded its settings from, whatever the asking process has in its own environment.
+ */
+export function grokFolderEnv(env: NodeJS.ProcessEnv, started: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
+	const rest = { ...env };
+	for (const name of GROK_FOLDER_VARIABLES) {
+		delete rest[name];
+		const value = started[name];
+		if (value !== undefined) rest[name] = value;
+	}
+	return rest;
+}
+
+/**
  * The variables of the grok process's start environment the hooks read (src/grok/hooks.ts), at once: whose session it
  * is, the Orrery config it runs with, and Grok's folder. The status row reads the same (src/grok/status.ts), so a start
  * environment the hooks can't read (on macOS, one of them holding a space) the row can't either, and says so.

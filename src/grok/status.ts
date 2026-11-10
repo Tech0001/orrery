@@ -51,7 +51,7 @@ import { type StatusState, statusText } from "../agent/status-text.ts";
 import { validSession } from "../claude/paths.ts";
 import { readMode } from "../claude/spool.ts";
 import { grokAgent, launchedEnv, startEnvOf } from "../codex/pick.ts";
-import { GROK_LEADER_REFUSAL, GROK_START_VARIABLES, grokHostRefusal, grokPid } from "./host.ts";
+import { GROK_LEADER_REFUSAL, GROK_START_VARIABLES, grokFolderEnv, grokHostRefusal, grokPid } from "./host.ts";
 import { GROK_SESSION_START_TIMEOUT, grokRecordingSwitchedOff } from "./install.ts";
 import { grokSettingsChanged } from "./settings-row.ts";
 
@@ -135,7 +135,9 @@ function rowOf(stdin: string, ctx: GrokStatusContext): string | undefined {
 	const young = (at: number | undefined) => at !== undefined && now - at >= 0 && now - at < GROK_SESSION_START_TIMEOUT * 1000;
 	const starting = () => young(claimMadeAt(agent.dir, env[TOKEN_ENV] ?? "")) || young(sessionStartedAt(session));
 	const state = stateOf(ctx.config, agent, session, pid, now, () => grokRecordingSwitchedOff(env), starting);
-	const settings = grokSettingsChanged(ctx.config.dataDir, env, () => (ctx.cwdOf ?? processCwd)(pid)) ? [SETTINGS_CHANGED] : [];
+	// Grok's folders as Grok was started with them (as the hooks take them); its folder from the process, else the status
+	// JSON's cwd, else none (the check then says changed, whatever it compares).
+	const settings = grokSettingsChanged(ctx.config.dataDir, grokFolderEnv(env, started ?? {}), () => (ctx.cwdOf ?? processCwd)(pid) ?? cwdIn(stdin)) ? [SETTINGS_CHANGED] : [];
 	return statusText({ name: agent.name, count: readMessageCount(agent), state, extra: settings });
 }
 
@@ -146,6 +148,17 @@ function rowOf(stdin: string, ctx: GrokStatusContext): string | undefined {
 function sessionStartedAt(session: string): number | undefined {
 	const v7 = /^([0-9a-f]{8})-([0-9a-f]{4})-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.exec(session);
 	return v7 === null ? undefined : Number.parseInt(`${v7[1]}${v7[2]}`, 16);
+}
+
+/** The `cwd` in Grok's status JSON, when it is a non-empty string. */
+function cwdIn(stdin: string): string | undefined {
+	try {
+		const parsed: unknown = JSON.parse(stdin);
+		const cwd = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as { readonly cwd?: unknown }).cwd : undefined;
+		return typeof cwd === "string" && cwd !== "" ? cwd : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** The session id in Grok's status JSON (`session_id`; a hook's `sessionId` too), when it is one the spool takes. */

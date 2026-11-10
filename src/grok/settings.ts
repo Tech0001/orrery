@@ -151,13 +151,15 @@ export function settingsQuestion(check: SettingsCheck, max = 20): SettingsQuesti
  * What an agent's Grok session says at its start (src/grok/hooks.ts sessionStart) when its settings aren't the ones
  * approved: one line by what they were compared with. None when unchanged, nor for the first run, which the launch asked.
  */
-export function grokSettingsNotice(check: SettingsCheck): string | undefined {
+export function grokSettingsNotice(check: SettingsCheck, recording = true): string | undefined {
 	if (check.state !== "changed") return undefined;
 	const review = "run orrery grok-settings in your own terminal to review them.";
 	if (check.record === "unreadable") return `Orrery can't read its record of Grok's settings; ${review}`;
 	if (check.record === "new-folder") return `Orrery has no record of approving this Grok folder's settings; ${review}`;
 	const count = check.changes.length;
-	return `Grok's settings changed since you approved them on ${approvalDate(check.approvedAt)} (${count} ${count === 1 ? "change" : "changes"}). Orrery still records and guards this session; ${review}`;
+	const changed = `Grok's settings changed since you approved them on ${approvalDate(check.approvedAt)} (${count} ${count === 1 ? "change" : "changes"}).`;
+	// A session that isn't recording is still guarded, but nothing is recorded in it.
+	return `${changed} Orrery still ${recording ? "records and guards" : "guards"} this session; ${review}`;
 }
 
 /** One line per source with content: its items' names, then where it is. */
