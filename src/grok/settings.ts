@@ -36,6 +36,8 @@ export type SettingsCheck =
 	| { readonly state: "changed"; readonly record: "ok" | "unreadable" | "new-folder"; readonly approvedAt: string; readonly changes: readonly SettingsChange[]; readonly shown: ShownSettings };
 
 const RECORD = "grok-settings.json";
+/** The record's file in a data folder (the status row stamps it: src/grok/settings-row.ts). */
+export const settingsRecordPath = (dataDir: string): string => join(dataDir, RECORD);
 
 function snapshotWith(sources: readonly SettingsSource[], reader: Reader): Record<string, SettingsEntry> {
 	return Object.fromEntries(sources.flatMap((source) => entriesOf(source, reader)));
@@ -145,6 +147,19 @@ export function settingsQuestion(check: SettingsCheck, max = 20): SettingsQuesti
 	return { lines: [header, ...indented(changeLines(check.changes, max))], question: "Approve these changes to Grok's settings? [y/N]", defaultYes: false };
 }
 
+/**
+ * What an agent's Grok session says at its start (src/grok/hooks.ts sessionStart) when its settings aren't the ones
+ * approved: one line by what they were compared with. None when unchanged, nor for the first run, which the launch asked.
+ */
+export function grokSettingsNotice(check: SettingsCheck): string | undefined {
+	if (check.state !== "changed") return undefined;
+	const review = "run orrery grok-settings in your own terminal to review them.";
+	if (check.record === "unreadable") return `Orrery can't read its record of Grok's settings; ${review}`;
+	if (check.record === "new-folder") return `Orrery has no record of approving this Grok folder's settings; ${review}`;
+	const count = check.changes.length;
+	return `Grok's settings changed since you approved them on ${approvalDate(check.approvedAt)} (${count} ${count === 1 ? "change" : "changes"}). Orrery still records and guards this session; ${review}`;
+}
+
 /** One line per source with content: its items' names, then where it is. */
 function firstLines(snapshot: SettingsSnapshot): string[] {
 	const groups = new Map<string, string[]>();
@@ -161,7 +176,7 @@ const validRecord = (json: unknown): json is SettingsRecord =>
 
 /** The record; undefined when there is none; `unreadable` (`can't read <path>`) when it isn't this user's file or a record. */
 export function readSettingsRecord(dataDir: string): SettingsRecord | undefined | { readonly unreadable: string } {
-	const path = join(dataDir, RECORD);
+	const path = settingsRecordPath(dataDir);
 	let text: string;
 	try {
 		// This user's own plain file, never through a link.
@@ -186,7 +201,7 @@ export function readSettingsRecord(dataDir: string): SettingsRecord | undefined 
 	return { unreadable: `can't read ${path}` };
 }
 
-const writeRecord = (dataDir: string, record: SettingsRecord) => writePrivate(join(dataDir, RECORD), `${JSON.stringify(record, null, "\t")}\n`);
+const writeRecord = (dataDir: string, record: SettingsRecord) => writePrivate(settingsRecordPath(dataDir), `${JSON.stringify(record, null, "\t")}\n`);
 const scoped = (snapshot: SettingsSnapshot, scope: Scope): SettingsSnapshot => Object.fromEntries(Object.entries(snapshot).filter(([key]) => key.startsWith(`${scope} `)));
 
 /** Inside ShownSettings: Grok's folder's real path, the session folder's (none: global only), and the entries compared. */
