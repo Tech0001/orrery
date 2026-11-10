@@ -8,14 +8,15 @@
  *   config.toml (the keys that start a program or decide what loads), managed_config.toml, requirements.toml, lsp.json,
  *   disabled-hooks, agents/*.md, plugins/<p>/, settings.json (marketplaces, enabledPlugins); and what config.toml names
  *   ([plugins].paths, agent.definition).
- * - Claude Code's and Cursor's files Grok reads ($HOME/.claude/settings{,.local}.json, its installed plugins unless
- *   switched off and folder plugins Grok's [plugins].enabled names, $HOME/.claude.json's MCP servers, its agents,
+ * - Claude Code's and Cursor's files Grok reads ($HOME/.claude/settings{,.local}.json, every plugin it has installed,
+ *   switched on or not, and folder plugins Grok's [plugins].enabled names, $HOME/.claude.json's MCP servers, its agents,
  *   $HOME/.cursor/hooks.json and mcp.json), and /etc/grok's two org files.
  * - The project: every folder from the git root down to the session folder C (C alone outside a repository, or when the
- *   root is /, the home or temp folder, or a parent of either); its .cursor/mcp.json, .grok/lsp.json and $HOME/.claude.json
- *   entry are read for C alone. Grok's folder trust is not asked: what C holds always counts.
+ *   root is /, home or a parent of it); its .cursor/mcp.json, .grok/lsp.json and $HOME/.claude.json entry are read for C
+ *   alone. Grok's folder trust is not asked: what C holds always counts.
  * - Programs: a file that a hook, server, language server or other command names (its program, and arguments that are
- *   paths), resolved as Grok does where it can (no PATH lookup); not followed on to others.
+ *   paths with no space), resolved as Grok does where it can (no PATH lookup); not followed on to others. Settings values
+ *   that are paths (not commands) take any relative path, a bare name too, against their file's (or plugin's) folder.
  * Each source's entry is a SHA-256 of its canonical relevant content (the whole file, or one entry per relevant key and
  * per MCP server), with a summary [what, where] that names things and never holds values: server names, hook event names,
  * program basenames and paths. The record is <data dir>/grok-settings.json (0600, written whole), per Grok folder's real
@@ -26,7 +27,7 @@
 
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { parse } from "smol-toml";
 import { realish } from "../agent/appended-lines.ts";
@@ -47,7 +48,14 @@ export type SettingsEntry = { readonly fingerprint: string; readonly summary: re
 export type SettingsSnapshot = Readonly<Record<string, SettingsEntry>>;
 export type SettingsChange = { readonly change: "added" | "changed" | "removed"; readonly line: string };
 export type SettingsRecord = { readonly version: 1; readonly grok: Readonly<Record<string, { readonly approvedAt: string; readonly global: SettingsSnapshot; readonly projects: Readonly<Record<string, SettingsSnapshot>> }>> };
-export type SettingsCheck = { readonly state: "unchanged" } | { readonly state: "first"; readonly lines: readonly string[] } | { readonly state: "changed"; readonly approvedAt: string; readonly changes: readonly SettingsChange[] };
+declare const shownBrand: unique symbol;
+/** What a check compared (Grok's folder, the session folder, and their entries then); opaque: approve it as it came. */
+export type ShownSettings = { readonly [shownBrand]: true };
+/** A check's result; `shown` is what approving it saves, whatever is on disk by then. */
+export type SettingsCheck =
+	| { readonly state: "unchanged"; readonly shown: ShownSettings }
+	| { readonly state: "first"; readonly lines: readonly string[]; readonly shown: ShownSettings }
+	| { readonly state: "changed"; readonly record: "ok" | "unreadable" | "new-folder"; readonly approvedAt: string; readonly changes: readonly SettingsChange[]; readonly shown: ShownSettings };
 
 type Kind = SettingsSource["kind"];
 type Scope = SettingsSource["scope"];
@@ -55,7 +63,7 @@ type Table = Record<string, unknown>;
 
 const RECORD = "grok-settings.json";
 const UNREADABLE = "unreadable";
-/** Settings files past this are fingerprinted by size and time; programs past PROGRAM_MAX (spec: best effort, 1 MiB). */
+/** Settings files past this are not read: their size, times and inode stand for them; programs past PROGRAM_MAX (1 MiB). */
 const SETTINGS_MAX = 64 * 1024 * 1024;
 const PROGRAM_MAX = 1024 * 1024;
 
@@ -95,14 +103,17 @@ const own = (table: unknown, key: string): unknown => (isTable(table) && Object.
 /** The value at a dotted name ("ui.status_line") in a parsed file. */
 const at = (table: unknown, name: string): unknown => name.split(".").reduce(own, table);
 
-/** A file as read: gone (a dangling link too), no plain file, not readable, or its bytes (past the limit: `big`). */
+/** A file as read: gone (a dangling link too), no plain file, not readable, or its bytes (past the limit: `big`, unread). */
 type Got = { readonly state: "absent" | "other" | "unreadable" } | { readonly state: "file"; readonly link?: string; readonly bytes?: Buffer; readonly big?: string };
 type File = Extract<Got, { state: "file" }>;
 
-/** A file's digest: its bytes' SHA-256, or past the limit its size and time. Taken only when needed (a keyed file's isn't). */
+/** A file's digest: its bytes' SHA-256, or past the limit its size, times and inode. Taken only when needed (a keyed file's isn't). */
 const digestOf = (got: File) => got.big ?? sha(got.bytes ?? "");
 
-/** Reads a file with lstat first: a link reads as its target's path plus the target's content. Never waits on a FIFO. */
+/**
+ * Reads a file with lstat first: a link reads as its target's path plus the target's content. Never waits on a FIFO. A
+ * file past `max` is not read: its size, mtime, ctime and inode stand for it (a rewrite moves the ctime, whatever mtime).
+ */
 function readFile(path: string, max: number): Got {
 	let link: string | undefined;
 	try {
@@ -122,7 +133,7 @@ function readFile(path: string, max: number): Got {
 		const stats = fstatSync(fd);
 		if (!stats.isFile()) return { state: "other" };
 		const linked = link === undefined ? {} : { link };
-		if (stats.size > max) return { state: "file", big: `size ${stats.size}, modified ${stats.mtimeMs}`, ...linked };
+		if (stats.size > max) return { state: "file", big: `size ${stats.size}, modified ${stats.mtimeMs}, changed ${stats.ctimeMs}, inode ${stats.ino}`, ...linked };
 		return { state: "file", bytes: readFileSync(fd), ...linked };
 	} catch {
 		return { state: "unreadable" };
@@ -195,11 +206,11 @@ class Found {
 		for (const file of filesIn(dir, suffix)) this.add(scope, kind, file);
 	}
 
-	/** A plugin folder: one source for its content, its files and folders watched. */
+	/** A plugin folder: one source for its content, its files and folders (those its manifests name too) watched. */
 	plugin(scope: Scope, root: string, id?: string): void {
 		this.add(scope, "plugin", root, id);
-		for (const folder of PLUGIN_FOLDERS) this.add(scope, "watched", join(root, folder));
-		for (const file of pluginFiles(root, this.reader)) this.add(scope, "watched", file);
+		const { files, folders } = pluginParts(root, this.reader);
+		for (const path of [...folders, ...files]) this.add(scope, "watched", path);
 	}
 }
 
@@ -229,17 +240,26 @@ function foldersIn(dir: string): string[] {
 	}
 }
 
-/** A plugin's files: the fixed names, agents/*.md, and what its manifests name for hooks, servers and agents. */
-function pluginFiles(root: string, reader: Reader): string[] {
+/**
+ * A plugin's files (the fixed names, agents/*.md, and what its manifests name for hooks, servers and agents), and the
+ * folders watched for new ones (the fixed ones and the folders its manifests name).
+ */
+function pluginParts(root: string, reader: Reader): { readonly files: string[]; readonly folders: string[] } {
 	const files = [...PLUGIN_FILES.map((name) => join(root, name)), ...filesIn(join(root, "agents"), ".md")];
+	const folders = PLUGIN_FOLDERS.map((name) => join(root, name));
 	for (const manifest of MANIFESTS) {
 		const json = reader.data(join(root, manifest));
-		for (const named of ["hooks", "mcpServers", "lspServers", "agents"].flatMap((field) => strings(json?.[field]))) {
-			const path = located(named, { base: root, plugin: root });
-			if (path !== undefined) files.push(...(isFolder(path) ? [...filesIn(path, ".md"), ...filesIn(path, ".json")] : [path]));
+		for (const named of ["hooks", "mcpServers", "lspServers", "agents"].flatMap((field) => strings(own(json, field)))) {
+			const path = pathNamed(named, { base: root, plugin: root });
+			if (path === undefined) continue;
+			if (!isFolder(path)) files.push(path);
+			else {
+				folders.push(path);
+				files.push(...filesIn(path, ".md"), ...filesIn(path, ".json"));
+			}
 		}
 	}
-	return unique(files);
+	return { files: unique(files), folders: unique(folders) };
 }
 
 /** Where a command's words resolve: relative paths, a bare name (hook files only: the file beside it), and variables. */
@@ -274,6 +294,9 @@ function located(word: string, place: Place, bare = false): string | undefined {
 	return bare && place.beside !== undefined ? join(place.beside, path) : undefined;
 }
 
+/** The absolute path a settings value that names a file or folder (not a command) gives: any relative one against `base`. */
+const pathNamed = (value: string, place: Place) => located(value, { ...place, beside: place.base }, true);
+
 /** A command as settings give it: with `args`, run directly; without, a shell line. */
 interface Command {
 	readonly command: string;
@@ -296,9 +319,12 @@ function commandsIn(value: unknown, out: Command[] = []): Command[] {
 const unquote = (word: string) => word.replace(/^(['"])(.*)\1$/, "$2");
 const NAME_LIKE = /^[\w.+@-]+$/;
 
-/** A command's program word and the other words that may name files (args that are paths; a shell line's path words). */
+/**
+ * A command's program word and the other words that may name files (args that are paths, never one with a space, which is
+ * text such as a shell line, not a file; a shell line's path words).
+ */
 function wordsOf({ command, args }: Command): { readonly program?: string; readonly paths: string[] } {
-	if (Array.isArray(args)) return { program: command, paths: strings(args).filter((arg) => /^(?:\/|~\/|\$)/.test(arg)) };
+	if (Array.isArray(args)) return { program: command, paths: strings(args).filter((arg) => /^(?:\/|~\/|\$)/.test(arg) && !/\s/.test(arg)) };
 	// A shell line: its first simple command, with leading assignments and `exec` dropped.
 	const words = (command.split(/[;&|<>`\n]|\$\(/)[0] ?? "").trim().split(/\s+/).map(unquote).filter((word) => word !== "" && word !== "exec" && !/^[A-Za-z_]\w*=/.test(word));
 	const [first, ...rest] = words;
@@ -309,8 +335,7 @@ function wordsOf({ command, args }: Command): { readonly program?: string; reado
 function programNames(value: unknown): string[] {
 	return unique(
 		commandsIn(value).flatMap((command) => {
-			const { program, paths } = wordsOf(command);
-			const name = basename(program ?? paths[0] ?? "");
+			const name = basename(wordsOf(command).program ?? "");
 			return NAME_LIKE.test(name) ? [name] : [];
 		}),
 	);
@@ -392,21 +417,26 @@ function entriesOf(source: SettingsSource, reader: Reader): [string, SettingsEnt
 	if (kind === "watched") return [];
 	if (kind === "plugin") {
 		if (!isFolder(path)) return [];
-		const files: Table = {};
-		for (const file of pluginFiles(path, reader)) {
-			const got = reader.file(file);
-			if (got.state !== "absent") files[relative(path, file)] = got.state === "file" ? { link: got.link ?? null, digest: digestOf(got) } : UNREADABLE;
-		}
+		// Own keys whatever a file is called (a file named __proto__ too).
+		const files = Object.fromEntries(
+			pluginParts(path, reader).files.flatMap((file) => {
+				const got = reader.file(file);
+				return got.state === "absent" ? [] : [[relative(path, file), got.state === "file" ? { link: got.link ?? null, digest: digestOf(got) } : UNREADABLE]];
+			}),
+		);
 		const install = installed(source, reader);
 		return [[key, { fingerprint: fingerprintOf({ ...install, files }), summary: [install === undefined ? "plugin" : `Claude Code plugin "${safeText(install.name)}"`, where] }]];
 	}
 	const got = reader.file(path, kind === "program" ? PROGRAM_MAX : SETTINGS_MAX);
-	if (got.state === "absent" || (kind === "program" && got.state !== "file")) return [];
+	// A program that isn't there, or is no plain file, runs nothing; one that can't be read is listed.
+	if (got.state === "absent" || (kind === "program" && got.state === "other")) return [];
 	if (got.state !== "file") return [[key, { fingerprint: UNREADABLE, summary: ["can't read", where] }]];
 	const whole = (summary: string[]): [string, SettingsEntry][] => [[key, { fingerprint: fingerprintOf({ link: got.link ?? null, digest: digestOf(got) }), summary }]];
+	const label = kind === "config-keys" && path.endsWith(".json") ? "Grok settings" : LABEL[kind];
+	if (got.big !== undefined && kind !== "program") return whole([label, `${where} (too large)`]);
 	const data = reader.data(path);
 	if (KEYED.has(kind)) {
-		if (data === undefined) return whole([kind === "config-keys" && path.endsWith(".json") ? "Grok settings" : LABEL[kind], `${where} (not valid ${path.endsWith(".toml") ? "TOML" : "JSON"})`]);
+		if (data === undefined) return whole([label, `${where} (not valid ${path.endsWith(".toml") ? "TOML" : "JSON"})`]);
 		return itemsOf(source, data).map((item) => [`${key}\0${item.id}`, { fingerprint: fingerprintOf(item.value), summary: [item.what, whereOf(source)] }]);
 	}
 	if (kind === "hook-file" || kind === "compat-hooks") return whole([LABEL[kind], `${where}${hooksDetail(data?.hooks)}`]);
@@ -417,17 +447,20 @@ function entriesOf(source: SettingsSource, reader: Reader): [string, SettingsEnt
 function commandsOf(source: SettingsSource, reader: Reader): Command[] {
 	const { kind, path } = source;
 	if (kind === "agent") return frontMatterCommands(reader.text(path));
-	if (kind === "plugin") return pluginFiles(path, reader).flatMap((file) => (file.endsWith(".md") ? frontMatterCommands(reader.text(file)) : commandsIn(reader.data(file))));
+	if (kind === "plugin") return pluginParts(path, reader).files.flatMap((file) => (file.endsWith(".md") ? frontMatterCommands(reader.text(file)) : commandsIn(reader.data(file))));
 	if (["hook-file", "compat-hooks", "org-config", "lsp"].includes(kind)) return commandsIn(reader.data(path));
 	if (!KEYED.has(kind)) return [];
 	const data = reader.data(path);
 	return data === undefined ? [] : commandsIn(itemsOf(source, data).map((item) => item.value));
 }
 
+/** Whether `outer` is `inner` or a folder above it. */
+const covers = (outer: string, inner: string) => inner === outer || inner.startsWith(outer.endsWith(sep) ? outer : `${outer}${sep}`);
+
 /**
  * The project's folders: from the git root (a `.git` folder or file) down to the session folder; the session folder alone
- * outside a repository, or when the root is /, or the home or temp folder or a parent of one (Grok reads only the launch
- * folder there).
+ * outside a repository, or when the root is /, or home or a parent of it (Grok reads only the launch folder there). A root
+ * at or above the temp folder still counts (over-cover).
  */
 function projectFolders(folder: string, home: string): string[] {
 	let root: string | undefined;
@@ -439,8 +472,7 @@ function projectFolders(folder: string, home: string): string[] {
 			if (dirname(dir) === dir) break;
 		}
 	}
-	const covers = (outer: string, inner: string) => inner === outer || inner.startsWith(outer.endsWith(sep) ? outer : `${outer}${sep}`);
-	if (root === undefined || dirname(root) === root || covers(root, home) || covers(root, realish(tmpdir()))) return [folder];
+	if (root === undefined || dirname(root) === root || covers(root, home)) return [folder];
 	const folders = [folder];
 	for (let dir = folder; dir !== root; dir = dirname(dir)) folders.unshift(dirname(dir));
 	return folders;
@@ -449,16 +481,19 @@ function projectFolders(folder: string, home: string): string[] {
 /** The plugin names a config's [plugins].enabled gives (a full ID's last part). */
 const enabledIn = (config: Table | undefined) => strings(at(config, "plugins.enabled")).map((name) => name.split("/").pop() ?? name);
 
-/** What a config names (notes, row 27): [plugins].paths folders, and (Grok's own config) the agent.definition file. */
+/**
+ * What a config names (notes, row 27): [plugins].paths folders, and (Grok's own config) the agent.definition file; a
+ * relative path, a bare name too, against the config's folder.
+ */
 function namedBy(found: Found, scope: Scope, config: string, home: string): void {
 	const data = found.reader.data(config);
 	const place = { base: dirname(config), home };
 	for (const named of strings(at(data, "plugins.paths"))) {
-		const root = located(named, place);
+		const root = pathNamed(named, place);
 		if (root !== undefined) found.plugin(scope, root);
 	}
 	const definition = scope === "global" ? at(data, "agent.definition") : undefined;
-	const agent = typeof definition === "string" ? located(definition, place) : undefined;
+	const agent = typeof definition === "string" ? pathNamed(definition, place) : undefined;
 	if (agent !== undefined) found.add(scope, "agent", agent);
 }
 
@@ -470,10 +505,12 @@ function discover(env: NodeJS.ProcessEnv, project: string | undefined, reader: R
 	const g = (name: string) => join(grok, name);
 	found.folder("global", "hook-file", g("hooks"), ".json");
 	found.add("global", "hook-paths", g("hooks-paths"));
+	// Absolute lines (Grok ignores relative ones); a ~/ line is taken against HOME (over-cover).
 	for (const line of (reader.text(g("hooks-paths")) ?? "").split("\n").map((text) => text.trim())) {
-		if (!isAbsolute(line)) continue;
-		if (isFolder(line)) found.folder("global", "hook-file", line, ".json");
-		else found.add("global", "hook-file", line);
+		const path = line.startsWith("~/") ? join(home, line.slice(2)) : isAbsolute(line) ? line : undefined;
+		if (path === undefined) continue;
+		if (isFolder(path)) found.folder("global", "hook-file", path, ".json");
+		else found.add("global", "hook-file", path);
 	}
 	found.add("global", "config-keys", g("config.toml"));
 	for (const name of ["managed_config.toml", "requirements.toml"]) found.add("global", "org-config", g(name));
@@ -491,10 +528,9 @@ function discover(env: NodeJS.ProcessEnv, project: string | undefined, reader: R
 	const plugins = join(claude, "plugins");
 	const list = join(plugins, "installed_plugins.json");
 	found.add("global", "watched", list);
-	const [user, local] = settings.map((file) => own(reader.data(file), "enabledPlugins"));
+	// Every installed plugin, whatever enabledPlugins says (it is read from more files than Grok was seen to use: over-cover).
 	const installedPlugins = own(reader.data(list), "plugins");
 	for (const [name, installs] of Object.entries(isTable(installedPlugins) ? installedPlugins : {})) {
-		if ((own(local, name) ?? own(user, name)) === false) continue;
 		[installs].flat().forEach((install, index) => {
 			const root = own(install, "installPath");
 			if (typeof root === "string" && isAbsolute(root)) found.plugin("global", root, `${reader.real(list)}\0${name}\0${index}`);
@@ -512,8 +548,11 @@ function discover(env: NodeJS.ProcessEnv, project: string | undefined, reader: R
 	if (project !== undefined) {
 		const given = resolve(project);
 		folder = reader.real(given);
-		const folders = projectFolders(folder, reader.real(home));
+		const realHome = reader.real(home);
+		const folders = projectFolders(folder, realHome);
 		workspace = folders[0];
+		// The folders above the session folder, below home and /: a .git made or removed in one changes the project's folders.
+		for (let dir = dirname(folder); dirname(dir) !== dir && !covers(dir, realHome); dir = dirname(dir)) found.add("project", "watched", dir);
 		for (const level of folders) {
 			const config = join(level, ".grok", "config.toml");
 			found.folder("project", "hook-file", join(level, ".grok", "hooks"), ".json");
@@ -534,10 +573,13 @@ function discover(env: NodeJS.ProcessEnv, project: string | undefined, reader: R
 		const claudeJson = join(home, ".claude.json");
 		found.add("project", "mcp-json", claudeJson, [join(reader.real(dirname(claudeJson)), basename(claudeJson)), ...unique([given, folder])].join("\0"));
 	}
-	// Claude Code folder plugins that a Grok config's [plugins].enabled names, by folder or manifest name.
+	// Claude Code folder plugins that a Grok config's [plugins].enabled names, by folder or manifest name; every folder's
+	// manifests are watched, as a new name can enable one.
 	found.add("global", "watched", plugins);
 	for (const root of foldersIn(plugins)) {
-		const names = [basename(root), ...MANIFESTS.flatMap((manifest) => strings(at(reader.data(join(root, manifest)), "name")))];
+		const manifests = MANIFESTS.map((manifest) => join(root, manifest));
+		for (const manifest of manifests) found.add("global", "watched", manifest);
+		const names = [basename(root), ...manifests.flatMap((manifest) => strings(at(reader.data(manifest), "name")))];
 		const scope = enabled.find(([, list]) => list.some((name) => names.includes(name)))?.[0];
 		if (scope !== undefined) found.plugin(scope, root);
 	}
@@ -672,34 +714,44 @@ export function readSettingsRecord(dataDir: string): SettingsRecord | undefined 
 const writeRecord = (dataDir: string, record: SettingsRecord) => writePrivate(join(dataDir, RECORD), `${JSON.stringify(record, null, "\t")}\n`);
 const scoped = (snapshot: SettingsSnapshot, scope: Scope): SettingsSnapshot => Object.fromEntries(Object.entries(snapshot).filter(([key]) => key.startsWith(`${scope} `)));
 
+/** Inside ShownSettings: Grok's folder's real path, the session folder's (none: global only), and the entries compared. */
+type Shown = ShownSettings & { readonly grok: string; readonly folder?: string; readonly global: SettingsSnapshot; readonly project: SettingsSnapshot };
+const shownOf = (shown: Omit<Shown, typeof shownBrand>) => shown as Shown;
+
 /**
- * Grok's settings now against the record: `first` when this Grok folder has none (one line per source with content);
- * else the changes against its global entries plus `project`'s (none recorded: nothing approved there). A record that
- * can't be read is a change, with an empty `approvedAt`.
+ * Grok's settings now against the record. `first` only when there is no record file at all (one line per source with
+ * content). Otherwise the changes against this Grok folder's global entries plus `project`'s (a project with none
+ * recorded: nothing approved there), with `record` saying what they were compared with: `ok`, this folder's approval of
+ * `approvedAt`; `new-folder`, a record with no entry for this Grok folder (a moved GROK_HOME), compared with nothing;
+ * `unreadable`, a record that can't be read (its first line says so), compared with nothing. Neither of the last two is
+ * ever `first`, which defaults to yes; their `approvedAt` is "".
  */
 export function checkGrokSettings(dataDir: string, env: NodeJS.ProcessEnv, project: string | undefined): SettingsCheck {
 	const reader = new Reader();
 	const found = discover(env, project, reader);
 	const now = snapshotWith(found.sources, reader);
+	const shown = shownOf({ grok: found.grok, ...(found.folder === undefined ? {} : { folder: found.folder }), global: scoped(now, "global"), project: scoped(now, "project") });
 	const record = readSettingsRecord(dataDir);
-	// A record that can't be read is never a first run (which defaults to yes): every source counts as new.
-	if (record !== undefined && "unreadable" in record) return { state: "changed", approvedAt: "", changes: [{ change: "changed", line: `changed  ${record.unreadable}` }, ...compareSettings({}, now)] };
-	const approved = record !== undefined && Object.hasOwn(record.grok, found.grok) ? record.grok[found.grok] : undefined;
-	if (approved === undefined) return { state: "first", lines: firstLines(now) };
-	const projectEntries = found.folder !== undefined && Object.hasOwn(approved.projects, found.folder) ? approved.projects[found.folder] : undefined;
-	const changes = compareSettings({ ...approved.global, ...projectEntries }, now);
-	return changes.length === 0 ? { state: "unchanged" } : { state: "changed", approvedAt: approved.approvedAt, changes };
+	if (record === undefined) return { state: "first", lines: firstLines(now), shown };
+	if ("unreadable" in record) return { state: "changed", record: "unreadable", approvedAt: "", changes: [{ change: "changed", line: `changed  ${record.unreadable}` }, ...compareSettings({}, now)], shown };
+	const approved = Object.hasOwn(record.grok, found.grok) ? record.grok[found.grok] : undefined;
+	const projectEntries = approved !== undefined && found.folder !== undefined && Object.hasOwn(approved.projects, found.folder) ? approved.projects[found.folder] : undefined;
+	const changes = compareSettings({ ...approved?.global, ...projectEntries }, now);
+	if (changes.length === 0) return { state: "unchanged", shown };
+	return approved === undefined ? { state: "changed", record: "new-folder", approvedAt: "", changes, shown } : { state: "changed", record: "ok", approvedAt: approved.approvedAt, changes, shown };
 }
 
-/** Records Grok's settings now as approved: the global entries, and `project`'s; other projects' entries stay. */
-export function approveGrokSettings(dataDir: string, env: NodeJS.ProcessEnv, project: string | undefined, now = new Date()): void {
-	const reader = new Reader();
-	const found = discover(env, project, reader);
-	const snapshot = snapshotWith(found.sources, reader);
+/**
+ * Records what a check showed as approved (not what is on disk by now): its Grok folder's global entries, and its session
+ * folder's when it had one; other projects' entries stay. A record that can't be read is replaced.
+ */
+export function approveGrokSettings(dataDir: string, shown: ShownSettings, now = new Date()): void {
+	const { grok: key, folder, global, project } = shown as Shown;
 	const read = readSettingsRecord(dataDir);
 	const grok = read === undefined || "unreadable" in read ? {} : read.grok;
-	const projects = { ...grok[found.grok]?.projects, ...(found.folder === undefined ? {} : { [found.folder]: scoped(snapshot, "project") }) };
-	writeRecord(dataDir, { version: 1, grok: { ...grok, [found.grok]: { approvedAt: now.toISOString(), global: scoped(snapshot, "global"), projects } } });
+	const kept = Object.hasOwn(grok, key) ? grok[key]?.projects : undefined;
+	const projects = { ...kept, ...(folder === undefined ? {} : { [folder]: project }) };
+	writeRecord(dataDir, { version: 1, grok: { ...grok, [key]: { approvedAt: now.toISOString(), global, projects } } });
 }
 
 /** Whether an entry key is the source's (the source's own, or one of its keys' or servers'). */
@@ -710,7 +762,9 @@ const sameEntries = (a: SettingsSnapshot, b: SettingsSnapshot) => JSON.stringify
 /**
  * Runs Orrery's own `write` to Grok's settings, then moves the record's entries for the global sources `keys` to what it
  * left, each only when it matched the record before (Orrery never approves a change it didn't make). A write that throws
- * moves nothing; with no record for this Grok folder there is nothing to move.
+ * moves nothing; with no record for this Grok folder there is nothing to move. `write` must be only the file writes
+ * Orrery makes to those sources (no downloads, waits or other work): anything written to them while it runs, by
+ * whatever process, is taken into the record.
  */
 export function keepInStep(dataDir: string, env: NodeJS.ProcessEnv, keys: readonly string[], write: () => void): void {
 	const wanted = new Set(keys);

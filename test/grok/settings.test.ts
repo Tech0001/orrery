@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { addGrokConfig, grokHookFile } from "../../src/grok/install.ts";
@@ -38,7 +38,8 @@ function scratch(options: { orrery?: boolean } = {}) {
 		writeFileSync(path, text);
 	};
 	const check = (folder: string | undefined = project): SettingsCheck => checkGrokSettings(data, env, folder);
-	const approve = (folder: string | undefined = project) => approveGrokSettings(data, env, folder);
+	/** Approves what a check shows now (the person saying yes to the list just shown). */
+	const approve = (folder: string | undefined = project) => approveGrokSettings(data, check(folder).shown);
 	/** The check's lines: the changes, or the first run's list. */
 	const lines = (folder: string | undefined = project): string[] => {
 		const now = check(folder);
@@ -56,10 +57,11 @@ describe("Grok settings record and compare", () => {
 		const check = t.check();
 		expect(check.state).toBe("first");
 		// One line per source with content: Orrery's hook file, its config tables, the language servers, and the program
-		// the hook file runs. The empty agents folder and the language server's missing program have none.
+		// the hook file runs. The empty agents folder and the language server's missing program have none. The status
+		// line's shell line starts with `[`, no program name, so it names none (an argument's name is never used).
 		expect(check.state === "first" ? check.lines : []).toEqual([
 			`hook file ${t.hooks} (SessionStart, UserPromptSubmit, PreToolUse, Stop, StopCancelled, SessionEnd; runs sh)`,
-			`MCP server "orrery" (runs orrery), status line (runs orrery) in ${t.config}`,
+			`MCP server "orrery" (runs orrery), status line in ${t.config}`,
 			`language servers in ${join(t.grok, "lsp.json")}`,
 			"program /bin/sh",
 		]);
@@ -68,8 +70,8 @@ describe("Grok settings record and compare", () => {
 	it("approve then unchanged", () => {
 		const t = scratch();
 		t.approve();
-		expect(t.check()).toEqual({ state: "unchanged" });
-		expect(t.check(undefined)).toEqual({ state: "unchanged" });
+		expect(t.check().state).toBe("unchanged");
+		expect(t.check(undefined).state).toBe("unchanged");
 		const record = t.record();
 		expect(record.version).toBe(1);
 		const [entry] = Object.values(record.grok);
@@ -82,7 +84,7 @@ describe("Grok settings record and compare", () => {
 		// Grok loads only the hooks folder's own *.json files.
 		t.write(join(t.grok, "hooks", "nested", "y.json"), hookFile("/bin/sh", ["-c", "true"]));
 		t.write(join(t.grok, "hooks", "y.json.bak"), hookFile("/bin/sh", ["-c", "true"]));
-		expect(t.check()).toEqual({ state: "unchanged" });
+		expect(t.check().state).toBe("unchanged");
 		t.write(join(t.grok, "hooks", "x.json"), hookFile("/bin/sh", ["-c", "true"]));
 		const check = t.check();
 		expect(check.state).toBe("changed");
@@ -124,7 +126,7 @@ describe("Grok settings record and compare", () => {
 		const t = scratch();
 		t.approve();
 		t.write(t.config, orreryConfig(t.orrery, 'model = "grok-4-fast"\n\n[ui]\ntheme = "dark"\n'));
-		expect(t.check()).toEqual({ state: "unchanged" });
+		expect(t.check().state).toBe("unchanged");
 	});
 
 	it("orrery's tables count", () => {
@@ -138,7 +140,7 @@ describe("Grok settings record and compare", () => {
 		t.write(t.config, withoutServer);
 		expect(t.lines()).toEqual([`removed  MCP server "orrery" (runs orrery) in ${t.config}`]);
 		t.write(t.config, original);
-		expect(t.check()).toEqual({ state: "unchanged" });
+		expect(t.check().state).toBe("unchanged");
 		t.write(t.config, original.replace('args = ["mcp", "--tool", "grok"]', 'args = ["mcp", "--tool", "grok"]\nenabled = false'));
 		expect(t.lines()).toEqual([`changed  MCP server "orrery" (runs orrery) in ${t.config}`]);
 		t.write(t.config, `disabled_mcp_servers = ["orrery"]\n${original}`);
@@ -164,9 +166,9 @@ describe("Grok settings record and compare", () => {
 		const before = Object.values(t.record().grok)[0]?.projects;
 		t.write(join(t.project, ".grok", "hooks", "p.json"), hookFile("/bin/sh", ["-c", "true"]));
 		expect(t.lines()).toEqual([`added    hook file ${join(t.project, ".grok", "hooks", "p.json")} (Stop; runs sh)`]);
-		expect(t.check(other)).toEqual({ state: "unchanged" });
+		expect(t.check(other).state).toBe("unchanged");
 		t.approve();
-		expect(t.check()).toEqual({ state: "unchanged" });
+		expect(t.check().state).toBe("unchanged");
 		const after = Object.values(t.record().grok)[0]?.projects ?? {};
 		expect(Object.keys(after)).toHaveLength(2);
 		const otherKey = Object.keys(after).find((key) => key.endsWith("other")) as string;
@@ -189,10 +191,8 @@ describe("Grok settings record and compare", () => {
 		t.write(script, "#!/bin/sh\necho two\n");
 		expect(t.lines()).toEqual([`changed  program ${script}`]);
 		t.approve();
-		// Over 1 MiB: its size and time only. The same size and time with other bytes reads as unchanged.
-		t.write(big, Buffer.alloc(2 * 1024 * 1024, 2));
-		utimesSync(big, 1_700_000_000, 1_700_000_000);
-		expect(t.check()).toEqual({ state: "unchanged" });
+		// Over 1 MiB: its size, times and inode, never its bytes. A new time is a change.
+		expect(t.check().state).toBe("unchanged");
 		utimesSync(big, 1_700_000_100, 1_700_000_100);
 		expect(t.lines()).toEqual([`changed  program ${big}`]);
 	});
@@ -215,7 +215,7 @@ describe("Grok settings record and compare", () => {
 		const t = scratch();
 		t.write(t.config, "[mcp_servers.x\ncommand = 1\n");
 		t.approve();
-		expect(t.check()).toEqual({ state: "unchanged" });
+		expect(t.check().state).toBe("unchanged");
 		t.write(t.config, "[mcp_servers.x\ncommand = 2\n");
 		expect(t.lines()).toEqual([`changed  Grok config ${t.config} (not valid TOML)`]);
 	});
@@ -241,7 +241,7 @@ describe("Grok settings record and compare", () => {
 		// (a) The record matches: Orrery's own write moves it.
 		t.approve();
 		keepInStep(t.data, t.env, [key], () => writeFileSync(t.hooks, grokHookFile(other)));
-		expect(t.check()).toEqual({ state: "unchanged" });
+		expect(t.check().state).toBe("unchanged");
 		// (b) An agent changed the file first: Orrery's write leaves the record, so the change still shows.
 		writeFileSync(t.hooks, hookFile("/bin/sh", ["-c", "true"]));
 		keepInStep(t.data, t.env, [key], () => writeFileSync(t.hooks, grokHookFile(t.orrery)));
@@ -276,9 +276,56 @@ describe("Grok settings record and compare", () => {
 		expect(readSettingsRecord(t.data)).toEqual({ unreadable: `can't read ${join(t.data, "grok-settings.json")}` });
 		const check = t.check();
 		expect(check.state).toBe("changed");
+		expect(check.state === "changed" ? check.record : "").toBe("unreadable");
+		expect(check.state === "changed" ? check.approvedAt : "x").toBe("");
 		expect(check.state === "changed" ? check.changes[0]?.line : "").toBe(`changed  can't read ${join(t.data, "grok-settings.json")}`);
 		t.approve();
-		expect(t.check()).toEqual({ state: "unchanged" });
+		expect(t.check().state).toBe("unchanged");
+	});
+
+	it("approval saves what the check showed, not what is there by then", () => {
+		const t = scratch();
+		const shown = t.check().shown;
+		expect(shown).toBeDefined();
+		const planted = join(t.grok, "hooks", "planted.json");
+		t.write(planted, hookFile("/bin/sh", ["-c", "true"]));
+		approveGrokSettings(t.data, shown);
+		expect(t.lines()).toEqual([`added    hook file ${planted} (Stop; runs sh)`]);
+		// A check with no session folder approves the global entries and keeps every project's.
+		t.approve();
+		const projects = Object.values(t.record().grok)[0]?.projects;
+		expect(Object.keys(projects ?? {})).toEqual([t.project]);
+		approveGrokSettings(t.data, checkGrokSettings(t.data, t.env, undefined).shown);
+		expect(Object.values(t.record().grok)[0]?.projects).toEqual(projects);
+		expect(t.check().state).toBe("unchanged");
+	});
+
+	it("a Grok folder the record has no entry for is a change, never a first run", () => {
+		const t = scratch();
+		const link = join(t.dir, "grok-link");
+		symlinkSync(t.grok, link);
+		t.env.GROK_HOME = link;
+		t.approve();
+		expect(t.check().state).toBe("unchanged");
+		// The link re-pointed at a copy of the folder with one more hook.
+		const copy = join(t.dir, "grok-copy");
+		cpSync(t.grok, copy, { recursive: true });
+		const planted = join(copy, "hooks", "planted.json");
+		writeFileSync(planted, hookFile("/bin/sh", ["-c", "true"]));
+		rmSync(link);
+		symlinkSync(copy, link);
+		const check = t.check();
+		expect(check.state).toBe("changed");
+		expect(check.state === "changed" ? check.record : "").toBe("new-folder");
+		expect(check.state === "changed" ? check.approvedAt : "x").toBe("");
+		// Named as Grok's folder is given (through the link); every source is new to the record.
+		expect(check.state === "changed" ? check.changes : []).toContainEqual({ change: "added", line: `added    hook file ${join(link, "hooks", "planted.json")} (Stop; runs sh)` });
+		expect(check.state === "changed" ? check.changes.every((change) => change.change === "added") : false).toBe(true);
+		// A record approved in this folder: a change against it says "ok" and when.
+		t.approve();
+		t.write(join(copy, "hooks", "more.json"), hookFile("/bin/sh", ["-c", "true"]));
+		const later = t.check();
+		expect(later.state === "changed" ? [later.record, later.approvedAt !== ""] : []).toEqual(["ok", true]);
 	});
 
 	it("twenty lines then more", () => {
@@ -325,7 +372,7 @@ describe("Grok settings sources", () => {
 		expect(t.lines()).toEqual([`added    [[experiments]] (MCP server "x") in ${t.config}`, `added    program ${tool}`]);
 	});
 
-	it("a Claude Code plugin's hook file counts; one switched off doesn't; its content counts, not where it is installed", () => {
+	it("a Claude Code plugin's hook file counts; its content counts, not where it is installed", () => {
 		const t = scratch();
 		const plugins = join(t.home, ".claude", "plugins");
 		const plugin = (name: string, version: string) => join(plugins, "cache", "mkt", name, version);
@@ -338,18 +385,16 @@ describe("Grok settings sources", () => {
 		installed({ "on@mkt": plugin("on", "1.0.0"), "off@mkt": plugin("off", "1.0.0") });
 		t.write(join(t.home, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "on@mkt": true, "off@mkt": false }, theme: "dark" }));
 		t.approve();
-		t.write(join(plugin("off", "1.0.0"), "hooks", "hooks.json"), hookFile("/bin/sh", ["-c", "true"]));
-		expect(t.check()).toEqual({ state: "unchanged" });
 		t.write(join(plugin("on", "1.0.0"), "hooks", "hooks.json"), hookFile("/bin/sh", ["-c", "true"]));
 		expect(t.lines()).toEqual([`changed  Claude Code plugin "on@mkt" ${plugin("on", "1.0.0")}`]);
 		t.approve();
 		// Reinstalled elsewhere with the same files, and new install dates: no change.
 		for (const file of [join(".claude-plugin", "plugin.json"), join("hooks", "hooks.json")]) t.write(join(plugin("on", "again"), file), readFileSync(join(plugin("on", "1.0.0"), file)));
 		installed({ "on@mkt": plugin("on", "again"), "off@mkt": plugin("off", "1.0.0") });
-		expect(t.check()).toEqual({ state: "unchanged" });
+		expect(t.check().state).toBe("unchanged");
 		// A folder plugin counts once Grok's [plugins].enabled names it.
 		t.write(join(plugins, "dirplug", "hooks", "hooks.json"), hookFile("/bin/sh", ["-c", "true"]));
-		expect(t.check()).toEqual({ state: "unchanged" });
+		expect(t.check().state).toBe("unchanged");
 		t.write(t.config, orreryConfig(t.orrery, '[plugins]\nenabled = ["dirplug"]\n'));
 		expect(t.lines()).toEqual([`added    [plugins] in ${t.config}`, `added    plugin ${join(plugins, "dirplug")}`]);
 	});
@@ -386,10 +431,127 @@ describe("Grok settings sources", () => {
 		for (const folder of [t.project, other]) t.write(join(folder, "check.sh"), "#!/bin/sh\n");
 		t.approve();
 		t.approve(other);
-		expect(t.check()).toEqual({ state: "unchanged" });
+		expect(t.check().state).toBe("unchanged");
 		t.write(join(other, "check.sh"), "#!/bin/sh\necho changed\n");
-		expect(t.check()).toEqual({ state: "unchanged" });
+		expect(t.check().state).toBe("unchanged");
 		expect(t.lines(other)).toEqual([`changed  program ${join(other, "check.sh")}`]);
+	});
+
+	it.skipIf(process.getuid?.() === 0)("a program that can't be read is listed as can't read, not removed", () => {
+		const t = scratch();
+		const script = join(t.dir, "scratch", "x.sh");
+		t.write(script, "#!/bin/sh\necho one\n");
+		t.write(join(t.grok, "hooks", "y.json"), hookFile("/bin/sh", [script]));
+		t.approve();
+		rmSync(script);
+		t.write(script, "#!/bin/sh\necho two\n");
+		chmodSync(script, 0o111);
+		try {
+			expect(t.lines()).toEqual([`changed  can't read ${script}`]);
+		} finally {
+			chmodSync(script, 0o600);
+		}
+	});
+
+	it("a Claude Code plugin counts whatever enabledPlugins says", () => {
+		const t = scratch();
+		const plugins = join(t.home, ".claude", "plugins");
+		const root = join(plugins, "cache", "mkt", "x", "1.0.0");
+		t.write(join(root, "hooks", "hooks.json"), hookFile("/bin/sh", ["-c", "true"]));
+		t.write(join(plugins, "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "x@mkt": [{ scope: "user", installPath: root, version: "1.0.0" }] } }));
+		// Off at home, on in the project: either way it is watched.
+		t.write(join(t.home, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "x@mkt": false } }));
+		t.write(join(t.project, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "x@mkt": true } }));
+		t.approve();
+		t.write(join(root, "hooks", "hooks.json"), hookFile("/bin/sh", ["-c", "false"]));
+		expect(t.lines()).toEqual([`changed  Claude Code plugin "x@mkt" ${root}`]);
+	});
+
+	it("paths that settings name resolve against their file's folder, bare names too", () => {
+		const t = scratch();
+		// [plugins].paths and agent.definition: against the config's folder.
+		t.write(join(t.grok, "myplug", "hooks", "hooks.json"), hookFile("/bin/sh", ["-c", "true"]));
+		t.write(join(t.grok, "agent.md"), "---\nname: a\n---\nBody\n");
+		t.write(t.config, orreryConfig(t.orrery, '[plugins]\npaths = ["myplug"]\n\n[agent]\ndefinition = "agent.md"\n'));
+		// A manifest's "hooks": against the plugin's folder.
+		const plugin = join(t.grok, "plugins", "gp");
+		t.write(join(plugin, "plugin.json"), JSON.stringify({ name: "gp", hooks: "custom.json" }));
+		t.write(join(plugin, "custom.json"), hookFile("/bin/sh", ["-c", "true"]));
+		// A ~/ line in hooks-paths: against HOME.
+		t.write(join(t.home, "hp", "h.json"), hookFile("/bin/sh", ["-c", "true"]));
+		t.write(join(t.grok, "hooks-paths"), "~/hp/h.json\n");
+		t.approve();
+		t.write(join(t.grok, "myplug", "hooks", "hooks.json"), hookFile("/bin/sh", ["-c", "false"]));
+		t.write(join(t.grok, "agent.md"), "---\nname: a\n---\nOther\n");
+		t.write(join(plugin, "custom.json"), hookFile("/bin/sh", ["-c", "false"]));
+		t.write(join(t.home, "hp", "h.json"), hookFile("/bin/sh", ["-c", "false"]));
+		expect(t.lines().sort()).toEqual([`changed  agent ${join(t.grok, "agent.md")}`, `changed  hook file ${join(t.home, "hp", "h.json")} (Stop; runs sh)`, `changed  plugin ${join(t.grok, "myplug")}`, `changed  plugin ${plugin}`].sort());
+	});
+
+	it("an argument's text never becomes a source", () => {
+		const t = scratch();
+		const probe = "sk-" + "proj-PROBE";
+		t.write(join(t.grok, "hooks", "p.json"), hookFile("/bin/sh", ["-c", `/bin/echo ${probe}`]));
+		t.write(t.config, `${readFileSync(t.config, "utf8")}\n[mcp_servers.p]\ncommand = "/bin/sh"\nargs = ["-c", "/bin/echo ${probe}"]\n`);
+		const sources = grokSettingsSources(t.env, t.project);
+		expect(sources.filter((source) => source.key.includes(probe) || source.path.includes(probe))).toEqual([]);
+		expect(sources.some((source) => source.kind === "program" && source.path === "/bin/sh")).toBe(true);
+	});
+
+	it("a big program is fingerprinted by size, times and inode: other bytes with the old mtime still count", () => {
+		const t = scratch();
+		const big = join(t.dir, "scratch", "big.bin");
+		t.write(big, Buffer.alloc(2 * 1024 * 1024, 1));
+		utimesSync(big, 1_700_000_000, 1_700_000_000);
+		t.write(join(t.grok, "hooks", "y.json"), hookFile("/bin/sh", [big]));
+		t.approve();
+		t.write(big, Buffer.alloc(2 * 1024 * 1024, 2));
+		utimesSync(big, 1_700_000_000, 1_700_000_000);
+		expect(t.lines()).toEqual([`changed  program ${big}`]);
+	});
+
+	it("a settings file past the limit is too large, not invalid", () => {
+		const t = scratch();
+		// Sparse: past 64 MiB without the disk.
+		writeFileSync(t.config, "");
+		truncateSync(t.config, 65 * 1024 * 1024);
+		expect(t.lines()).toContain(`Grok config ${t.config} (too large)`);
+	});
+
+	it("the stamp sees what changes the source list", () => {
+		const t = scratch();
+		const named = join(t.grok, "plugins", "gp", "more");
+		mkdirSync(named, { recursive: true });
+		t.write(join(t.grok, "plugins", "gp", "plugin.json"), JSON.stringify({ name: "gp", agents: "./more" }));
+		const folderPlugin = join(t.home, ".claude", "plugins", "dirplug", ".claude-plugin", "plugin.json");
+		t.write(folderPlugin, JSON.stringify({ name: "dirplug" }));
+		const sources = grokSettingsSources(t.env, t.project);
+		let stamp = settingsStamp(sources);
+		const moved = () => {
+			const now = settingsStamp(sources);
+			const result = now !== stamp;
+			stamp = now;
+			return result;
+		};
+		// A .git above the session folder changes which folders are the project.
+		mkdirSync(join(dirname(t.project), ".git"));
+		expect(moved()).toBe(true);
+		// A new file in a folder a plugin manifest names.
+		t.write(join(named, "a.md"), "---\nname: a\n---\n");
+		expect(moved()).toBe(true);
+		// A Claude Code folder plugin's manifest, enabled or not.
+		t.write(folderPlugin, JSON.stringify({ name: "renamed-plugin" }));
+		expect(moved()).toBe(true);
+	});
+
+	it("a plugin file named __proto__ counts", () => {
+		const t = scratch();
+		const root = join(t.grok, "plugins", "gp");
+		t.write(join(root, "plugin.json"), JSON.stringify({ hooks: "./__proto__" }));
+		t.write(join(root, "__proto__"), hookFile("/bin/sh", ["-c", "true"]));
+		t.approve();
+		t.write(join(root, "__proto__"), hookFile("/bin/sh", ["-c", "false"]));
+		expect(t.lines()).toEqual([`changed  plugin ${root}`]);
 	});
 
 	it("session-folder-only rows read the session folder alone", () => {
@@ -408,7 +570,7 @@ describe("Grok settings sources", () => {
 		const check = t.check(session);
 		expect(check.state === "first" ? check.lines : []).toEqual([
 			`hook file ${t.hooks} (SessionStart, UserPromptSubmit, PreToolUse, Stop, StopCancelled, SessionEnd; runs sh)`,
-			`MCP server "orrery" (runs orrery), status line (runs orrery) in ${t.config}`,
+			`MCP server "orrery" (runs orrery), status line in ${t.config}`,
 			`MCP server "user" (runs echo) in ${join(t.home, ".claude.json")}`,
 			`MCP server "cursor-here" (runs echo) in ${join(session, ".cursor", "mcp.json")}`,
 			`language servers in ${join(session, ".grok", "lsp.json")}`,
@@ -419,6 +581,6 @@ describe("Grok settings sources", () => {
 		// Claude Code rewrites the rest of the file all the time: only the servers count.
 		t.approve(session);
 		t.write(join(t.home, ".claude.json"), JSON.stringify({ numStartups: 4, mcpServers: { user: { command: "/bin/echo" } }, projects: { [repo]: { mcpServers: {} }, [session]: { mcpServers: { here: { command: "/bin/echo" } }, lastCost: 1 } } }));
-		expect(t.check(session)).toEqual({ state: "unchanged" });
+		expect(t.check(session).state).toBe("unchanged");
 	});
 });
