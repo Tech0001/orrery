@@ -50,9 +50,11 @@ async function askWithDefault(question: string, defaultYes: boolean): Promise<bo
 
 /** `orrery tools [--json]`, `orrery tools install <pi|claude-code|omp> [--yes]`. It needs no config, so a new user can run it first. */
 async function toolsCommand(positionals: string[], values: { json?: boolean; yes?: boolean }): Promise<number> {
-	const { checkTools, probeOri, installSteps, wiringRoot, runInstall } = await import("../agent/tools.ts");
-	const tools = checkTools();
-	if (positionals[1] === "install") {
+	const [{ checkTools, probeOri, installSteps, wiringRoot, runInstall, rowDetail }, { settingsDataDir }] = await Promise.all([import("../agent/tools.ts"), import("../grok/settings-keys.ts")]);
+	const install = positionals[1] === "install";
+	// The list says whether Grok's settings are as approved (the record of the config Orrery runs with); installing doesn't look.
+	const tools = checkTools(install ? {} : { grokSettings: settingsDataDir(process.env) });
+	if (install) {
 		const id = required(positionals[2], "pi, claude-code or omp");
 		const check = tools.find((t) => t.id === id);
 		if (check === undefined || (id !== "pi" && id !== "claude-code" && id !== "omp")) throw new Error("tools install takes pi, claude-code or omp.");
@@ -83,7 +85,7 @@ async function toolsCommand(positionals: string[], values: { json?: boolean; yes
 		process.stdout.write(`${JSON.stringify({ tools }, null, 2)}\n`);
 		return 0;
 	}
-	for (const t of tools) process.stdout.write(`${t.label.padEnd(12)} ${(t.version ?? (t.path === undefined ? "not found" : "?")).padEnd(24)} ${t.wiring.padEnd(17)} ${t.detail}\n`);
+	for (const t of tools) process.stdout.write(`${t.label.padEnd(12)} ${(t.version ?? (t.path === undefined ? "not found" : "?")).padEnd(24)} ${t.wiring.padEnd(17)} ${rowDetail(t)}\n`);
 	return 0;
 }
 

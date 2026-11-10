@@ -79,7 +79,7 @@ describe("dialogs", () => {
 		expect(await typed.result).toBe("ab");
 	});
 
-	it("ConfirmModal takes y or n; MessageModal closes on Enter", async () => {
+	it("ConfirmModal takes y or n; MessageModal closes on Enter (true) or Esc (false), with its own hint when given", async () => {
 		const yes = new ConfirmModal("Go?");
 		yes.handleInput("y");
 		expect(await yes.result).toBe(true);
@@ -89,8 +89,12 @@ describe("dialogs", () => {
 		const message = new MessageModal("Done", "line one\nline two");
 		expect(message.render(40, 10, PLAIN).join("\n")).toContain("line two");
 		message.handleInput(ENTER);
-		await message.result;
+		expect(await message.result).toBe(true);
 		expect(message.done).toBe(true);
+		const list = new MessageModal("List", "one", "Enter to go on · Esc says no");
+		expect(list.render(40, 10, PLAIN).at(-1)).toContain("Enter to go on · Esc says no");
+		list.handleInput(ESC);
+		expect(await list.result).toBe(false);
 	});
 
 	it("ChatListModal marks several chats of one folder with space, refuses another folder's, and goes on with them", async () => {

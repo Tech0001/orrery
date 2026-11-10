@@ -153,7 +153,8 @@ function unwireOldGrok(env: NodeJS.ProcessEnv, version: string | undefined, left
  * `dataDir` (the config's; else the one of the config Orrery runs with).
  */
 async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: Runner; install: Runner }, confirm: Confirm, left: string[], unchecked: string[], emit: (line: string) => void, dataDir: string | undefined): Promise<void> {
-	const look = () => checkTools({ root: current, env, run: run.probe, ...(dataDir === undefined ? {} : { dataDir }) });
+	// Setup's lines say nothing of Grok's settings (the Tools page and orrery tools do): they aren't looked at here.
+	const look = () => checkTools({ root: current, env, run: run.probe });
 	let checks = look();
 	for (const id of ["pi", "claude-code", "omp", "grok"] as const) {
 		const check = checks.find((c) => c.id === id) as ToolCheck;

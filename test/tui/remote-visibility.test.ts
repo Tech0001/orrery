@@ -41,7 +41,7 @@ it.each([[false, false], [false, true], [true, false], [true, true]])("Tools sho
 	const tools = vi.fn(() => [{ id: "wrangler" as const, label: "wrangler", wiring: "none" as const, detail: "Cloudflare Worker tools", ...(found ? { path: "/bin/wrangler", version: "4.45.0" } : {}) }]);
 	const app = makeApp(fakeDeps({ loadConfig: () => config(cloudflare), tools }), [toolsPage]);
 	expect(screen(app).includes("wrangler")).toBe(found || cloudflare);
-	expect(tools).toHaveBeenCalledWith({ probeWrangler: true });
+	expect(tools).toHaveBeenCalledWith({ probeWrangler: true, grokSettings: true });
 	expect(toolsPage.count(app)).toBe(found || cloudflare ? 2 : 1);
 });
 

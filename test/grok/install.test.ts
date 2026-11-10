@@ -4,11 +4,12 @@ import { basename, dirname, join } from "node:path";
 import { parse } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 import { GROK_HOOK_EVENTS } from "../../src/grok/hooks.ts";
-import { checkTools, type ToolCheck } from "../../src/agent/tools.ts";
+import { checkTools, rowDetail, type ToolCheck } from "../../src/agent/tools.ts";
 import { addGrokConfig, grokConfigLacks, grokGuardSwitchedOff, grokHookFile, grokHooksInstalled, grokRecordingSwitchedOff, grokStatusCommand, grokSwitchesUnreadable, isOrreryHookFile, removeGrokConfig } from "../../src/grok/install.ts";
 import { approveGrokSettings, checkGrokSettings } from "../../src/grok/settings.ts";
 import { wireReport } from "../../src/install/wire.ts";
 import { cleanupScratch, fakeRun, grokScratch, tempDir } from "../install/support.ts";
+import { cliCommand } from "../claude/support.ts";
 
 afterEach(cleanupScratch);
 
@@ -109,7 +110,7 @@ describe("Grok's hook file", () => {
 		const declined = await wireReport(t.env, { run: fakeRun, confirm: async (what) => (asked.push(what), !what.startsWith("Grok: ")) });
 		expect(asked.filter((what) => what.startsWith("Grok"))).toEqual([replaceForeign]);
 		expect([readFileSync(hooks, "utf8"), asides(hooks), existsSync(config)]).toEqual([foreign, [], false]);
-		expect(declined.left).toEqual([`Grok (still wired to ${hooks} is not Orrery's hook file; Grok settings not approved yet; tested with Grok 1.0.70)`]);
+		expect(declined.left).toEqual([`Grok (still wired to ${hooks} is not Orrery's hook file; tested with Grok 1.0.70)`]);
 		// Confirmed: set aside under setAside's name, then Orrery's written.
 		asked.length = 0;
 		const first = await wireReport(t.env, { run: fakeRun, confirm: async (what) => (asked.push(what), true) });
@@ -206,19 +207,40 @@ describe("Grok's hook file", () => {
 		expect(grokSwitchesUnreadable(t.env)).toBe(disabled);
 	});
 
-	it("Grok's row says whether Grok's settings are the ones approved: not yet, changed since, or nothing when they are", async () => {
+	it("Grok's row says whether Grok's settings are the ones approved, when asked: not yet, changed since, or nothing when they are", async () => {
 		const t = grokScratch();
 		await wireReport(t.env, { run: fakeRun, confirm: async () => true });
-		const grok = () => checkTools({ root: t.current, env: t.env, run: fakeRun }).find((check) => check.id === "grok") as ToolCheck;
+		// The record is in the data folder given: here Orrery's home, as with no config.
+		const grok = (grokSettings: string | null = t.orreryHome) => checkTools({ root: t.current, env: t.env, run: fakeRun, ...(grokSettings === null ? {} : { grokSettings }) }).find((check) => check.id === "grok") as ToolCheck;
 		const hooks = join(t.grok, "hooks", "orrery.json");
-		expect(grok()).toMatchObject({ wiring: "installed", detail: `${hooks}; Grok settings not approved yet; tested with Grok 1.0.70` });
-		// The record is in the data folder of the config Orrery runs with: none here, so Orrery's home.
+		const detail = `${hooks}; tested with Grok 1.0.70`;
+		expect(grok()).toMatchObject({ wiring: "installed", detail, settings: "Grok settings not approved yet" });
 		approveGrokSettings(t.orreryHome, checkGrokSettings(t.orreryHome, t.env, undefined).shown);
-		expect(grok()).toMatchObject({ wiring: "installed", detail: `${hooks}; tested with Grok 1.0.70` });
+		expect(grok()).toEqual(expect.objectContaining({ wiring: "installed", detail }));
+		expect(grok().settings).toBeUndefined();
 		writeFileSync(join(t.grok, "hooks", "other.json"), '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/nowhere/x"}]}]}}\n');
-		expect(grok()).toMatchObject({ wiring: "installed", detail: `${hooks}; Grok settings changed since you approved them; tested with Grok 1.0.70` });
-		// A record given (the TUI's config's data folder) is the one read.
-		expect(checkTools({ root: t.current, env: t.env, run: fakeRun, dataDir: join(t.home, "elsewhere") }).find((check) => check.id === "grok")?.detail).toContain("Grok settings not approved yet");
+		expect(grok()).toMatchObject({ wiring: "installed", detail, settings: "Grok settings changed since you approved them" });
+		expect(rowDetail(grok())).toBe(`${detail}; Grok settings changed since you approved them`);
+		// Another data folder's record is that folder's; with none given, Grok's settings aren't looked at.
+		expect(grok(join(t.home, "elsewhere")).settings).toBe("Grok settings not approved yet");
+		expect(grok(null).settings).toBeUndefined();
+	});
+
+	it("Grok's settings words stay out of setup's lines; orrery tools shows them after the row's detail", async () => {
+		const t = grokScratch();
+		await wireReport(t.env, { run: fakeRun, confirm: async () => true });
+		const hooks = join(t.grok, "hooks", "orrery.json");
+		// No config: the record is in Orrery's home. Approved, then a hook file of someone else's: changed.
+		approveGrokSettings(t.orreryHome, checkGrokSettings(t.orreryHome, t.env, undefined).shown);
+		writeFileSync(join(t.grok, "hooks", "other.json"), '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/nowhere/x"}]}]}}\n');
+		const { lines, left } = await wireReport(t.env, { run: fakeRun, confirm: async () => true });
+		expect(left).toEqual([]);
+		expect(lines.filter((line) => line.startsWith("Grok: "))).toEqual([`Grok: already wired (${hooks}; tested with Grok 1.0.70)`]);
+		const c = cliCommand(["tools"]);
+		const tools = spawnSync(c.cmd, c.args, { env: t.env, encoding: "utf8", timeout: 20_000 });
+		expect(tools.status, tools.stderr).toBe(0);
+		// (The spawned CLI is this checkout, so it calls the wiring another Orrery's: the words follow whatever detail.)
+		expect(tools.stdout.split("\n").find((line) => line.startsWith("Grok "))).toMatch(/; tested with Grok 1\.0\.70; Grok settings changed since you approved them$/);
 	});
 
 	it("names the config tables of Orrery's that Grok's config lacks, none when it can't be read", () => {
@@ -295,7 +317,7 @@ describe("Grok's config entries", () => {
 		const was = { hooks: readFileSync(hooks, "utf8"), config: readFileSync(config, "utf8"), asides: asides(config), changed: statSync(config).mtimeMs, written: statSync(hooks).mtimeMs };
 		const { lines, left } = await wireReport(t.env, { run: fakeRun, confirm: async (what) => !what.startsWith("Connect Orrery to Grok") });
 		expect(left).toEqual([]);
-		expect(lines.filter((line) => line.startsWith("Grok: "))).toEqual([`Grok: already wired (${hooks}; Grok settings not approved yet; tested with Grok 1.0.70)`]);
+		expect(lines.filter((line) => line.startsWith("Grok: "))).toEqual([`Grok: already wired (${hooks}; tested with Grok 1.0.70)`]);
 		expect({ hooks: readFileSync(hooks, "utf8"), config: readFileSync(config, "utf8"), asides: asides(config), changed: statSync(config).mtimeMs, written: statSync(hooks).mtimeMs }).toEqual(was);
 		expect(addGrokConfig(was.config, join(t.current, "bin", "orrery"))).toEqual({ next: was.config, added: [], kept: [] });
 	});
@@ -314,7 +336,7 @@ describe("Grok's config entries", () => {
 		writeFileSync(config, removed);
 		const copies = asides(config);
 		const grok = () => checkTools({ root: t.current, env: t.env }).find((check) => check.id === "grok") as ToolCheck;
-		expect(grok()).toMatchObject({ wiring: "missing", detail: `${config} has no [ui.status_line]; Grok settings not approved yet; tested with Grok 1.0.70` });
+		expect(grok()).toMatchObject({ wiring: "missing", detail: `${config} has no [ui.status_line]; tested with Grok 1.0.70` });
 		// Setup (and an update's) asks, as it asks to connect; declined, nothing is written and no copy made.
 		const asked: string[] = [];
 		const declined = await wireReport(t.env, { run: fakeRun, confirm: async (what) => (asked.push(what), !what.startsWith("Connect Orrery to Grok? (")) });

@@ -17,7 +17,7 @@
  *   blocks every prompt, so a rollback to one removes the wiring (src/install/uninstall.ts unwireGrok).
  * Writing them is src/agent/tools.ts's (installSteps, runInstall); this file makes and reads their text. Each write keeps
  * the record of the Grok settings the person approved in step (src/grok/settings.ts keepInStep), and Grok's row in the
- * tools check says when Grok's settings aren't the ones approved (grokWiring).
+ * tools check, where it is shown, says when Grok's settings aren't the ones approved (grokSettingsWords).
  */
 
 import { lstatSync, readFileSync, statSync } from "node:fs";
@@ -382,22 +382,13 @@ export function grokMemoryToolsSwitchedOff(env: NodeJS.ProcessEnv): boolean {
 export const GROK_TOOLS_SWITCHED_OFF = "Orrery's memory tools are switched off in Grok's config, so its sessions get no zoom, date or search; grok mcp enable orrery, run in your own terminal, switches them back on.";
 
 /**
- * What Grok's row says of Grok's settings against the record of the ones the person approved (src/grok/settings.ts),
- * Grok's own folder's (the global ones): changed since then, never approved, or nothing when they are as approved.
+ * What Grok's row says of Grok's settings (its `settings`, apart from its detail: the Tools page and orrery tools show it,
+ * setup doesn't) against the record of the ones the person approved in `dataDir` (src/grok/settings.ts), Grok's own
+ * folder's (the global ones): changed since then, never approved, or nothing when they are as approved.
  */
-function settingsWord(dataDir: string, env: NodeJS.ProcessEnv): string | undefined {
+export function grokSettingsWords(dataDir: string, env: NodeJS.ProcessEnv): string | undefined {
 	const check = checkGrokSettings(dataDir, env, undefined);
 	return check.state === "changed" ? "Grok settings changed since you approved them" : check.state === "first" ? "Grok settings not approved yet" : undefined;
-}
-
-/**
- * Grok's row in the tools check (hookWiring), its detail ending with what it says of Grok's settings (settingsWord): the
- * record in `dataDir`, else the one of the config Orrery runs with (src/grok/settings-keys.ts settingsDataDir).
- */
-export function grokWiring(root: string, env: NodeJS.ProcessEnv, dataDir?: string): Pick<ToolCheck, "wiring" | "detail" | "now"> {
-	const wiring = hookWiring(root, env);
-	const word = settingsWord(dataDir ?? settingsDataDir(env), env);
-	return word === undefined ? wiring : { ...wiring, detail: `${wiring.detail}; ${word}` };
 }
 
 /**
@@ -411,7 +402,7 @@ export function grokWiring(root: string, env: NodeJS.ProcessEnv, dataDir?: strin
  *   own counts); its detail says so when the config switches Orrery's memory tools off (grokMemoryToolsSwitchedOff).
  *   "unknown": a file that can't be read, or a config that is not TOML.
  */
-function hookWiring(root: string, env: NodeJS.ProcessEnv): Pick<ToolCheck, "wiring" | "detail" | "now"> {
+export function grokWiring(root: string, env: NodeJS.ProcessEnv): Pick<ToolCheck, "wiring" | "detail" | "now"> {
 	const { hooks, config } = grokFiles(env);
 	const orrery = entries(root).cli;
 	const file = readHookFile(hooks);

@@ -196,16 +196,21 @@ export function hardWrap(text: string, width: number): string[] {
 	return text.split("\n").flatMap((line) => (line === "" ? [""] : wrapTextWithAnsi(line, width)).flatMap((piece) => cutToWidth(piece, width)));
 }
 
-/** Text to read, scrolled with ↑↓; Enter or Esc closes it. */
-export class MessageModal extends Modal<void> {
+/**
+ * Text to read, scrolled with ↑↓; Enter or Esc closes it. Its answer is true for Enter, false for Esc or when the App
+ * closes it: text read before a question (`hint` says so) goes on to it only on Enter.
+ */
+export class MessageModal extends Modal<boolean> {
 	readonly text: string;
+	readonly #hint: string;
 	#top = 0;
 	/** Lines at the last drawn width. */
 	#count = 0;
 
-	constructor(title: string, text: string) {
+	constructor(title: string, text: string, hint = "Enter to close · ↑↓ scroll") {
 		super(title);
 		this.text = text;
+		this.#hint = hint;
 	}
 
 	render(width: number, height: number, theme: Theme): string[] {
@@ -214,17 +219,18 @@ export class MessageModal extends Modal<void> {
 		const wrapped = hardWrap(this.text, width);
 		this.#count = wrapped.length;
 		const lines = wrapped.slice(this.#top, this.#top + room).map((l) => fit(l, width));
-		return [...head, ...lines, theme.dim(fit("Enter to close · ↑↓ scroll", width))].slice(0, height);
+		return [...head, ...lines, theme.dim(fit(this.#hint, width))].slice(0, height);
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, "enter") || matchesKey(data, "escape")) this.finish();
+		if (matchesKey(data, "enter")) this.finish(true);
+		else if (matchesKey(data, "escape")) this.cancel();
 		else if (matchesKey(data, "up")) this.#top = Math.max(0, this.#top - 1);
 		else if (matchesKey(data, "down")) this.#top = Math.min(Math.max(0, this.#count - 1), this.#top + 1);
 	}
 
 	cancel(): void {
-		this.finish();
+		this.finish(false);
 	}
 }
 

@@ -11,7 +11,7 @@ import { COMPACT_AT_MIN, findAgent, type HarnessConfig, AGENT_TOOLS, agentNamePr
 import { editInstructionsFile } from "../../agent/editor.ts";
 import { instructionsTemplate, readInstructions } from "../../agent/instructions.ts";
 import { summaryLine } from "../../agent/agent-commands.ts";
-import { exitText, launchLabel, type LaunchPlan, launchPlan, remoteGate, runAgent, unknownToolRefusal, withoutOrrery } from "../../agent/launch.ts";
+import { exitText, launchLabel, type LaunchPlan, launchPlan, type LaunchStep, remoteGate, runAgent, unknownToolRefusal, withoutOrrery } from "../../agent/launch.ts";
 import { withoutOrreryQuestion } from "../../agent/load-check.ts";
 import type { CodexGate } from "../../codex/check.ts";
 import { archiveRefusal, type AgentRow, TOOL_LABELS, toolLabel } from "../../agent/overview.ts";
@@ -57,6 +57,18 @@ async function runFix(app: App, fix: () => string): Promise<boolean> {
 }
 
 /**
+ * The question about Grok's settings (src/agent/launch.ts grokSettingsSteps): the list in a dialog that scrolls, then the
+ * question alone, so that it and its answers are on screen however long the list is. Leaving the list (Esc) is a no.
+ * The TUI's yes/no has no answer for Enter, so the [Y/n] or [y/N] there is only the CLI's.
+ */
+async function settingsApproved(app: App, step: LaunchStep): Promise<boolean> {
+	const asked = step.grokSettings;
+	if (asked === undefined) return false;
+	if (!(await app.host.open(new MessageModal("Grok's settings", safeLines(asked.list), "Enter to go on to the question · ↑↓ scroll · Esc says no")))) return false;
+	return app.host.open(new ConfirmModal(safeLines(hardWrap(asked.question, 56).join("\n"))));
+}
+
+/**
  * After an agent is added: the fixes a launch would ask for (folder, pi extension, Claude Code plugin, Grok's
  * connection and memory import), each after a yes. A Claude Code agent with no folder opens only through the Orrery
  * mod: when that alone stops it, the switch to the mod is offered first. Any other block is said when the agent is
@@ -81,7 +93,7 @@ export async function wireAgent(app: App, name: string): Promise<void> {
 		if (step.fix === undefined) continue;
 		// The folder an agent with none opens in is the person's own: it is not made here.
 		if (step.fix === "create-folder" && row.folder === undefined) continue;
-		if (!(await app.host.open(new ConfirmModal(safeLines(step.text))))) continue;
+		if (!(await (step.fix === "approve-grok-settings" ? settingsApproved(app, step) : app.host.open(new ConfirmModal(safeLines(step.text)))))) continue;
 		const { fix } = step;
 		await runFix(app, () => app.deps.applyFix(fix, config, row, tools, plan.cwd, step.grokSettings?.shown));
 	}
@@ -133,7 +145,8 @@ export function launchAgent(app: App, row: AgentRow | undefined): void {
 		if (!gate.go) throw new Error(gate.text);
 		const cwd = await whereToOpen(app, gate.row);
 		if (cwd === undefined) return undefined;
-		const tools = app.deps.tools();
+		// Grok's row says whether Grok's settings are as approved only for a Grok launch.
+		const tools = app.deps.tools(gate.row.tool === "grok" ? { grokSettings: true } : {});
 		const plan = launchPlan(config, gate.row, tools, { cwd });
 		const label = launchLabel(plan);
 		if (plan.blocked !== undefined) throw new Error(plan.blocked);
@@ -144,7 +157,7 @@ export function launchAgent(app: App, row: AgentRow | undefined): void {
 		// grokSettingsSteps): a no leaves no lock taken over and no step done; a yes approves the list it showed.
 		const settings = launching.steps.find((step) => step.fix === "approve-grok-settings");
 		if (settings !== undefined) {
-			if (!(await app.host.open(new ConfirmModal(safeLines(settings.text))))) return "Not launched.";
+			if (!(await settingsApproved(app, settings))) return "Not launched.";
 			if (!(await runFix(app, () => app.deps.applyFix("approve-grok-settings", config, gate.row, tools, plan.cwd, settings.grokSettings?.shown)))) return "Not launched.";
 		}
 		// Plain Codex or OpenCode opens no agent: it takes no lock over (nor asks about a second session, withoutOrrery).

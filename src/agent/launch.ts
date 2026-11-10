@@ -50,9 +50,10 @@ export interface LaunchStep {
 	/**
 	 * approve-grok-settings (grokSettingsSteps): what the list showed, which a yes approves as it is (never a check made
 	 * after the question), and the answer Enter gives, which the text's last line names ([Y/n] or [y/N]). Only a person at
-	 * a terminal answers it: `--yes` doesn't, and with no terminal the launch opens nothing (src/cli/agent.ts).
+	 * a terminal answers it: `--yes` doesn't, and with no terminal the launch opens nothing (src/cli/agent.ts). `list` and
+	 * `question` are the text's two parts: the TUI shows the list in a dialog that scrolls, then asks the question alone.
 	 */
-	readonly grokSettings?: { readonly shown: ShownSettings; readonly defaultYes: boolean };
+	readonly grokSettings?: { readonly shown: ShownSettings; readonly defaultYes: boolean; readonly list: string; readonly question: string };
 }
 
 export interface LaunchPlan {
@@ -181,7 +182,8 @@ export function grokSettingsSteps(dataDir: string, env: NodeJS.ProcessEnv, proje
 	const check = checkGrokSettings(dataDir, env, project);
 	const asked = settingsQuestion(check);
 	if (asked === undefined) return [];
-	return [{ text: [...asked.lines, asked.question].join("\n"), confirm: true, fix: "approve-grok-settings", grokSettings: { shown: check.shown, defaultYes: asked.defaultYes } }];
+	const list = asked.lines.join("\n");
+	return [{ text: `${list}\n${asked.question}`, confirm: true, fix: "approve-grok-settings", grokSettings: { shown: check.shown, defaultYes: asked.defaultYes, list, question: asked.question } }];
 }
 
 /** What Grok's session goes without for the config tables it lacks (grokConfigLacks), and that setup adds them back; undefined for none. */

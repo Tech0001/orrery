@@ -52,7 +52,8 @@ export interface AppDeps {
 	localAgent?(name: string): Promise<string>;
 	/** Token use over the last `days` days, for every agent with memory, or only `only`. */
 	usage(config: HarnessConfig, days: number, only?: string): AgentUsage[];
-	tools(options?: { probeWrangler?: boolean }): ToolCheck[];
+	/** `grokSettings`: Grok's row says whether Grok's settings are as approved (the Tools page, a Grok launch). */
+	tools(options?: { probeWrangler?: boolean; grokSettings?: boolean }): ToolCheck[];
 	ori?(): Promise<ToolCheck>;
 	sources(config: HarnessConfig, agent?: Pick<AgentConfig, "launcher">): Promise<SummarySources>;
 	target(config: HarnessConfig, agent: string, report?: (message: string) => void): CompactorTarget;

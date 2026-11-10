@@ -69,7 +69,8 @@ export async function openAgentCommand(
 	const tool = (options.tool as AgentTool | undefined) ?? row.tool;
 	const remote = await remoteGate(config, row, { refreshRemote: (c, n) => cache.refreshRemote(c, n), overview: (c) => agentOverview(c, { cache }), say: io.say });
 	if (!remote.go) throw new Error(remote.text);
-	const tools = checkTools();
+	// Grok's row says whether Grok's settings are as approved only for a Grok launch, by this config's record.
+	const tools = checkTools(tool === "grok" ? { grokSettings: config.dataDir } : {});
 	const changeTool = `open ${agent.name} in another tool: --tool for this session, orrery agent set ${agent.name} --tool T for good`;
 	const plan = launchPlan(config, remote.row, tools, { cwd: options.cwd, tool, args: options.args, changeTool });
 	if (plan.blocked !== undefined) throw new Error(plan.blocked);

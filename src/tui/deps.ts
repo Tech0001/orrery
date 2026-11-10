@@ -21,6 +21,7 @@ import { agentOverview, agentUsage, OverviewCache } from "../agent/overview.ts";
 import { versionNumber } from "../agent/running.ts";
 import { openSummarySources, testChoice } from "../agent/summary-sources.ts";
 import { checkTools, probeOri, installSteps, runningRoot, runningVersion, wiringRoot, runInstall } from "../agent/tools.ts";
+import { settingsDataDir } from "../grok/settings-keys.ts";
 import { installedVersion, updateCheck } from "../install/update.ts";
 import { openStorage } from "../remote/index.ts";
 import type { AppDeps } from "./app.ts";
@@ -84,11 +85,9 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 		pushAgent: (name, remote) => agentRemoteCommand(current(), ["push", name], { to: remote }),
 		localAgent: (name) => agentRemoteCommand(current(), ["local", name]),
 		usage: (config, days, only) => agentUsage(config, days, only),
-		// Grok's row says whether Grok's settings are as approved: the record in the config's data folder.
-		tools: (options) => {
-			const dataDir = dataDirOf();
-			return checkTools({ ...options, ...(dataDir === undefined ? {} : { dataDir }) });
-		},
+		// Grok's row says, when asked, whether Grok's settings are as approved: the record in the config's data folder (with
+		// no config that loads, the one of the config Orrery runs with).
+		tools: (options = {}) => checkTools({ ...(options.probeWrangler === undefined ? {} : { probeWrangler: options.probeWrangler }), ...(options.grokSettings === true ? { grokSettings: dataDirOf() ?? settingsDataDir(process.env) } : {}) }),
 		ori: () => probeOri(),
 		sources: (config, agent) => openSummarySources(config, agent),
 		target: (config, agent, report = () => {}) => agentCompactorTarget(config, agent, { report }),

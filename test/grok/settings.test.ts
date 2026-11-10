@@ -1,4 +1,4 @@
-import { chmodSync, cpSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { addGrokConfig, grokHookFile } from "../../src/grok/install.ts";
@@ -255,6 +255,27 @@ describe("Grok settings record and compare", () => {
 			}),
 		).toThrow("failed");
 		expect(t.lines()).toEqual([`changed  hook file ${t.hooks}`, "removed  program /bin/sh"]);
+	});
+
+	it("keepInStep never fails a write that is done: when the record can't be written after it, it is left as it was", () => {
+		const t = scratch();
+		const key = grokSettingsSources(t.env, undefined).find((source) => source.path === t.hooks)?.key as string;
+		t.approve();
+		const before = readFileSync(join(t.data, "grok-settings.json"), "utf8");
+		const other = grokHookFile(join(t.dir, "app2", "bin", "orrery"));
+		const real = `${t.data}-real`;
+		// The write, then the data folder becomes a link: the record still reads, but is never written through a link.
+		expect(() =>
+			keepInStep(t.data, t.env, [key], () => {
+				writeFileSync(t.hooks, other);
+				renameSync(t.data, real);
+				symlinkSync(real, t.data);
+			}),
+		).not.toThrow();
+		expect(readFileSync(t.hooks, "utf8")).toBe(other);
+		expect(readFileSync(join(real, "grok-settings.json"), "utf8")).toBe(before);
+		// The next check asks about Orrery's own write: the safe direction.
+		expect(t.lines()).toEqual([`changed  hook file ${t.hooks} (SessionStart, UserPromptSubmit, PreToolUse, Stop, StopCancelled, SessionEnd; runs sh)`]);
 	});
 
 	it("record file is private", () => {

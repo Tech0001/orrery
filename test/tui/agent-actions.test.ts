@@ -1,9 +1,10 @@
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseConfig } from "../../src/agent/config.ts";
 import { instructionsTemplate } from "../../src/agent/instructions.ts";
-import type { LaunchPlan } from "../../src/agent/launch.ts";
+import { applyFix, type LaunchPlan } from "../../src/agent/launch.ts";
+import { checkGrokSettings } from "../../src/grok/settings.ts";
 import { saveKey } from "../../src/agent/logins.ts";
 import { summarySources } from "../../src/agent/summary-sources.ts";
 import type { CompactorTarget } from "../../src/agent/summary-text.ts";
@@ -15,6 +16,7 @@ import { writeSetupMarker } from "../../src/claude/view-file.ts";
 
 const ENTER = "\r";
 const DOWN = "\x1b[B";
+const ESC = "\x1b";
 const dirs: string[] = [];
 beforeEach(() => {
 	for (const name of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]) vi.stubEnv(name, "");
@@ -254,16 +256,20 @@ describe("L launch", () => {
 			[row({ name: "Alpha", tool: "grok", folder: "/" })],
 		);
 		const app = makeApp(deps, [agentsPage]);
-		// No record of approved Grok settings yet: that question comes first, and a no launches nothing.
+		// No record of approved Grok settings yet: that list and question come first, and a no launches nothing.
 		keys(app, "L");
 		await answer(app, "Open Alpha where?", DOWN, ENTER);
-		await answer(app, "Orrery now checks Grok's settings at each launch. Grok loads these now:", "n");
+		await answer(app, "Grok's settings");
+		expect(screen(app)).toContain("Orrery now checks Grok's settings at each launch. Grok loads these now:");
+		keys(app, ENTER);
+		await answer(app, "Approve Grok's current settings? [Y/n]", "n");
 		await app.idle();
 		expect([fixes, plans]).toEqual([[], []]);
 		expect(screen(app)).toContain("Not launched.");
 		// A yes approves the list it showed; then the connect question, whose no launches nothing and changes nothing.
 		keys(app, "L");
 		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "Grok's settings", ENTER);
 		await answer(app, "Approve Grok's current settings? [Y/n]", "y");
 		await answer(app, "Done", ENTER);
 		await answer(app, "Connect Orrery to Grok now?", "n");
@@ -276,6 +282,7 @@ describe("L launch", () => {
 		// (This fake approves nothing, so the question comes again.)
 		keys(app, "L");
 		await answer(app, "Open Alpha where?", DOWN, ENTER);
+		await answer(app, "Grok's settings", ENTER);
 		await answer(app, "Approve Grok's current settings? [Y/n]", "y");
 		await answer(app, "Done", ENTER);
 		await answer(app, "Orrery's hooks for Grok are not installed, so this session won't record", "y");
@@ -285,6 +292,58 @@ describe("L launch", () => {
 		expect(plans).toHaveLength(1);
 		expect(plans[0]).toMatchObject({ tool: "grok", command: "/bin/grok", env: { ORRERY_AGENT: "Alpha" } });
 		expect(screen(app)).toContain("Back from Grok (Alpha).");
+	});
+
+	it("on a 30-row terminal, lists Grok's settings in a dialog that scrolls, then asks the question alone with its answers on screen; a yes approves the list shown, Esc on the list is a no", async () => {
+		const grok = tempDir("orrery-tui-grok-");
+		const data = tempDir("orrery-tui-data-");
+		const here = tempDir("orrery-tui-here-");
+		dirs.push(grok, data, here);
+		vi.stubEnv("GROK_HOME", grok);
+		mkdirSync(join(grok, "hooks"));
+		const hookFile = (program: string) => JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: program, args: [] }] }] } });
+		for (let i = 0; i < 25; i++) writeFileSync(join(grok, "hooks", `h${String(i).padStart(2, "0")}.json`), hookFile(`/nowhere/h${i}`));
+		const config = parseConfig(`data_dir = ${JSON.stringify(data)}\n[agents.Alpha]\nfolder = ${JSON.stringify(here)}\ntool = "grok"\ncompactor_model = "openai/gpt-6.1-sol"\n`, data);
+		const plans: LaunchPlan[] = [];
+		const deps = fakeDeps(
+			{
+				cwd: here,
+				loadConfig: () => config,
+				tools: () => [tool("pi"), tool("grok")],
+				// The launch's own fix: the approval is saved in the config's data folder.
+				applyFix: (fix, c, r, t, cwd, shown) => applyFix(fix, c, r, t, { ...(cwd === undefined ? {} : { cwd }), ...(shown === undefined ? {} : { shown }) }),
+				launch: async (plan) => (plans.push(plan), { code: 0, signal: null }),
+			},
+			[row({ name: "Alpha", tool: "grok", folder: here })],
+		);
+		expect(deps.rows()).toBe(30);
+		const record = join(data, "grok-settings.json");
+		const app = makeApp(deps, [agentsPage]);
+		// Esc on the list is a no: nothing approved, nothing opened.
+		keys(app, "L");
+		await answer(app, "Grok's settings", ESC);
+		await app.idle();
+		expect([plans, existsSync(record)]).toEqual([[], false]);
+		expect(screen(app)).toContain("Not launched.");
+		// The list scrolls to its end; Enter goes on to the question, alone, its answers on screen.
+		keys(app, "L");
+		await answer(app, "Grok's settings");
+		expect(screen(app)).toContain("Orrery now checks Grok's settings at each launch. Grok loads these now:");
+		for (let i = 0; i < 30; i++) keys(app, DOWN);
+		expect(screen(app)).toMatch(/ {2}…and \d+ more \(orrery grok-settings lists them all\)/);
+		keys(app, ENTER);
+		await answer(app, "Approve Grok's current settings? [Y/n]");
+		expect(screen(app)).toContain("Approve Grok's current settings? [Y/n]");
+		expect(screen(app)).toContain("y yes · n no");
+		// A hook file arrives while the question is up: a yes approves the list that was shown, not it.
+		const later = join(grok, "hooks", "later.json");
+		writeFileSync(later, hookFile("/nowhere/later"));
+		keys(app, "y");
+		await answer(app, "Done", ENTER);
+		await app.idle();
+		expect(plans).toHaveLength(1);
+		const check = checkGrokSettings(data, process.env, here);
+		expect(check.state === "changed" ? check.changes.map((change) => change.line) : check.state).toEqual([`added    hook file ${later} (Stop; runs later)`]);
 	});
 });
 

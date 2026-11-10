@@ -7,7 +7,8 @@ import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
 import { checkTools, installSteps, orreryRoot, runInstall, type Runner, type ToolCheck } from "../../src/agent/tools.ts";
 import { openAgentCommand } from "../../src/cli/agent.ts";
 import { grokSettingsCommand } from "../../src/cli/grok-settings.ts";
-import { addGrokConfig, grokHookFile, grokWiring } from "../../src/grok/install.ts";
+import { addGrokConfig, grokHookFile, grokSettingsWords } from "../../src/grok/install.ts";
+import { settingsDataDir } from "../../src/grok/settings-keys.ts";
 import { approveGrokSettings, checkGrokSettings, type SettingsCheck } from "../../src/grok/settings.ts";
 import { installFrom } from "../../src/install/install.ts";
 import { entries } from "../../src/install/layout.ts";
@@ -15,6 +16,13 @@ import { uninstall } from "../../src/install/uninstall.ts";
 import { wireReport } from "../../src/install/wire.ts";
 import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { cleanupScratch, fakeRun, fixtureRelease, grokScratch, tempDir } from "../install/support.ts";
+
+/** The data folders whose record of approved Grok settings was read: every check goes through checkGrokSettings. */
+const reads = vi.hoisted(() => ({ dataDirs: [] as string[] }));
+vi.mock("../../src/grok/settings.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../src/grok/settings.ts")>();
+	return { ...actual, checkGrokSettings: (...args: Parameters<typeof actual.checkGrokSettings>) => (reads.dataDirs.push(args[0]), actual.checkGrokSettings(...args)) };
+});
 
 const recorded: [string, number][] = [];
 afterEach(() => {
@@ -180,6 +188,36 @@ describe("the launch's Grok settings gate", () => {
 		expect((await launch(s, io)).code).toBe(0);
 		expect(s.check().state).toBe("unchanged");
 	});
+
+	it("a launch with --config reads that config's record, and only a Grok launch reads one", async () => {
+		const s = scene();
+		// The config Orrery runs with (ORRERY_CONFIG) has a record of its own.
+		s.approve();
+		// The one the launch is given (--config): its own data folder and record, and a pi agent beside Atlas.
+		const data = join(s.dir, "data-2");
+		const birch = join(s.dir, "work", "birch");
+		for (const folder of [data, birch]) mkdirSync(folder, { recursive: true });
+		const config = join(s.dir, "config-2.toml");
+		const agent = (name: string, folder: string, tool: string) => `[agents.${name}]\nfolder = ${JSON.stringify(folder)}\ntool = "${tool}"\ncompactor_model = "openai/gpt-6.1-sol"\n`;
+		writeFileSync(config, `data_dir = ${JSON.stringify(data)}\n${agent("Atlas", s.project, "grok")}${agent("Birch", birch, "pi")}`);
+		approveGrokSettings(data, checkGrokSettings(data, s.env, s.project).shown);
+		writeFileSync(join(s.dir, "bin", "pi"), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.0; exit 0; fi\n`, { mode: 0o755 });
+		stubbed(s);
+		const io = { say: () => {}, confirm: async () => false, askSettings: async () => false };
+		const deps = {
+			takeover: async () => {
+				throw new Error("must not take over");
+			},
+			run: async () => ({ code: 0, signal: null }),
+		};
+		reads.dataDirs.length = 0;
+		expect(await openAgentCommand(config, "Atlas", { args: [], cwd: s.project }, io, deps)).toBe(0);
+		expect([...new Set(reads.dataDirs)]).toEqual([data]);
+		// Another tool's launch reads none (its install question's no opens nothing).
+		reads.dataDirs.length = 0;
+		expect(await openAgentCommand(config, "Birch", { args: [], cwd: birch }, io, deps)).toBe(1);
+		expect(reads.dataDirs).toEqual([]);
+	});
 });
 
 describe("orrery grok-settings", () => {
@@ -257,14 +295,15 @@ describe("Grok's row and Orrery's own writes", () => {
 	it("tools row says changed", () => {
 		const s = scene();
 		const root = orreryRoot();
-		expect(grokWiring(root, s.env, s.data).detail).toContain("Grok settings not approved yet");
+		expect(grokSettingsWords(s.data, s.env)).toBe("Grok settings not approved yet");
 		s.approve();
-		expect(grokWiring(root, s.env, s.data).detail).not.toContain("Grok settings");
+		expect(grokSettingsWords(s.data, s.env)).toBeUndefined();
 		writeFileSync(join(s.grok, "hooks", "x.json"), hookFile("/nowhere/x"));
-		expect(grokWiring(root, s.env, s.data).detail).toContain("Grok settings changed since you approved them");
-		// The tools check finds the record through the config Orrery runs with.
-		const grok = checkTools({ root, env: s.env }).find((check) => check.id === "grok") as ToolCheck;
-		expect(grok).toMatchObject({ wiring: "installed", detail: expect.stringContaining("Grok settings changed since you approved them") });
+		expect(grokSettingsWords(s.data, s.env)).toBe("Grok settings changed since you approved them");
+		// orrery tools finds the record through the config Orrery runs with; the words are the row's own, apart from its detail.
+		const grok = checkTools({ root, env: s.env, grokSettings: settingsDataDir(s.env) }).find((check) => check.id === "grok") as ToolCheck;
+		expect(grok).toMatchObject({ wiring: "installed", settings: "Grok settings changed since you approved them" });
+		expect(grok.detail).not.toContain("Grok settings");
 	});
 
 	it("setup keeps record in step", async () => {
@@ -318,15 +357,19 @@ describe("Grok's row and Orrery's own writes", () => {
 		expect(check().state).toBe("unchanged");
 	});
 
-	it("the Claude Code plugin's copy keeps record in step, wherever Claude Code puts the new version", () => {
+	/**
+	 * A scratch HOME whose fake claude installs Orrery's plugin as Claude Code does: a copy of the version `use` names in
+	 * its cache, listed in installed_plugins.json, switched on in settings.json. Installed (1.0.0, with no record yet), then
+	 * approved, unless `installed` is false. `fail()`: an install or update exits 1 after it has written.
+	 */
+	function pluginScene(options: { installed?: boolean } = {}) {
 		const dir = realpathSync(tempDir("orrery-grok-plugin-"));
 		const home = join(dir, "home");
 		const plugins = join(home, ".claude", "plugins");
 		const data = join(dir, "data");
-		for (const folder of [plugins, data, join(home, ".grok")]) mkdirSync(folder, { recursive: true });
+		for (const folder of [plugins, data, join(home, ".grok"), join(dir, "bin")]) mkdirSync(folder, { recursive: true });
 		const version = join(dir, "plugin-version");
-		// A fake claude that installs the Orrery plugin's version `plugin-version` names as Claude Code does: a copy in its
-		// cache, listed in installed_plugins.json, switched on in settings.json.
+		const exit = join(dir, "exit-code");
 		for (const v of ["1.0.0", "2.0.0"]) {
 			const root = join(dir, `plugin-${v}`);
 			mkdirSync(join(root, "bin"), { recursive: true });
@@ -339,15 +382,16 @@ describe("Grok's row and Orrery's own writes", () => {
 			writeFileSync(join(dir, `installed-${v}.json`), JSON.stringify({ version: 2, plugins: { "orrery@orrery": [{ scope: "user", installPath, version: v }] } }));
 		}
 		writeFileSync(join(dir, "settings.json"), JSON.stringify({ enabledPlugins: { "orrery@orrery": true } }));
+		writeFileSync(exit, "0\n");
 		const claude = join(dir, "bin", "claude");
-		mkdirSync(join(dir, "bin"));
 		const cache = join(plugins, "cache", "orrery", "orrery");
+		const q = JSON.stringify;
 		writeFileSync(
 			claude,
 			[
 				"#!/bin/sh",
 				'case "$1 $2" in',
-				`"plugin install"|"plugin update") v=$(/bin/cat ${JSON.stringify(version)}); /bin/mkdir -p ${JSON.stringify(cache)}; /bin/cp -R ${JSON.stringify(dir)}/plugin-$v ${JSON.stringify(cache)}/$v; /bin/cp ${JSON.stringify(dir)}/installed-$v.json ${JSON.stringify(join(plugins, "installed_plugins.json"))}; /bin/cp ${JSON.stringify(join(dir, "settings.json"))} ${JSON.stringify(join(home, ".claude", "settings.json"))} ;;`,
+				`"plugin install"|"plugin update") v=$(/bin/cat ${q(version)}); /bin/mkdir -p ${q(cache)}/$v; /bin/cp -R ${q(dir)}/plugin-$v/. ${q(cache)}/$v/; /bin/cp ${q(dir)}/installed-$v.json ${q(join(plugins, "installed_plugins.json"))}; /bin/cp ${q(join(dir, "settings.json"))} ${q(join(home, ".claude", "settings.json"))}; exit $(/bin/cat ${q(exit)}) ;;`,
 				"esac",
 				"",
 			].join("\n"),
@@ -361,14 +405,47 @@ describe("Grok's row and Orrery's own writes", () => {
 		const env: NodeJS.ProcessEnv = { HOME: home, PATH: join(dir, "bin") };
 		const check = () => checkGrokSettings(data, env, undefined);
 		const steps = (wiring: ToolCheck["wiring"]) => installSteps({ id: "claude-code", label: "Claude Code", path: claude, wiring, detail: "" }, join(dir, "orrery"), env, data);
-		writeFileSync(version, "1.0.0\n");
-		expect(runInstall(steps("missing"), run).ok).toBe(true);
-		expect(linesOf(check()).some((line) => line.includes('Claude Code plugin "orrery@orrery"'))).toBe(true);
-		approveGrokSettings(data, check().shown);
+		const use = (v: string) => writeFileSync(version, `${v}\n`);
+		if (options.installed !== false) {
+			use("1.0.0");
+			expect(runInstall(steps("missing"), run).ok).toBe(true);
+			approveGrokSettings(data, check().shown);
+		}
+		return { plugins, cache, data, record: join(data, "grok-settings.json"), run, check, steps, use, fail: () => writeFileSync(exit, "1\n") };
+	}
+
+	it("the Claude Code plugin's copy keeps record in step, wherever Claude Code puts the new version", () => {
+		const p = pluginScene({ installed: false });
+		p.use("1.0.0");
+		expect(runInstall(p.steps("missing"), p.run).ok).toBe(true);
+		expect(linesOf(p.check()).some((line) => line.includes('Claude Code plugin "orrery@orrery"'))).toBe(true);
+		approveGrokSettings(p.data, p.check().shown);
 		// The update: a new copy at a new place, its program with it.
-		writeFileSync(version, "2.0.0\n");
-		expect(runInstall(steps("update available"), run).ok).toBe(true);
-		expect(readFileSync(join(plugins, "installed_plugins.json"), "utf8")).toContain("2.0.0");
-		expect(linesOf(check())).toEqual([]);
+		p.use("2.0.0");
+		expect(runInstall(p.steps("update available"), p.run).ok).toBe(true);
+		expect(readFileSync(join(p.plugins, "installed_plugins.json"), "utf8")).toContain("2.0.0");
+		expect(linesOf(p.check())).toEqual([]);
+	});
+
+	it("a claude command that fails after writing moves nothing, and says it failed as before", () => {
+		const p = pluginScene();
+		const before = readFileSync(p.record, "utf8");
+		p.use("2.0.0");
+		p.fail();
+		expect(runInstall(p.steps("update available"), p.run)).toEqual({ ok: false, output: "$ claude plugin marketplace update orrery\n$ claude plugin update orrery@orrery\nexit 1\n" });
+		expect(readFileSync(join(p.plugins, "installed_plugins.json"), "utf8")).toContain("2.0.0");
+		expect(readFileSync(p.record, "utf8")).toBe(before);
+		expect(linesOf(p.check()).filter((line) => line.includes('Claude Code plugin "orrery@orrery"'))).toEqual([`changed  Claude Code plugin "orrery@orrery" ${join(p.cache, "2.0.0")}`]);
+	});
+
+	it("a plugin copy put in a folder that was there before the update is never approved: the next check lists it", () => {
+		const p = pluginScene();
+		// Something plants the next version's folder first, with a file of its own in it.
+		const next = join(p.cache, "2.0.0");
+		mkdirSync(join(next, "agents"), { recursive: true });
+		writeFileSync(join(next, "agents", "planted.md"), "---\nname: planted\n---\nPlanted.\n");
+		p.use("2.0.0");
+		expect(runInstall(p.steps("update available"), p.run).ok).toBe(true);
+		expect(linesOf(p.check())).toEqual([`changed  Claude Code plugin "orrery@orrery" ${next}`, `added    program ${join(next, "bin", "orrery-run")}`]);
 	});
 });

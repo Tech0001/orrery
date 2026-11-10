@@ -92,6 +92,18 @@ describe("the Tools page", () => {
 		expect(screen(app)).toContain("Done.");
 	});
 
+	it("Grok's row says whether Grok's settings are as approved, after its detail, in the table and in its dialog", async () => {
+		const asked: unknown[] = [];
+		const detail = "/h/.grok/hooks/orrery.json; tested with Grok 1.0.70";
+		const grok: ToolCheck = { id: "grok", label: "Grok", path: "/bin/grok", version: "grok 1.0.70 (f50904eaee6c) [stable]", wiring: "installed", detail, settings: "Grok settings changed since you approved them" };
+		const app = makeApp(fakeDeps({ tools: (options) => (asked.push(options), [grok]), installSteps: () => [] }), [toolsPage]);
+		expect(asked).toContainEqual({ probeWrangler: true, grokSettings: true });
+		expect(screen(app)).toMatch(/Grok\s+\/bin\/grok\s+1\.0\.70\s+installed\s+.*approved them/);
+		keys(app, ENTER);
+		await answer(app, "Grok");
+		expect(screen(app)).toContain(`${detail}; Grok settings changed since you approved them`);
+	});
+
 	it("I on the Orrery row says how Orrery updates: orrery update for a release, commit then npm run install-local from a checkout", async () => {
 		for (const [running, said] of [
 			["0.6.1", "Orrery updates with orrery update."],

@@ -104,12 +104,16 @@ export function changeLines(changes: readonly SettingsChange[], max = 20): strin
 	);
 }
 
+/** A day in local time, YYYY-MM-DD: an approval's (approvalDate), a file set aside's (src/agent/tools.ts setAside). */
+export function localDay(at: Date = new Date()): string {
+	const two = (n: number) => String(n).padStart(2, "0");
+	return `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())}`;
+}
+
 /** An approval's day (`approvedAt`, an ISO time) in local time, YYYY-MM-DD: the launch's question, orrery grok-settings. */
 export function approvalDate(approvedAt: string): string {
 	const at = new Date(approvedAt);
-	if (Number.isNaN(at.getTime())) return safeText(approvedAt.slice(0, 10));
-	const two = (n: number) => String(n).padStart(2, "0");
-	return `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())}`;
+	return Number.isNaN(at.getTime()) ? safeText(approvedAt.slice(0, 10)) : localDay(at);
 }
 
 /** Where the person reviews Grok's settings when there is no terminal to ask on (the launch, orrery grok-settings). */
@@ -228,59 +232,102 @@ export function approveGrokSettings(dataDir: string, shown: ShownSettings, now =
 /** Whether an entry key is the source's (the source's own, or one of its keys' or servers'). */
 const belongs = (entry: string, source: string) => entry === source || entry.startsWith(`${source}\0`);
 
-/** The global entries Orrery's own write may move: entry keys, with the source keys that cover them, or a test of an entry key. */
-export type StepKeys = readonly string[] | ((entry: string) => boolean);
+/**
+ * A test of the entry keys an Orrery write may move, made just before the write: `covers`, of what was there and
+ * recorded then; `after()`, made once the write has run, of what it left. A program at a place the write chose (a
+ * plugin's new copy) is named only after it; an entry the write left somewhere it may not vouch for (a folder that was
+ * there before it) is left out after it.
+ */
+export interface StepTest {
+	readonly covers: (entry: string) => boolean;
+	readonly after: () => (entry: string) => boolean;
+}
+
+/** The global entries Orrery's own write may move: entry keys, with the source keys that cover them, or a StepTest's maker. */
+export type StepKeys = readonly string[] | (() => StepTest);
 
 /**
  * Runs Orrery's own `write` to Grok's settings, then moves the record's global entries that `keys` cover to what it left,
  * each only when it matched the record before (Orrery never approves a change it didn't make): one there before and
  * recorded alike, or one neither there nor recorded (a new one, then, is taken in). `keys` are source keys (each covers
- * its entries) or entry keys (an entry key is `<source key>\0…`), or a test of an entry key, asked before the write for
- * what was there and recorded, and after it for what it left (a program at a place the write chose: a plugin's new copy).
- * A write that throws moves nothing; with no record for this Grok folder there is nothing to move. `write` must be only
- * the file writes Orrery makes to those sources (no downloads, waits or other work): anything written to them while it
- * runs, by whatever process, is taken into the record.
+ * its entries) or entry keys (an entry key is `<source key>\0…`), or a StepTest's maker, asked just before the write; an
+ * entry the write left that its `after()` leaves out stays as recorded. A write that throws moves nothing, and its error
+ * is the caller's. The bookkeeping never fails a write: when it can't be done (before the write or after it), the record
+ * is left as it was, so the next check asks (the safe direction). With no record for this Grok folder there is nothing to
+ * move. `write` must be only the file writes Orrery makes to those sources (no downloads, waits or other work): anything
+ * written to them while it runs, by whatever process, is taken into the record.
  */
 export function keepInStep(dataDir: string, env: NodeJS.ProcessEnv, keys: StepKeys, write: () => void): void {
-	const covers = typeof keys === "function" ? keys : (entry: string) => keys.some((key) => belongs(entry, key));
-	// Only the sources a key names, or one of whose entries it names, are read for a list; every global one for a test.
-	const read = typeof keys === "function" ? () => true : (source: string) => keys.some((key) => belongs(key, source));
-	const take = (): SettingsSnapshot => {
-		const reader = new Reader();
-		return snapshotWith(discover(env, undefined, reader).sources.filter((source) => read(source.key)), reader);
-	};
 	// This Grok folder's real path, as the record keys it (discover's `grok`), and its approval: none, nothing to move.
 	const grok = realish(grokHome(env, env.HOME || homedir()));
 	const approvedOf = () => {
 		const record = readSettingsRecord(dataDir);
 		return record === undefined || "unreadable" in record || !Object.hasOwn(record.grok, grok) ? undefined : { record, entry: record.grok[grok] as SettingsRecord["grok"][string] };
 	};
-	const approved = approvedOf();
-	if (approved === undefined) {
-		write();
-		return;
+	let ready: ReturnType<typeof beforeWrite> | undefined;
+	try {
+		ready = beforeWrite(env, keys, approvedOf);
+	} catch {
+		// What was there can't be told: the write runs, and nothing moves.
 	}
+	write();
+	if (ready === undefined) return;
+	try {
+		afterWrite(ready, approvedOf, (record) => writeRecord(dataDir, record), grok);
+	} catch {
+		// The write is done and stays: the record is left as it was.
+	}
+}
+
+type Approved = { readonly record: SettingsRecord; readonly entry: SettingsRecord["grok"][string] };
+
+/** Entry keys, and source keys that cover theirs, as a StepTest: the same before the write and after it. */
+function listTest(keys: readonly string[]): StepTest {
+	const covers = (entry: string) => keys.some((key) => belongs(entry, key));
+	return { covers, after: () => covers };
+}
+
+/** keepInStep before its write: what `keys` cover there and in the record, and how to read it again; undefined with no approval. */
+function beforeWrite(env: NodeJS.ProcessEnv, keys: StepKeys, approvedOf: () => Approved | undefined) {
+	const approved = approvedOf();
+	if (approved === undefined) return undefined;
+	const test = typeof keys === "function" ? keys() : listTest(keys);
+	// Only the sources a key names, or one of whose entries it names, are read for a list; every global one for a test.
+	const read = typeof keys === "function" ? () => true : (source: string) => keys.some((key) => belongs(key, source));
+	const take = (): SettingsSnapshot => {
+		const reader = new Reader();
+		return snapshotWith(discover(env, undefined, reader).sources.filter((source) => read(source.key)), reader);
+	};
 	const before = take();
 	const recorded = approved.entry.global;
-	const fingerprint = (snapshot: SettingsSnapshot, key: string) => (Object.hasOwn(snapshot, key) ? snapshot[key]?.fingerprint : undefined);
-	/** Whether the entry was there before as the record has it, or neither there nor recorded. */
-	const matched = (key: string) => fingerprint(before, key) === fingerprint(recorded, key);
-	const asked = [...Object.keys(before), ...Object.keys(recorded)].filter(covers);
-	write();
+	const asked = [...Object.keys(before), ...Object.keys(recorded)].filter(test.covers);
+	return { test, take, before, recorded, asked };
+}
+
+const fingerprint = (snapshot: SettingsSnapshot, key: string) => (Object.hasOwn(snapshot, key) ? snapshot[key]?.fingerprint : undefined);
+
+/** keepInStep after its write: each entry covered that matched the record before moves to what the write left. */
+function afterWrite(ready: NonNullable<ReturnType<typeof beforeWrite>>, approvedOf: () => Approved | undefined, save: (record: SettingsRecord) => void, grok: string): void {
+	const { test, take, before, recorded, asked } = ready;
+	const covers = test.after();
 	const after = take();
 	// The record as it is now: another approval may have been saved meanwhile.
 	const fresh = approvedOf();
 	if (fresh === undefined) return;
+	/** Whether the entry was there before as the record has it, or neither there nor recorded. */
+	const matched = (key: string) => fingerprint(before, key) === fingerprint(recorded, key);
 	const global: Record<string, SettingsEntry> = { ...fresh.entry.global };
 	let moved = false;
 	for (const key of new Set([...asked, ...Object.keys(after).filter(covers)])) {
 		if (!matched(key)) continue;
 		const now = Object.hasOwn(after, key) ? after[key] : undefined;
+		// What the write left there must be its own too: an entry it now names elsewhere (a folder that was there before) stays.
+		if (now !== undefined && !covers(key)) continue;
 		if (fingerprint(global, key) === now?.fingerprint && (now === undefined || JSON.stringify(global[key]?.summary) === JSON.stringify(now.summary))) continue;
 		moved = true;
 		if (now === undefined) delete global[key];
 		else global[key] = now;
 	}
 	// Nothing to move: the record is left as it is.
-	if (moved) writeRecord(dataDir, { version: 1, grok: { ...fresh.record.grok, [grok]: { ...fresh.entry, global } } });
+	if (moved) save({ version: 1, grok: { ...fresh.record.grok, [grok]: { ...fresh.entry, global } } });
 }

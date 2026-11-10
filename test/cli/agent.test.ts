@@ -240,6 +240,31 @@ describe("orrery agent", () => {
 		expect(existsSync(s.grok)).toBe(false);
 	});
 
+	it.skipIf(!hasScript)("in a terminal, Enter gives the settings question's default: yes on the first run's [Y/n], no on a change's [y/N]", () => {
+		const s = grokScene();
+		const record = join(s.dir, "data", "grok-settings.json");
+		// Connected first; then no record again, as on the first launch after updating.
+		approveSettings(s);
+		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok", "--yes").status).toBe(0);
+		rmSync(record);
+		rmSync(s.out);
+		const first = typedInTerminal("\n", s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
+		expect(first.status, first.stdout).toBe(0);
+		expect(first.stdout).toContain("Approve Grok's current settings? [Y/n]");
+		expect(first.stdout).toContain("Approved Grok's settings.");
+		expect(readFileSync(s.out, "utf8")).toBe("grok|Atlas|--no-leader\n");
+		// A change since: Enter is no, and nothing opens or is written.
+		writeFileSync(join(s.grok, "hooks", "x.json"), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "/nowhere/x", args: [] }] }] } }));
+		const approved = readFileSync(record, "utf8");
+		rmSync(s.out);
+		const changed = typedInTerminal("\n", s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
+		expect(changed.status).toBe(1);
+		expect(changed.stdout).toContain("Approve these changes to Grok's settings? [y/N]");
+		expect(changed.stdout).toContain("Not opened.");
+		expect(existsSync(s.out)).toBe(false);
+		expect(readFileSync(record, "utf8")).toBe(approved);
+	});
+
 	it("says at launch when Orrery's Grok hooks are switched off in Grok's /hooks, and opens Grok", () => {
 		const s = grokScene();
 		approveSettings(s);
