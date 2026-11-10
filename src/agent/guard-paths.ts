@@ -26,7 +26,7 @@
  * every session, but its open parts (GROK_OPEN: its memory, skills and workflows, what its bundled skills, docs and
  * logs write, and its session worktrees), which are Grok's own. Its login and session records are read by no agent's
  * session (HOME_SECRETS, grokCredentials). Nor may shell text, in every session, run Grok's own CLI but its read-only
- * commands, nor with an option that opens a session that may be live in another Grok (guard-rules.ts grokCommandIn). A
+ * commands, nor with an option that opens a session that may be live in another Grok (grok/guard-rules.ts grokCommandIn). A
  * session that is no agent's (GuardOptions.orreryOnly, spec 2026-10-19-no-agent-sessions §3) gets Orrery's own rules
  * alone (orreryJudge): Orrery's home, its credentials file,
  * config and installed program, where agents' sessions load code from outside its home (orreryEntries: read, never
@@ -80,7 +80,7 @@
  * - Shell text that names an open part of Grok's folder and changes folder (where it names its session worktrees alone,
  *   but into one of them), holds a ".." or makes a link (ln, cp -s, cp -l), or names it in a command substitution (read
  *   failing closed: after any substitution's opening, or in text whose parentheses don't pair up) or through a link out
- *   of Grok's folder, is refused (guard-rules.ts grokReaches), and so is a ".." that leaves the open part a call runs
+ *   of Grok's folder, is refused (grok/guard-rules.ts grokReaches), and so is a ".." that leaves the open part a call runs
  *   in (a grok -w session in its worktree; grokClimbsFrom), a relative path from Grok's folder itself or what it loads
  *   but into an open part, or a substitution or ${ there (grokNamedFrom), and Grok's folder spelt from the folder a
  *   call runs in, above or beside it (.grok from home, ../.grok beside it; grokSpeltFrom). But a link brought into an
@@ -96,7 +96,7 @@
  * - A coding tool an agent starts with settings of its own is a second program, as a script is: a Grok started with
  *   another GROK_HOME (or HOME) loads none of Orrery's hooks, so it has no guard and marks no session it opens
  *   (src/grok/hooks.ts markShared); a Claude Code started with its own config folder loads no Orrery plugin. A grok
- *   command the text doesn't hold gets past the grok command rule too (guard-rules.ts grokCommandIn): one run through
+ *   command the text doesn't hold gets past the grok command rule too (grok/guard-rules.ts grokCommandIn): one run through
  *   an alias, a function or a link of another name, a program name built at run time (`P=grok; $P update`), a brace
  *   sequence in the name (`{g..g}rok`), or a script or file another program reads (`sh x.sh`, a pager or a --pre in
  *   git's or rg's config). So does one that environment or shell state an earlier command set makes a program the rule
@@ -134,24 +134,18 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { viewFile } from "../claude/paths.ts";
 import { agentMode } from "../claude/view-file.ts";
+import { GROK_READ_ONLY, GROK_READ_ONLY_PLAIN, type GrokRule, grokFolders, grokLoads, grokNear, grokRule } from "../grok/guard-rules.ts";
 import type { HarnessConfig, AgentConfig } from "./config.ts";
+import { type CallOptions, checkToolCall } from "./guard-call.ts";
 import {
 	APP_READ_ONLY,
 	APP_READ_ONLY_PLAIN,
 	CONFIG_READ_ONLY,
 	CONFIG_READ_ONLY_PLAIN,
-	checkToolCall,
 	configSpellings,
 	editTextRefusal,
 	ENTRY_READ_ONLY_PLAIN,
 	foldName,
-	GROK_READ_ONLY,
-	GROK_READ_ONLY_PLAIN,
-	type GrokRule,
-	grokFolders,
-	grokLoads,
-	grokNear,
-	grokRule,
 	type GuardOptions,
 	HOME_SECRETS,
 	inOrreryHome,
@@ -249,7 +243,7 @@ const HOME_CREDENTIALS = [
 ];
 
 /** Where a tool call runs: the agent's roots, the tool's cwd, the home folder and any more credential files. */
-export interface PathGuardOptions extends GuardOptions {
+export interface PathGuardOptions extends CallOptions {
 	readonly cwd: string;
 	/** The home directory "~" means; default: the OS's. */
 	readonly home?: string;
@@ -304,7 +298,7 @@ interface PathRules {
 	readonly entries: string[];
 	/**
 	 * The same only: every place of Orrery's (its data folder, the config's folder, its credentials files, programs,
-	 * entries). Grok's folder (Orrery's Grok hooks are there) is judged beside them (guard-rules.ts grokNear).
+	 * entries). Grok's folder (Orrery's Grok hooks are there) is judged beside them (grok/guard-rules.ts grokNear).
 	 */
 	readonly places: string[];
 }
@@ -391,7 +385,7 @@ export function orreryEntries(env: NodeJS.ProcessEnv, home: string): OrreryEntri
 
 /**
  * Grok Build's login and session records in the folder GROK_HOME moves Grok's to (HOME_SECRETS has ~/.grok's): an agent's
- * session reads neither (guard-rules.ts grokRule).
+ * session reads neither (grok/guard-rules.ts grokRule).
  */
 export function grokCredentials(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] {
 	return grokFolders(env, home)
@@ -1081,7 +1075,7 @@ function pathRules(options: PathGuardOptions): PathRules {
 	// Grok's folder but its open parts, in every session: where it is and where it really is.
 	const grok = grokOf(options, home);
 	// Claude Code's, Codex's and Grok's session records, where they are and where they really are.
-	const transcripts = options.transcripts ?? transcriptRule(process.env, home, realTarget);
+	const transcripts = options.transcripts ?? transcriptRule(grokFolders, process.env, home, realTarget);
 	// The credential locations themselves, symlinks followed (a ~/.ssh linked from a dotfiles folder, say). Compared
 	// ignoring case: on a case-insensitive file system (macOS) ~/.SSH and /USERS are the same folders. A moved Grok
 	// folder's login and session records too (grokCredentials).
@@ -1187,7 +1181,7 @@ export function grokOf(options: Pick<PathGuardOptions, "grok">, home: string): G
 }
 
 /**
- * The names of `folder`'s entries, or undefined when it can't be listed: guard-rules.ts grokRule reads a bare word run
+ * The names of `folder`'s entries, or undefined when it can't be listed: grok/guard-rules.ts grokRule reads a bare word run
  * there by them.
  */
 function entriesIn(folder: string): string[] | undefined {
@@ -1198,7 +1192,7 @@ function entriesIn(folder: string): string[] | undefined {
 	}
 }
 
-/** The names of `folder`'s entries that are links (none when it can't be listed): guard-rules.ts grokRule follows them. */
+/** The names of `folder`'s entries that are links (none when it can't be listed): grok/guard-rules.ts grokRule follows them. */
 function linksIn(folder: string): string[] {
 	try {
 		return readdirSync(folder, { withFileTypes: true })

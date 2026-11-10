@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkToolCall, runsGrokCommand } from "../../src/agent/guard-rules.ts";
+import { checkToolCall } from "../../src/agent/guard-call.ts";
+import { runsGrokCommand } from "../../src/grok/guard-rules.ts";
 import { newToken } from "../../src/agent/pick.ts";
 import { CODEX_GUARD_DEADLINE_MS, CODEX_GUARD_WATCHDOG_MS, isGrokGuard } from "../../src/codex/guard-exit.ts";
 import { GROK_AS_CLAUDE, type GrokGuardContext, grokGuard, grokRefusal, runGrokGuard } from "../../src/grok/guard.ts";
