@@ -35,7 +35,7 @@ import { grokHome } from "./log.ts";
 /** A place Grok loads settings from. `key` is stable across runs: scope, kind and real path (and, for two kinds, what in it). */
 export type SettingsSource = {
 	readonly key: string;
-	readonly kind: "hook-file" | "hook-paths" | "config-keys" | "org-config" | "lsp" | "disabled-hooks" | "agent" | "plugin" | "claude-settings" | "compat-hooks" | "mcp-json" | "program" | "watched";
+	readonly kind: "hook-file" | "hook-paths" | "config-keys" | "org-config" | "lsp" | "disabled-hooks" | "agent" | "plugin" | "claude-settings" | "compat-hooks" | "mcp-json" | "program" | "watched" | "watched-presence";
 	readonly path: string;
 	readonly scope: "global" | "project";
 };
@@ -69,7 +69,7 @@ const PLUGIN_FOLDERS = ["agents", "hooks", ".claude-plugin", ".grok-plugin"];
 /** Each kind's name in change lines. */
 const LABEL: Readonly<Record<Kind, string>> = {
 	"hook-file": "hook file", "hook-paths": "hook path list", "config-keys": "Grok config", "org-config": "org config", lsp: "language servers", "disabled-hooks": "hook switches",
-	agent: "agent", plugin: "plugin", "claude-settings": "Claude Code settings", "compat-hooks": "Cursor hook file", "mcp-json": "MCP config", program: "program", watched: "",
+	agent: "agent", plugin: "plugin", "claude-settings": "Claude Code settings", "compat-hooks": "Cursor hook file", "mcp-json": "MCP config", program: "program", watched: "", "watched-presence": "",
 };
 const KEYED = new Set<Kind>(["config-keys", "claude-settings", "mcp-json"]);
 
@@ -308,7 +308,8 @@ const NAME_LIKE = /^[\w.+@-]+$/;
  * text such as a shell line, not a file; a shell line's path words).
  */
 function wordsOf({ command, args }: Command): { readonly program?: string; readonly paths: string[] } {
-	if (Array.isArray(args)) return { program: command, paths: strings(args).filter((arg) => /^(?:\/|~\/|\$)/.test(arg) && !/\s/.test(arg)) };
+	// With args, `command` is the program alone: text with a space is a command line (it may hold a secret), never a program.
+	if (Array.isArray(args)) return { program: /\s/.test(command) ? undefined : command, paths: strings(args).filter((arg) => /^(?:\/|~\/|\$)/.test(arg) && !/\s/.test(arg)) };
 	// A shell line: its first simple command, with leading assignments and `exec` dropped.
 	const words = (command.split(/[;&|<>`\n]|\$\(/)[0] ?? "").trim().split(/\s+/).map(unquote).filter((word) => word !== "" && word !== "exec" && !/^[A-Za-z_]\w*=/.test(word));
 	const [first, ...rest] = words;
@@ -398,7 +399,7 @@ function installed(source: SettingsSource, reader: Reader): { readonly name: str
 export function entriesOf(source: SettingsSource, reader: Reader): [string, SettingsEntry][] {
 	const { kind, path, key } = source;
 	const where = safeText(path);
-	if (kind === "watched") return [];
+	if (kind === "watched" || kind === "watched-presence") return [];
 	if (kind === "plugin") {
 		if (!isFolder(path)) return [];
 		// Own keys whatever a file is called (a file named __proto__ too).
@@ -535,8 +536,8 @@ export function discover(env: NodeJS.ProcessEnv, project: string | undefined, re
 		const realHome = reader.real(home);
 		const folders = projectFolders(folder, realHome);
 		workspace = folders[0];
-		// The folders above the session folder, below home and /: a .git made or removed in one changes the project's folders.
-		for (let dir = dirname(folder); dirname(dir) !== dir && !covers(dir, realHome); dir = dirname(dir)) found.add("project", "watched", dir);
+		// From the session folder up, below home and /: a .git made, removed or replaced in one changes the project's folders.
+		for (let dir = folder; dirname(dir) !== dir && !covers(dir, realHome); dir = dirname(dir)) found.add("project", "watched-presence", join(dir, ".git"));
 		for (const level of folders) {
 			const config = join(level, ".grok", "config.toml");
 			found.folder("project", "hook-file", join(level, ".grok", "hooks"), ".json");

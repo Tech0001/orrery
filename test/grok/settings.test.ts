@@ -498,6 +498,15 @@ describe("Grok settings sources", () => {
 		expect(sources.some((source) => source.kind === "program" && source.path === "/bin/sh")).toBe(true);
 	});
 
+	it("a command line given with args is never a source", () => {
+		const t = scratch();
+		const probe = "sk-" + "proj-PROBE";
+		t.write(t.config, `${readFileSync(t.config, "utf8")}\n[mcp_servers.q]\ncommand = "/bin/echo ${probe}"\nargs = ["x"]\n`);
+		const sources = grokSettingsSources(t.env, t.project);
+		expect(sources.filter((source) => source.key.includes(probe) || source.path.includes(probe))).toEqual([]);
+		expect(sources.filter((source) => source.kind === "program" && source.path === "/bin/echo")).toEqual([]);
+	});
+
 	it("a big program is fingerprinted by size, times and inode: other bytes with the old mtime still count", () => {
 		const t = scratch();
 		const big = join(t.dir, "scratch", "big.bin");
@@ -541,6 +550,31 @@ describe("Grok settings sources", () => {
 		expect(moved()).toBe(true);
 		// A Claude Code folder plugin's manifest, enabled or not.
 		t.write(folderPlugin, JSON.stringify({ name: "renamed-plugin" }));
+		expect(moved()).toBe(true);
+	});
+
+	it("the stamp watches .git in the session folder and above, not whole folders", () => {
+		const t = scratch();
+		const sources = grokSettingsSources(t.env, t.project);
+		const root = dirname(t.project);
+		let stamp = settingsStamp(sources);
+		const moved = () => {
+			const now = settingsStamp(sources);
+			const result = now !== stamp;
+			stamp = now;
+			return result;
+		};
+		mkdirSync(join(t.project, ".git"));
+		expect(moved()).toBe(true);
+		// Work in the repo: a new file, a file inside .git. Neither changes the project's folders.
+		writeFileSync(join(root, "new.txt"), "x");
+		writeFileSync(join(t.project, "new.txt"), "x");
+		writeFileSync(join(t.project, ".git", "index"), "x");
+		mkdirSync(join(t.project, ".git", "objects"));
+		expect(moved()).toBe(false);
+		rmSync(join(t.project, ".git"), { recursive: true });
+		expect(moved()).toBe(true);
+		mkdirSync(join(root, ".git"));
 		expect(moved()).toBe(true);
 	});
 

@@ -57,10 +57,20 @@ function statLine(path: string): string {
 	}
 }
 
+/** A path's presence and kind and inode only (`-` when it isn't there): a `.git` folder's times move on every `git add`. */
+function presenceLine(path: string): string {
+	try {
+		const stats = lstatSync(path);
+		return `${stats.isSymbolicLink() ? "link" : stats.isDirectory() ? "dir" : "file"} ${stats.ino}`;
+	} catch (error) {
+		return gone(error) ? "-" : "?";
+	}
+}
+
 /** A hash of the sources' keys and lstat (no file is read): it moves when a source, or a watched folder's listing, does. */
 export function settingsStamp(sources: readonly SettingsSource[]): string {
 	const hash = createHash("sha256");
-	for (const source of sources) hash.update(`${source.key}\0${statLine(source.path)}\n`);
+	for (const source of sources) hash.update(`${source.key}\0${source.kind === "watched-presence" ? presenceLine(source.path) : statLine(source.path)}\n`);
 	return hash.digest("hex");
 }
 
