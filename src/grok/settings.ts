@@ -11,8 +11,12 @@
 
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
+import { realish } from "../agent/appended-lines.ts";
 import { writePrivate } from "../agent/private-file.ts";
+import { safeText } from "../agent/source-labels.ts";
+import { grokHome } from "./log.ts";
 import { discover, entriesOf, gone, isTable, Reader, UNREADABLE } from "./settings-sources.ts";
 import type { Scope, SettingsEntry, SettingsSource } from "./settings-sources.ts";
 
@@ -25,9 +29,9 @@ export type SettingsRecord = { readonly version: 1; readonly grok: Readonly<Reco
 declare const shownBrand: unique symbol;
 /** What a check compared (Grok's folder, the session folder, and their entries then); opaque: approve it as it came. */
 export type ShownSettings = { readonly [shownBrand]: true };
-/** A check's result; `shown` is what approving it saves, whatever is on disk by then. */
+/** A check's result; `shown` is what approving it saves, whatever is on disk by then. An unchanged one's `approvedAt` is its approval's (none when nothing was approved, nor loaded). */
 export type SettingsCheck =
-	| { readonly state: "unchanged"; readonly shown: ShownSettings }
+	| { readonly state: "unchanged"; readonly approvedAt?: string; readonly shown: ShownSettings }
 	| { readonly state: "first"; readonly lines: readonly string[]; readonly shown: ShownSettings }
 	| { readonly state: "changed"; readonly record: "ok" | "unreadable" | "new-folder"; readonly approvedAt: string; readonly changes: readonly SettingsChange[]; readonly shown: ShownSettings };
 
@@ -89,11 +93,52 @@ export function compareSettings(approved: SettingsSnapshot, now: SettingsSnapsho
 	return changes;
 }
 
+/** The first `max` lines, then `…and <n> more (orrery grok-settings lists them all)`. */
+const capped = (lines: readonly string[], max: number): string[] => (lines.length > max ? [...lines.slice(0, max), `…and ${lines.length - max} more (orrery grok-settings lists them all)`] : [...lines]);
+
 /** The first `max` changes' lines (without indent), then `…and <n> more (orrery grok-settings lists them all)`. */
 export function changeLines(changes: readonly SettingsChange[], max = 20): string[] {
-	const lines = changes.slice(0, max).map((change) => change.line);
-	if (changes.length > max) lines.push(`…and ${changes.length - max} more (orrery grok-settings lists them all)`);
-	return lines;
+	return capped(
+		changes.map((change) => change.line),
+		max,
+	);
+}
+
+/** An approval's day (`approvedAt`, an ISO time) in local time, YYYY-MM-DD: the launch's question, orrery grok-settings. */
+export function approvalDate(approvedAt: string): string {
+	const at = new Date(approvedAt);
+	if (Number.isNaN(at.getTime())) return safeText(approvedAt.slice(0, 10));
+	const two = (n: number) => String(n).padStart(2, "0");
+	return `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())}`;
+}
+
+/** Where the person reviews Grok's settings when there is no terminal to ask on (the launch, orrery grok-settings). */
+export const REVIEW_IN_TERMINAL = "Run orrery grok-settings in your own terminal to review them.";
+
+/** What the launch and `orrery grok-settings` ask about a check: the list (a header, then its lines two spaces in), and the question. */
+export interface SettingsQuestion {
+	readonly lines: readonly string[];
+	/** Its last line, naming the answer Enter gives: `[Y/n]` (`defaultYes`) or `[y/N]`. */
+	readonly question: string;
+	readonly defaultYes: boolean;
+}
+
+/**
+ * The question about a check that isn't `unchanged` (spec "Change list copy"), with at most `max` lines before the "…and
+ * <n> more" line (orrery grok-settings lists them all). The first run's lists what Grok loads, default yes; a change's
+ * lists the changes since the approval, default no, under a header that says what they were compared with.
+ */
+export function settingsQuestion(check: SettingsCheck, max = 20): SettingsQuestion | undefined {
+	if (check.state === "unchanged") return undefined;
+	const indented = (lines: readonly string[]) => lines.map((line) => `  ${line}`);
+	if (check.state === "first") return { lines: ["Orrery now checks Grok's settings at each launch. Grok loads these now:", ...indented(capped(check.lines, max))], question: "Approve Grok's current settings? [Y/n]", defaultYes: true };
+	const header =
+		check.record === "ok"
+			? `Grok's settings changed since you approved them on ${approvalDate(check.approvedAt)}:`
+			: check.record === "unreadable"
+				? "Orrery can't read its record of Grok's settings, so it lists them all:"
+				: "Orrery has no record of approving this Grok folder's settings, so it lists them all:";
+	return { lines: [header, ...indented(changeLines(check.changes, max))], question: "Approve these changes to Grok's settings? [y/N]", defaultYes: false };
 }
 
 /** One line per source with content: its items' names, then where it is. */
@@ -163,7 +208,7 @@ export function checkGrokSettings(dataDir: string, env: NodeJS.ProcessEnv, proje
 	const approved = Object.hasOwn(record.grok, found.grok) ? record.grok[found.grok] : undefined;
 	const projectEntries = approved !== undefined && found.folder !== undefined && Object.hasOwn(approved.projects, found.folder) ? approved.projects[found.folder] : undefined;
 	const changes = compareSettings({ ...approved?.global, ...projectEntries }, now);
-	if (changes.length === 0) return { state: "unchanged", shown };
+	if (changes.length === 0) return { state: "unchanged", ...(approved === undefined ? {} : { approvedAt: approved.approvedAt }), shown };
 	return approved === undefined ? { state: "changed", record: "new-folder", approvedAt: "", changes, shown } : { state: "changed", record: "ok", approvedAt: approved.approvedAt, changes, shown };
 }
 
@@ -182,34 +227,60 @@ export function approveGrokSettings(dataDir: string, shown: ShownSettings, now =
 
 /** Whether an entry key is the source's (the source's own, or one of its keys' or servers'). */
 const belongs = (entry: string, source: string) => entry === source || entry.startsWith(`${source}\0`);
-const entriesFor = (snapshot: SettingsSnapshot, source: string): SettingsSnapshot => Object.fromEntries(Object.entries(snapshot).filter(([key]) => belongs(key, source)));
-const sameEntries = (a: SettingsSnapshot, b: SettingsSnapshot) => JSON.stringify(Object.entries(a).map(([key, entry]) => [key, entry.fingerprint]).sort()) === JSON.stringify(Object.entries(b).map(([key, entry]) => [key, entry.fingerprint]).sort());
+
+/** The global entries Orrery's own write may move: entry keys, with the source keys that cover them, or a test of an entry key. */
+export type StepKeys = readonly string[] | ((entry: string) => boolean);
 
 /**
- * Runs Orrery's own `write` to Grok's settings, then moves the record's entries for the global sources `keys` to what it
- * left, each only when it matched the record before (Orrery never approves a change it didn't make). A write that throws
- * moves nothing; with no record for this Grok folder there is nothing to move. `write` must be only the file writes
- * Orrery makes to those sources (no downloads, waits or other work): anything written to them while it runs, by
- * whatever process, is taken into the record.
+ * Runs Orrery's own `write` to Grok's settings, then moves the record's global entries that `keys` cover to what it left,
+ * each only when it matched the record before (Orrery never approves a change it didn't make): one there before and
+ * recorded alike, or one neither there nor recorded (a new one, then, is taken in). `keys` are source keys (each covers
+ * its entries) or entry keys (an entry key is `<source key>\0…`), or a test of an entry key, asked before the write for
+ * what was there and recorded, and after it for what it left (a program at a place the write chose: a plugin's new copy).
+ * A write that throws moves nothing; with no record for this Grok folder there is nothing to move. `write` must be only
+ * the file writes Orrery makes to those sources (no downloads, waits or other work): anything written to them while it
+ * runs, by whatever process, is taken into the record.
  */
-export function keepInStep(dataDir: string, env: NodeJS.ProcessEnv, keys: readonly string[], write: () => void): void {
-	const wanted = new Set(keys);
-	const take = () => {
+export function keepInStep(dataDir: string, env: NodeJS.ProcessEnv, keys: StepKeys, write: () => void): void {
+	const covers = typeof keys === "function" ? keys : (entry: string) => keys.some((key) => belongs(entry, key));
+	// Only the sources a key names, or one of whose entries it names, are read for a list; every global one for a test.
+	const read = typeof keys === "function" ? () => true : (source: string) => keys.some((key) => belongs(key, source));
+	const take = (): SettingsSnapshot => {
 		const reader = new Reader();
-		const found = discover(env, undefined, reader);
-		return { grok: found.grok, snapshot: snapshotWith(found.sources.filter((source) => wanted.has(source.key)), reader) };
+		return snapshotWith(discover(env, undefined, reader).sources.filter((source) => read(source.key)), reader);
 	};
+	// This Grok folder's real path, as the record keys it (discover's `grok`), and its approval: none, nothing to move.
+	const grok = realish(grokHome(env, env.HOME || homedir()));
+	const approvedOf = () => {
+		const record = readSettingsRecord(dataDir);
+		return record === undefined || "unreadable" in record || !Object.hasOwn(record.grok, grok) ? undefined : { record, entry: record.grok[grok] as SettingsRecord["grok"][string] };
+	};
+	const approved = approvedOf();
+	if (approved === undefined) {
+		write();
+		return;
+	}
 	const before = take();
-	const read = readSettingsRecord(dataDir);
-	const approved = read === undefined || "unreadable" in read ? undefined : read.grok[before.grok];
-	const matching = approved === undefined ? [] : keys.filter((key) => sameEntries(entriesFor(before.snapshot, key), entriesFor(approved.global, key)));
+	const recorded = approved.entry.global;
+	const fingerprint = (snapshot: SettingsSnapshot, key: string) => (Object.hasOwn(snapshot, key) ? snapshot[key]?.fingerprint : undefined);
+	/** Whether the entry was there before as the record has it, or neither there nor recorded. */
+	const matched = (key: string) => fingerprint(before, key) === fingerprint(recorded, key);
+	const asked = [...Object.keys(before), ...Object.keys(recorded)].filter(covers);
 	write();
-	if (matching.length === 0) return;
 	const after = take();
-	const fresh = readSettingsRecord(dataDir);
-	if (fresh === undefined || "unreadable" in fresh || !Object.hasOwn(fresh.grok, after.grok)) return;
-	const entry = fresh.grok[after.grok] as SettingsRecord["grok"][string];
-	const global: Record<string, SettingsEntry> = Object.fromEntries(Object.entries(entry.global).filter(([key]) => !matching.some((source) => belongs(key, source))));
-	for (const source of matching) Object.assign(global, entriesFor(after.snapshot, source));
-	writeRecord(dataDir, { version: 1, grok: { ...fresh.grok, [after.grok]: { ...entry, global } } });
+	// The record as it is now: another approval may have been saved meanwhile.
+	const fresh = approvedOf();
+	if (fresh === undefined) return;
+	const global: Record<string, SettingsEntry> = { ...fresh.entry.global };
+	let moved = false;
+	for (const key of new Set([...asked, ...Object.keys(after).filter(covers)])) {
+		if (!matched(key)) continue;
+		const now = Object.hasOwn(after, key) ? after[key] : undefined;
+		if (fingerprint(global, key) === now?.fingerprint && (now === undefined || JSON.stringify(global[key]?.summary) === JSON.stringify(now.summary))) continue;
+		moved = true;
+		if (now === undefined) delete global[key];
+		else global[key] = now;
+	}
+	// Nothing to move: the record is left as it is.
+	if (moved) writeRecord(dataDir, { version: 1, grok: { ...fresh.record.grok, [grok]: { ...fresh.entry, global } } });
 }

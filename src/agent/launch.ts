@@ -4,7 +4,8 @@
  * agent (ORRERY_AGENT and a fresh ORRERY_AGENT_TOKEN, src/agent/pick.ts). `orrery agent` and the TUI's Enter and L use
  * it. No tool gets a coding tool's variables (toolEnv), even ones this process inherited.
  * Grok gets the agent's memory section and instructions as its one `--rules` value (src/grok/launch.ts), after the
- * question that connects Orrery to Grok when it isn't (setup's steps, src/grok/install.ts).
+ * question that connects Orrery to Grok when it isn't (setup's steps, src/grok/install.ts), and first the question about
+ * Grok's settings when they aren't the ones the person approved (grokSettingsSteps).
  * Codex gets Orrery's hooks, memory tools and instructions on its command line (src/codex/launch.ts), after the hook
  * check (src/codex/check.ts). OpenCode gets Orrery's plugin through OPENCODE_CONFIG_CONTENT and the agent's token as a
  * file, never in its environment (src/opencode/launch.ts, src/opencode/token-file.ts), after the plugin check
@@ -25,6 +26,7 @@ import { configContent } from "../opencode/options.ts";
 import { removeOnSignals, removeTokenFile, tokenFilePath, writeTokenFile } from "../opencode/token-file.ts";
 import { GROK_TOOLS_SWITCHED_OFF, grokConfigLacks, grokGuardSwitchedOff, grokHooksInstalled, grokMemoryToolsSwitchedOff, grokRecordingSwitchedOff, grokSwitchesUnreadable } from "../grok/install.ts";
 import { grokArgs, grokArgsRefusal, grokResumeNotice, grokRules } from "../grok/launch.ts";
+import { approveGrokSettings, checkGrokSettings, settingsQuestion, type ShownSettings } from "../grok/settings.ts";
 import { buildRunning, readBuild } from "./build.ts";
 import { findAgent, type HarnessConfig, insideFolder, type AgentConfig, type AgentLauncher, type AgentTool } from "./config.ts";
 import { type AgentRow, TOOL_LABELS } from "./overview.ts";
@@ -35,7 +37,7 @@ import { BINARIES, codexVersion, findOnPath, type InstallStep, installSteps, orr
 
 const HINTS: Record<AgentTool, string> = { pi: "Get it at https://pi.dev", "claude-code": "Get it at https://claude.com/claude-code", codex: "Get it at https://github.com/openai/codex", omp: "Get it at https://omp.sh", opencode: "Get it at https://opencode.ai", grok: "Get Grok Build from xAI" };
 
-export type LaunchFix = "create-folder" | "install-pi" | "install-omp" | "install-claude-code" | "install-grok" | "claude-setup-mod";
+export type LaunchFix = "create-folder" | "install-pi" | "install-omp" | "install-claude-code" | "install-grok" | "claude-setup-mod" | "approve-grok-settings";
 
 export interface LaunchStep {
 	readonly text: string;
@@ -45,6 +47,12 @@ export interface LaunchStep {
 	readonly fix?: LaunchFix;
 	/** A question about opening the agent itself (it is open elsewhere): plain Codex (withoutOrrery), which opens no agent, skips it. */
 	readonly asAgent?: true;
+	/**
+	 * approve-grok-settings (grokSettingsSteps): what the list showed, which a yes approves as it is (never a check made
+	 * after the question), and the answer Enter gives, which the text's last line names ([Y/n] or [y/N]). Only a person at
+	 * a terminal answers it: `--yes` doesn't, and with no terminal the launch opens nothing (src/cli/agent.ts).
+	 */
+	readonly grokSettings?: { readonly shown: ShownSettings; readonly defaultYes: boolean };
 }
 
 export interface LaunchPlan {
@@ -161,6 +169,21 @@ function grokWiringSteps(check: ToolCheck, options: { root?: string; env?: NodeJ
 	return [{ text: stepsQuestion(why, steps, "Connecting Orrery to Grok", "Connect Orrery to Grok now?"), confirm: true, fix: "install-grok" }, ...switched()];
 }
 
+/**
+ * The gate before Grok starts (spec 2026-11-10-grok-settings-check-design, Goal 2): Grok's settings, for Grok's folder
+ * in `env` and the folder Grok starts in (`project`), against the record of the ones the person approved, in `dataDir`
+ * (src/grok/settings.ts). None when they are as approved. Else one question (src/grok/settings.ts settingsQuestion):
+ * the first run's list, default yes, or the changes, default no; a yes approves what it listed (approve-grok-settings),
+ * a no opens nothing. launchPlan asks it before every other step: a no then leaves nothing done, and Orrery's own write
+ * that connects Grok, after it, keeps the approval in step (src/grok/install.ts grokInstallSteps).
+ */
+export function grokSettingsSteps(dataDir: string, env: NodeJS.ProcessEnv, project: string): LaunchStep[] {
+	const check = checkGrokSettings(dataDir, env, project);
+	const asked = settingsQuestion(check);
+	if (asked === undefined) return [];
+	return [{ text: [...asked.lines, asked.question].join("\n"), confirm: true, fix: "approve-grok-settings", grokSettings: { shown: check.shown, defaultYes: asked.defaultYes } }];
+}
+
 /** What Grok's session goes without for the config tables it lacks (grokConfigLacks), and that setup adds them back; undefined for none. */
 function grokLacksText(lacks: readonly string[]): string | undefined {
 	if (lacks.length === 0) return undefined;
@@ -261,6 +284,8 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 	const badArgs = tool === "opencode" ? argsRefusal(agent.name, base.args) : undefined;
 	if (badArgs !== undefined) return { ...base, steps: [], blocked: badArgs };
 	const steps: LaunchStep[] = [];
+	// Grok's settings against the ones the person approved, before anything else (grokSettingsSteps).
+	if (tool === "grok") steps.push(...grokSettingsSteps(config.dataDir, options.env ?? process.env, cwd));
 	if (!existsSync(cwd)) steps.push({ text: `The folder ${cwd} does not exist. Create it?`, confirm: true, fix: "create-folder" });
 	if ((row.state === "open" || row.state === "working") && row.openIn !== undefined) {
 		steps.push({ text: `${row.name} is already open in ${TOOL_LABELS[row.openIn]}. A second session won't record. Launch anyway?`, confirm: true, asAgent: true });
@@ -378,18 +403,24 @@ export function withoutOrrery(plan: LaunchPlan): LaunchPlan {
 
 /**
  * Does what a yes to a launch step asked; returns what it did, for showing. Throws when it fails. `cwd` is the folder the
- * plan opens in (create-folder makes it).
+ * plan opens in (create-folder makes it). `shown`: the step's grokSettings.shown, which approve-grok-settings saves as
+ * approved, in the config's data folder. Connecting Grok, or installing the Claude Code plugin, keeps that record in step.
  */
-export function applyFix(fix: LaunchFix, config: HarnessConfig, row: AgentRow, tools: readonly ToolCheck[], options: { root?: string; env?: NodeJS.ProcessEnv; run?: Runner; cwd?: string } = {}): string {
+export function applyFix(fix: LaunchFix, config: HarnessConfig, row: AgentRow, tools: readonly ToolCheck[], options: { root?: string; env?: NodeJS.ProcessEnv; run?: Runner; cwd?: string; shown?: ShownSettings } = {}): string {
 	if (fix === "create-folder") {
 		const folder = options.cwd ?? row.folder ?? process.cwd();
 		mkdirSync(folder, { recursive: true });
 		return `Created ${folder}.`;
 	}
 	if (fix === "claude-setup-mod") return modSetupReport(claudeSetupMod(findAgent(config, row.name)));
+	if (fix === "approve-grok-settings") {
+		if (options.shown === undefined) throw new Error("Nothing to approve: no list of Grok's settings was shown.");
+		approveGrokSettings(config.dataDir, options.shown);
+		return "Approved Grok's settings.";
+	}
 	const check = tools.find((t) => t.id === (fix === "install-pi" ? "pi" : fix === "install-omp" ? "omp" : fix === "install-grok" ? "grok" : "claude-code"));
 	if (check === undefined) throw new Error("That tool was not checked.");
-	const result = runInstall(installSteps(check, options.root ?? wiringRoot(options.env).root, options.env), options.run ?? realRunner);
+	const result = runInstall(installSteps(check, options.root ?? wiringRoot(options.env).root, options.env, config.dataDir), options.run ?? realRunner);
 	if (!result.ok) throw new Error(result.output);
 	return result.output;
 }

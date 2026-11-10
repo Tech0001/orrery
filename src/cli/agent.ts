@@ -4,7 +4,9 @@
  * §5). The checks are the TUI's (src/agent/launch.ts): the tool is installed and wired, the agent is not open on another
  * machine or is taken over, Claude Code opens outside the agent's folder only through the Orrery mod, and Orrery's hooks
  * load in the Codex installed (src/codex/check.ts) and its plugin in the OpenCode installed (src/opencode/check.ts);
- * only a person at a terminal may start Codex or OpenCode without them.
+ * only a person at a terminal may start Codex or OpenCode without them. Before Grok starts, Grok's settings are checked
+ * against the ones the person approved (src/grok/settings.ts), and a difference is asked about first: only a person at a
+ * terminal answers that, and with none nothing opens.
  */
 
 import { resolve } from "node:path";
@@ -17,6 +19,7 @@ import { checkTools } from "../agent/tools.ts";
 import type { CodexGate } from "../codex/check.ts";
 import type { OpenCodeGate } from "../opencode/check.ts";
 import { codexResumeLine } from "../codex/resume.ts";
+import { REVIEW_IN_TERMINAL } from "../grok/settings.ts";
 
 export interface AgentIo {
 	say(line: string): void;
@@ -27,6 +30,11 @@ export interface AgentIo {
 	 * Orrery's memory and guard. Absent without a terminal.
 	 */
 	askPerson?(question: string): Promise<boolean>;
+	/**
+	 * The question about Grok's settings (src/agent/launch.ts grokSettingsSteps), shown whole: its last line names the
+	 * answer Enter gives (`defaultYes`). Only a person answers it (`--yes` does not). Absent without a terminal.
+	 */
+	askSettings?(question: string, defaultYes: boolean): Promise<boolean>;
 }
 
 /** The tools an agent opens in. */
@@ -73,6 +81,21 @@ export async function openAgentCommand(
 		io.say("Not opened.");
 		return 1;
 	}
+	// Grok's settings, when they aren't the ones the person approved, are asked about first: a no, or no terminal to ask
+	// on, leaves no lock taken over and no step done. A yes approves the list it showed.
+	const settings = launching.steps.find((step) => step.fix === "approve-grok-settings");
+	if (settings !== undefined) {
+		if (io.askSettings === undefined) {
+			io.say("Not opened.");
+			io.say(REVIEW_IN_TERMINAL);
+			return 1;
+		}
+		if (!(await io.askSettings(settings.text, settings.grokSettings?.defaultYes === true))) {
+			io.say("Not opened.");
+			return 1;
+		}
+		io.say(applyFix("approve-grok-settings", config, remote.row, tools, { cwd: plan.cwd, ...(settings.grokSettings === undefined ? {} : { shown: settings.grokSettings.shown }) }));
+	}
 	// Plain Codex or OpenCode opens no agent: it takes no lock over (nor asks about a second session, withoutOrrery).
 	if (remote.takeover !== undefined && launching.withoutOrrery !== true) {
 		if (!(await io.confirm(remote.takeover))) {
@@ -82,6 +105,7 @@ export async function openAgentCommand(
 		io.say((await deps.takeover(agent.name)).trimEnd());
 	}
 	for (const step of launching.steps) {
+		if (step === settings) continue;
 		if (!step.confirm) {
 			io.say(step.text);
 			continue;

@@ -55,6 +55,14 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 	const cache = new OverviewCache({ changed: () => options.tui.requestRender() });
 	const { tui } = options;
 	const current = judgedConfig(options.configPath, options.config);
+	/** The config's data folder, where the record of approved Grok settings is; none before there is a config that loads. */
+	const dataDirOf = (): string | undefined => {
+		try {
+			return current().config?.dataDir;
+		} catch {
+			return undefined;
+		}
+	};
 	return {
 		configPath: options.configPath,
 		cwd: process.cwd(),
@@ -76,7 +84,11 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 		pushAgent: (name, remote) => agentRemoteCommand(current(), ["push", name], { to: remote }),
 		localAgent: (name) => agentRemoteCommand(current(), ["local", name]),
 		usage: (config, days, only) => agentUsage(config, days, only),
-		tools: (options) => checkTools(options),
+		// Grok's row says whether Grok's settings are as approved: the record in the config's data folder.
+		tools: (options) => {
+			const dataDir = dataDirOf();
+			return checkTools({ ...options, ...(dataDir === undefined ? {} : { dataDir }) });
+		},
 		ori: () => probeOri(),
 		sources: (config, agent) => openSummarySources(config, agent),
 		target: (config, agent, report = () => {}) => agentCompactorTarget(config, agent, { report }),
@@ -97,7 +109,7 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 		},
 		codexCheck: (plan, say) => checkCodexHooks(plan, { onCheck: say }),
 		opencodeCheck: (plan, say) => checkOpenCodePlugin(plan, { onCheck: say }),
-		applyFix: (fix, config, row, tools, cwd) => applyFix(fix, config, row, tools, cwd === undefined ? {} : { cwd }),
+		applyFix: (fix, config, row, tools, cwd, shown) => applyFix(fix, config, row, tools, { ...(cwd === undefined ? {} : { cwd }), ...(shown === undefined ? {} : { shown }) }),
 		edit: async (path) => {
 			// As launch does: the editor gets the terminal, and the TUI comes back when it exits.
 			tui.stop({ preserveScreen: true });
@@ -108,7 +120,8 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 				tui.requestRender(true);
 			}
 		},
-		installSteps: (check) => installSteps(check, wiringRoot().root),
+		// Grok's and Claude Code's steps keep the record of approved Grok settings in the config's data folder in step.
+		installSteps: (check) => installSteps(check, wiringRoot().root, process.env, dataDirOf()),
 		install: (steps) => runInstall(steps),
 		browse: (config, agent) => {
 			const agentDir = config.agents.get(agent)?.dir ?? "";

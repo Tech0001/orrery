@@ -15,6 +15,8 @@ import { realTarget } from "../agent/guard-paths.ts";
 import { orreryHome, passwordHome } from "../agent/home.ts";
 import { findOnPath, ompExtensionFile, orreryPlugin, piExtensionFile, rewriteKeepingCopy, type RunResult, type Runner } from "../agent/tools.ts";
 import { grokFiles, grokHookTarget, removeGrokConfig } from "../grok/install.ts";
+import { keepInStep, type StepKeys } from "../grok/settings.ts";
+import { appPrograms, grokConfigKeys, grokHookKeys, orreryPluginEntries, settingsDataDir } from "../grok/settings-keys.ts";
 import { dropVersion, envRunner, holdInstallLock, isLeftover, agentVersions, removeVersion } from "./install.ts";
 import { ENTRY_TAILS, inApp, oneLineTarget, VERSION_NAME } from "./layout.ts";
 
@@ -68,8 +70,11 @@ function unwireExtension(report: Report, label: string, file: string, app: strin
 	report.lines.push(`${label}: removed ${file}`);
 }
 
-/** Uninstalls the Claude Code plugin, then its marketplace, when the plugin reads from this home's app/. */
-function unwireClaude(report: Report, env: NodeJS.ProcessEnv, app: string, run: Runner): void {
+/**
+ * Uninstalls the Claude Code plugin, then its marketplace, when the plugin reads from this home's app/: Grok loads the
+ * plugin too, so the commands run inside keepInStep (`keep`).
+ */
+function unwireClaude(report: Report, env: NodeJS.ProcessEnv, app: string, run: Runner, keep: (keys: StepKeys, write: () => void) => void): void {
 	const claude = findOnPath("claude", env);
 	if (claude === undefined) {
 		report.lines.push("Claude Code: not on PATH, so not checked (if it has the Orrery plugin: claude plugin uninstall orrery@orrery)");
@@ -94,15 +99,17 @@ function unwireClaude(report: Report, env: NodeJS.ProcessEnv, app: string, run: 
 		report.lines.push(`Claude Code: the Orrery plugin reads from ${from}, not this install; left as it is`);
 		return;
 	}
-	for (const args of [["plugin", "uninstall", "orrery@orrery"], ["plugin", "marketplace", "remove", "orrery"]]) {
-		const r = run(claude, args);
-		if (r.status !== 0) {
-			report.lines.push(`Claude Code: claude ${args.join(" ")} failed (${failure(r)})`);
-			report.ok = false;
-			return;
+	keep(orreryPluginEntries(env), () => {
+		for (const args of [["plugin", "uninstall", "orrery@orrery"], ["plugin", "marketplace", "remove", "orrery"]]) {
+			const r = run(claude, args);
+			if (r.status !== 0) {
+				report.lines.push(`Claude Code: claude ${args.join(" ")} failed (${failure(r)})`);
+				report.ok = false;
+				return;
+			}
+			report.lines.push(`Claude Code: claude ${args.join(" ")}`);
 		}
-		report.lines.push(`Claude Code: claude ${args.join(" ")}`);
-	}
+	});
 }
 
 /**
@@ -111,11 +118,13 @@ function unwireClaude(report: Report, env: NodeJS.ProcessEnv, app: string, run: 
  * (removeGrokConfig), after a copy of the config; everything else in it stays. Uninstall runs it, and so do setup and
  * update when app/current is a version without Grok's hooks (an older Orrery answers grok-hook with an error, which
  * blocks every prompt). Its lines start with "Grok: "; `ok` is false when something of Orrery's may be left, `changed`
- * true when something was removed.
+ * true when something was removed. Each removal keeps the record of approved Grok settings in step (keepInStep: the
+ * record in `dataDir`, else the one of the config Orrery runs with) for what it removes and the programs that ran.
  */
-export function unwireGrok(env: NodeJS.ProcessEnv, app: string): { lines: string[]; ok: boolean; changed: boolean } {
+export function unwireGrok(env: NodeJS.ProcessEnv, app: string, dataDir?: string): { lines: string[]; ok: boolean; changed: boolean } {
 	const report: Report & { changed: boolean } = { lines: [], ok: true, changed: false };
 	const { hooks, config } = grokFiles(env);
+	const keep = (keys: readonly string[], write: () => void) => keepInStep(dataDir ?? settingsDataDir(env), env, keys, write);
 	let text: string | undefined;
 	try {
 		if (lstatSync(hooks).isFile()) text = readFileSync(hooks, "utf8");
@@ -132,7 +141,7 @@ export function unwireGrok(env: NodeJS.ProcessEnv, app: string): { lines: string
 	else if (target !== undefined && !inApp(app, target, ENTRY_TAILS.cli)) report.lines.push(`Grok: left ${hooks} as it is (it runs ${target}, not this install)`);
 	else if (target !== undefined) {
 		try {
-			rmSync(hooks);
+			keep(grokHookKeys(env), () => rmSync(hooks));
 			report.lines.push(`Grok: removed ${hooks}`);
 			report.changed = true;
 		} catch (error) {
@@ -167,7 +176,16 @@ export function unwireGrok(env: NodeJS.ProcessEnv, app: string): { lines: string
 	}
 	if (removed.length > 0) {
 		try {
-			const copy = rewriteKeepingCopy(config, next);
+			let copy: string | undefined;
+			keep(
+				grokConfigKeys(
+					env,
+					ENTRY_TAILS.cli.map((tail) => join(app, "current", tail)),
+				),
+				() => {
+					copy = rewriteKeepingCopy(config, next);
+				},
+			);
 			report.lines.push(`Grok: removed ${removed.map((name) => `[${name}]`).join(" and ")} from ${config} (its copy from before: ${copy})`);
 			report.changed = true;
 		} catch (error) {
@@ -388,10 +406,13 @@ function purgeRefusal(home: string, env: NodeJS.ProcessEnv): string | undefined 
  * Unwires and removes this install; with `purge`, also deletes the home. Everything that can stop it (open agents, a home
  * that is not Orrery's, the purge question, an install holding the lock) comes before the first change, so a refusal or
  * a no changes nothing. The install lock is held from before the first change until app/ is emptied, so an install
- * cannot run in between. `confirmPurge` answers "no terminal" when there was none to ask.
+ * cannot run in between. `confirmPurge` answers "no terminal" when there was none to ask. What it removes that Grok loads
+ * (its hook file and config tables, the Claude Code plugin, the programs in app/) keeps the record of approved Grok
+ * settings in step: the record in `dataDir`, else the one of the config Orrery runs with.
  */
-export async function uninstall(options: { env: NodeJS.ProcessEnv; purge: boolean; confirmPurge: () => Promise<boolean | "no terminal">; run?: Runner }): Promise<{ lines: string[]; ok: boolean }> {
+export async function uninstall(options: { env: NodeJS.ProcessEnv; purge: boolean; confirmPurge: () => Promise<boolean | "no terminal">; run?: Runner; dataDir?: string }): Promise<{ lines: string[]; ok: boolean }> {
 	const { env } = options;
+	const keep = (keys: StepKeys, write: () => void) => keepInStep(options.dataDir ?? settingsDataDir(env), env, keys, write);
 	const run = options.run ?? envRunner(env, 120_000);
 	const home = orreryHome(env);
 	const app = join(home, "app");
@@ -432,13 +453,13 @@ export async function uninstall(options: { env: NodeJS.ProcessEnv; purge: boolea
 			unwireExtension(report, "pi", pi, app);
 			unwireExtension(report, "OMP", omp, app);
 		}
-		unwireClaude(report, env, app, run);
-		const grok = unwireGrok(env, app);
+		unwireClaude(report, env, app, run, keep);
+		const grok = unwireGrok(env, app, options.dataDir);
 		report.lines.push(...grok.lines);
 		if (!grok.ok) report.ok = false;
 		unwireBackup(report, env, userHome, app, run);
 		unlinkCommand(report, userHome, app);
-		removeApp(report, app, release);
+		keep(appPrograms(env), () => removeApp(report, app, release));
 	} finally {
 		release();
 	}

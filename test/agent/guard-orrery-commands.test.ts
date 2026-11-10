@@ -135,7 +135,7 @@ describe("the commands the guard knows", () => {
 
 	it("refuse every one that does not run inside an agent session, but version, which prints before any command runs", () => {
 		expect([...REFUSED_COMMANDS].sort()).toEqual(
-			["agent", "backup", "claude-setup", "compact", "import", "install", "login", "logins", "logout", "remote", "restore", "run", "setup", "tools", "trust-host", "uninstall", "update"].sort(),
+			["agent", "backup", "claude-setup", "compact", "grok-settings", "import", "install", "login", "logins", "logout", "remote", "restore", "run", "setup", "tools", "trust-host", "uninstall", "update"].sort(),
 		);
 		expect(ORRERY_COMMANDS.filter((command) => !REFUSED_COMMANDS.includes(command)).sort()).toEqual([...ALLOWED_INSIDE, "version"].sort());
 	});
@@ -187,6 +187,9 @@ describe("Orrery's commands in shell text", () => {
 		["orrery claude-setup Atlas", "claude-setup"],
 		["orrery install --from /tmp/r --yes", "install"],
 		["orrery uninstall --purge", "uninstall"],
+		// Approving Grok's settings is the person's alone.
+		["orrery grok-settings --yes", "grok-settings"],
+		["orrery grok-settings", "grok-settings"],
 		// After options main.ts knows, their values skipped.
 		["orrery --config /tmp/c.toml restore Atlas", "restore"],
 		["orrery --config=/tmp/c.toml setup", "setup"],

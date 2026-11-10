@@ -241,6 +241,8 @@ describe("the CLI gate (spec 2026-10-18-agent-permissions §3)", () => {
 			[["install"], { from: "/x" }, "orrery install"],
 			[["update"], {}, "orrery update"],
 			[["uninstall"], {}, "orrery uninstall"],
+			[["grok-settings"], { yes: true }, "orrery grok-settings"],
+			[["grok-settings"], {}, "orrery grok-settings"],
 			[[], {}, "orrery's TUI"],
 		];
 		for (const [argv, values, label] of cases) expect(refusal(() => gate(t, argv, values)), argv.join(" ") || "TUI").toBe(changes(label));
@@ -795,6 +797,7 @@ describe("a coding tool's session that is no agent's (spec 2026-10-19-no-agent-s
 			[["install"], { from: "/x" }, "orrery install"],
 			[["update"], {}, "orrery update"],
 			[["uninstall"], {}, "orrery uninstall"],
+			[["grok-settings"], { yes: true }, "orrery grok-settings"],
 			[[], {}, "orrery's TUI"],
 		];
 		for (const [argv, values, label] of cases) expect(refusal(() => gateCommand(argv[0], argv, values, env, deps)), argv.join(" ") || "TUI").toBe(noAgent(label));

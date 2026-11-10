@@ -186,29 +186,50 @@ describe("orrery agent", () => {
 		return { ...s, env: { ...s.env, GROK_HOME: grok }, grok, hooks: join(grok, "hooks", "orrery.json") };
 	}
 
-	it("asks to connect Orrery to Grok before a Grok launch: no terminal is a no, and nothing opens or is written; --yes connects it as setup does", () => {
+	/** `orrery grok-settings --yes` where the scene's launches run: Grok's settings as they are now, approved, as a person would approve them in their own terminal. */
+	function approveSettings(s: ReturnType<typeof grokScene>): void {
+		const r = orrery(s.env, s.elsewhere, "grok-settings", "--yes");
+		expect(r.status, r.stderr).toBe(0);
+	}
+
+	it("asks about Grok's settings, then to connect Orrery to Grok, before a Grok launch: no terminal opens nothing and writes nothing; once approved, --yes connects it as setup does", () => {
 		const s = grokScene();
-		// No terminal to answer on: the connect question is a no, as pi's install question is.
-		const no = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
-		expect(no.status).toBe(1);
-		expect(no.stdout).toContain("Not opened.");
-		expect(existsSync(s.out)).toBe(false);
-		expect(existsSync(s.grok)).toBe(false);
+		const record = join(s.dir, "data", "grok-settings.json");
+		// No terminal to answer on: Grok's settings can't be asked about, so nothing opens, --yes or not.
+		for (const yes of [[], ["--yes"]]) {
+			const no = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok", ...yes);
+			expect(no.status).toBe(1);
+			expect(no.stdout).toContain("Not opened.\nRun orrery grok-settings in your own terminal to review them.\n");
+			expect(existsSync(s.out)).toBe(false);
+			expect(existsSync(s.grok)).toBe(false);
+			expect(existsSync(record)).toBe(false);
+		}
+		approveSettings(s);
 		const yes = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok", "--yes");
 		expect(yes.status, yes.stderr).toBe(0);
 		expect(yes.stdout).toContain(`wrote ${s.hooks}`);
 		expect(isOrreryHookFile(readFileSync(s.hooks, "utf8"))).toBe(true);
 		expect(readFileSync(join(s.grok, "config.toml"), "utf8")).toMatch(/\[ui\.status_line\][\s\S]*\[mcp_servers\.orrery\]/);
 		expect(readFileSync(s.out, "utf8")).toBe("grok|Atlas|--no-leader\n");
-		// Connected: the next launch asks nothing, with or without a terminal.
+		// Connected, and Orrery's own write kept the approval in step: the next launch asks nothing, with or without a terminal.
 		rmSync(s.out);
 		const again = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
 		expect(again.status, again.stderr).toBe(0);
 		expect(readFileSync(s.out, "utf8")).toBe("grok|Atlas|--no-leader\n");
 	});
 
-	it.skipIf(!hasScript)("in a terminal, asks to connect Orrery to Grok, listing what it writes; no opens nothing and writes nothing", () => {
+	it.skipIf(!hasScript)("in a terminal, asks about Grok's settings first, then to connect Orrery to Grok, listing what it writes; no opens nothing and writes nothing", () => {
 		const s = grokScene();
+		const record = join(s.dir, "data", "grok-settings.json");
+		// The first launch after updating: Grok's settings first, default yes; a no opens nothing, and asks nothing more.
+		const first = typedInTerminal("n\n", s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
+		expect(first.status).toBe(1);
+		expect(first.stdout).toContain("Orrery now checks Grok's settings at each launch. Grok loads these now:");
+		expect(first.stdout).toContain("Approve Grok's current settings? [Y/n]");
+		expect(first.stdout).toContain("Not opened.");
+		expect(first.stdout).not.toContain("Connect Orrery to Grok now?");
+		expect([existsSync(s.out), existsSync(s.grok), existsSync(record)]).toEqual([false, false, false]);
+		approveSettings(s);
 		const no = typedInTerminal("n\n", s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
 		expect(no.status).toBe(1);
 		expect(no.stdout).toContain("Orrery's hooks for Grok are not installed, so this session won't record. Connecting Orrery to Grok will:");
@@ -221,8 +242,11 @@ describe("orrery agent", () => {
 
 	it("says at launch when Orrery's Grok hooks are switched off in Grok's /hooks, and opens Grok", () => {
 		const s = grokScene();
+		approveSettings(s);
 		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok", "--yes").status).toBe(0);
 		writeFileSync(join(s.grok, "disabled-hooks"), "global/orrery:user_prompt_submit[0].hooks[0]\n");
+		// A switch flipped in Grok's /hooks is a change to Grok's settings: approved first, as the person would.
+		approveSettings(s);
 		const off = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
 		expect(off.status, off.stderr).toBe(0);
 		expect(off.stdout).toContain("Orrery's recording hooks are switched off in Grok's /hooks, so this session won't be fully recorded: switch them on there, then start a new session (/new).");
@@ -231,6 +255,7 @@ describe("orrery agent", () => {
 		rmSync(join(s.grok, "disabled-hooks"));
 		mkdirSync(join(s.grok, "disabled-hooks"));
 		rmSync(s.out);
+		approveSettings(s);
 		const unread = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");
 		expect(unread.status, unread.stderr).toBe(0);
 		expect(unread.stdout).toContain(`Orrery couldn't read Grok's /hooks settings (${join(s.grok, "disabled-hooks")}), so it can't tell whether its hooks are switched off there`);
@@ -240,12 +265,14 @@ describe("orrery agent", () => {
 
 	it("opens Grok without asking when Grok runs this Orrery's hooks and a config entry of Orrery's was removed, and says which", () => {
 		const s = grokScene();
+		approveSettings(s);
 		expect(orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok", "--yes").status).toBe(0);
-		// The person removes Orrery's status row (on purpose, say), keeping its memory tools.
+		// The person removes Orrery's status row (on purpose, say), keeping its memory tools, and approves that change.
 		const config = join(s.grok, "config.toml");
 		const full = readFileSync(config, "utf8");
 		const kept = full.slice(full.indexOf("[mcp_servers.orrery]"));
 		writeFileSync(config, kept);
+		approveSettings(s);
 		rmSync(s.out);
 		// No terminal and no --yes: nothing to answer, so it opens.
 		const r = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok");

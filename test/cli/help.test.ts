@@ -21,7 +21,7 @@ const DISPATCHED = [
 	.sort();
 
 /** Commands people use that only `orrery help all` shows: the short page is the one the user approved. */
-const DETAIL_ONLY = ["trust-host", "version"];
+const DETAIL_ONLY = ["trust-host", "version", "grok-settings"];
 
 const dirs: string[] = [];
 afterEach(() => {

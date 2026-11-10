@@ -83,7 +83,7 @@ export async function wireAgent(app: App, name: string): Promise<void> {
 		if (step.fix === "create-folder" && row.folder === undefined) continue;
 		if (!(await app.host.open(new ConfirmModal(safeLines(step.text))))) continue;
 		const { fix } = step;
-		await runFix(app, () => app.deps.applyFix(fix, config, row, tools, plan.cwd));
+		await runFix(app, () => app.deps.applyFix(fix, config, row, tools, plan.cwd, step.grokSettings?.shown));
 	}
 }
 
@@ -140,6 +140,13 @@ export function launchAgent(app: App, row: AgentRow | undefined): void {
 		// Codex's hook check and OpenCode's plugin check come first: a no to one must leave no lock taken over and no step done.
 		const launching = await checkedOrPlain(app, plan);
 		if (launching === undefined) return "Not launched.";
+		// Grok's settings, when they aren't the ones the person approved, are asked about first (src/agent/launch.ts
+		// grokSettingsSteps): a no leaves no lock taken over and no step done; a yes approves the list it showed.
+		const settings = launching.steps.find((step) => step.fix === "approve-grok-settings");
+		if (settings !== undefined) {
+			if (!(await app.host.open(new ConfirmModal(safeLines(settings.text))))) return "Not launched.";
+			if (!(await runFix(app, () => app.deps.applyFix("approve-grok-settings", config, gate.row, tools, plan.cwd, settings.grokSettings?.shown)))) return "Not launched.";
+		}
 		// Plain Codex or OpenCode opens no agent: it takes no lock over (nor asks about a second session, withoutOrrery).
 		if (gate.takeover !== undefined && launching.withoutOrrery !== true) {
 			if (app.deps.takeoverAgent === undefined) throw new Error("Remote takeover is unavailable here.");
@@ -147,6 +154,7 @@ export function launchAgent(app: App, row: AgentRow | undefined): void {
 			await app.deps.takeoverAgent(row.name);
 		}
 		for (const step of launching.steps) {
+			if (step === settings) continue;
 			if (!step.confirm) {
 				await app.host.open(new MessageModal(label, safeLines(step.text)));
 				continue;

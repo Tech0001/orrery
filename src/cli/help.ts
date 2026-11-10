@@ -33,7 +33,7 @@ const GROUPS: readonly Group[] = [
 		detail: [
 			[
 				"agent <Name> [--tool pi|omp|claude-code|codex|opencode|grok] [--yes] [-- <tool arguments>]",
-				"open the agent here: its tool starts in this folder with its instructions and memory (--tool: another tool this time; --yes: answers its questions yes; what follows -- goes to the tool). Codex gets Orrery's hooks, memory tools and instructions on its command line, after a check that the hooks load in that Codex; OpenCode gets Orrery's plugin for this launch (opencode --standalone, nothing written to OpenCode's config), after a check that it loads in that OpenCode, and only a person at a terminal can start either without them; Grok gets the agent's memory and instructions as --rules (with --no-leader), and Orrery's hooks, status row and memory tools from Grok's own folder, which setup connects once (or the launch, after asking, when Orrery isn't connected there)",
+				"open the agent here: its tool starts in this folder with its instructions and memory (--tool: another tool this time; --yes: answers its questions yes; what follows -- goes to the tool). Codex gets Orrery's hooks, memory tools and instructions on its command line, after a check that the hooks load in that Codex; OpenCode gets Orrery's plugin for this launch (opencode --standalone, nothing written to OpenCode's config), after a check that it loads in that OpenCode, and only a person at a terminal can start either without them; Grok gets the agent's memory and instructions as --rules (with --no-leader), and Orrery's hooks, status row and memory tools from Grok's own folder, which setup connects once (or the launch, after asking, when Orrery isn't connected there); before Grok starts, any change to Grok's settings since you approved them is asked about first, which only a person at a terminal answers (--yes doesn't; see grok-settings)",
 			],
 			[
 				"agent add <Name> --folder DIR --tool pi|omp|claude-code|codex|opencode|grok --summary provider/id [--thinking L] [--reads all|none|A,B]",
@@ -134,6 +134,10 @@ const GROUPS: readonly Group[] = [
 			["update [--check] [--version V] [--yes]", "install the newest release (or V); --check only says whether one is out; --yes answers setup's questions yes"],
 			["tools [--json]", "pi, Claude Code, Codex, OMP, OpenCode, Grok and Ori: found, version, Orrery's side installed (Codex's and OpenCode's come with each launch)"],
 			["tools install <pi|claude-code|omp> [--yes]", "install or update Orrery's side of a tool (shows what it does first)"],
+			[
+				"grok-settings [--yes]",
+				"list what changed in Grok's settings (hooks, MCP servers, language servers, plugins, agents) since you approved them, for Grok's folder and this folder, and ask to approve it, as orrery agent asks before Grok starts (--yes: approve without asking); run it in your own terminal",
+			],
 			[
 				"claude-setup <Name> [--mod]",
 				"the file setup: Claude Code loads the agent's memory view from CLAUDE.md (CLAUDE.local.md in a repo), for Claude Code before 2.1.287; --mod: back to the Orrery mod, which needs no setup",

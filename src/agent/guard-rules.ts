@@ -245,7 +245,7 @@ export const PLUMBING_REFUSED = "This command runs Orrery's hook plumbing (codex
 export const ORRERY_COMMANDS: readonly string[] = [
 	...["help", "agent", "run", "status", "import", "compact", "browse", "backup", "restore", "login", "logins", "logout"],
 	...["compactor", "usage", "remote", "trust-host", "update", "tools", "claude-setup", "setup", "install", "uninstall"],
-	...["version", "holder", "claude-mod", "mcp", "claude-hook", "codex-hook", "grok-hook", "grok-status"],
+	...["version", "holder", "claude-mod", "mcp", "claude-hook", "codex-hook", "grok-hook", "grok-status", "grok-settings"],
 ];
 
 /**

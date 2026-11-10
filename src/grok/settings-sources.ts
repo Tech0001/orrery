@@ -45,6 +45,13 @@ export type SettingsEntry = { readonly fingerprint: string; readonly summary: re
 
 type Kind = SettingsSource["kind"];
 export type Scope = SettingsSource["scope"];
+
+/**
+ * A source's key: scope, kind, and its folder's real path (`real`) and its name; a program's by its path as named; or
+ * `id`. What Orrery writes is named by it before it is there (src/grok/settings-keys.ts).
+ */
+export const sourceKey = (scope: Scope, kind: Kind, path: string, real: (path: string) => string = realish, id?: string): string =>
+	`${scope} ${kind} ${id ?? (kind === "program" ? path : join(real(dirname(path)), basename(path)))}`;
 type Table = Record<string, unknown>;
 
 export const UNREADABLE = "unreadable";
@@ -179,7 +186,7 @@ class Found {
 
 	/** Adds a source keyed by `id` (else its folder's real path and its name; a program's by its path as named). */
 	add(scope: Scope, kind: Kind, path: string, id?: string): void {
-		const key = `${scope} ${kind} ${id ?? (kind === "program" ? path : join(this.reader.real(dirname(path)), basename(path)))}`;
+		const key = sourceKey(scope, kind, path, (folder) => this.reader.real(folder), id);
 		if (this.keys.has(key)) return;
 		this.keys.add(key);
 		this.sources.push({ key, kind, path, scope });
