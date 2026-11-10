@@ -18,8 +18,9 @@
  *   that are paths (not commands) take any relative path, a bare name too, against their file's (or plugin's) folder.
  * Each source's entry is a SHA-256 of its canonical relevant content (the whole file, or one entry per relevant key and
  * per MCP server), with a summary [what, where] that names things and never holds values: server names, hook event names,
- * program basenames and paths. The folders listed for new files, a plugin's files, the folders above C and every Claude
- * Code folder plugin's manifests are `watched` sources, which the stamp covers and the snapshot skips.
+ * program basenames and paths. The folders listed for new files, the links in them, a plugin's files and every Claude
+ * Code folder plugin's manifests are `watched` sources, which the stamp covers and the snapshot skips; the folders from C
+ * upward are `watched-presence` sources at `<folder>/.git`.
  */
 
 import { createHash } from "node:crypto";
@@ -215,10 +216,24 @@ const isFolder = (path: string) => {
 	}
 };
 
-/** The folders (and links to folders) in a folder, sorted. */
-function foldersIn(dir: string): string[] {
+/** Whether a path names an existing regular file (links followed). */
+const isFile = (path: string) => {
 	try {
-		return readdirSync(dir).map((name) => join(dir, name)).filter(isFolder).sort();
+		return statSync(path).isFile();
+	} catch {
+		return false;
+	}
+};
+
+/**
+ * The folders (and links to folders) in a folder, sorted. Each link found is also a `watched` source at its own path, so
+ * a target that appears or changes later moves the stamp.
+ */
+function foldersIn(found: Found, scope: Scope, dir: string): string[] {
+	try {
+		const paths = readdirSync(dir, { withFileTypes: true }).map((entry) => (entry.isSymbolicLink() ? ([join(dir, entry.name), true] as const) : ([join(dir, entry.name), false] as const)));
+		for (const [path, link] of paths) if (link) found.add(scope, "watched", path);
+		return paths.map(([path]) => path).filter(isFolder).sort();
 	} catch {
 		return [];
 	}
@@ -503,7 +518,7 @@ export function discover(env: NodeJS.ProcessEnv, project: string | undefined, re
 	found.add("global", "disabled-hooks", g("disabled-hooks"));
 	found.folder("global", "agent", g("agents"), ".md");
 	found.add("global", "watched", g("plugins"));
-	for (const root of foldersIn(g("plugins"))) found.plugin("global", root);
+	for (const root of foldersIn(found, "global", g("plugins"))) found.plugin("global", root);
 	found.add("global", "config-keys", g("settings.json"));
 	namedBy(found, "global", g("config.toml"), home);
 
@@ -548,7 +563,7 @@ export function discover(env: NodeJS.ProcessEnv, project: string | undefined, re
 			for (const agents of [join(level, ".grok", "agents"), join(level, ".claude", "agents")]) found.folder("project", "agent", agents, ".md");
 			for (const pluginsHere of [join(level, ".grok", "plugins"), join(level, ".claude", "plugins")]) {
 				found.add("project", "watched", pluginsHere);
-				for (const root of foldersIn(pluginsHere)) found.plugin("project", root);
+				for (const root of foldersIn(found, "project", pluginsHere)) found.plugin("project", root);
 			}
 			namedBy(found, "project", config, home);
 			enabled.push(["project", enabledIn(reader.data(config))]);
@@ -561,7 +576,7 @@ export function discover(env: NodeJS.ProcessEnv, project: string | undefined, re
 	// Claude Code folder plugins that a Grok config's [plugins].enabled names, by folder or manifest name; every folder's
 	// manifests are watched, as a new name can enable one.
 	found.add("global", "watched", plugins);
-	for (const root of foldersIn(plugins)) {
+	for (const root of foldersIn(found, "global", plugins)) {
 		const manifests = MANIFESTS.map((manifest) => join(root, manifest));
 		for (const manifest of manifests) found.add("global", "watched", manifest);
 		const names = [basename(root), ...manifests.flatMap((manifest) => strings(at(reader.data(manifest), "name")))];
@@ -584,7 +599,7 @@ export function discover(env: NodeJS.ProcessEnv, project: string | undefined, re
 				const { program, paths } = wordsOf(command);
 				for (const [word, bare] of [...(program === undefined ? [] : [[program, besideFile] as const]), ...paths.map((path) => [path, false] as const)]) {
 					const file = located(word, place, bare);
-					if (file === undefined || named.has(file)) continue;
+					if (file === undefined || named.has(file) || !isFile(file)) continue;
 					named.add(file);
 					found.add(withSession ? "project" : source.scope, "program", file);
 				}

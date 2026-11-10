@@ -5,7 +5,8 @@
  * approved, whatever put it there. Which files, and each one's entries, are src/grok/settings-sources.ts's. The record is
  * <data dir>/grok-settings.json (0600, written whole), per Grok folder's real path: the approval time, the global
  * entries, and each project's entries by C's real path. The stamp reads no file (lstat only) for the status row's fast
- * path; it covers the `watched` sources too, which the snapshot skips.
+ * path; it covers the `watched` sources too (and the `watched-presence` ones at <folder>/.git, from C upward), which the snapshot
+ * skips.
  */
 
 import { createHash } from "node:crypto";

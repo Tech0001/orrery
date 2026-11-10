@@ -617,4 +617,38 @@ describe("Grok settings sources", () => {
 		t.write(join(t.home, ".claude.json"), JSON.stringify({ numStartups: 4, mcpServers: { user: { command: "/bin/echo" } }, projects: { [repo]: { mcpServers: {} }, [session]: { mcpServers: { here: { command: "/bin/echo" } }, lastCost: 1 } } }));
 		expect(t.check(session).state).toBe("unchanged");
 	});
+
+	it("shell-line words that name no file are not sources", () => {
+		const t = scratch();
+		const secret = "sk-" + "proj-PROBE";
+		const shell = (command: string) => JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command }] }] } });
+		t.write(join(t.grok, "hooks", "probe.json"), shell(`echo tok/${secret}`));
+		t.write(t.config, `${orreryConfig(t.orrery)}\n[mcp_servers.odd]\ncommand = "https://h.example/run?key=${secret}"\n`);
+		const sources = grokSettingsSources(t.env, t.project);
+		expect(sources.filter((source) => `${source.key}\0${source.path}`.includes("PROBE"))).toEqual([]);
+	});
+
+	it("a shell-line script that exists is still a source, and an edit to it is a change", () => {
+		const t = scratch();
+		const script = join(t.grok, "hooks", "scripts", "x.sh");
+		t.write(script, "#!/bin/sh\necho one\n");
+		t.write(join(t.grok, "hooks", "run.json"), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "bash scripts/x.sh" }] }] } }));
+		expect(grokSettingsSources(t.env, t.project).some((source) => source.kind === "program" && source.path === script)).toBe(true);
+		t.approve();
+		t.write(script, "#!/bin/sh\necho two\n");
+		expect(t.lines()).toEqual([`changed  program ${script}`]);
+	});
+
+	it("a link in a listed plugins folder moves the stamp when its target appears", () => {
+		const t = scratch();
+		const plugins = join(t.grok, "plugins");
+		mkdirSync(plugins, { recursive: true });
+		const target = join(t.dir, "elsewhere", "lp");
+		symlinkSync(target, join(plugins, "lp"));
+		const old = grokSettingsSources(t.env, t.project);
+		const stamp = settingsStamp(old);
+		t.write(join(target, "plugin.json"), JSON.stringify({ name: "lp" }));
+		expect(settingsStamp(grokSettingsSources(t.env, t.project))).not.toBe(stamp);
+		expect(settingsStamp(old)).not.toBe(stamp);
+	});
 });
