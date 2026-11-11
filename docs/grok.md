@@ -447,43 +447,67 @@ settings you approved, asks when they change, and tells the session.
 
 **What it watches.** What Grok 1.0.70 loads that starts a program or decides what loads:
 
-- Grok's folder: its hooks, `config.toml` (the keys that start a program or decide what loads), language servers,
-  plugins, agents and skills, and the other files Grok reads there.
-- What Grok reads from Claude Code and Cursor: Claude Code's settings and plugins, MCP servers and agents, and Cursor's
-  hooks and MCP file.
-- The project: `.grok/` and the other project files Grok reads, from the git root down to the folder the session runs
-  in. Grok's folder trust is not asked: whatever the folder holds counts.
-- The programs that hooks and MCP servers name, when Orrery can find the file.
+- Grok's folder: its hook files (`hooks/*.json`, and the files and folders its `hooks-paths` list names), the keys of
+  `config.toml` that start a program or decide what loads (and the plugin folders and agent file it names),
+  `managed_config.toml` and `requirements.toml`, `lsp.json`, `disabled-hooks`, `agents/*.md`, its plugins, and the
+  plugin keys of its `settings.json`.
+- What Grok reads from Claude Code and Cursor: Claude Code's settings (`hooks` and the plugin keys), every plugin
+  Claude Code installed (and a plugin folder there that a Grok config's `[plugins].enabled` names), MCP servers in
+  `~/.claude.json`, and agents; Cursor's `hooks.json` and `mcp.json`. Also the two org files in `/etc/grok`.
+- The project, in every folder from the git root down to the folder the session runs in: `.grok/hooks/*.json`, the
+  keys of `.grok/config.toml` that start a program or decide what loads (and the plugin folders it names),
+  `.claude/settings.json` and `.claude/settings.local.json` (`hooks` and `enabledPlugins`), `.cursor/hooks.json`,
+  `.mcp.json`, agents in `.grok/agents` and `.claude/agents`, and plugins in `.grok/plugins` and `.claude/plugins`. In
+  the session's folder alone: `.grok/lsp.json`, `.cursor/mcp.json` and its entry in `~/.claude.json`. Grok's folder
+  trust is not asked: whatever the folder holds counts.
+- The programs that hooks, MCP servers and language servers name, when Orrery can find the file. A program you can't
+  write counts by its path and owner, not its content: another user owns it and its folder, and neither has a group or
+  other write bit (`/bin/sh`, say). An OS update of it doesn't ask; a change of its owner does. A program you can write
+  counts by its content.
+- What can't be read counts as `can't read <path>`, a folder that can't be listed too. Its size, times and inode stand
+  for its content, so a rewrite still shows.
 
-The record is `grok-settings.json` in Orrery's data folder, one entry per Grok folder. It holds fingerprints and short
-names (server names, hook events, program names), never the settings themselves or the text of a command.
+The record is `grok-settings.json` in Orrery's data folder, one entry per Grok folder. It holds fingerprints, names
+(server names, hook events, program names) and the full paths of the files and programs it watches. Those are paths,
+not values: it never holds a setting's value or the text of a command.
 
-**At launch.** `orrery agent <Name> --tool grok` and the TUI compare the settings with the record before Grok starts:
+**At launch.** When an agent opens in Grok, Orrery compares the settings with the record before Grok starts: `orrery
+agent <Name>` for an agent whose tool is Grok (with or without `--tool grok`), `--tool grok` for any agent, and the TUI.
 
 - The first time, it lists what Grok loads and asks `Approve Grok's current settings? [Y/n]`. The default is yes.
 - After a change, it lists the changes and asks `Approve these changes to Grok's settings? [y/N]`. The default is no.
+- The defaults are the CLI's: in the TUI, Enter gives no answer, so pick yes or no.
 - A no opens nothing: `Not opened.` in the CLI, `Not launched.` in the TUI.
 - `--yes` never answers this question. It is yours to answer.
-- With no terminal to ask on, nothing opens until you approve once in a terminal, or run `orrery grok-settings --yes`.
+- With no terminal to ask on, nothing opens: `Run orrery grok-settings in <folder> in your own terminal to review
+  them.` Approve them there, or answer the question at a launch from a terminal.
+- An approval covers what it listed. Every later change asks again.
 
-**Reviewing.** `orrery grok-settings` lists everything that changed and asks. `--yes` approves without asking. With no
-terminal and no `--yes`, it lists and exits with an error. Run it in your own terminal: an agent's shell can't run it.
+**Reviewing.** `orrery grok-settings` checks Grok's folder and the folder it runs in, so run it in the folder the launch
+or the notice names: a change in a project's settings shows only from that project. It lists everything that changed
+and asks; `--yes` approves without asking. With no terminal and no `--yes`, it lists and exits with an error. Every
+outcome names the folder it checked: `No changes to Grok's settings for <folder> since you approved them on <date>.`,
+`Approved Grok's settings for <folder>.`, or `Grok's settings for <folder> are not approved.` Run it in your own
+terminal: inside an agent's session it is refused, as `orrery agent` is (Orrery reads the process, not the text), with
+that rule's [limits](architecture.md#limits).
 
 **In the session.** When the settings are not the ones you approved:
 
 - Grok's session start adds a notice, for a launch, a resume, `/new` and `/clear`: `Grok's settings changed since you
   approved them on <date> (<n> changes). Orrery still records and guards this session; run orrery grok-settings in
-  your own terminal to review them.` A session that isn't recording says `guards` alone. If the record can't be read,
-  or has no approval for this Grok folder, the notice says so instead.
+  <folder> in your own terminal to review them.`, where `<folder>` is the folder the session runs in. A session that
+  isn't recording says `guards` alone. If the record can't be read, or has no approval for this Grok folder, the notice
+  says so instead.
 - The status row ends ` · Grok settings changed`, after whatever state it shows. Grok doesn't refresh the row after a
   hook (see [The status row](#the-status-row)), so it may keep an old state until Grok redraws it.
 
 **The Tools page.** `orrery tools` and the Tools page say `Grok settings not approved yet` before the first approval,
-and `Grok settings changed since you approved them` after a change.
+and for a Grok folder you haven't approved (a new `GROK_HOME`), and `Grok settings changed since you approved them`
+after a change. They check Grok's own folder, not a project's.
 
 **Orrery's own writes.** `orrery update`, `install` and `rollback` move the record along with the program and Claude
-Code's plugin copy, so Orrery's own update never asks. A Claude Code plugin update made by Claude Code itself does ask,
-once.
+Code's plugin copy, so Orrery's own update never asks. A Claude Code plugin update made by Claude Code itself asks, as
+any other change does. A write of Orrery's that fails (a `claude` command that exits with an error) moves nothing.
 
 ### Its limits
 
@@ -491,13 +515,20 @@ once.
   notice, the next launch for the question. A change made and undone between two checks is missed.
 - `/new` and `/clear` reload settings in a running Grok without passing the launch question. The session-start notice
   covers them, and the question covers the next launch.
-- It can't tell who made a change, so it asks. Your own edits, and Claude Code updating its plugins, ask once.
+- It can't tell who made a change, so it asks. Your own edits ask, and so does Claude Code updating its plugins: every
+  change, each time.
 - A source Grok loads that isn't in the list isn't seen. The list follows the manual of the Grok version tested.
 - The record is a file of the user the agents run as, in Orrery's guarded data folder. Something that gets past the
   guard could rewrite or delete it. A deleted record turns the next launch into a first run, which defaults to yes.
-- Program paths in hook and MCP commands are followed as far as Orrery can read them. A path relative to the session
-  folder is best effort, and a path with spaces in the args form isn't followed. Command text is never recorded, only
-  files that exist.
+- Orrery follows only the program paths it can tell without running anything. In the args form, an argument counts
+  only when it starts with `/`, `~/` or `$` and holds no space: `node server.js` follows neither `server.js` nor
+  `node`. A bare program name found on PATH is never followed, in either form. A relative path is taken against the
+  folder Orrery expects (the settings file's, or for an MCP server the session's), which may not be the one Grok
+  uses. Command text is never recorded, only files that exist.
+- A program you can't write counts by its path and owner, so a rewrite by its owner (an OS update, or anyone with
+  root) doesn't ask. An agent running as you can't make that rewrite.
+- While one of Orrery's own writes runs, anything written to the same settings is taken into the record with it. For
+  the Claude Code plugin copy, that write is a `claude plugin …` command, which runs for seconds.
 - A wrapper that sets `GROK_HOME` to another folder (some desktop setups do this per account) makes the check look at the
   folder Orrery was started with.
 
@@ -613,8 +644,9 @@ and keeps that agent's rules in its guard (both agents' rules, in another agent'
   memory section. Start a new session.
 - `Not opened.` (the TUI says `Not launched.`) after a change to Grok's settings: Orrery listed what changed since you
   approved Grok's settings, and you answered no, or there was no terminal to ask on. Review them with `orrery
-  grok-settings` in your own terminal, and approve them there if they are yours (see
-  [Grok's settings check](#groks-settings-check)). `--yes` doesn't answer this question.
+  grok-settings` in your own terminal, in the folder the launch names (it checks the folder it runs in), and approve
+  them there if they are yours (see [Grok's settings check](#groks-settings-check)). `--yes` doesn't answer this
+  question.
 - `This command names Grok's folder or what Grok loads and runs in it`: read those files with Grok's file tools, and
   change Grok's settings yourself.
 - `can't run here: this is a Grok session that is no agent's`, or `orrery status` showing no agent: that is a plain
@@ -634,7 +666,7 @@ and keeps that agent's rules in its guard (both agents' rules, in another agent'
 - `<agent data>/status.json`, which `orrery status` reads;
 - `<agent data>/claude/unconfirmed.json`: how many prompts and replies the log never confirmed (a count, no words);
 - `<data>/grok-processes/`: each Grok process's pick, so a session keeps the agent it started with;
-- `<data>/grok-settings.json`: the settings you approved, per Grok folder (fingerprints and short names, no values),
+- `<data>/grok-settings.json`: the settings you approved, per Grok folder (fingerprints, names and paths, no values),
   and `<data>/grok-settings-stamp.json`, the status row's cache of its last check;
 - `<data>/session-hosts/`: the Grok process of each open agent session, with its session id, so `orrery` knows a
   command run inside it;
