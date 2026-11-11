@@ -175,7 +175,7 @@ const GROUPS: readonly Group[] = [
 			["claude-hook <event>", "a Claude Code plugin hook (session-start, user-prompt-submit, stop, session-end, pre-tool-use)"],
 			["codex-hook <event>", "a hook orrery agent gives Codex (session-start, user-prompt-submit, stop, session-end, pre-tool-use)"],
 			["grok-hook <event>", "a hook Orrery gives Grok Build (session-start, user-prompt-submit, pre-tool-use, stop, stop-cancelled, session-end)"],
-			["grok-status", "Grok Build's status row, which Orrery's install gives it: the session's agent, its message count and whether it is recorded (Grok's status JSON on stdin)"],
+			["grok-status", "Grok Build's status row, which Orrery's install gives it: the session's agent, its message count and whether it is recorded, and when Grok's settings changed since you approved them (Grok's status JSON on stdin)"],
 		],
 	},
 ];

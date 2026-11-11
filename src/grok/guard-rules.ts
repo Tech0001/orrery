@@ -327,7 +327,7 @@ function asksHelp(words: readonly string[]): boolean {
 
 /**
  * What Grok's `words` (grokWords) give it that shell text may not (above), or undefined: a command named with the
- * line's words that name Grok's commands, and one a glob could name (what is read as a glob: above) or a word built at
+ * line's words that name Grok's commands, and one a glob could name (what namedBy reads as a glob) or a word built at
  * run time (builtAtRunTime) as written, when no word names one plainly. `prompts`: Grok's program runs as the command,
  * so a word that is one quoted string holding a blank is its prompt, but one with a substitution or a ${…} in it or a
  * "-" first.

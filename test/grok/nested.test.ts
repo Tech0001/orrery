@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type AgentConfig, parseConfig } from "../../src/agent/config.ts";
 import { claimedBy, claimToken, newToken } from "../../src/agent/pick.ts";
 import { processAlive, processArgv } from "../../src/agent/process.ts";
@@ -18,7 +18,16 @@ import { type GrokHome, grokHomeIn, grokSession } from "./log-lines.ts";
 const recorded: { dataDir: string; pid: number }[] = [];
 const children: ChildProcess[] = [];
 const homes: GrokHome[] = [];
+/**
+ * Tests that run at once (`--sequence.concurrent`) share the lists above and the pi world's folders, so one test's
+ * cleanup must not take another's children, records or folders away. Clean up when the last running test is done.
+ */
+let running = 0;
+beforeEach(() => {
+	running++;
+});
 afterEach(async () => {
+	if (--running > 0) return;
 	for (const { dataDir, pid } of recorded.splice(0)) forgetSession(dataDir, pid);
 	for (const child of children.splice(0)) child.kill("SIGKILL");
 	for (const home of homes.splice(0)) home.close();

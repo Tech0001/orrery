@@ -199,7 +199,8 @@ loads, and writes nothing to OpenCode's config. A plain `opencode` is not an age
 connected once, by setup or **I**: Orrery's hook file and two entries (its status row and memory tools) in Grok's
 folder. Open its agents with `orrery agent Atlas --tool grok`, which gives Grok the agent's memory and instructions on
 its command line, and asks to connect Orrery to Grok first when it isn't; a plain `grok` is not an agent's session.
-Inside a plain session of any coding tool, `orrery` reads no agent's memory and changes nothing; see [Sessions that
+It also asks before launching when Grok's hooks, MCP servers or plugins changed since you approved them
+(`orrery grok-settings`; [details](docs/grok.md#groks-settings-check)). Inside a plain session of any coding tool, `orrery` reads no agent's memory and changes nothing; see [Sessions that
 are no agent's](#sessions-that-are-no-agents).
 
 The Claude Code desktop app works too: start a session in the agent's folder, and the app's Claude Code records it

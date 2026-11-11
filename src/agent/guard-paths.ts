@@ -284,7 +284,7 @@ interface PathRules {
 	readonly realData: string | undefined;
 	readonly data: string | undefined;
 	readonly setUp: ReadonlySet<string>;
-	readonly roots: GuardOptions;
+	readonly roots: CallOptions;
 	/**
 	 * A session that is no agent's only (empty for an agent's): Orrery's installed program, its data folder's app/ and
 	 * the app/ beside the config file in use (an Orrery home not named .orrery, its data folder moved), where they really
@@ -1175,7 +1175,7 @@ export function openCodeOf(options: Pick<PathGuardOptions, "openCode">, home: st
 	return options.openCode ?? openCodeRule(process.env, home, realTarget);
 }
 
-/** Grok's folder for `options` (GuardOptions.grok), with folders and entries reached through links. */
+/** Grok's folder for `options` (CallOptions.grok), with folders and entries reached through links. */
 export function grokOf(options: Pick<PathGuardOptions, "grok">, home: string): GrokRule {
 	return options.grok ?? grokRule(process.env, home, realTarget, linksIn, entriesIn);
 }
