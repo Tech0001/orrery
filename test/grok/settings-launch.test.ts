@@ -160,7 +160,8 @@ describe("the launch's Grok settings gate", () => {
 		const said: string[] = [];
 		// --yes answers the other questions (the folder's here), never this one; with no terminal, nothing is asked.
 		const { code, ran } = await launch(s, { say: (line: string) => said.push(line), confirm: async () => true }, missing);
-		expect([code, said, ran]).toEqual([1, ["Not opened.", "Run orrery grok-settings in your own terminal to review them."], []]);
+		// The pointer names the folder the launch checked: orrery grok-settings checks the folder it runs in.
+		expect([code, said, ran]).toEqual([1, ["Not opened.", `Run orrery grok-settings in ${missing} in your own terminal to review them.`], []]);
 		expect(readFileSync(s.record, "utf8")).toBe(before);
 		expect(existsSync(missing)).toBe(false);
 		// The first launch after updating, with no record yet: the same, and no record is made.
@@ -221,37 +222,48 @@ describe("the launch's Grok settings gate", () => {
 });
 
 describe("orrery grok-settings", () => {
-	/** The command in the scene's project: its status, what it said, and what it asked (absent `answer`: no terminal). */
-	async function run(s: Scene, options: { yes?: boolean; answer?: boolean } = {}) {
+	/** The command in the scene's project (or `cwd`): its status, what it said, and what it asked (absent `answer`: no terminal). */
+	async function run(s: Scene, options: { yes?: boolean; answer?: boolean; cwd?: string; env?: NodeJS.ProcessEnv } = {}) {
 		const said: string[] = [];
 		const asked: [string, boolean][] = [];
 		const io = { say: (line: string) => said.push(line), ...(options.answer === undefined ? {} : { ask: async (question: string, defaultYes: boolean) => (asked.push([question, defaultYes]), options.answer as boolean) }) };
-		const code = await grokSettingsCommand(s.data, { yes: options.yes === true, cwd: s.project, env: s.env }, io);
+		const code = await grokSettingsCommand(s.data, { yes: options.yes === true, cwd: options.cwd ?? s.project, env: options.env ?? s.env }, io);
 		return { code, said, asked };
 	}
 
-	it("grok-settings lists and approves", async () => {
+	it("grok-settings lists and approves, and says which folder it checked", async () => {
 		const s = scene();
 		s.approve();
-		expect(await run(s, { answer: true })).toEqual({ code: 0, said: [`No changes to Grok's settings since you approved them on ${today()}.`], asked: [] });
+		expect(await run(s, { answer: true })).toEqual({ code: 0, said: [`No changes to Grok's settings for ${s.project} since you approved them on ${today()}.`], asked: [] });
 		const added = join(s.grok, "hooks", "x.json");
 		writeFileSync(added, hookFile("/nowhere/x"));
 		const header = `Grok's settings changed since you approved them on ${today()}:`;
 		const line = `  added    hook file ${added} (Stop; runs x)`;
 		// In a terminal: listed and asked, default no; a no approves nothing.
 		const no = await run(s, { answer: false });
-		expect(no).toEqual({ code: 1, said: ["Not approved."], asked: [[[header, line, "Approve these changes to Grok's settings? [y/N]"].join("\n"), false]] });
+		expect(no).toEqual({ code: 1, said: [`Grok's settings for ${s.project} are not approved.`], asked: [[[header, line, "Approve these changes to Grok's settings? [y/N]"].join("\n"), false]] });
 		expect(s.check().state).toBe("changed");
 		// No terminal and no --yes: listed, not approved, and not zero.
-		expect(await run(s)).toEqual({ code: 1, said: [header, line, "Not approved: there is no terminal to ask on. Run orrery grok-settings in your own terminal to review them."], asked: [] });
+		expect(await run(s)).toEqual({ code: 1, said: [header, line, `Not approved: there is no terminal to ask on. Run orrery grok-settings in ${s.project} in your own terminal to review them.`], asked: [] });
 		expect(s.check().state).toBe("changed");
 		// --yes: approves what it just checked, without asking.
-		expect(await run(s, { yes: true, answer: false })).toEqual({ code: 0, said: [header, line, "Approved Grok's settings."], asked: [] });
+		expect(await run(s, { yes: true, answer: false })).toEqual({ code: 0, said: [header, line, `Approved Grok's settings for ${s.project}.`], asked: [] });
 		expect(s.check().state).toBe("unchanged");
 		// A yes in a terminal approves too.
 		writeFileSync(join(s.grok, "hooks", "y.json"), hookFile("/nowhere/y"));
 		expect((await run(s, { answer: true })).code).toBe(0);
 		expect(s.check().state).toBe("unchanged");
+		// It checks the folder it runs in: a project's change shows there, not from another folder, and each says which.
+		const project = join(s.project, ".grok", "hooks", "p.json");
+		mkdirSync(join(s.project, ".grok", "hooks"), { recursive: true });
+		writeFileSync(project, hookFile("/nowhere/p"));
+		const home = await run(s, { cwd: s.home });
+		expect(home).toEqual({ code: 0, said: [`No changes to Grok's settings for ${s.home} since you approved them on ${today()}.`], asked: [] });
+		expect((await run(s)).said).toEqual([header, `  added    hook file ${project} (Stop; runs p)`, `Not approved: there is no terminal to ask on. Run orrery grok-settings in ${s.project} in your own terminal to review them.`]);
+		// A Grok folder with nothing in it that Orrery checks, and no approval of its own.
+		const empty = join(s.dir, "grok-empty");
+		mkdirSync(empty);
+		expect(await run(s, { env: { ...s.env, GROK_HOME: empty }, cwd: s.home })).toEqual({ code: 0, said: [`No changes to Grok's settings for ${s.home}: Grok loads none of the settings Orrery checks.`], asked: [] });
 	});
 
 	it("lists every line, never the launch's 20, and asks the first run's question, default yes", async () => {
@@ -286,7 +298,7 @@ describe("orrery grok-settings", () => {
 		forgetSession(s.data, process.pid);
 		const outside = spawnSync(c.cmd, c.args, { env: s.env, cwd: s.project, encoding: "utf8", timeout: 20_000 });
 		expect(outside.status, outside.stderr).toBe(0);
-		expect(outside.stdout).toContain("Approved Grok's settings.");
+		expect(outside.stdout).toContain(`Approved Grok's settings for ${s.project}.`);
 		expect(s.check().state).toBe("unchanged");
 	});
 });
@@ -298,6 +310,11 @@ describe("Grok's row and Orrery's own writes", () => {
 		expect(grokSettingsWords(s.data, s.env)).toBe("Grok settings not approved yet");
 		s.approve();
 		expect(grokSettingsWords(s.data, s.env)).toBeUndefined();
+		// A Grok folder the record has no approval for (a moved GROK_HOME): never approved, not changed.
+		const moved = join(s.dir, "grok-moved");
+		mkdirSync(join(moved, "hooks"), { recursive: true });
+		writeFileSync(join(moved, "hooks", "z.json"), hookFile("/nowhere/z"));
+		expect(grokSettingsWords(s.data, { ...s.env, GROK_HOME: moved })).toBe("Grok settings not approved yet");
 		writeFileSync(join(s.grok, "hooks", "x.json"), hookFile("/nowhere/x"));
 		expect(grokSettingsWords(s.data, s.env)).toBe("Grok settings changed since you approved them");
 		// orrery tools finds the record through the config Orrery runs with; the words are the row's own, apart from its detail.
@@ -343,6 +360,33 @@ describe("Grok's row and Orrery's own writes", () => {
 		writeFileSync(evil, hookFile("/nowhere/evil"));
 		await uninstall({ env: u.env, purge: false, confirmPurge: async () => false, run: fakeRun });
 		expect(linesOf(checkU())).toEqual([`added    hook file ${evil} (Stop; runs evil)`]);
+	});
+
+	it("uninstall: a claude command that fails after writing moves nothing, and says it failed as before", async () => {
+		// A fake claude whose plugin list is plugins.json beside it, and whose uninstall empties Claude Code's plugin list, then fails.
+		const list = '"${0%/*}/../.claude/plugins/installed_plugins.json"';
+		const claude = [
+			'if [ "$1" = "--version" ]; then echo "2.1.294 (Claude Code)"; exit 0; fi',
+			`if [ "$1 $2" = "plugin list" ]; then IFS= read -r line < "\${0%/*}/plugins.json"; printf '%s' "$line"; exit 0; fi`,
+			`if [ "$1 $2" = "plugin uninstall" ]; then printf '%s' '{"version":2,"plugins":{}}' > ${list}; exit 1; fi`,
+		].join("\n");
+		const t = grokScratch({ tools: { claude } });
+		writeFileSync(join(t.bin, "plugins.json"), JSON.stringify([{ id: "orrery@orrery", version: "1.0.0", enabled: true, readFromFolder: join(t.current, "claude-plugin") }]));
+		const plugins = join(t.home, ".claude", "plugins");
+		const root = join(plugins, "cache", "orrery", "orrery", "1.0.0");
+		mkdirSync(join(root, "hooks"), { recursive: true });
+		writeFileSync(join(root, "hooks", "hooks.json"), hookFile("/nowhere/orrery-run"));
+		writeFileSync(join(plugins, "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "orrery@orrery": [{ scope: "user", installPath: root, version: "1.0.0" }] } }));
+		const check = () => checkGrokSettings(t.orreryHome, t.env, undefined);
+		approveGrokSettings(t.orreryHome, check().shown);
+		const record = join(t.orreryHome, "grok-settings.json");
+		const before = readFileSync(record, "utf8");
+		const { lines, ok } = await uninstall({ env: t.env, purge: false, confirmPurge: async () => false, run: fakeRun });
+		expect(ok).toBe(false);
+		expect(lines).toContain("Claude Code: claude plugin uninstall orrery@orrery failed (exit 1)");
+		// The record is as it was: what the failed command left is listed at the next check.
+		expect(readFileSync(record, "utf8")).toBe(before);
+		expect(linesOf(check())).toEqual([`removed  Claude Code plugin "orrery@orrery" ${root}`]);
 	});
 
 	it("an update's swap keeps record in step", async () => {

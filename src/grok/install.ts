@@ -384,11 +384,13 @@ export const GROK_TOOLS_SWITCHED_OFF = "Orrery's memory tools are switched off i
 /**
  * What Grok's row says of Grok's settings (its `settings`, apart from its detail: the Tools page and orrery tools show it,
  * setup doesn't) against the record of the ones the person approved in `dataDir` (src/grok/settings.ts), Grok's own
- * folder's (the global ones): changed since then, never approved, or nothing when they are as approved.
+ * folder's (the global ones): never approved (no record, or none for this Grok folder), changed since then, or nothing
+ * when they are as approved.
  */
 export function grokSettingsWords(dataDir: string, env: NodeJS.ProcessEnv): string | undefined {
 	const check = checkGrokSettings(dataDir, env, undefined);
-	return check.state === "changed" ? "Grok settings changed since you approved them" : check.state === "first" ? "Grok settings not approved yet" : undefined;
+	if (check.state === "first" || (check.state === "changed" && check.record === "new-folder")) return "Grok settings not approved yet";
+	return check.state === "changed" ? "Grok settings changed since you approved them" : undefined;
 }
 
 /**

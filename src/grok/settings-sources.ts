@@ -14,17 +14,19 @@
  *   root is /, home or a parent of it); its .cursor/mcp.json, .grok/lsp.json and $HOME/.claude.json entry are read for C
  *   alone. Grok's folder trust is not asked: what C holds always counts.
  * - Programs: a file that a hook, server, language server or other command names (its program, and arguments that are
- *   paths with no space), resolved as Grok does where it can (no PATH lookup); not followed on to others. Settings values
- *   that are paths (not commands) take any relative path, a bare name too, against their file's (or plugin's) folder.
+ *   paths with no space), resolved as Grok does where it can (no PATH lookup); not followed on to others. One this user
+ *   can't write counts by its owner and real path, not its content (lockedProgram). Settings values that are paths (not
+ *   commands) take any relative path, a bare name too, against their file's (or plugin's) folder.
  * Each source's entry is a SHA-256 of its canonical relevant content (the whole file, or one entry per relevant key and
  * per MCP server), with a summary [what, where] that names things and never holds values: server names, hook event names,
- * program basenames and paths. The folders listed for new files, the links in them, a plugin's files and every Claude
- * Code folder plugin's manifests are `watched` sources, which the stamp covers and the snapshot skips; the folders from C
- * upward are `watched-presence` sources at `<folder>/.git`.
+ * program basenames and paths. What can't be read is `unreadable` with its lstat (markOf), so a rewrite still shows. The
+ * folders listed for new files, the links in them, a plugin's files and every Claude Code folder plugin's manifests are
+ * `watched` sources, which the stamp covers and the snapshot skips; a listed folder that can't be listed is a `folder`
+ * source, one can't-read entry; the folders from C upward are `watched-presence` sources at `<folder>/.git`.
  */
 
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, type Stats, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { parse } from "smol-toml";
@@ -36,11 +38,11 @@ import { grokHome } from "./log.ts";
 /** A place Grok loads settings from. `key` is stable across runs: scope, kind and real path (and, for two kinds, what in it). */
 export type SettingsSource = {
 	readonly key: string;
-	readonly kind: "hook-file" | "hook-paths" | "config-keys" | "org-config" | "lsp" | "disabled-hooks" | "agent" | "plugin" | "claude-settings" | "compat-hooks" | "mcp-json" | "program" | "watched" | "watched-presence";
+	readonly kind: "hook-file" | "hook-paths" | "config-keys" | "org-config" | "lsp" | "disabled-hooks" | "agent" | "plugin" | "claude-settings" | "compat-hooks" | "mcp-json" | "program" | "folder" | "watched" | "watched-presence";
 	readonly path: string;
 	readonly scope: "global" | "project";
 };
-/** A source's (or one of its keys' or servers') fingerprint, `"unreadable"` when it can't be read, and [what, where]. */
+/** A source's (or one of its keys' or servers') fingerprint, starting `unreadable` when it can't be read (isUnreadable), and [what, where]. */
 export type SettingsEntry = { readonly fingerprint: string; readonly summary: readonly string[] };
 
 type Kind = SettingsSource["kind"];
@@ -77,7 +79,7 @@ const PLUGIN_FOLDERS = ["agents", "hooks", ".claude-plugin", ".grok-plugin"];
 /** Each kind's name in change lines. */
 const LABEL: Readonly<Record<Kind, string>> = {
 	"hook-file": "hook file", "hook-paths": "hook path list", "config-keys": "Grok config", "org-config": "org config", lsp: "language servers", "disabled-hooks": "hook switches",
-	agent: "agent", plugin: "plugin", "claude-settings": "Claude Code settings", "compat-hooks": "Cursor hook file", "mcp-json": "MCP config", program: "program", watched: "", "watched-presence": "",
+	agent: "agent", plugin: "plugin", "claude-settings": "Claude Code settings", "compat-hooks": "Cursor hook file", "mcp-json": "MCP config", program: "program", folder: "folder", watched: "", "watched-presence": "",
 };
 const KEYED = new Set<Kind>(["config-keys", "claude-settings", "mcp-json"]);
 
@@ -95,12 +97,32 @@ const own = (table: unknown, key: string): unknown => (isTable(table) && Object.
 /** The value at a dotted name ("ui.status_line") in a parsed file. */
 const at = (table: unknown, name: string): unknown => name.split(".").reduce(own, table);
 
-/** A file as read: gone (a dangling link too), no plain file, not readable, or its bytes (past the limit: `big`, unread). */
-type Got = { readonly state: "absent" | "other" | "unreadable" } | { readonly state: "file"; readonly link?: string; readonly bytes?: Buffer; readonly big?: string };
+/**
+ * A file as read: gone (a dangling link too), no plain file or not readable (`mark` stands for it: markOf), or its bytes
+ * (past the limit: `big`, unread).
+ */
+type Got = { readonly state: "absent" } | { readonly state: "other" | "unreadable"; readonly mark: string } | { readonly state: "file"; readonly link?: string; readonly bytes?: Buffer; readonly big?: string };
 type File = Extract<Got, { state: "file" }>;
+
+/** Whether a fingerprint is one of something that can't be read (markOf's, or UNREADABLE alone). */
+export const isUnreadable = (fingerprint: string): boolean => fingerprint.startsWith(UNREADABLE);
 
 /** A file's digest: its bytes' SHA-256, or past the limit its size, times and inode. Taken only when needed (a keyed file's isn't). */
 const digestOf = (got: File) => got.big ?? sha(got.bytes ?? "");
+
+/**
+ * What stands for a path whose content can't be read (Grok can still run a program it can't read): `unreadable` and its
+ * lstat's size, mtime, ctime and inode, so a rewrite still shows; for a link, its target's after ` > ` (`-`: none).
+ */
+function markOf(path: string, stats: Stats): string {
+	const line = (of: Stats) => `${of.size} ${of.mtimeMs} ${of.ctimeMs} ${of.ino}`;
+	if (!stats.isSymbolicLink()) return `${UNREADABLE} ${line(stats)}`;
+	try {
+		return `${UNREADABLE} ${line(stats)} > ${line(statSync(path))}`;
+	} catch {
+		return `${UNREADABLE} ${line(stats)} > -`;
+	}
+}
 
 /**
  * Reads a file with lstat first: a link reads as its target's path plus the target's content. Never waits on a FIFO. A
@@ -108,30 +130,58 @@ const digestOf = (got: File) => got.big ?? sha(got.bytes ?? "");
  */
 function readFile(path: string, max: number): Got {
 	let link: string | undefined;
+	let first: Stats;
 	try {
-		const stats = lstatSync(path);
-		if (stats.isSymbolicLink()) link = readlinkSync(path);
-		else if (!stats.isFile()) return { state: "other" };
+		first = lstatSync(path);
+		if (first.isSymbolicLink()) link = readlinkSync(path);
+		else if (!first.isFile()) return { state: "other", mark: markOf(path, first) };
 	} catch (error) {
-		return { state: gone(error) ? "absent" : "unreadable" };
+		// Not even its lstat: nothing but the word stands for it.
+		return gone(error) ? { state: "absent" } : { state: "unreadable", mark: UNREADABLE };
 	}
 	let fd: number;
 	try {
 		fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
 	} catch (error) {
-		return { state: gone(error) ? "absent" : "unreadable" };
+		return gone(error) ? { state: "absent" } : { state: "unreadable", mark: markOf(path, first) };
 	}
 	try {
 		const stats = fstatSync(fd);
-		if (!stats.isFile()) return { state: "other" };
+		if (!stats.isFile()) return { state: "other", mark: markOf(path, first) };
 		const linked = link === undefined ? {} : { link };
 		if (stats.size > max) return { state: "file", big: `size ${stats.size}, modified ${stats.mtimeMs}, changed ${stats.ctimeMs}, inode ${stats.ino}`, ...linked };
 		return { state: "file", bytes: readFileSync(fd), ...linked };
 	} catch {
-		return { state: "unreadable" };
+		return { state: "unreadable", mark: markOf(path, first) };
 	} finally {
 		closeSync(fd);
 	}
+}
+
+/** A path's owner and mode, links followed: fs.statSync's, or a test's (ownership can't be given away without root). */
+export type OwnerOf = (path: string) => { readonly uid: number; readonly mode: number };
+
+/**
+ * A program this user can't write, by its owner and real path (undefined: one it may write, or no plain file there).
+ * "Can't write": another user owns it and it has no group or other write bit, and the same holds for its folder (as
+ * named, and its real one when a link leads elsewhere). An OS update rewrites such a program, and an agent running as
+ * this user can't, so its content isn't what counts (spec 2026-11-10-grok-settings-check-design, amended).
+ */
+function lockedProgram(path: string, ownerOf: OwnerOf, real: (path: string) => string): { readonly owner: number; readonly real: string } | undefined {
+	const me = process.getuid?.();
+	if (me === undefined) return undefined;
+	const locked = (of: string, file: boolean) => {
+		try {
+			const { uid, mode } = ownerOf(of);
+			return (mode & constants.S_IFMT) === (file ? constants.S_IFREG : constants.S_IFDIR) && uid !== me && (mode & 0o022) === 0 ? uid : undefined;
+		} catch {
+			return undefined;
+		}
+	};
+	const owner = locked(path, true);
+	if (owner === undefined) return undefined;
+	const where = real(path);
+	return unique([dirname(path), dirname(where)]).every((folder) => locked(folder, false) !== undefined) ? { owner, real: where } : undefined;
 }
 
 /** One check's reads, so listing the sources and fingerprinting them read and parse each file once. */
@@ -139,6 +189,16 @@ export class Reader {
 	private readonly files = new Map<string, Got>();
 	private readonly parsed = new Map<string, Table | undefined>();
 	private readonly reals = new Map<string, string>();
+	private readonly ownerOf: OwnerOf;
+
+	constructor(ownerOf: OwnerOf = (path) => statSync(path)) {
+		this.ownerOf = ownerOf;
+	}
+
+	/** A program this user can't write: its owner and real path, which count for it instead of its content (lockedProgram). */
+	locked(path: string): { readonly owner: number; readonly real: string } | undefined {
+		return lockedProgram(path, this.ownerOf, (inner) => this.real(inner));
+	}
 
 	file(path: string, max = SETTINGS_MAX): Got {
 		const key = `${max} ${path}`;
@@ -192,10 +252,12 @@ class Found {
 		this.sources.push({ key, kind, path, scope });
 	}
 
-	/** A folder watched for new files, and its files ending in `suffix` as `kind`. */
+	/** A folder watched for new files, and its files ending in `suffix` as `kind` (one that can't be listed: a `folder` source). */
 	folder(scope: Scope, kind: Kind, dir: string, suffix: string): void {
 		this.add(scope, "watched", dir);
-		for (const file of filesIn(dir, suffix)) this.add(scope, kind, file);
+		const files = filesIn(dir, suffix);
+		if (files === undefined) this.add(scope, "folder", dir);
+		else for (const file of files) this.add(scope, kind, file);
 	}
 
 	/** A plugin folder: one source for its content, its files and folders (those its manifests name too) watched. */
@@ -206,12 +268,15 @@ class Found {
 	}
 }
 
-/** The files (and links) in a folder whose names end in `suffix`, sorted; none when it can't be listed. */
-function filesIn(dir: string, suffix: string): string[] {
+/**
+ * The files (and links) in a folder whose names end in `suffix`, sorted; none when it isn't there (or is no folder);
+ * undefined when it is there but can't be listed, which then reads as one can't-read entry, never as empty.
+ */
+function filesIn(dir: string, suffix: string): string[] | undefined {
 	try {
 		return readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.name.endsWith(suffix) && (entry.isFile() || entry.isSymbolicLink())).map((entry) => join(dir, entry.name)).sort();
-	} catch {
-		return [];
+	} catch (error) {
+		return gone(error) ? [] : undefined;
 	}
 }
 
@@ -234,24 +299,28 @@ const isFile = (path: string) => {
 
 /**
  * The folders (and links to folders) in a folder, sorted. Each link found is also a `watched` source at its own path, so
- * a target that appears or changes later moves the stamp.
+ * a target that appears or changes later moves the stamp. A folder that is there but can't be listed is a `folder`
+ * source (one can't-read entry), never empty.
  */
 function foldersIn(found: Found, scope: Scope, dir: string): string[] {
 	try {
 		const paths = readdirSync(dir, { withFileTypes: true }).map((entry) => (entry.isSymbolicLink() ? ([join(dir, entry.name), true] as const) : ([join(dir, entry.name), false] as const)));
 		for (const [path, link] of paths) if (link) found.add(scope, "watched", path);
 		return paths.map(([path]) => path).filter(isFolder).sort();
-	} catch {
+	} catch (error) {
+		if (!gone(error)) found.add(scope, "folder", dir);
 		return [];
 	}
 }
 
 /**
  * A plugin's files (the fixed names, agents/*.md, and what its manifests name for hooks, servers and agents), and the
- * folders watched for new ones (the fixed ones and the folders its manifests name).
+ * folders watched for new ones (the fixed ones and the folders its manifests name). A folder of it that can't be listed
+ * is one of its files: it reads as can't read.
  */
 function pluginParts(root: string, reader: Reader): { readonly files: string[]; readonly folders: string[] } {
-	const files = [...PLUGIN_FILES.map((name) => join(root, name)), ...filesIn(join(root, "agents"), ".md")];
+	const listed = (dir: string, suffix: string) => filesIn(dir, suffix) ?? [dir];
+	const files = [...PLUGIN_FILES.map((name) => join(root, name)), ...listed(join(root, "agents"), ".md")];
 	const folders = PLUGIN_FOLDERS.map((name) => join(root, name));
 	for (const manifest of MANIFESTS) {
 		const json = reader.data(join(root, manifest));
@@ -261,7 +330,7 @@ function pluginParts(root: string, reader: Reader): { readonly files: string[]; 
 			if (!isFolder(path)) files.push(path);
 			else {
 				folders.push(path);
-				files.push(...filesIn(path, ".md"), ...filesIn(path, ".json"));
+				files.push(...listed(path, ".md"), ...listed(path, ".json"));
 			}
 		}
 	}
@@ -326,26 +395,61 @@ const unquote = (word: string) => word.replace(/^(['"])(.*)\1$/, "$2");
 const NAME_LIKE = /^[\w.+@-]+$/;
 
 /**
- * A command's program word and the other words that may name files (args that are paths, never one with a space, which is
- * text such as a shell line, not a file; a shell line's path words).
+ * A shell line's first simple command in words, split as the shell splits them: a quoted part is never split, so
+ * `K="a b"` is one word; quotes stay in the word. It ends at the first operator outside quotes (an unclosed quote runs
+ * to the end).
  */
-function wordsOf({ command, args }: Command): { readonly program?: string; readonly paths: string[] } {
+function shellWords(line: string): string[] {
+	const words: string[] = [];
+	let word = "";
+	let quote: string | undefined;
+	for (let i = 0; i < line.length; i++) {
+		const char = line[i] as string;
+		if (quote !== undefined) {
+			word += char;
+			if (char === quote) quote = undefined;
+			else if (char === "\\" && quote === '"' && i + 1 < line.length) word += line[++i];
+		} else if (char === "\\" && i + 1 < line.length) word += char + line[++i];
+		else if (char === "'" || char === '"') {
+			quote = char;
+			word += char;
+		} else if (/[;&|<>`\n]/.test(char) || (char === "$" && line[i + 1] === "(")) break;
+		else if (/\s/.test(char)) {
+			if (word !== "") words.push(word);
+			word = "";
+		} else word += char;
+	}
+	if (word !== "") words.push(word);
+	return words;
+}
+
+/** A program word's name for summaries: its basename, only from a word with no quote and no `://`, and only a plain name. */
+function nameOf(word: string | undefined): string | undefined {
+	if (word === undefined || /['"]|:\/\//.test(word)) return undefined;
+	const name = basename(word);
+	return NAME_LIKE.test(name) ? name : undefined;
+}
+
+/**
+ * A command's program word, its name for summaries (nameOf), and the other words that may name files (args that are
+ * paths, never one with a space, which is text such as a shell line, not a file; a shell line's path words).
+ */
+function wordsOf({ command, args }: Command): { readonly program?: string; readonly name?: string; readonly paths: string[] } {
 	// With args, `command` is the program alone: text with a space is a command line (it may hold a secret), never a program.
-	if (Array.isArray(args)) return { program: /\s/.test(command) ? undefined : command, paths: strings(args).filter((arg) => /^(?:\/|~\/|\$)/.test(arg) && !/\s/.test(arg)) };
-	// A shell line: its first simple command, with leading assignments and `exec` dropped.
-	const words = (command.split(/[;&|<>`\n]|\$\(/)[0] ?? "").trim().split(/\s+/).map(unquote).filter((word) => word !== "" && word !== "exec" && !/^[A-Za-z_]\w*=/.test(word));
-	const [first, ...rest] = words;
-	return { program: first !== undefined && (NAME_LIKE.test(first) || first.includes("/")) ? first : undefined, paths: rest.filter((word) => word.includes("/") && !word.startsWith("-")) };
+	if (Array.isArray(args)) {
+		const program = /\s/.test(command) ? undefined : command;
+		return { program, name: nameOf(program), paths: strings(args).filter((arg) => /^(?:\/|~\/|\$)/.test(arg) && !/\s/.test(arg)) };
+	}
+	// A shell line: its first simple command, with assignments (each one word, quotes and all) and `exec` dropped.
+	const [raw, ...rest] = shellWords(command).filter((word) => word !== "exec" && !/^[A-Za-z_]\w*=/.test(word));
+	const first = raw === undefined ? undefined : unquote(raw);
+	const program = first !== undefined && (NAME_LIKE.test(first) || first.includes("/")) ? first : undefined;
+	return { program, name: program === undefined ? undefined : nameOf(raw), paths: rest.map(unquote).filter((word) => word.includes("/") && !word.startsWith("-")) };
 }
 
 /** The basenames of the programs a value's commands run, for summaries: plain names only, so no value slips in. */
 function programNames(value: unknown): string[] {
-	return unique(
-		commandsIn(value).flatMap((command) => {
-			const name = basename(wordsOf(command).program ?? "");
-			return NAME_LIKE.test(name) ? [name] : [];
-		}),
-	);
+	return unique(commandsIn(value).flatMap((command) => wordsOf(command).name ?? []));
 }
 
 /** ` (a; runs b, c)` for the parts there are. */
@@ -428,16 +532,19 @@ export function entriesOf(source: SettingsSource, reader: Reader): [string, Sett
 		const files = Object.fromEntries(
 			pluginParts(path, reader).files.flatMap((file) => {
 				const got = reader.file(file);
-				return got.state === "absent" ? [] : [[relative(path, file), got.state === "file" ? { link: got.link ?? null, digest: digestOf(got) } : UNREADABLE]];
+				return got.state === "absent" ? [] : [[relative(path, file), got.state === "file" ? { link: got.link ?? null, digest: digestOf(got) } : got.mark]];
 			}),
 		);
 		const install = installed(source, reader);
 		return [[key, { fingerprint: fingerprintOf({ ...install, files }), summary: [install === undefined ? "plugin" : `Claude Code plugin "${safeText(install.name)}"`, where] }]];
 	}
+	// A program this user can't write: its owner and real path, not its content (an OS update asks nothing).
+	const locked = kind === "program" ? reader.locked(path) : undefined;
+	if (locked !== undefined) return [[key, { fingerprint: fingerprintOf(locked), summary: [LABEL.program, where] }]];
 	const got = reader.file(path, kind === "program" ? PROGRAM_MAX : SETTINGS_MAX);
 	// A program that isn't there, or is no plain file, runs nothing; one that can't be read is listed.
 	if (got.state === "absent" || (kind === "program" && got.state === "other")) return [];
-	if (got.state !== "file") return [[key, { fingerprint: UNREADABLE, summary: ["can't read", where] }]];
+	if (got.state !== "file") return [[key, { fingerprint: got.mark, summary: ["can't read", where] }]];
 	const whole = (summary: string[]): [string, SettingsEntry][] => [[key, { fingerprint: fingerprintOf({ link: got.link ?? null, digest: digestOf(got) }), summary }]];
 	const label = kind === "config-keys" && path.endsWith(".json") ? "Grok settings" : LABEL[kind];
 	if (got.big !== undefined && kind !== "program") return whole([label, `${where} (too large)`]);

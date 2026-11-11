@@ -19,7 +19,7 @@ import { checkTools } from "../agent/tools.ts";
 import type { CodexGate } from "../codex/check.ts";
 import type { OpenCodeGate } from "../opencode/check.ts";
 import { codexResumeLine } from "../codex/resume.ts";
-import { REVIEW_IN_TERMINAL } from "../grok/settings.ts";
+import { reviewInTerminal } from "../grok/settings.ts";
 
 export interface AgentIo {
 	say(line: string): void;
@@ -88,7 +88,8 @@ export async function openAgentCommand(
 	if (settings !== undefined) {
 		if (io.askSettings === undefined) {
 			io.say("Not opened.");
-			io.say(REVIEW_IN_TERMINAL);
+			// The folder the launch checked: orrery grok-settings checks the folder it runs in.
+			io.say(reviewInTerminal(plan.cwd));
 			return 1;
 		}
 		if (!(await io.askSettings(settings.text, settings.grokSettings?.defaultYes === true))) {

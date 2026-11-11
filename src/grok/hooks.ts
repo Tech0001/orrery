@@ -113,7 +113,7 @@ import { grokAgent, launchedEnv, startEnvOf } from "../codex/pick.ts";
 import { GROK_FOLDER_VARIABLES, GROK_START_VARIABLES, grokFolderEnv, grokHostNotice, grokHostRefusal } from "./host.ts";
 import { GROK_SHARED, type GrokHeld, grokHeldSessions, grokLogStart, grokSessionKind, grokStartHome } from "./log.ts";
 import { GROK_HOOK_EVENTS } from "./names.ts";
-import { checkGrokSettings, grokSettingsNotice } from "./settings.ts";
+import { checkGrokSettings, grokSettingsNotice, reviewPointer } from "./settings.ts";
 
 /** The events `orrery grok-hook` answers (pre-tool-use is the guard), kept in src/grok/names.ts, where the install reads them. */
 export { GROK_HOOK_EVENTS };
@@ -550,10 +550,10 @@ export async function sessionStart(input: GrokHookInput, ctx: GrokHookContext): 
 function settingsLines(ctx: GrokHookContext, own: OwnLog, recording: boolean): string[] {
 	try {
 		// The folder and the folder variables ownSession already found, from Grok's start: no second lookup.
-		const notice = grokSettingsNotice(checkGrokSettings(ctx.config.dataDir, grokFolderEnv(ctx.env, own.started), own.cwd), recording);
+		const notice = grokSettingsNotice(checkGrokSettings(ctx.config.dataDir, grokFolderEnv(ctx.env, own.started), own.cwd), own.cwd, recording);
 		return notice === undefined ? [] : [notice];
 	} catch (error) {
-		return [`Orrery: Grok's settings could not be checked (${safeText(errorText(error))}); run orrery grok-settings in your own terminal to review them.`];
+		return [`Orrery: Grok's settings could not be checked (${safeText(errorText(error))}); ${reviewPointer(own.cwd)}`];
 	}
 }
 

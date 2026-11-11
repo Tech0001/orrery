@@ -17,7 +17,7 @@ import { realish } from "../agent/appended-lines.ts";
 import { writePrivate } from "../agent/private-file.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { grokHome } from "./log.ts";
-import { discover, entriesOf, gone, isTable, Reader, UNREADABLE } from "./settings-sources.ts";
+import { discover, entriesOf, gone, isTable, isUnreadable, Reader } from "./settings-sources.ts";
 import type { Scope, SettingsEntry, SettingsSource } from "./settings-sources.ts";
 
 export { grokSettingsSources } from "./settings-sources.ts";
@@ -88,7 +88,7 @@ export function compareSettings(approved: SettingsSnapshot, now: SettingsSnapsho
 	const changes: SettingsChange[] = [];
 	for (const [key, entry] of Object.entries(now)) {
 		const was = Object.hasOwn(approved, key) ? approved[key] : undefined;
-		if (was === undefined) changes.push(lineOf(entry.fingerprint === UNREADABLE ? "changed" : "added", entry));
+		if (was === undefined) changes.push(lineOf(isUnreadable(entry.fingerprint) ? "changed" : "added", entry));
 		else if (was.fingerprint !== entry.fingerprint) changes.push(lineOf("changed", entry));
 	}
 	for (const [key, entry] of Object.entries(approved)) if (!Object.hasOwn(now, key)) changes.push(lineOf("removed", entry));
@@ -118,8 +118,14 @@ export function approvalDate(approvedAt: string): string {
 	return Number.isNaN(at.getTime()) ? safeText(approvedAt.slice(0, 10)) : localDay(at);
 }
 
-/** Where the person reviews Grok's settings when there is no terminal to ask on (the launch, orrery grok-settings). */
-export const REVIEW_IN_TERMINAL = "Run orrery grok-settings in your own terminal to review them.";
+/**
+ * Where the person reviews Grok's settings, mid-sentence (the session's notice): orrery grok-settings checks the folder
+ * it runs in (and Grok's folder), so the pointer names `folder`, the one that was checked.
+ */
+export const reviewPointer = (folder: string): string => `run orrery grok-settings in ${safeText(folder)} in your own terminal to review them.`;
+
+/** reviewPointer as a sentence: when there is no terminal to ask on (the launch, orrery grok-settings). */
+export const reviewInTerminal = (folder: string): string => `R${reviewPointer(folder).slice(1)}`;
 
 /** What the launch and `orrery grok-settings` ask about a check: the list (a header, then its lines two spaces in), and the question. */
 export interface SettingsQuestion {
@@ -149,11 +155,12 @@ export function settingsQuestion(check: SettingsCheck, max = 20): SettingsQuesti
 
 /**
  * What an agent's Grok session says at its start (src/grok/hooks.ts sessionStart) when its settings aren't the ones
- * approved: one line by what they were compared with. None when unchanged, nor for the first run, which the launch asked.
+ * approved: one line by what they were compared with, pointing to orrery grok-settings in `folder`, the folder the
+ * session runs in (the one checked). None when unchanged, nor for the first run, which the launch asked.
  */
-export function grokSettingsNotice(check: SettingsCheck, recording = true): string | undefined {
+export function grokSettingsNotice(check: SettingsCheck, folder: string, recording = true): string | undefined {
 	if (check.state !== "changed") return undefined;
-	const review = "run orrery grok-settings in your own terminal to review them.";
+	const review = reviewPointer(folder);
 	if (check.record === "unreadable") return `Orrery can't read its record of Grok's settings; ${review}`;
 	if (check.record === "new-folder") return `Orrery has no record of approving this Grok folder's settings; ${review}`;
 	const count = check.changes.length;
@@ -216,10 +223,10 @@ const shownOf = (shown: Omit<Shown, typeof shownBrand>) => shown as Shown;
  * recorded: nothing approved there), with `record` saying what they were compared with: `ok`, this folder's approval of
  * `approvedAt`; `new-folder`, a record with no entry for this Grok folder (a moved GROK_HOME), compared with nothing;
  * `unreadable`, a record that can't be read (its first line says so), compared with nothing. Neither of the last two is
- * ever `first`, which defaults to yes; their `approvedAt` is "".
+ * ever `first`, which defaults to yes; their `approvedAt` is "". `reader`: a fresh one per check (tests give one whose
+ * stat fakes ownership).
  */
-export function checkGrokSettings(dataDir: string, env: NodeJS.ProcessEnv, project: string | undefined): SettingsCheck {
-	const reader = new Reader();
+export function checkGrokSettings(dataDir: string, env: NodeJS.ProcessEnv, project: string | undefined, reader = new Reader()): SettingsCheck {
 	const found = discover(env, project, reader);
 	const now = snapshotWith(found.sources, reader);
 	const shown = shownOf({ grok: found.grok, ...(found.folder === undefined ? {} : { folder: found.folder }), global: scoped(now, "global"), project: scoped(now, "project") });

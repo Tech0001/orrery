@@ -199,7 +199,7 @@ describe("orrery agent", () => {
 		for (const yes of [[], ["--yes"]]) {
 			const no = orrery(s.env, s.elsewhere, "agent", "Atlas", "--tool", "grok", ...yes);
 			expect(no.status).toBe(1);
-			expect(no.stdout).toContain("Not opened.\nRun orrery grok-settings in your own terminal to review them.\n");
+			expect(no.stdout).toContain(`Not opened.\nRun orrery grok-settings in ${realpathSync(s.elsewhere)} in your own terminal to review them.\n`);
 			expect(existsSync(s.out)).toBe(false);
 			expect(existsSync(s.grok)).toBe(false);
 			expect(existsSync(record)).toBe(false);

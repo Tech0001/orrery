@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { addGrokConfig, grokHookFile } from "../../src/grok/install.ts";
 import { approveGrokSettings, changeLines, checkGrokSettings, grokSettingsSources, keepInStep, readSettingsRecord, settingsStamp, type SettingsCheck, type SettingsRecord } from "../../src/grok/settings.ts";
+import { type OwnerOf, Reader } from "../../src/grok/settings-sources.ts";
 import { cleanupScratch, tempDir } from "../install/support.ts";
 
 afterEach(cleanupScratch);
@@ -108,18 +109,33 @@ describe("Grok settings record and compare", () => {
 	it("summaries carry names only", () => {
 		const t = scratch();
 		const secret = "sk-" + "proj-x";
-		const leaky = `\n[mcp_servers.leaky]\ncommand = "/bin/sh"\nargs = ["-c", "serve --key ${secret}"]\nenv = { K = "${secret}" }\n\n[mcp_servers.odd]\ncommand = "https://h.example/run?key=${secret}"\n`;
-		t.write(t.config, `${orreryConfig(t.orrery)}${leaky}`);
-		t.write(join(t.grok, "hooks", "leak.json"), hookFile("/bin/sh", ["-c", `echo ${secret}`]));
+		// A quoted assignment with spaces before the program (shell form), and a URL whose last part is a token (args form).
+		const leaky = (key: string) =>
+			`\n[mcp_servers.leaky]\ncommand = "/bin/sh"\nargs = ["-c", "serve --key ${key}"]\nenv = { K = "${key}" }\n\n[mcp_servers.odd]\ncommand = "https://h.example/run?key=${key}"\n\n[mcp_servers.quoted]\ncommand = ${JSON.stringify(`K="a ${key} b" node server.js`)}\n\n[mcp_servers.url]\ncommand = "https://h.example/run/${key}"\nargs = []\n`;
+		const hooks = (key: string) => {
+			t.write(join(t.grok, "hooks", "leak.json"), hookFile("/bin/sh", ["-c", `echo ${key}`]));
+			t.write(join(t.grok, "hooks", "probe.json"), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: `AUTH="user ${key} x" ./run.sh` }] }] } }));
+		};
+		t.write(t.config, `${orreryConfig(t.orrery)}${leaky(secret)}`);
+		hooks(secret);
 		expect(t.lines().join("\n")).not.toContain("proj-x");
 		t.approve();
 		expect(readFileSync(join(t.data, "grok-settings.json"), "utf8")).not.toContain("proj-x");
-		t.write(t.config, `${orreryConfig(t.orrery)}${leaky.replaceAll(secret, `${secret}2`)}`);
-		t.write(join(t.grok, "hooks", "leak.json"), hookFile("/bin/sh", ["-c", `echo ${secret}2`]));
+		t.write(t.config, `${orreryConfig(t.orrery)}${leaky(`${secret}2`)}`);
+		hooks(`${secret}2`);
 		const lines = t.lines();
-		// A command that is no program name (here a URL) gives no name at all.
-		expect(lines).toEqual([`changed  hook file ${join(t.grok, "hooks", "leak.json")} (Stop; runs sh)`, `changed  MCP server "leaky" (runs sh) in ${t.config}`, `changed  MCP server "odd" in ${t.config}`]);
+		// A command that is no program name (here a URL) gives no name at all; a quoted assignment drops as one word.
+		expect(lines).toEqual([
+			`changed  hook file ${join(t.grok, "hooks", "leak.json")} (Stop; runs sh)`,
+			`changed  hook file ${join(t.grok, "hooks", "probe.json")} (Stop; runs run.sh)`,
+			`changed  MCP server "leaky" (runs sh) in ${t.config}`,
+			`changed  MCP server "odd" in ${t.config}`,
+			`changed  MCP server "quoted" (runs node) in ${t.config}`,
+			`changed  MCP server "url" in ${t.config}`,
+		]);
 		expect(lines.join("\n")).not.toContain("proj-x");
+		t.approve();
+		expect(readFileSync(join(t.data, "grok-settings.json"), "utf8")).not.toContain("proj-x");
 	});
 
 	it("unrelated config keys don't count", () => {
@@ -474,6 +490,54 @@ describe("Grok settings sources", () => {
 		}
 	});
 
+	it.skipIf(process.getuid?.() === 0)("a program that can't be read, rewritten with the same mode, is a change", () => {
+		const t = scratch();
+		const tool = join(t.dir, "scratch", "bin-tool");
+		t.write(tool, "\x7fELF-original-1");
+		chmodSync(tool, 0o111);
+		t.write(join(t.grok, "hooks", "b.json"), hookFile(tool, []));
+		try {
+			t.approve();
+			expect(t.check().state).toBe("unchanged");
+			// Rewritten in place with the same size, then the same mode again: Grok can still run what it can't read.
+			chmodSync(tool, 0o711);
+			writeFileSync(tool, "\x7fELF-replaced-2");
+			chmodSync(tool, 0o111);
+			expect(t.lines()).toEqual([`changed  can't read ${tool}`]);
+		} finally {
+			chmodSync(tool, 0o600);
+		}
+	});
+
+	it.skipIf(process.getuid?.() === 0)("a folder that is there but can't be listed reads as can't read, not as empty", () => {
+		const t = scratch();
+		const hooks = join(t.project, ".grok", "hooks");
+		const plugins = join(t.grok, "plugins");
+		const agents = join(plugins, "gp", "agents");
+		t.write(join(hooks, "p.json"), hookFile("/bin/sh", ["-c", "true"]));
+		t.write(join(plugins, "gp", "plugin.json"), JSON.stringify({ name: "gp" }));
+		t.write(join(plugins, "lp", "plugin.json"), JSON.stringify({ name: "lp" }));
+		t.write(join(agents, "a.md"), "---\nname: a\n---\nBody\n");
+		t.approve();
+		// Write and search, no read: the files are still there, but nothing can list them.
+		chmodSync(hooks, 0o300);
+		chmodSync(agents, 0o300);
+		try {
+			expect(t.lines()).toEqual([`changed  plugin ${join(plugins, "gp")}`, `changed  can't read ${hooks}`, `removed  hook file ${join(hooks, "p.json")} (Stop; runs sh)`]);
+			t.approve();
+			// A file added where nothing can list it is still a change.
+			t.write(join(hooks, "q.json"), hookFile("/bin/sh", ["-c", "true"]));
+			t.write(join(agents, "b.md"), "---\nname: b\n---\nBody\n");
+			expect(t.lines()).toEqual([`changed  plugin ${join(plugins, "gp")}`, `changed  can't read ${hooks}`]);
+			t.approve();
+			// A plugins folder that can't be listed: its plugins can't be told, so it reads as can't read.
+			chmodSync(plugins, 0o300);
+			expect(t.lines()).toEqual([`changed  can't read ${plugins}`, `removed  plugin ${join(plugins, "gp")}`, `removed  plugin ${join(plugins, "lp")}`]);
+		} finally {
+			for (const folder of [hooks, agents, plugins]) chmodSync(folder, 0o700);
+		}
+	});
+
 	it("a Claude Code plugin counts whatever enabledPlugins says", () => {
 		const t = scratch();
 		const plugins = join(t.home, ".claude", "plugins");
@@ -526,6 +590,54 @@ describe("Grok settings sources", () => {
 		const sources = grokSettingsSources(t.env, t.project);
 		expect(sources.filter((source) => source.key.includes(probe) || source.path.includes(probe))).toEqual([]);
 		expect(sources.filter((source) => source.kind === "program" && source.path === "/bin/echo")).toEqual([]);
+	});
+
+	it.skipIf(process.getuid === undefined)("a program this user can't write counts by its path and owner, not its content; one it can write counts by content", () => {
+		const t = scratch();
+		const system = join(t.dir, "sys", "bin", "tool");
+		const mine = join(t.dir, "scratch", "mine");
+		t.write(system, "#!/bin/sh\necho one\n");
+		t.write(mine, "#!/bin/sh\necho one\n");
+		t.write(join(t.grok, "hooks", "y.json"), hookFile("/bin/sh", [system, mine]));
+		// Ownership can't be given away without root, so the stat says it: another user owns the program and its folder,
+		// with no group or other write bit, unless the test says otherwise.
+		const someone = (process.getuid?.() ?? 0) + 1;
+		const fake = { owner: someone, fileMode: 0o755, folderMode: 0o755 };
+		const ownerOf: OwnerOf = (path) => {
+			const real = statSync(path);
+			if (path === system) return { uid: fake.owner, mode: (real.mode & ~0o777) | fake.fileMode };
+			if (path === dirname(system)) return { uid: fake.owner, mode: (real.mode & ~0o777) | fake.folderMode };
+			return real;
+		};
+		const check = () => checkGrokSettings(t.data, t.env, t.project, new Reader(ownerOf));
+		const lines = () => {
+			const now = check();
+			return now.state === "changed" ? now.changes.map((change) => change.line) : [];
+		};
+		approveGrokSettings(t.data, check().shown);
+		// An OS update rewrites it: no change.
+		t.write(system, "#!/bin/sh\necho two, from an update\n");
+		expect(check().state).toBe("unchanged");
+		// This user's own program, rewritten: a change.
+		t.write(mine, "#!/bin/sh\necho two\n");
+		expect(lines()).toEqual([`changed  program ${mine}`]);
+		approveGrokSettings(t.data, check().shown);
+		// A change of owner is a change.
+		fake.owner = someone + 1;
+		expect(lines()).toEqual([`changed  program ${system}`]);
+		approveGrokSettings(t.data, check().shown);
+		// A folder this user may write (here a group write bit): its program counts by content.
+		fake.folderMode = 0o775;
+		expect(lines()).toEqual([`changed  program ${system}`]);
+		approveGrokSettings(t.data, check().shown);
+		t.write(system, "#!/bin/sh\necho three\n");
+		expect(lines()).toEqual([`changed  program ${system}`]);
+		// So does a program with an other write bit, in a folder it can't write.
+		fake.folderMode = 0o755;
+		fake.fileMode = 0o757;
+		approveGrokSettings(t.data, check().shown);
+		t.write(system, "#!/bin/sh\necho four\n");
+		expect(lines()).toEqual([`changed  program ${system}`]);
 	});
 
 	it("a big program is fingerprinted by size, times and inode: other bytes with the old mtime still count", () => {

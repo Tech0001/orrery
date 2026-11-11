@@ -99,17 +99,23 @@ function unwireClaude(report: Report, env: NodeJS.ProcessEnv, app: string, run: 
 		report.lines.push(`Claude Code: the Orrery plugin reads from ${from}, not this install; left as it is`);
 		return;
 	}
-	keep(orreryPluginEntries(env), () => {
-		for (const args of [["plugin", "uninstall", "orrery@orrery"], ["plugin", "marketplace", "remove", "orrery"]]) {
-			const r = run(claude, args);
-			if (r.status !== 0) {
-				report.lines.push(`Claude Code: claude ${args.join(" ")} failed (${failure(r)})`);
-				report.ok = false;
-				return;
+	/** A command that exits non-zero, thrown inside keep so that nothing moves (as runInstall does: src/agent/tools.ts). */
+	const failed = new Error("the command failed");
+	try {
+		keep(orreryPluginEntries(env), () => {
+			for (const args of [["plugin", "uninstall", "orrery@orrery"], ["plugin", "marketplace", "remove", "orrery"]]) {
+				const r = run(claude, args);
+				if (r.status !== 0) {
+					report.lines.push(`Claude Code: claude ${args.join(" ")} failed (${failure(r)})`);
+					report.ok = false;
+					throw failed;
+				}
+				report.lines.push(`Claude Code: claude ${args.join(" ")}`);
 			}
-			report.lines.push(`Claude Code: claude ${args.join(" ")}`);
-		}
-	});
+		});
+	} catch (error) {
+		if (error !== failed) throw error;
+	}
 }
 
 /**
