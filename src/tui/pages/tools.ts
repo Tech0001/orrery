@@ -5,7 +5,7 @@
  */
 
 import { join } from "node:path";
-import { shortHome, toolVersionNumber, type ToolCheck } from "../../agent/tools.ts";
+import { rowDetail, shortHome, toolVersionNumber, type ToolCheck } from "../../agent/tools.ts";
 import type { App, Page } from "../app.ts";
 import { ConfirmModal, MessageModal } from "../dialogs.ts";
 import { safeLines } from "./agent-actions.ts";
@@ -45,7 +45,7 @@ function check(app: App, force = false): ToolCheck[] {
 	const now = app.deps.now();
 	const cloudflare = [...(app.config?.remotes.values() ?? [])].some((remote) => remote.kind === "cloudflare");
 	if (force || now - s.at > FRESH_MS || s.cloudflare !== cloudflare) {
-		s.checks = app.deps.tools({ probeWrangler: true }).filter((tool) => tool.id !== "wrangler" || tool.path !== undefined || cloudflare);
+		s.checks = app.deps.tools({ probeWrangler: true, grokSettings: true }).filter((tool) => tool.id !== "wrangler" || tool.path !== undefined || cloudflare);
 		s.cloudflare = cloudflare;
 		s.at = now;
 		if (app.deps.ori !== undefined && s.pending === undefined) {
@@ -67,7 +67,7 @@ function rows(app: App): string[][] {
 	const about = app.deps.about();
 	const backup = newestBackup(app);
 	return [
-		...state(app).checks.map((t) => [t.label, t.path === undefined ? "not found" : shortHome(t.path), toolVersionNumber(t.version), t.id === "ori" ? t.signin ?? "unknown" : t.wiring, shortHome(t.detail)]),
+		...state(app).checks.map((t) => [t.label, t.path === undefined ? "not found" : shortHome(t.path), toolVersionNumber(t.version), t.id === "ori" ? t.signin ?? "unknown" : t.wiring, shortHome(rowDetail(t))]),
 		["Orrery", shortHome(about.root), toolVersionNumber(about.version), "—", backup === undefined ? "no backup yet" : `last backup ${backup}`],
 	];
 }
@@ -112,7 +112,7 @@ export const toolsPage: Page = {
 		}
 		const steps = app.deps.installSteps(tool);
 		const plan = tool.wiring === "memory" ? `Nothing to install: ${atLaunch(tool)}.` : steps.length === 0 ? "I does nothing here." : `I would:\n${steps.map((s) => `  ${s.describe}`).join("\n")}`;
-		void app.host.open(new MessageModal(tool.label, safeLines(`Found: ${tool.path ?? "not on PATH"}\nVersion: ${tool.version ?? "—"}\nOrrery: ${tool.wiring}\n${tool.detail}\n\n${plan}`)));
+		void app.host.open(new MessageModal(tool.label, safeLines(`Found: ${tool.path ?? "not on PATH"}\nVersion: ${tool.version ?? "—"}\nOrrery: ${tool.wiring}\n${rowDetail(tool)}\n\n${plan}`)));
 	},
 	key(app, data) {
 		if (data.toLowerCase() !== "i") return false;

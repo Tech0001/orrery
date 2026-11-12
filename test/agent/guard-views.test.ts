@@ -6,7 +6,7 @@ import { writeSetupMarker } from "../../src/claude/view-file.ts";
 import { type HarnessConfig, type AgentConfig, parseConfig } from "../../src/agent/config.ts";
 import { checkResolvedPath } from "../../src/agent/guard.ts";
 import { guardOmpToolCall, guardToolCall, agentViews } from "../../src/agent/guard-paths.ts";
-import { checkToolCall } from "../../src/agent/guard-rules.ts";
+import { checkToolCall } from "../../src/agent/guard-call.ts";
 import { ctx, tempDir } from "./support.ts";
 
 const dirs: string[] = [];

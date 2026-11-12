@@ -13,6 +13,7 @@ import { type Component, decodeKittyPrintable, matchesKey, visibleWidth } from "
 import type { HarnessConfig, AgentConfig, ModelChoice } from "../agent/config.ts";
 import type { LaunchFix, LaunchPlan, ToolExit } from "../agent/launch.ts";
 import type { CodexGate } from "../codex/check.ts";
+import type { ShownSettings } from "../grok/settings.ts";
 import type { OpenCodeGate } from "../opencode/check.ts";
 import type { LoginRow } from "../agent/logins.ts";
 import type { AgentRow, AgentUsage, RemoteRow } from "../agent/overview.ts";
@@ -51,7 +52,8 @@ export interface AppDeps {
 	localAgent?(name: string): Promise<string>;
 	/** Token use over the last `days` days, for every agent with memory, or only `only`. */
 	usage(config: HarnessConfig, days: number, only?: string): AgentUsage[];
-	tools(options?: { probeWrangler?: boolean }): ToolCheck[];
+	/** `grokSettings`: Grok's row says whether Grok's settings are as approved (the Tools page, a Grok launch). */
+	tools(options?: { probeWrangler?: boolean; grokSettings?: boolean }): ToolCheck[];
 	ori?(): Promise<ToolCheck>;
 	sources(config: HarnessConfig, agent?: Pick<AgentConfig, "launcher">): Promise<SummarySources>;
 	target(config: HarnessConfig, agent: string, report?: (message: string) => void): CompactorTarget;
@@ -66,8 +68,8 @@ export interface AppDeps {
 	codexCheck(plan: LaunchPlan, say: (text: string) => void): Promise<CodexGate>;
 	/** Before OpenCode opens: whether Orrery's plugin loads in it (src/opencode/check.ts); `say` hears when OpenCode is asked. */
 	opencodeCheck(plan: LaunchPlan, say: (text: string) => void): Promise<OpenCodeGate>;
-	/** `cwd`: the folder the launch opens in (create-folder makes it). */
-	applyFix(fix: LaunchFix, config: HarnessConfig, row: AgentRow, tools: readonly ToolCheck[], cwd?: string): string;
+	/** `cwd`: the folder the launch opens in (create-folder makes it); `shown`: what approve-grok-settings approves (the step's list). */
+	applyFix(fix: LaunchFix, config: HarnessConfig, row: AgentRow, tools: readonly ToolCheck[], cwd?: string, shown?: ShownSettings): string;
 	/** Gives the terminal to $EDITOR on `path` and takes it back (src/agent/editor.ts). Absent in the read-only demo. */
 	edit?(path: string): Promise<ToolExit>;
 	installSteps(check: ToolCheck): InstallStep[];

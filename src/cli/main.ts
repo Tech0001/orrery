@@ -32,11 +32,29 @@ async function askYes(question: string, hint = "y/n"): Promise<boolean> {
 	}
 }
 
+/**
+ * Asks a question on the terminal whose last line names its answers and the one Enter gives ("[Y/n]", `defaultYes`, or
+ * "[y/N]"): y or yes is yes, an empty answer the default, anything else no. No without a terminal.
+ */
+async function askWithDefault(question: string, defaultYes: boolean): Promise<boolean> {
+	if (process.stdin.isTTY !== true) return false;
+	const { createInterface } = await import("node:readline/promises");
+	const rl = createInterface({ input: process.stdin, output: process.stdout });
+	try {
+		const answer = (await rl.question(`${question} `)).trim();
+		return answer === "" ? defaultYes : /^y(es)?$/i.test(answer);
+	} finally {
+		rl.close();
+	}
+}
+
 /** `orrery tools [--json]`, `orrery tools install <pi|claude-code|omp> [--yes]`. It needs no config, so a new user can run it first. */
 async function toolsCommand(positionals: string[], values: { json?: boolean; yes?: boolean }): Promise<number> {
-	const { checkTools, probeOri, installSteps, wiringRoot, runInstall } = await import("../agent/tools.ts");
-	const tools = checkTools();
-	if (positionals[1] === "install") {
+	const [{ checkTools, probeOri, installSteps, wiringRoot, runInstall, rowDetail }, { settingsDataDir }] = await Promise.all([import("../agent/tools.ts"), import("../grok/settings-keys.ts")]);
+	const install = positionals[1] === "install";
+	// The list says whether Grok's settings are as approved (the record of the config Orrery runs with); installing doesn't look.
+	const tools = checkTools(install ? {} : { grokSettings: settingsDataDir(process.env) });
+	if (install) {
 		const id = required(positionals[2], "pi, claude-code or omp");
 		const check = tools.find((t) => t.id === id);
 		if (check === undefined || (id !== "pi" && id !== "claude-code" && id !== "omp")) throw new Error("tools install takes pi, claude-code or omp.");
@@ -67,7 +85,7 @@ async function toolsCommand(positionals: string[], values: { json?: boolean; yes
 		process.stdout.write(`${JSON.stringify({ tools }, null, 2)}\n`);
 		return 0;
 	}
-	for (const t of tools) process.stdout.write(`${t.label.padEnd(12)} ${(t.version ?? (t.path === undefined ? "not found" : "?")).padEnd(24)} ${t.wiring.padEnd(17)} ${t.detail}\n`);
+	for (const t of tools) process.stdout.write(`${t.label.padEnd(12)} ${(t.version ?? (t.path === undefined ? "not found" : "?")).padEnd(24)} ${t.wiring.padEnd(17)} ${rowDetail(t)}\n`);
 	return 0;
 }
 
@@ -100,7 +118,8 @@ async function installCommand(values: { from?: string; rollback?: boolean; list?
 	const { installFrom, listVersions, rollback, versionLines } = await import("../install/install.ts");
 	if (values.from !== undefined) {
 		if (values.rollback === true || values.list === true) throw new Error("install takes one of --from DIR, --rollback or --list.");
-		const { version, previous, removed } = installFrom({ from: values.from, env: process.env, log: say });
+		const dataDir = config.config?.dataDir;
+		const { version, previous, removed } = installFrom({ from: values.from, env: process.env, log: say, ...(dataDir === undefined ? {} : { dataDir }) });
 		say(`Installed ${version}.`);
 		if (removed.length > 0) say(`Removed older versions: ${removed.join(", ")}.`);
 		const status = await setupCommand(values, config);
@@ -121,7 +140,7 @@ async function installCommand(values: { from?: string; rollback?: boolean; list?
 		return 0;
 	}
 	if (values.rollback === true) {
-		const { from, to } = rollback(process.env);
+		const { from, to } = rollback(process.env, config.config?.dataDir);
 		say(`Switched back from ${from} to ${to}.`);
 		const status = await setupCommand(values, config);
 		// A session open across it runs the older version's hooks against the newer recorder (or the other way round),
@@ -595,7 +614,11 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 		const [{ editAgentCommand, openAgentCommand }, { agentRemoteCommand }] = await Promise.all([import("./agent.ts"), import("./remote.ts")]);
 		// A question only a person answers (starting Codex without Orrery's memory and guard) needs a terminal; --yes is no answer to it.
 		const terminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
-		const io = { say, confirm: (question: string) => (values.yes === true ? Promise.resolve(true) : askYes(question)), ...(terminal ? { askPerson: (question: string) => askYes(question, "y/N") } : {}) };
+		const io = {
+			say,
+			confirm: (question: string) => (values.yes === true ? Promise.resolve(true) : askYes(question)),
+			...(terminal ? { askPerson: (question: string) => askYes(question, "y/N"), askSettings: (question: string, defaultYes: boolean) => askWithDefault(question, defaultYes) } : {}),
+		};
 		if (positionals[1] === "edit") {
 			if (positionals.length > 3) throw new Error(`orrery agent edit takes one agent name (got ${positionals.slice(2).join(" ")}).`);
 			return editAgentCommand(judged(), required(positionals[2], "agent name"), io);
@@ -650,6 +673,13 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 			const { trustHostCommand } = await import("./commands.ts");
 			await trustHostCommand(config, required(arg, "host"));
 			return 0;
+		}
+		case "grok-settings": {
+			// Grok's settings for the folder it runs in, against the record in the config's data folder; only a person at a
+			// terminal is asked (--yes approves without asking).
+			const { grokSettingsCommand } = await import("./grok-settings.ts");
+			const terminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
+			return grokSettingsCommand(config.dataDir, { yes: values.yes === true, cwd: process.cwd(), env: process.env }, { say, ...(terminal ? { ask: (question: string, defaultYes: boolean) => askWithDefault(question, defaultYes) } : {}) });
 		}
 		case "compact": {
 			const [{ compactCommand }, { configureHttp }] = await Promise.all([import("./commands.ts"), import("../agent/http.ts")]);

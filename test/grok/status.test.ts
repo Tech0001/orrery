@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,6 +11,8 @@ import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
 import { statusText } from "../../src/agent/status-text.ts";
 import { writeMode } from "../../src/claude/spool.ts";
 import { runGrokHook } from "../../src/grok/hooks.ts";
+import { approveGrokSettings, checkGrokSettings, grokSettingsSources } from "../../src/grok/settings.ts";
+import { grokSettingsChanged } from "../../src/grok/settings-row.ts";
 import { grokStatus } from "../../src/grok/status.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { tempDir } from "../agent/support.ts";
@@ -484,5 +486,193 @@ describe("orrery grok-status", () => {
 		} finally {
 			home.close();
 		}
+	});
+});
+
+describe("the row says when Grok's settings aren't the ones the person approved", () => {
+	/**
+	 * Grok's settings for world `w`'s Grok: a scratch HOME, its Grok folder (GROK_HOME) and the session folder Grok runs in
+	 * (Scratch's). `plant` puts a hook file in Grok's folder; `row` is the row for Scratch's session as its Grok runs it.
+	 */
+	function settings(w: ReturnType<typeof world>) {
+		const env = { HOME: join(w.dir, "home"), GROK_HOME: grokHomeOf(w.config) };
+		mkdirSync(env.HOME, { recursive: true });
+		mkdirSync(join(env.GROK_HOME, "hooks"), { recursive: true });
+		const folder = w.scratch.folder;
+		const data = w.config.dataDir;
+		return {
+			env,
+			folder,
+			data,
+			cache: join(data, "grok-settings-stamp.json"),
+			approve: () => approveGrokSettings(data, checkGrokSettings(data, env, folder).shown),
+			plant: (name: string) => writeFileSync(join(env.GROK_HOME, "hooks", name), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "true" }] }] } })),
+			row: (session: string, token: string, extra: object = {}) => grokStatus(payload(session), ctx(w.config, { ...as("Scratch", token), ...env }, { cwdOf: () => folder, ...extra })),
+		};
+	}
+	type Cache = { version: number; entries: { grok: string; folder?: string; stamp: string; sources: unknown[]; changed: boolean }[] };
+	const readCache = (path: string) => JSON.parse(readFileSync(path, "utf8")) as Cache;
+
+	it("row says changed", () => {
+		const w = world();
+		remember(w.scratch, 5);
+		const s = settings(w);
+		const session = randomUUID();
+		const token = started(w.config, w.scratch, session);
+		const recording = "Orrery · Scratch · 5 msgs · recording";
+		// No record at all (the first run, which the launch asks about): no suffix, and nothing written.
+		expect(s.row(session, token)).toBe(recording);
+		expect(existsSync(s.cache)).toBe(false);
+		s.approve();
+		expect(s.row(session, token)).toBe(recording);
+		s.plant("planted.json");
+		expect(s.row(session, token)).toBe(`${recording} · Grok settings changed`);
+		// Again, from the cache.
+		expect(s.row(session, token)).toBe(`${recording} · Grok settings changed`);
+		// After whatever state the row says.
+		expect(s.row(session, token, { now: Date.now() + 60_000 })).toBe("Orrery · Scratch · 5 msgs · not recording: Orrery's recorder stopped; a new session or a resume starts it again · Grok settings changed");
+		// Approved: the record moved, so the row checks again, and the suffix goes.
+		s.approve();
+		expect(s.row(session, token)).toBe(recording);
+		// A record that can't be read is a change too.
+		writeFileSync(join(s.data, "grok-settings.json"), "not a record");
+		expect(s.row(session, token)).toBe(`${recording} · Grok settings changed`);
+	});
+
+	it("row cache never approves: deleted, garbage, or a stale stamp, the row checks the record again", () => {
+		const w = world();
+		const s = settings(w);
+		const session = randomUUID();
+		const token = started(w.config, w.scratch, session);
+		const recording = "Orrery · Scratch · no memory yet · recording";
+		const changed = `${recording} · Grok settings changed`;
+		s.approve();
+		expect(s.row(session, token)).toBe(recording);
+		// The cache as the unchanged row left it: its own, 0600, an entry per Grok folder and session folder.
+		const unchanged = readFileSync(s.cache, "utf8");
+		expect(statSync(s.cache).mode & 0o777).toBe(0o600);
+		const [entry] = readCache(s.cache).entries;
+		expect(Object.keys(entry ?? {}).sort()).toEqual(["changed", "folder", "grok", "sources", "stamp"]);
+		expect(entry?.changed).toBe(false);
+		s.plant("planted.json");
+		expect(s.row(session, token)).toBe(changed);
+		expect(readCache(s.cache).entries[0]?.changed).toBe(true);
+		// Deleted.
+		rmSync(s.cache);
+		expect(s.row(session, token)).toBe(changed);
+		// Garbage, or no cache of the row's.
+		for (const garbage of ["not json", "{}", "[]", JSON.stringify({ version: 1, entries: [{ grok: 1 }] }), JSON.stringify({ version: 1, entries: "x" })]) {
+			writeFileSync(s.cache, garbage);
+			expect(s.row(session, token), garbage).toBe(changed);
+		}
+		// The unchanged row's cache back: its stamp is stale (the hooks folder moved since).
+		writeFileSync(s.cache, unchanged);
+		expect(s.row(session, token)).toBe(changed);
+		// Any entry that says unchanged with another stamp, or with fewer sources: checked again.
+		const forged = readCache(s.cache);
+		for (const one of forged.entries) Object.assign(one, { changed: false, stamp: "0".repeat(64) });
+		writeFileSync(s.cache, JSON.stringify(forged));
+		expect(s.row(session, token)).toBe(changed);
+		const fewer = readCache(s.cache);
+		for (const one of fewer.entries) Object.assign(one, { changed: false, sources: [] });
+		writeFileSync(s.cache, JSON.stringify(fewer));
+		expect(s.row(session, token)).toBe(changed);
+		// And it was rebuilt from the record each time.
+		expect(readCache(s.cache).entries.map((one) => one.changed)).toEqual([true]);
+	});
+
+	it("row stamp path under 5 ms (asserted under 25 ms): the unchanged path with 30 sources is the cache's", () => {
+		const w = world();
+		const s = settings(w);
+		for (let i = 0; i < 10; i++) s.plant(`h${i}.json`);
+		s.approve();
+		expect(grokSettingsSources(s.env, s.folder).length).toBeGreaterThanOrEqual(30);
+		const folder = () => s.folder;
+		// The first run checks in full and leaves the cache.
+		expect(grokSettingsChanged(s.data, s.env, folder)).toBe(false);
+		const times: number[] = [];
+		for (let i = 0; i < 50; i++) {
+			const from = performance.now();
+			expect(grokSettingsChanged(s.data, s.env, folder)).toBe(false);
+			times.push(performance.now() - from);
+		}
+		times.sort((a, b) => a - b);
+		const median = ((times[24] ?? 0) + (times[25] ?? 0)) / 2;
+		expect(median, `median ${median.toFixed(2)} ms`).toBeLessThan(25);
+		// It is the cache's answer while the stamp holds: one saying changed (the safe direction) is taken as it is.
+		const cache = readCache(s.cache);
+		for (const one of cache.entries) one.changed = true;
+		writeFileSync(s.cache, JSON.stringify(cache));
+		expect(grokSettingsChanged(s.data, s.env, folder)).toBe(true);
+	});
+
+	it("keeps an entry per Grok folder and session folder, at most 32, the oldest dropped", () => {
+		const w = world();
+		const s = settings(w);
+		s.approve();
+		const folders = Array.from({ length: 33 }, (_, i) => join(w.dir, "work", `f${i}`));
+		for (const folder of folders) {
+			mkdirSync(folder, { recursive: true });
+			expect(grokSettingsChanged(s.data, s.env, () => folder)).toBe(false);
+		}
+		expect(readCache(s.cache).entries.map((entry) => entry.folder)).toEqual(folders.slice(1).map((folder) => realpathSync(folder)));
+		// Two folders in turn keep their entries: neither evicts the other, and nothing is written again.
+		const [a, b] = folders.slice(-2) as [string, string];
+		const before = readFileSync(s.cache, "utf8");
+		expect(grokSettingsChanged(s.data, s.env, () => a)).toBe(false);
+		expect(grokSettingsChanged(s.data, s.env, () => b)).toBe(false);
+		expect(readFileSync(s.cache, "utf8")).toBe(before);
+	});
+
+	it("without the process's folder the row uses the status JSON's cwd; with neither, a record means changed, and that answer isn't cached", () => {
+		const w = world();
+		remember(w.scratch, 5);
+		const s = settings(w);
+		const session = randomUUID();
+		const token = started(w.config, w.scratch, session);
+		const recording = "Orrery · Scratch · 5 msgs · recording";
+		s.approve();
+		const row = (cwd: string | undefined) => grokStatus(payload(session, { cwd }), ctx(w.config, { ...as("Scratch", token), ...s.env }, { cwdOf: () => undefined }));
+		// The JSON's cwd is the session folder: unchanged settings, no suffix.
+		expect(row(s.folder)).toBe(recording);
+		// A project hook file in that folder is seen through it.
+		mkdirSync(join(s.folder, ".grok", "hooks"), { recursive: true });
+		writeFileSync(join(s.folder, ".grok", "hooks", "planted.json"), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "true" }] }] } }));
+		expect(row(s.folder)).toBe(`${recording} · Grok settings changed`);
+		// Neither gives a folder: changed, though what was approved is as it was; nothing cached for it.
+		rmSync(join(s.folder, ".grok"), { recursive: true });
+		expect(row(s.folder)).toBe(recording);
+		const before = readFileSync(s.cache, "utf8");
+		expect(row(undefined)).toBe(`${recording} · Grok settings changed`);
+		expect(readFileSync(s.cache, "utf8")).toBe(before);
+		// The next row with a folder is its own full answer.
+		expect(row(s.folder)).toBe(recording);
+	});
+
+	it("the row checks the folders Grok was started with, not its own environment's", () => {
+		const w = world();
+		remember(w.scratch, 5);
+		const s = settings(w);
+		const session = randomUUID();
+		const token = started(w.config, w.scratch, session);
+		s.approve();
+		s.plant("planted.json");
+		// The row's own GROK_HOME is another, clean folder; Grok was started with the planted one.
+		const own = join(w.dir, "row-own-grok");
+		mkdirSync(join(own, "hooks"), { recursive: true });
+		const env = { ...as("Scratch", token), ...s.env };
+		const row = grokStatus(payload(session), ctx(w.config, { ...env, GROK_HOME: own }, { cwdOf: () => s.folder, envOf: startedWith(env) }));
+		expect(row).toBe("Orrery · Scratch · 5 msgs · recording · Grok settings changed");
+	});
+
+	it("plain grok gets no suffix: no agent, no row, as today", () => {
+		const w = world();
+		const s = settings(w);
+		const session = randomUUID();
+		started(w.config, w.scratch, session);
+		s.approve();
+		s.plant("planted.json");
+		expect(grokStatus(payload(session), ctx(w.config, s.env, { cwdOf: () => s.folder }))).toBe("");
+		expect(existsSync(s.cache)).toBe(false);
 	});
 });

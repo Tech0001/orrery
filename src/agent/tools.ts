@@ -13,7 +13,9 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } fro
 import { ENTRY_TAILS, endsWithSegments, entries, oneLineTarget, type Style } from "../install/layout.ts";
 import type { AgentTool } from "./config.ts";
 import { codexCheckDetail } from "../codex/check.ts";
-import { grokFolderThere, grokInstallSteps, grokWiring } from "../grok/install.ts";
+import { grokFolderThere, grokInstallSteps, grokSettingsWords, grokWiring } from "../grok/install.ts";
+import { keepInStep, localDay } from "../grok/settings.ts";
+import { orreryPluginEntries, settingsDataDir } from "../grok/settings-keys.ts";
 import { opencodeCheckDetail } from "../opencode/check.ts";
 import { makeScratch } from "../opencode/scratch.ts";
 import { realTarget } from "./guard-paths.ts";
@@ -35,7 +37,15 @@ export interface ToolCheck {
 	readonly now?: string;
 	/** Why Orrery will not install here although the entry is not its own: pi and OMP share one extensions folder. */
 	readonly blocked?: string;
+	/**
+	 * Grok, when checkTools was asked (grokSettings): whether Grok's settings are as the person approved them (src/grok/install.ts
+	 * grokSettingsWords). The Tools page and orrery tools show it after the detail (rowDetail); setup's lines don't.
+	 */
+	readonly settings?: string;
 }
+
+/** A row's detail as the Tools page and orrery tools show it: what Grok's row says of Grok's settings follows it. */
+export const rowDetail = (check: ToolCheck): string => (check.settings === undefined ? check.detail : `${check.detail}; ${check.settings}`);
 
 /** TUI-only path display: shorten the user's home, including paths embedded in detail text. */
 export function shortHome(text: string, home = homedir()): string {
@@ -358,17 +368,22 @@ export const GROK_TESTED = "1.0.70";
 /**
  * Grok's row: Orrery's hook file and config entries in Grok's folder (src/grok/install.ts grokWiring; the memory itself
  * comes with each launch, in `--rules`), and the version tested. A Grok whose folder is there counts as found, though
- * `grok` is not on PATH.
+ * `grok` is not on PATH. With `settingsIn` (a data folder), also whether Grok's settings are as approved there.
  */
-function grokRow(root: string, env: NodeJS.ProcessEnv, path: string | undefined, version: string | undefined): Pick<ToolCheck, "wiring" | "detail" | "now"> {
+function grokRow(root: string, env: NodeJS.ProcessEnv, path: string | undefined, version: string | undefined, settingsIn: string | undefined): Pick<ToolCheck, "wiring" | "detail" | "now" | "settings"> {
 	if (path === undefined && !grokFolderThere(env)) return { wiring: "missing", detail: "Grok Build is not on PATH" };
 	const wiring = grokWiring(root, env);
 	const tested = version === undefined || version === GROK_TESTED ? `tested with Grok ${GROK_TESTED}` : `tested with Grok ${GROK_TESTED}, this is ${version}`;
-	return { ...wiring, detail: `${wiring.detail}; ${tested}` };
+	const settings = settingsIn === undefined ? undefined : grokSettingsWords(settingsIn, env);
+	return { ...wiring, detail: `${wiring.detail}; ${tested}`, ...(settings === undefined ? {} : { settings }) };
 }
 
-/** pi, Claude Code, Codex, OMP, OpenCode and Grok, in that order. */
-export function checkTools(options: { root?: string; env?: NodeJS.ProcessEnv; run?: Runner; probeWrangler?: boolean } = {}): ToolCheck[] {
+/**
+ * pi, Claude Code, Codex, OMP, OpenCode and Grok, in that order. `grokSettings`: the data folder of the record of the Grok
+ * settings the person approved, given where Grok's row is shown or used (the Tools page, orrery tools, a Grok launch);
+ * Grok's row then says whether they are as approved (`settings`). Without it, Grok's settings aren't looked at.
+ */
+export function checkTools(options: { root?: string; env?: NodeJS.ProcessEnv; run?: Runner; probeWrangler?: boolean; grokSettings?: string } = {}): ToolCheck[] {
 	const env = options.env ?? process.env;
 	const root = options.root ?? wiringRoot(env).root;
 	const run: Runner = options.run ?? ((cmd, args) => {
@@ -382,7 +397,7 @@ export function checkTools(options: { root?: string; env?: NodeJS.ProcessEnv; ru
 		const found = { id, label: LABELS[id], ...(path === undefined ? {} : { path }), ...(version === undefined ? {} : { version }) };
 		if (id === "codex") return { ...found, wiring: "memory" as const, detail: codexCheckDetail(env, codexVersion(version), orreryVersion()) };
 		if (id === "opencode") return { ...found, wiring: "memory" as const, detail: opencodeCheckDetail(env, codexVersion(version), orreryVersion()) };
-		if (id === "grok") return { ...found, ...grokRow(root, env, path, codexVersion(version)) };
+		if (id === "grok") return { ...found, ...grokRow(root, env, path, codexVersion(version), options.grokSettings) };
 		if (id === "pi") return { ...found, ...piWiring(root, env) };
 		if (id === "omp") return { ...found, ...ompWiring(root, env) };
 		if (path === undefined) return { ...found, wiring: "missing" as const, detail: "Claude Code is not on PATH" };
@@ -424,25 +439,34 @@ export async function probeOri(options: { env?: NodeJS.ProcessEnv; timeout?: num
 	return { ...check, version };
 }
 
+/**
+ * What a step's work runs inside, when it writes what Grok loads: keepInStep (src/grok/settings.ts), so that Orrery's own
+ * write keeps the record of the Grok settings the person approved in step. runInstall runs only the step's own write or
+ * command in it.
+ */
+type Keep = (write: () => void) => void;
+
 export type InstallStep =
 	/**
 	 * `text` written to `path` in one rename. A file already there that is not Orrery's is set aside first: by `ours`, a
 	 * test of its text (default: pi's and OMP's one-line extension, foreignExtension). `folderMode`: the mode of folders
 	 * made for it (default: the umask's).
 	 */
-	| { readonly kind: "write"; readonly path: string; readonly text: string; readonly describe: string; readonly ours?: (text: string) => boolean; readonly folderMode?: number }
-	| { readonly kind: "run"; readonly cmd: string; readonly args: readonly string[]; readonly describe: string }
+	| { readonly kind: "write"; readonly path: string; readonly text: string; readonly describe: string; readonly ours?: (text: string) => boolean; readonly folderMode?: number; readonly keep?: Keep }
+	| { readonly kind: "run"; readonly cmd: string; readonly args: readonly string[]; readonly describe: string; readonly keep?: Keep }
 	/**
 	 * Another tool's config at `path` (its text, "" when there is none), changed by `edit` when it is run, after a copy of
 	 * it (rewriteKeepingCopy); `said` is shown. `what` is what the edit adds, for the question that asks first.
 	 */
-	| { readonly kind: "edit"; readonly path: string; readonly what: string; readonly edit: (text: string) => { readonly next: string; readonly said: readonly string[] }; readonly describe: string };
+	| { readonly kind: "edit"; readonly path: string; readonly what: string; readonly edit: (text: string) => { readonly next: string; readonly said: readonly string[] }; readonly describe: string; readonly keep?: Keep };
 
 /**
  * What installing or repairing orrery's side of a tool does; empty when there is nothing to do (already installed) or
- * nothing orrery can safely do. Each step's `describe` says what it writes or runs, and for pi what it replaces.
+ * nothing orrery can safely do. Each step's `describe` says what it writes or runs, and for pi what it replaces. Grok's
+ * steps, and Claude Code's (Grok loads Orrery's Claude Code plugin too), keep the record of approved Grok settings in
+ * step (InstallStep `keep`): the record in `dataDir`, else the one of the config Orrery runs with.
  */
-export function installSteps(check: ToolCheck, root: string, env: NodeJS.ProcessEnv = process.env): InstallStep[] {
+export function installSteps(check: ToolCheck, root: string, env: NodeJS.ProcessEnv = process.env, dataDir?: string): InstallStep[] {
 	// pi and OMP share one extensions folder: Orrery never replaces the other tool's entry.
 	if (check.blocked !== undefined) return [];
 	// pi and OMP: "update available" is Orrery's entry of the other install shape, rewritten like a missing file.
@@ -459,7 +483,8 @@ export function installSteps(check: ToolCheck, root: string, env: NodeJS.Process
 		return [{ kind: "write", path, text: check.id === "pi" ? piExtensionText(root) : ompExtensionText(root, path), describe }];
 	}
 	if (check.id === "claude-code" && check.path !== undefined) {
-		const run = (...args: string[]): InstallStep => ({ kind: "run", cmd: check.path as string, args, describe: `claude ${args.join(" ")}` });
+		const keep: Keep = (write) => keepInStep(dataDir ?? settingsDataDir(env), env, orreryPluginEntries(env), write);
+		const run = (...args: string[]): InstallStep => ({ kind: "run", cmd: check.path as string, args, describe: `claude ${args.join(" ")}`, keep });
 		if (check.wiring === "missing") return [run("plugin", "marketplace", "add", root), run("plugin", "install", "orrery@orrery")];
 		// Adding the same marketplace name from a new path repoints it, and the installed plugin follows. `marketplace remove`
 		// would also uninstall the plugin and delete its saved options, so it is not used.
@@ -469,15 +494,9 @@ export function installSteps(check: ToolCheck, root: string, env: NodeJS.Process
 	// Grok: the hook file (a file that is not Orrery's set aside), then the config tables it lacks.
 	if (check.id === "grok") {
 		if (check.wiring !== "missing" && check.wiring !== "other" && check.wiring !== "update available") return [];
-		return grokInstallSteps(root, env, check.now);
+		return grokInstallSteps(root, env, check.now, dataDir);
 	}
 	return [];
-}
-
-/** Today's date as YYYY-MM-DD, local time. */
-function today(now = new Date()): string {
-	const two = (n: number) => String(n).padStart(2, "0");
-	return `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
 }
 
 const taken = (path: string) => {
@@ -496,7 +515,7 @@ const taken = (path: string) => {
  * already there, and leaves `path` as it is (a config Orrery is about to change: rewriteKeepingCopy).
  */
 export function setAside(path: string, how: "rename" | "copy" = "rename"): string {
-	const base = `${path}.before-orrery-${today()}`;
+	const base = `${path}.before-orrery-${localDay()}`;
 	for (let n = 1; ; n++) {
 		const aside = n === 1 ? base : `${base}-${n}`;
 		if (taken(aside)) continue;
@@ -627,13 +646,22 @@ function editFile(step: Extract<InstallStep, { kind: "edit" }>): string {
 	return output;
 }
 
-/** Runs the steps in order and stops at the first that fails; `output` is what each did, for showing. */
+/**
+ * Runs the steps in order and stops at the first that fails; `output` is what each did, for showing. Each step's write
+ * or command runs inside its `keep`, when it has one.
+ */
 export function runInstall(steps: readonly InstallStep[], run: Runner = realRunner): { ok: boolean; output: string; problem?: string } {
 	let output = "";
+	/** A command that exits non-zero, thrown inside its step's keep so that nothing moves; said below as before. */
+	const failed = new Error("the command failed");
 	for (const step of steps) {
+		const kept = step.keep ?? ((write: () => void) => write());
 		if (step.kind === "write") {
 			try {
-				const aside = replaceFile(step.path, step.text, step.ours, step.folderMode);
+				let aside: string | undefined;
+				kept(() => {
+					aside = replaceFile(step.path, step.text, step.ours, step.folderMode);
+				});
 				if (aside !== undefined) output += `set ${step.path} aside as ${aside}\n`;
 			} catch (error) {
 				return { ok: false, output: `${output}${reason(error)}\n`, problem: reason(error) };
@@ -643,7 +671,10 @@ export function runInstall(steps: readonly InstallStep[], run: Runner = realRunn
 		}
 		if (step.kind === "edit") {
 			try {
-				const edited = editFile(step);
+				let edited = "";
+				kept(() => {
+					edited = editFile(step);
+				});
 				output += edited;
 			} catch (error) {
 				const problem = `could not change ${step.path}: ${reason(error)}`;
@@ -651,7 +682,15 @@ export function runInstall(steps: readonly InstallStep[], run: Runner = realRunn
 			}
 			continue;
 		}
-		const result = run(step.cmd, step.args);
+		let result: RunResult = { status: null, stdout: "", stderr: "" };
+		try {
+			kept(() => {
+				result = run(step.cmd, step.args);
+				if (result.status !== 0) throw failed;
+			});
+		} catch (error) {
+			if (error !== failed) return { ok: false, output: `${output}${reason(error)}\n`, problem: reason(error) };
+		}
 		output += `$ claude ${step.args.join(" ")}\n${result.stdout}${result.stderr}${result.stdout || result.stderr ? "\n" : ""}`;
 		if (result.status !== 0) return { ok: false, output: `${output}${result.status === null ? "did not finish" : `exit ${result.status}`}\n` };
 	}

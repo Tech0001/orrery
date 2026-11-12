@@ -1,12 +1,13 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeHolder } from "../../src/agent/handover.ts";
 import { claimToken, newToken } from "../../src/agent/pick.ts";
 import { forgetSession, recordSession } from "../../src/agent/sessions.ts";
 import { writeMode } from "../../src/claude/spool.ts";
+import { approveGrokSettings, checkGrokSettings } from "../../src/grok/settings.ts";
 import { MemoryStore } from "../../src/memory/index.ts";
 import { cleanEnv, cleanupDirs, cliCommand, grokLaunch, type TestAgent, testAgent, waitUntil } from "../claude/support.ts";
 
@@ -43,12 +44,12 @@ function remember(t: TestAgent, count: number): void {
  * known before, so a test can claim the token for it and record its session first, as Grok's hooks would. `done`: the
  * command's stdout, stderr and exit code, and how long it took from `go`.
  */
-function grokRow(stdin: string, env: Record<string, string>) {
+function grokRow(stdin: string, env: Record<string, string>, cwd?: string) {
 	const c = cliCommand(["grok-status"]);
 	const gate = join(cleanEnv({}).HOME as string, `go-${randomUUID()}`);
 	// Waits for the gate file, then execs the command: its parent is the stand-in Grok, as when Grok runs it.
 	const [cmd, args] = grokLaunch("/bin/sh", ["-c", 'while [ ! -e "$0" ]; do sleep 0.005; done; exec "$@"', gate, c.cmd, ...c.args]);
-	const grok = spawn(cmd, args, { env: cleanEnv(env), stdio: ["pipe", "pipe", "pipe"] });
+	const grok = spawn(cmd, args, { env: cleanEnv(env), stdio: ["pipe", "pipe", "pipe"], ...(cwd === undefined ? {} : { cwd }) });
 	groks.push(grok);
 	let stdout = "";
 	let stderr = "";
@@ -110,5 +111,39 @@ describe("orrery grok-status, process by process", () => {
 		const unreadable = grokRow(`${JSON.stringify({ session_id: randomUUID() })}\n`, { ORRERY_CONFIG: broken, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token });
 		expect(await unreadable.go()).toMatchObject({ code: 0, stdout: "", stderr: "" });
 		expect(existsSync(join(t.config.dataDir, "grok-processes"))).toBe(false);
+	});
+
+	it(`says when Grok's settings changed since they were approved, for the folder Grok runs in, within ${BUDGET_MS} ms; not once approved again`, async () => {
+		const t = testAgent();
+		// Grok's settings: a scratch HOME and Grok folder, and the session folder Grok runs in (the agent's).
+		const settings = { HOME: join(t.dir, "home"), GROK_HOME: join(t.dir, "grok-home") };
+		mkdirSync(settings.HOME);
+		mkdirSync(join(settings.GROK_HOME, "hooks"), { recursive: true });
+		const approve = () => approveGrokSettings(t.config.dataDir, checkGrokSettings(t.config.dataDir, settings, t.folder).shown);
+		approve();
+		// A project hook file in the folder Grok runs in, planted after the approval.
+		mkdirSync(join(t.folder, ".grok", "hooks"), { recursive: true });
+		writeFileSync(join(t.folder, ".grok", "hooks", "planted.json"), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "true" }] }] } }));
+		/** One run of the row in a stand-in Grok started in the agent's folder, its session recording as SessionStart left it. */
+		const once = async () => {
+			const session = randomUUID();
+			const token = newToken();
+			const row = grokRow(`${JSON.stringify({ schema_version: 1, session_id: session, cwd: t.folder, trigger: "state" })}\n`, { ORRERY_CONFIG: t.configPath, ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, ...settings }, t.folder);
+			await waitUntil(() => claimToken(t.agent.dir, token, row.pid));
+			expect(recordSession(t.config.dataDir, { agent: "Test", tool: "grok", pid: row.pid, grokSession: session, config: t.configPath })).toBe(true);
+			recorded.push({ dataDir: t.config.dataDir, pid: row.pid });
+			writeMode(t.agent.dir, session, { mode: "recording", pid: 1, claudePid: row.pid, nonce: randomUUID(), since: Date.now() });
+			writeHolder(t.agent.dir, { pid: 1, session, claudePid: row.pid, host: "grok", state: "recording", startedAt: Date.now(), updatedAt: Date.now() });
+			const run = await row.go();
+			expect(run.ms).toBeLessThan(BUDGET_MS);
+			return run;
+		};
+		const changed = { code: 0, stdout: "Orrery · Test · no memory yet · recording · Grok settings changed\n", stderr: "" };
+		// The first run checks in full and leaves its cache; the next one reads it.
+		expect(await once()).toMatchObject(changed);
+		expect(statSync(join(t.config.dataDir, "grok-settings-stamp.json")).mode & 0o777).toBe(0o600);
+		expect(await once()).toMatchObject(changed);
+		approve();
+		expect(await once()).toMatchObject({ code: 0, stdout: "Orrery · Test · no memory yet · recording\n", stderr: "" });
 	});
 });

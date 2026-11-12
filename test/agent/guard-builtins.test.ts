@@ -5,7 +5,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkResolvedPath } from "../../src/agent/guard.ts";
 import { guardOmpToolCall, guardToolCall } from "../../src/agent/guard-paths.ts";
-import { checkToolCall } from "../../src/agent/guard-rules.ts";
+import { checkToolCall } from "../../src/agent/guard-call.ts";
 import { claudeGuard } from "../../src/claude/guard.ts";
 import { ctx, tempDir } from "./support.ts";
 

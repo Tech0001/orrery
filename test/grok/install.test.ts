@@ -4,10 +4,12 @@ import { basename, dirname, join } from "node:path";
 import { parse } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 import { GROK_HOOK_EVENTS } from "../../src/grok/hooks.ts";
-import { checkTools, type ToolCheck } from "../../src/agent/tools.ts";
+import { checkTools, rowDetail, type ToolCheck } from "../../src/agent/tools.ts";
 import { addGrokConfig, grokConfigLacks, grokGuardSwitchedOff, grokHookFile, grokHooksInstalled, grokRecordingSwitchedOff, grokStatusCommand, grokSwitchesUnreadable, isOrreryHookFile, removeGrokConfig } from "../../src/grok/install.ts";
+import { approveGrokSettings, checkGrokSettings } from "../../src/grok/settings.ts";
 import { wireReport } from "../../src/install/wire.ts";
 import { cleanupScratch, fakeRun, grokScratch, tempDir } from "../install/support.ts";
+import { cliCommand } from "../claude/support.ts";
 
 afterEach(cleanupScratch);
 
@@ -203,6 +205,42 @@ describe("Grok's hook file", () => {
 		rmSync(disabled);
 		mkdirSync(disabled);
 		expect(grokSwitchesUnreadable(t.env)).toBe(disabled);
+	});
+
+	it("Grok's row says whether Grok's settings are the ones approved, when asked: not yet, changed since, or nothing when they are", async () => {
+		const t = grokScratch();
+		await wireReport(t.env, { run: fakeRun, confirm: async () => true });
+		// The record is in the data folder given: here Orrery's home, as with no config.
+		const grok = (grokSettings: string | null = t.orreryHome) => checkTools({ root: t.current, env: t.env, run: fakeRun, ...(grokSettings === null ? {} : { grokSettings }) }).find((check) => check.id === "grok") as ToolCheck;
+		const hooks = join(t.grok, "hooks", "orrery.json");
+		const detail = `${hooks}; tested with Grok 1.0.70`;
+		expect(grok()).toMatchObject({ wiring: "installed", detail, settings: "Grok settings not approved yet" });
+		approveGrokSettings(t.orreryHome, checkGrokSettings(t.orreryHome, t.env, undefined).shown);
+		expect(grok()).toEqual(expect.objectContaining({ wiring: "installed", detail }));
+		expect(grok().settings).toBeUndefined();
+		writeFileSync(join(t.grok, "hooks", "other.json"), '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/nowhere/x"}]}]}}\n');
+		expect(grok()).toMatchObject({ wiring: "installed", detail, settings: "Grok settings changed since you approved them" });
+		expect(rowDetail(grok())).toBe(`${detail}; Grok settings changed since you approved them`);
+		// Another data folder's record is that folder's; with none given, Grok's settings aren't looked at.
+		expect(grok(join(t.home, "elsewhere")).settings).toBe("Grok settings not approved yet");
+		expect(grok(null).settings).toBeUndefined();
+	});
+
+	it("Grok's settings words stay out of setup's lines; orrery tools shows them after the row's detail", async () => {
+		const t = grokScratch();
+		await wireReport(t.env, { run: fakeRun, confirm: async () => true });
+		const hooks = join(t.grok, "hooks", "orrery.json");
+		// No config: the record is in Orrery's home. Approved, then a hook file of someone else's: changed.
+		approveGrokSettings(t.orreryHome, checkGrokSettings(t.orreryHome, t.env, undefined).shown);
+		writeFileSync(join(t.grok, "hooks", "other.json"), '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/nowhere/x"}]}]}}\n');
+		const { lines, left } = await wireReport(t.env, { run: fakeRun, confirm: async () => true });
+		expect(left).toEqual([]);
+		expect(lines.filter((line) => line.startsWith("Grok: "))).toEqual([`Grok: already wired (${hooks}; tested with Grok 1.0.70)`]);
+		const c = cliCommand(["tools"]);
+		const tools = spawnSync(c.cmd, c.args, { env: t.env, encoding: "utf8", timeout: 20_000 });
+		expect(tools.status, tools.stderr).toBe(0);
+		// (The spawned CLI is this checkout, so it calls the wiring another Orrery's: the words follow whatever detail.)
+		expect(tools.stdout.split("\n").find((line) => line.startsWith("Grok "))).toMatch(/; tested with Grok 1\.0\.70; Grok settings changed since you approved them$/);
 	});
 
 	it("names the config tables of Orrery's that Grok's config lacks, none when it can't be read", () => {

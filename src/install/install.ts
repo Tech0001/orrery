@@ -13,6 +13,8 @@ import { basename, join } from "node:path";
 import { defaultConfigPath, loadConfig } from "../agent/config.ts";
 import { orreryHome } from "../agent/home.ts";
 import type { Runner } from "../agent/tools.ts";
+import { keepInStep } from "../grok/settings.ts";
+import { appPrograms, settingsDataDir } from "../grok/settings-keys.ts";
 import { ENTRY_TAILS, VERSION_NAME } from "./layout.ts";
 
 /** Versions kept by history alone; current and versions live agents run are kept besides. */
@@ -360,8 +362,20 @@ function stageRelease(from: string, app: string, version: string, run: Runner): 
 	}
 }
 
-/** Installs a release folder and switches app/current to it. `previous` is what current named before the switch. */
-export function installFrom(options: { from: string; env: NodeJS.ProcessEnv; log?: (line: string) => void; run?: Runner }): { version: string; previous?: string; removed: string[] } {
+/**
+ * Switches app/current to `version` (switchTo) inside keepInStep: Grok runs app/current's command (its memory tools and
+ * status row), so the swap keeps the record of approved Grok settings in step, the record in `dataDir`, else the one of
+ * the config Orrery runs with. Only the swap is in it: the copy and check come before.
+ */
+function swapTo(app: string, version: string, record: boolean, env: NodeJS.ProcessEnv, dataDir: string | undefined): void {
+	keepInStep(dataDir ?? settingsDataDir(env), env, appPrograms(env), () => switchTo(app, version, record));
+}
+
+/**
+ * Installs a release folder and switches app/current to it. `previous` is what current named before the switch.
+ * `dataDir`: where the record of approved Grok settings is (swapTo).
+ */
+export function installFrom(options: { from: string; env: NodeJS.ProcessEnv; log?: (line: string) => void; run?: Runner; dataDir?: string }): { version: string; previous?: string; removed: string[] } {
 	const { env } = options;
 	const run = options.run ?? envRunner(env, 60_000);
 	const log = options.log ?? (() => {});
@@ -385,15 +399,18 @@ export function installFrom(options: { from: string; env: NodeJS.ProcessEnv; log
 			log(`Installing ${version}...`);
 			stageRelease(options.from, app, version, run);
 		}
-		switchTo(app, version, true);
+		swapTo(app, version, true, env, options.dataDir);
 		return { version, ...(previous === undefined ? {} : { previous }), removed: collect(app, env, log, previous) };
 	} finally {
 		release();
 	}
 }
 
-/** Switches app/current back to the latest version before it in install order (app/history) that still has a folder. */
-export function rollback(env: NodeJS.ProcessEnv): { from: string; to: string } {
+/**
+ * Switches app/current back to the latest version before it in install order (app/history) that still has a folder.
+ * `dataDir`: where the record of approved Grok settings is (swapTo).
+ */
+export function rollback(env: NodeJS.ProcessEnv, dataDir?: string): { from: string; to: string } {
 	const app = appDir(env);
 	if (currentName(app) === undefined) throw new Error("Orrery is not installed yet: see the install line in the README");
 	const release = holdInstallLock(env);
@@ -401,7 +418,7 @@ export function rollback(env: NodeJS.ProcessEnv): { from: string; to: string } {
 		const from = currentName(app) as string;
 		const to = rollbackTarget(app, from);
 		if (to === undefined) throw new Error("no earlier version to roll back to");
-		switchTo(app, to, false);
+		swapTo(app, to, false, env, dataDir);
 		return { from, to };
 	} finally {
 		release();

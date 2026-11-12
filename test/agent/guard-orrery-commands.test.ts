@@ -14,6 +14,7 @@ import {
 	transcriptRule,
 } from "../../src/agent/guard-rules.ts";
 import { ALLOWED_INSIDE } from "../../src/agent/inside-commands.ts";
+import { grokFolders } from "../../src/grok/guard-rules.ts";
 import { claudeGuard } from "../../src/claude/guard.ts";
 import { HELP_COMMANDS } from "../../src/cli/help.ts";
 import { codexGuard } from "../../src/codex/guard.ts";
@@ -45,7 +46,7 @@ function world(linked = false) {
 	const codexHome = linked ? join(home, ".config", "codex") : join(root, "codex-home");
 	for (const dir of [folder, home, join(store, "projects"), join(claudeConfig, "projects"), join(codexHome, "sessions")]) mkdirSync(dir, { recursive: true });
 	if (linked) symlinkSync(store, join(home, ".claude"));
-	const transcripts = transcriptRule({ CLAUDE_CONFIG_DIR: claudeConfig, CODEX_HOME: codexHome }, home, linked ? realTarget : undefined);
+	const transcripts = transcriptRule(grokFolders, { CLAUDE_CONFIG_DIR: claudeConfig, CODEX_HOME: codexHome }, home, linked ? realTarget : undefined);
 	const options: PathGuardOptions = { folder, allowedRoots: [home, claudeConfig, codexHome, join(root, "Store")], cwd: folder, home, foreignViews: [], transcripts };
 	return { root, folder, home, store, claudeConfig, codexHome, options };
 }
@@ -134,7 +135,7 @@ describe("the commands the guard knows", () => {
 
 	it("refuse every one that does not run inside an agent session, but version, which prints before any command runs", () => {
 		expect([...REFUSED_COMMANDS].sort()).toEqual(
-			["agent", "backup", "claude-setup", "compact", "import", "install", "login", "logins", "logout", "remote", "restore", "run", "setup", "tools", "trust-host", "uninstall", "update"].sort(),
+			["agent", "backup", "claude-setup", "compact", "grok-settings", "import", "install", "login", "logins", "logout", "remote", "restore", "run", "setup", "tools", "trust-host", "uninstall", "update"].sort(),
 		);
 		expect(ORRERY_COMMANDS.filter((command) => !REFUSED_COMMANDS.includes(command)).sort()).toEqual([...ALLOWED_INSIDE, "version"].sort());
 	});
@@ -186,6 +187,9 @@ describe("Orrery's commands in shell text", () => {
 		["orrery claude-setup Atlas", "claude-setup"],
 		["orrery install --from /tmp/r --yes", "install"],
 		["orrery uninstall --purge", "uninstall"],
+		// Approving Grok's settings is the person's alone.
+		["orrery grok-settings --yes", "grok-settings"],
+		["orrery grok-settings", "grok-settings"],
 		// After options main.ts knows, their values skipped.
 		["orrery --config /tmp/c.toml restore Atlas", "restore"],
 		["orrery --config=/tmp/c.toml setup", "setup"],
@@ -472,7 +476,7 @@ describe("Claude Code's and Codex's session records", () => {
 			const claudeConfig = join(w.root, "cfg");
 			const codexHome = join(claudeConfig, "codex");
 			mkdirSync(join(codexHome, "sessions"), { recursive: true });
-			const transcripts = transcriptRule({ CLAUDE_CONFIG_DIR: claudeConfig, CODEX_HOME: codexHome }, w.home);
+			const transcripts = transcriptRule(grokFolders, { CLAUDE_CONFIG_DIR: claudeConfig, CODEX_HOME: codexHome }, w.home);
 			return { ...w, claudeConfig, codexHome, options: { ...w.options, allowedRoots: [...w.options.allowedRoots, claudeConfig], transcripts } };
 		};
 		expect(verdicts((w) => `ls ${w.codexHome}/sess*`, nested)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));

@@ -131,9 +131,9 @@ const connectText = (steps: readonly InstallStep[]) => steps.map((step) => (step
  * Grok's wiring removed when app/current is a version without Grok's hooks (src/grok/install.ts grokSupported): such an
  * Orrery answers them with an error, which blocks every prompt. Says so, and what went.
  */
-function unwireOldGrok(env: NodeJS.ProcessEnv, version: string | undefined, left: string[], emit: (line: string) => void): void {
+function unwireOldGrok(env: NodeJS.ProcessEnv, version: string | undefined, left: string[], emit: (line: string) => void, dataDir: string | undefined): void {
 	const why = version === undefined ? "the installed version can't be read" : `${version} has no Grok support`;
-	const unwired = unwireGrok(env, join(orreryHome(env), "app"));
+	const unwired = unwireGrok(env, join(orreryHome(env), "app"), dataDir);
 	if (!unwired.changed && unwired.ok) {
 		emit(`Grok: ${why}; not wired`);
 		return;
@@ -149,18 +149,21 @@ function unwireOldGrok(env: NodeJS.ProcessEnv, version: string | undefined, left
  * config without an entry of Orrery's, which the person may have removed) and "other" (another Orrery, or not Orrery's
  * file) only after confirm, and a file that is not Orrery's is set aside first. A missing pi or OMP extension is written only when that tool is on PATH, and
  * Grok's when grok is on PATH or Grok's folder is there; a version without Grok's hooks gets Grok's wiring removed.
+ * What Grok loads (its wiring, the Claude Code plugin) is written in step with the record of approved Grok settings in
+ * `dataDir` (the config's; else the one of the config Orrery runs with).
  */
-async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: Runner; install: Runner }, confirm: Confirm, left: string[], unchecked: string[], emit: (line: string) => void): Promise<void> {
+async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: Runner; install: Runner }, confirm: Confirm, left: string[], unchecked: string[], emit: (line: string) => void, dataDir: string | undefined): Promise<void> {
+	// Setup's lines say nothing of Grok's settings (the Tools page and orrery tools do): they aren't looked at here.
 	const look = () => checkTools({ root: current, env, run: run.probe });
 	let checks = look();
 	for (const id of ["pi", "claude-code", "omp", "grok"] as const) {
 		const check = checks.find((c) => c.id === id) as ToolCheck;
 		const found = check.path !== undefined || (id === "grok" && grokFolderThere(env));
 		if (id === "grok" && found && !grokSupported(installedVersion(env))) {
-			unwireOldGrok(env, installedVersion(env), left, emit);
+			unwireOldGrok(env, installedVersion(env), left, emit, dataDir);
 			continue;
 		}
-		const steps = installSteps(check, current, env);
+		const steps = installSteps(check, current, env, dataDir);
 		if (steps.length === 0) {
 			// "unknown" is a tool Orrery could not check; "other" with nothing to run is blocked (shared folder), only info.
 			if (check.wiring === "unknown") unchecked.push(`${check.label}: ${check.detail}`);
@@ -222,7 +225,7 @@ export async function wireReport(env: NodeJS.ProcessEnv, options: { run?: Runner
 	emit(await linkCommand(env, current, options.confirm, left));
 	if (advice !== undefined) emit(advice);
 	for (const line of pointBackup(env, home, run, left, options.platform ?? process.platform)) emit(line);
-	await wireTools(env, current, { probe, install: run }, options.confirm, left, unchecked, emit);
+	await wireTools(env, current, { probe, install: run }, options.confirm, left, unchecked, emit, options.config?.config?.dataDir);
 	// The [guard] example, once per config: nothing is left when it is not added.
 	const preset = offerGuardPreset(env, options.config);
 	if (preset !== undefined) emit(preset);

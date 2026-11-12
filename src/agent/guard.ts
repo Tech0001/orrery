@@ -13,7 +13,7 @@
  *
  * Limits, by design:
  * - Shell commands cannot be parsed reliably, so bash is judged by its text, read bluntly every way a shell may read it
- *   (guard-rules.ts checkToolCall): names of sensitive, protected and Orrery's own files, the hook plumbing, Orrery's
+ *   (guard-call.ts checkToolCall): names of sensitive, protected and Orrery's own files, the hook plumbing, Orrery's
  *   commands, OpenCode's config, skills folders and the session records. A name built at run time gets through.
  * - An agent can still reach anything its OS account can. The real boundary is the account the tools run as.
  * - No search-root rule here: a grep or find over a folder holding a credential store or another agent's view is not
@@ -32,17 +32,13 @@ import type { Context } from "@earendil-works/chord";
 import { defineExtension, hook, type ToolRegistration, ToolTask, wrapTool } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
+import { GROK_OPEN, GROK_READ_ONLY, grokFolders, grokLoads, grokRule } from "../grok/guard-rules.ts";
+import { checkToolCall, type CallOptions } from "./guard-call.ts";
 import { grokOf } from "./guard-paths.ts";
 import {
 	APP_READ_ONLY,
 	CONFIG_READ_ONLY,
-	checkToolCall,
 	foldName,
-	GROK_OPEN,
-	GROK_READ_ONLY,
-	grokFolders,
-	grokLoads,
-	grokRule,
 	type GuardOptions,
 	inOrreryHome,
 	type NewText,
@@ -66,13 +62,13 @@ import {
 	within,
 } from "./guard-rules.ts";
 
-export { checkToolCall, type GuardOptions };
+export { type CallOptions, checkToolCall, type GuardOptions };
 
 /**
  * The durable harness's guard: the agent's roots, plus orrery's credentials file and home (data_dir) when known, and
  * the config's [guard] protect (GuardOptions.protect).
  */
-export interface DurableGuardOptions extends GuardOptions {
+export interface DurableGuardOptions extends CallOptions {
 	readonly credentials?: readonly string[];
 	readonly orreryData?: string;
 	/** The home "~/" in [guard] protect and the built-in home secrets are under; default: the OS's. */
@@ -174,7 +170,7 @@ export async function checkResolvedPath(
 		// OpenCode's config and code (guard-rules.ts openCodeLoads), where the tool writes and where that really is.
 		const openCode = options.openCode ?? openCodeRule(process.env, options.home ?? homedir());
 		if (openCodeLoads(target, openCode) || openCodeLoads(real, openCode)) return OPENCODE_READ_ONLY(real);
-		// Grok's folder but its open parts (guard-rules.ts grokRule), where the tool writes and where that really is: its
+		// Grok's folder but its open parts (grok/guard-rules.ts grokRule), where the tool writes and where that really is: its
 		// folders and entries as this machine's links lead them (guard-paths.ts grokOf, a dangling link followed as
 		// realTarget follows it, a link that leads nowhere found by its kind), and as the tools' file system's do (every
 		// entry listed and taken for a link when its real path is elsewhere, so an env that reports kinds differently
@@ -204,7 +200,7 @@ export async function checkResolvedPath(
 		if (!roots.some((root) => within(real, root))) return `${real} is outside this agent's folder and allowed roots.`;
 		// Claude Code's, Codex's and Grok's session records (guard-rules.ts transcriptRule), where the tool writes and where
 		// that really is; the folders as given and where they really are (a ~/.claude that is a link).
-		const records = options.transcripts ?? transcriptRule(process.env, options.home ?? homedir());
+		const records = options.transcripts ?? transcriptRule(grokFolders, process.env, options.home ?? homedir());
 		const reals = async (folders: readonly string[]) => Promise.all(folders.map((folder) => realPath(env, folder, context)));
 		const realRecords = { claude: await reals(records.claude), codex: await reals(records.codex), grok: await reals(records.grok ?? []) };
 		if ([records, realRecords].some((rule) => transcriptPath(target, rule) || transcriptPath(real, rule))) return TRANSCRIPT_READ_ONLY(real);

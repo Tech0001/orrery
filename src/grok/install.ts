@@ -15,7 +15,9 @@
  *   are told how to show Orrery's.
  * - Only a version that answers `grok-hook` (GROK_SINCE on) is wired: an older Orrery answers it with an error, which
  *   blocks every prompt, so a rollback to one removes the wiring (src/install/uninstall.ts unwireGrok).
- * Writing them is src/agent/tools.ts's (installSteps, runInstall); this file makes and reads their text.
+ * Writing them is src/agent/tools.ts's (installSteps, runInstall); this file makes and reads their text. Each write keeps
+ * the record of the Grok settings the person approved in step (src/grok/settings.ts keepInStep), and Grok's row in the
+ * tools check, where it is shown, says when Grok's settings aren't the ones approved (grokSettingsWords).
  */
 
 import { lstatSync, readFileSync, statSync } from "node:fs";
@@ -32,6 +34,8 @@ import { ENTRY_TAILS, entries } from "../install/layout.ts";
 import { newer } from "../install/update.ts";
 import { grokHome } from "./log.ts";
 import { GROK_HOOK_EVENTS } from "./names.ts";
+import { checkGrokSettings, keepInStep } from "./settings.ts";
+import { grokConfigKeys, grokHookKeys, settingsDataDir } from "./settings-keys.ts";
 
 /** The first Orrery that answers `orrery grok-hook`. */
 export const GROK_SINCE = "0.10.0";
@@ -378,6 +382,18 @@ export function grokMemoryToolsSwitchedOff(env: NodeJS.ProcessEnv): boolean {
 export const GROK_TOOLS_SWITCHED_OFF = "Orrery's memory tools are switched off in Grok's config, so its sessions get no zoom, date or search; grok mcp enable orrery, run in your own terminal, switches them back on.";
 
 /**
+ * What Grok's row says of Grok's settings (its `settings`, apart from its detail: the Tools page and orrery tools show it,
+ * setup doesn't) against the record of the ones the person approved in `dataDir` (src/grok/settings.ts), Grok's own
+ * folder's (the global ones): never approved (no record, or none for this Grok folder), changed since then, or nothing
+ * when they are as approved.
+ */
+export function grokSettingsWords(dataDir: string, env: NodeJS.ProcessEnv): string | undefined {
+	const check = checkGrokSettings(dataDir, env, undefined);
+	if (check.state === "first" || (check.state === "changed" && check.record === "new-folder")) return "Grok settings not approved yet";
+	return check.state === "changed" ? "Grok settings changed since you approved them" : undefined;
+}
+
+/**
  * Grok's row in the tools check: Orrery's hook file and config tables in Grok's folder, for the Orrery at `root`.
  * - "missing": no hook file; or Orrery's, for this root, with a table of Orrery's missing from the config (none written
  *   yet, or the person removed it): adding one is asked, as connecting is, and never done by an update on its own; a
@@ -440,11 +456,14 @@ export function grokConfigLacks(root: string, env: NodeJS.ProcessEnv): Name[] {
 /**
  * What installing Orrery's side of Grok does for the Orrery at `root`: write the hook file when it isn't this root's
  * already (a file that is not Orrery's is set aside first), then add the config tables it lacks (a copy of the config
- * first). `now`: what the hook file is now, for the step's text.
+ * first). `now`: what the hook file is now, for the step's text. Each write keeps the record of approved Grok settings
+ * in step (keepInStep: the record in `dataDir`, else the one of the config Orrery runs with) for the file it writes and
+ * the programs that runs.
  */
-export function grokInstallSteps(root: string, env: NodeJS.ProcessEnv, now?: string): InstallStep[] {
+export function grokInstallSteps(root: string, env: NodeJS.ProcessEnv, now?: string, dataDir?: string): InstallStep[] {
 	const { hooks, config } = grokFiles(env);
 	const orrery = entries(root).cli;
+	const keep = (keys: () => readonly string[]) => (write: () => void) => keepInStep(dataDir ?? settingsDataDir(env), env, keys(), write);
 	const text = grokHookFile(orrery);
 	const steps: InstallStep[] = [];
 	let current: string | undefined;
@@ -456,7 +475,7 @@ export function grokInstallSteps(root: string, env: NodeJS.ProcessEnv, now?: str
 	if (current !== text) {
 		const describe = current === undefined ? `write ${safeText(hooks)} (Orrery's hooks for every Grok session)` : `replace ${safeText(hooks)} (now ${now ?? "something else"}) with Orrery's hooks for every Grok session`;
 		// Grok keeps its folder private (0700); one made for the hook file is too.
-		steps.push({ kind: "write", path: hooks, text, ours: isOrreryHookFile, folderMode: 0o700, describe });
+		steps.push({ kind: "write", path: hooks, text, ours: isOrreryHookFile, folderMode: 0o700, describe, keep: keep(() => grokHookKeys(env)) });
 	}
 	let configText = "";
 	try {
@@ -472,7 +491,7 @@ export function grokInstallSteps(root: string, env: NodeJS.ProcessEnv, now?: str
 	}
 	if (lacks) {
 		const what = "Orrery's status row and memory tools";
-		steps.push({ kind: "edit", path: config, what, edit: grokConfigEdit(orrery, config), describe: `add ${what} to ${safeText(config)} unless it has its own (a copy of it first)` });
+		steps.push({ kind: "edit", path: config, what, edit: grokConfigEdit(orrery, config), describe: `add ${what} to ${safeText(config)} unless it has its own (a copy of it first)`, keep: keep(() => grokConfigKeys(env, [orrery])) });
 	}
 	return steps;
 }

@@ -29,25 +29,31 @@
  * - Under Grok's shared leader (leader mode), whose environment is its first client's, it names no agent and never says
  *   recording: when its host is the leader it says why; a session's own grok in leader mode holds no claim (its hooks and
  *   memory server run in the leader, which refuses them: src/grok/host.ts), so its row says nothing.
+ * - An agent's row ends ` · Grok settings changed`, after whatever state it says, when Grok's settings (its folder and
+ *   HOME as the row's environment has them, and the folder Grok runs in) aren't the ones the person approved, by
+ *   src/grok/settings-row.ts grokSettingsChanged: a stamp of what the last full check read, and the full check when it
+ *   moved. None with no record at all (the first run, which the launch asks about). Recording and the guard go on as ever.
  * - It reads the agent's message count alone (src/memory/store.ts messageCount: no write lock, nothing of the memory
- *   loaded), and never prints a word of memory. It writes nothing of its own: no claim, decision or record. Reading this
- *   Grok's host record takes down a stale one it finds there, as every reader of the records does (src/agent/sessions.ts
- *   liveSession). Every error prints nothing: Grok paints a failing command's exit code into the row, so the CLI exits 0
- *   whatever happens (src/cli/main.ts grokStatusCommand).
+ *   loaded), and never prints a word of memory. It writes nothing of its own but the settings check's cache: no claim,
+ *   decision or record. Reading this Grok's host record takes down a stale one it finds there, as every reader of the
+ *   records does (src/agent/sessions.ts liveSession). Every error prints nothing: Grok paints a failing command's exit
+ *   code into the row, so the CLI exits 0 whatever happens (src/cli/main.ts grokStatusCommand).
  */
 
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { holderFresh, openElsewhere, readHolder } from "../agent/handover.ts";
 import { readMessageCount } from "../agent/memory-read.ts";
 import { AGENT_ENV, claimMadeAt, TOKEN_ENV } from "../agent/pick.ts";
+import { processCwd } from "../agent/process.ts";
 import { liveSession } from "../agent/sessions.ts";
 import { safeText } from "../agent/source-labels.ts";
 import { type StatusState, statusText } from "../agent/status-text.ts";
 import { validSession } from "../claude/paths.ts";
 import { readMode } from "../claude/spool.ts";
 import { grokAgent, launchedEnv, startEnvOf } from "../codex/pick.ts";
-import { GROK_LEADER_REFUSAL, GROK_START_VARIABLES, grokHostRefusal, grokPid } from "./host.ts";
+import { GROK_LEADER_REFUSAL, GROK_START_VARIABLES, grokFolderEnv, grokHostRefusal, grokPid } from "./host.ts";
 import { GROK_SESSION_START_TIMEOUT, grokRecordingSwitchedOff } from "./install.ts";
+import { grokSettingsChanged } from "./settings-row.ts";
 
 /** What the row reads besides the config and the environment; tests pass their own. */
 export interface GrokStatusContext {
@@ -65,6 +71,8 @@ export interface GrokStatusContext {
 	readonly argvOf?: (pid: number) => readonly string[] | undefined;
 	/** Named variables of the environment a process was started with (default startEnvOf): whose Grok this is. */
 	readonly envOf?: (pid: number, names: readonly string[]) => Readonly<Record<string, string>> | undefined;
+	/** The folder a process runs in (default processCwd): the session folder whose settings Grok loaded, as its hooks find it. */
+	readonly cwdOf?: (pid: number) => string | undefined;
 }
 
 /**
@@ -81,6 +89,8 @@ const SWITCHED_OFF = "Orrery's hooks are switched off in /hooks";
 const ANOTHER_SESSION = "this Grok records another of its sessions now";
 /** The session's holder chose recording, but no longer beats for it. */
 const RECORDER_STOPPED = "Orrery's recorder stopped; a new session or a resume starts it again";
+/** Grok's settings aren't the ones the person approved (module doc): after the state. */
+const SETTINGS_CHANGED = "Grok settings changed";
 
 /** The row's line for Grok's status JSON `stdin`, or "" for no row (module doc). Never throws. */
 export function grokStatus(stdin: string, ctx: GrokStatusContext): string {
@@ -125,7 +135,10 @@ function rowOf(stdin: string, ctx: GrokStatusContext): string | undefined {
 	const young = (at: number | undefined) => at !== undefined && now - at >= 0 && now - at < GROK_SESSION_START_TIMEOUT * 1000;
 	const starting = () => young(claimMadeAt(agent.dir, env[TOKEN_ENV] ?? "")) || young(sessionStartedAt(session));
 	const state = stateOf(ctx.config, agent, session, pid, now, () => grokRecordingSwitchedOff(env), starting);
-	return statusText({ name: agent.name, count: readMessageCount(agent), state });
+	// Grok's folders as Grok was started with them (as the hooks take them); its folder from the process, else the status
+	// JSON's cwd, else none (the check then says changed, whatever it compares).
+	const settings = grokSettingsChanged(ctx.config.dataDir, grokFolderEnv(env, started ?? {}), () => (ctx.cwdOf ?? processCwd)(pid) ?? cwdIn(stdin)) ? [SETTINGS_CHANGED] : [];
+	return statusText({ name: agent.name, count: readMessageCount(agent), state, extra: settings });
 }
 
 /**
@@ -135,6 +148,17 @@ function rowOf(stdin: string, ctx: GrokStatusContext): string | undefined {
 function sessionStartedAt(session: string): number | undefined {
 	const v7 = /^([0-9a-f]{8})-([0-9a-f]{4})-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.exec(session);
 	return v7 === null ? undefined : Number.parseInt(`${v7[1]}${v7[2]}`, 16);
+}
+
+/** The `cwd` in Grok's status JSON, when it is a non-empty string. */
+function cwdIn(stdin: string): string | undefined {
+	try {
+		const parsed: unknown = JSON.parse(stdin);
+		const cwd = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as { readonly cwd?: unknown }).cwd : undefined;
+		return typeof cwd === "string" && cwd !== "" ? cwd : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** The session id in Grok's status JSON (`session_id`; a hook's `sessionId` too), when it is one the spool takes. */

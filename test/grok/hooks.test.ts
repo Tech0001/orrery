@@ -16,6 +16,7 @@ import { readUnconfirmed } from "../../src/claude/transcript.ts";
 import { LAUNCH_VARIABLES } from "../../src/codex/pick.ts";
 import { GROK_HOOK_EVENTS, type GrokHookContext, grokOwnConfig, ownConfigNotice, runGrokHook } from "../../src/grok/hooks.ts";
 import { GROK_SHARED, grokFolder } from "../../src/grok/log.ts";
+import { approvalDate, approveGrokSettings, checkGrokSettings, grokSettingsNotice, readSettingsRecord, type SettingsCheck, type SettingsRecord, type ShownSettings } from "../../src/grok/settings.ts";
 import { grokStatus } from "../../src/grok/status.ts";
 import { fauxModels } from "../agent/support.ts";
 import { cleanupDirs, messages, seed, startedWith, type TestAgent, testAgent, waitUntil } from "../claude/support.ts";
@@ -212,6 +213,126 @@ describe("SessionStart for a Grok session", () => {
 		expect(spooled(t, "s1").map((event) => event.kind)).toEqual(["grok-log"]);
 		const silent = (await run("session-start", input({ session: "s2", source: "new" }), ctx(t))) as Answer;
 		expect(silent.systemMessage).toContain("not recording yet");
+	});
+});
+
+describe("Grok's settings at SessionStart: the start message says when they aren't the ones the person approved", () => {
+	/**
+	 * The test agent's Grok, whose settings are a scratch HOME's and its Grok folder's (GROK_HOME), and whose holder answers
+	 * recording. `plant` puts a hook file in Grok's folder (a command that names no file: one change).
+	 */
+	function settingsWorld() {
+		const t = testAgent();
+		const token = tokenOf(t);
+		const env = { ORRERY_AGENT: "Test", ORRERY_AGENT_TOKEN: token, GROK_HOME: homeOf(t).home, HOME: join(t.dir, "home") };
+		mkdirSync(join(env.GROK_HOME, "hooks"), { recursive: true });
+		mkdirSync(env.HOME, { recursive: true });
+		const data = t.config.dataDir;
+		return {
+			t,
+			data,
+			c: ctx(t, { env, startHolder: answer("recording"), envOf: () => ({ GROK_HOME: env.GROK_HOME, HOME: env.HOME }) }, token),
+			approve: (grok = env.GROK_HOME) => approveGrokSettings(data, checkGrokSettings(data, { ...env, GROK_HOME: grok }, t.folder).shown),
+			plant: (name: string) => writeFileSync(join(env.GROK_HOME, "hooks", name), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "true" }] }] } })),
+			approvedOn: () => approvalDate(Object.values((readSettingsRecord(data) as SettingsRecord).grok)[0]?.approvedAt ?? ""),
+		};
+	}
+	/** SessionStart's start message for session `session` (by name), at `source`. */
+	const startMessage = async (c: GrokHookContext, session: string, source = "new") => ((await run("session-start", input({ session, source }), c)) as Answer).systemMessage;
+	const status = "Orrery · Test · no memory yet · recording";
+	/** The notice's pointer, naming the folder the session runs in (the test agent's). */
+	const review = (folder: string) => `run orrery grok-settings in ${folder} in your own terminal to review them.`;
+
+	it("session start says changed", async () => {
+		const w = settingsWorld();
+		// The first run (no record at all): the launch asked about it; the start says nothing of it.
+		expect(await startMessage(w.c, "s1")).toBe(status);
+		// Approved and unchanged: nothing.
+		w.approve();
+		expect(await startMessage(w.c, "s2")).toBe(status);
+		w.plant("planted.json");
+		const one = `Grok's settings changed since you approved them on ${w.approvedOn()} (1 change). Orrery still records and guards this session; ${review(w.t.folder)}`;
+		// A start, /new and /clear (`new`), and a resume (`load`): every SessionStart says it, after the status line.
+		expect(await startMessage(w.c, "s3", "new")).toBe(`${status}\n${one}`);
+		expect(await startMessage(w.c, "s1", "load")).toBe(`${status}\n${one}`);
+		w.plant("another.json");
+		expect(await startMessage(w.c, "s4")).toBe(`${status}\n${one.replace("(1 change)", "(2 changes)")}`);
+		// Approved again: nothing.
+		w.approve();
+		expect(await startMessage(w.c, "s5")).toBe(status);
+	});
+
+	it("a record that can't be read, or one with no approval for this Grok folder, says so", async () => {
+		const w = settingsWorld();
+		w.plant("planted.json");
+		const record = join(w.data, "grok-settings.json");
+		writeFileSync(record, "not a record");
+		expect(await startMessage(w.c, "s1")).toBe(`${status}\nOrrery can't read its record of Grok's settings; ${review(w.t.folder)}`);
+		// Another Grok folder's approval only (a moved GROK_HOME).
+		rmSync(record);
+		const elsewhere = join(w.t.dir, "other-grok");
+		mkdirSync(elsewhere);
+		w.approve(elsewhere);
+		expect(await startMessage(w.c, "s2")).toBe(`${status}\nOrrery has no record of approving this Grok folder's settings; ${review(w.t.folder)}`);
+	});
+
+	it("a plain grok's SessionStart says nothing of Grok's settings, as before", async () => {
+		const w = settingsWorld();
+		w.approve();
+		w.plant("planted.json");
+		const plain = { GROK_HOME: homeOf(w.t).home, HOME: join(w.t.dir, "home") };
+		const elsewhere = join(w.t.dir, "elsewhere");
+		mkdirSync(elsewhere);
+		expect(await run("session-start", input({ source: "new" }), ctx(w.t, { env: plain, cwdOf: () => elsewhere }))).toBe("");
+		expect(await startMessage(ctx(w.t, { env: plain }), "s2")).toBe("Orrery: this folder is Test's, but this Grok wasn't opened as Test, so it opens no memory and records nothing. Open it with orrery agent Test --tool grok.");
+	});
+
+	it("looks the folder Grok runs in up once, and checks the folders Grok was started with, not the hook's own", async () => {
+		const w = settingsWorld();
+		w.approve();
+		w.plant("planted.json");
+		let lookups = 0;
+		const counted: GrokHookContext = { ...w.c, cwdOf: (pid: number) => (lookups++, w.c.cwdOf?.(pid)) };
+		expect(await startMessage(counted, "s1")).toContain("(1 change)");
+		expect(lookups).toBe(1);
+		// The hook's own GROK_HOME is another folder, never approved: the check follows Grok's start, so it says the same.
+		const own = join(w.t.dir, "hook-own-grok");
+		mkdirSync(join(own, "hooks"), { recursive: true });
+		homeOf(w.t).begin(id("s2"));
+		expect(await startMessage({ ...w.c, env: { ...w.c.env, GROK_HOME: own } }, "s2")).toContain("(1 change)");
+		// Approved again for Grok's folder: the hook's own, unapproved folder does not make it changed.
+		w.approve();
+		homeOf(w.t).begin(id("s3"));
+		expect(await startMessage({ ...w.c, env: { ...w.c.env, GROK_HOME: own } }, "s3")).toBe(status);
+	});
+
+	it("a session that isn't recording is still guarded, but the notice doesn't say it records", async () => {
+		const w = settingsWorld();
+		w.approve();
+		w.plant("planted.json");
+		const message = await startMessage({ ...w.c, startHolder: answer("read-only") }, "s1");
+		expect(message).toContain("read-only: this session is not recorded");
+		expect(message).toContain(`(1 change). Orrery still guards this session; ${review(w.t.folder)}`);
+		expect(message).not.toContain("records and guards");
+	});
+
+	it("grokSettingsNotice: none for unchanged or the first run; one line for each kind of change", () => {
+		const shown = {} as ShownSettings;
+		const change = { change: "added", line: "added    hook file x" } as const;
+		const ok = (count: number): SettingsCheck => ({ state: "changed", record: "ok", approvedAt: "2026-11-01T12:00:00.000Z", changes: Array.from({ length: count }, () => change), shown });
+		expect(grokSettingsNotice({ state: "unchanged", approvedAt: "2026-11-01T12:00:00.000Z", shown }, "/work/atlas")).toBeUndefined();
+		expect(grokSettingsNotice({ state: "first", lines: ["hook file x"], shown }, "/work/atlas")).toBeUndefined();
+		const day = approvalDate("2026-11-01T12:00:00.000Z");
+		const folder = "/work/atlas";
+		const pointer = `run orrery grok-settings in ${folder} in your own terminal to review them.`;
+		expect(grokSettingsNotice(ok(1), folder)).toBe(`Grok's settings changed since you approved them on ${day} (1 change). Orrery still records and guards this session; ${pointer}`);
+		expect(grokSettingsNotice(ok(3), folder)).toBe(`Grok's settings changed since you approved them on ${day} (3 changes). Orrery still records and guards this session; ${pointer}`);
+		expect(grokSettingsNotice(ok(1), folder, false)).toBe(`Grok's settings changed since you approved them on ${day} (1 change). Orrery still guards this session; ${pointer}`);
+		expect(grokSettingsNotice(ok(2), folder, false)).toBe(`Grok's settings changed since you approved them on ${day} (2 changes). Orrery still guards this session; ${pointer}`);
+		expect(grokSettingsNotice({ state: "changed", record: "unreadable", approvedAt: "", changes: [change], shown }, folder)).toBe(`Orrery can't read its record of Grok's settings; ${pointer}`);
+		expect(grokSettingsNotice({ state: "changed", record: "new-folder", approvedAt: "", changes: [change], shown }, folder)).toBe(`Orrery has no record of approving this Grok folder's settings; ${pointer}`);
+		// The folder is shown as safe text: no line breaks or terminal escapes.
+		expect(grokSettingsNotice(ok(1), "/work/a\nb\u001b[31m")).toContain("run orrery grok-settings in /work/a b[31m in your own terminal");
 	});
 });
 

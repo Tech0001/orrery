@@ -9,7 +9,9 @@
  *   (`orrery agent <Name> --tool grok`); elsewhere it prints nothing.
  * - SessionStart (source `new`, for a start, /new and /clear; `load`, for a resume): starts this session's holder, or
  *   keeps the one already recording it, and answers the status line and any update or summary notices as a top-level
- *   systemMessage. Grok's SessionStart can't give the model context: the memory came with the launch (src/grok/launch.ts).
+ *   systemMessage, then a line when Grok's settings aren't the ones the person approved (src/grok/settings.ts
+ *   grokSettingsNotice): /new and /clear reload Grok's hooks and servers past the launch's question, so every start
+ *   checks. Grok's SessionStart can't give the model context: the memory came with the launch (src/grok/launch.ts).
  *   It also records Grok's process as the agent's session host, with the session's id. A Grok started inside an agent's
  *   session (src/codex/pick.ts) opens no memory and records nothing: SessionStart says why, and no event spools.
  * - UserPromptSubmit spools the prompt and Stop (`reason` "end_turn") the turn's last reply, each with the turn's
@@ -108,9 +110,10 @@ import { summaryNotice, updateNotice } from "../claude/notices.ts";
 import { holderLog, validSession } from "../claude/paths.ts";
 import { readMode, type SessionMode, spoolEvent } from "../claude/spool.ts";
 import { grokAgent, launchedEnv, startEnvOf } from "../codex/pick.ts";
-import { GROK_FOLDER_VARIABLES, GROK_START_VARIABLES, grokHostNotice, grokHostRefusal } from "./host.ts";
+import { GROK_FOLDER_VARIABLES, GROK_START_VARIABLES, grokFolderEnv, grokHostNotice, grokHostRefusal } from "./host.ts";
 import { GROK_SHARED, type GrokHeld, grokHeldSessions, grokLogStart, grokSessionKind, grokStartHome } from "./log.ts";
 import { GROK_HOOK_EVENTS } from "./names.ts";
+import { checkGrokSettings, grokSettingsNotice, reviewPointer } from "./settings.ts";
 
 /** The events `orrery grok-hook` answers (pre-tool-use is the guard), kept in src/grok/names.ts, where the install reads them. */
 export { GROK_HOOK_EVENTS };
@@ -266,6 +269,9 @@ interface OwnLog {
 	readonly home: string;
 	readonly offset: number;
 	readonly file?: string;
+	/** The folder the process runs in and the folder variables it was started with, as ownSession found them. */
+	readonly cwd: string;
+	readonly started: Readonly<Record<string, string>>;
 }
 
 /** What is at `path` itself, a link there not followed: undefined when nothing is, "unreadable" when that can't be told. */
@@ -385,7 +391,7 @@ function ownSession(session: string, ctx: GrokHookContext): OwnLog | string {
 	if (kind !== "main") return "it is no session of the person's own, but a subagent's or another kind";
 	const start = grokLogStart(log);
 	if (start === undefined) return "its log can't be read";
-	return { path: log, home, offset: start.offset, ...(start.file === undefined ? {} : { file: start.file }) };
+	return { path: log, home, offset: start.offset, ...(start.file === undefined ? {} : { file: start.file }), cwd, started };
 }
 
 /**
@@ -533,7 +539,22 @@ export async function sessionStart(input: GrokHookInput, ctx: GrokHookContext): 
 	// The status line as statusText says it, which the status row (src/grok/status.ts) uses too, with why on the lines
 	// after. Their words can differ: a read-only row says where the agent is open, this line that the session isn't recorded.
 	const status = statusText({ name: agent.name, count: memory.messages, state });
-	return { systemMessage: [status, ...warnings, ...noticeLines(agent, session, ctx)].join("\n") };
+	return { systemMessage: [status, ...warnings, ...noticeLines(agent, session, ctx), ...settingsLines(ctx, log, state === "recording")].join("\n") };
+}
+
+/**
+ * Whether Grok's settings are the ones the person approved (src/grok/settings.ts): its folder and HOME as the grok process
+ * was started with them, and the folder it runs in, whose project settings it loaded (both from ownSession). A line when they
+ * aren't (none for the first run, which the launch asked about); a check that fails says so.
+ */
+function settingsLines(ctx: GrokHookContext, own: OwnLog, recording: boolean): string[] {
+	try {
+		// The folder and the folder variables ownSession already found, from Grok's start: no second lookup.
+		const notice = grokSettingsNotice(checkGrokSettings(ctx.config.dataDir, grokFolderEnv(ctx.env, own.started), own.cwd), own.cwd, recording);
+		return notice === undefined ? [] : [notice];
+	} catch (error) {
+		return [`Orrery: Grok's settings could not be checked (${safeText(errorText(error))}); ${reviewPointer(own.cwd)}`];
+	}
 }
 
 /** The hook's stdout for `event` (an empty string: nothing to say). An event it does not know throws. */
