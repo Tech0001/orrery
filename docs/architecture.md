@@ -476,7 +476,7 @@ file they load, and Claude Code's plugin copy `plugins/cache/orrery`, its market
 and the records `known_marketplaces.json` and `installed_plugins.json`, in `~/.claude` or `$CLAUDE_CONFIG_DIR`:
 readable by file tools, never written, the folders and the records' names refused in shell text), every agent's memory view
 (the session is no agent's, so each is another's), Claude Code's and Codex's session records (no writes, not named in
-shell text), shell text that runs or names Orrery's hook plumbing or an `orrery` command other than `help`,
+shell text but one plain read of them), shell text that runs or names Orrery's hook plumbing or an `orrery` command other than `help`,
 `--version`, `status` and `usage`, and what the guard can't judge in time. A search whose root holds the data folder
 or the credentials file is refused, and a content search whose root holds an agent's view. In OMP, a language
 server's edits pass unless the session's folder, or the file the action names, holds or is inside one of Orrery's
@@ -749,7 +749,13 @@ names, such as a `grep` or a commit message, is refused too; a name built at run
 In the same style, shell text that runs Orrery's program with a command an agent's session may not run is refused, and
 so is shell text that names Claude Code's or Codex's session records (`~/.claude/projects`, `~/.codex/sessions` and
 `archived_sessions`, or where `CLAUDE_CONFIG_DIR` and `CODEX_HOME` put them), which no file tool may write, Claude
-Code's auto-memory folder for the project aside; see [Agent sessions](#agent-sessions).
+Code's auto-memory folder for the project aside; see [Agent sessions](#agent-sessions). One plain read of them passes
+in every tool's shell, in the grammar Codex reads its skills with (`cat`, `head` or `tail` with `-n N`, `wc` with
+`-l`, `-c`, `-w` or `-m`, `sed -n 'A,Bp'`, `ls`; one simple command, every reading of the text the same), its paths
+written out from `/` or `~/` with no `..`: the shared path layer judges each path as a file tool's read (a listing for
+`ls`), links followed, and refuses one in Grok's session records. The durable harness's own agents (`orrery run`),
+whose files may be on another host, have no such layer and still refuse it. Claude Code's Workflow tool carries no
+command line: its script only starts agents, whose calls the guard judges one by one.
 In Codex the guard runs as its `PreToolUse` hook, which sees neither a command's `workdir` nor hosted web search, and
 which Codex lets through when the hook crashes or times out; the guard therefore refuses within its own deadline, and
 [Codex](codex.md#its-limits-in-codex) lists what remains. In OpenCode it runs on the plugin's tool hook, where a throw

@@ -389,7 +389,7 @@ runs too, with Orrery's own rules only:
   written, and not named in a Bash command.
 - Every agent's memory view (`.orrery/view.md`), by its path or a symbolic link to it.
 - Claude Code's, Codex's and Grok's session records: Read, Grep and Glob may read them, no tool writes them, and a Bash
-  command that names their folders is refused.
+  command that names their folders is refused, but one plain read of Claude Code's or Codex's (below).
 - Grok's folder (`~/.grok`), but the parts Grok's own features write (its memory, skills, workflows and the like): read,
   never written, and not named in a Bash command ([Grok](grok.md#the-guard)).
 - A Bash command that runs or names an `orrery` command other than `help`, `--version`, `status` and `usage`, or the
@@ -419,8 +419,24 @@ refused before it runs (`orrery remote can't run from an agent's shell: …`), a
 Claude Code's transcripts are what Orrery checks prompts against, so no tool may change them, and neither may it
 change Codex's session files: Write, Edit and the rest are refused anywhere under `~/.claude/projects/` (or
 `$CLAUDE_CONFIG_DIR/projects`), `~/.codex/sessions` and `~/.codex/archived_sessions` (or under `$CODEX_HOME`), but
-this project's auto-memory folder. Read, Grep and Glob may read them; a Bash command that names one of those folders is
-refused, whatever it does (`ls ~/.claude/projects`, and globs that could name one, such as `ls ~/.claude/*`).
+this project's auto-memory folder. Read, Grep and Glob may read them, and so may one plain Bash read that writes the
+full path out: `cat`, `head` or `tail` (with `-n N` or not), `wc` (with `-l`, `-c`, `-w` or `-m`, alone or together, or
+none), `sed -n 'A,Bp'` or `ls`, every path starting with `/` or `~/` and holding no `..`
+(`wc -l ~/.claude/projects/<project>/<session>.jsonl`, `ls ~/.claude/projects/<project>/memory`). Each path is then
+judged as a Read (an LS for `ls`), links followed, so a link there to a key or another agent's view is refused as that
+file, and a path into Grok's session records stays refused. Any other Bash command that names one of those folders is
+refused, whatever it does: a pipe, a redirection, a `;` or a second command, a variable (`J=…; wc -l $J`), a relative
+path, another option (`ls -la`, `tail -f`, `sed -i`), and globs that could name one (`ls ~/.claude/*`). The refusal
+names the forms that pass.
+
+Claude Code's Workflow tool takes a JavaScript `script` (and an `args` value) that runs no shell and has no file access
+of its own: it only starts agents, and each agent's tool calls come to the guard one by one. So nothing in a Workflow
+call is read as a command line, at any depth, as `script` and `args` are in other tools, and the 64 KB cap on command
+lines doesn't apply: a script up to the tool's own limit passes, within the 1 MB cap on a hook input. Its paths
+(`scriptPath`) are still judged as reads, and as with the Agent tool's prompt, a value that is one path into Grok's
+folder, OpenCode's config or a skill is refused. A workflow script Claude Code saved in a session's folder under
+`~/.claude/projects` can't be edited there, since no tool writes the session records: send the changed script inline
+instead.
 
 OpenCode's config and code are read-only to agents, as in every tool: no tool writes `opencode.json` or
 `opencode.jsonc` in any folder, a `.opencode` folder, OpenCode's own config, cache and state folders, its database, or
@@ -489,7 +505,14 @@ The guard runs before every tool. A hook that crashes does not block. It is a se
 - Project folders collide the way Claude Code's own folders do (`/a-b` and `/a/b` share one).
 - One call is checked for about 2 seconds at most. A call that names more paths than that, or whose paths take longer
   to check, is refused. So is a command line, Grep glob or Glob pattern over 64 KB, and a hook input over 1 MB (a
-  single `Write` over 1 MB included). The 1 MB rule holds in every session, an agent's or not.
+  single `Write` over 1 MB included, and a Workflow script whose input passes 1 MB as Claude Code writes it, which a
+  script of mostly non-ASCII text or quotes near the tool's 512 KB limit can). The 1 MB rule holds in every session, an
+  agent's or not.
+- A Workflow script is not read for what its agents will do: their own tool calls are judged as they come. A script
+  that names a folder the guard keeps (Grok's, OpenCode's config) inside its text passes, as an Agent tool's prompt
+  does; only a value that is one path is judged.
+- A workflow script Claude Code saved in a session's folder under `~/.claude/projects` can't be edited with Edit or
+  Write: send the changed script inline.
 - A filesystem call that blocks (a hung network mount, a macOS automount such as `/net/<host>`) can still hold the hook
   past Claude Code's timeout, and that call then runs unchecked.
 

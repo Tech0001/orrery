@@ -232,9 +232,9 @@ command must be exactly one of these:
 - `tail <file>` or `tail -n <N> <file>`
 - `sed -n '<A>,<B>p' <file>`
 - `ls <folder>`
-- `wc <file>...`
+- `wc <file>...`, with `-l`, `-c`, `-w` or `-m` before the files or not, alone or together (`wc -l`, `wc -lc`)
 
-`<N>`, `<A>` and `<B>` are numbers. It is one simple command, with no other option (`wc -l`, `head -c`, `tail -f`,
+`<N>`, `<A>` and `<B>` are numbers. It is one simple command, with no other option (`wc -L`, `head -c`, `tail -f`,
 `sed -i` and `ls -la` are refused), no redirection, pipe, `;`, `&&`, `&`, newline or comment, and no variable,
 substitution, glob, brace, backslash or `~user`. A word may be quoted, but only around plain path characters (letters,
 digits and `. _ / @ + , = : % -`), and every way the guard reads the command (quotes, `$'…'`, braces, backslashes, `..`)
@@ -243,6 +243,12 @@ credential, a `.env`, a protected file or another agent's view, or a skill that 
 a command that also names OpenCode's config. Anything else that names a skills folder is refused, a `grep`, `git add`
 or commit message among them, and an agent in Codex can't read OpenCode's config files by name. You set up OpenCode for
 a project yourself. `AGENTS.md` stays writable.
+
+The same plain read passes for Claude Code's and Codex's session records (`~/.claude/projects`, `~/.codex/sessions`
+and `archived_sessions`), in Codex's shell as in every tool's, when each path is written out from `/` or `~/` with no
+`..` (`wc -l ~/.codex/sessions/<year>/<month>/<day>/<rollout>.jsonl`). Each path is judged as a read, links followed,
+and none may be in Grok's session records. Any other shell text that names those folders is refused, and no tool
+writes there.
 
 ### Its limits in Codex
 

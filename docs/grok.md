@@ -286,7 +286,10 @@ The guard also refuses shell text that runs Orrery's hook plumbing: the hook com
 it made-up input. The cost: a shell command that only names them is refused too, such as `grep -r grok-hook src/` or a
 `git commit -m` whose message names one. Run those yourself, or search with Grok's file tools. The same goes for
 Orrery's commands that agents may not run (README, Safety). `orrery grok-status`, which only reads, runs in an agent's
-shell, as `orrery claude-mod` does.
+shell, as `orrery claude-mod` does. Shell text that names Claude Code's or Codex's session records is refused as in
+every tool, but one plain read of them with the full path written out (`cat`, `head`, `tail`, `wc`, `ls` or `sed -n`,
+as in [Claude Code](claude-code.md#the-guard)), each path judged as a read; a path into Grok's own session records is
+refused all the same.
 
 **Grok's own folder.** Grok loads and runs much of what is in its folder, so no tool writes there and no shell text
 names it, in every session, plain ones too, but in the parts Grok's own features write:

@@ -311,13 +311,15 @@ still applies to it. Close the first one, or work in it.
   Orrery's own rules only: Orrery's home, data folder and logins file (no reads or writes), its config and installed
   program, and where your agents' sessions load code from outside its home (pi's and OMP's extensions folders,
   Claude Code's plugin copy and its records; not named in bash text either), all read, never written, every agent's
-  memory view, Claude Code's and Codex's session records (no writes, not named in bash text), bash text that runs or names an `orrery` command other than `help`, `--version`, `status` and
+  memory view, Claude Code's and Codex's session records (no writes, not named in bash text but one plain read), bash text that runs or names an `orrery` command other than `help`, `--version`, `status` and
   `usage`, and a search (grep, find, ls) whose folder holds Orrery's home, or a grep whose folder holds an agent's
   memory view. Nothing else: no folder limits, no `.env` or home-login rules, no `[guard] protect`. `orrery` run there
   shows no agent and changes nothing (README, [Sessions that are no agent's](../README.md#sessions-that-are-no-agents)).
   With no Orrery config at all, pi runs as usual, with no guard.
 - bash text that names Claude Code's or Codex's session records (`~/.claude/projects`, `~/.codex/sessions`) is refused,
-  and no tool writes there: Orrery checks those tools' prompts against them. `read` may read them.
+  and no tool writes there: Orrery checks those tools' prompts against them. `read` may read them, and so may one plain
+  bash read that writes the full path out (`cat`, `head`, `tail`, `wc`, `ls` or `sed -n`, as in
+  [Claude Code](claude-code.md#the-guard)), each path judged as a `read`, links followed.
 - The guard knows pi's built-in tools only. Tools added by other pi packages (for example context-mode's
   `ctx_execute`) are not checked.
 - A message does not wait for summaries longer than 60 seconds, and not at all while they are failing or stopped.
