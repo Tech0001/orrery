@@ -1650,6 +1650,11 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 			"ls ~/.claude/skills",
 			"ls .Claude/Skills",
 			"wc .claude/skills/s/SKILL.md",
+			// wc's counting options, alone or in one word, before its files.
+			"wc -l .agents/skills/s/SKILL.md",
+			"wc -lc .agents/skills/s/SKILL.md .claude/skills/s/SKILL.md",
+			"wc -l -c -w -m .agents/skills/s/SKILL.md",
+			"wc -mw .agents/skills/s/SKILL.md",
 			"  cat\t.agents/skills/s/SKILL.md  ",
 		];
 		for (const command of allowed) expect([command, codex(command)]).toEqual([command, undefined]);
@@ -1683,7 +1688,13 @@ describe("OpenCode's skills: written in every gate, never with front matter that
 			"sed -i 's/a/b/' .agents/skills/s/SKILL.md",
 			"ls -la .agents/skills",
 			"ls .agents/skills .claude/skills",
-			"wc -l .agents/skills/s/SKILL.md",
+			"wc -L .agents/skills/s/SKILL.md",
+			"wc --lines .agents/skills/s/SKILL.md",
+			"wc --files0-from=.agents/skills/s/list",
+			"wc -l -- .agents/skills/s/SKILL.md",
+			"wc -lx .agents/skills/s/SKILL.md",
+			"wc -l - .agents/skills/s/SKILL.md",
+			"wc .agents/skills/s/SKILL.md -l",
 			// another program, or one with something before it,
 			"cp .agents/skills/s/SKILL.md x.md",
 			"grep -r name .agents/skills",

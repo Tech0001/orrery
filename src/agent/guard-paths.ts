@@ -19,8 +19,9 @@
  * tools). Shell text may not run Orrery's commands that change memory or settings (guard-rules.ts runsOrreryCommand), nor
  * name Claude Code's, Codex's or Grok's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions,
  * ~/.grok/sessions; guard-rules.ts transcriptRule), which no tool writes, but a project's memory folder there (Claude
- * Code's auto memory); file tools may read Claude Code's and Codex's. Grok Build's folder (~/.grok, $GROK_HOME), where
- * it keeps what it loads and runs (its hooks, Orrery's hook file among them, its config and policy files, the /hooks
+ * Code's auto memory); file tools may read Claude Code's and Codex's, and so may one plain shell read of them with its
+ * paths written out (guard-rules.ts writtenOutRead), each path judged here as a read (shellReads). Grok Build's folder
+ * (~/.grok, $GROK_HOME), where it keeps what it loads and runs (its hooks, Orrery's hook file among them, its config and policy files, the /hooks
  * switch, the trust list, plugins, agent definitions, the bundle's agents and language servers; guard-rules.ts
  * grokRule) and its session records, is written by no tool and named in no shell text, nor is the folder itself, in
  * every session, but its open parts (GROK_OPEN: its memory, skills and workflows, what its bundled skills, docs and
@@ -146,6 +147,7 @@ import {
 	editTextRefusal,
 	ENTRY_READ_ONLY_PLAIN,
 	foldName,
+	grokRecordsPath,
 	type GuardOptions,
 	HOME_SECRETS,
 	inOrreryHome,
@@ -169,6 +171,9 @@ import {
 	secretPath,
 	secretText,
 	sensitive,
+	type SkillShellRead,
+	TRANSCRIPT_COMMAND,
+	TRANSCRIPT_COMMAND_PLAIN,
 	TRANSCRIPT_READ_ONLY,
 	TRANSCRIPT_READ_ONLY_PLAIN,
 	type TranscriptRule,
@@ -907,11 +912,46 @@ export function guardToolCall(toolName: string, input: Readonly<Record<string, u
  * views, [guard] protect, the config's spellings, the credential locations, OpenCode's rule, the roots, each where it
  * really is) is worked out once, and each call is judged by the same rules.
  */
-export function pathJudge(options: PathGuardOptions): (toolName: string, input: Readonly<Record<string, unknown>>) => string | undefined {
+export function pathJudge(options: PathGuardOptions): Judge {
 	const rules = rulesFor(options);
-	if (options.orreryOnly === true) return orreryJudge(options, rules);
+	return options.orreryOnly === true ? orreryJudge(options, rules) : agentJudge(options, rules);
+}
+
+/** A gate's judgment of one tool call (in pi's tool names and arguments): why it is refused, or undefined. */
+type Judge = (toolName: string, input: Readonly<Record<string, unknown>>) => string | undefined;
+
+/** Where a shell places a path a plain read writes out (guard-rules.ts writtenOutRead): "~" and "~/…" from home. */
+function shellPath(raw: string, cwd: string, home: string = homedir()): string {
+	if (raw === "~") return home;
+	return raw.startsWith("~/") ? join(home, raw.slice(2)) : resolve(cwd, raw);
+}
+
+/**
+ * The judgment of a plain shell read's paths (guard-call.ts CallOptions.judgeShellRead), by the gate's own judge
+ * (`make`, under the call's `rules`) with each path placed as the shell places it (shellPath), not as a file tool
+ * would: each a read (ls: a listing), links followed. A path in Grok's session records, as written, placed or where it
+ * really is, is refused by the records rule (`records`) whatever the read rules say: no agent reads them, and a session
+ * that is no agent's names them in no shell text.
+ */
+function shellReads(options: PathGuardOptions, rules: PathRules, make: (options: PathGuardOptions, rules: PathRules) => Judge, records: string): (read: SkillShellRead) => string | undefined {
+	let judge: Judge | undefined;
+	return (read) => {
+		judge ??= make({ ...options, resolvePath: shellPath }, rules);
+		for (const path of new Set(read.paths)) {
+			const placed = shellPath(path, options.cwd, rules.home);
+			if ([path, placed, realTarget(placed)].some((form) => grokRecordsPath(form, rules.transcripts))) return records;
+			const reason = judge(read.program === "ls" ? "ls" : "read", { path });
+			if (reason !== undefined) return reason;
+		}
+		return undefined;
+	};
+}
+
+/** pathJudge in an agent's session, under `rules` (rulesFor). */
+function agentJudge(options: PathGuardOptions, rules: PathRules): Judge {
 	const { home, views, protect, config, openCode, grok, transcripts, credentials, foreign, realData, data, setUp, roots } = rules;
 	const fold = (path: string) => path.toLowerCase();
+	const judgeShellRead = shellReads(options, rules, agentJudge, TRANSCRIPT_COMMAND);
 	return (toolName, input) => {
 		const search = SEARCHES.has(toolName);
 		// The arguments that name files: grep's glob and find's pattern (a file-name glob). grep's pattern is the text it
@@ -923,7 +963,7 @@ export function pathJudge(options: PathGuardOptions): (toolName: string, input: 
 		if (namedEntry !== undefined) return `${toolName} ${nameKey} "${names}" names ${namedEntry}, ${PROTECTED_BY}.`;
 		const given = typeof input.path === "string" && input.path !== "" ? input.path : undefined;
 		const raw = given ?? (search ? "." : undefined);
-		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode, grok, transcripts }, views, config, protect);
+		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode, grok, transcripts, judgeShellRead }, views, config, protect);
 		// All three forms: what the model wrote, where the tool resolves it, and where it really lands.
 		const resolved = (options.resolvePath ?? piToolPath)(raw, options.cwd, home);
 		const named = views.path(resolved);
@@ -973,7 +1013,7 @@ export function pathJudge(options: PathGuardOptions): (toolName: string, input: 
 		// The rest, on the real path: the roots, and a command the call may carry beside its path (bash with an extra path
 		// key), judged with every rule its own call would get, [guard] protect included; then a write into the tools'
 		// session records where the tool resolves it (the real path is judged there).
-		const rest = checkToolCall({ name: toolName, arguments: { ...input, path: target } }, roots, views, config, protect);
+		const rest = checkToolCall({ name: toolName, arguments: { ...input, path: target } }, { ...roots, judgeShellRead }, views, config, protect);
 		return rest ?? (writes && transcriptPath(resolved, transcripts) ? TRANSCRIPT_READ_ONLY(raw) : undefined);
 	};
 }
@@ -988,9 +1028,10 @@ export function pathJudge(options: PathGuardOptions): (toolName: string, input: 
  * checkToolCall's own rules for the command a call may carry. No folder confinement, home secrets, .env or other
  * built-in names, [guard] protect, OpenCode or skills.
  */
-function orreryJudge(options: PathGuardOptions, rules: PathRules): (toolName: string, input: Readonly<Record<string, unknown>>) => string | undefined {
+function orreryJudge(options: PathGuardOptions, rules: PathRules): Judge {
 	const { home, views, protect, config, shellNamed, openCode, grok, transcripts, credentials, foreign, realData, data, setUp, roots, programs, entries } = rules;
 	const fold = (path: string) => path.toLowerCase();
+	const judgeShellRead = shellReads(options, rules, orreryJudge, TRANSCRIPT_COMMAND_PLAIN);
 	return (toolName, input) => {
 		const search = SEARCHES.has(toolName);
 		const nameKey = toolName === "grep" ? "glob" : toolName === "find" ? "pattern" : undefined;
@@ -998,7 +1039,7 @@ function orreryJudge(options: PathGuardOptions, rules: PathRules): (toolName: st
 		if (typeof names === "string" && sensitive(names, views.path(), true)) return `${toolName} ${nameKey} "${names}" names sensitive files (keys, credentials or Orrery's private data).`;
 		const given = typeof input.path === "string" && input.path !== "" ? input.path : undefined;
 		const raw = given ?? (search ? "." : undefined);
-		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode, grok, transcripts }, views, shellNamed, protect);
+		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode, grok, transcripts, judgeShellRead }, views, shellNamed, protect);
 		const resolved = (options.resolvePath ?? piToolPath)(raw, options.cwd, home);
 		const named = views.path(resolved);
 		if (sensitive(raw, named, true) || sensitive(resolved, named, true)) return SENSITIVE_FILE(raw);
@@ -1030,7 +1071,7 @@ function orreryJudge(options: PathGuardOptions, rules: PathRules): (toolName: st
 		if (search && !LISTINGS.has(toolName) && foreign.some((view) => within(fold(view), where) && (setUp.has(fold(view)) || present(view)))) {
 			return `${toolName} on ${target} would search another agent's memory view; search a narrower folder.`;
 		}
-		const rest = checkToolCall({ name: toolName, arguments: { ...input, path: target } }, roots, views, shellNamed, protect);
+		const rest = checkToolCall({ name: toolName, arguments: { ...input, path: target } }, { ...roots, judgeShellRead }, views, shellNamed, protect);
 		return rest ?? (writes && transcriptPath(resolved, transcripts) ? TRANSCRIPT_READ_ONLY_PLAIN(raw) : undefined);
 	};
 }

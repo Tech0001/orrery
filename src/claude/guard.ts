@@ -4,7 +4,8 @@
  * - Read, Write, Edit, MultiEdit and NotebookEdit name one file;
  * - Grep and Glob search a folder: the cwd by default, or the folder an absolute Glob pattern starts with;
  * - Bash is judged by its command, and so is any other tool's command line, at any depth: a command, cmd, script or
- *   shell string, or a command, cmd, script, shell, args or argv list (Monitor, PowerShell, an MCP shell);
+ *   shell string, or a command, cmd, script, shell, args or argv list (Monitor, PowerShell, an MCP shell); but not
+ *   Claude Code's Workflow, whose script only starts agents whose own calls come here (WORKFLOW);
  * - any tool, MCP tools included, is judged by every path it names (file_path, notebook_path, path, filePath,
  *   file_paths, out_dir, source, destination and the like, at any depth), and by any file: URI outside what a tool
  *   writes;
@@ -172,9 +173,10 @@ interface Named {
 
 /**
  * Walks a tool's input, at any depth, for what it names (Named). Under a path or destination key's list or map, a
- * string counts only if it may be a path (oneLine): the rest is text or data.
+ * string counts only if it may be a path (oneLine): the rest is text or data. `shell` false: no key is a command line
+ * (Claude Code's Workflow, WORKFLOW).
  */
-function named(input: Readonly<Record<string, unknown>>): Named {
+function named(input: Readonly<Record<string, unknown>>, shell = true): Named {
 	const found: Named = { paths: [], destinations: [], pathLike: [], commands: [], words: [] };
 	const stack: { key: string; value: unknown; under: boolean; into: boolean }[] = Object.entries(input).map(([key, value]) => ({ key, value, under: false, into: false }));
 	for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
@@ -183,7 +185,7 @@ function named(input: Readonly<Record<string, unknown>>): Named {
 		const destinationKey = DESTINATION_KEY.test(key);
 		if (typeof value === "string") {
 			const text = value.trim();
-			if (SHELL_TEXT.test(key)) found.commands.push(value);
+			if (shell && SHELL_TEXT.test(key)) found.commands.push(value);
 			if (value !== "" && (pathKey || (next.under && oneLine(text)))) found.paths.push(value);
 			if (value !== "" && (destinationKey || (next.into && oneLine(text)))) found.destinations.push(value);
 			if (!CONTENT_KEY.test(key) && oneLine(text) && PATH_LIKE.test(text)) found.pathLike.push(value);
@@ -191,7 +193,7 @@ function named(input: Readonly<Record<string, unknown>>): Named {
 			const local = CONTENT_KEY.test(key) ? undefined : fileUriPath(value);
 			if (local !== undefined) found.paths.push(local);
 		} else if (typeof value === "object" && value !== null) {
-			if (Array.isArray(value) && SHELL_LIST.test(key)) found.commands.push(value.filter((item) => typeof item === "string").join(" "));
+			if (shell && Array.isArray(value) && SHELL_LIST.test(key)) found.commands.push(value.filter((item) => typeof item === "string").join(" "));
 			for (const [inner, item] of Object.entries(value)) {
 				stack.push({ key: inner, value: item, under: next.under || pathKey, into: next.into || destinationKey });
 			}
@@ -238,7 +240,21 @@ function judgeBounded(tool: string, args: Readonly<Record<string, unknown>>, opt
 export interface ClaudeGuardOptions extends PathGuardOptions {
 	/** The time the guard may take to judge one call, in ms (default 2000): a call it cannot judge in time is refused. */
 	readonly judgeMs?: number;
+	/**
+	 * The call comes from Claude Code's own hook (src/claude/hooks.ts), so its tool name is Claude Code's: its built-in
+	 * Workflow (WORKFLOW) carries no command line. Other gates name their own tools, which may be named anything.
+	 */
+	readonly claudeTools?: boolean;
 }
+
+/**
+ * Claude Code's built-in Workflow tool: its `script` is JavaScript that only starts agents, with no file or shell
+ * access of its own, and `args` is data for it; each agent's tool calls come to the guard one by one. So no key in its
+ * input is a command line, at any depth, and none is held to the 64 KB cap on command lines (the hook's input cap,
+ * TOOL_INPUT_MAX, still holds). Its paths (scriptPath) are reads, and as a tool named for neither writing nor reading
+ * its path-like strings are judged by the folder rule for tools Orrery doesn't know, as the Agent tool's are.
+ */
+const WORKFLOW = "Workflow";
 
 /**
  * The guard's options for a hook's session that is an agent's, or judged by an agent's rules (a nested one's, a refused
@@ -298,12 +314,12 @@ function namedHome(env: NodeJS.ProcessEnv): { readonly orreryHome?: string } {
  * rules alone: Claude Code's login and the rules for OpenCode's config and skills are an agent's.
  */
 export function claudeGuard(toolName: string, input: Readonly<Record<string, unknown>>, options: ClaudeGuardOptions): string | undefined {
-	const { judgeMs = JUDGE_MS, ...where } = options;
+	const { judgeMs = JUDGE_MS, claudeTools = false, ...where } = options;
 	const deadline = performance.now() + judgeMs;
 	const home = where.home ?? homedir();
 	const agent = where.orreryOnly !== true;
 	const guard = { ...where, home, credentials: [...(where.credentials ?? []), ...(agent ? claudeLoginFiles(home) : [])], resolvePath: where.resolvePath ?? claudeToolPath };
-	const found = named(input);
+	const found = named(input, !(claudeTools && toolName === WORKFLOW));
 	const as = AS_PI[toolName];
 	// Text too long to check in time is refused before any pattern runs (paths in judgeBounded).
 	if (found.commands.some((command) => command.length > CHECK_MAX)) return TOO_LONG("a command line");

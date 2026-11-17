@@ -4,7 +4,9 @@
  * - write/edit must land inside the folder and allowed roots, and never in Orrery's config or installed program, nor in
  *   Claude Code's, Codex's or Grok's session records (but a project's memory folder there), nor in what Grok loads and
  *   runs from its folder (its hooks, config and policy files, /hooks switch, trust list, plugins and agents).
- * - bash may not run Orrery's commands that change memory or settings, nor name those session records (guard-rules.ts).
+ * - bash may not run Orrery's commands that change memory or settings, nor name those session records (guard-rules.ts),
+ *   not even in one plain read, which the other gates let through (guard-call.ts CallOptions.judgeShellRead): this
+ *   guard has no path judgment at that point, and its agent's files may be on another host.
  * - No file tool may touch ssh keys or credential stores (tool logins under home such as ~/.npmrc among them), .env
  *   files and the other built-in secret names, what the config's [guard] protect names, or another agent's memory view
  *   (GuardOptions.foreignViews).

@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { claudeGuard, claudeProjectFolder, claudeStateRoots, JUDGE_MS } from "../../src/claude/guard.ts";
-import { type HookContext, type HookInput, preToolUse, runHook } from "../../src/claude/hooks.ts";
+import { type HookContext, type HookInput, preToolUse, runHook, TOOL_INPUT_MAX } from "../../src/claude/hooks.ts";
+import { TRANSCRIPT_COMMAND } from "../../src/agent/guard-rules.ts";
+import { codexGuard } from "../../src/codex/guard.ts";
+import { grokGuard } from "../../src/grok/guard.ts";
+import { openCodeGuard } from "../../src/opencode/guard.ts";
 import { VIEW_IMPORT, writeSetupMarker } from "../../src/claude/view-file.ts";
 import { type HarnessConfig, parseConfig } from "../../src/agent/config.ts";
 import { ownFolder } from "../../src/agent/private-file.ts";
@@ -614,6 +618,28 @@ describe("the PreToolUse hook answers in time, whatever the size of the call (fi
 		expect(await answer(call("Read", { file_path: `${slowPath(60 * KB)}notes.md` }))).toBeUndefined();
 	}, 120_000);
 
+	it("judges a Workflow script near Claude Code's 512 KB limit in under 1 s: it holds no command line, so no 64 KB cap", async () => {
+		const { t, c, call, answer } = hook();
+		// The slowest text for the patterns, as one line; and a script of lines with quotes, a records path and a pipe.
+		const line = slowText(512 * KB);
+		const step = 'const journal = "~/.claude/projects/-w/s/subagents/workflows/w1/journal.jsonl";\nawait agent(`wc -l ${journal} | tee x`);\n';
+		const script = step.repeat(Math.floor((512 * KB) / step.length));
+		for (const input of [{ script: line }, { script, args: ["rm -rf ~/.claude/projects", "J=x; wc -l $J"] }]) {
+			const stdin = call("Workflow", input);
+			expect(Buffer.byteLength(stdin)).toBeGreaterThan(500 * KB);
+			expect(Buffer.byteLength(stdin)).toBeLessThan(TOOL_INPUT_MAX);
+			let started = performance.now();
+			expect(await answer(stdin)).toBeUndefined();
+			expect(performance.now() - started).toBeLessThan(1000);
+			// A project that is no agent's (spec 2026-10-19-no-agent-sessions §3) reads it the same way.
+			started = performance.now();
+			expect(await answer(stdin, { ...c, env: { CLAUDE_PROJECT_DIR: t.dir } })).toBeUndefined();
+			expect(performance.now() - started).toBeLessThan(1000);
+		}
+		// The hook's own cap still holds: a script whose input passes 1 MB as Claude Code writes it is refused unread.
+		expect(await answer(call("Workflow", { script: "é".repeat(600 * KB) }))).toMatch(/over 1 MB/);
+	}, 60_000);
+
 	it("refuses a hook input over 1 MB unread, in under 1 s, in every session, an agent's or not", async () => {
 		const { t, c, call, answer } = hook();
 		const big = call("Write", { file_path: join(t.folder, "a.txt"), content: "x".repeat(1024 * KB) });
@@ -647,6 +673,66 @@ describe("the PreToolUse hook answers in time, whatever the size of the call (fi
 		const under = hookCli("pre-tool-use", write("é".repeat(400 * 1024)), env);
 		expect([under.status, under.stdout, under.stderr]).toEqual([0, "", ""]);
 	}, 60_000);
+});
+
+describe("Claude Code's Workflow: no command line in its input (spec 2026-11-17, 0.10.2)", () => {
+	const records = "~/.claude/projects/-w/s/subagents/workflows/w1/journal.jsonl";
+	const script = `const lines = await agent("Count the lines of ${records} with wc -l ${records}");\nreturn lines;\n`;
+	const grokHooks = "~/.gr" + "ok/hooks/orrery.json";
+
+	it("lets through a script that names the session records, args with shell-looking text at any depth, and a scriptPath read", () => {
+		const { home, options } = setup();
+		const claude = { ...options, claudeTools: true };
+		const scriptPath = join(home, ".claude", "projects", "-w", "s", "workflows", "w.js");
+		for (const input of [
+			{ script },
+			{ script: `cat ${records} > /tmp/x | tee ~/.claude/projects/-w/s.jsonl`, args: ["rm -rf ~/.claude/projects", "J=x; wc -l $J"] },
+			{ script, args: { steps: [{ command: "echo x >> ~/.claude/projects/-w/s.jsonl", shell: "sed -i d ~/.codex/sessions/x.jsonl" }], argv: ["cat", records] } },
+			{ scriptPath },
+			{ scriptPath, args: [records] },
+		]) {
+			expect([input, claudeGuard("Workflow", input, claude)]).toEqual([input, undefined]);
+		}
+		// Each was read as shell text before, and still is in a gate that isn't Claude Code's hook.
+		expect(claudeGuard("Workflow", { script }, options)).toBe(TRANSCRIPT_COMMAND);
+		expect(claudeGuard("Workflow", { script: "x", args: ["rm -rf", "~/.claude/projects"] }, options)).toBe(TRANSCRIPT_COMMAND);
+	});
+
+	it("still judges its paths, and the folder rule for a tool Orrery doesn't know, as the Agent tool's", () => {
+		const { options } = setup();
+		const claude = { ...options, claudeTools: true };
+		expect(claudeGuard("Workflow", { scriptPath: "~/.ssh/id_ed25519" }, claude)).toMatch(/sensitive/);
+		expect(claudeGuard("Workflow", { script, args: ["~/.ssh/id_ed25519"] }, claude)).toMatch(/sensitive/);
+		expect(claudeGuard("Workflow", { script, args: { files: ["~/.config/opencode/opencode.json"] } }, claude)).toMatch(/OpenCode's config or code/);
+		for (const [tool, key] of [
+			["Agent", "prompt"],
+			["Workflow", "script"],
+		] as const) {
+			// A path-like word into Grok's folder is refused; running text that mentions it is words, as a prompt's are.
+			expect([tool, claudeGuard(tool, { [key]: grokHooks }, claude)]).toEqual([tool, expect.stringMatching(/is in Grok's folder/)]);
+			expect([tool, claudeGuard(tool, { [key]: `await agent("edit ${grokHooks}")\n` }, claude)]).toEqual([tool, undefined]);
+		}
+		expect(claudeGuard("Workflow", { script, args: [grokHooks] }, claude)).toMatch(/is in Grok's folder/);
+	});
+
+	it("is Claude Code's own: another gate's tool named Workflow keeps its command lines read as shell text", () => {
+		const { options } = setup();
+		const input = { script: "cat ~/.ssh/id_ed25519" };
+		expect(claudeGuard("Workflow", input, options)).toMatch(/sensitive/);
+		expect(codexGuard("Workflow", input, options)).toMatch(/sensitive/);
+		expect(grokGuard("Workflow", input, options, false)).toMatch(/sensitive/);
+		expect(openCodeGuard("Workflow", input, options)).toMatch(/sensitive/);
+	});
+
+	it("lets the script through Claude Code's hook, in an agent's session and in one that is no agent's", async () => {
+		const t = testAgent();
+		const { home } = setup();
+		const c: HookContext = { config: t.config, env: { CLAUDE_PROJECT_DIR: t.folder }, claudePid: 1, startHolder: () => {}, home };
+		const call = (tool_input: object) => JSON.stringify({ session_id: "s1", cwd: t.folder, tool_name: "Workflow", tool_input });
+		expect(await runHook("pre-tool-use", call({ script, args: ["J=x; wc -l $J"] }), c)).toBe("");
+		expect(await runHook("pre-tool-use", call({ script }), { ...c, env: { CLAUDE_PROJECT_DIR: t.dir } })).toBe("");
+		expect(JSON.parse(await runHook("pre-tool-use", call({ scriptPath: "~/.ssh/id_ed25519" }), c)).hookSpecificOutput.permissionDecisionReason).toMatch(/sensitive/);
+	});
 });
 
 describe("claudeGuard keeps Orrery's home out", () => {
@@ -940,8 +1026,12 @@ describe("claudeGuard in a session that is no agent's: Orrery's own rules only (
 		expect(guard("Read", { file_path: files.transcript })).toBeUndefined();
 		expect(guard("Write", { file_path: files.transcript, content: "x" })).toMatch(/session records/);
 		expect(guard("Edit", { file_path: files.rollout, old_string: "x", new_string: "y" })).toMatch(/session records/);
-		for (const command of ["ls ~/.claude/projects", `grep -r prompt ${join(home, ".codex", "sessions")}`]) {
+		for (const command of ["ls -la ~/.claude/projects", `grep -r prompt ${join(home, ".codex", "sessions")}`]) {
 			expect([command, guard("Bash", { command })]).toEqual([command, expect.stringMatching(/session records/)]);
+		}
+		// But one plain read of them, as a file tool's read (spec 2026-11-17, 0.10.2).
+		for (const command of ["ls ~/.claude/projects", `wc -l ${files.transcript}`, `cat ${files.rollout}`]) {
+			expect([command, guard("Bash", { command })]).toEqual([command, undefined]);
 		}
 	});
 
@@ -1037,7 +1127,7 @@ describe("claudeGuard in a session that is no agent's: Orrery's own rules only (
 			guard("Write", { file_path: files.config, content: "x" }),
 			guard("Edit", { file_path: files.program, old_string: "x", new_string: "y" }),
 			guard("Write", { file_path: files.transcript, content: "x" }),
-			guard("Bash", { command: "ls ~/.claude/projects" }),
+			guard("Bash", { command: "ls -la ~/.claude/projects" }),
 			guard("Bash", { command: "orrery browse Atlas" }),
 		];
 		for (const reason of reasons) expect(reason).toMatch(/^(?![^]*(agents may|agent's shell))[^]+$/);

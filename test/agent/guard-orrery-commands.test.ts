@@ -1,7 +1,7 @@
-import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { checkResolvedPath, durablePreCheck } from "../../src/agent/guard.ts";
 import { guardOmpToolCall, guardToolCall, type PathGuardOptions, realTarget } from "../../src/agent/guard-paths.ts";
 import {
@@ -11,6 +11,7 @@ import {
 	REFUSED_COMMANDS,
 	runsOrreryCommand,
 	TRANSCRIPT_COMMAND,
+	TRANSCRIPT_COMMAND_PLAIN,
 	transcriptRule,
 } from "../../src/agent/guard-rules.ts";
 import { ALLOWED_INSIDE } from "../../src/agent/inside-commands.ts";
@@ -18,6 +19,7 @@ import { grokFolders } from "../../src/grok/guard-rules.ts";
 import { claudeGuard } from "../../src/claude/guard.ts";
 import { HELP_COMMANDS } from "../../src/cli/help.ts";
 import { codexGuard } from "../../src/codex/guard.ts";
+import { grokGuard } from "../../src/grok/guard.ts";
 import { openCodeGuard } from "../../src/opencode/guard.ts";
 import { ctx, tempDir } from "./support.ts";
 
@@ -55,7 +57,7 @@ type World = ReturnType<typeof world>;
 
 /**
  * Every gate's verdict on one command line: pi's bash (with and without a path), OMP's bash and eval, Claude Code's Bash
- * and an MCP shell, Codex's shell, orrery run, OpenCode's shell, Code Mode program and an MCP shell.
+ * and an MCP shell, Codex's shell, orrery run, OpenCode's shell, Code Mode program and an MCP shell, and Grok's shell.
  */
 function verdicts(command: string | ((w: World) => string), make: () => World = world): (string | undefined)[] {
 	const w = make();
@@ -74,13 +76,20 @@ function verdicts(command: string | ((w: World) => string), make: () => World = 
 			openCodeGuard("shell", { command: text }, options),
 			openCodeGuard("execute", { code: text }, options),
 			openCodeGuard("box_run", { command: text }, options),
+			grokGuard("run_terminal_command", { command: text }, options, false),
 		];
 	} finally {
 		rmSync(w.root, { recursive: true, force: true });
 	}
 }
 
-const GATES = 11;
+const GATES = 12;
+
+/** orrery run's own check in verdicts: it has no path layer, so it judges no plain read of the session records. */
+const DURABLE = 7;
+
+/** A plain read of Claude Code's or Codex's session records: every gate lets it through but orrery run's (DURABLE). */
+const readPasses = (refused: string = TRANSCRIPT_COMMAND) => Array.from({ length: GATES }, (_, at) => (at === DURABLE ? refused : undefined));
 
 /** Every file tool's write of `path` in every gate: pi's write and edit, OMP's write, Claude Code's Write and Edit, Codex's patch, orrery run's, OpenCode's write. */
 function writes(path: string | ((w: World) => string), make: () => World = world): (string | undefined)[] {
@@ -444,24 +453,28 @@ describe("Claude Code's and Codex's session records", () => {
 		["tail -f /home/u/.claude/projects/-w/s.jsonl"],
 		["grep -r prompt ~/.claude/projects/"],
 		["cd ~ && cat .claude/projects/p/s.jsonl"],
-		["ls ~/.claude/proj''ects"],
-		["ls ~/.Claude/Projects"],
 		["ls ~/.claude/{projects,x}"],
-		["ls ~/.claude//projects"],
 		["ls ~/.codex/sessions*"],
 		["cat $CLAUDE_CONFIG_DIR/projects/p/s.jsonl"],
 		["ls ${CODEX_HOME}/sessions"],
 		["ls ${CODEX_HOME:-~/.codex}/sessions"],
-		["ls ~/.codex/archived_sessions"],
 		["cat $CODEX_HOME/archived_sessions/x.jsonl"],
 	])("refuses shell text naming them, %s, in every gate", (command) => {
 		expect(verdicts(command)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
 	});
 
-	it("refuses shell text naming the moved folders by their paths (the gate's CLAUDE_CONFIG_DIR and CODEX_HOME)", () => {
-		expect(verdicts((w) => `cat ${w.claudeConfig}/projects/p/s.jsonl`)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
+	it.each([["ls ~/.claude/proj''ects"], ["ls ~/.Claude/Projects"], ["ls ~/.claude//projects"], ["ls ~/.codex/archived_sessions"]])(
+		"lets through %s, one plain read of them, in every gate but orrery run's",
+		(command) => {
+			expect(verdicts(command)).toEqual(readPasses());
+		},
+	);
+
+	it("refuses shell text naming the moved folders by their paths (the gate's CLAUDE_CONFIG_DIR and CODEX_HOME), but a plain read", () => {
+		expect(verdicts((w) => `cat ${w.claudeConfig}/projects/p/s.jsonl`)).toEqual(readPasses());
 		expect(verdicts((w) => `echo x >> ${w.codexHome}/sessions/2026/r.jsonl`)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
-		expect(verdicts((w) => `ls ${w.codexHome}/archived_sessions`)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
+		expect(verdicts((w) => `ls ${w.codexHome}/archived_sessions`)).toEqual(readPasses());
+		expect(verdicts((w) => `cp ${w.claudeConfig}/projects/p/s.jsonl x.jsonl`)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
 		expect(verdicts((w) => `ls ${w.claudeConfig} ${w.codexHome}`)).toEqual(Array(GATES).fill(undefined));
 		// A glob beside a moved folder's parent, spelt out.
 		expect(verdicts((w) => `cat ${w.claudeConfig}/pro*/p/s.jsonl`)).toEqual(Array(GATES).fill(TRANSCRIPT_COMMAND));
@@ -517,12 +530,15 @@ describe("Claude Code's and Codex's session records", () => {
 
 	it("spells moved folders from a home with capitals (macOS's /Users/…), and a ~/.claude that is a link by where it leads", () => {
 		const linked = () => world(true);
+		// A plain read of them, spelt from home or by where a link leads, as a file tool's read.
+		for (const command of ["cat ~/.config/claude/projects/p/s.jsonl", (w: World) => `cat ${w.home}/.config/codex/sessions/x.jsonl`, (w: World) => `ls ${w.store}/projects`]) {
+			expect(verdicts(command, linked)).toEqual(readPasses());
+		}
 		for (const command of [
-			"cat ~/.config/claude/projects/p/s.jsonl",
 			"cat $HOME/.config/codex/sessions/x.jsonl",
 			"cat ${HOME}/.config/claude/projects/p/s.jsonl",
-			(w: World) => `cat ${w.home}/.config/codex/sessions/x.jsonl`,
 			(w: World) => `echo x >> ${w.store}/projects/p/s.jsonl`,
+			(w: World) => `tail -f ${w.home}/.config/codex/sessions/x.jsonl`,
 			// A glob beside a moved folder's parent, spelt from home or by where a link leads.
 			"cat ~/.config/claude/pro*/p/s.jsonl",
 			"ls $HOME/.config/codex/sess*",
@@ -589,6 +605,152 @@ describe("Claude Code's and Codex's session records", () => {
 			expect(await checkResolvedPath(env, join(w.home, ".claude", "projects", "-w", "memory", "MEMORY.md"), "write", w.options, ctx)).toBeUndefined();
 		} finally {
 			rmSync(w.root, { recursive: true, force: true });
+		}
+	});
+});
+
+/**
+ * world() with the records in place: Claude Code's (a session, a workflow's journal, a project's memory), Codex's and
+ * Grok's, a secret and another agent's view, and links from Claude Code's records to the last three. `plain`: a session
+ * that is no agent's (orreryOnly). `grok`: Grok's folder, moved there by GROK_HOME when it is not ~/.grok.
+ */
+function recordsWorld(plain = false, grok?: (w: World) => string): World {
+	const w = world();
+	const project = join(w.home, ".claude", "projects", "-w");
+	const grokHome = grok === undefined ? join(w.home, ".grok") : grok(w);
+	if (grok !== undefined) vi.stubEnv("GROK_HOME", grokHome);
+	// Another agent's view, where no name rule refuses it: only the view rule does.
+	const view = join(w.root, "birch", "view.md");
+	const files: Record<string, string> = {
+		[join(project, "s.jsonl")]: "{}",
+		[join(project, "s", "subagents", "workflows", "w1", "journal.jsonl")]: "{}",
+		[join(project, "memory", "MEMORY.md")]: "# memory",
+		[join(w.home, ".codex", "sessions", "2026", "x.jsonl")]: "{}",
+		[join(w.home, ".codex", "archived_sessions", "a.jsonl")]: "{}",
+		[join(grokHome, "sessions", "g", "s.jsonl")]: "{}",
+		[join(w.home, ".ssh", "id_ed25519")]: "key",
+		[view]: "Birch's memory",
+	};
+	for (const [file, text] of Object.entries(files)) {
+		mkdirSync(dirname(file), { recursive: true });
+		writeFileSync(file, text);
+	}
+	symlinkSync(join(w.home, ".ssh", "id_ed25519"), join(project, "key.jsonl"));
+	symlinkSync(view, join(project, "view.jsonl"));
+	symlinkSync(join(grokHome, "sessions", "g", "s.jsonl"), join(project, "grok.jsonl"));
+	const transcripts = transcriptRule(grokFolders, { CLAUDE_CONFIG_DIR: w.claudeConfig, CODEX_HOME: w.codexHome, ...(grok === undefined ? {} : { GROK_HOME: grokHome }) }, w.home);
+	return { ...w, options: { ...w.options, foreignViews: [view], transcripts, ...(plain ? { orreryOnly: true } : {}) } };
+}
+
+describe("one plain shell read of Claude Code's or Codex's session records (spec 2026-11-17, 0.10.2)", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	const sessions = [
+		["an agent's", () => recordsWorld(), TRANSCRIPT_COMMAND],
+		["no agent's", () => recordsWorld(true), TRANSCRIPT_COMMAND_PLAIN],
+	] as const;
+
+	it.each(sessions)("passes in %s session, in every gate with a shell but orrery run's: cat, wc, head, tail, sed -n and ls, the path written out", (_, make, records) => {
+		for (const command of [
+			"cat ~/.claude/projects/-w/s/subagents/workflows/w1/journal.jsonl",
+			"wc -l ~/.claude/projects/-w/s.jsonl",
+			"wc -lc ~/.claude/projects/-w/s.jsonl",
+			"wc -l -c -w -m ~/.claude/projects/-w/s.jsonl ~/.codex/sessions/2026/x.jsonl",
+			"head -n 20 ~/.claude/projects/-w/s.jsonl",
+			"head ~/.codex/archived_sessions/a.jsonl",
+			"tail ~/.claude/projects/-w/s.jsonl",
+			"tail -n 5 ~/.codex/sessions/2026/x.jsonl",
+			"sed -n '1,40p' ~/.claude/projects/-w/s.jsonl",
+			"sed -n 1,40p ~/.codex/sessions/2026/x.jsonl",
+			"ls ~/.claude/projects/-w/memory",
+			"ls ~/.claude/projects",
+			"ls ~/.codex/sessions/2026",
+			"cat ~/.claude/projects/-w/s.jsonl ~/.codex/sessions/2026/x.jsonl",
+			"cat ~/.claude/projects/-w/memory/MEMORY.md",
+			(w: World) => `cat ${w.home}/.claude/projects/-w/s.jsonl`,
+			(w: World) => `wc -l "${w.home}/.codex/sessions/2026/x.jsonl"`,
+			(w: World) => `cat '${w.home}/.claude/projects/-w/s.jsonl'`,
+			"cat ~/.claude/proj''ects/-w/s.jsonl",
+			"  cat\t~/.claude/projects/-w/s.jsonl  ",
+		]) {
+			expect([command.toString(), verdicts(command, make)]).toEqual([command.toString(), readPasses(records)]);
+		}
+	});
+
+	it.each(sessions)("still refuses in %s session what is more than that read, or reads Grok's records", (_, make, records) => {
+		for (const command of [
+			// Grok's records, by their path, and through a link from Claude Code's,
+			"cat ~/.grok/sessions/g/s.jsonl",
+			"ls ~/.grok/sessions",
+			"cat ~/.claude/projects/-w/grok.jsonl",
+			"cat ~/.claude/projects/-w/s.jsonl ~/.grok/sessions/g/s.jsonl",
+			// a variable, a redirection, a pipe, a write, a glob, another user's home,
+			"J=~/.claude/projects/-w/s.jsonl; wc -l $J",
+			"wc -l $HOME/.claude/projects/-w/s.jsonl",
+			"cat ~/.claude/projects/-w/s.jsonl > /tmp/x",
+			"cat notes.md | tee ~/.claude/projects/-w/s.jsonl",
+			"cat ~/.claude/projects/-w/s.jsonl | head",
+			"sed -i 's/a/b/' ~/.claude/projects/-w/s.jsonl",
+			"wc -l ~/.claude/projects/*/s.jsonl",
+			"cat ~other/.claude/projects/x",
+			"grep .claude/projects src",
+			"cp ~/.claude/projects/-w/s.jsonl x.jsonl",
+			// a relative path (the shell's folder may not be the call's), a "..",
+			"cat .claude/projects/-w/s.jsonl",
+			"cd ~ && cat .claude/projects/-w/s.jsonl",
+			"cat ~/.claude/projects/-w/../-w/s.jsonl",
+			// disguises of the read: $'…', a backslash, a newline, a ";", "--", another option,
+			"cat $'~/.claude/projects/-w/s.jsonl'",
+			"cat ~/.claude/projects/-w/s\\.jsonl",
+			"cat \\~/.claude/projects/-w/s.jsonl",
+			"cat ~/.claude/projects/-w/s.jsonl\nrm -f x",
+			"cat ~/.claude/projects/-w/s.jsonl;",
+			"cat ~/.claude/projects/-w/s.jsonl; rm -f x",
+			"cat -- ~/.claude/projects/-w/s.jsonl",
+			"wc -l -- ~/.claude/projects/-w/s.jsonl",
+			"wc -L ~/.claude/projects/-w/s.jsonl",
+			"wc --lines ~/.claude/projects/-w/s.jsonl",
+			"wc --files0-from=~/.claude/projects/-w/s.jsonl",
+			"wc -lx ~/.claude/projects/-w/s.jsonl",
+			"wc ~/.claude/projects/-w/s.jsonl -l",
+			"tail -f ~/.claude/projects/-w/s.jsonl",
+			"head -c 5 ~/.claude/projects/-w/s.jsonl",
+			"ls -la ~/.claude/projects",
+			"cat ~/.claude/projects/-w/s.jsonl &",
+			'cat "$(echo ~/.claude/projects/-w/s.jsonl)"',
+		]) {
+			expect([command, verdicts(command, make)]).toEqual([command, Array(GATES).fill(expect.any(String))]);
+		}
+		// Each of those that names no other rule's file is refused by the records rule.
+		for (const command of ["cat ~/.claude/projects/-w/grok.jsonl", "J=~/.claude/projects/-w/s.jsonl; wc -l $J", "cat .claude/projects/-w/s.jsonl", "cat ~/.claude/projects/-w/../-w/s.jsonl", "wc -L ~/.claude/projects/-w/s.jsonl", "cat ~/.claude/projects/-w/s.jsonl;"]) {
+			expect([command, verdicts(command, make)]).toEqual([command, Array(GATES).fill(records)]);
+		}
+	});
+
+	it("judges each path as a read, links followed: a link from the records to a secret or another agent's view is refused as that file", () => {
+		expect(verdicts("cat ~/.claude/projects/-w/key.jsonl", () => recordsWorld())).toEqual(readPasses().map((verdict) => verdict ?? expect.stringMatching(/key\.jsonl is a sensitive file/)));
+		expect(verdicts("wc -l ~/.claude/projects/-w/s.jsonl ~/.claude/projects/-w/view.jsonl", () => recordsWorld())).toEqual(
+			readPasses().map((verdict) => verdict ?? expect.stringMatching(/view\.jsonl is another agent's memory view/)),
+		);
+		// A session that is no agent's reads no agent's view either, and its own rules keep Orrery's files.
+		expect(verdicts("cat ~/.claude/projects/-w/view.jsonl", () => recordsWorld(true))).toEqual(
+			readPasses(TRANSCRIPT_COMMAND_PLAIN).map((verdict) => verdict ?? expect.stringMatching(/view\.jsonl is another agent's memory view/)),
+		);
+		// What the text names outright is refused before: a secret by its name.
+		expect(verdicts("cat ~/.claude/projects/-w/s.jsonl ~/.ssh/id_ed25519", () => recordsWorld())).toEqual(Array(GATES).fill(expect.stringMatching(/sensitive files/)));
+	});
+
+	it("keeps Grok's records refused where GROK_HOME moves them, by their path and through a link", () => {
+		const moved = (w: World) => join(w.root, "gdata");
+		for (const [make, records] of [
+			[() => recordsWorld(false, moved), TRANSCRIPT_COMMAND],
+			[() => recordsWorld(true, moved), TRANSCRIPT_COMMAND_PLAIN],
+		] as const) {
+			expect(verdicts((w) => `cat ${w.root}/gdata/sessions/g/s.jsonl`, make)).toEqual(Array(GATES).fill(expect.any(String)));
+			expect(verdicts("cat ~/.claude/projects/-w/grok.jsonl", make)).toEqual(Array(GATES).fill(records));
+			expect(verdicts("cat ~/.claude/projects/-w/s.jsonl", make)).toEqual(readPasses(records));
 		}
 	});
 });
