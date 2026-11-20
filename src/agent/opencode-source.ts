@@ -90,7 +90,8 @@ export function compactorCommandIn(host: Host, agent: string): string {
 			return "/orrery:compactor";
 		case "codex":
 		case "grok":
-			// Codex and Grok have no command of Orrery's.
+		case "antigravity":
+			// Codex, Grok and Antigravity have no command of Orrery's.
 			return `orrery compactor ${agent}`;
 		default:
 			// pi's, OMP's and OpenCode's own /compactor.

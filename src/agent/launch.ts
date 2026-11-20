@@ -35,9 +35,9 @@ import { TOOL_MARKERS } from "./sessions.ts";
 import { safeText } from "./source-labels.ts";
 import { BINARIES, codexVersion, findOnPath, type InstallStep, installSteps, orreryVersion, wiringRoot, type Runner, realRunner, runInstall, type ToolCheck } from "./tools.ts";
 
-const HINTS: Record<AgentTool, string> = { pi: "Get it at https://pi.dev", "claude-code": "Get it at https://claude.com/claude-code", codex: "Get it at https://github.com/openai/codex", omp: "Get it at https://omp.sh", opencode: "Get it at https://opencode.ai", grok: "Get Grok Build from xAI" };
+const HINTS: Record<AgentTool, string> = { pi: "Get it at https://pi.dev", "claude-code": "Get it at https://claude.com/claude-code", codex: "Get it at https://github.com/openai/codex", omp: "Get it at https://omp.sh", opencode: "Get it at https://opencode.ai", grok: "Get Grok Build from xAI", antigravity: "Get the Antigravity CLI at https://antigravity.google" };
 
-export type LaunchFix = "create-folder" | "install-pi" | "install-omp" | "install-claude-code" | "install-grok" | "claude-setup-mod" | "approve-grok-settings";
+export type LaunchFix = "create-folder" | "install-pi" | "install-omp" | "install-claude-code" | "install-grok" | "install-antigravity" | "claude-setup-mod" | "approve-grok-settings";
 
 export interface LaunchStep {
 	readonly text: string;
@@ -121,7 +121,32 @@ export interface LaunchOptions {
  * unchecked), and Grok, whose Ori launch (--no-leader and the memory section after `ori grok`) no one has checked. Such
  * an agent opens directly.
  */
-const NOT_THROUGH_ORI: readonly AgentTool[] = ["opencode", "grok"];
+const NOT_THROUGH_ORI: readonly AgentTool[] = ["opencode", "grok", "antigravity"];
+
+/**
+ * Antigravity's step for its row in the tools check (src/antigravity/install.ts agyWiring): when Orrery's hooks aren't
+ * this Orrery's ("missing", "other", "update available"), the conversation can't record or be guarded, so the launch asks
+ * setup's question with setup's steps (install-antigravity); no opens nothing. "unknown" says so and goes on.
+ */
+function agyWiringSteps(check: ToolCheck, options: { root?: string; env?: NodeJS.ProcessEnv }): LaunchStep[] {
+	if (check.wiring === "installed") return [];
+	if (check.wiring === "unknown") return [{ text: `Orrery can't tell whether Antigravity runs its hooks (${check.detail}), so this conversation may not record; orrery tools says why.`, confirm: false }];
+	const env = options.env ?? process.env;
+	const steps = installSteps(check, options.root ?? wiringRoot(env).root, env);
+	// Nothing Orrery may change (an orrery entry of the person's own): this conversation goes unrecorded and unguarded.
+	if (steps.length === 0) return [{ text: `${check.detail}, so this conversation won't be recorded or guarded by Orrery. Launch anyway?`, confirm: true }];
+	const why = check.wiring === "missing" ? "Orrery's hooks for Antigravity are not installed, so this conversation won't record or be guarded" : "Antigravity doesn't run this Orrery's hooks, so this conversation may not record";
+	return [{ text: stepsQuestion(why, steps, "Connecting Orrery to Antigravity", "Connect Orrery to Antigravity now?"), confirm: true, fix: "install-antigravity" }];
+}
+
+/** Why the person's arguments can't open an agent in agy, or undefined: a remote agent's hooks would run on another machine. */
+function agyArgsRefusal(name: string, args: readonly string[]): string | undefined {
+	const own = args.indexOf("--") < 0 ? args : args.slice(0, args.indexOf("--"));
+	if (own.some((word) => word === "--remote-agent" || word.startsWith("--remote-agent="))) {
+		return `Orrery doesn't open ${name} with --remote-agent: a remote agent's hooks run on another machine, where nothing records it or guards it. Open it without --remote-agent.`;
+	}
+	return undefined;
+}
 const NOT_THROUGH_ORI_TEXT = (tool: AgentTool, name: string) => `Orrery doesn't open ${TOOL_LABELS[tool]} through Ori yet: open ${name} with launcher = "direct" (orrery agent set ${name} launcher direct), or in another tool.`;
 
 /** "<what>. <doing> will:\n  <step>\n  <step>\n<ask>": a question that lists what a yes does first (spec §4.6). */
@@ -283,7 +308,7 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 	if (misplaced !== undefined) {
 		return { ...base, steps: [], blocked: `Put Codex's subcommand first, or Codex won't apply Orrery's flags to the session (no memory, no guard): ${subcommandFirst(agent.name, base.args)}` };
 	}
-	const badArgs = tool === "opencode" ? argsRefusal(agent.name, base.args) : undefined;
+	const badArgs = tool === "opencode" ? argsRefusal(agent.name, base.args) : tool === "antigravity" ? agyArgsRefusal(agent.name, base.args) : undefined;
 	if (badArgs !== undefined) return { ...base, steps: [], blocked: badArgs };
 	const steps: LaunchStep[] = [];
 	// Grok's settings against the ones the person approved, before anything else (grokSettingsSteps).
@@ -305,6 +330,7 @@ export function launchPlan(config: HarnessConfig, row: AgentRow, tools: readonly
 		}
 	}
 	if (tool === "grok") steps.push(...grokWiringSteps(check, options));
+	if (tool === "antigravity") steps.push(...agyWiringSteps(check, options));
 	// Codex: Orrery's hooks, memory tools and instructions go on its command line, before the person's arguments.
 	const codex = tool === "codex" ? codexLaunch(agent, options.orrery ?? orreryCommand(options.env ?? process.env)) : undefined;
 	for (const notice of codex?.notices ?? []) steps.push({ text: notice, confirm: false });
@@ -420,7 +446,7 @@ export function applyFix(fix: LaunchFix, config: HarnessConfig, row: AgentRow, t
 		approveGrokSettings(config.dataDir, options.shown);
 		return "Approved Grok's settings.";
 	}
-	const check = tools.find((t) => t.id === (fix === "install-pi" ? "pi" : fix === "install-omp" ? "omp" : fix === "install-grok" ? "grok" : "claude-code"));
+	const check = tools.find((t) => t.id === (fix === "install-pi" ? "pi" : fix === "install-omp" ? "omp" : fix === "install-grok" ? "grok" : fix === "install-antigravity" ? "antigravity" : "claude-code"));
 	if (check === undefined) throw new Error("That tool was not checked.");
 	const result = runInstall(installSteps(check, options.root ?? wiringRoot(options.env).root, options.env, config.dataDir), options.run ?? realRunner);
 	if (!result.ok) throw new Error(result.output);

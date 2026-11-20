@@ -32,6 +32,11 @@ import { sessionDir, sessionsDir, validSession } from "./paths.ts";
  * - `grok-shared`: another Grok's SessionStart's, for a session a live Grok records, which that other Grok
  *   (`claudePid`, started at `start`) has open too (src/grok/hooks.ts): its log is no proof of the recording Grok's
  *   turns any more, so the holder confirms nothing more of it while that Grok lives.
+ * - `agy-log`: an Antigravity conversation's transcript, once agy was seen holding the conversation as its own
+ *   (src/antigravity/hooks.ts): its path under Antigravity's folder (`folder`), both as they really are, and the step
+ *   recording starts at (the prompt in progress: a resumed conversation's earlier turns are behind it).
+ * - `agy-turn`: an Antigravity turn mark, with no words (`over`: agy said it is idle): the holder records the turns
+ *   the transcript shows over, in the transcript's words (src/antigravity/transcript.ts).
  */
 export type SpoolEvent =
 	| { readonly kind: "prompt"; readonly at: number; readonly claudePid: number; readonly text: string; readonly promptId?: string; readonly host?: "codex" | "grok"; readonly turnId?: string }
@@ -42,7 +47,9 @@ export type SpoolEvent =
 	| { readonly kind: "transcript"; readonly at: number; readonly claudePid: number; readonly path: string; readonly projects: string; readonly offset: number }
 	| { readonly kind: "rollout"; readonly at: number; readonly claudePid: number; readonly path: string; readonly home: string; readonly offset: number; readonly file?: string }
 	| { readonly kind: "grok-log"; readonly at: number; readonly claudePid: number; readonly path: string; readonly home: string; readonly offset: number; readonly file?: string }
-	| { readonly kind: "grok-shared"; readonly at: number; readonly claudePid: number; readonly start?: string };
+	| { readonly kind: "grok-shared"; readonly at: number; readonly claudePid: number; readonly start?: string }
+	| { readonly kind: "agy-log"; readonly at: number; readonly claudePid: number; readonly path: string; readonly folder: string; readonly step: number }
+	| { readonly kind: "agy-turn"; readonly at: number; readonly claudePid: number; readonly over: boolean };
 
 /**
  * What a session's holder chose, from `since` (its start) on. `nonce` comes from SessionStart, so the hook knows this
@@ -68,7 +75,7 @@ export interface Pending {
 	readonly at: number;
 }
 
-const EVENT_NAME = /^(\d{15})-\d{10}-\d{6}-(prompt|reply|command|end|compactor|transcript|rollout|grok-log|grok-shared)\.json$/;
+const EVENT_NAME = /^(\d{15})-\d{10}-\d{6}-(prompt|reply|command|end|compactor|transcript|rollout|grok-log|grok-shared|agy-log|agy-turn)\.json$/;
 const MODE = "mode.json";
 /** From here on a local date can have a five-digit year, which memory refuses: such an event would never go in. */
 const LAST_AT = Date.UTC(9999, 11, 31);
@@ -111,6 +118,10 @@ export function readEvent(path: string): SpoolEvent | undefined {
 	}
 	if (value.kind === "command") return { kind: "command", at: value.at, claudePid: value.claudePid };
 	if (value.kind === "grok-shared" && (value.start === undefined || typeof value.start === "string")) return value as unknown as SpoolEvent;
+	if (value.kind === "agy-log" && typeof value.path === "string" && typeof value.folder === "string" && Number.isSafeInteger(value.step) && (value.step as number) >= 0) {
+		return { kind: "agy-log", at: value.at, claudePid: value.claudePid, path: value.path, folder: value.folder, step: value.step as number };
+	}
+	if (value.kind === "agy-turn" && typeof value.over === "boolean") return { kind: "agy-turn", at: value.at, claudePid: value.claudePid, over: value.over };
 	if (value.kind === "end" || (value.kind === "compactor" && typeof value.args === "string")) return value as unknown as SpoolEvent;
 	return undefined;
 }

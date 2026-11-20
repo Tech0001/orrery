@@ -187,7 +187,7 @@ const CREDENTIALS = [...SENSITIVE, HOME_NAMED];
 export const ESCAPE_BEFORE = "\\\\(?:[a-z]|x[0-9a-f]{1,2}|[0-7]{1,3})";
 export const PLUMBING_START = `(?:^|[\\s"'=:/~<>;|&()\`{},*@]|(?:^|[\\s"'])-[a-z]+|${ESCAPE_BEFORE})`;
 export const PLUMBING_END = "(?=$|[\\s\"'/:;|&()<>`,{}*?\\[$\\\\])";
-const HOOK_COMMAND = new RegExp(`${PLUMBING_START}(?:codex|claude|grok)-hook${PLUMBING_END}`);
+const HOOK_COMMAND = new RegExp(`${PLUMBING_START}(?:codex|claude|grok|agy)-hook${PLUMBING_END}`);
 const ORRERY_PROGRAM = new RegExp(`${PLUMBING_START}(?:orrery(?:\\.exe)?|cli/main\\.[cm]?[jt]s)(?=$|[\\s"';|&()<>\`{}$\\\\,])`);
 const HOLDER_WORD = new RegExp(`(?:^|[\\s"'<>;|&()\`{},]|${ESCAPE_BEFORE})holder${PLUMBING_END}`);
 
@@ -212,7 +212,7 @@ export function runsPlumbing(form: string): boolean {
 }
 
 /** Why shell text that runs Orrery's hook plumbing is refused (runsPlumbing). */
-export const PLUMBING_REFUSED = "This command runs Orrery's hook plumbing (codex-hook, claude-hook, grok-hook, orrery holder), which only Orrery's own hooks run.";
+export const PLUMBING_REFUSED = "This command runs Orrery's hook plumbing (codex-hook, claude-hook, grok-hook, agy-hook, orrery holder), which only Orrery's own hooks run.";
 
 // ---- Orrery's own commands from an agent's shell (spec 2026-10-18-agent-permissions §4) ----
 //
@@ -246,6 +246,7 @@ export const ORRERY_COMMANDS: readonly string[] = [
 	...["help", "agent", "run", "status", "import", "compact", "browse", "backup", "restore", "login", "logins", "logout"],
 	...["compactor", "usage", "remote", "trust-host", "update", "tools", "claude-setup", "setup", "install", "uninstall"],
 	...["version", "holder", "claude-mod", "mcp", "claude-hook", "codex-hook", "grok-hook", "grok-status", "grok-settings"],
+	...["agy-hook", "agy-status"],
 ];
 
 /**

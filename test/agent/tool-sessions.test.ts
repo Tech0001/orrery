@@ -763,7 +763,7 @@ describe("Grok Build", () => {
 
 describe("the tool lists", () => {
 	it("are the planned program names, each with a name to show", () => {
-		expect([...CODING_TOOLS].sort()).toEqual(["aider", "amp", "claude", "codex", "copilot", "crush", "cursor-agent", "droid", "gemini", "goose", "grok", "omp", "opencode", "pi", "qwen"]);
+		expect([...CODING_TOOLS].sort()).toEqual(["agy", "aider", "amp", "claude", "codex", "copilot", "crush", "cursor-agent", "droid", "gemini", "goose", "grok", "omp", "opencode", "pi", "qwen"]);
 		for (const tool of [...CODING_TOOLS, ...TOOL_MARKERS.map((marker) => marker.tool)]) expect(TOOL_SESSION_NAMES[tool], tool).toMatch(/\S/);
 		expect(TOOL_SESSION_NAMES).toMatchObject({ claude: "Claude Code", codex: "Codex", opencode: "OpenCode", pi: "pi", omp: "OMP", gemini: "Gemini", "cursor-agent": "Cursor Agent", copilot: "Copilot" });
 	});
