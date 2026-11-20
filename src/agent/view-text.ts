@@ -8,12 +8,14 @@
  * compaction. Codex gets it from Orrery's SessionStart hook as developer context, unfenced, at the session's start and
  * after each compaction (src/codex/hooks.ts). OpenCode gets it from Orrery's plugin as the last system part (src/opencode/plugin.ts).
  * Grok gets it on its command line from Orrery's launch (src/grok/launch.ts), made to fit there (fitMemory).
+ * Antigravity gets it from Orrery's PreInvocation hook as system messages in the conversation, before the first model
+ * call and again after each compaction (src/antigravity/hooks.ts).
  */
 
 import { type MemoryView, type Part, VIEW_DOC } from "../memory/index.ts";
 
-/** The tool that reads a memory section: pi, OMP, Claude Code's view file, the Orrery mod, Codex, Grok, or OpenCode. */
-export type Host = "pi" | "omp" | "claude-code" | "claude-mod" | "codex" | "grok" | "opencode";
+/** The tool that reads a memory section: pi, OMP, Claude Code's view file, the Orrery mod, Codex, Grok, OpenCode or Antigravity. */
+export type Host = "pi" | "omp" | "claude-code" | "claude-mod" | "codex" | "grok" | "opencode" | "antigravity";
 
 const PI_INTRO = `You keep no memory between turns. Each turn starts with the view below, followed by the user's new
 message. Tool calls and their results are not kept in memory, only your replies, so say in your reply what you did and
@@ -79,6 +81,20 @@ you did and learned that will matter later. zoom, date and search are the Orrery
 export const OPENCODE_READ_ONLY = `This session is read-only, though: another session has the agent, so nothing said here goes to memory, a
 compaction here is OpenCode's own summary, and the view below stays as it was when this session started.`;
 
+/**
+ * Antigravity: Orrery's hook puts the section into the conversation as system messages before the first model call and
+ * again after each compaction (which summarizes everything before it). The memory tools come from Orrery's MCP server,
+ * which Antigravity names mcp_orrery_<tool>.
+ */
+const ANTIGRAVITY_INTRO = `Earlier conversation reaches you only through the view below. It is given again each time the conversation is
+compacted; what was said since then you see directly. Memory keeps the user's messages and your final reply of each
+turn, not tool calls, their results or your other text, so say in your final reply what you did and learned that will
+matter later. zoom, date and search are the Orrery memory tools (\`mcp_orrery_zoom\`, \`mcp_orrery_date\`,
+\`mcp_orrery_search\`).`;
+
+/** Antigravity, while another session has the agent (its memory is read, not recorded). */
+export const ANTIGRAVITY_READ_ONLY = `This session is read-only, though: another session has the agent, so nothing said here goes to memory.`;
+
 const RULES = `${VIEW_DOC}
 
 search(query) finds messages anywhere in the full log by keywords (all must appear) or /regex/, newest first, even when
@@ -106,6 +122,7 @@ export function memorySection(view: MemoryView, host: Host = "pi", options: { re
 		const chat = options.from === undefined ? view.render() : `${grokLeftOut(options.from.address)}\n${view.render({ start: options.from.start })}`;
 		return `# Memory\n\n${GROK_INTRO}\n\n${options.readOnly === true ? `${GROK_READ_ONLY}\n\n` : ""}${RULES}\n\n${chat}`;
 	}
+	if (host === "antigravity") return `# Memory\n\n${ANTIGRAVITY_INTRO}\n\n${options.readOnly === true ? `${ANTIGRAVITY_READ_ONLY}\n\n` : ""}${RULES}\n\n${view.render()}`;
 	if (host === "opencode") return `# Memory\n\n${OPENCODE_INTRO}\n\n${options.readOnly === true ? `${OPENCODE_READ_ONLY}\n\n` : ""}${RULES}\n\n${view.render()}`;
 	return `# Memory\n\n${CLAUDE_INTRO}\n\n${RULES}\n\n${fenced(view.render())}`;
 }

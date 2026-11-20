@@ -76,8 +76,8 @@ export const realRunner: Runner = (cmd, args) => {
 	return { status: r.status, stdout: r.stdout ?? "", stderr: `${r.stderr ?? ""}${why === "" ? "" : `${r.stderr ? "\n" : ""}${why}`}` };
 };
 
-const LABELS: Record<AgentTool, string> = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", opencode: "OpenCode", grok: "Grok" };
-export const BINARIES: Record<AgentTool, string> = { pi: "pi", "claude-code": "claude", codex: "codex", omp: "omp", opencode: "opencode", grok: "grok" };
+const LABELS: Record<AgentTool, string> = { pi: "pi", "claude-code": "Claude Code", codex: "Codex", omp: "OMP", opencode: "OpenCode", grok: "Grok", antigravity: "Antigravity" };
+export const BINARIES: Record<AgentTool, string> = { pi: "pi", "claude-code": "claude", codex: "codex", omp: "omp", opencode: "opencode", grok: "grok", antigravity: "agy" };
 
 export { runningRoot, runningVersion, wiringRoot } from "./running.ts";
 /** @deprecated alias for runningRoot */

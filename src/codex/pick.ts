@@ -65,12 +65,13 @@ import { insideSession, liveSession, type PlainFound, plainFields, processStart,
 import { safeText } from "../agent/source-labels.ts";
 
 /** A tool whose sessions are picked by ORRERY_AGENT and its token alone, for its own process (module doc). */
-export type PickHost = "codex" | "grok";
+export type PickHost = "codex" | "grok" | "antigravity";
 
 /** Each host's name in notices, its decisions' folder in the data folder, and the session a host record of it names. */
 const HOSTS: Readonly<Record<PickHost, { readonly label: string; readonly decisions: string; readonly session: (record: SessionRecord) => string | undefined }>> = {
 	codex: { label: "Codex", decisions: "codex-processes", session: (record) => record.codexSession },
 	grok: { label: "Grok", decisions: "grok-processes", session: (record) => record.grokSession },
+	antigravity: { label: "Antigravity", decisions: "antigravity-processes", session: (record) => record.antigravitySession },
 };
 
 export type CodexPicked =
@@ -331,6 +332,20 @@ export function codexAgent(config: HarnessConfig, asking: CodexAsker): CodexPick
 /** A Grok session's agent, or why there is none, as codexAgent decides a Codex session's (module doc). */
 export function grokAgent(config: HarnessConfig, asking: CodexAsker): GrokPicked {
 	return hostAgent("grok", config, asking);
+}
+
+/**
+ * An Antigravity conversation's agent, or why there is none, as codexAgent decides a Codex session's (module doc): the
+ * agy process (src/antigravity/host.ts) owns the token, its decisions are in <data>/antigravity-processes/<pid>.json,
+ * and its first askers are its PreInvocations (src/antigravity/hooks.ts), since agy fires no SessionStart on a resume.
+ */
+export function antigravityAgent(config: HarnessConfig, asking: CodexAsker): CodexPicked {
+	return hostAgent("antigravity", config, asking);
+}
+
+/** The agent session this agy was started inside, or the coding tool's session that is no agent's (as codexNested). */
+export function antigravityNested(config: HarnessConfig, env: NodeJS.ProcessEnv, pid: number, plain?: PlainDeps): CodexPicked | undefined {
+	return hostNested("antigravity", config, env, pid, plain);
 }
 
 /** The agent of a session of `host`'s process (codexAgent). */

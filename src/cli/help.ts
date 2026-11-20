@@ -165,6 +165,7 @@ const GROUPS: readonly Group[] = [
 			],
 			["holder <Name> --session ID --host-pid PID --tool codex [--nonce N] [--since MS]", "record a Codex session into the agent (Orrery's SessionStart hook in Codex starts it)"],
 			["holder <Name> --session ID --host-pid PID --tool grok [--nonce N] [--since MS]", "record a Grok Build session into the agent (Orrery's SessionStart hook in Grok starts it)"],
+			["holder <Name> --session ID --host-pid PID --tool antigravity [--nonce N] [--since MS]", "record an Antigravity CLI conversation into the agent (Orrery's PreInvocation hook in agy starts it)"],
 			[
 				"claude-mod view [--cwd DIR] [--session ID] [--agent NAME [--agent-token T]] [--wait-ms N [--spool-only]]",
 				"the Orrery mod's call: the session's agent's memory section as JSON (--agent: the ORRERY_AGENT Claude Code has; --wait-ms: up to 120000; --spool-only waits for the session's spool alone, not for summaries)",
@@ -176,6 +177,9 @@ const GROUPS: readonly Group[] = [
 			["codex-hook <event>", "a hook orrery agent gives Codex (session-start, user-prompt-submit, stop, session-end, pre-tool-use)"],
 			["grok-hook <event>", "a hook Orrery gives Grok Build (session-start, user-prompt-submit, pre-tool-use, stop, stop-cancelled, session-end)"],
 			["grok-status", "Grok Build's status row, which Orrery's install gives it: the session's agent, its message count and whether it is recorded, and when Grok's settings changed since you approved them (Grok's status JSON on stdin)"],
+			["mcp --tool antigravity", "the MCP server orrery install gives the Antigravity CLI: memory tools for ORRERY_AGENT's agent, with its token"],
+			["agy-hook <event>", "a hook Orrery gives the Antigravity CLI (pre-invocation, pre-tool-use, stop)"],
+			["agy-status", "the Antigravity CLI's status row, which Orrery's install gives it: the conversation's agent, its message count and whether it is recorded (agy's status JSON on stdin)"],
 		],
 	},
 ];

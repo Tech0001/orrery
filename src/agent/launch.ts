@@ -35,7 +35,7 @@ import { TOOL_MARKERS } from "./sessions.ts";
 import { safeText } from "./source-labels.ts";
 import { BINARIES, codexVersion, findOnPath, type InstallStep, installSteps, orreryVersion, wiringRoot, type Runner, realRunner, runInstall, type ToolCheck } from "./tools.ts";
 
-const HINTS: Record<AgentTool, string> = { pi: "Get it at https://pi.dev", "claude-code": "Get it at https://claude.com/claude-code", codex: "Get it at https://github.com/openai/codex", omp: "Get it at https://omp.sh", opencode: "Get it at https://opencode.ai", grok: "Get Grok Build from xAI" };
+const HINTS: Record<AgentTool, string> = { pi: "Get it at https://pi.dev", "claude-code": "Get it at https://claude.com/claude-code", codex: "Get it at https://github.com/openai/codex", omp: "Get it at https://omp.sh", opencode: "Get it at https://opencode.ai", grok: "Get Grok Build from xAI", antigravity: "Get the Antigravity CLI at https://antigravity.google" };
 
 export type LaunchFix = "create-folder" | "install-pi" | "install-omp" | "install-claude-code" | "install-grok" | "claude-setup-mod" | "approve-grok-settings";
 

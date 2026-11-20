@@ -13,7 +13,7 @@ import { tempDir } from "./support.ts";
  * put a "user:" message in its own memory. Orrery's other commands stay open to agents.
  */
 
-const PLUMBING = "This command runs Orrery's hook plumbing (codex-hook, claude-hook, grok-hook, orrery holder), which only Orrery's own hooks run.";
+const PLUMBING = "This command runs Orrery's hook plumbing (codex-hook, claude-hook, grok-hook, agy-hook, orrery holder), which only Orrery's own hooks run.";
 
 /** A session's guard: an agent's, or one that is no agent's (Orrery's own rules only: GuardOptions.orreryOnly). */
 type Session = { readonly orreryOnly?: true };
