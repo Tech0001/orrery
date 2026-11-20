@@ -22,8 +22,8 @@ from pi to Claude Code, open the agent in another project or carry on from anoth
 
 ## What you can do
 
-- **Keep one agent across tools.** pi, OMP (oh-my-pi), Claude Code, Codex, OpenCode and Grok Build all read and record
-  the same agent's memory. OpenRouter's Ori can launch it too.
+- **Keep one agent across tools.** pi, OMP (oh-my-pi), Claude Code, Codex, OpenCode, Grok Build and the Antigravity CLI
+  all read and record the same agent's memory. OpenRouter's Ori can launch it too.
 - **Open any agent anywhere.** `orrery agent Atlas` starts Atlas's tool in the folder you are in, with its
   instructions and memory. The folder's own `AGENTS.md` or `CLAUDE.md` still applies as that project's rules.
 - **Turn existing chats into an agent.** Pick one or more of your Claude Code or Codex chats from a list and they
@@ -55,8 +55,8 @@ from pi to Claude Code, open the agent in another project or carry on from anoth
 
 You need:
 - Linux or macOS, x64 or arm64. On Windows, use WSL. Alpine and other musl Linux is not supported yet.
-- At least one coding tool: pi, OMP, Claude Code, Codex (0.162.1 or later), OpenCode or Grok Build, installed on its
-  own.
+- At least one coding tool: pi, OMP, Claude Code, Codex (0.162.1 or later), OpenCode, Grok Build or the Antigravity
+  CLI, installed on its own.
 - A way to make summaries: a ChatGPT or OpenRouter account, an API key, or a local model server (see
   [Summaries](#summaries)).
 
@@ -68,7 +68,8 @@ curl -fsSL https://github.com/Tech0001/orrery/releases/latest/download/install.s
 
 The script checks the download, installs Orrery into `~/.orrery`, and asks before connecting it to each coding tool
 it finds (Codex and OpenCode need nothing: Orrery's side comes with each launch; for Grok it writes Orrery's hook file
-and two config entries in `~/.grok`). It puts the `orrery` command in `~/.local/bin`; add that folder to your PATH if
+and two config entries in `~/.grok`; for Antigravity, one entry each in its hooks, MCP and status-line settings under
+`~/.gemini`). It puts the `orrery` command in `~/.local/bin`; add that folder to your PATH if
 it is not there already.
 
 **2. Start Orrery.**
@@ -94,7 +95,7 @@ agent's folder, it asks whether to open the agent here or there. Its tool starts
 | **1 Agents** | **Enter** open · **i** details · **N** new · **M** summary model · **E** instructions · **C** settings · **s** sort · **/** filter. On an agent's details: **B** browse its memory, **A** archive it |
 | **2 Logins** | **A** add or replace a sign-in or key · **T** test · **D** remove · **R** add a remote |
 | **3 Usage** | **+** / **-** more or fewer days |
-| **4 Tools** | **Enter** details · **I** install or repair Orrery's side of pi, OMP, Claude Code or Grok |
+| **4 Tools** | **Enter** details · **I** install or repair Orrery's side of pi, OMP, Claude Code, Grok or Antigravity |
 
 **?** shows help on any page and **q** quits. Nearly everything the TUI does can also be done from the command line;
 `orrery help` lists the commands, and `orrery help <command>` every option of one.
@@ -115,8 +116,8 @@ memory, up to 32 KB. Only you edit them: an agent can suggest a change in chat b
 **Default folder.** An agent can have one (`folder = "…"`, or **C** in the TUI). Starting its tool there, or in any
 folder inside it, picks that agent automatically, as if you had run `orrery agent`. Choose a folder that belongs to
 the agent, not a broad one like your home folder, or every session under it records into that agent. With no default
-folder, the agent opens only through Orrery. Claude Code needs one setup step per agent first; Codex, OpenCode and Grok
-never pick an agent by its folder, and open agents only through Orrery; see [Coding tools](#coding-tools).
+folder, the agent opens only through Orrery. Claude Code needs one setup step per agent first; Codex, OpenCode, Grok
+and Antigravity never pick an agent by its folder, and open agents only through Orrery; see [Coding tools](#coding-tools).
 
 **Importing chats.** **N**, then **From an existing chat**, lists your Claude Code and Codex chats, newest first,
 and marks the ones written to in the last ten minutes as in use. Pick one, or mark several with Space and they are
@@ -138,7 +139,7 @@ pi and OMP add those tools once per run, so a pi or OMP that first opened an age
 a restart.
 
 **One session at a time.** An agent records from one session. A second session on the same agent runs without its
-memory in pi and OMP, and read-only in Claude Code, Codex, OpenCode and Grok.
+memory in pi and OMP, and read-only in Claude Code, Codex, OpenCode, Grok and Antigravity.
 
 **Archiving.** **A** on a closed agent's page takes it out of the list; its memory stays on disk.
 
@@ -186,6 +187,7 @@ the one in that environment variable.
 | Codex | Memory, recording, the memory tools and the guard, on Codex's command line at each `orrery agent` launch | [docs/codex.md](docs/codex.md) |
 | OpenCode | A plugin for each `orrery agent` launch: memory, recording, the memory tools, the guard, compaction from memory and `/compactor` | [docs/opencode.md](docs/opencode.md) |
 | Grok Build | Hooks for recording and the guard, a status row and the memory tools, connected once in Grok's folder; memory and instructions on Grok's command line at each `orrery agent` launch | [docs/grok.md](docs/grok.md) |
+| Antigravity CLI | Hooks that give the model memory and instructions (before its first call and after each compaction), record and guard; a status row and the memory tools; connected once in Antigravity's settings | [docs/antigravity.md](docs/antigravity.md) |
 
 Connect a tool with **I** on the **Tools** page, or `orrery tools install pi`. Each guide lists the versions tested
 and the known limits. Claude Code needs no step per agent: with Claude Code 2.1.287 or newer, the Orrery mod brings
@@ -200,7 +202,11 @@ connected once, by setup or **I**: Orrery's hook file and two entries (its statu
 folder. Open its agents with `orrery agent Atlas --tool grok`, which gives Grok the agent's memory and instructions on
 its command line, and asks to connect Orrery to Grok first when it isn't; a plain `grok` is not an agent's session.
 It also asks before launching when Grok's hooks, MCP servers or plugins changed since you approved them
-(`orrery grok-settings`; [details](docs/grok.md#groks-settings-check)). Inside a plain session of any coding tool, `orrery` reads no agent's memory and changes nothing; see [Sessions that
+(`orrery grok-settings`; [details](docs/grok.md#groks-settings-check)). The Antigravity CLI is connected once the
+same way: one entry of Orrery's each in its hooks, MCP config and status-line settings. Open its agents with `orrery
+agent Atlas --tool antigravity` (pick agy's model with `-- --model <id>`); Orrery's hooks give the model the agent's
+memory and instructions in the conversation, and again after each compaction, and a plain `agy` is not an agent's
+session. Inside a plain session of any coding tool, `orrery` reads no agent's memory and changes nothing; see [Sessions that
 are no agent's](#sessions-that-are-no-agents).
 
 The Claude Code desktop app works too: start a session in the agent's folder, and the app's Claude Code records it
@@ -246,8 +252,8 @@ Leave these to the person, in their own terminal:
 
 Orrery's own files are off-limits to agents: your tools are refused anywhere in `~/.orrery`, except that file tools may
 read the config and the installed program, and shell commands that name `.orrery` are refused. Ask the CLI instead.
-Shell commands that name Orrery's hook plumbing (`codex-hook`, `claude-hook`, `grok-hook`, or `orrery` with
-`holder`), or run an `orrery` command an agent's session may not run (`orrery setup`, `orrery remote` and the like), are
+Shell commands that name Orrery's hook plumbing (`codex-hook`, `claude-hook`, `grok-hook`, `agy-hook`, or `orrery`
+with `holder`), or run an `orrery` command an agent's session may not run (`orrery setup`, `orrery remote` and the like), are
 refused too, even in a `grep` or a commit message: leave those to the person, search with your file tools, and write a
 commit message that names one to a file (`git commit -F`). So are shell commands that name Claude Code's or Codex's
 session records (`~/.claude/projects`, `~/.codex/sessions`), but one plain read: you may read them, not change them,
@@ -256,10 +262,13 @@ with your file tools or with one plain `cat`, `head`, `tail`, `wc`, `ls` or `sed
 (`opencode.json`, a `.opencode` folder, OpenCode's own folders) or a skills folder (`.claude/skills`, `.agents/skills`):
 read those with your file tools. Grok's folder (`~/.grok`) is the same, all but the parts Grok's own features write (its memory, skills, workflows, docs, logs and the like): read it with your file tools (but not Grok's
 login or session records, which you can't read at all), and leave changes to Grok's settings and hooks to the person.
-You can't write OpenCode's config, so ask the person to set up OpenCode for a project; skills you may write with your
+Antigravity's conversation records and the settings that load its hooks and servers (`~/.gemini/config/hooks.json`,
+`mcp_config.json`, the CLI's `settings.json`, a project's `.agents/hooks.json`) are the same: read them with your file
+tools, and leave changes to the person. You can't write OpenCode's config, so ask the person to set up OpenCode for a project; skills you may write with your
 file tools, with plain YAML front matter. Your own memory has its own tools: `zoom`, `date` and `search`
-(`memory_search` in OMP; in Codex and Grok, from the `orrery` MCP server). In a session that is no agent's, the guard
-keeps only Orrery's own files, the session records, Grok's folder and Orrery's commands from you; see
+(`memory_search` in OMP; in Codex, Grok and Antigravity, from the `orrery` MCP server). In a session that is no agent's,
+the guard keeps only Orrery's own files, the session records, Grok's folder, Antigravity's files and Orrery's commands
+from you; see
 [Sessions that are no agent's](#sessions-that-are-no-agents).
 
 ## Memory that follows you

@@ -14,7 +14,7 @@ The store is local and inspectable; summaries are derived data rather than the o
 ## An agent from prompt to recall
 
 An agent has a data directory under `data_dir/agents/<Name>/`, a summary model, and optionally a default folder.
-The `tool` setting selects pi, OMP, Claude Code, Codex, OpenCode or Grok Build for launching.
+The `tool` setting selects pi, OMP, Claude Code, Codex, OpenCode, Grok Build or the Antigravity CLI for launching.
 A tool this version doesn't know (a typo, or one a newer Orrery set) still loads the config: that agent is listed, and `orrery agent` and the TUI refuse to launch it, naming the unknown tool. Its memory is read as ever, and the other ways in still open it (`orrery run <Name>`, `orrery claude-setup <Name>`, a tool started in its folder): the memory is the same whatever the tool. This version never writes such a tool itself.
 The optional `launcher` setting selects direct launch or Ori.
 Those launch choices do not select a different memory database: each tool reaches the same memory through its own
@@ -287,6 +287,11 @@ Codex's and Grok's hooks take `ORRERY_AGENT` and its token, and the Orrery confi
 A Grok session that a live (or unsure) host record of another process already names is taken by no other process whose hooks find that record (in their config's data folder, or where their agent's data really is), as a Codex session is: a second Grok on the session, or a program the agent's shell started holding its `events.jsonl` open, records nothing, and its session start names the process that hosts it. A record made in another pid namespace under the asking Grok's own pid, and session records that can't be read, count as for Codex. A shell with no parent of its own is never taken for Grok either.
 Under Grok the Claude Code plugin's hooks and server stand down, so nothing runs twice.
 See [Grok](grok.md) for folder trust, the status row and the guard's Grok-specific limits.
+
+**Antigravity CLI:** Orrery's side is installed once: an `orrery` entry in Antigravity's global `hooks.json` (PreInvocation, PreToolUse, Stop), an `orrery` MCP server in its `mcp_config.json`, and a status line in the CLI's `settings.json`.
+`orrery agent` launches plain `agy` with `ORRERY_AGENT` and a token: nothing on its command line. Antigravity fires no session start on a resume, so the PreInvocation hook, before every model call, takes the conversation: it checks it is the agy process's own, decides the agent from agy's start environment (as Codex's and Grok's hooks do), records agy as the session host, starts the holder, and gives the model the agent's instructions and memory section as system messages (agy cuts a step past about 48 KB, so in chunks of 40 KB) when the conversation has none since its last compaction checkpoint. So the view refreshes at each compaction, which agy makes itself.
+The holder records from agy's own transcript of the conversation, never from a hook's input: the Stop hook only marks a turn's end (see [Agent sessions](#prompts-checked-against-the-tools-record)).
+The hooks are global (agy's App and IDE load the same file), so a plain `agy` runs them as a session that is no agent's: the shell line answers PreInvocation and Stop at once without starting Orrery, and the guard runs with Orrery's own rules. agy blocks a tool call when the guard's hook fails, prints garbage or times out, but lets it through on an empty answer, so the guard always prints a decision. See [Antigravity](antigravity.md).
 
 **Ori:** Ori supplies OpenRouter models to the agent executable.
 Orrery launches `ori pi`, `ori omp`, `ori claude` or `ori codex` in the folder the agent is opened in.
@@ -570,6 +575,16 @@ session.
   folder the record is in. Its recorder then confirms nothing more of that log and turns the session read-only, saying
   so in the row and the next session start, until a recorder starts for it again with the second Grok gone. The second
   Grok itself is refused the session, as any process is one another process hosts.
+- **Antigravity CLI.** Its hooks pass no words at all. A conversation counts only when the agy process holds its
+  `presence/<id>.lock` open for writing under the Antigravity folder of its start environment's `HOME` (Linux
+  `/proc/<pid>/fd`, macOS `lsof`), nothing on the way to its transcript is a link, and the transcript's first step is a
+  prompt the person typed (a subagent's conversation starts with a system message). The holder then reads that folder's
+  `brain/<id>/.system_generated/logs/transcript_full.jsonl` from its cursor (a step index, kept in memory meta): a prompt
+  is a step agy marks `USER_EXPLICIT` `USER_INPUT` (its `<USER_REQUEST>` body), and a turn's reply its last non-empty
+  `PLANNER_RESPONSE`, recorded once the turn is over (a later prompt, a Stop that says agy is idle, or agy gone). A
+  hook's injected message (`SYSTEM_SDK`), a subagent's result and a Stop hook's "continue" (`SYSTEM`) and slash
+  commands are not prompts. A made-up Stop only makes the holder read the transcript again; the guard keeps every
+  tool from writing it.
 
 A prompt or reply not confirmed within a grace (30 seconds) after its turn ends is dropped and counted, in
 `claude/unconfirmed.json` in the agent's data folder; `orrery status` shows the count (`unconfirmedMessages` in its

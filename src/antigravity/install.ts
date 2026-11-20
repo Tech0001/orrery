@@ -84,8 +84,11 @@ export function agyHookTarget(entry: unknown): string | undefined {
 	return isDeepStrictEqual(entry, agyHookEntry(orrery)) ? orrery : undefined;
 }
 
-/** The memory tools Orrery's server gives, each eager (agy registers it up front, as mcp_orrery_<tool>). */
-const MEMORY_TOOLS = ["zoom", "date", "search", "agents", "agent_memory"];
+/**
+ * The memory tools agy registers up front, as mcp_orrery_<tool> (eager; seen live). The server's others (agents,
+ * agent_memory, for an agent whose reads allow them) stay lazy: the model reaches them through call_mcp_tool.
+ */
+const MEMORY_TOOLS = ["zoom", "date", "search"];
 
 /** Orrery's server in Antigravity's mcp_config.json, for the Orrery command at `orrery`. */
 export function agyMcpEntry(orrery: string): Record<string, unknown> {
