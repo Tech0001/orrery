@@ -60,14 +60,15 @@ const OUT_OF_TIME = "this call names more than the guard can check in time; noth
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** `input` with `keys` renamed (a key already there under the new name keeps its value). */
-function renamed(input: Readonly<Record<string, unknown>>, keys: Readonly<Record<string, string>>): Record<string, unknown> {
+/**
+ * `input` with agy's argument names (`keys`) renamed to Claude Code's, so the guard judges the very value agy acts on;
+ * undefined when the input also holds a key under one of the new names (a decoy the guard would judge in place of agy's
+ * own argument), which refuses the call.
+ */
+function renamed(input: Readonly<Record<string, unknown>>, keys: Readonly<Record<string, string>>): Record<string, unknown> | undefined {
+	if (Object.entries(keys).some(([from, to]) => from !== to && Object.hasOwn(input, to))) return undefined;
 	const out: Record<string, unknown> = {};
-	for (const [key, value] of Object.entries(input)) {
-		const to = keys[key];
-		if (to === undefined || to in input || to in out) out[key] = value;
-		else out[to] = value;
-	}
+	for (const [key, value] of Object.entries(input)) out[Object.hasOwn(keys, key) ? (keys[key] as string) : key] = value;
 	return out;
 }
 
@@ -81,6 +82,7 @@ export function agyGuard(toolName: string, input: unknown, options: ClaudeGuardO
 	const as = Object.hasOwn(AGY_AS_CLAUDE, toolName) ? AGY_AS_CLAUDE[toolName] : undefined;
 	const name = as?.name ?? toolName;
 	const args = as === undefined ? { ...input } : renamed(input, as.keys);
+	if (args === undefined) return CALL_UNREADABLE;
 	const reason = claudeGuard(name, args, timed());
 	if (reason !== undefined) return reason;
 	const content = WRITERS.has(name) ? Object.fromEntries(Object.entries(args).filter(([key]) => !WRITTEN.test(key))) : args;

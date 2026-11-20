@@ -90,6 +90,15 @@ describe("the guard on Antigravity's tool calls", () => {
 		expect(agyGuard("run_command", { CommandLine: "npm test", Cwd: folder }, options)).toBeUndefined();
 	});
 
+	it("refuses a call that also names a key under Claude Code's name: the guard would judge it in place of agy's own", () => {
+		const { options, folder } = setup();
+		expect(agyGuard("read_file", { Path: "~/.ssh/config", file_path: join(folder, "notes.md") }, options)).toMatch(/could not read this call/);
+		expect(agyGuard("run_command", { CommandLine: "cat ~/.ssh/config", command: "ls" }, options)).toMatch(/could not read this call/);
+		expect(agyGuard("edit_file", { Path: join(folder, "notes.md"), Target: "a", Replacement: "b", file_path: "/etc/hosts" }, options)).toMatch(/could not read this call/);
+		// A key under a name no mapping uses passes as it is.
+		expect(agyGuard("read_file", { Path: join(folder, "notes.md"), StartLine: 1 }, options)).toBeUndefined();
+	});
+
 	it("refuses Orrery's hook plumbing in a command, so an agent can't feed a hook made-up input", () => {
 		const { options } = setup();
 		expect(agyGuard("run_command", { CommandLine: "echo '{}' | orrery agy-hook stop" }, options)).toMatch(/hook plumbing/);
