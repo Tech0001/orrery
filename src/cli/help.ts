@@ -22,7 +22,7 @@ const GROUPS: readonly Group[] = [
 	{
 		title: "Agents",
 		short: [
-			["agent <Name>", "open it in this folder (--tool pi|omp|claude-code|codex|opencode|grok)"],
+			["agent <Name>", "open it in this folder (--tool pi|omp|claude-code|codex|opencode|grok|antigravity)"],
 			["agent add <Name>", "add an agent"],
 			["agent edit <Name>", "edit its instructions"],
 			["agent set <Name> …", "change a setting"],
@@ -32,11 +32,11 @@ const GROUPS: readonly Group[] = [
 		],
 		detail: [
 			[
-				"agent <Name> [--tool pi|omp|claude-code|codex|opencode|grok] [--yes] [-- <tool arguments>]",
-				"open the agent here: its tool starts in this folder with its instructions and memory (--tool: another tool this time; --yes: answers its questions yes; what follows -- goes to the tool). Codex gets Orrery's hooks, memory tools and instructions on its command line, after a check that the hooks load in that Codex; OpenCode gets Orrery's plugin for this launch (opencode --standalone, nothing written to OpenCode's config), after a check that it loads in that OpenCode, and only a person at a terminal can start either without them; Grok gets the agent's memory and instructions as --rules (with --no-leader), and Orrery's hooks, status row and memory tools from Grok's own folder, which setup connects once (or the launch, after asking, when Orrery isn't connected there); before Grok starts, any change to Grok's settings since you approved them is asked about first, which only a person at a terminal answers (--yes doesn't; see grok-settings)",
+				"agent <Name> [--tool pi|omp|claude-code|codex|opencode|grok|antigravity] [--yes] [-- <tool arguments>]",
+				"open the agent here: its tool starts in this folder with its instructions and memory (--tool: another tool this time; --yes: answers its questions yes; what follows -- goes to the tool). Codex gets Orrery's hooks, memory tools and instructions on its command line, after a check that the hooks load in that Codex; OpenCode gets Orrery's plugin for this launch (opencode --standalone, nothing written to OpenCode's config), after a check that it loads in that OpenCode, and only a person at a terminal can start either without them; Grok gets the agent's memory and instructions as --rules (with --no-leader), and Orrery's hooks, status row and memory tools from Grok's own folder, which setup connects once (or the launch, after asking, when Orrery isn't connected there); before Grok starts, any change to Grok's settings since you approved them is asked about first, which only a person at a terminal answers (--yes doesn't; see grok-settings); the Antigravity CLI (agy) gets the agent's memory and instructions from Orrery's hooks, before its first model call and again after each compaction, and Orrery's hooks, status row and memory tools from Antigravity's own config, which setup connects once (or the launch, after asking); --remote-agent is refused",
 			],
 			[
-				"agent add <Name> --folder DIR --tool pi|omp|claude-code|codex|opencode|grok --summary provider/id [--thinking L] [--reads all|none|A,B]",
+				"agent add <Name> --folder DIR --tool pi|omp|claude-code|codex|opencode|grok|antigravity --summary provider/id [--thinking L] [--reads all|none|A,B]",
 				"add an agent to the config (the TUI's N); --thinking is the summary model's thinking level (default low); --reads: the other agents it may read through the memory tools (default none)",
 			],
 			["agent edit <Name>", "open the agent's instructions in $EDITOR (else nano, else vi); needs a terminal"],

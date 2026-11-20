@@ -13,6 +13,7 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } fro
 import { ENTRY_TAILS, endsWithSegments, entries, oneLineTarget, type Style } from "../install/layout.ts";
 import type { AgentTool } from "./config.ts";
 import { codexCheckDetail } from "../codex/check.ts";
+import { agyFolderThere, agyInstallSteps, agyWiring } from "../antigravity/install.ts";
 import { grokFolderThere, grokInstallSteps, grokSettingsWords, grokWiring } from "../grok/install.ts";
 import { keepInStep, localDay } from "../grok/settings.ts";
 import { orreryPluginEntries, settingsDataDir } from "../grok/settings-keys.ts";
@@ -378,8 +379,22 @@ function grokRow(root: string, env: NodeJS.ProcessEnv, path: string | undefined,
 	return { ...wiring, detail: `${wiring.detail}; ${tested}`, ...(settings === undefined ? {} : { settings }) };
 }
 
+/** The Antigravity CLI version Orrery's hooks were checked with (agy --version). */
+export const AGY_TESTED = "1.5.13";
+
 /**
- * pi, Claude Code, Codex, OMP, OpenCode and Grok, in that order. `grokSettings`: the data folder of the record of the Grok
+ * Antigravity's row: Orrery's entries in its hooks and MCP config (src/antigravity/install.ts agyWiring), and the version
+ * tested. An agy whose folder is there counts as found, though `agy` is not on PATH.
+ */
+function agyRow(root: string, env: NodeJS.ProcessEnv, path: string | undefined, version: string | undefined): Pick<ToolCheck, "wiring" | "detail" | "now"> {
+	if (path === undefined && !agyFolderThere(env)) return { wiring: "missing", detail: "the Antigravity CLI (agy) is not on PATH" };
+	const wiring = agyWiring(root, env);
+	const tested = version === undefined || version === AGY_TESTED ? `tested with agy ${AGY_TESTED}` : `tested with agy ${AGY_TESTED}, this is ${version}`;
+	return { ...wiring, detail: `${wiring.detail}; ${tested}` };
+}
+
+/**
+ * pi, Claude Code, Codex, OMP, OpenCode, Grok and Antigravity, in that order. `grokSettings`: the data folder of the record of the Grok
  * settings the person approved, given where Grok's row is shown or used (the Tools page, orrery tools, a Grok launch);
  * Grok's row then says whether they are as approved (`settings`). Without it, Grok's settings aren't looked at.
  */
@@ -390,7 +405,7 @@ export function checkTools(options: { root?: string; env?: NodeJS.ProcessEnv; ru
 		const r = spawnSync(cmd, [...args], { encoding: "utf8", timeout: 15_000, env });
 		return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 	});
-	const checks: ToolCheck[] = (["pi", "claude-code", "codex", "omp", "opencode", "grok"] as const).map((id) => {
+	const checks: ToolCheck[] = (["pi", "claude-code", "codex", "omp", "opencode", "grok", "antigravity"] as const).map((id) => {
 		const path = findOnPath(BINARIES[id], env);
 		const asked = path === undefined ? undefined : id === "opencode" && options.run === undefined ? opencodeVersionOutput(path, env) : run(path, ["--version"]);
 		const version = asked === undefined ? undefined : versionLine(asked.stdout);
@@ -398,6 +413,7 @@ export function checkTools(options: { root?: string; env?: NodeJS.ProcessEnv; ru
 		if (id === "codex") return { ...found, wiring: "memory" as const, detail: codexCheckDetail(env, codexVersion(version), orreryVersion()) };
 		if (id === "opencode") return { ...found, wiring: "memory" as const, detail: opencodeCheckDetail(env, codexVersion(version), orreryVersion()) };
 		if (id === "grok") return { ...found, ...grokRow(root, env, path, codexVersion(version), options.grokSettings) };
+		if (id === "antigravity") return { ...found, ...agyRow(root, env, path, codexVersion(version)) };
 		if (id === "pi") return { ...found, ...piWiring(root, env) };
 		if (id === "omp") return { ...found, ...ompWiring(root, env) };
 		if (path === undefined) return { ...found, wiring: "missing" as const, detail: "Claude Code is not on PATH" };
@@ -495,6 +511,11 @@ export function installSteps(check: ToolCheck, root: string, env: NodeJS.Process
 	if (check.id === "grok") {
 		if (check.wiring !== "missing" && check.wiring !== "other" && check.wiring !== "update available") return [];
 		return grokInstallSteps(root, env, check.now, dataDir);
+	}
+	// Antigravity: Orrery's entries in its hooks, MCP config and settings, each file copied first.
+	if (check.id === "antigravity") {
+		if (check.wiring !== "missing" && check.wiring !== "other" && check.wiring !== "update available") return [];
+		return agyInstallSteps(root, env);
 	}
 	return [];
 }

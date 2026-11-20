@@ -152,6 +152,19 @@ describe.skipIf(agy === null)(`an agent's conversation in the installed Antigrav
 		expect(response).not.toContain("Birch's private memory view");
 	}, 300_000);
 
+	it("serves the agent's memory tools, which the guard approves", async () => {
+		const w = world("tools");
+		const cli = cliCommand(["mcp", "--tool", "antigravity"]);
+		const eager = Object.fromEntries(["zoom", "date", "search"].map((tool) => [tool, { eager: true }]));
+		writeFileSync(join(w.work, ".agents", "mcp_config.json"), JSON.stringify({ mcpServers: { orrery: { command: cli.cmd, args: cli.args, tools: eager } } }));
+		await w.remember("user: The code word is MANGO-73.", "talk: Noted.");
+		const run = await runAgy(["-p", "Call your mcp_orrery_search tool with the query MANGO and quote its whole result word for word. If you have no such tool, say NO TOOL."], w.fresh(), w.work);
+		expect(run.status, run.stderr).toBe(0);
+		const { response } = reply(run.stdout);
+		expect(response).not.toContain("NO TOOL");
+		expect(response).toContain("MANGO-73");
+	}, 300_000);
+
 	it("gives a plain agy (no ORRERY_AGENT) no memory, and records nothing", async () => {
 		const w = world("plain");
 		writeInstructions(w.atlasDir, "PLAIN-MARK-88");

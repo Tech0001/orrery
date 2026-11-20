@@ -12,13 +12,14 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { orreryHome } from "../agent/home.ts";
 import { checkTools, findOnPath, setAside, type InstallStep, installSteps, ompExtensionFile, piExtensionFile, runInstall, type Runner, type ToolCheck } from "../agent/tools.ts";
+import { agyFolderThere, agySupported } from "../antigravity/install.ts";
 import { grokFolderThere, grokSupported } from "../grok/install.ts";
 import { type Confirm, pathAdvice } from "./ask.ts";
 import { offerGuardPreset } from "./guard-preset.ts";
 import type { ConfigFile } from "../agent/config.ts";
 import { envRunner } from "./install.ts";
 import { ENTRY_TAILS, endsWithSegments, entries, isOrreryCommand, oneLineTarget } from "./layout.ts";
-import { unwireGrok } from "./uninstall.ts";
+import { unwireAgy, unwireGrok } from "./uninstall.ts";
 import { installedVersion } from "./update.ts";
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -144,7 +145,23 @@ function unwireOldGrok(env: NodeJS.ProcessEnv, version: string | undefined, left
 }
 
 /**
- * pi, Claude Code, OMP and Grok through checkTools and installSteps against app/current: "update available" (Orrery's
+ * Antigravity's wiring removed when app/current is a version without its hooks (src/antigravity/install.ts
+ * agySupported): such an Orrery answers the guard with an error, which agy takes as a refusal of every tool call.
+ */
+function unwireOldAgy(env: NodeJS.ProcessEnv, version: string | undefined, left: string[], emit: (line: string) => void): void {
+	const why = version === undefined ? "the installed version can't be read" : `${version} has no Antigravity support`;
+	const unwired = unwireAgy(env, join(orreryHome(env), "app"));
+	if (!unwired.changed && unwired.ok) {
+		emit(`Antigravity: ${why}; not wired`);
+		return;
+	}
+	emit(`Antigravity: ${why}, so Orrery's Antigravity wiring goes:`);
+	for (const line of unwired.lines) emit(line);
+	if (!unwired.ok) left.push("Antigravity (Orrery's entries could not all be removed)");
+}
+
+/**
+ * pi, Claude Code, OMP, Grok and Antigravity through checkTools and installSteps against app/current: "update available" (Orrery's
  * own wiring of the other shape or an older plugin) runs without asking; "missing" (no Orrery wiring yet, or Grok's
  * config without an entry of Orrery's, which the person may have removed) and "other" (another Orrery, or not Orrery's
  * file) only after confirm, and a file that is not Orrery's is set aside first. A missing pi or OMP extension is written only when that tool is on PATH, and
@@ -156,11 +173,15 @@ async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: 
 	// Setup's lines say nothing of Grok's settings (the Tools page and orrery tools do): they aren't looked at here.
 	const look = () => checkTools({ root: current, env, run: run.probe });
 	let checks = look();
-	for (const id of ["pi", "claude-code", "omp", "grok"] as const) {
+	for (const id of ["pi", "claude-code", "omp", "grok", "antigravity"] as const) {
 		const check = checks.find((c) => c.id === id) as ToolCheck;
-		const found = check.path !== undefined || (id === "grok" && grokFolderThere(env));
+		const found = check.path !== undefined || (id === "grok" && grokFolderThere(env)) || (id === "antigravity" && agyFolderThere(env));
 		if (id === "grok" && found && !grokSupported(installedVersion(env))) {
 			unwireOldGrok(env, installedVersion(env), left, emit, dataDir);
+			continue;
+		}
+		if (id === "antigravity" && found && !agySupported(installedVersion(env))) {
+			unwireOldAgy(env, installedVersion(env), left, emit);
 			continue;
 		}
 		const steps = installSteps(check, current, env, dataDir);
@@ -188,7 +209,7 @@ async function wireTools(env: NodeJS.ProcessEnv, current: string, run: { probe: 
 		for (const line of result.output.split("\n").filter((line) => line.trim() !== "")) emit(`${check.label}: ${line}`);
 		if (!result.ok) {
 			left.push(`${check.label} (${result.problem ?? "the install failed"})`);
-			emit(`${check.label}: not wired; ${id === "grok" ? "orrery setup" : `orrery tools install ${id}`} tries again`);
+			emit(`${check.label}: not wired; ${id === "grok" || id === "antigravity" ? "orrery setup" : `orrery tools install ${id}`} tries again`);
 		}
 		// pi and OMP may share one extensions folder: OMP is judged after pi's file is written.
 		checks = look();
