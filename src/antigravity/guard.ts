@@ -32,6 +32,8 @@ import { opensHere, type PlainDeps } from "../agent/plain-nested.ts";
 import { agentGuardOptions, type ClaudeGuardOptions, claudeGuard, plainGuardOptions } from "../claude/guard.ts";
 import { codexRefusal, contentGuard } from "../codex/guard.ts";
 import { antigravityAgent, antigravityNested, LAUNCH_VARIABLES, launchedEnv, startEnvOf } from "../codex/pick.ts";
+import { wiringRoot } from "../agent/running.ts";
+import { agyServerIsOurs } from "./install.ts";
 
 /** agy's tools as Claude Code's guard knows them (module doc), and the argument keys it reads under its own names. */
 export const AGY_AS_CLAUDE: Readonly<Record<string, { readonly name: string; readonly keys: Readonly<Record<string, string>> }>> = {
@@ -111,6 +113,8 @@ export interface AgyGuardContext {
 	readonly plain?: PlainDeps;
 	/** Named variables of the environment a process was started with (default startEnvOf). */
 	readonly envOf?: (pid: number, names: readonly string[]) => Readonly<Record<string, string>> | undefined;
+	/** The Orrery whose MCP server counts as Orrery's own (default: the installed one, wiringRoot); tests set it. */
+	readonly root?: string;
 }
 
 /** A session's rules: Orrery's own, for a session that is no agent's, or where it may write and its agent. */
@@ -190,7 +194,11 @@ export function runAgyGuard(stdin: string | undefined, ctx: AgyGuardContext): st
 		const options = rules.plain ? plainGuardOptions(ctx.config, ctx.env, home, cwd, cwd, ctx.configFile) : agentGuardOptions(ctx.config, ctx.env, home, cwd, rules.rules, rules.agent, ctx.configFile);
 		const reason = agyGuard(name, args ?? {}, { ...options, judgeMs: by - performance.now() });
 		if (reason !== undefined) return decision("deny", agyRefusal(reason));
-		return decision(!rules.plain && rules.agent !== undefined && orreryMemoryTool(name, args) ? "auto_approve" : "allow");
+		// Orrery's memory tools in an agent's conversation, while the orrery server agy runs is this Orrery's own; any other
+		// call (and a server under that name that isn't) goes on to agy's own permission rules.
+		const workspaces = [cwd, ...(Array.isArray(parsed.workspacePaths) ? parsed.workspacePaths.filter((path): path is string => typeof path === "string" && isAbsolute(path)) : [])];
+		const ours = () => agyServerIsOurs(home, ctx.root ?? wiringRoot(ctx.env).root, workspaces);
+		return decision(!rules.plain && rules.agent !== undefined && orreryMemoryTool(name, args) && ours() ? "auto_approve" : "allow");
 	} catch (error) {
 		return decision("deny", agyRefusal(`this call could not be checked (${errorText(error)}); nothing was run.`));
 	}

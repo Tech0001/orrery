@@ -34,7 +34,8 @@ the rest of each file as it was:
 - **`~/.gemini/antigravity-cli/settings.json`**: Orrery's status line (`orrery agy-status`), shown below agy's own row.
   A status line of your own stays; run `orrery agy-status` from it to show Orrery's.
 
-An `orrery` hooks entry or server that isn't Orrery's stays as it is, and setup says so. `orrery uninstall` removes
+An `orrery` hooks entry or server that isn't Orrery's stays as it is, and setup says so; `orrery agent` then says the
+conversation won't be recorded or guarded, and asks before opening it. `orrery uninstall` removes
 Orrery's three entries while they still read as Orrery wrote them, after a copy of each file. A rollback or an update to
 a release before 0.11.0 removes them too: an older Orrery answers the guard with an error, and agy takes a failing guard
 as a refusal of every tool call.
@@ -108,8 +109,13 @@ Antigravity's compaction is its own: it asks its model for a summary of the conv
 
 `zoom`, `date` and `search`, plus `agents` and `agent_memory` for an agent whose `reads` allows it, from the `orrery`
 MCP server; agy names them `mcp_orrery_<tool>`. The guard approves them in an agent's conversation, so agy asks no
-permission for them. The server serves only the agent `ORRERY_AGENT` names, with its token, as the agy process was
-started with them, so a plain agy gets no memory tools.
+permission for them, but only while the `orrery` server agy runs is the one setup wrote in Antigravity's global
+`mcp_config.json`, for this Orrery, and no workspace of the conversation has an `orrery` server of its own in its
+`.agents/mcp_config.json`: a server of someone else's under that name would otherwise run with Orrery's approval.
+Otherwise agy asks, as for any MCP tool; `agy -p`, which can't ask, then refuses them unless a rule allows them
+(`--settings '{"permissions":{"allow":["mcp(orrery/*)"]}}'`, or `permissions.allow` in agy's settings). The server
+serves only the agent `ORRERY_AGENT` names, with its token, as the agy process was started with them, so a plain agy
+gets no memory tools.
 
 ## The status row
 
@@ -207,6 +213,9 @@ settings, the tools' session records and Antigravity's own files are kept from i
   tools out of it, not a program that builds the path itself.
 - Antigravity's hooks file is global: the Antigravity App and its IDE extensions load it too, where Orrery's hooks run
   as in a plain agy (no memory, the plain guard). That was not checked.
+- If Orrery's program is deleted without `orrery uninstall`, its hook lines stay and let every tool call through
+  unchecked (they answer as if nothing were there), rather than refuse every call in every agy session. Agents can't
+  delete it: the guard keeps them out of Orrery's installed program. Uninstall removes the lines.
 - `orrery usage` shows only summary tokens for agy conversations, not the conversation's own.
 - **macOS is not yet verified.** There Orrery asks `lsof` which files agy holds open, and `ps` for its environment; if
   either can't say, the conversation is not recorded.

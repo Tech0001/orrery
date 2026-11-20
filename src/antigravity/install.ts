@@ -146,6 +146,29 @@ function isOurs(part: AgyPart, present: unknown, orrery: string): boolean {
 	return isDeepStrictEqual(present, entryOf(part, orrery));
 }
 
+/**
+ * Whether the `orrery` MCP server agy runs is this Orrery's own, for the Orrery at `root` (the guard approves its memory
+ * tools only then: a server of another's under that name would run with Orrery's approval): Antigravity's global
+ * mcp_config.json under `home` holds Orrery's entry for root's command (either install shape), and no workspace of the
+ * conversation (`workspaces`) has an `orrery` server of its own in its .agents/mcp_config.json. Anything that can't be
+ * read counts as not.
+ */
+export function agyServerIsOurs(home: string, root: string, workspaces: readonly string[]): boolean {
+	const serverIn = (path: string): unknown => {
+		const text = readText(path);
+		if (text === undefined) return "unreadable";
+		try {
+			return PLACE.mcp.get(parseObject(text, path));
+		} catch {
+			return "unreadable";
+		}
+	};
+	const global = serverIn(agyFiles({ HOME: home }).mcp);
+	const commands = ENTRY_TAILS.cli.map((tail) => join(root, tail));
+	if (!commands.some((orrery) => isOurs("mcp", global, orrery))) return false;
+	return workspaces.every((workspace) => serverIn(join(workspace, ".agents", "mcp_config.json")) === undefined);
+}
+
 /** The file's text with Orrery's `part` added where it has none: `added`, or `kept` when one is there that isn't Orrery's. */
 export function addAgyEntry(part: AgyPart, text: string, orrery: string, path: string = part): { readonly next: string; readonly added: boolean; readonly kept: boolean } {
 	const json = parseObject(text, path);

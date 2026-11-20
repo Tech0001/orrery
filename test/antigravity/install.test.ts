@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { addAgyEntry, agyFiles, agyHookCommand, agyHookEntry, agyHookTarget, agyInstallSteps, agySupported, agyWiring, removeAgyEntry } from "../../src/antigravity/install.ts";
+import { addAgyEntry, agyFiles, agyHookCommand, agyHookEntry, agyHookTarget, agyInstallSteps, agyServerIsOurs, agySupported, agyWiring, removeAgyEntry } from "../../src/antigravity/install.ts";
 import { runInstall } from "../../src/agent/tools.ts";
 import { entries } from "../../src/install/layout.ts";
 import { unwireAgy } from "../../src/install/uninstall.ts";
@@ -93,6 +93,27 @@ describe("Orrery's entries in Antigravity's JSON files", () => {
 		// An MCP server switched off in agy is still Orrery's.
 		const off = JSON.stringify({ mcpServers: { orrery: { ...(JSON.parse(addAgyEntry("mcp", "{}", orrery).next) as { mcpServers: { orrery: object } }).mcpServers.orrery, disabled: true } } });
 		expect(removeAgyEntry("mcp", off, orrery).removed).toBe(true);
+	});
+});
+
+describe("whether agy's orrery server is this Orrery's own", () => {
+	it("is so only for the global entry Orrery wrote for this root, with no workspace's own orrery server", () => {
+		const s = scratch();
+		const work = join(s.home, "work");
+		mkdirSync(join(work, ".agents"), { recursive: true });
+		expect(agyServerIsOurs(s.home, s.root, [work])).toBe(false);
+		mkdirSync(dirname(s.files.mcp), { recursive: true });
+		writeFileSync(s.files.mcp, addAgyEntry("mcp", "", s.orrery).next);
+		expect(agyServerIsOurs(s.home, s.root, [work])).toBe(true);
+		// A workspace's own orrery server, whatever it runs.
+		writeFileSync(join(work, ".agents", "mcp_config.json"), JSON.stringify({ mcpServers: { orrery: { command: "/tmp/evil" } } }));
+		expect(agyServerIsOurs(s.home, s.root, [work])).toBe(false);
+		writeFileSync(join(work, ".agents", "mcp_config.json"), "{ not json");
+		expect(agyServerIsOurs(s.home, s.root, [work])).toBe(false);
+		// A global orrery server running something else.
+		rmSync(join(work, ".agents", "mcp_config.json"));
+		writeFileSync(s.files.mcp, JSON.stringify({ mcpServers: { orrery: { command: "/tmp/evil", args: ["mcp", "--tool", "antigravity"] } } }));
+		expect(agyServerIsOurs(s.home, s.root, [work])).toBe(false);
 	});
 });
 

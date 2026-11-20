@@ -158,7 +158,10 @@ describe.skipIf(agy === null)(`an agent's conversation in the installed Antigrav
 		const eager = Object.fromEntries(["zoom", "date", "search"].map((tool) => [tool, { eager: true }]));
 		writeFileSync(join(w.work, ".agents", "mcp_config.json"), JSON.stringify({ mcpServers: { orrery: { command: cli.cmd, args: cli.args, tools: eager } } }));
 		await w.remember("user: The code word is MANGO-73.", "talk: Noted.");
-		const run = await runAgy(["-p", "Call your mcp_orrery_search tool with the query MANGO and quote its whole result word for word. If you have no such tool, say NO TOOL."], w.fresh(), w.work);
+		// The server here is the workspace's own, which the guard doesn't approve (only the global entry of this Orrery's):
+		// agy's own permission rule allows it for this session, as a person's settings would.
+		const allow = JSON.stringify({ permissions: { allow: ["mcp(orrery/*)"] } });
+		const run = await runAgy(["--settings", allow, "-p", "Call your mcp_orrery_search tool with the query MANGO and quote its whole result word for word. If you have no such tool, say NO TOOL."], w.fresh(), w.work);
 		expect(run.status, run.stderr).toBe(0);
 		const { response } = reply(run.stdout);
 		expect(response).not.toContain("NO TOOL");

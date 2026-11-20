@@ -133,7 +133,8 @@ function agyWiringSteps(check: ToolCheck, options: { root?: string; env?: NodeJS
 	if (check.wiring === "unknown") return [{ text: `Orrery can't tell whether Antigravity runs its hooks (${check.detail}), so this conversation may not record; orrery tools says why.`, confirm: false }];
 	const env = options.env ?? process.env;
 	const steps = installSteps(check, options.root ?? wiringRoot(env).root, env);
-	if (steps.length === 0) return [];
+	// Nothing Orrery may change (an orrery entry of the person's own): this conversation goes unrecorded and unguarded.
+	if (steps.length === 0) return [{ text: `${check.detail}, so this conversation won't be recorded or guarded by Orrery. Launch anyway?`, confirm: true }];
 	const why = check.wiring === "missing" ? "Orrery's hooks for Antigravity are not installed, so this conversation won't record or be guarded" : "Antigravity doesn't run this Orrery's hooks, so this conversation may not record";
 	return [{ text: stepsQuestion(why, steps, "Connecting Orrery to Antigravity", "Connect Orrery to Antigravity now?"), confirm: true, fix: "install-antigravity" }];
 }
