@@ -135,6 +135,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { viewFile } from "../claude/paths.ts";
 import { agentMode } from "../claude/view-file.ts";
+import { AGY_READ_ONLY, AGY_READ_ONLY_PLAIN, agyKeeps, agyRule } from "../antigravity/guard-rules.ts";
 import { GROK_READ_ONLY, GROK_READ_ONLY_PLAIN, type GrokRule, grokFolders, grokLoads, grokNear, grokRule } from "../grok/guard-rules.ts";
 import type { HarnessConfig, AgentConfig } from "./config.ts";
 import { type CallOptions, checkToolCall } from "./guard-call.ts";
@@ -952,6 +953,7 @@ function agentJudge(options: PathGuardOptions, rules: PathRules): Judge {
 	const { home, views, protect, config, openCode, grok, transcripts, credentials, foreign, realData, data, setUp, roots } = rules;
 	const fold = (path: string) => path.toLowerCase();
 	const judgeShellRead = shellReads(options, rules, agentJudge, TRANSCRIPT_COMMAND);
+	const antigravity = agyRule(home);
 	return (toolName, input) => {
 		const search = SEARCHES.has(toolName);
 		// The arguments that name files: grep's glob and find's pattern (a file-name glob). grep's pattern is the text it
@@ -963,7 +965,7 @@ function agentJudge(options: PathGuardOptions, rules: PathRules): Judge {
 		if (namedEntry !== undefined) return `${toolName} ${nameKey} "${names}" names ${namedEntry}, ${PROTECTED_BY}.`;
 		const given = typeof input.path === "string" && input.path !== "" ? input.path : undefined;
 		const raw = given ?? (search ? "." : undefined);
-		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode, grok, transcripts, judgeShellRead }, views, config, protect);
+		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode, grok, antigravity, transcripts, judgeShellRead }, views, config, protect);
 		// All three forms: what the model wrote, where the tool resolves it, and where it really lands.
 		const resolved = (options.resolvePath ?? piToolPath)(raw, options.cwd, home);
 		const named = views.path(resolved);
@@ -981,6 +983,8 @@ function agentJudge(options: PathGuardOptions, rules: PathRules): Judge {
 		// And Grok's folder but its open parts: its hooks, settings, plugins, agents and records among it (guard-rules.ts
 		// grokRule).
 		if (writes && (grokLoads(resolved, grok) || grokLoads(target, grok))) return GROK_READ_ONLY(raw);
+		// And Antigravity's records and the settings that load its hooks and servers (src/antigravity/guard-rules.ts).
+		if (writes && (agyKeeps(resolved, antigravity) || agyKeeps(target, antigravity))) return AGY_READ_ONLY(raw);
 		// A skill OpenCode loads may be written, but not given front matter it runs as code (guard-rules.ts).
 		const skills = writes && (openCodeSkillPath(resolved) || openCodeSkillPath(target));
 		const skill = skills ? openCodeSkillRefusal(resolved, target, newTextIn(toolName, input), readSmall(target)) : undefined;
@@ -1032,6 +1036,7 @@ function orreryJudge(options: PathGuardOptions, rules: PathRules): Judge {
 	const { home, views, protect, config, shellNamed, openCode, grok, transcripts, credentials, foreign, realData, data, setUp, roots, programs, entries } = rules;
 	const fold = (path: string) => path.toLowerCase();
 	const judgeShellRead = shellReads(options, rules, orreryJudge, TRANSCRIPT_COMMAND_PLAIN);
+	const antigravity = agyRule(home);
 	return (toolName, input) => {
 		const search = SEARCHES.has(toolName);
 		const nameKey = toolName === "grep" ? "glob" : toolName === "find" ? "pattern" : undefined;
@@ -1039,7 +1044,7 @@ function orreryJudge(options: PathGuardOptions, rules: PathRules): Judge {
 		if (typeof names === "string" && sensitive(names, views.path(), true)) return `${toolName} ${nameKey} "${names}" names sensitive files (keys, credentials or Orrery's private data).`;
 		const given = typeof input.path === "string" && input.path !== "" ? input.path : undefined;
 		const raw = given ?? (search ? "." : undefined);
-		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode, grok, transcripts, judgeShellRead }, views, shellNamed, protect);
+		if (raw === undefined) return checkToolCall({ name: toolName, arguments: input }, { ...options, openCode, grok, antigravity, transcripts, judgeShellRead }, views, shellNamed, protect);
 		const resolved = (options.resolvePath ?? piToolPath)(raw, options.cwd, home);
 		const named = views.path(resolved);
 		if (sensitive(raw, named, true) || sensitive(resolved, named, true)) return SENSITIVE_FILE(raw);
@@ -1050,6 +1055,7 @@ function orreryJudge(options: PathGuardOptions, rules: PathRules): Judge {
 		if (writes && (isConfig(resolved) || isConfig(target))) return CONFIG_READ_ONLY_PLAIN(raw);
 		if (writes && (orreryAppNamed(resolved) || orreryAppNamed(target))) return APP_READ_ONLY_PLAIN(raw);
 		if (writes && (grokLoads(resolved, grok) || grokLoads(target, grok))) return GROK_READ_ONLY_PLAIN(raw);
+		if (writes && (agyKeeps(resolved, antigravity) || agyKeeps(target, antigravity))) return AGY_READ_ONLY_PLAIN(raw);
 		const where = fold(target);
 		if (credentials.some((location) => within(where, location))) return SENSITIVE_FILE(raw);
 		// An agent's view file, as given and where it really is: no tool reads or writes it, by any spelling or link.

@@ -66,7 +66,7 @@ const NAMED = new RegExp(
 	[
 		String.raw`\.gemini/+antigravity-cli/+(?:brain|conversations|presence|conversation_summaries\.db|settings\.json)(?:$|[/\-\s"'])`,
 		String.raw`\.gemini/+config/+(?:hooks\.json|mcp_config\.json|plugins)(?:$|[/\s"'])`,
-		String.raw`(?:^|/)\.agents/+(?:hooks|mcp_config)\.json(?:$|[\s"'])`,
+		String.raw`(?:^|[/\s"'=<>|;&(])\.agents/+(?:hooks|mcp_config)\.json(?:$|[\s"';|&)<>])`,
 	].join("|"),
 );
 
