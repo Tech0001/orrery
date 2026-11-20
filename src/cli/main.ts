@@ -236,6 +236,15 @@ async function updateCommand(values: { check?: boolean; version?: string; yes?: 
 		if (unwired.changed || !unwired.ok) for (const line of unwired.lines) process.stdout.write(`${line}\n`);
 		if (!unwired.ok) status = status === 0 ? 1 : status;
 	}
+	// So does its Antigravity wiring: an older release fails Antigravity's guard hook, which agy takes as a refusal of
+	// every tool call (src/antigravity/install.ts).
+	const { agySupported } = await import("../antigravity/install.ts");
+	if (!agySupported(installedVersion(process.env))) {
+		const [{ unwireAgy }, { orreryHome }] = await Promise.all([import("../install/uninstall.ts"), import("../agent/home.ts")]);
+		const unwired = unwireAgy(process.env, join(orreryHome(process.env), "app"));
+		if (unwired.changed || !unwired.ok) for (const line of unwired.lines) process.stdout.write(`${line}\n`);
+		if (!unwired.ok) status = status === 0 ? 1 : status;
+	}
 	const live = [...agentVersions(process.env).versions].filter(([v]) => v !== target);
 	if (live.length > 0) process.stdout.write(`These agents keep their version until they restart: ${live.map(([v, agents]) => `${agents.join(", ")} (${v})`).join("; ")}\n`);
 	if (!compiled) process.stdout.write("This Orrery runs from a checkout; the installed copy was updated, the checkout was not.\n");
