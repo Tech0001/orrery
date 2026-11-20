@@ -611,13 +611,14 @@ export function preToolUse(input: HookInput, ctx: HookContext): object | undefin
 		const toolInput = typeof input.tool_input === "object" && input.tool_input !== null ? (input.tool_input as Record<string, unknown>) : {};
 		const home = ctx.home ?? homedir();
 		const cwd = typeof input.cwd === "string" ? input.cwd : projectDir;
+		// The tool names are Claude Code's own (ClaudeGuardOptions.claudeTools: its Workflow carries no command line).
 		if (plainHere(pick, ctx.config, projectDir)) {
-			reason = claudeGuard(input.tool_name, toolInput, plainGuardOptions(ctx.config, ctx.env, home, projectDir, cwd, ctx.configFile));
+			reason = claudeGuard(input.tool_name, toolInput, { ...plainGuardOptions(ctx.config, ctx.env, home, projectDir, cwd, ctx.configFile), claudeTools: true });
 		} else {
 			// The session's write rules, and Claude Code's own state (claudeStateRoots).
 			const rules = writeRules(pick, ctx.config, projectDir);
 			const options = agentGuardOptions(ctx.config, ctx.env, home, cwd, rules, pick.kind === "agent" ? pick.agent : undefined, ctx.configFile);
-			reason = claudeGuard(input.tool_name, toolInput, { ...options, allowedRoots: [...rules.allowedRoots, ...claudeStateRoots(projectDir, home, ctx.env)] });
+			reason = claudeGuard(input.tool_name, toolInput, { ...options, allowedRoots: [...rules.allowedRoots, ...claudeStateRoots(projectDir, home, ctx.env)], claudeTools: true });
 		}
 	} catch (error) {
 		reason = `this call could not be checked (${errorText(error)}).`;

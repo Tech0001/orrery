@@ -205,7 +205,9 @@ describe("PreToolUse in a Claude Code session that is no agent's (spec 2026-10-1
 		expect(await call("Write", { file_path: t.configPath, content: "x" })).toMatch(/^Orrery guard: .*Orrery's config/);
 		expect(await call("Grep", { pattern: "x", path: t.config.dataDir })).toMatch(/^Orrery guard: .*narrower folder/);
 		expect(await call("Bash", { command: "orrery restore Test --from /tmp/x" })).toMatch(/^Orrery guard: orrery restore can't run from a session that is no agent's/);
-		expect(await call("Bash", { command: "ls ~/.claude/projects" })).toMatch(/^Orrery guard: .*session records/);
+		expect(await call("Bash", { command: "ls -la ~/.claude/projects" })).toMatch(/^Orrery guard: .*session records/);
+		// One plain read of them passes, as a Read does (spec 2026-11-17, 0.10.2).
+		expect(await call("Bash", { command: "ls ~/.claude/projects" })).toBeUndefined();
 		expect(await call("Write", { file_path: join(home, ".claude", "projects", "-x", "s.jsonl"), content: "x" })).toMatch(/^Orrery guard: .*session records/);
 		// Everything else as before: writes anywhere, .env files, keys under home, Orrery's commands that only read.
 		expect(await call("Write", { file_path: join(plain, "a.ts"), content: "x" })).toBeUndefined();

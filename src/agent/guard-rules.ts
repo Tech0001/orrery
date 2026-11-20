@@ -1497,7 +1497,9 @@ export function skillsNamed(text: string): boolean {
 // sessions folder (~/.grok/sessions, or under $GROK_HOME; kept with all of Grok's folder but its open parts, and an
 // agent's session may not even read Grok's records, which hold each session's system prompt: src/grok/guard-rules.ts grokRule,
 // HOME_SECRETS). An agent that wrote a line there could fake one, so no file tool writes there, in
-// any gate, and no shell text names them; file tools may read Claude Code's and Codex's. A project's memory folder
+// any gate, and no shell text names them; file tools may read Claude Code's and Codex's, and so may one plain shell read
+// that writes each path out (writtenOutRead), where a gate judges each path as a read (guard-call.ts
+// CallOptions.judgeShellRead; never into Grok's records). A project's memory folder
 // there (Claude Code's auto memory, ruling C10) stays writable: it is no record of a session. In shell text they are
 // named by their tails anywhere (.claude/projects, .codex/sessions, .codex/archived_sessions, .grok/sessions, and the
 // same after $CLAUDE_CONFIG_DIR, $CODEX_HOME or $GROK_HOME), with the readings every name gets, by a glob that could
@@ -1643,9 +1645,32 @@ export function transcriptsNamed(command: string, reading: Reading, reach: numbe
 	return protectedIn(rule.spelled.reach > reach ? readings(command, rule.spelled.reach) : reading, rule.spelled, false) !== undefined;
 }
 
+/**
+ * Whether a path (one spelling of it) is in Grok's session records: below .grok/sessions anywhere, or in one of the
+ * rule's Grok folders. Ignoring case.
+ */
+export function grokRecordsPath(path: string, rule: Pick<TranscriptRule, "grok">): boolean {
+	const folded = posix.normalize(path).toLowerCase();
+	const parts = folded.split("/");
+	for (let at = 0; at + 1 < parts.length; at++) if (parts[at] === ".grok" && GROK_RECORDS.includes(parts[at + 1] as string)) return true;
+	return (rule.grok ?? []).some((folder) => within(folded, posix.normalize(folder.toLowerCase()).replace(/(.)\/+$/, "$1")));
+}
+
+/**
+ * The plain read shell text is (skillShellRead) when each of its paths is written out, for the session-records rule
+ * (guard-call.ts checkToolCall): absolute, "~" or "~/…", with no ".." part; undefined otherwise. A relative path is
+ * read from a folder the guard may not know (a shell may keep its own, and Codex's workdir never reaches the hook), and
+ * the kernel takes ".." after a link where the link leads, not where the guard reads it.
+ */
+export function writtenOutRead(text: string): SkillShellRead | undefined {
+	const read = skillShellRead(text);
+	const written = (path: string) => (path === "~" || path.startsWith("~/") || path.startsWith("/")) && !path.split("/").includes("..");
+	return read !== undefined && read.paths.every(written) ? read : undefined;
+}
+
 /** Why shell text naming the session records is refused. */
 export const TRANSCRIPT_COMMAND =
-	"This command names Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions) or Grok's (~/.grok/sessions), which Orrery checks prompts against: agents may read Claude Code's and Codex's with file tools, not with commands.";
+	"This command names Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions) or Grok's (~/.grok/sessions), which Orrery checks prompts against: agents may read Claude Code's and Codex's with file tools or one plain cat, head, tail, wc, ls or sed -n that writes the full path out, not with other commands.";
 
 /** Why a write there is refused. */
 export const TRANSCRIPT_READ_ONLY = (path: string) =>
@@ -1653,19 +1678,21 @@ export const TRANSCRIPT_READ_ONLY = (path: string) =>
 
 /** TRANSCRIPT_COMMAND and TRANSCRIPT_READ_ONLY worded for any session (GuardOptions.orreryOnly). */
 export const TRANSCRIPT_COMMAND_PLAIN =
-	"This command names Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions) or Grok's (~/.grok/sessions), which Orrery checks prompts against: they may be read with file tools, not with commands.";
+	"This command names Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions) or Grok's (~/.grok/sessions), which Orrery checks prompts against: they may be read with file tools, and Claude Code's and Codex's with one plain cat, head, tail, wc, ls or sed -n that writes the full path out, not with other commands.";
 export const TRANSCRIPT_READ_ONLY_PLAIN = (path: string) =>
 	`${path} is in Claude Code's or Codex's session records (~/.claude/projects, ~/.codex/sessions and archived_sessions) or Grok's (~/.grok/sessions), which Orrery checks prompts against: they may be read, not changed.`;
 
-// ---- A plain read of skill files, for Codex's own shell ----
+// ---- A plain read of files: skill files in Codex's own shell, and the session records in every gate's ----
 //
 // Codex reads files only through its shell, so refusing every command that names a skills folder would leave it no way
 // to read its own skills. Its shell may run one plain read instead, a grammar rather than a list of commands with open
 // options: exactly `cat <file>...`, `head [-n N] <file>`, `tail [-n N] <file>`, `sed -n '<A>,<B>p' <file>` (the range
-// Codex reads files with), `ls <dir>` or `wc <file>...`. One simple command: no other option, no redirection, pipe, `;`,
-// `&&`, `&`, newline, comment, substitution, variable, glob, brace, escape or `~user`; a word may be quoted, its text
-// only plain path characters. Every reading of the text (quotes, $'…', braces, backslashes, paths collapsed) must be
-// that same read, or it is refused.
+// Codex reads files with), `ls <dir>` or `wc [-l|-c|-w|-m…] <file>...` (those options alone or in one word, -lc, before
+// the files; each only counts). One simple command: no other option, no redirection, pipe, `;`, `&&`, `&`, newline,
+// comment, substitution, variable, glob, brace, escape or `~user`; a word may be quoted, its text only plain path
+// characters. Every reading of the text (quotes, $'…', braces, backslashes, paths collapsed) must be that same read, or
+// it is refused. The same read of Claude Code's or Codex's session records, its paths written out (writtenOutRead),
+// passes the records rule in every gate's shell.
 
 /** What a plain read of skill files reads (skillShellRead): its program, and each file (a folder, for ls) as the shell hands it over. */
 export interface SkillShellRead {
@@ -1714,8 +1741,14 @@ function plainRead(words: readonly string[]): SkillShellRead | undefined {
 	const count = /^[0-9]{1,9}$/;
 	switch (program) {
 		case "cat":
-		case "wc":
 			return rest.length > 0 && rest.every(file) ? { program, paths: rest } : undefined;
+		case "wc": {
+			// Its counting options first, each alone (-l -c) or in one word (-lc); then its files.
+			let at = 0;
+			while (at < rest.length && /^-[lcwm]+$/.test(rest[at] as string)) at++;
+			const files = rest.slice(at);
+			return files.length > 0 && files.every(file) ? { program, paths: files } : undefined;
+		}
 		case "head":
 		case "tail":
 			if (rest.length === 1 && file(rest[0])) return { program, paths: rest };

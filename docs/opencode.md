@@ -5,7 +5,8 @@ An agent can run in OpenCode as well as in pi, OMP, Claude Code and Codex, on th
 gets the agent's instructions and its memory view in the system prompt, the memory tools, Orrery's guard on every tool
 call, and compaction answered from memory with no model call; each turn is recorded into the agent's memory.
 
-Tested with OpenCode 2.0.30 (`opencode --version` says `opencode v2.0.30`).
+Tested with OpenCode 2.0.30 (`opencode --version` says `opencode v2.0.30`). Orrery's tests against the installed
+OpenCode also pass with 2.3.0.
 
 ## Install
 
@@ -290,7 +291,8 @@ The same goes for Orrery's commands that agents may not run (all but `help`, `--
 and `compactor`; README, Safety): a shell command that runs `orrery` with one of them, or only names it, is refused,
 and the CLI refuses them inside the session too. Shell text that names Claude Code's or Codex's session records
 (`~/.claude/projects`, `~/.codex/sessions`) is refused, and no tool writes there; `read`, `glob` and `grep` may read
-them.
+them, and so may one plain shell read that writes the full path out (`cat`, `head`, `tail`, `wc`, `ls` or `sed -n`, as
+in [Claude Code](claude-code.md#the-guard)), each path judged as a `read`, links followed.
 
 ### Its limits in OpenCode
 

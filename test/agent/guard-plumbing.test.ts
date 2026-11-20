@@ -150,7 +150,8 @@ describe("a session that is no agent's, in every gate", () => {
 		["a detached recorder", "(env -i setsid orrery holder Atlas --session s > out &)", /hook plumbing/],
 		["a detached hook", "(env -i setsid orrery claude-hook user-prompt-submit < x.json &)", /hook plumbing/],
 		["Orrery's home by name", "cat ~/.orrery/agents/Atlas/memory.sqlite", /sensitive files/],
-		["Claude Code's session records", "ls ~/.claude/projects", /session records/],
+		// Named in more than one plain read (which passes: guard-orrery-commands.test.ts).
+		["Claude Code's session records", "ls -la ~/.claude/projects", /session records/],
 	])("refuses %s", (_what, command, refusal) => {
 		expect(verdicts(command, { orreryOnly: true })).toEqual(Array(10).fill(expect.stringMatching(refusal)));
 	});

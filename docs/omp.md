@@ -167,7 +167,9 @@ and put words in your mouth in its memory. The cost: a command that only names t
 for them or a commit message that mentions one; OMP's own search tools are not read this way.
 The same goes for Orrery's commands that agents may not run (all but `help`, `--version`, `status`, `usage`, `browse`
 and `compactor`) and for Claude Code's and Codex's session records (`~/.claude/projects`, `~/.codex/sessions`), which
-no tool may write: `bash` and `eval` text that runs or names one is refused (README, Safety).
+no tool may write: `bash` and `eval` text that runs or names one is refused (README, Safety). One plain read of the
+session records passes, with each path written out from `/` or `~/` (`cat`, `head`, `tail`, `wc`, `ls` or `sed -n`,
+as in [Claude Code](claude-code.md#the-guard)), each path judged as a `read`, links followed.
 `bash` runs in the folder its `cwd` names, so that folder is judged as a read of it: a credential folder, Orrery's
 home or a protected folder as `cwd` is refused. A relative name in the command is then not seen, as after a `cd`.
 Tools from OMP plugins are not checked.

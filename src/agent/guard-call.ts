@@ -3,7 +3,7 @@
 import { homedir } from "node:os";
 import { posix } from "node:path";
 import { GROK_CLI_REFUSED, GROK_CLIMB, GROK_COMMAND, GROK_COMMAND_PLAIN, GROK_READ_ONLY, GROK_READ_ONLY_PLAIN, GROK_REACH, grokClimbsFrom, grokCommandOf, grokFolders, type GrokRule, grokLoads, grokNamed, grokNamedFrom, grokReaches, grokRule, grokSpeltFrom } from "../grok/guard-rules.ts";
-import { AGENT_REFUSED, APP_READ_ONLY, APP_READ_ONLY_PLAIN, CONFIG_READ_ONLY, CONFIG_READ_ONLY_PLAIN, configSpellings, flagged, type GuardOptions, namesFolder, newTextIn, OPENCODE_COMMAND, OPENCODE_NAMED, OPENCODE_READ_ONLY, openCodeLoads, openCodeRule, openCodeSkillRefusal, ORRERY_COMMAND_REFUSED, ORRERY_COMMAND_REFUSED_PLAIN, orreryAppNamed, orreryCommandIn, orreryConfigNamed, pathProtected, PLAIN_REFUSED, PLUMBING_REFUSED, PROTECTED_BY, PROTECTED_FILE, protectedIn, type Protection, protection, readings, runsPlumbing, secretIn, secretPath, sensitive, SKILL_SHELL, SKILLS_NAMED, skillShellRead, TRANSCRIPT_COMMAND, TRANSCRIPT_COMMAND_PLAIN, TRANSCRIPT_READ_ONLY, TRANSCRIPT_READ_ONLY_PLAIN, transcriptPath, transcriptRule, transcriptsNamed, type ViewRules, viewRules, within } from "./guard-rules.ts";
+import { AGENT_REFUSED, APP_READ_ONLY, APP_READ_ONLY_PLAIN, CONFIG_READ_ONLY, CONFIG_READ_ONLY_PLAIN, configSpellings, flagged, type GuardOptions, namesFolder, newTextIn, OPENCODE_COMMAND, OPENCODE_NAMED, OPENCODE_READ_ONLY, openCodeLoads, openCodeRule, openCodeSkillRefusal, ORRERY_COMMAND_REFUSED, ORRERY_COMMAND_REFUSED_PLAIN, orreryAppNamed, orreryCommandIn, orreryConfigNamed, pathProtected, PLAIN_REFUSED, PLUMBING_REFUSED, PROTECTED_BY, PROTECTED_FILE, protectedIn, type Protection, protection, readings, runsPlumbing, secretIn, secretPath, sensitive, SKILL_SHELL, SKILLS_NAMED, type SkillShellRead, skillShellRead, TRANSCRIPT_COMMAND, TRANSCRIPT_COMMAND_PLAIN, TRANSCRIPT_READ_ONLY, TRANSCRIPT_READ_ONLY_PLAIN, transcriptPath, transcriptRule, transcriptsNamed, type ViewRules, viewRules, within, writtenOutRead } from "./guard-rules.ts";
 
 /** What checkToolCall judges against: the guard's options, and Grok's folder rule. */
 export interface CallOptions extends GuardOptions {
@@ -13,6 +13,14 @@ export interface CallOptions extends GuardOptions {
 	 * process's environment and the guard's home.
 	 */
 	readonly grok?: GrokRule;
+	/**
+	 * How the gate judges a plain shell read's paths (guard-rules.ts writtenOutRead), the layer every gate's shell goes
+	 * through (src/agent/guard-paths.ts pathJudge): each as a read (ls: a listing), placed as the shell places it, links
+	 * followed, and none in Grok's session records; the first refusal, or undefined when each passes. Given, such a read
+	 * passes the session-records rule, and every other rule still applies. Without it (orrery run's own check, whose
+	 * files may be on another host) the rule refuses it.
+	 */
+	readonly judgeShellRead?: (read: SkillShellRead) => string | undefined;
 }
 
 /**
@@ -51,8 +59,9 @@ export function checkToolCall(
 			if (inReading((form) => SKILLS_NAMED.test(form)) && !(options.shellReadsSkills === true && skillShellRead(command) !== undefined)) return SKILL_SHELL;
 		}
 		// Last, so a command refused before keeps its reason: Orrery's commands that change memory or settings (in a
-		// session that is no agent's, every one the CLI refuses it: PLAIN_REFUSED_COMMANDS), the tools' session records,
-		// and Grok's folder but its open parts, or the folder itself, in every session, by its path or by its relative
+		// session that is no agent's, every one the CLI refuses it: PLAIN_REFUSED_COMMANDS), the tools' session records (but
+		// one plain read of Claude Code's or Codex's whose paths pass as reads, judgeShellRead), and Grok's folder but its
+		// open parts, or the folder itself, in every session, by its path or by its relative
 		// spelling from the call's cwd (as the hook gives it); and, where the call runs in Grok's folder, a ".." that leaves
 		// the open part it runs in, and, where that is the folder itself or what it loads, any path from there but into an
 		// open part.
@@ -60,7 +69,15 @@ export function checkToolCall(
 		if (orrery !== undefined) return agent ? ORRERY_COMMAND_REFUSED(orrery) : ORRERY_COMMAND_REFUSED_PLAIN(orrery);
 		const grokCommand = grokCommandOf(command, reading);
 		if (grokCommand !== undefined) return GROK_CLI_REFUSED(grokCommand);
-		if (transcriptsNamed(command, reading, protect.reach, transcripts())) return agent ? TRANSCRIPT_COMMAND : TRANSCRIPT_COMMAND_PLAIN;
+		if (transcriptsNamed(command, reading, protect.reach, transcripts())) {
+			// One plain read with its paths written out passes when each path passes as a read (CallOptions.judgeShellRead):
+			// file tools may read Claude Code's and Codex's records, and such a read changes nothing.
+			const judgeRead = options.judgeShellRead;
+			const read = judgeRead === undefined ? undefined : writtenOutRead(command);
+			if (read === undefined || judgeRead === undefined) return agent ? TRANSCRIPT_COMMAND : TRANSCRIPT_COMMAND_PLAIN;
+			const reason = judgeRead(read);
+			if (reason !== undefined) return reason;
+		}
 		if (inReading((form) => grokNamed(form, grok()))) return agent ? GROK_COMMAND : GROK_COMMAND_PLAIN;
 		if (inReading((form) => grokReaches(form, grok()))) return GROK_REACH;
 		const cwd = options.cwd;

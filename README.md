@@ -250,10 +250,11 @@ Shell commands that name Orrery's hook plumbing (`codex-hook`, `claude-hook`, `g
 `holder`), or run an `orrery` command an agent's session may not run (`orrery setup`, `orrery remote` and the like), are
 refused too, even in a `grep` or a commit message: leave those to the person, search with your file tools, and write a
 commit message that names one to a file (`git commit -F`). So are shell commands that name Claude Code's or Codex's
-session records (`~/.claude/projects`, `~/.codex/sessions`), which you may read with your file tools but not change,
-OpenCode's config (`opencode.json`, a `.opencode` folder, OpenCode's own folders) or a skills folder (`.claude/skills`,
-`.agents/skills`): read those with your file tools. Grok's folder (`~/.grok`) is the same, all but the parts Grok's own
-features write (its memory, skills, workflows, docs, logs and the like): read it with your file tools (but not Grok's
+session records (`~/.claude/projects`, `~/.codex/sessions`), but one plain read: you may read them, not change them,
+with your file tools or with one plain `cat`, `head`, `tail`, `wc`, `ls` or `sed -n` that writes the full path out
+(`wc -l ~/.claude/projects/<project>/<session>.jsonl`). So are shell commands that name OpenCode's config
+(`opencode.json`, a `.opencode` folder, OpenCode's own folders) or a skills folder (`.claude/skills`, `.agents/skills`):
+read those with your file tools. Grok's folder (`~/.grok`) is the same, all but the parts Grok's own features write (its memory, skills, workflows, docs, logs and the like): read it with your file tools (but not Grok's
 login or session records, which you can't read at all), and leave changes to Grok's settings and hooks to the person.
 You can't write OpenCode's config, so ask the person to set up OpenCode for a project; skills you may write with your
 file tools, with plain YAML front matter. Your own memory has its own tools: `zoom`, `date` and `search`
@@ -427,9 +428,10 @@ are never recorded. In Grok, a prompt counts only once the session's own log in 
 session of your own that the Grok process holds open: a turn Grok starts on its own (a scheduled prompt, a background
 task's result) and a subagent's session are never recorded. What is never confirmed is dropped and counted: `orrery
 status` shows "N unconfirmed messages not recorded" (`unconfirmedMessages` in `orrery status --json`). Agents may read
-Claude Code's and Codex's session records with file tools, but no tool may change them, and shell text that names
-those folders (`~/.claude/projects`, `~/.codex/sessions`) is refused; Claude Code's own memory folder for the project
-stays writable. Grok's session records (`~/.grok/sessions`) an agent's session can't read either. pi, OMP and OpenCode
+Claude Code's and Codex's session records with file tools, or with one plain shell read (`cat`, `head`, `tail`, `wc`,
+`ls` or `sed -n` with the full path written out), but no tool may change them, and other shell text that names those
+folders (`~/.claude/projects`, `~/.codex/sessions`) is refused; Claude Code's own memory folder for the project stays
+writable. Grok's session records (`~/.grok/sessions`) an agent's session can't read either. pi, OMP and OpenCode
 record inside their own process, so there is no hook to fake. Where Orrery can't make the check (see the
 [Claude Code](docs/claude-code.md#daily-use), [Codex](docs/codex.md#whats-recorded) and
 [Grok](docs/grok.md#whats-recorded) guides), the session says why and records nothing.
@@ -532,7 +534,8 @@ Orrery's own files only:
   `installed_plugins.json`): read by file tools, never written, and not named in shell text.
 - Every agent's memory view (`.orrery/view.md` in an agent's folder): not read or written.
 - Claude Code's, Codex's and Grok's session records (`~/.claude/projects`, `~/.codex/sessions`, `~/.grok/sessions`):
-  file tools may read them, no tool writes them, and shell text may not name them.
+  file tools may read them, and so may one plain shell read of Claude Code's or Codex's with the full path written out;
+  no tool writes them, and other shell text may not name them.
 - Grok's folder (`~/.grok`), but the parts Grok's own features write: read by file tools, never written, and not named
   in shell text.
 - Shell text that runs or names an `orrery` command other than `help`, `--version`, `status` and `usage`, or Orrery's

@@ -412,12 +412,23 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("an
 			expect(child).toBeDefined();
 			const tail = (system: string) => system.slice(system.lastIndexOf("# Memory"));
 			expect(tail(systemOf(child as FakeRequest))).toBe(tail(systemOf(after)));
-			await waitUntil(() => world.memory().some((line) => line.startsWith("talk: TOOLRESULT:")));
+			// The parent's turn is recorded. OpenCode 2.3 runs the subagent in the background and tells the parent when it
+			// finishes; if that comes before the parent goes idle, both replies are one turn and memory keeps its last one.
+			const recorded = () => {
+				const memory = world.memory();
+				const asked = memory.findIndex((line) => line.startsWith("user: TOOL subagent "));
+				return asked >= 0 && memory.slice(asked + 1).some((line) => line.startsWith("talk: "));
+			};
+			await waitUntil(recorded, 15_000);
 			expect(world.memory().filter((line) => line.includes("You are a subagent") || line === "talk: child-reply-7")).toEqual([]);
 			expect(world.memory().filter((line) => line.startsWith("user: "))).toHaveLength(5);
 			// Every request was the agent loop's (with tools): no title or compaction request reached the model.
 			for (const request of requests) expect((request.body.tools ?? []).length, `request ${request.n}`).toBeGreaterThan(0);
-			expect(requests).toHaveLength(7);
+			// OpenCode 2.3 runs the subagent in the background: its finish reaches the parent as a <subagent> notice in a
+			// user message, which asks the model once more. The notice is not a prompt of the user's (five, above).
+			const notices = requests.filter((request) => conversationOf(request).at(-1)?.startsWith("user: <subagent "));
+			expect(notices.length).toBeLessThanOrEqual(1);
+			expect(requests).toHaveLength(7 + notices.length);
 		} finally {
 			server.stdin.end();
 			const killer = setTimeout(() => server.kill("SIGKILL"), 10_000);
