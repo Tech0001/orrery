@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { agyPid, isAgy, ownConversation, validConversation } from "../../src/antigravity/host.ts";
@@ -51,7 +51,9 @@ describe("a conversation as agy's own", () => {
 		const h = home();
 		const lock = presence(h);
 		const own = ownConversation(1, C, h, () => [{ path: lock, writes: true }]);
-		expect(own).toEqual({ folder: agyFolder(h), transcript: agyTranscript(agyFolder(h) as string, C) });
+		// The folder as it really is (macOS's temp folder is under /private).
+		const folder = realpathSync(agyFolder(h) as string);
+		expect(own).toEqual({ folder, transcript: agyTranscript(folder, C) });
 	});
 
 	it("is refused when agy holds it only to read, more than once, not at all, or the system can't tell", () => {
