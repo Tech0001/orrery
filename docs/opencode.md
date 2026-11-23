@@ -6,7 +6,7 @@ gets the agent's instructions and its memory view in the system prompt, the memo
 call, and compaction answered from memory with no model call; each turn is recorded into the agent's memory.
 
 Tested with OpenCode 2.0.30 (`opencode --version` says `opencode v2.0.30`). Orrery's tests against the installed
-OpenCode also pass with 2.3.0.
+OpenCode also pass with 2.3.0 and 2.4.1.
 
 ## Install
 
