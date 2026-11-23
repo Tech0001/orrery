@@ -135,6 +135,10 @@ describe("the guard on Antigravity's tool calls", () => {
 		expect(orreryMemoryTool("call_mcp_tool", { ServerName: "orrery", ToolName: "search" })).toBe(true);
 		expect(orreryMemoryTool("call_mcp_tool", { ServerName: "other" })).toBe(false);
 		expect(orreryMemoryTool("mcp_other_zoom", {})).toBe(false);
+		// Only the server's own tools: another server named orrery_<something> has tools mcp_orrery_<something>_<tool>.
+		expect(orreryMemoryTool("mcp_orrery_evil_run", {})).toBe(false);
+		expect(orreryMemoryTool("mcp_orrery_zoom_x", {})).toBe(false);
+		expect(orreryMemoryTool("mcp_orrery_", {})).toBe(false);
 	});
 
 	it("always answers with a decision, and denies a call it can't read", () => {

@@ -149,24 +149,33 @@ function isOurs(part: AgyPart, present: unknown, orrery: string): boolean {
 /**
  * Whether the `orrery` MCP server agy runs is this Orrery's own, for the Orrery at `root` (the guard approves its memory
  * tools only then: a server of another's under that name would run with Orrery's approval): Antigravity's global
- * mcp_config.json under `home` holds Orrery's entry for root's command (either install shape), and no workspace of the
- * conversation (`workspaces`) has an `orrery` server of its own in its .agents/mcp_config.json. Anything that can't be
- * read counts as not.
+ * mcp_config.json under `home` holds Orrery's entry for root's command (either install shape), and no other server,
+ * there or in a workspace of the conversation's (`workspaces`, its .agents/mcp_config.json), has a name starting
+ * "orrery" in any case: agy names a tool mcp_<server>_<tool>, so a server "orrery_agent" with a tool "memory" would be
+ * called as Orrery's mcp_orrery_agent_memory. Anything that can't be read counts as not.
  */
 export function agyServerIsOurs(home: string, root: string, workspaces: readonly string[]): boolean {
-	const serverIn = (path: string): unknown => {
+	const serversIn = (path: string): Json | undefined => {
 		const text = readText(path);
-		if (text === undefined) return "unreadable";
+		if (text === undefined) return undefined;
 		try {
-			return PLACE.mcp.get(parseObject(text, path));
+			const json = parseObject(text, path);
+			if (json.mcpServers === undefined) return {};
+			return isObject(json.mcpServers) ? json.mcpServers : undefined;
 		} catch {
-			return "unreadable";
+			return undefined;
 		}
 	};
-	const global = serverIn(agyFiles({ HOME: home }).mcp);
+	const orreryNamed = (servers: Json) => Object.keys(servers).filter((name) => name.toLowerCase().startsWith("orrery"));
+	const global = serversIn(agyFiles({ HOME: home }).mcp);
+	if (global === undefined) return false;
 	const commands = ENTRY_TAILS.cli.map((tail) => join(root, tail));
-	if (!commands.some((orrery) => isOurs("mcp", global, orrery))) return false;
-	return workspaces.every((workspace) => serverIn(join(workspace, ".agents", "mcp_config.json")) === undefined);
+	if (!commands.some((orrery) => isOurs("mcp", global.orrery, orrery))) return false;
+	if (orreryNamed(global).some((name) => name !== "orrery")) return false;
+	return workspaces.every((workspace) => {
+		const servers = serversIn(join(workspace, ".agents", "mcp_config.json"));
+		return servers !== undefined && orreryNamed(servers).length === 0;
+	});
 }
 
 /** The file's text with Orrery's `part` added where it has none: `added`, or `kept` when one is there that isn't Orrery's. */
