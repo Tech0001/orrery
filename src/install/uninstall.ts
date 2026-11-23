@@ -14,6 +14,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { realTarget } from "../agent/guard-paths.ts";
 import { orreryHome, passwordHome } from "../agent/home.ts";
 import { findOnPath, ompExtensionFile, orreryPlugin, piExtensionFile, rewriteKeepingCopy, type RunResult, type Runner } from "../agent/tools.ts";
+import { agyFiles, removeAgyEntry } from "../antigravity/install.ts";
 import { grokFiles, grokHookTarget, removeGrokConfig } from "../grok/install.ts";
 import { keepInStep, type StepKeys } from "../grok/settings.ts";
 import { appPrograms, grokConfigKeys, grokHookKeys, orreryPluginEntries, settingsDataDir } from "../grok/settings-keys.ts";
@@ -200,6 +201,53 @@ export function unwireGrok(env: NodeJS.ProcessEnv, app: string, dataDir?: string
 		}
 	}
 	for (const name of kept) report.lines.push(`Grok: left [${name}] in ${config} as it is (not as Orrery wrote it for this install)`);
+	return report;
+}
+
+/**
+ * Removes Orrery's Antigravity wiring of this home's app/ (src/antigravity/install.ts): its `orrery` hooks entry, its
+ * `orrery` MCP server and its status line, each only while it reads as Orrery wrote it for app/current's command (either
+ * install shape), after a copy of the file; everything else in each file stays. Uninstall runs it, and so do setup and
+ * update when app/current is a version without Antigravity's hooks (an older Orrery answers the guard with an error,
+ * which agy takes as a refusal of every tool call). Its lines start with "Antigravity: ".
+ */
+export function unwireAgy(env: NodeJS.ProcessEnv, app: string): { lines: string[]; ok: boolean; changed: boolean } {
+	const report: Report & { changed: boolean } = { lines: [], ok: true, changed: false };
+	const files = agyFiles(env);
+	const commands = ENTRY_TAILS.cli.map((tail) => join(app, "current", tail));
+	for (const [part, path, what] of [["hooks", files.hooks, "Orrery's hooks"], ["mcp", files.mcp, "Orrery's memory tools"], ["status", files.settings, "Orrery's status line"]] as const) {
+		let before: string;
+		try {
+			before = readFileSync(path, "utf8");
+		} catch (error) {
+			if (code(error) === "ENOENT") continue;
+			report.lines.push(`Antigravity: could not read ${path}: ${errorText(error)}`);
+			report.ok = false;
+			continue;
+		}
+		let next = before;
+		let removed = false;
+		try {
+			for (const orrery of commands) {
+				const pass = removeAgyEntry(part, next, orrery, path);
+				next = pass.next;
+				removed ||= pass.removed;
+			}
+		} catch (error) {
+			report.lines.push(`Antigravity: left ${path} as it is (${errorText(error)})`);
+			report.ok = false;
+			continue;
+		}
+		if (!removed) continue;
+		try {
+			const copy = rewriteKeepingCopy(path, next);
+			report.lines.push(`Antigravity: removed ${what} from ${path} (its copy from before: ${copy})`);
+			report.changed = true;
+		} catch (error) {
+			report.lines.push(`Antigravity: could not change ${path}: ${errorText(error)}`);
+			report.ok = false;
+		}
+	}
 	return report;
 }
 
@@ -463,6 +511,9 @@ export async function uninstall(options: { env: NodeJS.ProcessEnv; purge: boolea
 		const grok = unwireGrok(env, app, options.dataDir);
 		report.lines.push(...grok.lines);
 		if (!grok.ok) report.ok = false;
+		const agy = unwireAgy(env, app);
+		report.lines.push(...agy.lines);
+		if (!agy.ok) report.ok = false;
 		unwireBackup(report, env, userHome, app, run);
 		unlinkCommand(report, userHome, app);
 		keep(appPrograms(env), () => removeApp(report, app, release));

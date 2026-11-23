@@ -19,10 +19,10 @@ import { processAlive } from "./process.ts";
 import { readStatus } from "./status-file.ts";
 
 /** The tool whose session a holder records. */
-export type HolderHost = "claude-code" | "codex" | "grok";
+export type HolderHost = "claude-code" | "codex" | "grok" | "antigravity";
 
 /** A host's name as said to a person. */
-export const HOST_LABELS: Record<HolderHost, string> = { "claude-code": "Claude Code", codex: "Codex", grok: "Grok" };
+export const HOST_LABELS: Record<HolderHost, string> = { "claude-code": "Claude Code", codex: "Codex", grok: "Grok", antigravity: "Antigravity" };
 
 /** holder.json: who records the agent, for which session and host process, and whether it only finishes. */
 export interface HolderState {
@@ -30,8 +30,8 @@ export interface HolderState {
 	readonly session: string;
 	/** The host's process: Claude Code's, Codex's or Grok's (the name is older than Codex, and kept for files already written). */
 	readonly claudePid: number;
-	/** "codex" or "grok" for a Codex or Grok session's holder; absent for Claude Code's, as in every holder.json before Codex. */
-	readonly host?: "codex" | "grok";
+	/** "codex", "grok" or "antigravity" for those tools' holders; absent for Claude Code's, as in every holder.json before Codex. */
+	readonly host?: "codex" | "grok" | "antigravity";
 	readonly state: "recording" | "finishing";
 	readonly startedAt: number;
 	readonly updatedAt: number;
@@ -76,7 +76,7 @@ export function readHolder(agentDir: string): HolderState | undefined {
 
 /** The tool whose session `holder` records: the one its holder.json names, else Claude Code. */
 export function holderHost(holder: Pick<HolderState, "host">): HolderHost {
-	return holder.host === "codex" || holder.host === "grok" ? holder.host : "claude-code";
+	return holder.host === "codex" || holder.host === "grok" || holder.host === "antigravity" ? holder.host : "claude-code";
 }
 
 /** Whether `holder` beat within FRESH_MS, so it still runs. */

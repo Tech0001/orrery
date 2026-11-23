@@ -2,6 +2,7 @@
 
 import { homedir } from "node:os";
 import { posix } from "node:path";
+import { AGY_COMMAND, AGY_COMMAND_PLAIN, AGY_READ_ONLY, AGY_READ_ONLY_PLAIN, agyKeeps, agyNamed, type AgyRule, agyRule } from "../antigravity/guard-rules.ts";
 import { GROK_CLI_REFUSED, GROK_CLIMB, GROK_COMMAND, GROK_COMMAND_PLAIN, GROK_READ_ONLY, GROK_READ_ONLY_PLAIN, GROK_REACH, grokClimbsFrom, grokCommandOf, grokFolders, type GrokRule, grokLoads, grokNamed, grokNamedFrom, grokReaches, grokRule, grokSpeltFrom } from "../grok/guard-rules.ts";
 import { AGENT_REFUSED, APP_READ_ONLY, APP_READ_ONLY_PLAIN, CONFIG_READ_ONLY, CONFIG_READ_ONLY_PLAIN, configSpellings, flagged, type GuardOptions, namesFolder, newTextIn, OPENCODE_COMMAND, OPENCODE_NAMED, OPENCODE_READ_ONLY, openCodeLoads, openCodeRule, openCodeSkillRefusal, ORRERY_COMMAND_REFUSED, ORRERY_COMMAND_REFUSED_PLAIN, orreryAppNamed, orreryCommandIn, orreryConfigNamed, pathProtected, PLAIN_REFUSED, PLUMBING_REFUSED, PROTECTED_BY, PROTECTED_FILE, protectedIn, type Protection, protection, readings, runsPlumbing, secretIn, secretPath, sensitive, SKILL_SHELL, SKILLS_NAMED, type SkillShellRead, skillShellRead, TRANSCRIPT_COMMAND, TRANSCRIPT_COMMAND_PLAIN, TRANSCRIPT_READ_ONLY, TRANSCRIPT_READ_ONLY_PLAIN, transcriptPath, transcriptRule, transcriptsNamed, type ViewRules, viewRules, within, writtenOutRead } from "./guard-rules.ts";
 
@@ -13,6 +14,8 @@ export interface CallOptions extends GuardOptions {
 	 * process's environment and the guard's home.
 	 */
 	readonly grok?: GrokRule;
+	/** Antigravity's own files (src/antigravity/guard-rules.ts), kept in every session; default: from the guard's home. */
+	readonly antigravity?: AgyRule;
 	/**
 	 * How the gate judges a plain shell read's paths (guard-rules.ts writtenOutRead), the layer every gate's shell goes
 	 * through (src/agent/guard-paths.ts pathJudge): each as a read (ls: a listing), placed as the shell places it, links
@@ -42,6 +45,8 @@ export function checkToolCall(
 	const transcripts = () => (records ??= transcriptRule(grokFolders, process.env, (options as { readonly home?: string }).home ?? homedir()));
 	let folder = options.grok;
 	const grok = () => (folder ??= grokRule(process.env, (options as { readonly home?: string }).home ?? homedir()));
+	let agyFiles = options.antigravity;
+	const agy = () => (agyFiles ??= agyRule((options as { readonly home?: string }).home ?? homedir()));
 	const command = call.arguments.command;
 	if (call.name === "bash" && typeof command === "string") {
 		// Shell text's readings, made once: sensitive by flagged's rules for shell text and the built-in home secrets spelt
@@ -78,6 +83,7 @@ export function checkToolCall(
 			const reason = judgeRead(read);
 			if (reason !== undefined) return reason;
 		}
+		if (inReading(agyNamed)) return agent ? AGY_COMMAND : AGY_COMMAND_PLAIN;
 		if (inReading((form) => grokNamed(form, grok()))) return agent ? GROK_COMMAND : GROK_COMMAND_PLAIN;
 		if (inReading((form) => grokReaches(form, grok()))) return GROK_REACH;
 		const cwd = options.cwd;
@@ -99,6 +105,7 @@ export function checkToolCall(
 	if (writes && (orreryConfigNamed(path) || config.includes(path.toLowerCase()))) return agent ? CONFIG_READ_ONLY(path) : CONFIG_READ_ONLY_PLAIN(path);
 	if (writes && orreryAppNamed(path)) return agent ? APP_READ_ONLY(path) : APP_READ_ONLY_PLAIN(path);
 	if (writes && grokLoads(path, grok())) return agent ? GROK_READ_ONLY(path) : GROK_READ_ONLY_PLAIN(path);
+	if (writes && agyKeeps(path, agy())) return agent ? AGY_READ_ONLY(path) : AGY_READ_ONLY_PLAIN(path);
 	// A session that is no agent's: its writes go anywhere but those, and the session records.
 	if (!agent) return writes && transcriptPath(path, transcripts()) ? TRANSCRIPT_READ_ONLY_PLAIN(path) : undefined;
 	if (writes && openCodeLoads(path, openCode())) return OPENCODE_READ_ONLY(path);

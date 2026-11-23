@@ -236,6 +236,15 @@ async function updateCommand(values: { check?: boolean; version?: string; yes?: 
 		if (unwired.changed || !unwired.ok) for (const line of unwired.lines) process.stdout.write(`${line}\n`);
 		if (!unwired.ok) status = status === 0 ? 1 : status;
 	}
+	// So does its Antigravity wiring: an older release fails Antigravity's guard hook, which agy takes as a refusal of
+	// every tool call (src/antigravity/install.ts).
+	const { agySupported } = await import("../antigravity/install.ts");
+	if (!agySupported(installedVersion(process.env))) {
+		const [{ unwireAgy }, { orreryHome }] = await Promise.all([import("../install/uninstall.ts"), import("../agent/home.ts")]);
+		const unwired = unwireAgy(process.env, join(orreryHome(process.env), "app"));
+		if (unwired.changed || !unwired.ok) for (const line of unwired.lines) process.stdout.write(`${line}\n`);
+		if (!unwired.ok) status = status === 0 ? 1 : status;
+	}
 	const live = [...agentVersions(process.env).versions].filter(([v]) => v !== target);
 	if (live.length > 0) process.stdout.write(`These agents keep their version until they restart: ${live.map(([v, agents]) => `${agents.join(", ")} (${v})`).join("; ")}\n`);
 	if (!compiled) process.stdout.write("This Orrery runs from a checkout; the installed copy was updated, the checkout was not.\n");
@@ -313,7 +322,7 @@ async function agentCommand(args: string[], values: Record<string, string | bool
 		const agent = required(name, "agent name");
 		const summary = required(values.summary as string | undefined, "--summary provider/id");
 		const thinking = (values.thinking as string | undefined) ?? "low";
-		const tool = required(values.tool as string | undefined, "--tool pi|omp|claude-code|codex|opencode|grok");
+		const tool = required(values.tool as string | undefined, "--tool pi|omp|claude-code|codex|opencode|grok|antigravity");
 		const folder = fullPath(required(values.folder as string | undefined, "--folder DIR"));
 		const reads = values.reads === undefined ? undefined : parseReads(values.reads as string, known(), agent);
 		editConfigOnce(file, (text, dir) => addAgent(text, dir, { name: agent, folder, tool: tool as never, compactorModel: summary, compactorThinking: thinking as never, ...(reads === undefined ? {} : { reads }) }));
@@ -542,6 +551,9 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 	if (command === "claude-hook") return claudeHook(arg, values.config);
 	if (command === "codex-hook") return codexHook(arg, values.config);
 	if (command === "grok-hook") return grokHook(arg, values.config);
+	if (command === "agy-hook") return agyHook(arg, values.config);
+	// Antigravity's status row: as Grok's, it decides and writes nothing.
+	if (command === "agy-status") return agyStatusCommand(values.config);
 	// Grok's status row runs several times a second during a turn, and decides and writes nothing: as a hook event, the
 	// claim its Grok already holds names its agent.
 	if (command === "grok-status") return grokStatusCommand(values.config);
@@ -808,10 +820,10 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 		}
 		case "holder": {
 			// The host's process: --claude-pid, Claude Code's (as always); or --host-pid, with --tool codex for Codex's, or
-			// --tool grok for Grok's.
+			// --tool grok for Grok's, or --tool antigravity for agy's.
 			if (values["claude-pid"] !== undefined && values["host-pid"] !== undefined) throw new UsageError("holder takes --claude-pid or --host-pid, not both.");
 			const host = values.tool ?? "claude-code";
-			if (host !== "claude-code" && host !== "codex" && host !== "grok") throw new UsageError(`holder: --tool takes claude-code, codex or grok (not ${host}).`);
+			if (host !== "claude-code" && host !== "codex" && host !== "grok" && host !== "antigravity") throw new UsageError(`holder: --tool takes claude-code, codex, grok or antigravity (not ${host}).`);
 			if (host !== "claude-code" && values["host-pid"] === undefined) throw new UsageError(`holder --tool ${host} needs --host-pid PID.`);
 			const hostPid = Number(values["host-pid"] ?? values["claude-pid"]);
 			if (!Number.isInteger(hostPid) || hostPid < 1) throw new UsageError("holder needs --claude-pid PID (or --host-pid PID).");
@@ -895,7 +907,7 @@ const denyToolCall = (reason: string) =>
  * with none it picks nothing, so it decides nothing for its parent either.
  */
 async function mcpServer(configPath: string | undefined, tool: string | undefined, gated: Gated): Promise<number> {
-	if (tool !== undefined && tool !== "claude-code" && tool !== "codex" && tool !== "grok") throw new UsageError(`mcp: --tool takes claude-code, codex or grok (not ${tool}).`);
+	if (tool !== undefined && tool !== "claude-code" && tool !== "codex" && tool !== "grok" && tool !== "antigravity") throw new UsageError(`mcp: --tool takes claude-code, codex, grok or antigravity (not ${tool}).`);
 	const { agentTools, runMcp } = await import("../claude/mcp.ts");
 	let tools: ReaderTool[] = [];
 	const { inside, hostAgent } = gated;
@@ -903,7 +915,19 @@ async function mcpServer(configPath: string | undefined, tool: string | undefine
 	if (gated.notice !== undefined) process.stderr.write(`${gated.notice}\n`);
 	const config = hostAgent === null ? undefined : gatedConfig(gated, configPath, "orrery mcp");
 	const ours = (agent: AgentConfig) => (inside === undefined || agent.name === inside.agent) && (hostAgent === undefined || agent.name === hostAgent);
-	if (config !== undefined && (tool === "codex" || tool === "grok")) {
+	if (config !== undefined && tool === "antigravity") {
+		// Antigravity's (src/antigravity/install.ts names it in its global mcp_config.json, for every session): whose it is
+		// comes from the agy process's own start environment, as its hooks take it (src/antigravity/hooks.ts). A plain agy
+		// (no ORRERY_AGENT there), or one whose start environment can't be read, gets no tools and decides nothing.
+		const [{ antigravityAgent, LAUNCH_VARIABLES, launchedEnv, startEnvOf }, { agyPid }, { AGENT_ENV }] = await Promise.all([import("../codex/pick.ts"), import("../antigravity/host.ts"), import("../agent/pick.ts")]);
+		const pid = agyPid();
+		const launched = pid === undefined ? undefined : launchedEnv("antigravity", process.env, startEnvOf(pid, LAUNCH_VARIABLES));
+		if (launched !== undefined && "refused" in launched) process.stderr.write(`orrery: mcp serves no agent here: ${launched.refused}.\n`);
+		else if (pid !== undefined && launched !== undefined && (launched.env[AGENT_ENV]?.trim() ?? "") !== "") {
+			const pick = antigravityAgent(config, { parent: process.ppid, takeover: true, env: launched.env, pid });
+			if (pick.kind === "agent" && ours(pick.agent)) tools = agentTools(config, pick.agent);
+		}
+	} else if (config !== undefined && (tool === "codex" || tool === "grok")) {
 		const [{ codexAgent, grokAgent, LAUNCH_VARIABLES, launchedEnv, startEnvOf }, { codexPid }, { grokPid }, { AGENT_ENV }] = await Promise.all([
 			import("../codex/pick.ts"),
 			import("../codex/host.ts"),
@@ -1222,6 +1246,121 @@ async function grokStatusCommand(configPath: string | undefined): Promise<number
 		// A shell with no parent of its own ran it, so no Grok did (src/grok/host.ts): no row.
 		if (pid === undefined) return 0;
 		const line = grokStatus(stdin, { config, env: process.env, grokPid: pid, grokParent: process.ppid });
+		if (line !== "") process.stdout.write(`${line}\n`);
+	} catch {
+		// No row.
+	}
+	return 0;
+}
+
+/** agy's answer to a hook Orrery has nothing for: PreInvocation's empty one, Stop's that lets it stop. */
+const agyIdle = (event: string | undefined) => (event === "stop" ? JSON.stringify({ decision: "stop" }) : "{}");
+
+/** The variables of agy's start environment the hooks read: whose session it is, the Orrery config, and its HOME. */
+const AGY_START_VARIABLES: readonly string[] = ["ORRERY_AGENT", "ORRERY_AGENT_TOKEN", "ORRERY_CONFIG", "ORRERY_HOME", "HOME"];
+
+/**
+ * `orrery agy-hook pre-tool-use`, the guard (src/antigravity/guard.ts), in every agy session: it always prints agy's
+ * decision (agy lets a call through on an empty answer, and blocks one on a failure or a timeout). Without any config
+ * (none named, none at the default paths) there is no Orrery data to keep: every call is allowed. A config that is there
+ * but can't be read, and any error, deny.
+ */
+async function agyGuardHook(configPath: string | undefined): Promise<number> {
+	const deny = (reason: string) => {
+		process.stdout.write(JSON.stringify({ decision: "deny", reason: `Orrery guard: ${reason.replace(/\s*[\r\n]+\s*/g, " ").replace(/\.+$/, "")}; nothing was run` }));
+		return 0;
+	};
+	try {
+		const [guard, { TOOL_INPUT_MAX }] = await Promise.all([import("../antigravity/guard.ts"), import("../claude/hooks.ts")]);
+		const stdin = await readStdin(TOOL_INPUT_MAX);
+		let config: HarnessConfig;
+		try {
+			config = loadConfig(configPath);
+		} catch (error) {
+			if (absentConfig(error, configPath)) {
+				process.stdout.write(JSON.stringify({ decision: "allow" }));
+				return 0;
+			}
+			return deny(`Orrery's config could not be read (${errorText(error)}), so no call can be checked. Fix the config file`);
+		}
+		const { agyPid } = await import("../antigravity/host.ts");
+		const pid = agyPid();
+		if (pid === undefined) return deny("this hook was run by no Antigravity (the shell that ran it has no parent)");
+		const configFile = resolvePath(configPath ?? defaultConfigPath());
+		process.stdout.write(guard.runAgyGuard(stdin, { config, env: process.env, agyPid: pid, agyParent: process.ppid, configFile }));
+		return 0;
+	} catch (error) {
+		return deny(`this call could not be checked (${errorText(error)})`);
+	}
+}
+
+/**
+ * `orrery agy-hook <event>`: Orrery's hooks for the Antigravity CLI (src/antigravity/hooks.ts), global, so they run in
+ * every agy session. pre-tool-use is the guard (agyGuardHook). The others never fail the session: exit 0, only their JSON
+ * answer on stdout, an error in one stderr line, never with message contents. A plain agy (no ORRERY_AGENT) gets the idle
+ * answer at once. They run with the Orrery config the agy process was started with (src/grok/hooks.ts grokOwnConfig);
+ * one the hook would read otherwise is refused, and the hook does nothing.
+ */
+async function agyHook(event: string | undefined, configPath: string | undefined): Promise<number> {
+	if (event === "pre-tool-use") return agyGuardHook(configPath);
+	const idle = () => {
+		process.stdout.write(agyIdle(event));
+		return 0;
+	};
+	try {
+		const stdin = (await readStdin(Number.POSITIVE_INFINITY)) ?? "";
+		const { AGENT_ENV } = await import("../agent/pick.ts");
+		if ((process.env[AGENT_ENV]?.trim() ?? "") === "") return idle();
+		const [hooks, { agyPid }, { spawnHolder }, { startEnvRead, launchedEnv }, { processCwd }, { grokOwnConfig }] = await Promise.all([
+			import("../antigravity/hooks.ts"),
+			import("../antigravity/host.ts"),
+			import("../claude/hooks.ts"),
+			import("../codex/pick.ts"),
+			import("../agent/process.ts"),
+			import("../grok/hooks.ts"),
+		]);
+		const pid = agyPid();
+		if (pid === undefined) return idle();
+		const read = startEnvRead(pid, AGY_START_VARIABLES);
+		const started = read !== undefined && "env" in read ? read.env : undefined;
+		const launched = launchedEnv("antigravity", process.env, started);
+		if ("refused" in launched) {
+			process.stderr.write(`Orrery: ${event ?? "agy-hook"}: ${launched.refused}\n`);
+			return idle();
+		}
+		const own = grokOwnConfig(configPath, process.env, started, () => processCwd(pid), read !== undefined && "cut" in read ? read.cut : undefined, "Antigravity");
+		if ("refused" in own) {
+			process.stderr.write(`Orrery: ${event ?? "agy-hook"}: ${own.refused}\n`);
+			return idle();
+		}
+		const config = loadConfig(own.path);
+		const startHolder = (agent: AgentConfig, session: string, nonce: string, since: number) => spawnHolder(agent, session, nonce, pid, since, own.path, "antigravity");
+		process.stdout.write(await hooks.runAgyHook(event ?? "", stdin, { config, env: launched.env, home: started?.HOME, agyPid: pid, agyParent: process.ppid, startHolder, updateNotices: true }));
+		return 0;
+	} catch (error) {
+		process.stderr.write(`Orrery: ${event ?? "agy-hook"}: ${errorText(error)}\n`);
+		return idle();
+	}
+}
+
+/** The most of agy's status JSON read: a few kilobytes. */
+const AGY_STATUS_INPUT_MAX = 1024 * 1024;
+
+/**
+ * `orrery agy-status`: the Antigravity CLI's status row (src/antigravity/status.ts), which Orrery's install names in
+ * agy's settings. agy runs it with its status JSON on stdin; it prints one line, or nothing. Exit 0 and nothing on stderr,
+ * whatever happens. A plain agy's (no ORRERY_AGENT) reads no config at all.
+ */
+async function agyStatusCommand(configPath: string | undefined): Promise<number> {
+	try {
+		const stdin = (await readStdin(AGY_STATUS_INPUT_MAX)) ?? "";
+		const { AGENT_ENV } = await import("../agent/pick.ts");
+		if ((process.env[AGENT_ENV]?.trim() ?? "") === "") return 0;
+		const config = loadConfig(configPath);
+		const [{ agyStatus }, { agyPid }] = await Promise.all([import("../antigravity/status.ts"), import("../antigravity/host.ts")]);
+		const pid = agyPid();
+		if (pid === undefined) return 0;
+		const line = agyStatus(stdin, { config, env: process.env, agyPid: pid, agyParent: process.ppid });
 		if (line !== "") process.stdout.write(`${line}\n`);
 	} catch {
 		// No row.

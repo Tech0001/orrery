@@ -38,7 +38,7 @@ export interface AgentIo {
 }
 
 /** The tools an agent opens in. */
-const OPENED_IN: readonly AgentTool[] = ["pi", "omp", "claude-code", "codex", "opencode", "grok"];
+const OPENED_IN: readonly AgentTool[] = ["pi", "omp", "claude-code", "codex", "opencode", "grok", "antigravity"];
 
 export async function openAgentCommand(
 	configPath: string | undefined,
@@ -61,7 +61,7 @@ export async function openAgentCommand(
 	// A tool this version doesn't know (a typo, or a newer Orrery's): refused before anything runs, whatever --tool says.
 	const unknown = unknownToolRefusal(agent);
 	if (unknown !== undefined) throw new Error(unknown);
-	if (options.tool !== undefined && !OPENED_IN.includes(options.tool as AgentTool)) throw new Error(`--tool takes pi, omp, claude-code, codex, opencode or grok (not ${options.tool}).`);
+	if (options.tool !== undefined && !OPENED_IN.includes(options.tool as AgentTool)) throw new Error(`--tool takes pi, omp, claude-code, codex, opencode, grok or antigravity (not ${options.tool}).`);
 	const cache = deps.cache ?? new OverviewCache();
 	const row = agentOverview(config, { cache }).find((r) => r.name === agent.name);
 	if (row === undefined) throw new Error(`No agent named ${agent.name}.`);

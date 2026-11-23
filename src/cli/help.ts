@@ -22,7 +22,7 @@ const GROUPS: readonly Group[] = [
 	{
 		title: "Agents",
 		short: [
-			["agent <Name>", "open it in this folder (--tool pi|omp|claude-code|codex|opencode|grok)"],
+			["agent <Name>", "open it in this folder (--tool pi|omp|claude-code|codex|opencode|grok|antigravity)"],
 			["agent add <Name>", "add an agent"],
 			["agent edit <Name>", "edit its instructions"],
 			["agent set <Name> …", "change a setting"],
@@ -32,11 +32,11 @@ const GROUPS: readonly Group[] = [
 		],
 		detail: [
 			[
-				"agent <Name> [--tool pi|omp|claude-code|codex|opencode|grok] [--yes] [-- <tool arguments>]",
-				"open the agent here: its tool starts in this folder with its instructions and memory (--tool: another tool this time; --yes: answers its questions yes; what follows -- goes to the tool). Codex gets Orrery's hooks, memory tools and instructions on its command line, after a check that the hooks load in that Codex; OpenCode gets Orrery's plugin for this launch (opencode --standalone, nothing written to OpenCode's config), after a check that it loads in that OpenCode, and only a person at a terminal can start either without them; Grok gets the agent's memory and instructions as --rules (with --no-leader), and Orrery's hooks, status row and memory tools from Grok's own folder, which setup connects once (or the launch, after asking, when Orrery isn't connected there); before Grok starts, any change to Grok's settings since you approved them is asked about first, which only a person at a terminal answers (--yes doesn't; see grok-settings)",
+				"agent <Name> [--tool pi|omp|claude-code|codex|opencode|grok|antigravity] [--yes] [-- <tool arguments>]",
+				"open the agent here: its tool starts in this folder with its instructions and memory (--tool: another tool this time; --yes: answers its questions yes; what follows -- goes to the tool). Codex gets Orrery's hooks, memory tools and instructions on its command line, after a check that the hooks load in that Codex; OpenCode gets Orrery's plugin for this launch (opencode --standalone, nothing written to OpenCode's config), after a check that it loads in that OpenCode, and only a person at a terminal can start either without them; Grok gets the agent's memory and instructions as --rules (with --no-leader), and Orrery's hooks, status row and memory tools from Grok's own folder, which setup connects once (or the launch, after asking, when Orrery isn't connected there); before Grok starts, any change to Grok's settings since you approved them is asked about first, which only a person at a terminal answers (--yes doesn't; see grok-settings); the Antigravity CLI (agy) gets the agent's memory and instructions from Orrery's hooks, before its first model call and again after each compaction, and Orrery's hooks, status row and memory tools from Antigravity's own config, which setup connects once (or the launch, after asking); --remote-agent is refused",
 			],
 			[
-				"agent add <Name> --folder DIR --tool pi|omp|claude-code|codex|opencode|grok --summary provider/id [--thinking L] [--reads all|none|A,B]",
+				"agent add <Name> --folder DIR --tool pi|omp|claude-code|codex|opencode|grok|antigravity --summary provider/id [--thinking L] [--reads all|none|A,B]",
 				"add an agent to the config (the TUI's N); --thinking is the summary model's thinking level (default low); --reads: the other agents it may read through the memory tools (default none)",
 			],
 			["agent edit <Name>", "open the agent's instructions in $EDITOR (else nano, else vi); needs a terminal"],
@@ -165,6 +165,7 @@ const GROUPS: readonly Group[] = [
 			],
 			["holder <Name> --session ID --host-pid PID --tool codex [--nonce N] [--since MS]", "record a Codex session into the agent (Orrery's SessionStart hook in Codex starts it)"],
 			["holder <Name> --session ID --host-pid PID --tool grok [--nonce N] [--since MS]", "record a Grok Build session into the agent (Orrery's SessionStart hook in Grok starts it)"],
+			["holder <Name> --session ID --host-pid PID --tool antigravity [--nonce N] [--since MS]", "record an Antigravity CLI conversation into the agent (Orrery's PreInvocation hook in agy starts it)"],
 			[
 				"claude-mod view [--cwd DIR] [--session ID] [--agent NAME [--agent-token T]] [--wait-ms N [--spool-only]]",
 				"the Orrery mod's call: the session's agent's memory section as JSON (--agent: the ORRERY_AGENT Claude Code has; --wait-ms: up to 120000; --spool-only waits for the session's spool alone, not for summaries)",
@@ -176,6 +177,9 @@ const GROUPS: readonly Group[] = [
 			["codex-hook <event>", "a hook orrery agent gives Codex (session-start, user-prompt-submit, stop, session-end, pre-tool-use)"],
 			["grok-hook <event>", "a hook Orrery gives Grok Build (session-start, user-prompt-submit, pre-tool-use, stop, stop-cancelled, session-end)"],
 			["grok-status", "Grok Build's status row, which Orrery's install gives it: the session's agent, its message count and whether it is recorded, and when Grok's settings changed since you approved them (Grok's status JSON on stdin)"],
+			["mcp --tool antigravity", "the MCP server orrery install gives the Antigravity CLI: memory tools for ORRERY_AGENT's agent, with its token"],
+			["agy-hook <event>", "a hook Orrery gives the Antigravity CLI (pre-invocation, pre-tool-use, stop)"],
+			["agy-status", "the Antigravity CLI's status row, which Orrery's install gives it: the conversation's agent, its message count and whether it is recorded (agy's status JSON on stdin)"],
 		],
 	},
 ];

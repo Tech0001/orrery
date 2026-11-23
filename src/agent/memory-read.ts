@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore, MemoryView } from "../memory/index.ts";
 import type { AgentConfig } from "./config.ts";
-import { memorySection } from "./view-text.ts";
+import { type Host, memorySection } from "./view-text.ts";
 
 /** `use` on a read-only snapshot of the agent's memory, closed after; undefined when it has no memory yet. */
 function withSnapshot<T>(agent: AgentConfig, use: (store: MemoryStore) => T): T | undefined {
@@ -23,11 +23,11 @@ function withSnapshot<T>(agent: AgentConfig, use: (store: MemoryStore) => T): T 
 }
 
 /**
- * The agent's message count and, when `withSection`, its memory section (Codex's), read from a read-only snapshot; none
- * yet: {}.
+ * The agent's message count and, when `withSection`, its memory section (`host`'s: Codex's by default, or
+ * Antigravity's), read from a read-only snapshot; none yet: {}.
  */
-export function readMemory(agent: AgentConfig, withSection: boolean): { readonly messages?: number; readonly section?: string } {
-	return withSnapshot(agent, (store) => ({ messages: store.root.length, ...(withSection ? { section: memorySection(new MemoryView(store, agent.memory.viewBytes), "codex") } : {}) })) ?? {};
+export function readMemory(agent: AgentConfig, withSection: boolean, host: Host = "codex", options: { readonly readOnly?: boolean } = {}): { readonly messages?: number; readonly section?: string } {
+	return withSnapshot(agent, (store) => ({ messages: store.root.length, ...(withSection ? { section: memorySection(new MemoryView(store, agent.memory.viewBytes), host, options) } : {}) })) ?? {};
 }
 
 /** The agent's message count alone (MemoryStore.messageCount: no writer lock, nothing loaded); undefined when it has no memory yet. */

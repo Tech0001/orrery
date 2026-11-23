@@ -28,7 +28,12 @@
  *   own session turns read-only, with the reason its status row and its next SessionStart say (GROK_SHARED), for the
  *   rest of this holder's run; a holder that starts for it later (it reopened) records it again once that process is
  *   gone.
- * It logs lifecycle and errors only, never message contents; its lines name the host (Claude Code, Codex or Grok).
+ * - An Antigravity conversation (`--host-pid <pid> --tool antigravity`, the agy process) spools no words: its hooks
+ *   spool where its transcript is (`agy-log`) and a mark at each turn's end (`agy-turn`), and the holder records the
+ *   turns the transcript shows over, in its words (src/antigravity/transcript.ts): each typed prompt and its turn's last
+ *   reply. Once agy is gone its last turn counts as over. Its place in the transcript is kept in memory meta.
+ * It logs lifecycle and errors only, never message contents; its lines name the host (Claude Code, Codex, Grok or
+ * Antigravity).
  */
 
 import { appendFileSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -46,6 +51,7 @@ import { localIso, type NewMessage } from "../memory/index.ts";
 import { holdWriterLock } from "../memory/store.ts";
 import { remoteFooter, remoteOpenNotice } from "../remote/checkout.ts";
 import { RemoteError, type RemoteStatus, type LockState } from "../remote/types.ts";
+import { AgyTranscriptReader, agyTranscriptIn, parseAgyMark } from "../antigravity/transcript.ts";
 import { codexSessionOf } from "../codex/resume.ts";
 import { type CodexSaid, type CodexVerdict, parseRolloutMark, RolloutReader, rolloutIn } from "../codex/rollout.ts";
 import { GROK_SHARED, type GrokConfirmation, GrokLogReader, type GrokSaid, grokLogIn, parseGrokLogMark, sharedLogLives, sharedLogMark } from "../grok/log.ts";
@@ -60,6 +66,8 @@ export const transcriptKey = (session: string) => `claude.transcript.${session}`
 export const rolloutKey = (session: string) => `codex.rollout.${session}`;
 /** The meta key holding a Grok session's log place (src/grok/log.ts GrokLogMark). */
 export const grokLogKey = (session: string) => `grok.log.${session}`;
+/** The meta key holding an Antigravity conversation's transcript place (src/antigravity/transcript.ts AgyMark). */
+export const agyLogKey = (session: string) => `antigravity.transcript.${session}`;
 
 /** How long a prompt (or a Codex reply) may stay unconfirmed once its turn is over (default for HolderOptions.graceMs). */
 export const PROMPT_GRACE_MS = 30_000;
@@ -101,6 +109,7 @@ const READ_ONLY: Record<HolderHost, string> = {
 	"claude-code": "the agent is open elsewhere (pi, or a session of another Claude Code)",
 	codex: "the agent is open elsewhere (pi, Claude Code, or another Codex session)",
 	grok: "the agent is open elsewhere (pi, Claude Code, Codex, or another Grok session)",
+	antigravity: "the agent is open elsewhere (pi, Claude Code, Codex, Grok, or another Antigravity conversation)",
 };
 const YIELDED = "yielded the agent";
 
@@ -125,6 +134,10 @@ export class Holder {
 	readonly #rollouts = new Map<string, RolloutReader>();
 	/** Each Grok session's log, as read so far (loaded from memory meta when first needed). */
 	readonly #grokLogs = new Map<string, GrokLogReader>();
+	/** Each Antigravity conversation's transcript, as read so far (loaded from memory meta when first needed). */
+	readonly #agyReaders = new Map<string, AgyTranscriptReader>();
+	/** Whether its own Antigravity conversation's last turn was recorded once agy was gone. */
+	#agyFlushed = false;
 	/** When each held prompt's grace began (its turn was over), by event name. */
 	readonly #graceFrom = new Map<string, number>();
 	/** Whether the last look left a prompt (or a Codex reply) of its own session held. */
@@ -270,6 +283,8 @@ export class Holder {
 			this.#ended = true;
 			this.#log(`${this.session}: ${HOST_LABELS[this.#host]} (pid ${this.#claudePid}) is gone`);
 		}
+		// agy gone: its conversation's last turn is over, whether or not a Stop said so.
+		if (this.#ended) this.#attempt("recording the last turn", () => this.#agyFlush());
 		if (this.#ended && this.#state === "recording") {
 			this.#state = "finishing";
 			this.#finishingSince = now;
@@ -426,6 +441,16 @@ export class Holder {
 				meta[grokLogKey(event.session)] = sharedLogMark(parsed.claudePid, parsed.start);
 				if (event.session === this.session) this.#attempt("pausing the session", () => this.#pause(parsed.at));
 				this.#log(`${event.session}: another process (pid ${parsed.claudePid}) has this session open; its log confirms nothing more`);
+			} else if (parsed?.kind === "agy-log") {
+				const reader = this.#startAgyLog(event.session, parsed);
+				meta[agyLogKey(event.session)] = reader === undefined ? "{}" : JSON.stringify(reader.mark());
+			} else if (parsed?.kind === "agy-turn") {
+				// Antigravity's: the turns its transcript shows over, in its words (src/antigravity/transcript.ts).
+				const reader = this.#agyReader(event.session);
+				const said = reader?.read(parsed.over) ?? [];
+				if (!commandReply) for (const one of said) items.push({ kind: one.kind, text: one.text, date: localIso(new Date(one.at ?? parsed.at)) });
+				if (reader !== undefined) meta[agyLogKey(event.session)] = JSON.stringify(reader.mark());
+				else unconfirmed = "a turn of an Antigravity conversation whose transcript isn't known";
 			} else if (parsed?.kind === "reply" && this.#codexSession(event.session, parsed.claudePid)) {
 				// A Codex reply with no turn to check (spooled by an Orrery from before the rollout check), or a reply in this
 				// Grok holder's own session that isn't marked Grok's: never recorded. The log line names the tool's record.
@@ -447,7 +472,7 @@ export class Holder {
 				// A prompt starts a turn of the user's again: its reply is memory.
 				if (parsed.kind === "command") this.#afterCommand.add(event.session);
 				else this.#afterCommand.delete(event.session);
-			} else if (parsed.kind === "reply") {
+			} else if (parsed.kind === "reply" || (parsed.kind === "agy-turn" && items.length > 0)) {
 				this.#busy = false;
 				this.#afterCommand.delete(event.session);
 				if (this.agent.remote !== undefined) this.#savesPending += 1;
@@ -586,6 +611,44 @@ export class Holder {
 		const reader = new GrokLogReader({ path, home: event.home, offset: event.offset, ...(event.file === undefined ? {} : { file: event.file }), ...(before === undefined ? {} : { recorded: before }) });
 		this.#grokLogs.set(session, reader);
 		return reader;
+	}
+
+	/** An Antigravity conversation's transcript: as read so far, else where memory meta says the last holder left it, else none. */
+	#agyReader(session: string): AgyTranscriptReader | undefined {
+		const known = this.#agyReaders.get(session);
+		if (known !== undefined) return known;
+		const mark = parseAgyMark(this.agent.store.getMeta(agyLogKey(session)));
+		if (mark === undefined) return undefined;
+		const reader = new AgyTranscriptReader(mark);
+		this.#agyReaders.set(session, reader);
+		return reader;
+	}
+
+	/**
+	 * An Antigravity conversation's transcript, from its hook: read from the step it named (the prompt in progress), or
+	 * from where an earlier holder stopped when that is further on, so no turn is recorded twice. One that is not that
+	 * conversation's under Antigravity's folder is none: its turns are not recorded.
+	 */
+	#startAgyLog(session: string, event: Extract<SpoolEvent, { kind: "agy-log" }>): AgyTranscriptReader | undefined {
+		const before = this.#agyReader(session)?.mark();
+		this.#agyReaders.delete(session);
+		const path = agyTranscriptIn(event.path, event.folder, session);
+		if (path === undefined) return undefined;
+		const mark = before !== undefined && before.path === path && before.step >= event.step ? before : { path, step: event.step, byte: 0 };
+		const reader = new AgyTranscriptReader(mark);
+		this.#agyReaders.set(session, reader);
+		return reader;
+	}
+
+	/** Its own Antigravity conversation's last turn, once agy is gone (no Stop may come): recorded as over. */
+	#agyFlush(): void {
+		if (this.#host !== "antigravity" || this.#agyFlushed || this.#shared) return;
+		this.#agyFlushed = true;
+		const reader = this.#agyReader(this.session);
+		const said = reader?.read(true);
+		if (reader === undefined || said === undefined) return;
+		const items: NewMessage[] = said.map((one) => ({ kind: one.kind, text: one.text, date: localIso(new Date(one.at ?? Date.now())) }));
+		this.agent.view.appendBatch(items, { [agyLogKey(this.session)]: JSON.stringify(reader.mark()) });
 	}
 
 	/** A session's transcript: as read so far, else where memory meta says the last holder left it, else none. */

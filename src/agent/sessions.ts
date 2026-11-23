@@ -95,6 +95,7 @@
 
 import { lstatSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { isAgyProcess } from "../antigravity/names.ts";
 import { isGrokProcess } from "../grok/names.ts";
 import { namesOrreryPlugin } from "../install/layout.ts";
 import { readPluginOptions } from "../opencode/options.ts";
@@ -118,10 +119,10 @@ export { processStart };
 export const HOST_ENV = "ORRERY_HOST";
 
 /** The tool a session runs in: `run` is `orrery run`. */
-export type SessionTool = "pi" | "omp" | "claude-code" | "codex" | "opencode" | "grok" | "run";
+export type SessionTool = "pi" | "omp" | "claude-code" | "codex" | "opencode" | "grok" | "antigravity" | "run";
 
 /** Each tool as a notice (and the CLI's refusal, src/cli/gate.ts) names it. */
-export const TOOL_NAMES: Readonly<Record<SessionTool, string>> = { pi: "pi", omp: "OMP", "claude-code": "Claude Code", codex: "Codex", opencode: "OpenCode", grok: "Grok", run: "orrery run" };
+export const TOOL_NAMES: Readonly<Record<SessionTool, string>> = { pi: "pi", omp: "OMP", "claude-code": "Claude Code", codex: "Codex", opencode: "OpenCode", grok: "Grok", antigravity: "Antigravity", run: "orrery run" };
 /** Every SessionTool, for reading one from a record (here, and the Claude Code and Codex decisions). */
 export const SESSION_TOOLS: ReadonlySet<string> = new Set(Object.keys(TOOL_NAMES));
 
@@ -136,6 +137,8 @@ export interface SessionRecord {
 	readonly codexSession?: string;
 	/** A Grok session's id: the session its SessionStart took as this Grok's own (src/grok/hooks.ts). */
 	readonly grokSession?: string;
+	/** An Antigravity conversation's id: the conversation its hooks took as this agy's own (src/antigravity/hooks.ts). */
+	readonly antigravitySession?: string;
 	/** Linux: the pid namespace `pid` is numbered in ("pid:[4026531836]"). */
 	readonly ns?: string;
 	/** Linux: the boot's id. */
@@ -305,10 +308,10 @@ function walkTo(from: number, parentOf: (pid: number) => number | undefined): { 
  *   CLI takes the data folder's own (src/cli/gate.ts).
  */
 function recordOf(value: unknown, pid: number): { readonly record: SessionRecord; readonly doubtful: boolean } | undefined {
-	const { agent, tool, pid: own, start, codexSession, grokSession, ns, boot, config, configReal } = (value ?? {}) as Record<string, unknown>;
+	const { agent, tool, pid: own, start, codexSession, grokSession, antigravitySession, ns, boot, config, configReal } = (value ?? {}) as Record<string, unknown>;
 	if (typeof agent !== "string" || agent === "" || typeof tool !== "string" || !SESSION_TOOLS.has(tool) || own !== pid || typeof start !== "string" || start === "") return undefined;
 	const text = (field: unknown): field is string => typeof field === "string" && field !== "";
-	const doubtful = [codexSession, grokSession, ns, boot].some((field) => field !== undefined && !text(field));
+	const doubtful = [codexSession, grokSession, antigravitySession, ns, boot].some((field) => field !== undefined && !text(field));
 	const configured = text(config) && text(configReal) && isAbsolute(config) && isAbsolute(configReal);
 	const record: SessionRecord = {
 		agent,
@@ -317,6 +320,7 @@ function recordOf(value: unknown, pid: number): { readonly record: SessionRecord
 		start,
 		...(text(codexSession) ? { codexSession } : {}),
 		...(text(grokSession) ? { grokSession } : {}),
+		...(text(antigravitySession) ? { antigravitySession } : {}),
 		...(text(ns) ? { ns } : {}),
 		...(text(boot) ? { boot } : {}),
 		...(configured ? { config, configReal } : {}),
@@ -785,7 +789,7 @@ function launchToken(file: string, env: NodeJS.ProcessEnv): string | undefined {
 }
 
 /** The coding tools, by the exact names of their programs (module doc, Tool sessions). */
-export const CODING_TOOLS: ReadonlySet<string> = new Set(["claude", "codex", "opencode", "grok", "pi", "omp", "gemini", "qwen", "cursor-agent", "aider", "goose", "amp", "crush", "droid", "copilot"]);
+export const CODING_TOOLS: ReadonlySet<string> = new Set(["claude", "codex", "opencode", "grok", "agy", "pi", "omp", "gemini", "qwen", "cursor-agent", "aider", "goose", "amp", "crush", "droid", "copilot"]);
 
 /**
  * Each tool id (a CODING_TOOLS name, or a TOOL_MARKERS tool) as a refusal names it: "this is a Claude Code session …".
@@ -796,6 +800,7 @@ export const TOOL_SESSION_NAMES: Readonly<Partial<Record<string, string>>> = {
 	codex: "Codex",
 	opencode: "OpenCode",
 	grok: "Grok",
+	agy: "Antigravity",
 	pi: "pi",
 	omp: "OMP",
 	gemini: "Gemini",
@@ -984,8 +989,8 @@ const SCRIPT_SUFFIX = /\.(?:exe|js|mjs|cjs|py)$/;
 /** `path`'s file name without `suffix`. */
 const programOf = (path: string, suffix: RegExp = PROGRAM_SUFFIX): string => basename(path).replace(suffix, "");
 
-/** The coding tool a program name is (CODING_TOOLS, and Grok's names: isGrokProcess), or undefined. */
-const codingTool = (program: string): string | undefined => (isGrokProcess(program) ? "grok" : CODING_TOOLS.has(program) ? program : undefined);
+/** The coding tool a program name is (CODING_TOOLS, and Grok's and Antigravity's names), or undefined. */
+const codingTool = (program: string): string | undefined => (isGrokProcess(program) ? "grok" : isAgyProcess(program) ? "agy" : CODING_TOOLS.has(program) ? program : undefined);
 
 /** A coding tool's session that a process was started from (toolSession). */
 export interface ToolSession {
@@ -1227,6 +1232,14 @@ export function grokSessionHosts(dataDirs: readonly string[], session: string, e
 	return hostRecords(dataDirs, "grokSession", deps, session, except).map(hostOnly);
 }
 
+/**
+ * What may host Antigravity conversation `session` besides `except` (the asker), read as grokSessionHosts reads Grok's:
+ * an agy's hooks take no conversation another process hosts (src/antigravity/hooks.ts).
+ */
+export function antigravitySessionHosts(dataDirs: readonly string[], session: string, except: number, deps: SessionDeps = {}): SessionHost[] {
+	return hostRecords(dataDirs, "antigravitySession", deps, session, except).map(hostOnly);
+}
+
 /** A host as hostRecords found it, without the session it names (the one asked about). */
 const hostOnly = ({ session: _session, ...host }: SessionHost & { readonly session?: string }): SessionHost => host;
 
@@ -1235,7 +1248,7 @@ const hostOnly = ({ session: _session, ...host }: SessionHost & { readonly sessi
  * can't be read may, as may one that holds no JSON object, or whose `field` can't be read as an id; one whose `field` is
  * another session's id, or that has none (another tool's record), doesn't.
  */
-function mayName(read: ReturnType<typeof readRecord>, field: "codexSession" | "grokSession", only: string): boolean {
+function mayName(read: ReturnType<typeof readRecord>, field: "codexSession" | "grokSession" | "antigravitySession", only: string): boolean {
 	if (read === "none") return false;
 	if (read === "unreadable") return true;
 	const json = read.json;
@@ -1258,7 +1271,7 @@ function mayName(read: ReturnType<typeof readRecord>, field: "codexSession" | "g
  * namespace it is numbered in (module doc): a record made in another under `except`'s number (a program in a pid
  * namespace of its own, numbered there as a real host is here) is another process's, and counts as any other does.
  */
-function hostRecords(dataDirs: readonly string[], field: "codexSession" | "grokSession", deps: SessionDeps, only?: string, except?: number): (SessionHost & { readonly session?: string })[] {
+function hostRecords(dataDirs: readonly string[], field: "codexSession" | "grokSession" | "antigravitySession", deps: SessionDeps, only?: string, except?: number): (SessionHost & { readonly session?: string })[] {
 	const found: (SessionHost & { readonly session?: string })[] = [];
 	const linux = onLinux(deps);
 	// This process's pid namespace, read once, and only when `except`'s record is there.

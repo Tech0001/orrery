@@ -304,7 +304,7 @@ const PATH_VARIABLES: readonly string[] = ["ORRERY_CONFIG", "ORRERY_HOME", ...GR
  * Why a hook can't confirm Grok's config or folder when the path in its start environment's `name` holds a space: macOS's
  * ps shows that environment as words split at spaces, so where such a value ends can't be told (src/agent/process.ts).
  */
-const spacedPath = (name: string): string => `Grok's ${name} has a space in it, and on macOS Orrery can't confirm a config or home path with one: use a path without spaces`;
+const spacedPath = (name: string, label = "Grok"): string => `${label}'s ${name} has a space in it, and on macOS Orrery can't confirm a config or home path with one: use a path without spaces`;
 
 /**
  * The Orrery config of the grok process, which its host record and holder take (module doc): the one its start
@@ -313,25 +313,26 @@ const spacedPath = (name: string): string => `Grok's ${name} has a space in it, 
  * environment can't be read, or says too little, or the config the hook itself would load (its --config `given`, else
  * its own ORRERY_CONFIG, Orrery home or default, from `env`) is another file. `cwd` is asked only for a relative
  * ORRERY_CONFIG: on macOS it runs lsof. `cut`, with `started` undefined: the variable of it whose value a space cut
- * (src/codex/pick.ts startEnvRead), which is said when it holds a path.
+ * (src/codex/pick.ts startEnvRead), which is said when it holds a path. `label`: the tool as said (Antigravity's hooks
+ * take the same rule for the agy process).
  */
-export function grokOwnConfig(given: string | undefined, env: NodeJS.ProcessEnv, started: Readonly<Record<string, string>> | undefined, cwd: () => string | undefined, cut?: string): { readonly path: string } | { readonly refused: string } {
-	if (started === undefined) return { refused: cut !== undefined && PATH_VARIABLES.includes(cut) ? spacedPath(cut) : "the environment this Grok was started with can't be read" };
+export function grokOwnConfig(given: string | undefined, env: NodeJS.ProcessEnv, started: Readonly<Record<string, string>> | undefined, cwd: () => string | undefined, cut?: string, label = "Grok"): { readonly path: string } | { readonly refused: string } {
+	if (started === undefined) return { refused: cut !== undefined && PATH_VARIABLES.includes(cut) ? spacedPath(cut, label) : `the environment this ${label} was started with can't be read` };
 	let own: string;
 	const set = started.ORRERY_CONFIG;
 	if (set) {
 		if (isAbsolute(set)) own = set;
 		else {
 			const folder = cwd();
-			if (folder === undefined) return { refused: "the folder Grok runs in can't be read" };
+			if (folder === undefined) return { refused: `the folder ${label} runs in can't be read` };
 			own = resolve(folder, set);
 		}
 	} else {
-		if (!started.HOME) return { refused: "Grok's environment names no HOME" };
+		if (!started.HOME) return { refused: `${label}'s environment names no HOME` };
 		try {
 			own = defaultConfigPath({ HOME: started.HOME, ...(started.ORRERY_HOME === undefined ? {} : { ORRERY_HOME: started.ORRERY_HOME }) });
 		} catch {
-			return { refused: "Grok's ORRERY_HOME is no absolute path" };
+			return { refused: `${label}'s ORRERY_HOME is no absolute path` };
 		}
 	}
 	let would: string;
@@ -340,7 +341,7 @@ export function grokOwnConfig(given: string | undefined, env: NodeJS.ProcessEnv,
 	} catch {
 		return { refused: "this hook's ORRERY_HOME is no absolute path" };
 	}
-	if (fileOf(would) !== fileOf(own)) return { refused: "this hook would read another Orrery config than the one this Grok was started with" };
+	if (fileOf(would) !== fileOf(own)) return { refused: `this hook would read another Orrery config than the one this ${label} was started with` };
 	return { path: own };
 }
 
