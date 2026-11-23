@@ -518,6 +518,12 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Or
 			const code = `return await tools.opencode.session.move({ directory: ${JSON.stringify(`${world.base}/va`)} + "ult" })`;
 			expect(await toolResult("execute", { code })).toMatch(REFUSED);
 			expect(readdirSync(vault)).toEqual(["secret.txt"]);
+			// Another session moved by a relative folder, which OpenCode places from that session's own: the guard knows the
+			// move tool by the name OpenCode hands it, as a tool and from Code Mode.
+			const OTHER = /Orrery guard: .*another session/;
+			const other = { sessionID: "ses_other", directory: "elsewhere" };
+			expect(await toolResult("opencode_session_move", other)).toMatch(OTHER);
+			expect(await toolResult("execute", { code: `return await tools.opencode.session.move(${JSON.stringify(other)})` })).toMatch(OTHER);
 			// OpenCode's config and plugins, in the session's own folder too: OpenCode would load them into its server.
 			const CONFIG = /Orrery guard: .*OpenCode's config or code/;
 			expect(await toolResult("write", { path: "opencode.json", content: "{}" })).toMatch(CONFIG);
