@@ -97,6 +97,15 @@ export function fakeOpenCode(bin: string, options: { readonly mode?: FakeMode; r
 	writeFileSync(path, `#!${process.execPath}\n(() => {${SCRIPT.replace("__BIN__", JSON.stringify(bin))}})();\n`);
 	chmodSync(path, 0o755);
 	const log = join(bin, "opencode.log");
+	/**
+	 * The log's whole lines, parsed. A test that polls may read while a run is still writing its line (a run's line holds
+	 * its whole environment, and macOS lets a reader see part of one write): that part is left for the next read.
+	 */
+	const lines = <T>(): T[] => {
+		if (!existsSync(log)) return [];
+		const text = readFileSync(log, "utf8");
+		return text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter((line) => line !== "").map((line) => JSON.parse(line) as T);
+	};
 	return {
 		path,
 		setMode(mode: FakeMode) {
@@ -105,13 +114,11 @@ export function fakeOpenCode(bin: string, options: { readonly mode?: FakeMode; r
 		},
 		/** Every run so far, oldest first (a server's "ended" lines aside). */
 		runs(): FakeRun[] {
-			if (!existsSync(log)) return [];
-			return readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line) as FakeRun & { ended?: true }).filter((run) => run.ended !== true);
+			return lines<FakeRun & { ended?: true }>().filter((run) => run.ended !== true);
 		},
 		/** How many times a server's lease ended (stdin closed), with how many plugin lists it served. */
 		ended(): { polls: number }[] {
-			if (!existsSync(log)) return [];
-			return readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { ended?: true; polls: number }).filter((run) => run.ended === true);
+			return lines<{ ended?: true; polls: number }>().filter((run) => run.ended === true);
 		},
 	};
 }
