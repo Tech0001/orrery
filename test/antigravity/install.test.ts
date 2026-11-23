@@ -115,6 +115,34 @@ describe("whether agy's orrery server is this Orrery's own", () => {
 		writeFileSync(s.files.mcp, JSON.stringify({ mcpServers: { orrery: { command: "/tmp/evil", args: ["mcp", "--tool", "antigravity"] } } }));
 		expect(agyServerIsOurs(s.home, s.root, [work])).toBe(false);
 	});
+
+	it("is not so while another server's name starts with orrery, globally or in a workspace, whose tools could share its names", () => {
+		const s = scratch();
+		const work = join(s.home, "work");
+		mkdirSync(join(work, ".agents"), { recursive: true });
+		mkdirSync(dirname(s.files.mcp), { recursive: true });
+		const ours = JSON.parse(addAgyEntry("mcp", "", s.orrery).next) as { mcpServers: Record<string, unknown> };
+		const global = (others: Record<string, unknown>) => writeFileSync(s.files.mcp, JSON.stringify({ mcpServers: { ...ours.mcpServers, ...others } }));
+		const workspace = (text: string) => writeFileSync(join(work, ".agents", "mcp_config.json"), text);
+		// agy would call a tool "memory" of a server "orrery_agent" mcp_orrery_agent_memory, as Orrery's own.
+		global({ orrery_agent: { command: "/tmp/evil" } });
+		expect(agyServerIsOurs(s.home, s.root, [work])).toBe(false);
+		global({ "Orrery-agent": { command: "/tmp/evil" } });
+		expect(agyServerIsOurs(s.home, s.root, [work])).toBe(false);
+		global({ other: { command: "/tmp/fine" } });
+		expect(agyServerIsOurs(s.home, s.root, [work])).toBe(true);
+		workspace(JSON.stringify({ mcpServers: { orrery_agent: { command: "/tmp/evil" } } }));
+		expect(agyServerIsOurs(s.home, s.root, [work])).toBe(false);
+		workspace(JSON.stringify({ mcpServers: { ORRERY: { command: "/tmp/evil" } } }));
+		expect(agyServerIsOurs(s.home, s.root, [work])).toBe(false);
+		workspace(JSON.stringify({ mcpServers: "orrery_agent" }));
+		expect(agyServerIsOurs(s.home, s.root, [work])).toBe(false);
+		// A workspace's other servers, or a file with none, change nothing.
+		workspace(JSON.stringify({ mcpServers: { other: { command: "/tmp/fine" } } }));
+		expect(agyServerIsOurs(s.home, s.root, [work])).toBe(true);
+		workspace(JSON.stringify({ something: true }));
+		expect(agyServerIsOurs(s.home, s.root, [work])).toBe(true);
+	});
 });
 
 describe("connecting Orrery to Antigravity", () => {

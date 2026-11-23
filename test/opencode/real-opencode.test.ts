@@ -426,7 +426,8 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("an
 			for (const request of requests) expect((request.body.tools ?? []).length, `request ${request.n}`).toBeGreaterThan(0);
 			// OpenCode 2.3 runs the subagent in the background: its finish reaches the parent as a <subagent> notice in a
 			// user message, which asks the model once more. The notice is not a prompt of the user's (five, above).
-			const notices = requests.filter((request) => conversationOf(request).at(-1)?.startsWith("user: <subagent "));
+			// OpenCode 2.4 words it <background-result kind="subagent" …>.
+			const notices = requests.filter((request) => /^user: <(subagent |background-result kind="subagent")/.test(conversationOf(request).at(-1) ?? ""));
 			expect(notices.length).toBeLessThanOrEqual(1);
 			expect(requests).toHaveLength(7 + notices.length);
 		} finally {
@@ -466,9 +467,9 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("an
 			};
 			const { session } = await turn("TEXT before-the-move");
 			await waitUntil(() => world.memory().length === 2);
-			const move = `return await tools.opencode.session_move({ directory: ${JSON.stringify(other)} })`;
+			const move = `return await tools.opencode.session.move({ directory: ${JSON.stringify(other)} })`;
 			const moved = await turn(`TOOL64 execute ${Buffer.from(JSON.stringify({ code: move })).toString("base64")}`, session);
-			expect(moved.stdout).toContain('"tool":"opencode.session_move","status":"completed"');
+			expect(moved.stdout).toContain('"tool":"opencode.session.move","status":"completed"');
 			// The session runs in the other folder now, with that folder's plugin: still recorded, by the same memory.
 			await turn("TEXT after-the-move", session);
 			await waitUntil(() => world.memory().includes("talk: after-the-move"));
@@ -514,9 +515,15 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Or
 			expect(await toolResult("edit", { path: join(vault, "secret.txt"), oldString: "the", newString: "a" })).toMatch(REFUSED);
 			expect(await toolResult("patch", { patchText: `*** Begin Patch\n*** Add File: ${join(vault, "p.txt")}\n+x\n*** End Patch` }, "fake/gpt-5-fake")).toMatch(REFUSED);
 			// Code Mode: the program's text names no protected folder; the call it makes is judged on its own.
-			const code = `return await tools.opencode.session_move({ directory: ${JSON.stringify(`${world.base}/va`)} + "ult" })`;
+			const code = `return await tools.opencode.session.move({ directory: ${JSON.stringify(`${world.base}/va`)} + "ult" })`;
 			expect(await toolResult("execute", { code })).toMatch(REFUSED);
 			expect(readdirSync(vault)).toEqual(["secret.txt"]);
+			// Another session moved by a relative folder, which OpenCode places from that session's own: the guard knows the
+			// move tool by the name OpenCode hands it, as a tool and from Code Mode.
+			const OTHER = /Orrery guard: .*another session/;
+			const other = { sessionID: "ses_other", directory: "elsewhere" };
+			expect(await toolResult("opencode_session_move", other)).toMatch(OTHER);
+			expect(await toolResult("execute", { code: `return await tools.opencode.session.move(${JSON.stringify(other)})` })).toMatch(OTHER);
 			// OpenCode's config and plugins, in the session's own folder too: OpenCode would load them into its server.
 			const CONFIG = /Orrery guard: .*OpenCode's config or code/;
 			expect(await toolResult("write", { path: "opencode.json", content: "{}" })).toMatch(CONFIG);
@@ -612,9 +619,9 @@ describe.skipIf(opencode === null || (releaseAt === undefined && !bunReady))("Or
 			return { session: sessionIn(run.stdout) as string, result: answered === undefined ? "" : (conversationOf(answered).at(-1) ?? ""), stdout: run.stdout };
 		};
 		try {
-			const moved = await toolRun("execute", { code: `return await tools.opencode.session_move({ directory: ${JSON.stringify(other)} })` });
+			const moved = await toolRun("execute", { code: `return await tools.opencode.session.move({ directory: ${JSON.stringify(other)} })` });
 			// The move is the step's end (OpenCode moves the session at its next boundary): it went through.
-			expect(moved.stdout).toContain('"tool":"opencode.session_move","status":"completed"');
+			expect(moved.stdout).toContain('"tool":"opencode.session.move","status":"completed"');
 			expect(moved.stdout).not.toContain("Orrery guard");
 			// The session works in the other folder now: a relative path is that folder's, for OpenCode and the guard alike.
 			expect((await toolRun("read", { path: "note.txt" }, moved.session)).result).toContain("a note from the other folder");

@@ -110,8 +110,10 @@ Antigravity's compaction is its own: it asks its model for a summary of the conv
 `zoom`, `date` and `search`, plus `agents` and `agent_memory` for an agent whose `reads` allows it, from the `orrery`
 MCP server; agy names them `mcp_orrery_<tool>`. The guard approves them in an agent's conversation, so agy asks no
 permission for them, but only while the `orrery` server agy runs is the one setup wrote in Antigravity's global
-`mcp_config.json`, for this Orrery, and no workspace of the conversation has an `orrery` server of its own in its
-`.agents/mcp_config.json`: a server of someone else's under that name would otherwise run with Orrery's approval.
+`mcp_config.json`, for this Orrery, and no other server, there or in a workspace's `.agents/mcp_config.json`, has a
+name starting `orrery` (in any case): a server of someone else's under that name, or one whose tools agy would name
+like Orrery's (a server `orrery_agent` with a tool `memory` is `mcp_orrery_agent_memory`), would otherwise run with
+Orrery's approval.
 Otherwise agy asks, as for any MCP tool; `agy -p`, which can't ask, then refuses them unless a rule allows them
 (`--settings '{"permissions":{"allow":["mcp(orrery/*)"]}}'`, or `permissions.allow` in agy's settings). The server
 serves only the agent `ORRERY_AGENT` names, with its token, as the agy process was started with them, so a plain agy

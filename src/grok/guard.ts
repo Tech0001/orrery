@@ -122,15 +122,18 @@ const FILE_ARGUMENTS = "this call's arguments are in a file Orrery's guard doesn
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** `input` with `keys` renamed (a key already there under the new name keeps its value). */
-function renamed(input: Readonly<Record<string, unknown>>, keys: Readonly<Record<string, string>> | undefined): Record<string, unknown> {
+/**
+ * `input` with `keys` renamed; undefined when the input also holds a key under a new name, or two keys that take the
+ * same one (a decoy the guard would judge in place of the argument Grok's tool uses), which refuses the call.
+ */
+function renamed(input: Readonly<Record<string, unknown>>, keys: Readonly<Record<string, string>> | undefined): Record<string, unknown> | undefined {
 	if (keys === undefined) return { ...input };
 	const out: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(input)) {
-		const to = keys[key];
+		const to = Object.hasOwn(keys, key) ? keys[key] : undefined;
 		if (to === undefined) out[key] = value;
-		else if (!(to in input) && !(to in out)) out[to] = value;
-		else out[key] = value;
+		else if (Object.hasOwn(input, to) || Object.hasOwn(out, to)) return undefined;
+		else out[to] = value;
 	}
 	return out;
 }
@@ -178,7 +181,9 @@ export function grokGuard(toolName: string, input: unknown, options: ClaudeGuard
 	const as = Object.hasOwn(GROK_AS_CLAUDE, name) ? GROK_AS_CLAUDE[name] : undefined;
 	const claudeName = as?.name ?? name;
 	const writer = WRITERS.has(claudeName);
-	let args = renamed(input, as?.keys);
+	const named = renamed(input, as?.keys);
+	if (named === undefined) return CALL_UNREADABLE;
+	let args = named;
 	if (truncated) {
 		const cut = cutString(args, writer);
 		if (cut.key !== undefined) return CUT(cut.key);

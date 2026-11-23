@@ -13,8 +13,9 @@
  * agy reads the hook's answer as JSON: `{"decision": "deny", "reason": …}` blocks, `{"decision": "allow"}` lets the call
  * go on to agy's own permission rules, and `auto_approve` approves it. It blocks a hook that exits non-zero, prints
  * garbage or times out, but lets through one that prints nothing (seen live), so this guard always prints a decision,
- * and denies what it can't read or judge. Orrery's own memory tools (`mcp_orrery_*`, or call_mcp_tool naming the orrery
- * server) are approved in an agent's session, where they serve its memory.
+ * and denies what it can't read or judge. Orrery's own memory tools (`mcp_orrery_zoom` and the rest, or call_mcp_tool
+ * naming the orrery server) are approved in an agent's session, where they serve its memory, while no other server
+ * could answer to their names.
  *
  * Whose rules: the agent ORRERY_AGENT names, with its token claimed by this agy (src/codex/pick.ts antigravityAgent),
  * both as the agy process was started with them (launchedEnv), gets its own; one started inside an agent's session gets
@@ -91,9 +92,15 @@ export function agyGuard(toolName: string, input: unknown, options: ClaudeGuardO
 	return contentGuard(content, timed());
 }
 
-/** Whether a call is to Orrery's own memory tools: `mcp_orrery_<tool>`, or call_mcp_tool naming the orrery server. */
+/** The tools Orrery's memory server has (src/agent/memory-tools.ts), as agy names them: mcp_orrery_<tool>. */
+const MEMORY_TOOLS: ReadonlySet<string> = new Set(["zoom", "date", "search", "agents", "agent_memory"].map((tool) => `mcp_orrery_${tool}`));
+
+/**
+ * Whether a call is to Orrery's own memory tools: one of its tools by agy's name for it, or call_mcp_tool naming the
+ * orrery server. That no other server's tool has the same name is agyServerIsOurs's (src/antigravity/install.ts).
+ */
 export function orreryMemoryTool(toolName: string, input: unknown): boolean {
-	if (/^mcp_orrery_[a-z_]+$/.test(toolName)) return true;
+	if (MEMORY_TOOLS.has(toolName)) return true;
 	return toolName === "call_mcp_tool" && isObject(input) && input.ServerName === "orrery";
 }
 
