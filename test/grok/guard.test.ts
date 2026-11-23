@@ -228,6 +228,20 @@ describe("every tool and input shape Grok 1.0.70 hands PreToolUse", () => {
 		expect(grokGuard("__proto__", { command: "cat ~/.ssh/config" }, options, false)).toMatch(SENSITIVE);
 	});
 
+	it("refuses a call naming an argument twice, under Grok's name and the one the guard reads it by, or two of Grok's", () => {
+		const { options } = setup();
+		// The guard would judge the harmless decoy while Grok's tool reads the other.
+		expect(grokGuard("read_file", { target_file: "~/.ssh/id_ed25519", file_path: "notes.md" }, options, false)).toMatch(/could not read this call/);
+		expect(grokGuard("read_file", { file_path: "notes.md", target_file: "~/.ssh/id_ed25519" }, options, false)).toMatch(/could not read this call/);
+		expect(grokGuard("hashline_edit", { target_file: "../secret.txt", file_path: "notes.md", edits: [] }, options, false)).toMatch(/could not read this call/);
+		expect(grokGuard("list_dir", { target_directory: "~/.ssh", path: "." }, options, false)).toMatch(/could not read this call/);
+		expect(grokGuard("list_dir", { dir_path: ".", target_directory: "~/.ssh" }, options, false)).toMatch(/could not read this call/);
+		expect(grokGuard("apply_patch", { input: patch("*** Add File: notes2.md", "+x"), command: "x" }, options, false)).toMatch(/could not read this call/);
+		// One name each is read as before.
+		expect(grokGuard("read_file", { target_file: "notes.md" }, options, false)).toBeUndefined();
+		expect(grokGuard("list_dir", { dir_path: "." }, options, false)).toBeUndefined();
+	});
+
 	it("judges a call's cwd or workdir as a folder it reads", () => {
 		const { home, options } = setup();
 		expect(grokGuard("spawn_subagent", { prompt: "x", description: "x", cwd: join(home, ".ssh") }, options, false)).toMatch(SENSITIVE);
