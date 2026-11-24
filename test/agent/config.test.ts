@@ -115,12 +115,19 @@ describe("parseConfig", () => {
 		expect(() => parseConfig(`[agents.A]\nfolder = "/w"\nmodel = "a/b"\nnode_bytes = 10\n`, "/x")).toThrow(/nodeBytes/);
 	});
 
-	it("takes an agent without a folder: no allowed roots unless set, and agentForCwd never picks it", () => {
-		const config = parseConfig(`[agents.Nomad]\ncompactor_model = "openai/gpt-6.1-sol"\n[agents.Rooted]\ncompactor_model = "openai/gpt-6.1-sol"\nallowed_roots = ["/srv"]\n`, "/d");
+	it("takes an agent without a folder: its roots from the session's folder unless set, and agentForCwd never picks it", () => {
+		const config = parseConfig(
+			`[agents.Nomad]\ncompactor_model = "openai/gpt-6.1-sol"\n[agents.Rooted]\ncompactor_model = "openai/gpt-6.1-sol"\nallowed_roots = ["/srv"]\n[agents.Closed]\ncompactor_model = "openai/gpt-6.1-sol"\nallowed_roots = []\n`,
+			"/d",
+		);
 		const nomad = config.agents.get("Nomad")!;
 		expect(nomad.folder).toBeUndefined();
 		expect(nomad.allowedRoots).toEqual([]);
-		expect(config.agents.get("Rooted")?.allowedRoots).toEqual(["/srv"]);
+		expect(nomad.rootsFromCwd).toBe(true);
+		expect(config.agents.get("Rooted")).toMatchObject({ allowedRoots: ["/srv"] });
+		expect(config.agents.get("Rooted")?.rootsFromCwd).toBeUndefined();
+		// An empty allowed_roots key keeps such an agent to the folder it runs in.
+		expect(config.agents.get("Closed")?.rootsFromCwd).toBeUndefined();
 		expect(agentForCwd(config, "/")).toBeUndefined();
 		expect(agentForCwd(config, "/srv")).toBeUndefined();
 	});

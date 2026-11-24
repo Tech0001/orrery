@@ -18,7 +18,8 @@
 
 import { randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { type HarnessConfig, insideFolder, type AgentConfig, agentForCwd } from "./config.ts";
 import { beingMade, publish, removeStale, stray, temporaryOf } from "./exclusive.ts";
 import { readPrivate } from "./private-file.ts";
@@ -286,6 +287,19 @@ export function newToken(): string {
 /** Where a session of `agent` works: its folder when the session runs in it or below it, else the session's folder. */
 export function workArea(agent: Pick<AgentConfig, "folder">, cwd: string): string {
 	return agent.folder !== undefined && insideFolder(agent, cwd) ? agent.folder : resolve(cwd);
+}
+
+/**
+ * Where else a session of `agent` in `cwd` may write: the config's allowed roots, or for an agent with no folder and no
+ * allowed_roots key (AgentConfig.rootsFromCwd) the parent of the folder the session runs in, as an agent with a folder
+ * gets its folder's parent. Not when that parent is the filesystem's root or holds the home folder (a session opened in
+ * the home folder, or above it): the session's folder alone then.
+ */
+export function allowedRootsFor(agent: Pick<AgentConfig, "allowedRoots" | "rootsFromCwd">, cwd: string, home: string = homedir()): readonly string[] {
+	if (agent.rootsFromCwd !== true) return agent.allowedRoots;
+	const parent = dirname(resolve(cwd));
+	const top = resolve(home);
+	return parent === "/" || parent === dirname(parent) || top.startsWith(`${parent}/`) ? [] : [parent];
 }
 
 /** What a session whose ORRERY_AGENT was refused says, once. */

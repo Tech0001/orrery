@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/agent/config.ts";
-import { claimedBy, claimHeld, claimMadeAt, claimText, claimToken, newToken, pickAgent, refusedNotice, releaseClaim, workArea } from "../../src/agent/pick.ts";
+import { claimedBy, claimHeld, claimMadeAt, claimText, claimToken, newToken, pickAgent, refusedNotice, releaseClaim, allowedRootsFor, workArea } from "../../src/agent/pick.ts";
 import { pidNamespace } from "../../src/agent/process.ts";
 import { processStart } from "../../src/agent/sessions.ts";
 
@@ -303,6 +303,32 @@ describe("workArea", () => {
 		expect(workArea(atlas, join(root, "agent-Atlas", "sub"))).toBe(join(root, "agent-Atlas"));
 		expect(workArea(atlas, join(root, "plain"))).toBe(join(root, "plain"));
 		expect(workArea(config.agents.get("Nomad")!, join(root, "plain"))).toBe(join(root, "plain"));
+	});
+});
+
+describe("allowedRootsFor", () => {
+	const nomad = { allowedRoots: [], rootsFromCwd: true as const };
+
+	it("gives an agent with no folder and no allowed_roots the parent of the folder its session runs in", () => {
+		expect(allowedRootsFor(nomad, "/home/u/src/app", "/home/u")).toEqual(["/home/u/src"]);
+		expect(allowedRootsFor(nomad, "/home/u/src/app/", "/home/u")).toEqual(["/home/u/src"]);
+		expect(allowedRootsFor(nomad, "/home/u/app", "/home/u")).toEqual(["/home/u"]);
+		expect(allowedRootsFor(nomad, "/srv/work/app", "/home/u")).toEqual(["/srv/work"]);
+	});
+
+	it("gives none when that parent is the filesystem's root or holds the home folder", () => {
+		expect(allowedRootsFor(nomad, "/home/u", "/home/u")).toEqual([]);
+		expect(allowedRootsFor(nomad, "/home", "/home/u")).toEqual([]);
+		expect(allowedRootsFor(nomad, "/srv", "/home/u")).toEqual([]);
+		expect(allowedRootsFor(nomad, "/", "/home/u")).toEqual([]);
+		expect(allowedRootsFor(nomad, "/Users/Alex", "/Users/Alex")).toEqual([]);
+	});
+
+	it("keeps the config's roots for every other agent", () => {
+		expect(allowedRootsFor({ allowedRoots: ["/w"] }, "/home/u/src/app", "/home/u")).toEqual(["/w"]);
+		expect(allowedRootsFor({ allowedRoots: [] }, "/home/u/src/app", "/home/u")).toEqual([]);
+		const { root, config } = world();
+		expect(allowedRootsFor(config.agents.get("Atlas")!, join(root, "plain"))).toEqual(config.agents.get("Atlas")!.allowedRoots);
 	});
 
 	it("finds a folder through a symbolic link to it", () => {

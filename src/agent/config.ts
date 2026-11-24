@@ -75,6 +75,11 @@ export interface AgentConfig {
 	 */
 	readonly folder?: string;
 	readonly allowedRoots: readonly string[];
+	/**
+	 * Set for an agent with no folder and no allowed_roots key: its allowed root is the parent of the folder a session
+	 * of it runs in, as an agent with a folder gets its folder's parent (src/agent/pick.ts allowedRootsFor).
+	 */
+	readonly rootsFromCwd?: true;
 	/** The tool the agent is launched in; undefined when the config does not say (the TUI then guesses). */
 	readonly tool?: AgentTool;
 	/**
@@ -473,6 +478,7 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 			host,
 			...(folder === undefined ? {} : { folder }),
 			allowedRoots: (roots as string[] | undefined) ?? (folder === undefined ? [] : [posix.dirname(folder)]),
+			...(roots === undefined && folder === undefined ? { rootsFromCwd: true as const } : {}),
 			launcher,
 			...(oriModel === undefined ? {} : { oriModel }),
 			...(tool === undefined || !known ? {} : { tool }),

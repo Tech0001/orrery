@@ -29,6 +29,7 @@ import { agentViews, openCodeCredentials } from "./guard-paths.ts";
 import { compactorModel, createAgentModels, modelContextWindow, savedSummaryLoginsOnly } from "./models.ts";
 import { isOpenCodeChoice, OPENCODE_SOURCE } from "./opencode-source.ts";
 import { Projector } from "./projector.ts";
+import { allowedRootsFor } from "./pick.ts";
 import { leaveHostEnv } from "./host-env.ts";
 import { type PlainDeps, plainNested } from "./plain-nested.ts";
 import { forgetSession, insideSession, nestedNotice, recordSession } from "./sessions.ts";
@@ -226,7 +227,7 @@ export class Agent {
 			registry.install(
 				guardExtension({
 					folder,
-					allowedRoots: config.allowedRoots,
+					allowedRoots: allowedRootsFor(config, folder),
 					credentials: [options.config.credentialsPath, ...openCodeCredentials()],
 					orreryData: options.config.dataDir,
 					protect: options.config.guard.protect,

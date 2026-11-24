@@ -28,7 +28,7 @@ import { isAbsolute } from "node:path";
 import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { GuardCall } from "../agent/guard-paths.ts";
 import { nestedRules, type WriteRules } from "../agent/nested-rules.ts";
-import { AGENT_ENV, workArea } from "../agent/pick.ts";
+import { AGENT_ENV, allowedRootsFor, workArea } from "../agent/pick.ts";
 import { opensHere, type PlainDeps } from "../agent/plain-nested.ts";
 import { agentGuardOptions, type ClaudeGuardOptions, claudeGuard, plainGuardOptions } from "../claude/guard.ts";
 import { codexRefusal, contentGuard } from "../codex/guard.ts";
@@ -154,7 +154,7 @@ function sessionRules(ctx: AgyGuardContext, cwd: string, session: string | undef
 		...(ctx.alive === undefined ? {} : { alive: ctx.alive }),
 		...(ctx.plain === undefined ? {} : { plain: ctx.plain }),
 	});
-	if (pick.kind === "agent") return { plain: false, rules: { workArea: workArea(pick.agent, cwd), allowedRoots: pick.agent.allowedRoots }, agent: pick.agent };
+	if (pick.kind === "agent") return { plain: false, rules: { workArea: workArea(pick.agent, cwd), allowedRoots: allowedRootsFor(pick.agent, cwd) }, agent: pick.agent };
 	const nested = pick.kind === "nested" ? pick : pick.undecided === true ? antigravityNested(config, own, ctx.agyPid, ctx.plain) : undefined;
 	if (nested?.kind === "nested") {
 		const outer = nestedRules(config, nested.outer, cwd);

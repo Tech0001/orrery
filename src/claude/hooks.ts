@@ -49,7 +49,7 @@ import { type HarnessConfig, type AgentConfig, agentForCwd } from "../agent/conf
 import { cutNotice, readInstructions } from "../agent/instructions.ts";
 import { nestedRules, type WriteRules } from "../agent/nested-rules.ts";
 import { opensHere, type PlainDeps } from "../agent/plain-nested.ts";
-import { AGENT_ENV, agentNamed, workArea } from "../agent/pick.ts";
+import { AGENT_ENV, agentNamed, allowedRootsFor, workArea } from "../agent/pick.ts";
 import { writePrivate } from "../agent/private-file.ts";
 import { processAlive } from "../agent/process.ts";
 import { liveSession, processStart } from "../agent/sessions.ts";
@@ -632,7 +632,7 @@ export function preToolUse(input: HookInput, ctx: HookContext): object | undefin
  * agent whose folder it runs in, else of an agent with no folder.
  */
 function writeRules(pick: ClaudePicked, config: HarnessConfig, projectDir: string): WriteRules {
-	if (pick.kind === "agent") return { workArea: workArea(pick.agent, projectDir), allowedRoots: pick.agent.allowedRoots };
+	if (pick.kind === "agent") return { workArea: workArea(pick.agent, projectDir), allowedRoots: allowedRootsFor(pick.agent, projectDir) };
 	const nested = pick.kind === "nested" ? nestedRules(config, pick.outer, projectDir) : undefined;
 	if (nested !== undefined) return nested;
 	const here = agentForCwd(config, projectDir);
