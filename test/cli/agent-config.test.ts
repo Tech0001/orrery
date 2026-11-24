@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { localIso } from "../../src/memory/index.ts";
+import { MemoryStore } from "../../src/memory/store.ts";
 import { tempDir } from "../agent/support.ts";
 import { fifos, readableOnce, standInTool, stopWriters } from "./read-once.ts";
 
@@ -136,6 +137,20 @@ describe("orrery agent rename", () => {
 		expect(readFileSync(join(data, "agents", "Gamma", "memory.sqlite"), "utf8")).toBe("kept");
 		const status = orrery(["status", "--json"], { ORRERY_CONFIG: config });
 		expect(JSON.parse(status.stdout).agents.map((l: { name: string }) => l.name).sort()).toEqual(["Beta", "Gamma"]);
+	});
+
+	it("brings a real memory along whole: the same messages, read back under the new name", () => {
+		const { config, data, memory } = agents();
+		rmSync(join(memory, "memory.sqlite"));
+		const store = MemoryStore.open(join(memory, "memory.sqlite"));
+		store.appendBatch(["one", "two", "three"].map((text, i) => ({ kind: (i % 2 === 0 ? "user" : "talk") as "user" | "talk", text, date: `2026-11-23T10:0${i}:00.000Z` })));
+		store.close();
+		const out = orrery(["agent", "rename", "Alpha", "Gamma"], { ORRERY_CONFIG: config });
+		expect(out.stderr).toBe("");
+		expect(MemoryStore.messageCount(join(data, "agents", "Gamma", "memory.sqlite"))).toBe(3);
+		const status = orrery(["status", "Gamma", "--json"], { ORRERY_CONFIG: config });
+		expect(status.stderr).toBe("");
+		expect(JSON.parse(status.stdout).agents[0]).toMatchObject({ name: "Gamma", messages: 3 });
 	});
 
 	it("renames a change of case alone, and an agent never opened (no data folder)", () => {
