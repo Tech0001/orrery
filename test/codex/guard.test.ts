@@ -471,7 +471,9 @@ describe("the PreToolUse hook (runCodexGuard)", () => {
 		const cwd = join(t.folder, "sub");
 		expect(runCodexGuard(call("apply_patch", { command: "*** Begin Patch\n*** Add File: a.ts\n+x\n*** Add File: ../b.ts\n+y\n*** End Patch" }, cwd), ctx())).toBeUndefined();
 		expect(runCodexGuard(call("apply_patch", { command: patch("*** Add File: /etc/x", "+x") }, cwd), ctx())).toMatch(/outside this agent's folder/);
-		expect(readFileSync(join(t.agent.dir, "turn-writes"), "utf8").split("\n").filter(Boolean).sort()).toEqual([join(t.folder, "b.ts"), join(cwd, "a.ts")].sort());
+		// Where each really lands: on macOS the temp folder is reached through a link (/var is /private/var).
+		const real = realpathSync(t.folder);
+		expect(readFileSync(join(t.agent.dir, "turn-writes"), "utf8").split("\n").filter(Boolean).sort()).toEqual([join(real, "b.ts"), join(real, "sub", "a.ts")].sort());
 	});
 
 	it("lets an agent with no folder write beside the folder it runs in, unless its allowed_roots says otherwise or that is home", () => {

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { noteWrite, receiptText, takeReceipt, turnReceipts } from "../../src/agent/receipts.ts";
@@ -174,7 +174,9 @@ describe("the guard notes the writes it lets through", () => {
 		expect(await call("Bash", { command: "echo x > d.ts" })).toBe("");
 		expect(JSON.parse(await call("Write", { file_path: "/etc/passwd-x", content: "x" })).hookSpecificOutput.permissionDecision).toBe("deny");
 		const spool = join(t.agent.dir, "turn-writes");
-		expect(readFileSync(spool, "utf8").split("\n").filter(Boolean)).toEqual([join(t.folder, "a.ts"), join(t.folder, "b.ts")]);
+		// Where each really lands: on macOS the temp folder is reached through a link (/var is /private/var).
+		const real = realpathSync(t.folder);
+		expect(readFileSync(spool, "utf8").split("\n").filter(Boolean)).toEqual([join(real, "a.ts"), join(real, "b.ts")]);
 	});
 
 	it("not in a session that is no agent's", async () => {
