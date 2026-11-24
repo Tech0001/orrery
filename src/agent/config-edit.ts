@@ -291,6 +291,47 @@ export function archiveAgent(text: string, configDir: string, agent: string, day
 }
 
 /**
+ * Renames an agent in the config: its `[agents.<agent>]` header names `name`, and every other agent's reads that names
+ * it names `name` instead; nothing else changes (the result must read back as exactly that). `name` must be a name an
+ * agent may take and no other agent's, ignoring case; a change of case alone is a rename too.
+ */
+export function renameAgent(text: string, configDir: string, agent: string, name: string): string {
+	const before = parseConfig(text, configDir);
+	const renamed = before.agents.get(agent);
+	if (renamed === undefined) throw new ConfigError(`No agent named ${agent} in the config.`);
+	const problem = agentNameProblem(name);
+	if (problem !== undefined) throw new ConfigError(problem);
+	if (name === agent) throw new ConfigError(`${agent} already has that name.`);
+	const taken = [...before.agents.keys()].find((other) => other !== agent && other.toLowerCase() === name.toLowerCase());
+	if (taken !== undefined) throw new ConfigError(`${taken} is already an agent; pick another name.`);
+	const lines = text.split("\n");
+	const headers = lines.flatMap((line, i) => (agentHeader(line) === agent ? [i] : []));
+	// A sub-table of the agent's ([agents.<agent>.x]) or a second header: placed by hand.
+	const deeper = new RegExp(`^\\s*\\[\\s*agents\\s*\\.\\s*(?:"${agent}"|${agent})\\s*\\.`);
+	if (headers.length !== 1 || lines.some((line) => deeper.test(line))) throw new ConfigError(`${agent} is not written as one [agents.${agent}] block; rename it by hand.`);
+	const at = headers[0] as number;
+	lines[at] = (lines[at] as string).replace(/agents\s*\.\s*(?:"[^"]+"|[A-Za-z0-9_-]+)/, `agents.${name}`);
+	let out = lines.join("\n");
+	for (const other of before.agents.values()) {
+		if (other.name !== agent && other.reads.includes(agent)) out = setAgentKey(out, configDir, other.name, "reads", other.reads.map((read) => (read === agent ? name : read)));
+	}
+	if (!tomlParses(out)) throw new ConfigError("Orrery couldn't place this change safely; the config is unchanged — edit it by hand.");
+	const want = parse(text) as Table;
+	const agents: Table = {};
+	for (const [key, value] of Object.entries(want.agents as Table)) {
+		const block = { ...(value as Table) };
+		if (Array.isArray(block.reads)) block.reads = block.reads.map((read) => (read === agent ? name : read));
+		agents[key === agent ? name : key] = block;
+	}
+	want.agents = agents;
+	if (JSON.stringify(canonical(withoutEmptyAgents(parse(out) as Table))) !== JSON.stringify(canonical(withoutEmptyAgents(want)))) {
+		throw new ConfigError("That edit would change more than intended; the config is left as it was.");
+	}
+	parseConfig(out, configDir);
+	return out;
+}
+
+/**
  * The [guard] block every new config has, and an older one gets once from setup (spec 2026-10-16-guard-presets,
  * addGuardPreset): an empty protect list, with commented examples of each kind of entry the config takes (config.ts
  * protectProblem). No final newline.

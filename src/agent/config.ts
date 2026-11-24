@@ -133,7 +133,7 @@ const LOCAL_HOST: HostConfig = { name: "local", kind: "local" };
 const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 
 /** Words `orrery agent` takes as subcommands: no agent may be named one of them (compared without case). */
-export const RESERVED_NAMES: readonly string[] = ["add", "set", "edit", "archive", "push", "pull", "takeover", "local"];
+export const RESERVED_NAMES: readonly string[] = ["add", "set", "edit", "archive", "rename", "push", "pull", "takeover", "local"];
 
 const reserved = (name: string) => `${name} is a word orrery agent uses (${RESERVED_NAMES.join(", ")})`;
 

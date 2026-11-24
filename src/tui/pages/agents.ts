@@ -13,7 +13,7 @@ import { localIso } from "../../memory/index.ts";
 import type { UsageRow } from "../../memory/types.ts";
 import type { App, Page } from "../app.ts";
 import { type Column, compactCount, fit, renderTable } from "../table.ts";
-import { archiveAgentAction, browseAgent, chooseSummaryModel, editInstructions, editAgent, launchAgent, readsText } from "./agent-actions.ts";
+import { archiveAgentAction, browseAgent, chooseSummaryModel, editInstructions, editAgent, launchAgent, readsText, renameAgentAction } from "./agent-actions.ts";
 import { newAgent } from "./new-agent.ts";
 
 /**
@@ -221,7 +221,7 @@ function detailLines(app: App, row: AgentRow, width: number): string[] {
 		...field("Last backup", backup.text).map((line) => (backup.stale ? theme.yellow(line) : line)),
 		...field("Tokens, 7 days", usage ?? "—"),
 		"",
-		theme.dim(fit("Enter or L open · M summary model · E instructions · C settings · B browse memory · A archive · Esc back", width)),
+		theme.dim(fit("Enter or L open · M summary model · E instructions · C settings · B browse memory · R rename · A archive · Esc back", width)),
 	];
 }
 
@@ -260,7 +260,7 @@ export const agentsPage: Page = {
 	title: "Agents",
 	// Short words, so the order and "q quit" still fit at 120 columns: the list leaves B and A to the agent's page and ?.
 	hints: (app) =>
-		app.detail !== undefined ? "Esc back · Enter open · M model · E instructions · C settings · B browse · A archive" : `Enter open · i details · N new · M model · E instructions · C settings · s sort: ${orderOf(app)}`,
+		app.detail !== undefined ? "Esc back · Enter open · M model · E instructions · C settings · B browse · R rename · A archive" : `Enter open · i details · N new · M model · E instructions · C settings · s sort: ${orderOf(app)}`,
 	refresh(app) {
 		// An agent taken out of the config closes its page.
 		if (app.detail !== undefined && !app.agents.some((r) => r.name === app.detail)) app.detail = undefined;
@@ -336,6 +336,9 @@ export const agentsPage: Page = {
 				return true;
 			case "a":
 				archiveAgentAction(app, row);
+				return true;
+			case "r":
+				renameAgentAction(app, row);
 				return true;
 			case "s":
 				if (app.detail !== undefined) return false;

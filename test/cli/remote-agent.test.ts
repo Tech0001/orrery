@@ -139,7 +139,7 @@ describe("agent push and pull", () => {
 
 	it("refuses a name orrery agent uses as a subcommand before contacting storage", async () => {
 		const before = readFileSync(path, "utf8");
-		await expect(pullAgentCommand(path, "Pull", "home", folder)).rejects.toThrow("Pull is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); pick another name.");
+		await expect(pullAgentCommand(path, "Pull", "home", folder)).rejects.toThrow("Pull is a word orrery agent uses (add, set, edit, archive, rename, push, pull, takeover, local); pick another name.");
 		expect(readFileSync(path, "utf8")).toBe(before); expect(await storage.list()).toEqual([]);
 	});
 

@@ -48,6 +48,8 @@ export interface AppDeps {
 	remoteAgents?(config: HarnessConfig, name: string): Promise<readonly LaneEntry[]>;
 	/** Without a folder the pulled agent has no default folder. */
 	pullAgent?(name: string, remote: string, folder?: string): Promise<string>;
+	/** Renames a closed agent everywhere (src/agent/rename.ts); what it says. Absent in the read-only demo. */
+	renameAgent?(name: string, next: string): string;
 	pushAgent?(name: string, remote: string): Promise<string>;
 	localAgent?(name: string): Promise<string>;
 	/** Token use over the last `days` days, for every agent with memory, or only `only`. */
@@ -139,7 +141,7 @@ const HELP = [
 	"q            quit (agents keep running in their tools)",
 	"",
 	"Agents:  Enter or L open · i details · N new agent · M summary model · E instructions · C settings",
-	"        B browse memory · A archive · s sort (config, name, last message, needs attention)",
+	"        B browse memory · R rename · A archive · s sort (config, name, last message, needs attention)",
 	"Logins: A add or replace · T test · D remove · R add remote",
 	"Usage:  + more days · - fewer days",
 	"Tools:  I install or repair",

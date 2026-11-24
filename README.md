@@ -92,7 +92,7 @@ agent's folder, it asks whether to open the agent here or there. Its tool starts
 
 | Page | Keys |
 | --- | --- |
-| **1 Agents** | **Enter** open · **i** details · **N** new · **M** summary model · **E** instructions · **C** settings · **s** sort · **/** filter. On an agent's details: **B** browse its memory, **A** archive it |
+| **1 Agents** | **Enter** open · **i** details · **N** new · **M** summary model · **E** instructions · **C** settings · **s** sort · **/** filter. On an agent's details: **B** browse its memory, **R** rename it, **A** archive it |
 | **2 Logins** | **A** add or replace a sign-in or key · **T** test · **D** remove · **R** add a remote |
 | **3 Usage** | **+** / **-** more or fewer days |
 | **4 Tools** | **Enter** details · **I** install or repair Orrery's side of pi, OMP, Claude Code, Grok or Antigravity |
@@ -403,7 +403,7 @@ only:
   grok-status`, among them).
 
 Everything else is refused, with a message that says to run it in your own terminal or the TUI: `orrery agent` (open,
-add, set, edit, archive, push, pull and the rest), `run`, `import` (the dry run too), `compact`, `backup`, `restore`,
+add, set, edit, archive, rename, push, pull and the rest), `run`, `import` (the dry run too), `compact`, `backup`, `restore`,
 `login`, `logins`, `logout`, `remote` (`remote key` among them), `trust-host`, `claude-setup`, `tools`, `setup`,
 `install`, `update`, `uninstall`, and the TUI. A read of an agent it may not read says how to allow it:
 `Atlas may not read Birch. Allow it in the TUI (C, Reads) or with: orrery agent set Atlas --reads Birch`. Inside a
