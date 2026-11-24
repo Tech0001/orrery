@@ -488,23 +488,16 @@ describe("the PreToolUse hook (runCodexGuard)", () => {
 			const token = newToken();
 			mkdirSync(join(data, "agents", name, "claims"), { recursive: true, mode: 0o700 });
 			writeFileSync(join(data, "agents", name, "claims", token), "4343\n");
-			return { config, env: { ORRERY_AGENT: name, ORRERY_AGENT_TOKEN: token }, codexPid: 4343, alive: (pid: number) => pid === 4343 } satisfies CodexGuardContext;
+			return { config, env: { ORRERY_AGENT: name, ORRERY_AGENT_TOKEN: token }, codexPid: 4343, alive: (pid: number) => pid === 4343, home } satisfies CodexGuardContext;
 		};
 		const write = (to: string, cwd: string, ctx: CodexGuardContext) => runCodexGuard(call("apply_patch", { command: patch(`*** Add File: ${to}`, "+x") }, cwd), ctx);
 		const app = join(root, "projects", "app");
-		const saved = process.env.HOME;
-		process.env.HOME = home;
-		try {
-			expect(write(join(root, "projects", "sibling", "x.ts"), app, session("Nomad"))).toBeUndefined();
-			expect(write(join(root, "elsewhere.ts"), app, session("Nomad"))).toMatch(/outside this agent's folder/);
-			expect(write(join(root, "projects", "sibling", "x.ts"), app, session("Shut"))).toMatch(/outside this agent's folder/);
-			// Opened in a folder of home's own: that folder alone, not all of home.
-			expect(write(join(home, "notes.md"), join(home, "app"), session("Nomad"))).toMatch(/outside this agent's folder/);
-			expect(write(join(home, "app", "x.ts"), join(home, "app"), session("Nomad"))).toBeUndefined();
-		} finally {
-			if (saved === undefined) delete process.env.HOME;
-			else process.env.HOME = saved;
-		}
+		expect(write(join(root, "projects", "sibling", "x.ts"), app, session("Nomad"))).toBeUndefined();
+		expect(write(join(root, "elsewhere.ts"), app, session("Nomad"))).toMatch(/outside this agent's folder/);
+		expect(write(join(root, "projects", "sibling", "x.ts"), app, session("Shut"))).toMatch(/outside this agent's folder/);
+		// Opened in a folder of home's own: that folder alone, not all of home.
+		expect(write(join(home, "notes.md"), join(home, "app"), session("Nomad"))).toMatch(/outside this agent's folder/);
+		expect(write(join(home, "app", "x.ts"), join(home, "app"), session("Nomad"))).toBeUndefined();
 	});
 
 	it("refuses what it cannot judge: input over 1 MB or unread, input that is no JSON object, a call with no cwd or tool, a failure", () => {
