@@ -2,9 +2,9 @@
 
 import { homedir } from "node:os";
 import { posix } from "node:path";
-import { AGY_COMMAND, AGY_COMMAND_PLAIN, AGY_READ_ONLY, AGY_READ_ONLY_PLAIN, agyKeeps, agyNamed, type AgyRule, agyRule } from "../antigravity/guard-rules.ts";
+import { AGY_COMMAND, AGY_COMMAND_PLAIN, AGY_READ_ONLY, AGY_READ_ONLY_PLAIN, agyKeeps, agyNamed, agyUpload, type AgyRule, agyRule } from "../antigravity/guard-rules.ts";
 import { GROK_CLI_REFUSED, GROK_CLIMB, GROK_COMMAND, GROK_COMMAND_PLAIN, GROK_READ_ONLY, GROK_READ_ONLY_PLAIN, GROK_REACH, grokClimbsFrom, grokCommandOf, grokFolders, type GrokRule, grokLoads, grokNamed, grokNamedFrom, grokReaches, grokRule, grokSpeltFrom } from "../grok/guard-rules.ts";
-import { AGENT_REFUSED, APP_READ_ONLY, APP_READ_ONLY_PLAIN, CONFIG_READ_ONLY, CONFIG_READ_ONLY_PLAIN, configSpellings, flagged, type GuardOptions, namesFolder, newTextIn, OPENCODE_COMMAND, OPENCODE_NAMED, OPENCODE_READ_ONLY, openCodeLoads, openCodeRule, openCodeSkillRefusal, ORRERY_COMMAND_REFUSED, ORRERY_COMMAND_REFUSED_PLAIN, orreryAppNamed, orreryCommandIn, orreryConfigNamed, pathProtected, PLAIN_REFUSED, PLUMBING_REFUSED, PROTECTED_BY, PROTECTED_FILE, protectedIn, type Protection, protection, readings, runsPlumbing, secretIn, secretPath, sensitive, SKILL_SHELL, SKILLS_NAMED, type SkillShellRead, skillShellRead, TRANSCRIPT_COMMAND, TRANSCRIPT_COMMAND_PLAIN, TRANSCRIPT_READ_ONLY, TRANSCRIPT_READ_ONLY_PLAIN, transcriptPath, transcriptRule, transcriptsNamed, type ViewRules, viewRules, within, writtenOutRead } from "./guard-rules.ts";
+import { AGENT_REFUSED, APP_READ_ONLY, APP_READ_ONLY_PLAIN, CONFIG_READ_ONLY, CONFIG_READ_ONLY_PLAIN, configSpellings, flagged, type GuardOptions, namesFolder, newTextIn, OPENCODE_COMMAND, OPENCODE_NAMED, OPENCODE_READ_ONLY, openCodeLoads, openCodeRule, openCodeSkillRefusal, ORRERY_COMMAND_REFUSED, ORRERY_COMMAND_REFUSED_PLAIN, orreryAppNamed, orreryCommandIn, orreryConfigNamed, pathProtected, PLAIN_REFUSED, PLUMBING_REFUSED, PROTECTED_BY, PROTECTED_FILE, protectedIn, type Protection, protection, readings, runsPlumbing, secretIn, secretPath, sensitive, SKILL_SHELL, SKILLS_NAMED, type SkillShellRead, skillShellRead, TRANSCRIPT_COMMAND, TRANSCRIPT_COMMAND_PLAIN, TRANSCRIPT_READ_ONLY, TRANSCRIPT_READ_ONLY_PLAIN, transcriptPath, transcriptRule, transcriptsNamed, type ViewRules, viewRules, within, writtenOutCopy, writtenOutRead } from "./guard-rules.ts";
 
 /** What checkToolCall judges against: the guard's options, and Grok's folder rule. */
 export interface CallOptions extends GuardOptions {
@@ -83,7 +83,17 @@ export function checkToolCall(
 			const reason = judgeRead(read);
 			if (reason !== undefined) return reason;
 		}
-		if (inReading(agyNamed)) return agent ? AGY_COMMAND : AGY_COMMAND_PLAIN;
+		if (inReading(agyNamed)) {
+			// What the person attached in Antigravity: one plain read of it, or one plain cp of it out to a place none of
+			// Antigravity's own, its paths written out and each passing as a read (judgeShellRead). A file tool can read an
+			// image, not copy it.
+			const judgeRead = options.judgeShellRead;
+			const home = (options as { readonly home?: string }).home ?? homedir();
+			const read = judgeRead === undefined ? undefined : agyUploadsRead(command, home, options.cwd, agy());
+			if (read === undefined || judgeRead === undefined) return agent ? AGY_COMMAND : AGY_COMMAND_PLAIN;
+			const reason = judgeRead(read);
+			if (reason !== undefined) return reason;
+		}
 		if (inReading((form) => grokNamed(form, grok()))) return agent ? GROK_COMMAND : GROK_COMMAND_PLAIN;
 		if (inReading((form) => grokReaches(form, grok()))) return GROK_REACH;
 		const cwd = options.cwd;
@@ -118,4 +128,22 @@ export function checkToolCall(
 	}
 	if (writes && transcriptPath(path, transcripts())) return TRANSCRIPT_READ_ONLY(path);
 	return undefined;
+}
+
+/**
+ * The read shell text makes of what the person attached in Antigravity (antigravity/guard-rules.ts agyUpload), as a
+ * plain read for judgeShellRead: one plain read whose every path is there, or one plain cp whose every source is there
+ * and whose destination is no file of Antigravity's own (placed from the call's folder when relative; refused when that
+ * is unknown). Undefined for anything else.
+ */
+function agyUploadsRead(command: string, home: string, cwd: string | undefined, rule: AgyRule): SkillShellRead | undefined {
+	const place = (raw: string) => (raw === "~" ? home : raw.startsWith("~/") ? posix.join(home, raw.slice(2)) : raw);
+	const read = writtenOutRead(command);
+	if (read !== undefined) return read.paths.every((path) => agyUpload(place(path), home)) ? read : undefined;
+	const copy = writtenOutCopy(command);
+	if (copy === undefined || !copy.sources.every((path) => agyUpload(place(path), home))) return undefined;
+	const to = copy.destination;
+	const placed = to === "~" || to.startsWith("~/") || to.startsWith("/") ? place(to) : cwd !== undefined && posix.isAbsolute(cwd) ? posix.join(cwd, to) : undefined;
+	if (placed === undefined || agyKeeps(placed, rule) || agyNamed(posix.normalize(placed).toLowerCase())) return undefined;
+	return { program: "cat", paths: copy.sources };
 }

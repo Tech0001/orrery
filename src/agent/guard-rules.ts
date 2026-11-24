@@ -1689,8 +1689,43 @@ export function grokRecordsPath(path: string, rule: Pick<TranscriptRule, "grok">
  */
 export function writtenOutRead(text: string): SkillShellRead | undefined {
 	const read = skillShellRead(text);
-	const written = (path: string) => (path === "~" || path.startsWith("~/") || path.startsWith("/")) && !path.split("/").includes("..");
-	return read !== undefined && read.paths.every(written) ? read : undefined;
+	return read !== undefined && read.paths.every(writtenOut) ? read : undefined;
+}
+
+/** A path a shell places without the guard knowing its folder: absolute, "~" or "~/…", with no ".." part. */
+function writtenOut(path: string): boolean {
+	return (path === "~" || path.startsWith("~/") || path.startsWith("/")) && !path.split("/").includes("..");
+}
+
+/** A plain copy (writtenOutCopy): the files it reads, and where it writes, as the shell hands them over. */
+export interface PlainCopy {
+	readonly sources: readonly string[];
+	readonly destination: string;
+}
+
+/** The plain copy `words` make: exactly `cp <source>... <destination>`, no option; undefined otherwise. */
+function plainCopy(words: readonly string[]): PlainCopy | undefined {
+	const [program, ...rest] = words;
+	if (program !== "cp" || rest.length < 2 || rest.some((word) => word === "" || word.startsWith("-"))) return undefined;
+	return { sources: rest.slice(0, -1), destination: rest.at(-1) as string };
+}
+
+/**
+ * The plain copy shell text is, in the plain read's grammar (one simple command, its words plain path characters, the
+ * same copy in every reading of it), its sources written out (writtenOut) and its destination with no ".." part;
+ * undefined otherwise. What the person attached in Antigravity is copied so (guard-call.ts): a file tool can't copy an
+ * image.
+ */
+export function writtenOutCopy(text: string): PlainCopy | undefined {
+	if (text.length > PLAIN_READ_MAX) return undefined;
+	const words = plainWords(text);
+	const copy = words === undefined ? undefined : plainCopy(words);
+	if (copy === undefined || !copy.sources.every(writtenOut) || copy.destination.split("/").includes("..")) return undefined;
+	const fits = (form: string) => {
+		const inForm = plainWords(form);
+		return inForm !== undefined && plainCopy(inForm) !== undefined;
+	};
+	return inAnyReading(text, (form) => !fits(form)) ? undefined : copy;
 }
 
 /** Why shell text naming the session records is refused. */

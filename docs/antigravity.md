@@ -157,6 +157,12 @@ fixed, and so does any error.
 - the settings that load hooks and servers into its sessions: `~/.gemini/config/hooks.json`, `mcp_config.json` and
   `plugins/`, the CLI's `settings.json`, and a project's `.agents/hooks.json` and `.agents/mcp_config.json`.
 
+What you attach to a conversation (an image, say) lands in `brain/<conversation>/.user_uploaded/`. A file tool reads it
+but can't copy it, so one plain `cp` of those files out to a folder of yours is let through, and so is one plain
+`cat`, `head`, `tail`, `wc`, `ls` or `sed -n` of them: the full path written out (`~/…` or absolute), no option, pipe,
+redirection or `..`, and the copy going nowhere in Antigravity's own files. A file there that is a link is judged as
+where it leads.
+
 Its skills, rules and other customizations stay open. Shell text that runs Orrery's hook plumbing (`agy-hook`, and the
 other tools' hook commands) is refused too, as in every tool.
 

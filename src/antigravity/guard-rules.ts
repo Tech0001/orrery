@@ -78,6 +78,20 @@ export function agyNamed(form: string): boolean {
 export const AGY_READ_ONLY = (path: string) =>
 	`${path} is Antigravity's own (its conversation records, or a settings file that loads hooks and servers into its sessions): this agent may read it with a file tool, but no tool writes it.`;
 export const AGY_READ_ONLY_PLAIN = (path: string) => `${path} is Antigravity's own (its conversation records, or a settings file that loads hooks and servers into its sessions): no tool writes it.`;
+/**
+ * Whether `path` (absolute, as the shell places it) is where Antigravity keeps what the person attached to a
+ * conversation, `brain/<conversation>/.user_uploaded/`, or in it: written out, no ".." part, in the home's own case.
+ */
+export function agyUpload(path: string, home: string): boolean {
+	if (path.split("/").includes("..")) return false;
+	const brain = `${posix.join(home, ".gemini", "antigravity-cli", "brain")}/`;
+	const normal = posix.normalize(path);
+	if (!normal.startsWith(brain)) return false;
+	const [conversation, folder] = normal.slice(brain.length).split("/");
+	return conversation !== undefined && conversation !== "" && folder === ".user_uploaded";
+}
+
 export const AGY_COMMAND =
-	"This command names Antigravity's own files (its conversation records, or settings that load hooks and servers into its sessions): agents may read them with a file tool, not in shell commands, and write them with no tool.";
-export const AGY_COMMAND_PLAIN = "This command names Antigravity's own files (its conversation records, or settings that load hooks and servers into its sessions): read them with a file tool; no tool writes them.";
+	"This command names Antigravity's own files (its conversation records, or settings that load hooks and servers into its sessions): agents may read them with a file tool, not in shell commands, and write them with no tool. What you attached (brain/<conversation>/.user_uploaded/) may be copied out with one plain cp, or read with one plain cat, head, tail, wc, ls or sed -n, that writes the full path out.";
+export const AGY_COMMAND_PLAIN =
+	"This command names Antigravity's own files (its conversation records, or settings that load hooks and servers into its sessions): read them with a file tool; no tool writes them. What you attached (brain/<conversation>/.user_uploaded/) may be copied out with one plain cp, or read with one plain cat, head, tail, wc, ls or sed -n, that writes the full path out.";
