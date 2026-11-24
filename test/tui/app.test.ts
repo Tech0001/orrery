@@ -118,7 +118,7 @@ describe("the App and the Agents page", () => {
 		expect(text).toContain("Folder");
 		expect(text).toContain("/w/alpha");
 		expect(text).toContain("stopped: unknown model x/y");
-		expect(text).toContain("guessed");
+		expect(text).toContain("(default: press C to change)");
 		expect(text).toContain("all agents");
 		keys(app, ESC);
 		expect(screen(app)).toContain("Summaries");
