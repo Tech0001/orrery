@@ -332,6 +332,13 @@ summaries that get coarser with age. Between rebuilds, new lines only extend the
 of the prompt from cache. The [architecture guide](docs/architecture.md) covers the store, the view, scheduling and
 the trade-offs.
 
+**Turn receipts.** Memory keeps what was said, not every tool call. Beside each reply it also keeps a one-line
+receipt of the files the agent's file tools wrote in that turn, grouped by git repository with the branch and short
+commit each was on: `wrote ~/src/app (main @ a7e5272): src/parser.ts, test/parser.test.ts`. `zoom(id, 1)` on the
+reply shows it, and `search` finds a reply by a file it wrote or a commit; the view and the summaries never include
+it. Git is read from its own files, never run. A turn that only runs shell commands (a commit, a merge) has none, and a
+write that failed after the guard let it through is still listed.
+
 ## Safety
 
 Orrery guards credentials: an agent's tool calls that would read key files, your logins or another agent's memory are

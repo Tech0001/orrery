@@ -39,13 +39,17 @@ export function searchLog(store: MemoryStore, query: string, options: { limit?: 
 	const match = matcher(query);
 	const limit = options.limit ?? 20;
 	const hits: SearchHit[] = [];
+	// A reply's turn receipt is searched with it (a file it wrote, a commit), and shown when it is what matched.
+	const receipts = store.receipts();
 	for (let i = store.root.length - 1; i >= 0 && hits.length < limit; i--) {
 		const message = store.root[i];
-		const at = match(message.text);
+		const receipt = receipts.get(message.i);
+		const text = receipt === undefined ? message.text : `${message.text}\n(receipt: ${receipt})`;
+		const at = match(text);
 		if (at < 0) continue;
 		const start = Math.max(0, at - SNIPPET);
-		const end = Math.min(message.text.length, at + SNIPPET);
-		const snippet = `${start > 0 ? "…" : ""}${flatten(message.text.slice(start, end))}${end < message.text.length ? "…" : ""}`;
+		const end = Math.min(text.length, at + SNIPPET);
+		const snippet = `${start > 0 ? "…" : ""}${flatten(text.slice(start, end))}${end < text.length ? "…" : ""}`;
 		hits.push({ id: message.i, date: message.date, kind: message.kind, snippet });
 	}
 	return hits;

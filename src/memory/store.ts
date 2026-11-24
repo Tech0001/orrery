@@ -34,6 +34,14 @@ CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY, at TEXT NOT NULL, role
 /** The meta key holding the saved view, JSON [[l, i], …] (spec 2026-10-07-cache-view §2, Persistence). */
 export const VIEW_KEY = "view.parts";
 
+/**
+ * A turn's receipt, kept beside its reply `i` (src/agent/receipts.ts): what the agent's file tools wrote and the git
+ * branch and commit they were on. In meta, so a remote save carries it; read by zoom(i, 1) and search, never by the
+ * view or the summaries.
+ */
+export const RECEIPT_PREFIX = "receipt.";
+export const receiptKey = (i: number): string => `${RECEIPT_PREFIX}${i}`;
+
 // Text is stored as UTF-8 BLOBs: node:sqlite on Node 22 truncates TEXT values at an embedded NUL when reading,
 // and tool output may contain NULs. BLOBs round-trip exactly.
 function encode(text: string): Uint8Array {
@@ -379,6 +387,17 @@ export class MemoryStore {
 	getMeta(key: string): string | undefined {
 		const row = this.#db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined;
 		return row?.value;
+	}
+
+	/** Every turn receipt (receiptKey), by the reply it belongs to. */
+	receipts(): Map<number, string> {
+		const rows = this.#db.prepare("SELECT key, value FROM meta WHERE key >= ? AND key < ?").all(RECEIPT_PREFIX, `${RECEIPT_PREFIX.slice(0, -1)}/`) as { key: string; value: string }[];
+		const found = new Map<number, string>();
+		for (const row of rows) {
+			const i = Number(row.key.slice(RECEIPT_PREFIX.length));
+			if (Number.isSafeInteger(i) && i >= 0 && typeof row.value === "string") found.set(i, row.value);
+		}
+		return found;
 	}
 
 	/** The saved view: a writer reads it now; a read-only reader sees it as of its snapshot. */

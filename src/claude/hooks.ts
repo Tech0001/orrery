@@ -632,7 +632,7 @@ export function preToolUse(input: HookInput, ctx: HookContext): object | undefin
  * agent whose folder it runs in, else of an agent with no folder.
  */
 function writeRules(pick: ClaudePicked, config: HarnessConfig, projectDir: string): WriteRules {
-	if (pick.kind === "agent") return { workArea: workArea(pick.agent, projectDir), allowedRoots: allowedRootsFor(pick.agent, projectDir) };
+	if (pick.kind === "agent") return { workArea: workArea(pick.agent, projectDir), allowedRoots: allowedRootsFor(pick.agent, projectDir), notes: pick.agent.dir };
 	const nested = pick.kind === "nested" ? nestedRules(config, pick.outer, projectDir) : undefined;
 	if (nested !== undefined) return nested;
 	const here = agentForCwd(config, projectDir);

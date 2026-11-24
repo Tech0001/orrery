@@ -294,7 +294,7 @@ function sessionRules(ctx: GrokGuardContext, cwd: string, session: string | unde
 		...(ctx.alive === undefined ? {} : { alive: ctx.alive }),
 		...(ctx.plain === undefined ? {} : { plain: ctx.plain }),
 	});
-	if (pick.kind === "agent") return { plain: false, rules: { workArea: workArea(pick.agent, cwd), allowedRoots: allowedRootsFor(pick.agent, cwd) }, agent: pick.agent };
+	if (pick.kind === "agent") return { plain: false, rules: { workArea: workArea(pick.agent, cwd), allowedRoots: allowedRootsFor(pick.agent, cwd), notes: pick.agent.dir }, agent: pick.agent };
 	// A Grok whose SessionStart made no decision (a plain grok's decides nothing) is looked up now: was it started inside
 	// a session?
 	const nested = pick.kind === "nested" ? pick : pick.undecided === true ? grokNested(config, own, ctx.grokPid, ctx.plain) : undefined;

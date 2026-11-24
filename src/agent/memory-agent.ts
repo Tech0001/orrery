@@ -17,6 +17,7 @@ import type { LockState, Storage } from "../remote/types.ts";
 import { holdWriterLock, type WriterLock } from "../memory/store.ts";
 import { openYielding } from "./handover.ts";
 import { statusVersion } from "./status-file.ts";
+import { turnReceipts } from "./receipts.ts";
 
 type MemoryAgentOptions = { agent: AgentConfig; models: ModelSource; report(message: string): void; host?: Host; writer?: WriterLock };
 
@@ -165,6 +166,8 @@ export class MemoryAgent {
 			}
 			const choice = stored.choice ?? agent.compactor.model;
 			const view = new MemoryView(store, agent.memory.viewBytes);
+			// A live session's replies carry their turn's receipt (src/agent/receipts.ts).
+			view.receipts = turnReceipts(agent.dir);
 			// An unknown summary model must not cost the agent its memory, logging or guard: the agent opens and the
 			// compactor waits for /compactor to name a model it knows.
 			const ref = `${choice.provider}/${choice.modelId}`;

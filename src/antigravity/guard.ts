@@ -154,7 +154,7 @@ function sessionRules(ctx: AgyGuardContext, cwd: string, session: string | undef
 		...(ctx.alive === undefined ? {} : { alive: ctx.alive }),
 		...(ctx.plain === undefined ? {} : { plain: ctx.plain }),
 	});
-	if (pick.kind === "agent") return { plain: false, rules: { workArea: workArea(pick.agent, cwd), allowedRoots: allowedRootsFor(pick.agent, cwd) }, agent: pick.agent };
+	if (pick.kind === "agent") return { plain: false, rules: { workArea: workArea(pick.agent, cwd), allowedRoots: allowedRootsFor(pick.agent, cwd), notes: pick.agent.dir }, agent: pick.agent };
 	const nested = pick.kind === "nested" ? pick : pick.undecided === true ? antigravityNested(config, own, ctx.agyPid, ctx.plain) : undefined;
 	if (nested?.kind === "nested") {
 		const outer = nestedRules(config, nested.outer, cwd);

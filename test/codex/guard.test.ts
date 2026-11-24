@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -464,6 +464,14 @@ describe("the PreToolUse hook (runCodexGuard)", () => {
 		expect(runCodexGuard(call("view_image", view, cwd), ctx())).toBeUndefined();
 		expect(runCodexGuard(call("view_image", view, cwd), other)).toMatch(/another agent's memory view|sensitive/);
 		expect(runCodexGuard(call("apply_patch", { command: patch("*** Add File: ../top.ts", "+x") }, cwd), ctx({ env: {} }))).toMatch(/outside this agent's folder/);
+	});
+
+	it("notes each file a patch it lets through writes, for the turn's receipt, and none it refuses", () => {
+		const { t, ctx } = agentWorld();
+		const cwd = join(t.folder, "sub");
+		expect(runCodexGuard(call("apply_patch", { command: "*** Begin Patch\n*** Add File: a.ts\n+x\n*** Add File: ../b.ts\n+y\n*** End Patch" }, cwd), ctx())).toBeUndefined();
+		expect(runCodexGuard(call("apply_patch", { command: patch("*** Add File: /etc/x", "+x") }, cwd), ctx())).toMatch(/outside this agent's folder/);
+		expect(readFileSync(join(t.agent.dir, "turn-writes"), "utf8").split("\n").filter(Boolean).sort()).toEqual([join(t.folder, "b.ts"), join(cwd, "a.ts")].sort());
 	});
 
 	it("lets an agent with no folder write beside the folder it runs in, unless its allowed_roots says otherwise or that is home", () => {

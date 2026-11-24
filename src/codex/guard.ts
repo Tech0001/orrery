@@ -433,7 +433,7 @@ export function runCodexGuard(stdin: string | undefined, ctx: CodexGuardContext)
  * it runs.
  */
 function writeRules(pick: CodexPicked, ctx: CodexGuardContext, cwd: string): WriteRules {
-	if (pick.kind === "agent") return { workArea: workArea(pick.agent, cwd), allowedRoots: allowedRootsFor(pick.agent, cwd) };
+	if (pick.kind === "agent") return { workArea: workArea(pick.agent, cwd), allowedRoots: allowedRootsFor(pick.agent, cwd), notes: pick.agent.dir };
 	const nested = pick.kind === "nested" ? pick : pick.undecided === true ? codexNested(ctx.config, ctx.env, ctx.codexPid, ctx.plain) : undefined;
 	const outer = nested?.kind === "nested" ? nestedRules(ctx.config, nested.outer, cwd) : undefined;
 	return outer ?? { workArea: workArea({}, cwd), allowedRoots: [] };

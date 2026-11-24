@@ -139,6 +139,7 @@ import { AGY_READ_ONLY, AGY_READ_ONLY_PLAIN, agyKeeps, agyRule } from "../antigr
 import { GROK_READ_ONLY, GROK_READ_ONLY_PLAIN, type GrokRule, grokFolders, grokLoads, grokNear, grokRule } from "../grok/guard-rules.ts";
 import type { HarnessConfig, AgentConfig } from "./config.ts";
 import { type CallOptions, checkToolCall } from "./guard-call.ts";
+import { noteWrite } from "./receipts.ts";
 import {
 	APP_READ_ONLY,
 	APP_READ_ONLY_PLAIN,
@@ -269,6 +270,8 @@ export interface PathGuardOptions extends CallOptions {
 	 * when it is this folder, not wherever --config or ORRERY_CONFIG puts a config (whose folder's app/ is a project's own).
 	 */
 	readonly orreryHome?: string;
+	/** The agent's own session's data folder: each write the guard lets through is noted there (WriteRules.notes). */
+	readonly notes?: string;
 }
 
 /** What pathJudge works out from its options before it judges any path: each rule set, its paths where they really are. */
@@ -1018,7 +1021,10 @@ function agentJudge(options: PathGuardOptions, rules: PathRules): Judge {
 		// key), judged with every rule its own call would get, [guard] protect included; then a write into the tools'
 		// session records where the tool resolves it (the real path is judged there).
 		const rest = checkToolCall({ name: toolName, arguments: { ...input, path: target } }, { ...roots, judgeShellRead }, views, config, protect);
-		return rest ?? (writes && transcriptPath(resolved, transcripts) ? TRANSCRIPT_READ_ONLY(raw) : undefined);
+		const verdict = rest ?? (writes && transcriptPath(resolved, transcripts) ? TRANSCRIPT_READ_ONLY(raw) : undefined);
+		// A write let through in the agent's own session goes on the turn's receipt (src/agent/receipts.ts).
+		if (verdict === undefined && writes && options.notes !== undefined) noteWrite(options.notes, target);
+		return verdict;
 	};
 }
 

@@ -140,10 +140,11 @@ export function openCodeGuardOptions(
 	const home = context.home ?? homedir();
 	const logins = openCodeLogins(env, home);
 	const tilde = context.home ?? openCodeHome(env);
-	const rules = context.rules ?? { workArea: workArea(agent ?? {}, cwd), allowedRoots: agent === undefined ? [] : allowedRootsFor(agent, cwd) };
+	const rules = context.rules ?? { workArea: workArea(agent ?? {}, cwd), allowedRoots: agent === undefined ? [] : allowedRootsFor(agent, cwd), ...(agent === undefined ? {} : { notes: agent.dir }) };
 	return {
 		folder: rules.workArea,
 		allowedRoots: [...rules.allowedRoots, ...openCodeStateRoots(tilde)],
+		...(rules.notes === undefined ? {} : { notes: rules.notes }),
 		cwd: resolve(cwd),
 		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...movedConfigDirCredentials(env), ...ompCredentials(env, home), ...logins],
 		orreryData: config.dataDir,

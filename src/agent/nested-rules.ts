@@ -14,6 +14,11 @@ import { agentNamed, allowedRootsFor, workArea } from "./pick.ts";
 export interface WriteRules {
 	readonly workArea: string;
 	readonly allowedRoots: readonly string[];
+	/**
+	 * The data folder of the agent whose own session this is, where the guard notes the writes it lets through for the
+	 * turn's receipt (src/agent/receipts.ts). Absent for a nested, refused or plain session: they record nothing.
+	 */
+	readonly notes?: string;
 }
 
 /**

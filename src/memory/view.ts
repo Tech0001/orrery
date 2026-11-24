@@ -5,7 +5,7 @@
 
 import { flatten, localIso } from "./bytes.ts";
 import { type LineSizes, Sawtooth } from "./sawtooth.ts";
-import { type MemoryStore, VIEW_KEY } from "./store.ts";
+import { type MemoryStore, receiptKey, VIEW_KEY } from "./store.ts";
 import { bitLength, children, type Kind, type Message, messageSource, type NewMessage, Part, type UsageRow } from "./types.ts";
 
 export const PLACEHOLDER = "(not summarized yet: zoom it)";
@@ -67,6 +67,14 @@ export function parseSavedView(saved: string | undefined, store: MemoryStore): P
 		end = part.end;
 	}
 	return parts;
+}
+
+/**
+ * Where a live session's turn receipts come from (src/agent/receipts.ts): what the guard noted the turn's file tools
+ * wrote, taken (and so cleared) when the turn's reply is recorded. Undefined, or nothing to say: no receipt.
+ */
+export interface ReceiptSource {
+	take(): string | undefined;
 }
 
 export class MemoryView {
@@ -131,7 +139,13 @@ export class MemoryView {
 		return this.appendBatch([{ kind, text, date }])[0];
 	}
 
-	/** Appends messages, each a new line at the end; nothing merges. The view is saved in the same transaction. */
+	/** A live session's turn receipts (ReceiptSource); none for an import or a reader. */
+	receipts: ReceiptSource | undefined;
+
+	/**
+	 * Appends messages, each a new line at the end; nothing merges. The view is saved in the same transaction, and so is
+	 * the turn's receipt (receipts), beside the batch's last reply.
+	 */
 	appendBatch(
 		items: readonly NewMessage[],
 		meta: Readonly<Record<string, string>> = {},
@@ -139,7 +153,15 @@ export class MemoryView {
 	): Message[] {
 		const total = this.store.root.length;
 		const leaves = items.map((_, k) => new Part(0, total + k));
-		const messages = this.store.appendBatch(items, { ...meta, [VIEW_KEY]: serializeView([...this.#saw.parts, ...leaves]) }, usage);
+		const reply = this.receipts === undefined ? -1 : items.findLastIndex((item) => item.kind === "talk");
+		let receipt: string | undefined;
+		try {
+			receipt = reply === -1 ? undefined : this.receipts?.take();
+		} catch {
+			receipt = undefined; // A receipt never costs a turn its recording.
+		}
+		const kept = receipt === undefined ? meta : { ...meta, [receiptKey(total + reply)]: receipt };
+		const messages = this.store.appendBatch(items, { ...kept, [VIEW_KEY]: serializeView([...this.#saw.parts, ...leaves]) }, usage);
 		this.#saw.append(leaves);
 		this.changes.notify();
 		return messages;
@@ -201,7 +223,10 @@ export class MemoryView {
 		const total = this.store.root.length;
 		if (start < 0 || count < 1 || start + count > total || count > 2 ** 30) return `No line ${start}+${count}.`;
 		if ((count & (count - 1)) !== 0 || start % count !== 0) return `No line ${start}+${count}.`;
-		if (count === 1) return `${start}+0|${messageSource(this.store.root[start])}`;
+		if (count === 1) {
+			const receipt = this.store.getMeta(receiptKey(start));
+			return `${start}+0|${messageSource(this.store.root[start])}${receipt === undefined ? "" : `\n(receipt: ${flatten(receipt)})`}`;
+		}
 		const pair = children(new Part(bitLength(count) - 1, start / count));
 		if (pair.some((child) => !this.store.hasNode(child))) return `No line ${start}+${count}.`;
 		return pair.map((child) => `${child.address}|${flatten(this.text(child))}`).join("\n");
