@@ -622,13 +622,19 @@ const HELP_FLAGS: ReadonlySet<string> = new Set(["--help", "-h"]);
 /**
  * Whether a refused command, its word ending at `i`, is only asked for its help: the simple command ends right after
  * it when a help flag came before it (orrery --help agent), or after exactly one help flag (orrery agent --help,
- * orrery agent -h). Any other word, `--` (orrery agent X -- --help hands the flag to the tool), a redirection or a
- * substitution, and it is the command.
+ * orrery agent -h), and at most a `2>&1` after it (errors to the output, where agents read help). Any other word, `--`
+ * (orrery agent X -- --help hands the flag to the tool), another redirection or a substitution, and it is the command.
  */
 function helpOnly(form: string, i: number, work: { left: number }, before: boolean): boolean {
 	const words: string[] = [];
+	let merged = false;
 	for (;;) {
 		i = skipBlanks(form, i);
+		if (!merged && form.startsWith("2>&1", i) && (i + 4 === form.length || [" ", "\t", ";", "|", "&", ")", "\n"].includes(form.charAt(i + 4)))) {
+			merged = true;
+			i += 4;
+			continue;
+		}
 		if (i >= form.length || COMMAND_ENDS.has(form.charAt(i)) || form.charAt(i) === ")") break;
 		const word = wordAt(form, i, work);
 		if (word.unclear || word.end === i || words.push(word.text) > 1) return false;

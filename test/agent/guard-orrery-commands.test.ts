@@ -422,6 +422,9 @@ describe("Orrery's commands in shell text", () => {
 			"(orrery remote -h)",
 			"orrery agent --help && echo ok",
 			"orrery --config /tmp/c.toml agent --help",
+			"orrery agent --help 2>&1",
+			"orrery agent --help 2>&1 | head -40",
+			"orrery --help agent 2>&1",
 		];
 		for (const text of texts) expect([text, runsOrreryCommand(text)]).toEqual([text, undefined]);
 	});
@@ -439,6 +442,10 @@ describe("Orrery's commands in shell text", () => {
 			"orrery -- agent --help",
 			"orrery agent --help; orrery agent Atlas",
 			"orrery agent --helper",
+			"orrery agent --help 2>&1 2>&1",
+			"orrery agent --help 2>&1x",
+			"orrery agent --help 2>/tmp/x",
+			"orrery agent 2>&1 Atlas",
 		];
 		for (const text of texts) expect([text, runsOrreryCommand(text)]).toEqual([text, "agent"]);
 	});
