@@ -118,7 +118,7 @@ describe("the App and the Agents page", () => {
 		expect(text).toContain("Folder");
 		expect(text).toContain("/w/alpha");
 		expect(text).toContain("stopped: unknown model x/y");
-		expect(text).toContain("guessed");
+		expect(text).toContain("(default: press C to change)");
 		expect(text).toContain("all agents");
 		keys(app, ESC);
 		expect(screen(app)).toContain("Summaries");
@@ -419,7 +419,7 @@ describe("sorting the Agents list with s", () => {
 		const app = makeApp(fakeDeps({}, agents), [agentsPage]);
 		expect(hint(app)).toMatch(/^Enter open · i details · N new · M model · E instructions · C settings · s sort: config/);
 		keys(app, "i");
-		expect(hint(app)).toMatch(/^Esc back · Enter open · M model · E instructions · C settings · B browse · A archive/);
+		expect(hint(app)).toMatch(/^Esc back · Enter open · M model · E instructions · C settings · B browse · R rename · A archive/);
 	});
 
 	it("fits its hint and every line in the window", () => {

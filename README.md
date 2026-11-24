@@ -92,7 +92,7 @@ agent's folder, it asks whether to open the agent here or there. Its tool starts
 
 | Page | Keys |
 | --- | --- |
-| **1 Agents** | **Enter** open · **i** details · **N** new · **M** summary model · **E** instructions · **C** settings · **s** sort · **/** filter. On an agent's details: **B** browse its memory, **A** archive it |
+| **1 Agents** | **Enter** open · **i** details · **N** new · **M** summary model · **E** instructions · **C** settings · **s** sort · **/** filter. On an agent's details: **B** browse its memory, **R** rename it, **A** archive it |
 | **2 Logins** | **A** add or replace a sign-in or key · **T** test · **D** remove · **R** add a remote |
 | **3 Usage** | **+** / **-** more or fewer days |
 | **4 Tools** | **Enter** details · **I** install or repair Orrery's side of pi, OMP, Claude Code, Grok or Antigravity |
@@ -332,6 +332,13 @@ summaries that get coarser with age. Between rebuilds, new lines only extend the
 of the prompt from cache. The [architecture guide](docs/architecture.md) covers the store, the view, scheduling and
 the trade-offs.
 
+**Turn receipts.** Memory keeps what was said, not every tool call. Beside each reply it also keeps a one-line
+receipt of the files the agent's file tools wrote in that turn, grouped by git repository with the branch and short
+commit each was on: `wrote ~/src/app (main @ a7e5272): src/parser.ts, test/parser.test.ts`. `zoom(id, 1)` on the
+reply shows it, and `search` finds a reply by a file it wrote or a commit; the view and the summaries never include
+it. Git is read from its own files, never run. A turn that only runs shell commands (a commit, a merge) has none, and a
+write that failed after the guard let it through is still listed.
+
 ## Safety
 
 Orrery guards credentials: an agent's tool calls that would read key files, your logins or another agent's memory are
@@ -350,8 +357,10 @@ refused, and Orrery's own config and program are read-only to agents. Out of the
 
 You edit those files yourself. A project's own `.npmrc`, `.pypirc`, `.azure` or `.wrangler` is not a login and stays
 open, and so do `npm`, `cargo`, `gcloud`, `az`, `wrangler`, `pass` and `op` themselves: only naming the protected files
-and folders is refused. An agent's file edits also stay inside the folder it was opened in; `allowed_roots =
-["/abs/path"]` in its `[agents.<Name>]` section adds more.
+and folders is refused. An agent's file edits also stay inside its folder and that folder's parent, so it can work in
+the projects beside it. An agent with no folder gets the folder it was opened in and that folder's parent, unless the
+parent is your home folder or above it. `allowed_roots = ["/abs/path"]` in its `[agents.<Name>]` section sets the
+roots instead of the parent, and `allowed_roots = []` keeps it to its folder.
 
 **You can add your own files and folders.** List them under `[guard]` in `~/.orrery/config.toml` (or the file
 `ORRERY_CONFIG` names), and every agent is kept from them, in every tool:
@@ -401,7 +410,7 @@ only:
   grok-status`, among them).
 
 Everything else is refused, with a message that says to run it in your own terminal or the TUI: `orrery agent` (open,
-add, set, edit, archive, push, pull and the rest), `run`, `import` (the dry run too), `compact`, `backup`, `restore`,
+add, set, edit, archive, rename, push, pull and the rest), `run`, `import` (the dry run too), `compact`, `backup`, `restore`,
 `login`, `logins`, `logout`, `remote` (`remote key` among them), `trust-host`, `claude-setup`, `tools`, `setup`,
 `install`, `update`, `uninstall`, and the TUI. A read of an agent it may not read says how to allow it:
 `Atlas may not read Birch. Allow it in the TUI (C, Reads) or with: orrery agent set Atlas --reads Birch`. Inside a

@@ -570,6 +570,7 @@ function commandAfter(form: string, at: number, work: { left: number }, refused:
 	let words = 0;
 	let value = false;
 	let positional = false;
+	let help = false;
 	for (;;) {
 		i = skipBlanks(form, i);
 		if (i >= form.length) return undefined;
@@ -606,11 +607,40 @@ function commandAfter(form: string, at: number, work: { left: number }, refused:
 			const name = equals === -1 ? text : text.slice(0, equals);
 			if (ORRERY_OPTIONS.valued.has(name)) value = equals === -1;
 			else if (equals !== -1 || !ORRERY_OPTIONS.flags.has(name)) return { unclear: start };
+			else if (HELP_FLAGS.has(name)) help = true;
 			continue;
 		}
 		const command = commandName(text, refused);
-		return command === undefined ? undefined : { refused: command };
+		if (command === undefined) return undefined;
+		return !positional && helpOnly(form, i, work, help) ? undefined : { refused: command };
 	}
+}
+
+/** The CLI's help flags: with any command, main.ts prints that command's help and runs nothing else. */
+const HELP_FLAGS: ReadonlySet<string> = new Set(["--help", "-h"]);
+
+/**
+ * Whether a refused command, its word ending at `i`, is only asked for its help: the simple command ends right after
+ * it when a help flag came before it (orrery --help agent), or after exactly one help flag (orrery agent --help,
+ * orrery agent -h), and at most a `2>&1` after it (errors to the output, where agents read help). Any other word, `--`
+ * (orrery agent X -- --help hands the flag to the tool), another redirection or a substitution, and it is the command.
+ */
+function helpOnly(form: string, i: number, work: { left: number }, before: boolean): boolean {
+	const words: string[] = [];
+	let merged = false;
+	for (;;) {
+		i = skipBlanks(form, i);
+		if (!merged && form.startsWith("2>&1", i) && (i + 4 === form.length || [" ", "\t", ";", "|", "&", ")", "\n"].includes(form.charAt(i + 4)))) {
+			merged = true;
+			i += 4;
+			continue;
+		}
+		if (i >= form.length || COMMAND_ENDS.has(form.charAt(i)) || form.charAt(i) === ")") break;
+		const word = wordAt(form, i, work);
+		if (word.unclear || word.end === i || words.push(word.text) > 1) return false;
+		i = word.end;
+	}
+	return before ? words.length === 0 : words.length === 1 && HELP_FLAGS.has(words[0] as string);
 }
 
 /**
@@ -731,11 +761,11 @@ export function runsOrreryCommand(text: string): string | undefined {
 
 /** Why shell text that runs one of them is refused (runsOrreryCommand). */
 export const ORRERY_COMMAND_REFUSED = (command: string) =>
-	`orrery ${command} can't run from an agent's shell: agents can't change memory or settings (only orrery help, status, usage, browse, compactor and --version run here). Run it in your own terminal or the TUI. Text that only names it is refused too: search with a file tool, and give git a message that names it from a file (git commit -F).`;
+	`orrery ${command} can't run from an agent's shell: agents can't change memory or settings (only orrery help, status, usage, browse, compactor, --version and any command's --help run here). Run it in your own terminal or the TUI. Text that only names it is refused too: search with a file tool, and give git a message that names it from a file (git commit -F).`;
 
 /** The same in a session that is no agent's (GuardOptions.orreryOnly, PLAIN_REFUSED_COMMANDS). */
 export const ORRERY_COMMAND_REFUSED_PLAIN = (command: string) =>
-	`orrery ${command} can't run from a session that is no agent's: it can't read or change Orrery's memory or settings (only orrery help, status, usage and --version run there). Run it in your own terminal or the TUI. Text that only names it is refused too: search with a file tool, and give git a message that names it from a file (git commit -F).`;
+	`orrery ${command} can't run from a session that is no agent's: it can't read or change Orrery's memory or settings (only orrery help, status, usage, --version and any command's --help run there). Run it in your own terminal or the TUI. Text that only names it is refused too: search with a file tool, and give git a message that names it from a file (git commit -F).`;
 
 /**
  * How far around a brace group the readings look (Reading.pieces) for the built-in rules: room for the longest fixed
@@ -1665,8 +1695,43 @@ export function grokRecordsPath(path: string, rule: Pick<TranscriptRule, "grok">
  */
 export function writtenOutRead(text: string): SkillShellRead | undefined {
 	const read = skillShellRead(text);
-	const written = (path: string) => (path === "~" || path.startsWith("~/") || path.startsWith("/")) && !path.split("/").includes("..");
-	return read !== undefined && read.paths.every(written) ? read : undefined;
+	return read !== undefined && read.paths.every(writtenOut) ? read : undefined;
+}
+
+/** A path a shell places without the guard knowing its folder: absolute, "~" or "~/…", with no ".." part. */
+function writtenOut(path: string): boolean {
+	return (path === "~" || path.startsWith("~/") || path.startsWith("/")) && !path.split("/").includes("..");
+}
+
+/** A plain copy (writtenOutCopy): the files it reads, and where it writes, as the shell hands them over. */
+export interface PlainCopy {
+	readonly sources: readonly string[];
+	readonly destination: string;
+}
+
+/** The plain copy `words` make: exactly `cp <source>... <destination>`, no option; undefined otherwise. */
+function plainCopy(words: readonly string[]): PlainCopy | undefined {
+	const [program, ...rest] = words;
+	if (program !== "cp" || rest.length < 2 || rest.some((word) => word === "" || word.startsWith("-"))) return undefined;
+	return { sources: rest.slice(0, -1), destination: rest.at(-1) as string };
+}
+
+/**
+ * The plain copy shell text is, in the plain read's grammar (one simple command, its words plain path characters, the
+ * same copy in every reading of it), its sources written out (writtenOut) and its destination with no ".." part;
+ * undefined otherwise. What the person attached in Antigravity is copied so (guard-call.ts): a file tool can't copy an
+ * image.
+ */
+export function writtenOutCopy(text: string): PlainCopy | undefined {
+	if (text.length > PLAIN_READ_MAX) return undefined;
+	const words = plainWords(text);
+	const copy = words === undefined ? undefined : plainCopy(words);
+	if (copy === undefined || !copy.sources.every(writtenOut) || copy.destination.split("/").includes("..")) return undefined;
+	const fits = (form: string) => {
+		const inForm = plainWords(form);
+		return inForm !== undefined && plainCopy(inForm) !== undefined;
+	};
+	return inAnyReading(text, (form) => !fits(form)) ? undefined : copy;
 }
 
 /** Why shell text naming the session records is refused. */

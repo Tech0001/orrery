@@ -432,3 +432,31 @@ export function archiveAgentAction(app: App, row: AgentRow | undefined): void {
 		return `Archived ${row.name}.`;
 	});
 }
+
+/**
+ * R: renames a closed agent (src/agent/rename.ts): its config block, the reads that name it and its data folder. Asks
+ * for the new name; the rename itself checks everything again, since the agent may have been opened meanwhile.
+ */
+export function renameAgentAction(app: App, row: AgentRow | undefined): void {
+	const rename = app.deps.renameAgent;
+	if (row === undefined || app.config === undefined || rename === undefined) return;
+	const refusal = archiveRefusal(row) ?? (row.remote === undefined ? undefined : `${row.name} has a remote (${row.remote}), which keeps its copy under its name; rename it after making it local.`);
+	if (refusal !== undefined) {
+		app.say(refusal, "error");
+		return;
+	}
+	if (!app.deps.configWritable()) {
+		app.say(readOnlyConfigText(app.deps.configPath), "error");
+		return;
+	}
+	app.run(`Renaming ${row.name}`, async () => {
+		const typed = await app.host.open(new InputModal(`Rename ${row.name} to (letters, digits, - and _):`, row.name));
+		const name = typed?.trim();
+		if (name === undefined || name === "" || name === row.name) return undefined;
+		const problem = agentNameProblem(name);
+		if (problem !== undefined) throw new Error(problem);
+		const said = rename(row.name, name);
+		await app.host.open(new MessageModal(`Renamed ${row.name}`, said.trim()));
+		return said.split("\n")[0];
+	});
+}

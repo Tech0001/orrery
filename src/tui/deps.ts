@@ -19,6 +19,7 @@ import { applyFix, checkCodexHooks, checkOpenCodePlugin, runTool } from "../agen
 import { loginRows, removeLogin, saveKey, signIn } from "../agent/logins.ts";
 import { agentOverview, agentUsage, OverviewCache } from "../agent/overview.ts";
 import { versionNumber } from "../agent/running.ts";
+import { renamedText, renameAgentNow } from "../agent/rename.ts";
 import { openSummarySources, testChoice } from "../agent/summary-sources.ts";
 import { checkTools, probeOri, installSteps, runningRoot, runningVersion, wiringRoot, runInstall } from "../agent/tools.ts";
 import { settingsDataDir } from "../grok/settings-keys.ts";
@@ -82,6 +83,7 @@ export function realDeps(options: { configPath: string; tui: TUI; quit: () => vo
 		addRemote: (name, request, interaction) => addRemoteCommand(current(), name, request, interaction),
 		remoteAgents: (config, name) => openStorage(config, name).list(),
 		pullAgent: (name, remote, folder) => pullAgentCommand(current(), name, remote, folder),
+		renameAgent: (name, next) => renamedText(renameAgentNow(current(), name, next)),
 		pushAgent: (name, remote) => agentRemoteCommand(current(), ["push", name], { to: remote }),
 		localAgent: (name) => agentRemoteCommand(current(), ["local", name]),
 		usage: (config, days, only) => agentUsage(config, days, only),

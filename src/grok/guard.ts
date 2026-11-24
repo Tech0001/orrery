@@ -58,7 +58,7 @@ import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { GuardCall } from "../agent/guard-paths.ts";
 import { NEW_TEXT } from "../agent/guard-rules.ts";
 import { nestedRules, type WriteRules } from "../agent/nested-rules.ts";
-import { AGENT_ENV, workArea } from "../agent/pick.ts";
+import { AGENT_ENV, allowedRootsFor, workArea } from "../agent/pick.ts";
 import { opensHere, type PlainDeps } from "../agent/plain-nested.ts";
 import { processArgv } from "../agent/process.ts";
 import { agentGuardOptions, type ClaudeGuardOptions, claudeGuard, plainGuardOptions } from "../claude/guard.ts";
@@ -294,7 +294,7 @@ function sessionRules(ctx: GrokGuardContext, cwd: string, session: string | unde
 		...(ctx.alive === undefined ? {} : { alive: ctx.alive }),
 		...(ctx.plain === undefined ? {} : { plain: ctx.plain }),
 	});
-	if (pick.kind === "agent") return { plain: false, rules: { workArea: workArea(pick.agent, cwd), allowedRoots: pick.agent.allowedRoots }, agent: pick.agent };
+	if (pick.kind === "agent") return { plain: false, rules: { workArea: workArea(pick.agent, cwd), allowedRoots: allowedRootsFor(pick.agent, cwd), notes: pick.agent.dir }, agent: pick.agent };
 	// A Grok whose SessionStart made no decision (a plain grok's decides nothing) is looked up now: was it started inside
 	// a session?
 	const nested = pick.kind === "nested" ? pick : pick.undecided === true ? grokNested(config, own, ctx.grokPid, ctx.plain) : undefined;

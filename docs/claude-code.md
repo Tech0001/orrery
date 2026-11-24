@@ -392,9 +392,10 @@ runs too, with Orrery's own rules only:
   command that names their folders is refused, but one plain read of Claude Code's or Codex's (below).
 - Grok's folder (`~/.grok`), but the parts Grok's own features write (its memory, skills, workflows and the like): read,
   never written, and not named in a Bash command ([Grok](grok.md#the-guard)).
-- A Bash command that runs or names an `orrery` command other than `help`, `--version`, `status` and `usage`, or the
-  hook plumbing: `orrery browse can't run from a session that is no agent's: it can't read or change Orrery's memory or
-  settings (only orrery help, status, usage and --version run there). Run it in your own terminal or the TUI. …`
+- A Bash command that runs or names an `orrery` command other than `help`, `--version`, `status` and `usage` (or a
+  command's own `--help`), or the hook plumbing: `orrery browse can't run from a session that is no agent's: it can't
+  read or change Orrery's memory or settings (only orrery help, status, usage, --version and any command's --help run
+  there). Run it in your own terminal or the TUI. …`
 - A Grep, Glob or LS whose folder holds Orrery's data folder (a search from your home folder, say), and a Grep whose
   folder holds an agent's memory view (a folder above your agents' folders, say): search a narrower folder.
 - A call too large to check, as below.

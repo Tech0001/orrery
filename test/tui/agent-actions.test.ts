@@ -433,7 +433,7 @@ describe("Enter opens an agent", () => {
 		const deps = fakeDeps({ cwd: folder, loadConfig: () => alpha(folder), tools: () => [tool("pi")], launch: async (plan) => (plans.push(plan), { code: 0, signal: null }) }, [row({ name: "Alpha", folder: folder })]);
 		const app = makeApp(deps, [agentsPage]);
 		keys(app, "i");
-		expect(screen(app)).toContain("Enter or L open · M summary model · E instructions · C settings · B browse memory · A archive · Esc back");
+		expect(screen(app)).toContain("Enter or L open · M summary model · E instructions · C settings · B browse memory · R rename · A archive · Esc back");
 		keys(app, ENTER);
 		await app.idle();
 		expect(plans.map((plan) => plan.cwd)).toEqual([folder]);
@@ -676,7 +676,7 @@ describe("N names", () => {
 		await answer(app, "New agent:", ENTER);
 		await answer(app, "New agent's name", ...typed("Archive"), ENTER);
 		await app.idle();
-		expect(screen(app)).toContain("Archive is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); pick another name.");
+		expect(screen(app)).toContain("Archive is a word orrery agent uses (add, set, edit, archive, rename, push, pull, takeover, local); pick another name.");
 		expect(deps.edits).toEqual([]);
 	});
 });
@@ -792,6 +792,64 @@ describe("N empty agent with no default folder", () => {
 		await app.idle();
 		expect(fixes).toEqual([]);
 		expect(screen(app)).toContain("Added Nomad.");
+	});
+});
+
+describe("R rename", () => {
+	const BACKSPACE = "\x7f";
+	const renaming = (fields: Partial<ReturnType<typeof row>> = {}) => {
+		const deps = fakeDeps();
+		deps.overview = (config) => [...config.agents.values()].map((agent) => row({ name: agent.name, folder: agent.folder, dataDir: agent.dir, ...(agent.name === "Alpha" ? fields : {}) }));
+		const calls: [string, string][] = [];
+		deps.renameAgent = (name, next) => {
+			calls.push([name, next]);
+			return `Renamed ${name} to ${next}. Its memory is in /d/agents/${next}.\nIts memory still says ${name} where earlier messages did. Open it as ${next} from now on.\n`;
+		};
+		return { deps, calls };
+	};
+
+	it("asks for the new name, renames, and shows all it said", async () => {
+		const { deps, calls } = renaming();
+		const app = makeApp(deps, [agentsPage]);
+		keys(app, "R");
+		await answer(app, "Rename Alpha to", ...Array(5).fill(BACKSPACE), ...typed("Gamma"), ENTER);
+		await answer(app, "Renamed Alpha");
+		expect((app.host.current as unknown as { text: string }).text).toContain("Open it as Gamma from now on.");
+		await answer(app, "Renamed Alpha", ENTER);
+		await app.idle();
+		expect(calls).toEqual([["Alpha", "Gamma"]]);
+		expect(screen(app)).toContain("Renamed Alpha to Gamma.");
+	});
+
+	it("does nothing on Esc or the same name, and refuses a bad name", async () => {
+		const { deps, calls } = renaming();
+		const app = makeApp(deps, [agentsPage]);
+		keys(app, "r");
+		await answer(app, "Rename Alpha to", ESC);
+		await app.idle();
+		keys(app, "r");
+		await answer(app, "Rename Alpha to", ENTER);
+		await app.idle();
+		keys(app, "r");
+		await answer(app, "Rename Alpha to", ...Array(5).fill(BACKSPACE), ...typed("Archive"), ENTER);
+		await app.idle();
+		expect(calls).toEqual([]);
+		expect(screen(app)).toContain("Archive is a word orrery agent uses");
+	});
+
+	it("refuses an open agent and one with a remote before asking", async () => {
+		for (const [fields, said] of [
+			[{ state: "open", openIn: "pi" }, "Alpha is open in pi; close it first."],
+			[{ remote: "home" }, "Alpha has a remote (home)"],
+		] as const) {
+			const { deps, calls } = renaming(fields);
+			const app = makeApp(deps, [agentsPage]);
+			keys(app, "R");
+			await app.idle();
+			expect(app.host.current).toBeUndefined();
+			expect(screen(app)).toContain(said);
+			expect(calls).toEqual([]);
+		}
 	});
 });
 

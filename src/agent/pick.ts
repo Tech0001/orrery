@@ -17,8 +17,9 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { type HarnessConfig, insideFolder, type AgentConfig, agentForCwd } from "./config.ts";
 import { beingMade, publish, removeStale, stray, temporaryOf } from "./exclusive.ts";
 import { readPrivate } from "./private-file.ts";
@@ -286,6 +287,34 @@ export function newToken(): string {
 /** Where a session of `agent` works: its folder when the session runs in it or below it, else the session's folder. */
 export function workArea(agent: Pick<AgentConfig, "folder">, cwd: string): string {
 	return agent.folder !== undefined && insideFolder(agent, cwd) ? agent.folder : resolve(cwd);
+}
+
+/**
+ * Where else a session of `agent` in `cwd` may write: the config's allowed roots, or for an agent with no folder and no
+ * allowed_roots key (AgentConfig.rootsFromCwd) the parent of the folder the session runs in, as an agent with a folder
+ * gets its folder's parent. Not when that parent is the home folder, holds it, or is the filesystem's root (a session
+ * opened in a folder of home's own, home itself or above it): the session's folder alone then. Compared where each
+ * really is (links followed), ignoring case, so a link or another spelling of home is home.
+ */
+export function allowedRootsFor(agent: Pick<AgentConfig, "allowedRoots" | "rootsFromCwd">, cwd: string, home: string = homedir()): readonly string[] {
+	if (agent.rootsFromCwd !== true) return agent.allowedRoots;
+	const parent = dirname(resolve(cwd));
+	if (parent === dirname(parent)) return [];
+	const [there, top] = [realOrResolved(parent), realOrResolved(home)].map((path) => path.replace(/\/+$/, "").toLowerCase()) as [string, string];
+	return there === "" || top === there || top.startsWith(`${there}/`) ? [] : [parent];
+}
+
+/** `path` where it really is, as far as it exists (links followed), or resolved as written. */
+function realOrResolved(path: string): string {
+	const rest: string[] = [];
+	for (let at = resolve(path); ; at = dirname(at)) {
+		try {
+			return join(realpathSync(at), ...rest.reverse());
+		} catch {
+			if (dirname(at) === at) return resolve(path);
+			rest.push(basename(at));
+		}
+	}
 }
 
 /** What a session whose ORRERY_AGENT was refused says, once. */

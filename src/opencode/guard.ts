@@ -55,7 +55,7 @@ import type { AgentConfig, HarnessConfig } from "../agent/config.ts";
 import { agentViews, DATABASE_NAME, GuardCall, movedAgentDirCredentials, ompCredentials, openCodeCredentials, openCodeOf, realTarget } from "../agent/guard-paths.ts";
 import { inAnyReading, NEW_TEXT, type NewText, OPENCODE_COMMAND, openCodeNamed, type OpenCodeRule, openCodeRule, openCodeSkillPath, patchNewText, SKILL_SHELL, skillsNamed } from "../agent/guard-rules.ts";
 import type { WriteRules } from "../agent/nested-rules.ts";
-import { workArea } from "../agent/pick.ts";
+import { allowedRootsFor, workArea } from "../agent/pick.ts";
 import { ownFolder } from "../agent/private-file.ts";
 import { type ClaudeGuardOptions, claudeGuard, movedConfigDirCredentials } from "../claude/guard.ts";
 
@@ -140,10 +140,11 @@ export function openCodeGuardOptions(
 	const home = context.home ?? homedir();
 	const logins = openCodeLogins(env, home);
 	const tilde = context.home ?? openCodeHome(env);
-	const rules = context.rules ?? { workArea: workArea(agent ?? {}, cwd), allowedRoots: agent?.allowedRoots ?? [] };
+	const rules = context.rules ?? { workArea: workArea(agent ?? {}, cwd), allowedRoots: agent === undefined ? [] : allowedRootsFor(agent, cwd), ...(agent === undefined ? {} : { notes: agent.dir }) };
 	return {
 		folder: rules.workArea,
 		allowedRoots: [...rules.allowedRoots, ...openCodeStateRoots(tilde)],
+		...(rules.notes === undefined ? {} : { notes: rules.notes }),
 		cwd: resolve(cwd),
 		credentials: [config.credentialsPath, ...movedAgentDirCredentials(env, home), ...movedConfigDirCredentials(env), ...ompCredentials(env, home), ...logins],
 		orreryData: config.dataDir,

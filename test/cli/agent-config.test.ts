@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanEnv, cliCommand } from "../claude/support.ts";
 import { localIso } from "../../src/memory/index.ts";
+import { MemoryStore } from "../../src/memory/store.ts";
 import { tempDir } from "../agent/support.ts";
 import { fifos, readableOnce, standInTool, stopWriters } from "./read-once.ts";
 
@@ -101,6 +102,95 @@ describe("orrery agent", () => {
 		expect(out.status).toBe(1);
 		expect(out.stderr).toContain("agents.A.tool must be one of pi, claude-code, codex");
 		expect(readFileSync(config, "utf8")).toBe(`[agents.A]\nfolder = "/w"\ncompactor_model = "a/b"\n`);
+	});
+});
+
+describe("orrery agent rename", () => {
+	function agents(extra = "") {
+		const dir = tempDir("orrery-agent-rename-");
+		dirs.push(dir);
+		const config = join(dir, "config.toml");
+		const data = join(dir, "data");
+		writeFileSync(
+			config,
+			`data_dir = ${JSON.stringify(data)}\n\n# The first one.\n[agents.Alpha] # keep me\nfolder = "/w/a"\ncompactor_model = "a/b"\n\n[agents.Beta]\nfolder = "/w/b"\ncompactor_model = "a/b"\nreads = ["Alpha"]\n${extra}`,
+		);
+		const memory = join(data, "agents", "Alpha");
+		mkdirSync(memory, { recursive: true });
+		writeFileSync(join(memory, "memory.sqlite"), "kept");
+		writeFileSync(join(memory, "instructions.md"), "You are Alpha. Alpha-like names stay; Alpha works on Alpha's things.\n");
+		return { config, data, memory };
+	}
+
+	it("renames the block, the reads that name it and the data folder, and says what still names the old name", () => {
+		const { config, data, memory } = agents();
+		const out = orrery(["agent", "rename", "alpha", "Gamma"], { ORRERY_CONFIG: config });
+		expect(out.stderr).toBe("");
+		expect(out.status).toBe(0);
+		expect(out.stdout).toBe(
+			`Renamed Alpha to Gamma. Its memory is in ${join(data, "agents", "Gamma")}.\nIts instructions.md names Alpha 3 times; change them if they should say Gamma (E in the TUI).\nIts memory still says Alpha where earlier messages did. Open it as Gamma from now on.\n`,
+		);
+		expect(readFileSync(config, "utf8")).toBe(
+			`data_dir = ${JSON.stringify(data)}\n\n# The first one.\n[agents.Gamma] # keep me\nfolder = "/w/a"\ncompactor_model = "a/b"\n\n[agents.Beta]\nfolder = "/w/b"\ncompactor_model = "a/b"\nreads = ["Gamma"]\n`,
+		);
+		expect(existsSync(memory)).toBe(false);
+		expect(readFileSync(join(data, "agents", "Gamma", "memory.sqlite"), "utf8")).toBe("kept");
+		const status = orrery(["status", "--json"], { ORRERY_CONFIG: config });
+		expect(JSON.parse(status.stdout).agents.map((l: { name: string }) => l.name).sort()).toEqual(["Beta", "Gamma"]);
+	});
+
+	it("brings a real memory along whole: the same messages, read back under the new name", () => {
+		const { config, data, memory } = agents();
+		rmSync(join(memory, "memory.sqlite"));
+		const store = MemoryStore.open(join(memory, "memory.sqlite"));
+		store.appendBatch(["one", "two", "three"].map((text, i) => ({ kind: (i % 2 === 0 ? "user" : "talk") as "user" | "talk", text, date: `2026-11-23T10:0${i}:00.000Z` })));
+		store.close();
+		const out = orrery(["agent", "rename", "Alpha", "Gamma"], { ORRERY_CONFIG: config });
+		expect(out.stderr).toBe("");
+		expect(MemoryStore.messageCount(join(data, "agents", "Gamma", "memory.sqlite"))).toBe(3);
+		const status = orrery(["status", "Gamma", "--json"], { ORRERY_CONFIG: config });
+		expect(status.stderr).toBe("");
+		expect(JSON.parse(status.stdout).agents[0]).toMatchObject({ name: "Gamma", messages: 3 });
+	});
+
+	it("renames a change of case alone, and an agent never opened (no data folder)", () => {
+		const { config, data } = agents();
+		const cased = orrery(["agent", "rename", "Alpha", "ALPHA"], { ORRERY_CONFIG: config });
+		expect(cased.stderr).toBe("");
+		expect(readFileSync(join(data, "agents", "ALPHA", "memory.sqlite"), "utf8")).toBe("kept");
+		expect(readFileSync(config, "utf8")).toContain('[agents.ALPHA] # keep me\n');
+		const fresh = orrery(["agent", "rename", "Beta", "Delta"], { ORRERY_CONFIG: config });
+		expect(fresh.stderr).toBe("");
+		expect(fresh.stdout).toBe("Renamed Beta to Delta.\nIts memory still says Beta where earlier messages did. Open it as Delta from now on.\n");
+		expect(existsSync(join(data, "agents", "Delta"))).toBe(false);
+	});
+
+	it("refuses a taken, reserved or bad name, a data folder already there, an open agent and one with a remote, changing nothing", () => {
+		const { config, data, memory } = agents();
+		const before = readFileSync(config, "utf8");
+		const refused = (args: string[], why: string, file = config) => {
+			const out = orrery(["agent", "rename", ...args], { ORRERY_CONFIG: file });
+			expect(out.status).toBe(1);
+			expect(out.stderr).toContain(why);
+		};
+		refused(["Alpha", "beta"], "Beta is already an agent; pick another name.");
+		refused(["Alpha", "Rename"], "Rename is a word orrery agent uses");
+		refused(["Alpha", "9lives"], "Agent names use letters, digits");
+		refused(["Alpha", "Alpha"], "Alpha already has that name.");
+		refused(["Alpha"], "Use agent rename <Name> <NewName>.");
+		mkdirSync(join(data, "agents", "Gamma"));
+		refused(["Alpha", "Gamma"], `${join(data, "agents", "Gamma")} already exists`);
+		expect(readFileSync(config, "utf8")).toBe(before);
+		expect(readFileSync(join(memory, "memory.sqlite"), "utf8")).toBe("kept");
+
+		const status = { agent: "Alpha", pid: process.pid, open: true, busy: false, model: "pi", thinking: "off", compactor: { stopped: false, failing: 0, model: "a/b", thinking: "low", source: "config" }, trouble: null, lastError: null, updatedAt: localIso() };
+		writeFileSync(join(memory, "status.json"), JSON.stringify(status));
+		refused(["Alpha", "Omega"], "Alpha is open in pi; close it first.");
+		rmSync(join(memory, "status.json"));
+
+		const remote = agents('remote = "home"\n\n[remotes.home]\nkind = "cloudflare"\nurl = "https://example.com"\n');
+		refused(["Beta", "Omega"], "Beta has a remote (home)", remote.config);
+		expect(readFileSync(config, "utf8")).toBe(before);
 	});
 });
 

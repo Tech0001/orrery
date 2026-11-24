@@ -119,7 +119,7 @@ describe("first run", () => {
 		await answer(app, "Where should memory live", "\x15", ...typed(dataDir), ENTER);
 		await answer(app, "first agent's name", ...typed("local"), ENTER);
 		await answer(app, "Agent name");
-		expect((app.host.current as unknown as { text: string }).text).toBe("local is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); pick another name.");
+		expect((app.host.current as unknown as { text: string }).text).toBe("local is a word orrery agent uses (add, set, edit, archive, rename, push, pull, takeover, local); pick another name.");
 		await answer(app, "Agent name", ENTER);
 		await answer(app, "first agent's name", "\x1b");
 		expect(await done).toBe(false);

@@ -75,6 +75,11 @@ export interface AgentConfig {
 	 */
 	readonly folder?: string;
 	readonly allowedRoots: readonly string[];
+	/**
+	 * Set for an agent with no folder and no allowed_roots key: its allowed root is the parent of the folder a session
+	 * of it runs in, as an agent with a folder gets its folder's parent (src/agent/pick.ts allowedRootsFor).
+	 */
+	readonly rootsFromCwd?: true;
 	/** The tool the agent is launched in; undefined when the config does not say (the TUI then guesses). */
 	readonly tool?: AgentTool;
 	/**
@@ -128,7 +133,7 @@ const LOCAL_HOST: HostConfig = { name: "local", kind: "local" };
 const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 
 /** Words `orrery agent` takes as subcommands: no agent may be named one of them (compared without case). */
-export const RESERVED_NAMES: readonly string[] = ["add", "set", "edit", "archive", "push", "pull", "takeover", "local"];
+export const RESERVED_NAMES: readonly string[] = ["add", "set", "edit", "archive", "rename", "push", "pull", "takeover", "local"];
 
 const reserved = (name: string) => `${name} is a word orrery agent uses (${RESERVED_NAMES.join(", ")})`;
 
@@ -473,6 +478,7 @@ export function parseConfig(text: string, configDir: string): HarnessConfig {
 			host,
 			...(folder === undefined ? {} : { folder }),
 			allowedRoots: (roots as string[] | undefined) ?? (folder === undefined ? [] : [posix.dirname(folder)]),
+			...(roots === undefined && folder === undefined ? { rootsFromCwd: true as const } : {}),
 			launcher,
 			...(oriModel === undefined ? {} : { oriModel }),
 			...(tool === undefined || !known ? {} : { tool }),

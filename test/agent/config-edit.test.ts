@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { parse } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfigError, parseConfig, readBy } from "../../src/agent/config.ts";
-import { addAgent, addRemote, removeRemote, archiveAgent, configWritable, editConfigFile, newConfigText, parseReads, saveConfigText, setAgentKey } from "../../src/agent/config-edit.ts";
+import { addAgent, addRemote, removeRemote, archiveAgent, configWritable, editConfigFile, newConfigText, parseReads, renameAgent, saveConfigText, setAgentKey } from "../../src/agent/config-edit.ts";
 import { tempDir } from "./support.ts";
 
 const dirs: string[] = [];
@@ -122,7 +122,7 @@ describe("addAgent", () => {
 	it("refuses a name that exists in another case, a bad or reserved name, and a relative folder", () => {
 		expect(() => addAgent(BASE, "/x", { ...agent, name: "alpha" })).toThrow("An agent named alpha already exists.");
 		expect(() => addAgent(BASE, "/x", { ...agent, name: "9lives" })).toThrow("Agent names use letters, digits, - and _ (at most 32), starting with a letter.");
-		expect(() => addAgent(BASE, "/x", { ...agent, name: "Takeover" })).toThrow("Takeover is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); pick another name.");
+		expect(() => addAgent(BASE, "/x", { ...agent, name: "Takeover" })).toThrow("Takeover is a word orrery agent uses (add, set, edit, archive, rename, push, pull, takeover, local); pick another name.");
 		expect(() => addAgent(BASE, "/x", { ...agent, folder: "rel/dir" })).toThrow("The folder must be an absolute path.");
 	});
 
@@ -139,6 +139,20 @@ describe("addAgent", () => {
 		const config = parseConfig(next, "/x");
 		expect(config.agents.get("Gamma")?.compactor.model.modelId).toBe("gpt-6.1-sol");
 		expect(next).toMatch(/^# Orrery's config/);
+	});
+});
+
+describe("renameAgent", () => {
+	it("renames a quoted header and keeps the file's line ends", () => {
+		const text = `[agents."Alpha"]\r\nfolder = "/w/a"\r\ncompactor_model = "a/b"\r\n\r\n[agents.Beta]\r\nfolder = "/w/b"\r\ncompactor_model = "a/b"\r\nreads = ["Alpha"]\r\n`;
+		const out = renameAgent(text, "/x", "Alpha", "Gamma");
+		expect(out).toBe(text.replace('[agents."Alpha"]', "[agents.Gamma]").replace('reads = ["Alpha"]', 'reads = ["Gamma"]'));
+	});
+
+	it("refuses a name another agent has, ignoring case, and an unknown agent", () => {
+		const text = `[agents.Alpha]\nfolder = "/w/a"\ncompactor_model = "a/b"\n[agents.Beta]\nfolder = "/w/b"\ncompactor_model = "a/b"\n`;
+		expect(() => renameAgent(text, "/x", "Alpha", "BETA")).toThrow("Beta is already an agent; pick another name.");
+		expect(() => renameAgent(text, "/x", "Gamma", "Delta")).toThrow("No agent named Gamma in the config.");
 	});
 });
 

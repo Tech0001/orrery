@@ -115,22 +115,29 @@ describe("parseConfig", () => {
 		expect(() => parseConfig(`[agents.A]\nfolder = "/w"\nmodel = "a/b"\nnode_bytes = 10\n`, "/x")).toThrow(/nodeBytes/);
 	});
 
-	it("takes an agent without a folder: no allowed roots unless set, and agentForCwd never picks it", () => {
-		const config = parseConfig(`[agents.Nomad]\ncompactor_model = "openai/gpt-6.1-sol"\n[agents.Rooted]\ncompactor_model = "openai/gpt-6.1-sol"\nallowed_roots = ["/srv"]\n`, "/d");
+	it("takes an agent without a folder: its roots from the session's folder unless set, and agentForCwd never picks it", () => {
+		const config = parseConfig(
+			`[agents.Nomad]\ncompactor_model = "openai/gpt-6.1-sol"\n[agents.Rooted]\ncompactor_model = "openai/gpt-6.1-sol"\nallowed_roots = ["/srv"]\n[agents.Closed]\ncompactor_model = "openai/gpt-6.1-sol"\nallowed_roots = []\n`,
+			"/d",
+		);
 		const nomad = config.agents.get("Nomad")!;
 		expect(nomad.folder).toBeUndefined();
 		expect(nomad.allowedRoots).toEqual([]);
-		expect(config.agents.get("Rooted")?.allowedRoots).toEqual(["/srv"]);
+		expect(nomad.rootsFromCwd).toBe(true);
+		expect(config.agents.get("Rooted")).toMatchObject({ allowedRoots: ["/srv"] });
+		expect(config.agents.get("Rooted")?.rootsFromCwd).toBeUndefined();
+		// An empty allowed_roots key keeps such an agent to the folder it runs in.
+		expect(config.agents.get("Closed")?.rootsFromCwd).toBeUndefined();
 		expect(agentForCwd(config, "/")).toBeUndefined();
 		expect(agentForCwd(config, "/srv")).toBeUndefined();
 	});
 
 	it("refuses an agent named like an orrery agent subcommand, ignoring case", () => {
 		expect(() => parseConfig(`[agents.Local]\nfolder = "/w/l"\ncompactor_model = "openai/gpt-6.1-sol"\n`, "/d")).toThrow(
-			"agents.Local: Local is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); rename the agent, and its data folder /d/agents/Local to the same name, or it starts without its memory",
+			"agents.Local: Local is a word orrery agent uses (add, set, edit, archive, rename, push, pull, takeover, local); rename the agent, and its data folder /d/agents/Local to the same name, or it starts without its memory",
 		);
 		for (const word of RESERVED_NAMES) expect(() => parseConfig(`[agents.${word.toUpperCase()}]\ncompactor_model = "a/b"\n`, "/d")).toThrow(ConfigError);
-		expect(agentNameProblem("Edit")).toBe("Edit is a word orrery agent uses (add, set, edit, archive, push, pull, takeover, local); pick another name.");
+		expect(agentNameProblem("Edit")).toBe("Edit is a word orrery agent uses (add, set, edit, archive, rename, push, pull, takeover, local); pick another name.");
 		expect(agentNameProblem("Editor")).toBeUndefined();
 		expect(agentNameProblem("Atlas")).toBeUndefined();
 		expect(agentNameProblem("9lives")).toBe("Agent names use letters, digits, - and _ (at most 32), starting with a letter.");

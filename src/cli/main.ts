@@ -365,7 +365,14 @@ async function agentCommand(args: string[], values: Record<string, string | bool
 		process.stdout.write(`Archived ${agent}.\n`);
 		return 0;
 	}
-	throw new UsageError("agent needs add, set, archive, push, pull, takeover or local.");
+	if (action === "rename") {
+		// The same refusals as the TUI's R: closed, no remote, the config writable, a free name.
+		if (args.length !== 3) throw new UsageError("Use agent rename <Name> <NewName>.");
+		const { renameAgentNow, renamedText } = await import("../agent/rename.ts");
+		process.stdout.write(renamedText(renameAgentNow(file, required(name, "agent name"), args[2] as string)));
+		return 0;
+	}
+	throw new UsageError("agent needs add, set, archive, rename, push, pull, takeover or local.");
 }
 
 /** The command line's options; parseArgs reads them, and main's command finder skips a string option's value. */
@@ -622,7 +629,7 @@ async function dispatch(positionals: string[], values: ReturnType<typeof parseCo
 	if (command === "agent") {
 		// The config and remote subcommands. No agent may take one of their names (RESERVED_NAMES, src/agent/config.ts).
 		const sub = positionals[1];
-		if (sub !== undefined && ["add", "set", "archive", "push", "pull", "takeover", "local"].includes(sub)) return agentCommand(positionals.slice(1), values, judged());
+		if (sub !== undefined && ["add", "set", "archive", "rename", "push", "pull", "takeover", "local"].includes(sub)) return agentCommand(positionals.slice(1), values, judged());
 		const [{ editAgentCommand, openAgentCommand }, { agentRemoteCommand }] = await Promise.all([import("./agent.ts"), import("./remote.ts")]);
 		// A question only a person answers (starting Codex without Orrery's memory and guard) needs a terminal; --yes is no answer to it.
 		const terminal = process.stdin.isTTY === true && process.stdout.isTTY === true;

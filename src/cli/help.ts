@@ -49,6 +49,10 @@ const GROUPS: readonly Group[] = [
 				"agent archive <Name>",
 				"take a closed agent out of the config (its settings kept as comments at the end); its memory stays in its data folder (the TUI's A)",
 			],
+			[
+				"agent rename <Name> <NewName>",
+				"rename a closed agent: its config block, the other agents' reads that name it, and its data folder, so its memory comes along; not for an agent with a remote (the TUI's R)",
+			],
 			["run <Name>", "start the agent in Orrery's own runtime, in this terminal (one process per agent)"],
 			["status [<Name>] [--json]", "every agent (or one): state, tool, memory, summaries"],
 		],

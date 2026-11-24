@@ -20,7 +20,7 @@ import { cutNotice, instructionsSection, readInstructions } from "../agent/instr
 import { compactorCommand } from "../agent/agent-commands.ts";
 import { agentModelSource } from "../agent/model-source.ts";
 import { noticeKey, noticeText, type TroubleState } from "../agent/notices.ts";
-import { pickAgent, refusedNotice, workArea } from "../agent/pick.ts";
+import { allowedRootsFor, pickAgent, refusedNotice, workArea } from "../agent/pick.ts";
 import { NO_AGENT, noteSession, sessionStanding, settleVisit } from "../agent/session-owner.ts";
 import { forgetSession, type Inside, insideSession, nestedNotice, recordSession } from "../agent/sessions.ts";
 import { leaveHostEnv } from "../agent/host-env.ts";
@@ -219,7 +219,7 @@ function unreadableGuard(file: string, cwd: string, options: OrreryOptions, prot
 
 /** The guard for `agent` in `cwd`: no other agent's view. */
 function guarded(agent: AgentConfig, by: "env" | "folder", cwd: string, config: HarnessConfig, options: OrreryOptions): Guarded {
-	return { agent, by, workArea: workArea(agent, cwd), allowedRoots: agent.allowedRoots, ...guardBase(config, options), ...agentViews(config, agent) };
+	return { agent, by, workArea: workArea(agent, cwd), allowedRoots: allowedRootsFor(agent, cwd), ...guardBase(config, options), ...agentViews(config, agent) };
 }
 
 /**
@@ -1147,7 +1147,9 @@ function guard(pi: ExtensionAPI, state: OrreryState, host: "pi" | "omp"): void {
 		if (state.guarded.blind === true) return { block: true, reason: PROTECT_UNKNOWN };
 		const { workArea: area, allowedRoots, credentials, orreryData, home, foreignViews, fileModeViews, ownView, configFile, protect, orreryOnly, orreryHome: named } = state.guarded;
 		const plain = orreryOnly === true ? { orreryOnly, ...(named === undefined ? {} : { orreryHome: named }) } : {};
-		const options = { folder: area, allowedRoots, cwd: ctx.cwd, credentials, orreryData, home, foreignViews, fileModeViews, ownView, configFile, protect, ...plain };
+		// The agent's own session notes its writes for the turn's receipt (src/agent/receipts.ts); a nested, refused or plain one doesn't.
+		const own = state.guarded.agent !== undefined && (state.guarded.by === "env" || state.guarded.by === "folder") ? { notes: state.guarded.agent.dir } : {};
+		const options = { folder: area, allowedRoots, cwd: ctx.cwd, credentials, orreryData, home, foreignViews, fileModeViews, ownView, configFile, protect, ...plain, ...own };
 		const reason = judge(event.toolName, event.input as Record<string, unknown>, options);
 		return reason === undefined ? undefined : { block: true, reason };
 	});

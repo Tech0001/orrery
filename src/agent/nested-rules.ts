@@ -8,12 +8,17 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { type AgentConfig, agentForCwd, type HarnessConfig } from "./config.ts";
-import { agentNamed, workArea } from "./pick.ts";
+import { agentNamed, allowedRootsFor, workArea } from "./pick.ts";
 
 /** A write's limits: the work area and the allowed roots. */
 export interface WriteRules {
 	readonly workArea: string;
 	readonly allowedRoots: readonly string[];
+	/**
+	 * The data folder of the agent whose own session this is, where the guard notes the writes it lets through for the
+	 * turn's receipt (src/agent/receipts.ts). Absent for a nested, refused or plain session: they record nothing.
+	 */
+	readonly notes?: string;
 }
 
 /**
@@ -25,7 +30,7 @@ export function nestedRules(config: HarnessConfig, outer: string | undefined, cw
 	const agent = outer === undefined ? undefined : agentNamed(config, outer);
 	if (agent === undefined) return undefined;
 	const here = agentForCwd(config, cwd);
-	return here === undefined || here.name === agent.name ? { workArea: workArea(agent, cwd), allowedRoots: agent.allowedRoots } : bothRules(agent, here, cwd);
+	return here === undefined || here.name === agent.name ? { workArea: workArea(agent, cwd), allowedRoots: allowedRootsFor(agent, cwd) } : bothRules(agent, here, cwd);
 }
 
 /** `path` where it really is (links followed), or as written when it can't be read. */
@@ -53,8 +58,8 @@ export function bothRules(outer: AgentConfig, here: AgentConfig, cwd: string): W
 	const [a, b] = [workArea(outer, cwd), workArea(here, cwd)];
 	const area = holds(b, a) ? a : holds(a, b) ? b : resolve(cwd);
 	const roots = new Set<string>();
-	for (const x of outer.allowedRoots) {
-		for (const y of here.allowedRoots) {
+	for (const x of allowedRootsFor(outer, cwd)) {
+		for (const y of allowedRootsFor(here, cwd)) {
 			if (holds(y, x)) roots.add(x);
 			else if (holds(x, y)) roots.add(y);
 		}

@@ -48,7 +48,7 @@ import { GuardCall, RUST_SPACE } from "../agent/guard-paths.ts";
 import { inAnyReading, NEW_TEXT, patchNewText, type SkillShellRead, shellWord, skillShellRead, skillsNamed } from "../agent/guard-rules.ts";
 import { nestedRules, type WriteRules } from "../agent/nested-rules.ts";
 import type { PlainDeps } from "../agent/plain-nested.ts";
-import { workArea } from "../agent/pick.ts";
+import { allowedRootsFor, workArea } from "../agent/pick.ts";
 import { agentGuardOptions, type ClaudeGuardOptions, claudeGuard } from "../claude/guard.ts";
 import { TOOL_INPUT_MAX } from "../claude/hooks.ts";
 import { codexAgent, type CodexPicked, codexNested } from "./pick.ts";
@@ -433,7 +433,7 @@ export function runCodexGuard(stdin: string | undefined, ctx: CodexGuardContext)
  * it runs.
  */
 function writeRules(pick: CodexPicked, ctx: CodexGuardContext, cwd: string): WriteRules {
-	if (pick.kind === "agent") return { workArea: workArea(pick.agent, cwd), allowedRoots: pick.agent.allowedRoots };
+	if (pick.kind === "agent") return { workArea: workArea(pick.agent, cwd), allowedRoots: allowedRootsFor(pick.agent, cwd, ctx.home), notes: pick.agent.dir };
 	const nested = pick.kind === "nested" ? pick : pick.undecided === true ? codexNested(ctx.config, ctx.env, ctx.codexPid, ctx.plain) : undefined;
 	const outer = nested?.kind === "nested" ? nestedRules(ctx.config, nested.outer, cwd) : undefined;
 	return outer ?? { workArea: workArea({}, cwd), allowedRoots: [] };

@@ -1,7 +1,8 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { parseConfig } from "../../src/agent/config.ts";
 import { newToken } from "../../src/agent/pick.ts";
 import { type CodexGuardContext, codexGuard, codexRefusal, codexToolPath, readPatch, runCodexGuard } from "../../src/codex/guard.ts";
 import { cleanupDirs, testAgent } from "../claude/support.ts";
@@ -463,6 +464,42 @@ describe("the PreToolUse hook (runCodexGuard)", () => {
 		expect(runCodexGuard(call("view_image", view, cwd), ctx())).toBeUndefined();
 		expect(runCodexGuard(call("view_image", view, cwd), other)).toMatch(/another agent's memory view|sensitive/);
 		expect(runCodexGuard(call("apply_patch", { command: patch("*** Add File: ../top.ts", "+x") }, cwd), ctx({ env: {} }))).toMatch(/outside this agent's folder/);
+	});
+
+	it("notes each file a patch it lets through writes, for the turn's receipt, and none it refuses", () => {
+		const { t, ctx } = agentWorld();
+		const cwd = join(t.folder, "sub");
+		expect(runCodexGuard(call("apply_patch", { command: "*** Begin Patch\n*** Add File: a.ts\n+x\n*** Add File: ../b.ts\n+y\n*** End Patch" }, cwd), ctx())).toBeUndefined();
+		expect(runCodexGuard(call("apply_patch", { command: patch("*** Add File: /etc/x", "+x") }, cwd), ctx())).toMatch(/outside this agent's folder/);
+		// Where each really lands: on macOS the temp folder is reached through a link (/var is /private/var).
+		const real = realpathSync(t.folder);
+		expect(readFileSync(join(t.agent.dir, "turn-writes"), "utf8").split("\n").filter(Boolean).sort()).toEqual([join(real, "b.ts"), join(real, "sub", "a.ts")].sort());
+	});
+
+	it("lets an agent with no folder write beside the folder it runs in, unless its allowed_roots says otherwise or that is home", () => {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "orrery-codex-roots-")));
+		dir = root;
+		const data = join(root, "data");
+		const home = join(root, "home");
+		for (const folder of [join(root, "projects", "app"), join(root, "projects", "sibling"), join(home, "app")]) mkdirSync(folder, { recursive: true });
+		const config = parseConfig(
+			`data_dir = ${JSON.stringify(data)}\n[agents.Nomad]\ncompactor_model = "a/b"\n[agents.Shut]\ncompactor_model = "a/b"\nallowed_roots = []\n`,
+			root,
+		);
+		const session = (name: string) => {
+			const token = newToken();
+			mkdirSync(join(data, "agents", name, "claims"), { recursive: true, mode: 0o700 });
+			writeFileSync(join(data, "agents", name, "claims", token), "4343\n");
+			return { config, env: { ORRERY_AGENT: name, ORRERY_AGENT_TOKEN: token }, codexPid: 4343, alive: (pid: number) => pid === 4343, home } satisfies CodexGuardContext;
+		};
+		const write = (to: string, cwd: string, ctx: CodexGuardContext) => runCodexGuard(call("apply_patch", { command: patch(`*** Add File: ${to}`, "+x") }, cwd), ctx);
+		const app = join(root, "projects", "app");
+		expect(write(join(root, "projects", "sibling", "x.ts"), app, session("Nomad"))).toBeUndefined();
+		expect(write(join(root, "elsewhere.ts"), app, session("Nomad"))).toMatch(/outside this agent's folder/);
+		expect(write(join(root, "projects", "sibling", "x.ts"), app, session("Shut"))).toMatch(/outside this agent's folder/);
+		// Opened in a folder of home's own: that folder alone, not all of home.
+		expect(write(join(home, "notes.md"), join(home, "app"), session("Nomad"))).toMatch(/outside this agent's folder/);
+		expect(write(join(home, "app", "x.ts"), join(home, "app"), session("Nomad"))).toBeUndefined();
 	});
 
 	it("refuses what it cannot judge: input over 1 MB or unread, input that is no JSON object, a call with no cwd or tool, a failure", () => {

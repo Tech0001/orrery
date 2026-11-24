@@ -129,6 +129,63 @@ describe("the guard on Antigravity's tool calls", () => {
 		expect(agyGuard("write_file", { Path: join(home, ".gemini", "config", "skills", "s", "SKILL.md"), Content: "x" }, atHome)).toBeUndefined();
 	});
 
+	it("lets what the person attached be copied out with one plain cp, or read with one plain read, its paths written out", () => {
+		const { options, plain, home, folder } = setup();
+		const uploads = join(home, ".gemini", "antigravity-cli", "brain", "c1", ".user_uploaded");
+		mkdirSync(uploads, { recursive: true });
+		writeFileSync(join(uploads, "uploaded_media_0.jpg"), "jpg");
+		writeFileSync(join(uploads, "uploaded_media_1.png"), "png");
+		mkdirSync(join(folder, "assets"));
+		const run = (CommandLine: string, session: typeof options | typeof plain = options) => agyGuard("run_command", { CommandLine }, session);
+		for (const session of [options, plain]) {
+			for (const text of [
+				"cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg assets/",
+				`cp ${join(uploads, "uploaded_media_0.jpg")} ${join(uploads, "uploaded_media_1.png")} ${join(folder, "assets")}`,
+				`cp "${join(uploads, "uploaded_media_0.jpg")}" assets/sakura.jpg`,
+				"ls ~/.gemini/antigravity-cli/brain/c1/.user_uploaded",
+				"wc -c ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_1.png",
+			]) {
+				expect([text, run(text, session)]).toEqual([text, undefined]);
+			}
+		}
+		for (const text of [
+			// Anything but the attachments, or more than one plain command.
+			"cp ~/.gemini/antigravity-cli/brain/c1/.system_generated/logs/transcript_full.jsonl assets/",
+			"cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/../.system_generated/logs/transcript_full.jsonl assets/",
+			"cp -r ~/.gemini/antigravity-cli/brain/c1/.user_uploaded assets/",
+			"cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg assets/ && rm -rf ~/.gemini/antigravity-cli/brain",
+			"cat ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg > ~/.gemini/config/hooks.json",
+			"mv ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg assets/",
+			"cp ~/.gemini/antigravity-cli/brain/*/.user_uploaded/uploaded_media_0.jpg assets/",
+			"cp $HOME/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg assets/",
+			// Into Antigravity's own files, or back among the attachments.
+			"cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/x.jpg",
+			"cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg ~/.gemini/config/hooks.json",
+			"cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg ../x.jpg",
+		]) {
+			expect([text, run(text)]).toEqual([text, expect.stringMatching(/Antigravity's own files|sensitive/)]);
+		}
+		// A relative destination is placed from the call's folder: there, into Antigravity's own files.
+		expect(run("cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg config/hooks.json", { ...options, cwd: join(home, ".gemini") })).toMatch(/Antigravity's own files/);
+		// An attachment that is a link to a secret is judged as the secret.
+		symlinkSync(join(home, ".ssh", "config"), join(uploads, "planted.png"));
+		expect(run("cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/planted.png assets/")).toMatch(SENSITIVE);
+		// A destination through a link into Antigravity's own files is judged where it lands: the folder setup() links in.
+		expect(run("cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg config-link/hooks.json")).toMatch(/Antigravity's own files/);
+		// Into that folder under its own name, a file none of Antigravity's own: passes; one named as its hooks file doesn't.
+		expect(run(`cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg ${join(folder, "config-link")}/`)).toBeUndefined();
+		writeFileSync(join(uploads, "hooks.json"), "{}");
+		expect(run("cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/hooks.json config-link")).toMatch(/Antigravity's own files/);
+		expect(run("cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/hooks.json config-link/")).toMatch(/Antigravity's own files/);
+		// A link to a file of Antigravity's own that isn't there yet: a copy through it would make that file.
+		symlinkSync(join(home, ".gemini", "config", "plugins", "q", "hooks.json"), join(folder, "dangling.jpg"));
+		expect(run("cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg dangling.jpg")).toMatch(/Antigravity's own files/);
+		symlinkSync(join(folder, "dangling.jpg"), join(folder, "twice.jpg"));
+		expect(run("cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg twice.jpg")).toMatch(/Antigravity's own files/);
+		// Its message says how.
+		expect(run("cat ~/.gemini/antigravity-cli/brain/c1/overview.txt")).toMatch(/may be copied out with one plain cp/);
+	});
+
 	it("knows Orrery's own memory tools, eager or through call_mcp_tool", () => {
 		expect(orreryMemoryTool("mcp_orrery_zoom", {})).toBe(true);
 		expect(orreryMemoryTool("mcp_orrery_agent_memory", {})).toBe(true);
