@@ -1,6 +1,6 @@
 /** The agent guard's pre-check on a tool call (spec §6): the shared rules (src/agent/guard-rules.ts) and Grok's (src/grok/guard-rules.ts). */
 
-import { statSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { posix } from "node:path";
 import { AGY_COMMAND, AGY_COMMAND_PLAIN, AGY_READ_ONLY, AGY_READ_ONLY_PLAIN, agyKeeps, agyNamed, agyUpload, realish, type AgyRule, agyRule } from "../antigravity/guard-rules.ts";
@@ -146,11 +146,13 @@ function agyUploadsRead(command: string, home: string, cwd: string | undefined, 
 	const to = copy.destination;
 	const placed = to === "~" || to.startsWith("~/") || to.startsWith("/") ? place(to) : cwd !== undefined && posix.isAbsolute(cwd) ? posix.join(cwd, to) : undefined;
 	if (placed === undefined) return undefined;
-	// Each file the copy makes: in a folder (a destination ending in "/", or one that is a folder), under its source's
-	// name. Each as written and where it really lands (a folder on the way may be a link into Antigravity's own).
-	const into = to.endsWith("/") || isFolder(realish(placed));
-	const made = into ? copy.sources.map((source) => posix.join(placed, posix.basename(source))) : [placed];
-	if (made.some((file) => [file, realish(file)].some((at) => agyKeeps(at, rule) || agyNamed(posix.normalize(at).toLowerCase())))) return undefined;
+	// The destination, and each file the copy makes: in a folder (a destination ending in "/", or one that is a folder),
+	// under its source's name. Each as written and where it really lands, links followed even to a file not there yet (a
+	// folder on the way, or the file itself, may be a link into Antigravity's own).
+	const into = to.endsWith("/") || isFolder(landing(placed));
+	const made = into ? copy.sources.map((source) => posix.join(placed, posix.basename(source))) : [];
+	const own = (at: string) => agyKeeps(at, rule) || agyNamed(posix.normalize(at).toLowerCase());
+	if ([placed, ...made].some((file) => [file, realish(file), landing(file)].some(own))) return undefined;
 	return { program: "cat", paths: copy.sources };
 }
 
@@ -161,4 +163,25 @@ function isFolder(path: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Where a write to `path` lands: links followed, the last one too when what it names isn't there yet (realpath gives up
+ * on such a link, and a write through it makes the file it names); as far as it exists, then the rest as written.
+ */
+function landing(path: string, hops = 0): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		// Not there (or not readable): a dangling link is followed, else its folder is placed and the name kept.
+	}
+	if (hops < 40) {
+		try {
+			if (lstatSync(path).isSymbolicLink()) return landing(posix.resolve(posix.dirname(path), readlinkSync(path)), hops + 1);
+		} catch {
+			// Nothing there at all.
+		}
+	}
+	const parent = posix.dirname(path);
+	return parent === path || hops >= 40 ? path : posix.join(landing(parent, hops + 1), posix.basename(path));
 }

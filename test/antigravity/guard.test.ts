@@ -177,6 +177,11 @@ describe("the guard on Antigravity's tool calls", () => {
 		writeFileSync(join(uploads, "hooks.json"), "{}");
 		expect(run("cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/hooks.json config-link")).toMatch(/Antigravity's own files/);
 		expect(run("cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/hooks.json config-link/")).toMatch(/Antigravity's own files/);
+		// A link to a file of Antigravity's own that isn't there yet: a copy through it would make that file.
+		symlinkSync(join(home, ".gemini", "config", "plugins", "q", "hooks.json"), join(folder, "dangling.jpg"));
+		expect(run("cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg dangling.jpg")).toMatch(/Antigravity's own files/);
+		symlinkSync(join(folder, "dangling.jpg"), join(folder, "twice.jpg"));
+		expect(run("cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg twice.jpg")).toMatch(/Antigravity's own files/);
 		// Its message says how.
 		expect(run("cat ~/.gemini/antigravity-cli/brain/c1/overview.txt")).toMatch(/may be copied out with one plain cp/);
 	});
