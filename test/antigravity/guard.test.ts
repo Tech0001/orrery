@@ -170,6 +170,13 @@ describe("the guard on Antigravity's tool calls", () => {
 		// An attachment that is a link to a secret is judged as the secret.
 		symlinkSync(join(home, ".ssh", "config"), join(uploads, "planted.png"));
 		expect(run("cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/planted.png assets/")).toMatch(SENSITIVE);
+		// A destination through a link into Antigravity's own files is judged where it lands: the folder setup() links in.
+		expect(run("cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg config-link/hooks.json")).toMatch(/Antigravity's own files/);
+		// Into that folder under its own name, a file none of Antigravity's own: passes; one named as its hooks file doesn't.
+		expect(run(`cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/uploaded_media_0.jpg ${join(folder, "config-link")}/`)).toBeUndefined();
+		writeFileSync(join(uploads, "hooks.json"), "{}");
+		expect(run("cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/hooks.json config-link")).toMatch(/Antigravity's own files/);
+		expect(run("cp ~/.gemini/antigravity-cli/brain/c1/.user_uploaded/hooks.json config-link/")).toMatch(/Antigravity's own files/);
 		// Its message says how.
 		expect(run("cat ~/.gemini/antigravity-cli/brain/c1/overview.txt")).toMatch(/may be copied out with one plain cp/);
 	});

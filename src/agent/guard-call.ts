@@ -1,8 +1,9 @@
 /** The agent guard's pre-check on a tool call (spec §6): the shared rules (src/agent/guard-rules.ts) and Grok's (src/grok/guard-rules.ts). */
 
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { posix } from "node:path";
-import { AGY_COMMAND, AGY_COMMAND_PLAIN, AGY_READ_ONLY, AGY_READ_ONLY_PLAIN, agyKeeps, agyNamed, agyUpload, type AgyRule, agyRule } from "../antigravity/guard-rules.ts";
+import { AGY_COMMAND, AGY_COMMAND_PLAIN, AGY_READ_ONLY, AGY_READ_ONLY_PLAIN, agyKeeps, agyNamed, agyUpload, realish, type AgyRule, agyRule } from "../antigravity/guard-rules.ts";
 import { GROK_CLI_REFUSED, GROK_CLIMB, GROK_COMMAND, GROK_COMMAND_PLAIN, GROK_READ_ONLY, GROK_READ_ONLY_PLAIN, GROK_REACH, grokClimbsFrom, grokCommandOf, grokFolders, type GrokRule, grokLoads, grokNamed, grokNamedFrom, grokReaches, grokRule, grokSpeltFrom } from "../grok/guard-rules.ts";
 import { AGENT_REFUSED, APP_READ_ONLY, APP_READ_ONLY_PLAIN, CONFIG_READ_ONLY, CONFIG_READ_ONLY_PLAIN, configSpellings, flagged, type GuardOptions, namesFolder, newTextIn, OPENCODE_COMMAND, OPENCODE_NAMED, OPENCODE_READ_ONLY, openCodeLoads, openCodeRule, openCodeSkillRefusal, ORRERY_COMMAND_REFUSED, ORRERY_COMMAND_REFUSED_PLAIN, orreryAppNamed, orreryCommandIn, orreryConfigNamed, pathProtected, PLAIN_REFUSED, PLUMBING_REFUSED, PROTECTED_BY, PROTECTED_FILE, protectedIn, type Protection, protection, readings, runsPlumbing, secretIn, secretPath, sensitive, SKILL_SHELL, SKILLS_NAMED, type SkillShellRead, skillShellRead, TRANSCRIPT_COMMAND, TRANSCRIPT_COMMAND_PLAIN, TRANSCRIPT_READ_ONLY, TRANSCRIPT_READ_ONLY_PLAIN, transcriptPath, transcriptRule, transcriptsNamed, type ViewRules, viewRules, within, writtenOutCopy, writtenOutRead } from "./guard-rules.ts";
 
@@ -133,8 +134,8 @@ export function checkToolCall(
 /**
  * The read shell text makes of what the person attached in Antigravity (antigravity/guard-rules.ts agyUpload), as a
  * plain read for judgeShellRead: one plain read whose every path is there, or one plain cp whose every source is there
- * and whose destination is no file of Antigravity's own (placed from the call's folder when relative; refused when that
- * is unknown). Undefined for anything else.
+ * and whose destination is no file of Antigravity's own, as written or where it really lands, links followed (placed from
+ * the call's folder when relative; refused when that is unknown). Undefined for anything else.
  */
 function agyUploadsRead(command: string, home: string, cwd: string | undefined, rule: AgyRule): SkillShellRead | undefined {
 	const place = (raw: string) => (raw === "~" ? home : raw.startsWith("~/") ? posix.join(home, raw.slice(2)) : raw);
@@ -144,6 +145,20 @@ function agyUploadsRead(command: string, home: string, cwd: string | undefined, 
 	if (copy === undefined || !copy.sources.every((path) => agyUpload(place(path), home))) return undefined;
 	const to = copy.destination;
 	const placed = to === "~" || to.startsWith("~/") || to.startsWith("/") ? place(to) : cwd !== undefined && posix.isAbsolute(cwd) ? posix.join(cwd, to) : undefined;
-	if (placed === undefined || agyKeeps(placed, rule) || agyNamed(posix.normalize(placed).toLowerCase())) return undefined;
+	if (placed === undefined) return undefined;
+	// Each file the copy makes: in a folder (a destination ending in "/", or one that is a folder), under its source's
+	// name. Each as written and where it really lands (a folder on the way may be a link into Antigravity's own).
+	const into = to.endsWith("/") || isFolder(realish(placed));
+	const made = into ? copy.sources.map((source) => posix.join(placed, posix.basename(source))) : [placed];
+	if (made.some((file) => [file, realish(file)].some((at) => agyKeeps(at, rule) || agyNamed(posix.normalize(at).toLowerCase())))) return undefined;
 	return { program: "cat", paths: copy.sources };
+}
+
+/** Whether `path` is a folder (links followed); false when it can't be read. */
+function isFolder(path: string): boolean {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
 }

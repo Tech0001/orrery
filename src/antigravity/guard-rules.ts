@@ -33,7 +33,7 @@ const KEPT = (home: string) => [
 ];
 
 /** A path as it really is, as far as it exists. */
-function realish(path: string): string {
+export function realish(path: string): string {
 	const rest: string[] = [];
 	for (let at = path; ; at = posix.dirname(at)) {
 		try {
