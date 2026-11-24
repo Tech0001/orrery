@@ -208,7 +208,7 @@ describe("Orrery's commands in shell text", () => {
 		["orrery --config ';' setup", "setup"],
 		["orrery --config 'a|b' setup", "setup"],
 		["orrery --tool codex agent Atlas", "agent"],
-		["orrery setup --help", "setup"],
+		["orrery setup --help --yes", "setup"],
 		// Redirections before the command.
 		["orrery 2>&1 setup", "setup"],
 		["orrery >/dev/null 2>&1 uninstall", "uninstall"],
@@ -408,7 +408,39 @@ describe("Orrery's commands in shell text", () => {
 	});
 
 	it("names --version among what runs, in its message", () => {
-		expect(ORRERY_COMMAND_REFUSED("setup")).toMatch(/help, status, usage, browse, compactor and --version run here/);
+		expect(ORRERY_COMMAND_REFUSED("setup")).toMatch(/help, status, usage, browse, compactor, --version and any command's --help run here/);
+	});
+
+	it("lets a refused command's own --help or -h through when that is all the command is (main.ts prints help and runs nothing)", () => {
+		const texts = [
+			"orrery agent --help",
+			"orrery agent -h",
+			"orrery --help agent",
+			"orrery -h setup",
+			`orrery 'agent' "--help"`,
+			"orrery import --help; ls",
+			"(orrery remote -h)",
+			"orrery agent --help && echo ok",
+			"orrery --config /tmp/c.toml agent --help",
+		];
+		for (const text of texts) expect([text, runsOrreryCommand(text)]).toEqual([text, undefined]);
+	});
+
+	it("refuses the command when anything more comes with its --help", () => {
+		const texts = [
+			"orrery agent Atlas -- --help",
+			"orrery agent --help Atlas",
+			"orrery --help agent Atlas",
+			"orrery agent --help --help",
+			"orrery agent --help > /tmp/x",
+			"orrery agent --help $(orrery agent Atlas)",
+			"orrery agent --help `id`",
+			"orrery agent $H",
+			"orrery -- agent --help",
+			"orrery agent --help; orrery agent Atlas",
+			"orrery agent --helper",
+		];
+		for (const text of texts) expect([text, runsOrreryCommand(text)]).toEqual([text, "agent"]);
 	});
 
 	it("judges a long command line in time: the rule, and one gate's whole call (Claude Code's hook gives a call 2 s)", () => {
