@@ -350,10 +350,10 @@ refused, and Orrery's own config and program are read-only to agents. Out of the
 
 You edit those files yourself. A project's own `.npmrc`, `.pypirc`, `.azure` or `.wrangler` is not a login and stays
 open, and so do `npm`, `cargo`, `gcloud`, `az`, `wrangler`, `pass` and `op` themselves: only naming the protected files
-and folders is refused. An agent's file edits also stay inside its folder (or the folder it was opened in) and that
-folder's parent, so it can work in the projects beside it; a session opened in your home folder gets no parent.
-`allowed_roots = ["/abs/path"]` in its `[agents.<Name>]` section sets the roots instead of the parent, and
-`allowed_roots = []` keeps it to its folder.
+and folders is refused. An agent's file edits also stay inside its folder and that folder's parent, so it can work in
+the projects beside it. An agent with no folder gets the folder it was opened in and that folder's parent, unless the
+parent is your home folder or above it. `allowed_roots = ["/abs/path"]` in its `[agents.<Name>]` section sets the
+roots instead of the parent, and `allowed_roots = []` keeps it to its folder.
 
 **You can add your own files and folders.** List them under `[guard]` in `~/.orrery/config.toml` (or the file
 `ORRERY_CONFIG` names), and every agent is kept from them, in every tool:

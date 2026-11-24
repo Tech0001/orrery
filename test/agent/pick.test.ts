@@ -312,16 +312,28 @@ describe("allowedRootsFor", () => {
 	it("gives an agent with no folder and no allowed_roots the parent of the folder its session runs in", () => {
 		expect(allowedRootsFor(nomad, "/home/u/src/app", "/home/u")).toEqual(["/home/u/src"]);
 		expect(allowedRootsFor(nomad, "/home/u/src/app/", "/home/u")).toEqual(["/home/u/src"]);
-		expect(allowedRootsFor(nomad, "/home/u/app", "/home/u")).toEqual(["/home/u"]);
 		expect(allowedRootsFor(nomad, "/srv/work/app", "/home/u")).toEqual(["/srv/work"]);
 	});
 
-	it("gives none when that parent is the filesystem's root or holds the home folder", () => {
+	it("gives none when that parent is the home folder, holds it, or is the filesystem's root", () => {
+		expect(allowedRootsFor(nomad, "/home/u/app", "/home/u")).toEqual([]);
+		expect(allowedRootsFor(nomad, "/home/u/app", "/home/u/")).toEqual([]);
+		expect(allowedRootsFor(nomad, "/Users/Alex/app", "/users/alex")).toEqual([]);
 		expect(allowedRootsFor(nomad, "/home/u", "/home/u")).toEqual([]);
 		expect(allowedRootsFor(nomad, "/home", "/home/u")).toEqual([]);
 		expect(allowedRootsFor(nomad, "/srv", "/home/u")).toEqual([]);
 		expect(allowedRootsFor(nomad, "/", "/home/u")).toEqual([]);
-		expect(allowedRootsFor(nomad, "/Users/Alex", "/Users/Alex")).toEqual([]);
+	});
+
+	it("knows the home folder through a link to it", () => {
+		const { root } = world();
+		const home = join(root, "home");
+		mkdirSync(join(home, "app"), { recursive: true });
+		mkdirSync(join(home, "src", "app"), { recursive: true });
+		symlinkSync(home, join(root, "home-link"));
+		expect(allowedRootsFor(nomad, join(root, "home-link", "app"), home)).toEqual([]);
+		expect(allowedRootsFor(nomad, join(home, "app"), join(root, "home-link"))).toEqual([]);
+		expect(allowedRootsFor(nomad, join(root, "home-link", "src", "app"), home)).toEqual([join(root, "home-link", "src")]);
 	});
 
 	it("keeps the config's roots for every other agent", () => {
